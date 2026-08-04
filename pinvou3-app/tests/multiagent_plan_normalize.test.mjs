@@ -606,6 +606,23 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     toolRenderersSource,
+    /webReadOnly && !item\.resolved/,
+    '澄清卡在 Web 只读会话呈现为锁定说明，不留"能点但必败"的按钮（复核 P2）',
+  );
+  const sessionsBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+  assert.match(
+    sessionsBridgeSource2,
+    /delete_session[\s\S]{0,400}enterDraft\(\)[\s\S]{0,200}pendingDraftMultiAgent = true/,
+    '草稿开关落盘失败必须中止物化并保留意图——首条消息不得静默退化成普通对话（复核 P1）',
+  );
+  const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
+  assert.match(
+    chatBridgeSource2,
+    /prefillComposer\(text\);\s*return;/,
+    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1）',
+  );
+  assert.match(
+    toolRenderersSource,
     /subagentRoleOrdinals\(list\)/,
     '轮询广播必须携带同角色序号，行内卡的 ①② 与面板同源一致',
   );

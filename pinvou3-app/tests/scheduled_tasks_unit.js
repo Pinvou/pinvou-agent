@@ -787,6 +787,39 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
 }
 
+async function draftToggleFailureAbortsFirstSend() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  harness.handlers.set_multi_agent_mode = function () { throw new Error("git missing"); };
+
+  await bridge.interaction.setMultiAgentMode(true); // 草稿态寄存意图
+  await bridge.chat.sendMessage("并行调研测试");
+
+  var calls = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(!calls.includes("chat"), "开关落盘失败后首条消息不得发出（否则静默退化成普通对话）");
+  assert.ok(calls.includes("delete_session"), "中止物化必须清掉刚建的空会话");
+  assert.equal(bridge.state.get("sessions").activeSessionId, null, "必须回到草稿态");
+  assert.ok(
+    JSON.stringify(bridge.state.get("chat").chatItems).includes("git missing"),
+    "失败原因要如实提示"
+  );
+  assert.equal(
+    bridge.state.get("chat").composerPrefill.text,
+    "并行调研测试",
+    "被中止的输入必须回填输入框，不得静默丢字"
+  );
+
+  // 意图保留：修好依赖后再次发送，开关重试且消息正常发出。
+  harness.handlers.set_multi_agent_mode = function () { return { mode: "yolo", multi_agent: true }; };
+  await bridge.chat.sendMessage("再来一次");
+  var after = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(
+    after.filter(function (cmd) { return cmd === "set_multi_agent_mode"; }).length >= 2,
+    "草稿开关意图必须保留到下一次物化重试"
+  );
+  assert.ok(after.includes("chat"), "开关成功后消息正常发出");
+}
+
 async function multiAgentToggleFailureIsRoutedToTriggerSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3729,6 +3762,7 @@ Promise.resolve()
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(internalSubagentHandoffStaysOutOfPresentation)
   .then(multiAgentToggleFailureIsRoutedToTriggerSession)
+  .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)
