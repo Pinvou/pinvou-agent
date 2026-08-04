@@ -105,27 +105,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
   });
 };
 
-const FEISHU_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
-      { key: 'cli', label: '安装连接组件', sub: 'lark-cli · 首次约 40 秒' },
-      { key: 'connect', label: '连接并授权', sub: '创建应用身份' },
-      { key: 'qr', label: '扫码登录', sub: '飞书 App 扫一扫' },
-    ];
-    const WECOM_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
-      { key: 'cli', label: '安装连接组件', sub: 'wecom-cli · 首次约 40 秒' },
-      { key: 'qr', label: '扫码登录', sub: '企业微信 App 扫一扫' },
-    ];
-    const DINGTALK_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
-      { key: 'cli', label: '安装连接组件', sub: 'dws · 首次约 40 秒' },
-      { key: 'qr', label: '扫码登录', sub: '钉钉 App 扫一扫' },
-    ];
-    const TMEET_STEPS = [
-      { key: 'runtime', label: '准备运行时', sub: '使用应用自带 Node' },
-      { key: 'cli', label: '安装连接组件', sub: 'tmeet · 首次约 40 秒' },
-      { key: 'qr', label: '扫码登录', sub: '腾讯会议授权页' },
-    ];
     const FeishuStepIcon = ({ st }) => {
       if (st === 'done') return <span className="w-5 h-5 rounded-full bg-emerald-500 grid place-items-center text-white text-[11px]">✓</span>;
       if (st === 'active') return <span className="w-5 h-5 rounded-full bg-blue-600 grid place-items-center text-white text-[10px] animate-pulse">●</span>;
@@ -137,15 +116,7 @@ const FEISHU_STEPS = [
         <div className={`h-full rounded-full transition-all ${creep ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: (pct || 0) + '%' }} />
       </div>
     );
-    const DEFAULT_FLOW_COPY = {
-      incomplete:name=>`${name}接入未完成`, connected:name=>`已连接${name}`, connecting:name=>`正在接入${name}`,
-      cancel:'取消', extracting:pct=>`解压中 ${pct}%`, elapsed:seconds=>`已 ${seconds}s`, installStarting:'在线安装：正在开始…',
-      browserOpened:'已打开浏览器登录页', browserHint:'请在浏览器中扫码确认。未弹出时可重新打开。', reopen:'重新打开',
-      qrAlt:name=>`${name}二维码`, authorizeStep:'第 2 步 / 共 2 步：扫码授权', registerStep:'第 1 步 / 共 2 步：扫码注册应用',
-      scanLogin:name=>`扫码登录${name}`, scanHint:name=>`用${name} App 扫一扫 → 确认`, userCode:'页面验证码',
-      openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
-    };
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '飞书', twoStep = true, browserAuth = false, steps = FEISHU_STEPS, copy = DEFAULT_FLOW_COPY }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = [], copy = {} }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -2110,4 +2081,4 @@ const FEISHU_STEPS = [
     // Shared Components
     // ==========================================
 
-export { FEISHU_STEPS, WECOM_STEPS, DINGTALK_STEPS, TMEET_STEPS, FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
+export { FeishuStepIcon, FeishuBar, FeishuFlowCard, FeishuMini, feishuConn, ensureFeishuListeners, wecomConn, ensureWecomListeners, dingtalkConn, ensureDingtalkListeners, tmeetConn, ensureTmeetListeners, TsAlert, TsConfigDialog, TsObsidianGuide, ToolStoreView };
