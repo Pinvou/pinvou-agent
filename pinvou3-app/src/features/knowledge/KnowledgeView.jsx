@@ -49,16 +49,17 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (age >= 0 && age < 7 * 86400000) return `${t.kbOutWeekdays[d.getDay()]} ${p(d.getHours())}:${p(d.getMinutes())}`;
         return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
       };
-      const muted = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-      const card = isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]';
-      const cardHover = isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]';
-      const iconHover = isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]';
-      const accent = isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white';
-      const soft = isDark ? 'bg-[#1E1F20] hover:bg-[#333537] text-[#A8C7FA]' : 'bg-[#F0F4F9] hover:bg-[#E1E5EA] text-[#0B57D0]';
-      const ink = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
+      const muted = 'text-[#444746] dark:text-[#C4C7C5]';
+      const card = 'bg-[#F0F4F9] dark:bg-[#1E1F20]';
+      const cardHover = 'hover:bg-[#F0F4F9] dark:hover:bg-[#1E1F20]';
+      const iconHover = 'hover:bg-[#E1E5EA] dark:hover:bg-[#333537]';
+      const accent = 'bg-[#0B57D0] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]';
+      const soft = 'bg-[#F0F4F9] hover:bg-[#E1E5EA] text-[#0B57D0] dark:bg-[#1E1F20] dark:hover:bg-[#333537] dark:text-[#A8C7FA]';
+      const ink = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
       // 设计稿白卡:白底 + 细边框 + 柔阴影(本页文件/知识库卡片专用,区别于全局灰底 card)
-      const panel = isDark ? 'bg-[#1E1F20] border border-white/10' : 'bg-white border border-[#ececf1]';
-      const panelHover = isDark ? 'hover:border-white/20' : 'hover:border-[#dfe4f5]';
+      const panel = 'bg-white border border-[#ececf1] dark:bg-[#1E1F20] dark:border-white/10';
+      const panelHover = 'hover:border-[#dfe4f5] dark:hover:border-white/20';
+      // P2 残留:inline-style boxShadow(boxShadow 含 rgba 非纯色,规则 C/D 留 P2);仍依赖 isDark。
       const panelShadow = isDark ? {} : { boxShadow: '0 1px 2px rgba(24,24,40,.04), 0 8px 24px rgba(24,24,40,.04)' };
       // 文件类型 → 配色(对齐设计稿的彩色 ext 方块/类型卡)
       const EXT_COLOR = { doc:'#2f6beb',docx:'#2f6beb',md:'#5a6acf',txt:'#8a8a9a',rtf:'#2f6beb',odt:'#2f6beb',wps:'#2f6beb',html:'#2f6beb',htm:'#2f6beb',mhtml:'#2f6beb',mht:'#2f6beb',
@@ -815,7 +816,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') doAdd(activeColl && activeColl.id, kind); else dzPick(kind); };
       const folderPickerAvailable = !!(bridge && bridge.files && bridge.files.pickFolders);
       const StatusPill = ({ s }) => {
-        const map = { ready: ['●', t.kbStReady, isDark ? 'text-[#7DD3A8]' : 'text-[#18a957]'], indexing: ['◐', t.kbStIndexing, isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'], pending: ['○', t.kbStPending, isDark ? 'text-[#E8C468]' : 'text-[#c98a00]'] };
+        const map = { ready: ['●', t.kbStReady, 'text-[#18a957] dark:text-[#7DD3A8]'], indexing: ['◐', t.kbStIndexing, 'text-[#0B57D0] dark:text-[#A8C7FA]'], pending: ['○', t.kbStPending, 'text-[#c98a00] dark:text-[#E8C468]'] };
         const v = map[s] || map.ready;
         return <span className={`text-[12px] font-medium ${v[2]}`}>{v[0]} {v[1]}</span>;
       };
@@ -880,7 +881,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
                     />
                     <button onClick={startScan} disabled={scanning || !loaded} title={t.kbRescan}
-                      className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C] disabled:hover:bg-[#2C2C2E]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB]'}`}>
+                      className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] dark:disabled:hover:bg-[#2C2C2E]`}>
                       <RefreshCw size={14} className={`mr-2 opacity-70 ${scanning ? 'animate-spin' : ''}`} />
                       {scanning ? `${t.kbScanning} ${(scan.scanned || 0).toLocaleString()}` : t.kbRescan}
                     </button>
@@ -906,7 +907,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                           <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div>
                           <div className="min-w-0">
                             <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
-                            <div className={`h-3 w-10 rounded mt-1.5 animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} />
+                            <div className={`h-3 w-10 rounded mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
                           </div>
                         </div>
                       );})}
@@ -915,8 +916,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
                       {Array.from({ length: 6 }).map((_, i) => (
                         <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                          <div className={`w-7 h-7 rounded-lg shrink-0 animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} />
-                          <div className={`flex-1 h-3 rounded animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} style={{ maxWidth: `${60 - i * 6}%` }} />
+                          <div className={`w-7 h-7 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                          <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${60 - i * 6}%` }} />
                         </div>
                       ))}
                     </div>
@@ -960,7 +961,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               <button
                                 type="button"
                                 onClick={() => setFileSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
-                                className={`inline-flex w-fit items-center gap-1 rounded-[8px] py-1 transition-colors ${isDark ? 'hover:text-[#E5E5EA]' : 'hover:text-[#1D1D1F]'}`}
+                                className={`inline-flex w-fit items-center gap-1 rounded-[8px] py-1 transition-colors hover:text-[#1D1D1F] dark:hover:text-[#E5E5EA]`}
                               >
                                 <span>{t.kbColTime}</span>
                                 <ChevronDown size={13} className={`transition-transform ${fileSortDir === 'asc' ? 'rotate-180' : ''}`} />
@@ -985,17 +986,17 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
                                   <div className="flex shrink-0 items-center justify-end gap-1">
                                     <button title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
-                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                       <Plus size={15} />
                                     </button>
                                       {canOpenSystemFiles && (
                                         <>
                                           <button onClick={(e2) => { e2.stopPropagation(); openFile(f.path); }}
-                                            className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                                            className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                                             {t.kbOpen}
                                           </button>
                                           <button title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <FolderOpen size={15} />
                                           </button>
                                         </>
@@ -1022,8 +1023,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
                     {Array.from({ length: 6 }).map((_, i) => (
                       <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
-                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} />
-                        <div className={`flex-1 h-3 rounded animate-pulse ${isDark ? 'bg-white/10' : 'bg-black/[0.07]'}`} style={{ maxWidth: `${70 - i * 7}%` }} />
+                        <div className={`w-8 h-8 rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${70 - i * 7}%` }} />
                       </div>
                     ))}
                   </div>
@@ -1046,22 +1047,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   const OutputActions = ({ o, compact }) => (
                     <div className={`flex items-center gap-1 ${compact ? 'justify-end' : 'mt-3'}`}>
                       <button onClick={() => continueOutput(o)}
-                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                         {t.kbOutContinue}
                       </button>
                       <button onClick={() => newOutputProject(o)}
-                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                        className={`h-8 px-2.5 rounded-[9px] text-[13px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
                         {t.kbOutNewProject}
                       </button>
                       {canOpenSystemFiles && (
                         <button title={t.kbOutOpenFolder} onClick={() => openFolder(o.path)}
-                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                           <FolderOpen size={15} />
                         </button>
                       )}
                       {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
                         <button title={t.uiKnowledge.downloadOutput} onClick={() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id)}
-                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                          className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                           <Download size={15} />
                         </button>
                       )}
@@ -1102,7 +1103,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 {rows.map((o) => {
                                   const meta = outCatMeta(o.category);
                                   return (
-                                    <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 ${isDark ? 'bg-[#1C1C1E] border-white/[0.055] hover:bg-[#202124] hover:border-white/[0.09]' : 'bg-white border-black/[0.045] hover:border-black/[0.075]'}`}
+                                    <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>
                                       <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} />
                                       <div className="px-5 pb-4">
@@ -1110,7 +1111,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
                                           <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0" style={{ color: isDark ? '#8DB7FF' : '#0066CC', background: isDark ? 'rgba(10,132,255,.10)' : 'rgba(0,122,255,.08)' }}>{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
                                         </div>
-                                        <div className={`flex items-center gap-2 text-[13px] mt-2 ${isDark ? 'text-[#AEAEB2]' : 'text-[#6E6E73]'}`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
+                                        <div className={`flex items-center gap-2 text-[13px] mt-2 text-[#6E6E73] dark:text-[#AEAEB2]`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
                                         <OutputActions o={o} />
                                       </div>
                                     </article>
@@ -1139,7 +1140,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                 <button
                                   type="button"
                                   onClick={() => setOutSortDir((v) => v === 'desc' ? 'asc' : 'desc')}
-                                  className={`inline-flex w-fit justify-self-start items-center gap-1 rounded-[8px] py-1 transition-colors ${isDark ? 'hover:text-[#E5E5EA]' : 'hover:text-[#1D1D1F]'}`}
+                                  className={`inline-flex w-fit justify-self-start items-center gap-1 rounded-[8px] py-1 transition-colors hover:text-[#1D1D1F] dark:hover:text-[#E5E5EA]`}
                                 >
                                   <span>{t.kbColTime}</span>
                                   <ChevronDown size={13} className={`transition-transform ${outSortDir === 'asc' ? 'rotate-180' : ''}`} />
@@ -1169,22 +1170,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                                       </div>
                                       <div className="flex shrink-0 items-center justify-end gap-1">
                                         <button onClick={(e) => { e.stopPropagation(); continueOutput(o); }}
-                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#0A84FF] hover:bg-[#0A84FF]/10' : 'text-[#007AFF] hover:bg-[#007AFF]/10'}`}>
+                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#007AFF] hover:bg-[#007AFF]/10 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/10`}>
                                           {t.kbOutContinue}
                                         </button>
                                         <button onClick={(e) => { e.stopPropagation(); newOutputProject(o); }}
-                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 ${isDark ? 'text-[#D1D1D6] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                          className={`h-8 rounded-[9px] px-2.5 text-[12px] font-medium transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
                                           {t.kbOutNewProject}
                                         </button>
                                         {canOpenSystemFiles && (
                                           <button title={t.kbOutOpenFolder} onClick={(e) => { e.stopPropagation(); openFolder(o.path); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <FolderOpen size={15} />
                                           </button>
                                         )}
                                         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
                                           <button title={t.uiKnowledge.downloadOutput} onClick={(e) => { e.stopPropagation(); bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 ${isDark ? 'text-[#C7C7CC] hover:bg-white/[0.08]' : 'text-[#3A3A3C] hover:bg-[#F2F2F7]'}`}>
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <Download size={15} />
                                           </button>
                                         )}
@@ -1238,12 +1239,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       t.kbModelChipInstalled.replace('{n}', mb(kbModel && kbModel.installedBytes) || 560),
                       t.kbModelChipOffline, t.kbModelChipLang,
                     ].map((c, i) => (
-                      <span key={i} className={`text-[11.5px] px-2.5 py-1 rounded-lg ${isDark ? 'bg-white/5 text-[#C4C7C5]' : 'bg-[#f4f5f8] text-[#5a5a66]'}`}>{c}</span>
+                      <span key={i} className={`text-[11.5px] px-2.5 py-1 rounded-lg bg-[#f4f5f8] text-[#5a5a66] dark:bg-white/5 dark:text-[#C4C7C5]`}>{c}</span>
                     ))}
                   </div>
                   <div className="mt-3.5 pt-3.5 border-t border-gray-400/15 flex flex-col gap-2.5">
                     {[t.kbModelItem1, t.kbModelItem2, t.kbModelItem3].map((it, i) => (
-                      <div key={i} className={`flex items-center gap-2.5 text-[12.5px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#56565f]'}`}>
+                      <div key={i} className={`flex items-center gap-2.5 text-[12.5px] text-[#56565f] dark:text-[#C4C7C5]`}>
                         <Check size={15} className="text-[#18a957] shrink-0" />{it}
                       </div>
                     ))}
@@ -1254,7 +1255,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   <div className="mt-5">
                     {modelFailed ? (
                       <div className="flex items-center justify-center gap-3">
-                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold ${isDark ? 'bg-white/10 text-white' : 'bg-[#eceef7] text-[#3f4250]'}`}>{t.kbModelRetryBtn}</button>
+                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold bg-[#eceef7] text-[#3f4250] dark:bg-white/10 dark:text-white`}>{t.kbModelRetryBtn}</button>
                         <button onClick={() => startModelDownload(true)} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
                           style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>{t.kbModelRepairBtn} →</button>
                       </div>
@@ -1270,11 +1271,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 ) : (
                   <div className="mt-5 max-w-[480px] mx-auto">
-                    <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-[#edf0fa]'}`}>
+                    <div className={`h-2 rounded-full overflow-hidden bg-[#edf0fa] dark:bg-white/10`}>
                       <div className="h-full rounded-full transition-all" style={{ width: dlPct + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
                     </div>
                     <div className="flex justify-between mt-2.5 text-[12.5px]">
-                      <span className={`font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#2f6beb]'}`}>{modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}</span>
+                      <span className={`font-semibold text-[#2f6beb] dark:text-[#A8C7FA]`}>{modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}</span>
                       {downloading && <span className="font-bold text-[#2f6beb]">{dlPct}%</span>}
                     </div>
                   </div>
@@ -1285,19 +1286,19 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelUsable && (
               <div className="max-w-[1400px] mx-auto">
-                <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
+                <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 bg-gradient-to-br from-[#ece8fc] to-[#dcebfb] dark:bg-gradient-to-br dark:from-[#2A2440] dark:to-[#1E2438]`}>
                   <div className="flex-1 min-w-0">
-                    <h2 className={`text-[20px] font-bold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#211f33]'}`}>{t.kbBannerTitle}</h2>
+                    <h2 className={`text-[20px] font-bold mb-3 text-[#211f33] dark:text-[#E3E3E3]`}>{t.kbBannerTitle}</h2>
                     <button onClick={() => setNewColl({ name: '', category: '' })} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white" style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)' }}>{t.kbNewColl} →</button>
                     <div className="flex gap-2 mt-4 flex-wrap">
                       {[t.kbStep1, t.kbStep2, t.kbStep3].map((s, i) => (
-                        <span key={i} className={`text-[12px] px-3 py-1.5 rounded-full ${isDark ? 'bg-white/10 text-[#C4C7C5]' : 'bg-white/70 text-[#54506b]'}`}><b className="text-[#6c5ce7]">{i + 1}</b> {s}</span>
+                        <span key={i} className={`text-[12px] px-3 py-1.5 rounded-full bg-white/70 text-[#54506b] dark:bg-white/10 dark:text-[#C4C7C5]`}><b className="text-[#6c5ce7]">{i + 1}</b> {s}</span>
                       ))}
                     </div>
                   </div>
                   <div className="hidden xl:flex gap-3 shrink-0">
                     {['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a'].map((c, i) => (
-                      <div key={i} className={`w-16 h-20 rounded-2xl grid place-items-center shadow-sm ${isDark ? 'bg-white/10' : 'bg-white/70'}`}>
+                      <div key={i} className={`w-16 h-20 rounded-2xl grid place-items-center shadow-sm bg-white/70 dark:bg-white/10`}>
                         <div className="w-9 h-9 rounded-xl grid place-items-center" style={{ background: c + '22', color: c }}><FileText size={18} /></div>
                       </div>
                     ))}
@@ -1306,7 +1307,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
                 {/* 语义检索状态 */}
                 <div className="flex items-center gap-2 mb-5 text-[12px]">
-                  <span className={`px-3 py-1 rounded-full ${embedInfo && embedInfo.enabled ? (isDark ? 'bg-[#13361f] text-[#7DD3A8]' : 'bg-[#e6f6ec] text-[#18a957]') : `${card} ${muted}`}`}>
+                  <span className={`px-3 py-1 rounded-full ${embedInfo && embedInfo.enabled ? 'bg-[#e6f6ec] text-[#18a957] dark:bg-[#13361f] dark:text-[#7DD3A8]' : `${card} ${muted}`}`}>
                     {embedInfo && embedInfo.enabled ? `${t.kbEmbedOn}（${embedInfo.model}）` : t.kbEmbedOff}
                   </span>
                 </div>
@@ -1317,7 +1318,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 )}
                 {idx && (idx.running || idx.resumable || idx.failed > 0) && (
-                  <div className={`mb-5 rounded-2xl border p-4 ${isDark ? 'border-white/10 bg-white/[0.04]' : 'border-[#dfe3ee] bg-[#f8f9fd]'}`}>
+                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04]`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={`text-[14px] font-bold ${ink}`}>
@@ -1422,7 +1423,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                             </div>
                           )}
                           <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-400/15">
-                            <span className={`text-[12px] ${muted}`}><b className={isDark ? 'text-[#C4C7C5]' : 'text-[#54545f]'}>{c.docCount}</b> {t.kbDocs} · {fmtSize(c.totalBytes)}</span>
+                            <span className={`text-[12px] ${muted}`}><b className="text-[#54545f] dark:text-[#C4C7C5]">{c.docCount}</b> {t.kbDocs} · {fmtSize(c.totalBytes)}</span>
                             <StatusPill s={c.status} />
                           </div>
                         </div>
@@ -1458,7 +1459,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       if (rows.length === 0) return <div className={`text-center py-12 ${muted} text-[14px]`}>{activeColl ? t.kbCollEmpty : t.kbNoCollFiles}</div>;
                       return (
                       <div className={`rounded-2xl overflow-hidden ${panel}`} style={panelShadow}>
-                        <div className={`flex items-center gap-3 px-5 py-3 text-[11.5px] font-semibold ${muted} border-b border-gray-400/15 ${isDark ? 'bg-white/5' : 'bg-[#fbfbfd]'}`}>
+                        <div className={`flex items-center gap-3 px-5 py-3 text-[11.5px] font-semibold ${muted} border-b border-gray-400/15 bg-[#fbfbfd] dark:bg-white/5`}>
                           <span className="flex-1 min-w-0">{t.kbColName}</span>
                           {!activeColl && <span className="w-[24%]">{t.kbColColl}</span>}
                           <span className="w-24 text-right">{t.kbStatus}</span>
@@ -1497,8 +1498,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
                 {/* 加入知识库入口：点击选文件/文件夹(单知识集直接加，多个弹选择) */}
                 <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }}
-                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${(indexing || !canPickHostFiles) ? 'cursor-default opacity-60' : 'cursor-pointer'} ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
-                  <Plus size={16} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
+                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${(indexing || !canPickHostFiles) ? 'cursor-default opacity-60' : 'cursor-pointer'} border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746] dark:border-[#444746] dark:hover:border-[#A8C7FA] dark:text-[#C4C7C5]`}>
+                  <Plus size={16} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
                   {!(indexing || !canPickHostFiles) && <ChevronDown size={13} className="opacity-60" />}
                 </div>
@@ -1510,7 +1511,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           {/* 删除知识集 二次确认(删库连同所有文档+索引,不可恢复) */}
           {delColl && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setDelColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`flex items-center gap-2 text-[16px] font-bold mb-2 ${ink}`}>
                   <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
                   {t.kbDelCollConfirm.replace('{n}', delColl.name)}
@@ -1527,12 +1528,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           {/* 新建知识集 modal */}
           {newColl && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
                 <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
-                  className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />
+                  className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
                 <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
-                  className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />
+                  className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
                 <div className="flex justify-end gap-2">
                   <button onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
                   <button onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
@@ -1544,7 +1545,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           {/* 加入知识库 浮层 */}
           {addToKb && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddToKb(null)}>
-              <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
+              <div onClick={(e) => e.stopPropagation()} className={`w-[380px] rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
                 <div className={`text-[16px] font-bold mb-1 ${ink}`}>{t.kbAddToKb}</div>
                 <div className={`text-[12px] mb-4 truncate ${muted}`}>{Array.isArray(addToKb) ? `${addToKb.length} ${t.kbDocs}` : addToKb}</div>
                 {colls.length === 0 ? (
@@ -1565,9 +1566,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           {/* 「+ 添加 ▾」下拉菜单：文件 / 文件夹(后端 WalkDir 递归展开目录) */}
           {addMenu && typeof document !== 'undefined' && createPortal(
             <div onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
-              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}>
-              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
-              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]') : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
+              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
+              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
+              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
             </div>, document.body)}
         </div>
       );
