@@ -2350,6 +2350,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     function htmlUnescape(s) {
       return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
     }
+    function highlightedCodeText(s) {
+      return htmlUnescape(String(s).replace(/<\/?span\b[^>]*>/gi, ''));
+    }
     function asDraft(d) {
       if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
       var dept = (d.dept && DEPT_ORDER.indexOf(d.dept) >= 0) ? d.dept : 'specialized';
@@ -2371,14 +2374,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
     function parsePersonaDraft(html) {
       if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
       while ((m = re.exec(html))) {
-        var raw = htmlUnescape(m[2]).trim();
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         try {
           var draft = asDraft(parseLooseJson(raw));
           if (!draft) continue;
-          if (/persona-card/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
+          if (/persona-card/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
           if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
         } catch (e) { /* 非 JSON 块,跳过 */ }
       }
@@ -2387,13 +2390,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     }
     function parseScheduledTaskDraft(html) {
       if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
       while ((m = re.exec(html))) {
-        var raw = htmlUnescape(m[2]).trim();
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         var draft = asScheduledTaskDraft(parseLooseJson(raw));
         if (!draft) continue;
-        if (/scheduled-task-draft/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; }
+        if (/scheduled-task-draft/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; }
         if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
       }
       if (!chosenDraft) return { draft: null, html: html };
@@ -2402,11 +2405,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
     // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
     function parseCardQuestion(html) {
-      if (!html || html.indexOf('card-question') < 0) return { q: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
+      if (!html || !/card-question/i.test(html)) return { q: null, html: html };
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
       while ((m = re.exec(html))) {
-        if (!/card-question/.test(m[1])) continue;
-        var raw = htmlUnescape(m[2]).trim();
+        if (!/card-question/i.test(m[1] + m[2])) continue;
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         var d = parseLooseJson(raw);
         if (d && d.question && Array.isArray(d.options)) {

@@ -72,7 +72,9 @@ function injectSource() {
       {role:'assistant',content:[{type:'tool_use',id:'t-shell-history',name:'exec_shell',input:{command:'history-shell'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"回归专家","body":"hidden-prompt","description":"高亮 JSON 卡片"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
@@ -758,6 +760,9 @@ async function expand(page) {
     return {
       found: true,
       copied: window.__ASSISTANT_COPY_TEXT__ || '',
+      renderedCard: turn?.innerText.includes('回归专家') && turn?.innerText.includes('高亮 JSON 卡片'),
+      renderedQuestion: turn?.innerText.includes('继续执行？') && turn?.innerText.includes('继续') && turn?.innerText.includes('取消'),
+      hiddenPayloadAbsent: !turn?.innerText.includes('hidden-prompt') && !turn?.innerText.includes('"question"'),
       feedback: button.textContent.trim(),
       title: button.getAttribute('title') || '',
       singleAction: turn?.querySelectorAll('[data-testid="assistant-message-actions"]').length === 1,
@@ -772,6 +777,9 @@ async function expand(page) {
   });
   rec('③a 每条完成态助手回复提供一键复制并显示成功反馈',
     assistantCopy.found && assistantCopy.copied.includes('已生成会议纪要。') &&
+    assistantCopy.copied.includes('回归专家\n\n高亮 JSON 卡片') &&
+    assistantCopy.copied.includes('继续执行？\n\n1. 继续\n2. 取消') &&
+    assistantCopy.renderedCard && assistantCopy.renderedQuestion && assistantCopy.hiddenPayloadAbsent &&
     assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制' &&
     assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
     JSON.stringify(assistantCopy));
