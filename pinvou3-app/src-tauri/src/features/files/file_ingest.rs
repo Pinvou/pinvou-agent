@@ -369,8 +369,13 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 /// 校验可由桌面端文件浏览器展示的现有路径。与 `validate_path` 共享相同的
-/// 位置和敏感目录限制，但允许普通文件和目录；真正摄入附件时仍由
+/// 位置和敏感组件限制，但允许普通文件和目录；真正摄入附件时仍由
 /// `validate_path` 强制要求普通文件。
+///
+/// Wave 3 收紧：原先只挡 5 个敏感目录（.ssh/.gnupg/.aws/.docker/.kube），
+/// 现委托 `path_policy::check_sensitive_components` 挡完整的凭据组件/前缀
+/// 黑名单（含 id_rsa/.env/credentials.json/.password-store 等文件级凭据）。
+/// 上传位置约束（$HOME / 非 system-root）仍由 `validate_upload_location` 保留。
 pub(crate) fn validate_browsable_path(raw: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(raw);
     if !p.is_absolute() {
@@ -380,18 +385,7 @@ pub(crate) fn validate_browsable_path(raw: &str) -> Result<PathBuf, String> {
     std::fs::metadata(&canon)
         .map_err(|e| format!("path {} is not readable: {e}", canon.display()))?;
     crate::platform::os::validate_upload_location(&canon)?;
-    for blocked in &[".ssh", ".gnupg", ".aws", ".docker", ".kube"] {
-        if canon
-            .components()
-            .any(|c| crate::platform::os::path_component_eq(c.as_os_str(), blocked))
-        {
-            return Err(format!(
-                "path {} crosses sensitive dir {}",
-                canon.display(),
-                blocked
-            ));
-        }
-    }
+    crate::platform::path_policy::check_sensitive_components(&canon)?;
     Ok(canon)
 }
 
@@ -806,6 +800,29 @@ mod tests {
     #[test]
     fn validate_path_rejects_relative() {
         assert!(validate_path("relative/path.txt").is_err());
+    }
+
+    #[test]
+    fn validate_browsable_path_rejects_credential_file() {
+        // Wave 3 收紧：id_rsa 不在任何敏感目录里，但文件名本身是凭据。
+        let home = crate::platform::os::user_home_dir();
+        let id_rsa = home.join("keys").join("id_rsa");
+        let result = validate_browsable_path(id_rsa.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "id_rsa outside .ssh should be rejected by tightened component check"
+        );
+    }
+
+    #[test]
+    fn validate_browsable_path_rejects_env_file() {
+        let home = crate::platform::os::user_home_dir();
+        let env_file = home.join("project").join(".env");
+        let result = validate_browsable_path(env_file.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            ".env file should be rejected by tightened component check"
+        );
     }
 
     #[test]
