@@ -133,6 +133,15 @@ function timelineUsage(usage) {
   };
 }
 
+function timelineUserError(event) {
+  const existing = event && (event.user_error || event.userError);
+  if (existing && typeof existing === 'object') return existing;
+  const error = event && event.error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!error || !helper || typeof helper.build !== 'function') return null;
+  return helper.build(error, { providerLabel: '当前模型服务' });
+}
+
 /**
  * timing_events.jsonl 是 DeepSeek 回合生命周期的事实源。这里把
  * user_start / assistant_done 配成只读 Turn 元数据，不改写消息历史。
@@ -155,6 +164,7 @@ export function pairDeepSeekTimeline(events = []) {
         status: 'incomplete',
         rawStatus: '',
         error: null,
+        userError: null,
         usage: null,
       };
       byId.set(id, record);
@@ -168,6 +178,7 @@ export function pairDeepSeekTimeline(events = []) {
       record.rawStatus = String(event.status || '');
       record.status = normalizeTurnStatus(event.status, true);
       record.error = event.error || null;
+      record.userError = timelineUserError(event);
       record.usage = timelineUsage(event.usage);
     }
   }
@@ -200,6 +211,7 @@ function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
     Object.assign(userTurns[record.turnIndex], {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,
@@ -220,6 +232,7 @@ function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
     Object.assign(trailingTurns[index], {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,
@@ -249,6 +262,7 @@ function transferSteeredRunTerminals(turns) {
       if (head.lifecycleKnown && head.completedAt) {
         tail.status = head.status;
         tail.error = head.error;
+        tail.userError = head.userError;
         tail.startedAt = head.startedAt;
         tail.completedAt = head.completedAt;
         tail.usage = head.usage;
@@ -256,6 +270,7 @@ function transferSteeredRunTerminals(turns) {
         for (let clear = start; clear < end; clear += 1) {
           turns[clear].status = 'completed';
           turns[clear].error = null;
+          turns[clear].userError = null;
           turns[clear].completedAt = null;
           turns[clear].usage = null;
           turns[clear].lifecycleKnown = false;
