@@ -607,6 +607,7 @@ async function modalWidth(page, headingText) {
       && savedCodingPlan.provider_kind === 'coding_plan'
       && savedCodingPlan.vendor === 'glm'
       && savedCodingPlan.model === 'glm-5-turbo'
+      && savedCodingPlan.name === 'glm-5-turbo'
       && savedCodingPlan.base_url === 'https://open.bigmodel.cn/api/coding/paas/v4'
       && savedCodingPlan.api_key === 'sk-coding-plan'
       && savedCodingPlan.credential_action === 'replace',
@@ -745,7 +746,12 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑦ 输入 API Key 后可保存新增模型', savedModel && savedModel.model === 'deepseek-v4-pro' && savedModel.api_key === 'sk-model-test', JSON.stringify(savedModel));
+  rec('⑦ 输入 API Key 后可保存新增模型',
+    savedModel
+      && savedModel.model === 'deepseek-v4-pro'
+      && savedModel.name === 'deepseek-v4-pro'
+      && savedModel.api_key === 'sk-model-test',
+    JSON.stringify(savedModel));
 
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {

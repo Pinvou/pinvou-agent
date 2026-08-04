@@ -395,6 +395,11 @@ assert.ok(
   'scheduled model selection should use saved model ids and submit modelId with the wire model'
 );
 assert.ok(
+  /label:\s*modelDisplayName\(model\)/.test(indexHtml) &&
+    !/label:\s*model\.name && model\.name !== model\.model \?/.test(indexHtml),
+  'scheduled model selection should display the wire model instead of stale display names'
+);
+assert.ok(
   !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
     !/data-testid="scheduled-task-actions"/.test(indexHtml) &&
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&

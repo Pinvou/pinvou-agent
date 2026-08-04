@@ -5,7 +5,7 @@ import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel } from '../../hooks/useBridge.js';
-import { visibleUserModels } from '../../shared/model-options.js';
+import { modelDisplayName, visibleUserModels } from '../../shared/model-options.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
@@ -498,7 +498,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             title={busy ? t.modelSwitchBusy : t.switchModelTitle}
             className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
             <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
-            <span className="max-w-[220px] truncate">{current ? current.name : t.modelNonePick}</span>
+            <span className="max-w-[220px] truncate">{current ? modelDisplayName(current) : t.modelNonePick}</span>
             <ChevronDown size={13} />
           </button>
           {open && canSwitchModels && (
@@ -510,8 +510,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2A2B2D]' : 'hover:bg-[#F0F4F9]'}`}>
                     <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${m.id === effectiveId ? 'bg-[#34A853]' : 'bg-transparent'}`}></span>
                     <span className="flex-1 min-w-0">
-                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
-                      <span className={`block text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model}</span>
+                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{modelDisplayName(m)}</span>
                     </span>
                     {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
                   </button>
@@ -1335,7 +1334,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const modalTitle = initial.__new
         ? (isCodingPlan ? settingsCopy.addProvider(selectedProvider) : t.modelFormAddTitle)
         : (isCodingPlan ? settingsCopy.editProvider(selectedProvider) : t.modelFormEditTitle);
-      const saveName = name.trim() || (isLocalPreset ? settingsCopy.localModelName(model.trim()) : (model.trim() ? model.trim() : selectedProvider));
+      const saveName = showDisplayNameField
+        ? (name.trim() || settingsCopy.localModelName(model.trim()))
+        : (isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider));
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
       const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
