@@ -21,13 +21,25 @@ struct StreamEvent {
     wire_bytes: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct EventStreamState {
     epoch: String,
     seq: u64,
     journal: VecDeque<StreamEvent>,
     journal_bytes: usize,
     subscriptions: HashSet<String>,
+}
+
+impl Default for EventStreamState {
+    fn default() -> Self {
+        Self {
+            epoch: new_stream_epoch(),
+            seq: 0,
+            journal: VecDeque::new(),
+            journal_bytes: 0,
+            subscriptions: HashSet::new(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,10 +62,7 @@ impl std::fmt::Display for StreamRecordError {
 
 impl EventStreamState {
     pub(super) fn new() -> Self {
-        Self {
-            epoch: new_stream_epoch(),
-            ..Self::default()
-        }
+        Self::default()
     }
 
     pub(super) fn epoch(&self) -> &str {
