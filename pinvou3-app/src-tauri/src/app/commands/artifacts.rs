@@ -1065,7 +1065,7 @@ pub(super) fn resolve_artifact_path(
         .or_else(|| store.active_id());
     match sid {
         Some(sid) => store
-            .execution_workspace(&sid)
+            .ledger_root(&sid)
             .map(|workspace| resolve_artifact_path_in_workspace(raw, &workspace))
             .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}")),
         None => Ok(raw.to_string()),
@@ -1126,7 +1126,7 @@ pub async fn reveal_session_folder(
     // 定时运行会话没有独立 runtime 目录，打开它所属任务的共享工作间。
     if store.scheduled_profile(&session_id).is_some() {
         let dir = store
-            .execution_workspace(&session_id)
+            .ledger_root(&session_id)
             .map_err(|e| format!("reveal_session_folder({session_id}): {e:#}"))?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create scheduled task workspace {}: {e}", dir.display()))?;

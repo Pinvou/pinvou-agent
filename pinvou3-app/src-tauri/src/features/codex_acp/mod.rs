@@ -245,7 +245,7 @@ fn load_acp_recovery_record(
     expected_backend: AgentBackend,
     session_store: &SessionStore,
 ) -> Result<SessionAgentRecord> {
-    let temporary_workspace = session_store.execution_workspace(session_id)?;
+    let temporary_workspace = session_store.session_roots(session_id)?.execution;
     let session_root = crate::platform::paths::sessions_root().join(session_id);
     let state_path = session_root.join("acp-state.json");
     let state: Value = serde_json::from_slice(
@@ -280,20 +280,55 @@ fn load_acp_recovery_record(
     )
 }
 
+/// 启动时原生代码会话 sidecar 恢复/回填/清理的统计，供真实恢复信号计数与测试断言。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SidecarRecoverySummary {
+    /// 真实从 sidecar 恢复的索引记录数（索引完好不误报）。
+    restored: usize,
+    /// 索引在而 sidecar 缺失时按索引补写的 sidecar 数。
+    backfilled: usize,
+    /// 已被 ACP 会话占用、作为残留清理的 sidecar 数。
+    cleaned: usize,
+}
+
 /// 扫描 session 私有目录中的原生代码会话权威 sidecar，恢复辅助索引缺失的
-/// 原生代码会话记录。
+/// 原生代码会话记录，并回填索引在而 sidecar 缺失的记录。
 ///
 /// sidecar（`code-session.json`）随会话存续，是跨进程的权威真相源；辅助索引
-/// `session-agents.json` 可损坏/丢失后据此重建。对每个 sidecar，若辅助索引里
-/// 没有对应的 code_session 记录（或已被 ACP 占用），则恢复之。
-fn restore_code_native_sessions_from_sidecars(agents: &SessionAgentStore) {
-    let sessions_root = crate::platform::paths::sessions_root();
-    let Ok(entries) = std::fs::read_dir(&sessions_root) else {
-        // sessions 根不存在 = 没有任何会话，无需恢复。
-        return;
+/// `session-agents.json` 可损坏/丢失后据此重建。扫描根与 sidecar 读取根同源
+/// （均由辅助索引路径派生，见 `store::code_session_sidecar_root`），避免两处
+/// 根定义漂移。对每个 sidecar：索引已持有 code_session 记录时跳过（不误报
+/// 恢复）；会话已被 ACP 占用时 sidecar 属历史残留，直接清理而非反复重试；
+/// 其余情况据 sidecar 恢复索引。
+fn restore_code_native_sessions_from_sidecars(
+    agents: &SessionAgentStore,
+) -> SidecarRecoverySummary {
+    let mut summary = SidecarRecoverySummary::default();
+    let sessions_root = store::code_session_sidecar_root(agents.path());
+    let entries = match std::fs::read_dir(&sessions_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // sessions 根不存在 = 没有任何会话，无需恢复。
+            return summary;
+        }
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] scan native code session sidecars failed ({}): {error:#}",
+                sessions_root.display()
+            );
+            return summary;
+        }
     };
-    let mut restored = 0usize;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] scan native code session sidecars failed to read an entry: {error:#}"
+                );
+                continue;
+            }
+        };
         let session_dir = entry.path();
         if !session_dir.is_dir() {
             continue;
@@ -304,21 +339,48 @@ fn restore_code_native_sessions_from_sidecars(agents: &SessionAgentStore) {
         let Some(sidecar) = store::read_code_session_sidecar(agents.path(), session_id) else {
             continue;
         };
+        let record = agents.get(session_id);
+        if record.code_session {
+            // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
+            continue;
+        }
+        if record.backend.is_acp() {
+            // 会话已被 ACP 绑定：sidecar 是历史残留，恢复必然被拒，直接清理并
+            // 如实记日志，而不是每次启动重复报 degraded。
+            store::remove_code_session_sidecar(agents.path(), session_id);
+            summary.cleaned += 1;
+            eprintln!(
+                "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
+            );
+            continue;
+        }
         match agents.restore_missing_code_session_record(session_id, sidecar) {
-            Ok(()) => {
-                restored += 1;
+            Ok(true) => {
+                summary.restored += 1;
                 eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
             }
+            Ok(false) => {}
             Err(error) => eprintln!(
                 "[pinvou3-app] native code session {session_id} remains degraded: {error:#}"
             ),
         }
     }
-    if restored > 0 {
+    // 回填自愈：索引在而 sidecar 缺失（修复前构建的存量会话，或绑定时 sidecar
+    // 写失败）时按索引补写 sidecar，写失败逐条记日志。
+    summary.backfilled = agents.backfill_missing_code_session_sidecars();
+    if summary.restored > 0 {
         eprintln!(
-            "[pinvou3-app] recovered {restored} native code session index record(s) from sidecars"
+            "[pinvou3-app] recovered {} native code session index record(s) from sidecars",
+            summary.restored
         );
     }
+    if summary.backfilled > 0 {
+        eprintln!(
+            "[pinvou3-app] backfilled {} missing native code session sidecar(s) from index",
+            summary.backfilled
+        );
+    }
+    summary
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -635,7 +697,7 @@ impl AcpSession {
 
 /// “代码”模块原生（品悟 Engine）会话的工作区信息。
 ///
-/// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::execution_workspace` 推导；
+/// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::session_roots` 推导；
 /// 项目会话返回绑定的项目目录，available 语义与 ACP 项目分支一致（目录存在即可用）。
 fn code_native_workspace_info(
     session_store: &SessionStore,
@@ -654,7 +716,8 @@ fn code_native_workspace_info(
         });
     }
     let path = session_store
-        .execution_workspace(session_id)
+        .session_roots(session_id)
+        .map(|roots| roots.execution)
         .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?;
     Ok(CodexAcpWorkspaceInfo {
         workspace_kind: CodexWorkspaceKind::Temporary,
@@ -946,7 +1009,8 @@ impl AcpPool {
                 .context("Codex 项目会话缺少工作目录记录")?,
             CodexWorkspaceKind::Temporary => self
                 .session_store
-                .execution_workspace(session_id)
+                .session_roots(session_id)
+                .map(|roots| roots.execution)
                 .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?,
         };
         let available = match record.workspace_kind {
@@ -980,14 +1044,16 @@ impl AcpPool {
             }
             return self
                 .session_store
-                .execution_workspace(session_id)
+                .session_roots(session_id)
+                .map(|roots| roots.execution)
                 .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"));
         }
         let record = self.acp_record(session_id)?;
         match record.workspace_kind {
             CodexWorkspaceKind::Temporary => self
                 .session_store
-                .execution_workspace(session_id)
+                .session_roots(session_id)
+                .map(|roots| roots.execution)
                 .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
             CodexWorkspaceKind::Project => {
                 let path = record.workspace_path.with_context(|| {
@@ -4444,8 +4510,9 @@ mod tests {
         assert_eq!(
             info.workspace_path,
             session_store
-                .execution_workspace("code-native-unit-test")
+                .session_roots("code-native-unit-test")
                 .unwrap()
+                .execution
                 .to_string_lossy()
         );
     }
@@ -5257,5 +5324,93 @@ max_context_size = 262144
         assert!(!kimi_version_supported("kimi-cli 0.31.1"));
         assert!(!kimi_version_supported("0.31"));
         assert!(!kimi_version_supported("native"));
+    }
+
+    #[test]
+    fn sidecar_startup_recovery_restores_backfills_and_cleans_leftovers() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-sidecar-startup-recovery-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        // 写入一个已绑定的原生代码会话（索引 + sidecar）。
+        let writer = SessionAgentStore::for_test(path.clone());
+        writer
+            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
+        let agents = SessionAgentStore::for_test(path.clone());
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 1,
+                backfilled: 0,
+                cleaned: 0
+            }
+        );
+        assert!(agents.is_code_session("code-1"));
+        assert_eq!(
+            agents.get("code-1").workspace_path.as_deref(),
+            Some(root.as_path())
+        );
+        // 索引完好时不再误报恢复信号。
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        // sidecar 缺失（存量会话/绑定时写失败）时按索引回填自愈。
+        let sidecar_path = root
+            .join("sessions")
+            .join("code-1")
+            .join("code-session.json");
+        std::fs::remove_file(&sidecar_path).unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 0,
+                backfilled: 1,
+                cleaned: 0
+            }
+        );
+        assert!(sidecar_path.is_file());
+        // ACP 会话的残留 sidecar：清理一次并如实计数，而不是每次启动报 degraded。
+        agents
+            .set_acp_workspace(
+                "acp-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .unwrap();
+        let leftover_dir = root.join("sessions").join("acp-1");
+        std::fs::create_dir_all(&leftover_dir).unwrap();
+        std::fs::write(
+            leftover_dir.join("code-session.json"),
+            serde_json::to_vec(&store::CodeSessionSidecar {
+                version: 1,
+                workspace_kind: CodexWorkspaceKind::Temporary,
+                workspace_path: None,
+                bound_at: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 0,
+                backfilled: 0,
+                cleaned: 1
+            }
+        );
+        assert!(!leftover_dir.join("code-session.json").exists());
+        assert_eq!(agents.get("acp-1").backend, AgentBackend::CodexAcp);
+        // 残留已清理：再次启动扫描无任何动作。
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

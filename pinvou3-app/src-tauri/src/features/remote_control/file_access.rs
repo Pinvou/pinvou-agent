@@ -205,7 +205,7 @@ pub(crate) fn resolve_session_artifact_path(
         return Err("missing artifact path".to_string());
     }
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("resolve session workspace: {error:#}"))?;
     let scheduled = store.scheduled_profile(session_id).is_some();
     let artifacts = paths::session_artifacts_dir(session_id);

@@ -441,12 +441,17 @@ pub fn run() {
             ) {
                 Ok(mut pool) => {
                     // 两个根：执行根（engine cwd/shell）对绑了项目目录的原生代码会话
-                    // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录，
-                    // SessionStore::execution_workspace 不动。
-                    pool.bridge.set_execution_root_resolver(std::sync::Arc::new({
-                        let agents = code_session_agents.clone();
-                        move |session_id: &str| agents.code_project_workspace(session_id)
-                    }));
+                    // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录。
+                    // 解析实现统一下沉在 SessionStore::session_roots，bridge 与
+                    // SessionStore 注入同一份 resolver 闭包，两侧结果一致。
+                    let execution_root_resolver: crate::features::sessions::ExecutionRootResolver =
+                        std::sync::Arc::new({
+                            let agents = code_session_agents.clone();
+                            move |session_id: &str| agents.code_project_workspace(session_id)
+                        });
+                    pool.bridge
+                        .set_execution_root_resolver(execution_root_resolver.clone());
+                    store_for_engine.set_execution_root_resolver(execution_root_resolver);
                     pool.bridge.set_code_session_predicate(std::sync::Arc::new({
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
