@@ -38,7 +38,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [err, setErr] = useState(false);
       const Fallback = DEPT_ICON[(card && card.dept)] || User;
       return (
-        <div className={cls + ' shrink-0 overflow-hidden flex items-center justify-center'} style={{ background: isDark ? '#2C2C2E' : '#F2F2F7' }}>
+        <div className={cls + ' shrink-0 overflow-hidden flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]'}>
           {!err
             ? <img src={avatarSrc(card && (card.id || card.name))} alt="" className="w-full h-full object-cover" onError={() => setErr(true)} />
             : <Fallback size={fb} style={{ color: '#8E8E93' }} strokeWidth={1.5} />}
@@ -59,20 +59,21 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
         <div className="absolute top-0 left-6 z-[15]" style={{ width:150, fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
           <div className="flex flex-col items-center">
             {/* 挂绳 + 扣环 */}
+            {/* isDark dynamic-value: 保留 (linear-gradient 无法纯 className 化) */}
             <div style={{ width:2, height:52, background: isDark?'linear-gradient(#3a3a3c,#5a5a5e)':'linear-gradient(#d1d1d6,#aeaeb2)' }}></div>
-            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2" style={{ background: isDark?'#1c1c1e':'#e8e8ed', border:'2px solid '+(isDark?'#48484a':'#c7c7cc') }}></div>
+            <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2 bg-[#e8e8ed] dark:bg-[#1c1c1e] border-2 border-[#c7c7cc] dark:border-[#48484a]"></div>
             {/* 卡片 */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
-              className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5"
-              style={{ background: isDark?'#1C1C1E':'#fff', border:'1px solid '+(isDark?'#2c2c2e':'rgba(0,0,0,.06)'), boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>
+              className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-[#fff] dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
+              style={{ boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>
               <button onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove}
-                className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none"
-                style={{ background: isDark?'#2C2C2E':'#fff', color:'#8E8E93', border:'1px solid '+(isDark?'#48484a':'rgba(0,0,0,.1)'), boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
+                className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none bg-[#fff] dark:bg-[#2C2C2E] border border-[rgba(0,0,0,.1)] dark:border-[#48484a]"
+                style={{ color:'#8E8E93', boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
               <div className="flex flex-col items-center text-center gap-2">
                 <AppIcon card={persona} isDark={isDark} cls="w-12 h-12 rounded-[14px]" fb={22} />
                 <div className="w-full min-w-0">
-                  <div className="text-[13px] font-semibold leading-tight truncate" style={{ color: isDark?'#fff':'#000' }}>{cd.name}</div>
-                  <div className="text-[11px] mt-0.5 truncate" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{deptLabelFor(t, persona.dept)}</div>
+                  <div className="text-[13px] font-semibold leading-tight truncate text-[#000] dark:text-[#fff]">{cd.name}</div>
+                  <div className="text-[11px] mt-0.5 truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, persona.dept)}</div>
                 </div>
               </div>
             </div>
@@ -108,29 +109,27 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       return (
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
           <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
-            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
-            style={{ background: isDark?'#1C1C1E':'#F2F2F7', color: isDark?'#fff':'#000' }}>
+            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 顶部:头像 + 名称/部门 + 关闭 */}
-            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0" style={{ background: isDark?'#000':'#fff' }}>
+            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0 bg-[#fff] dark:bg-[#000]">
               <AppIcon card={card} isDark={isDark} />
               <div className="min-w-0 flex-1">
-                <h2 className="text-[20px] font-semibold truncate" style={{ color: isDark?'#fff':'#000' }}>{cd.name}</h2>
+                <h2 className="text-[20px] font-semibold truncate text-[#000] dark:text-[#fff]">{cd.name}</h2>
                 <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
               </div>
-              <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: isDark?'#2C2C2E':'#F2F2F7', color:'#8E8E93' }}><X size={16}/></button>
+              <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]" style={{ color:'#8E8E93' }}><X size={16}/></button>
             </div>
-            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0" style={{ color: isDark?'#C7C7CC':'#3C3C43', background: isDark?'#000':'#fff', borderTop:'1px solid '+(isDark?'#1C1C1E':'rgba(198,198,200,.4)') }}>{cd.description}</div> : null}
+            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0 text-[#3C3C43] dark:text-[#C7C7CC] bg-[#fff] dark:bg-[#000] border-t border-[rgba(198,198,200,.4)] dark:border-[#1C1C1E]">{cd.description}</div> : null}
             {/* 完整人设 */}
             <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 min-h-0">
               <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
               {body===null
                 ? <div className="text-[14px] py-8 text-center" style={{ color:'#8E8E93' }}>{t.cpBodyLoading}</div>
-                : <div className="persona-body text-[14px] leading-relaxed light-code dark-code" style={{ color: isDark?'#C7C7CC':'#1C1C1E' }} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
+                : <div className="persona-body text-[14px] leading-relaxed light-code dark-code text-[#1C1C1E] dark:text-[#C7C7CC]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown ? bridge.rendering.renderMarkdown(body) : body }} />}
             </div>
             {/* 加持/取消 */}
-            <div className="p-4 shrink-0" style={{ borderTop:'1px solid '+(isDark?'#38383A':'rgba(198,198,200,.5)') }}>
-              <button onClick={()=>onEquip(card)} className="w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors"
-                style={ equipped ? { background: isDark?'#2C2C2E':'#E5E5EA', color: isDark?'#fff':'#000' } : { background: isDark?'#0A84FF':'#007AFF', color:'#fff' } }>
+            <div className="p-4 shrink-0 border-t border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
+              <button onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
                 {equipped ? t.cpDetailUnequip : t.cpEquipShort}
               </button>
             </div>
@@ -158,8 +157,6 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
         }
       }, []);
       const tc = deptColor(dept);
-      const inputCls = "w-full px-5 py-4 rounded-2xl text-[15px] outline-none border transition-all";
-      const inputStyle = isDark ? { background:'rgba(24,24,27,.5)', borderColor:'#3f3f46', color:'#fff' } : { background:'#fafafa', borderColor:'#e4e4e7', color:'#18181b' };
       async function save() {
         if (!name.trim()) { setErr(t.cpErrName); return; }
         if (!body.trim()) { setErr(t.cpErrBody); return; }
@@ -171,53 +168,51 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
           onClose();
         } catch (e) { setErr(t.cpErrSave(e)); setSaving(false); }
       }
-      const ph = isDark ? '#48484A' : '#C7C7CC';
       return (
         <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
           style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)', fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }} onClick={onClose}>
-          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden"
-            style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>
+          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 导航栏 */}
-            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
-              <button onClick={onClose} className="text-[17px]" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpCancel}</button>
+            <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
+              <button onClick={onClose} className="text-[17px] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
               <span className="text-[17px] font-semibold">{isEdit ? t.cpEditCard : t.cpNewCard}</span>
-              <button onClick={save} disabled={saving} className="text-[17px] font-semibold" style={{ color: saving ? '#8E8E93' : (isDark ? '#0A84FF' : '#007AFF') }}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
+              <button onClick={save} disabled={saving} className={"text-[17px] font-semibold " + (saving ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>{saving ? t.cpSaving : (isEdit ? t.cpSaveEdit : t.cpCreate)}</button>
             </div>
             {/* 表单 */}
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
               {err ? <div className="text-[13px] px-2" style={{ color:'#FF3B30' }}>{err}</div> : null}
               {/* 名称 + 部门 */}
-              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
-                <div className="flex items-center px-4 py-3 border-b" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+              <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
+                <div className="flex items-center px-4 py-3 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
                   <span className="w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
-                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000', '::placeholder': ph }} />
+                  <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none text-[#000] dark:text-[#fff]" />
                 </div>
                 <div className="flex items-center px-4 py-3">
                   <span className="w-20 text-[17px] shrink-0">{t.cpDept}</span>
-                  <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none" style={{ color: isDark?'#fff':'#000' }}>
+                  <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none text-[#000] dark:text-[#fff]">
                     {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d} style={{ color:'#000' }}>{deptLabelFor(t, d)}</option>; })}
                   </select>
                 </div>
               </div>
               {/* 描述 */}
-              <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+              <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
                 <div className="px-4 py-3">
-                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none" style={{ color: isDark?'#fff':'#000' }} />
+                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none text-[#000] dark:text-[#fff]" />
                 </div>
               </div>
               {/* 系统人设 (必填) */}
               <div>
                 <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color:'#8E8E93' }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
-                <div className="rounded-[10px] overflow-hidden" style={{ background: isDark ? '#000' : '#fff' }}>
+                <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
                   <div className="px-4 py-3">
-                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar" style={{ color: isDark?'#fff':'#000', maxHeight:'40vh' }} />
+                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar text-[#000] dark:text-[#fff]" style={{ maxHeight:'40vh' }} />
                   </div>
                 </div>
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
                 <button onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) onDeleted(init); onClose(); }); } else setConfirmDel(true); }}
-                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors" style={{ background: isDark?'#000':'#fff', color:'#FF3B30' }}>
+                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors bg-[#fff] dark:bg-[#000]" style={{ color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
               ) : null}
@@ -242,10 +237,10 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       return (
         <div onClick={onStart} className="relative w-full overflow-hidden cursor-pointer select-none flex items-stretch"
           style={{ height:200, borderRadius:20, background:'linear-gradient(135deg, #EEEDFE 0%, #E6F1FB 50%, #E1F5EE 100%)',
-            boxShadow: isDark
+            boxShadow: isDark // isDark dynamic-value: 保留 (multi-stop boxShadow)
               ? '0 2px 8px rgba(0,0,0,.45), 0 24px 60px rgba(0,0,0,.65)'
               : '0 8px 28px rgba(83,74,183,.16)',
-            border: isDark ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(83,74,183,.14)',
+            border: isDark ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(83,74,183,.14)', // isDark dynamic-value: 保留 (rgba border + banner 整体 isDark 同深浅)
             fontFamily:'-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' }}>
           <div className="absolute rounded-full" style={{ width:240, height:240, background:'#AFA9EC', opacity:.16, top:-80, right:-40 }} />
           <div className="absolute rounded-full" style={{ width:150, height:150, background:'#9FE1CB', opacity:.15, bottom:-50, right:120 }} />
@@ -342,8 +337,8 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       function openCtx(card, e){ if (card.source !== 'user') return; e.preventDefault(); e.stopPropagation(); setCtx({ card, x: e.clientX, y: e.clientY }); }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300"
-          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif', background: isDark ? '#131314' : '#fff' }}>
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300 bg-[#fff] dark:bg-[#131314]"
+          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto p-4 custom-scrollbar sm:p-6 lg:p-10">
             <div className="max-w-[1400px] mx-auto">
 
@@ -401,19 +396,18 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
 
                 {/* 分类药丸 + 左右滚动箭头 */}
                 <div className="relative pt-2 pb-4 group">
-                  {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronLeft size={18} /></button> : null}
+                  {showL ? <button onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronLeft size={18} /></button> : null}
                   <div ref={scrollRef} className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
                     {[ALL_DEPT].concat(DEPT_ORDER.filter(k => counts[k])).map(k => {
                       const isAll = k === ALL_DEPT; const on = isAll ? activeDept === ALL_DEPT : activeDept === k;
                       return (
-                        <button key={k} onClick={() => setActiveDept(k)} className="h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors"
-                          style={ on ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' } : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' } }>
+                        <button key={k} onClick={() => setActiveDept(k)} className={"h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
                           {isAll ? t.cpAll : deptLabelFor(t, k)}
                         </button>
                       );
                     })}
                   </div>
-                  {showR ? <button onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm" style={{ background: isDark ? '#2C2C2E' : '#fff', color: isDark ? '#fff' : '#000', borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.6)' }}><ChevronRight size={18} /></button> : null}
+                  {showR ? <button onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronRight size={18} /></button> : null}
                 </div>
 
                 {/* 列表 */}
@@ -427,16 +421,15 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                       {shown.map(c => { const isEmpowered = active && active.id === c.id; const isUser = c.source === 'user'; const cd = personaText(c, t);
                         return (
                           <div key={c.id} onClick={(e) => openDetail(c, e)} onContextMenu={(e) => openCtx(c, e)}
-                            className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer" style={{ borderColor: isDark ? '#38383A' : 'rgba(198,198,200,.5)' }}>
+                            className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                             <div className="flex items-center gap-4">
                               <AppIcon card={c} isDark={isDark} />
                               <div className="flex-1 min-w-0">
-                                <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5" style={{ color: isDark ? '#fff' : '#000' }}>{cd.name}</h2>
-                                <p className="text-[13px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
+                                <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5 text-[#000] dark:text-[#fff]">{cd.name}</h2>
+                                <p className="text-[13px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
                               </div>
                               {isUser ? <button onClick={(e) => openCtx(c, e)} title={t.cpEdit} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[18px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: '#8E8E93' }}>⋯</button> : null}
-                              <button onClick={(e) => equip(c, e)} className="shrink-0 text-[15px] font-bold px-5 py-1.5 rounded-full transition active:opacity-70"
-                                style={ isEmpowered ? { background: isDark ? '#2C2C2E' : '#F2F2F7', color: '#8E8E93' } : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#0A84FF' : '#007AFF' } }>
+                              <button onClick={(e) => equip(c, e)} className={"shrink-0 text-[15px] font-bold px-5 py-1.5 rounded-full transition active:opacity-70 bg-[#F2F2F7] dark:bg-[#2C2C2E] " + (isEmpowered ? 'text-[#8E8E93]' : 'text-[#007AFF] dark:text-[#0A84FF]')}>
                                 {isEmpowered ? t.cpUnequip : t.cpEquipShort}
                               </button>
                             </div>
@@ -447,13 +440,13 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                     </div>
                   ) : (
                     <div className="py-24 text-center">
-                      <p className="text-[17px] font-semibold" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpNoMatch}</p>
+                      <p className="text-[17px] font-semibold text-[#000] dark:text-[#fff]">{t.cpNoMatch}</p>
                       <p className="text-[15px] mt-1" style={{ color: '#8E8E93' }}>{t.cpEmptyHint}</p>
                     </div>
                   )}
                   {filtered.length > visible ? (
                     <div className="flex justify-center mt-6">
-                      <button onClick={() => setVisible(visible + 60)} className="text-[15px] px-5 py-2" style={{ color: isDark ? '#0A84FF' : '#007AFF' }}>{t.cpShowMore(filtered.length - visible)}</button>
+                      <button onClick={() => setVisible(visible + 60)} className="text-[15px] px-5 py-2 text-[#007AFF] dark:text-[#0A84FF]">{t.cpShowMore(filtered.length - visible)}</button>
                     </div>
                   ) : null}
                 </div>
@@ -469,11 +462,11 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
 
           {/* 右键菜单（自制卡 编辑/删除，macOS 风） */}
           {ctx ? (
-            <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px]"
-              style={{ left: Math.min(ctx.x, (typeof window !== 'undefined' ? window.innerWidth : 9999) - 150), top: Math.min(ctx.y, (typeof window !== 'undefined' ? window.innerHeight : 9999) - 100), background: isDark ? '#2C2C2E' : '#fff', borderColor: isDark ? '#38383A' : 'rgba(0,0,0,.08)', boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
+            <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px] bg-[#fff] dark:bg-[#2C2C2E] border-[rgba(0,0,0,.08)] dark:border-[#38383A]"
+              style={{ left: Math.min(ctx.x, (typeof window !== 'undefined' ? window.innerWidth : 9999) - 150), top: Math.min(ctx.y, (typeof window !== 'undefined' ? window.innerHeight : 9999) - 100), boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
               onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpMenuEdit}</button>
-              <div style={{ height: 1, background: isDark ? '#38383A' : 'rgba(0,0,0,.06)' }} />
+              <button onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5 text-[#000] dark:text-[#fff]">{t.cpMenuEdit}</button>
+              <div className="h-px bg-[rgba(0,0,0,.06)] dark:bg-[#38383A]" />
               <button onClick={() => { doDelete(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: '#FF3B30' }}>{t.cpDelete}</button>
             </div>
           ) : null}
@@ -496,31 +489,31 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
           {chooser ? createPortal((
             <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center md:p-4" style={{ background:'rgba(0,0,0,.6)', backdropFilter:'blur(2px)', WebkitBackdropFilter:'blur(2px)' }} onClick={()=>setChooser(false)}>
               <div onClick={(e)=>e.stopPropagation()} className="w-full md:max-w-sm flex flex-col gap-2 p-3 md:p-0">
-                <div className="rounded-[14px] overflow-hidden" style={{ background: isDark?'#1C1C1E':'#fff' }}>
-                  <button onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b" style={{ borderColor: isDark?'#38383A':'rgba(198,198,200,.5)' }}>
-                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0" style={{ background: isDark?'#0A84FF':'#007AFF' }}><Sparkles size={20} style={{ color:'#fff' }} /></div>
+                <div className="rounded-[14px] overflow-hidden bg-[#fff] dark:bg-[#1C1C1E]">
+                  <button onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
+                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#007AFF] dark:bg-[#0A84FF]"><Sparkles size={20} style={{ color:'#fff' }} /></div>
                     <div className="min-w-0">
-                      <div className="text-[16px] font-semibold flex items-center gap-2" style={{ color: isDark?'#fff':'#000' }}>{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: isDark?'rgba(10,132,255,.2)':'rgba(0,122,255,.12)', color: isDark?'#0A84FF':'#007AFF' }}>{t.chooserRecommend}</span></div>
-                      <div className="text-[13px] mt-0.5" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{t.chooserAIDesc}</div>
+                      <div className="text-[16px] font-semibold flex items-center gap-2 text-[#000] dark:text-[#fff]">{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(0,122,255,.12)] dark:bg-[rgba(10,132,255,.2)] text-[#007AFF] dark:text-[#0A84FF]">{t.chooserRecommend}</span></div>
+                      <div className="text-[13px] mt-0.5 text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{t.chooserAIDesc}</div>
                     </div>
                   </button>
                   <button onClick={()=>{ setChooser(false); setEditor({ initial: null }); }} className="w-full flex items-center gap-3 px-4 py-4 text-left">
-                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0" style={{ background: isDark?'#2C2C2E':'#F2F2F7', color: isDark?'#0A84FF':'#007AFF' }}><Plus size={20} /></div>
+                    <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]"><Plus size={20} /></div>
                     <div className="min-w-0">
-                      <div className="text-[16px] font-semibold" style={{ color: isDark?'#fff':'#000' }}>{t.chooserManualTitle}</div>
-                      <div className="text-[13px] mt-0.5" style={{ color: isDark?'rgba(235,235,245,.6)':'rgba(60,60,67,.6)' }}>{t.chooserManualDesc}</div>
+                      <div className="text-[16px] font-semibold text-[#000] dark:text-[#fff]">{t.chooserManualTitle}</div>
+                      <div className="text-[13px] mt-0.5 text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{t.chooserManualDesc}</div>
                     </div>
                   </button>
                 </div>
-                <button onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold" style={{ background: isDark?'#2C2C2E':'#fff', color: isDark?'#0A84FF':'#007AFF' }}>{t.cpCancel}</button>
+                <button onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold bg-[#fff] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
               </div>
             </div>
           ), document.body) : null}
 
           {/* iOS 风 toast */}
           {toast ? (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[90] px-5 py-2.5 rounded-full text-[14px] font-medium animate-in fade-in slide-in-from-bottom-2 duration-200"
-              style={{ background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(0,0,0,.85)', color: '#fff', boxShadow: '0 8px 30px rgba(0,0,0,.3)' }}>
+            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[90] px-5 py-2.5 rounded-full text-[14px] font-medium animate-in fade-in slide-in-from-bottom-2 duration-200 bg-[rgba(0,0,0,.85)] dark:bg-[rgba(44,44,46,.96)] text-[#fff]"
+              style={{ boxShadow: '0 8px 30px rgba(0,0,0,.3)' }}>
               {toast}
             </div>
           ) : null}
