@@ -52,9 +52,19 @@ import { createVisualPosterMessageMeta, shouldUseVisualPosterScene } from './vis
 import {
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
+  createPersonalWorkbenchMessageMeta,
+  PERSONAL_WORKBENCH_SCENE_KEY,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
+  shouldUsePersonalWorkbenchScene,
 } from './work-scene-routes.js';
+import {
+  PERSONAL_WORKBENCH_TEMPLATES,
+  findPersonalWorkbenchTemplateDraft,
+  getPersonalWorkbenchTemplate,
+  getPersonalWorkbenchTemplateById,
+  isPersonalWorkbenchTemplateDraftForTemplate,
+} from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -74,6 +84,7 @@ function unifiedConversationUiEnabled() {
 }
 
 const WORK_MODE_SUBTABS = [
+  { key: PERSONAL_WORKBENCH_SCENE_KEY, labelKey: 'personalWorkbench', Icon: Briefcase },
   { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
 ];
 
@@ -95,6 +106,8 @@ function pinvouSceneDisplay(scene, copy) {
   switch (scene) {
     case 'work:document-writing':
       return { label: copy.documentWriting, Icon: FileText };
+    case 'work:personal-workbench':
+      return { label: copy.personalWorkbench, Icon: Briefcase };
     case 'design:poster':
       return { label: copy.poster, Icon: ImageIcon };
     case 'design:data-visualization':
@@ -327,11 +340,46 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
+    const PersonalWorkbenchTemplatePicker = ({ isDark, selectedIndex, onSelect, templates }) => {
+      return (
+        <div
+          data-testid="personal-workbench-template-picker"
+          className="mb-2 flex justify-center px-1"
+        >
+          <div className="flex max-w-full items-center gap-2 overflow-x-auto px-1 py-1">
+            {templates.map((template, index) => {
+              const selected = selectedIndex === index;
+              return (
+                <button
+                  key={template.title}
+                  type="button"
+                  data-testid={`personal-workbench-template-${index}`}
+                  aria-pressed={selected}
+                  onClick={() => onSelect(index)}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                    selected
+                      ? isDark
+                        ? 'bg-[#F5F5F7] text-[#1D1D1F]'
+                        : 'bg-[#1D1D1F] text-white'
+                      : isDark
+                        ? 'bg-[#2A2B2D] text-[#C7C7CC] hover:bg-[#333537] hover:text-white'
+                        : 'bg-[#EEF0F2] text-[#3C4043] hover:bg-[#E3E5E8] hover:text-[#1D1D1F]'
+                  }`}
+                >
+                  {template.title}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
     const SceneModeTag = ({ isDark, scene, onClear, clearLabel }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
-        <div className="mb-2 flex justify-start px-1" data-testid="pinvou-scene-tag">
+        <div className="mb-2 flex flex-wrap justify-start gap-2 px-1" data-testid="pinvou-scene-tag">
           <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-sm ${
             isDark
               ? 'bg-[#2A2B2D] text-[#F5F5F7] ring-1 ring-white/10'
@@ -398,6 +446,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const pinvouModeScopeRef = useRef(initialPinvouModeScope);
       const pinvouModeStateRef = useRef(pinvouModeState);
       const pendingModeScopeMigrationRef = useRef(null);
+      const [personalWorkbenchTemplateId, setPersonalWorkbenchTemplateId] = useState(null);
+      const personalWorkbenchTemplateIdRef = useRef(null);
       const [selectedDesignElement, setSelectedDesignElement] = useState(null);
       const [designChangesByScope, setDesignChangesByScope] = useState({});
       const [designCommand, setDesignCommand] = useState(null);
@@ -593,15 +643,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
       }, [designScopeKey, updatePinvouModeState]);
+      const clearPersonalWorkbenchTemplateDraft = useCallback(() => {
+        if (personalWorkbenchTemplateIdRef.current || findPersonalWorkbenchTemplateDraft(inputTextRef.current)) setInputText('');
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
+      }, [setInputText]);
       const handlePinvouModeChange = useCallback((mode) => {
         updatePinvouModeState({ type: 'set-mode', mode });
+        if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
         if (mode !== 'design') setSelectedDesignElement(null);
         if (mode === 'design' && artifactCount > 0) {
           if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
           setArtifactsOpen(true);
           setArtifactsFullscreen(true);
         }
-      }, [artifactCount, latestArtifact, updatePinvouModeState]);
+      }, [artifactCount, clearPersonalWorkbenchTemplateDraft, latestArtifact, updatePinvouModeState]);
       const handleHomeModeChange = useCallback((mode) => {
         if (mode === 'code') {
           if (onSwitchHomeMode) onSwitchHomeMode(mode);
@@ -610,11 +666,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         handlePinvouModeChange(mode);
       }, [handlePinvouModeChange, onSwitchHomeMode]);
       const handleWorkSubtabChange = useCallback((subtab) => {
+        const nextSubtab = subtab === pinvouModeStateRef.current.workSubtab ? 'general' : subtab;
+        if (nextSubtab !== PERSONAL_WORKBENCH_SCENE_KEY) clearPersonalWorkbenchTemplateDraft();
         updatePinvouModeState({
           type: 'set-work-subtab',
-          subtab: subtab === pinvouModeStateRef.current.workSubtab ? 'general' : subtab,
+          subtab: nextSubtab,
         });
-      }, [updatePinvouModeState]);
+      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
       const handleDesignSubtabChange = useCallback((subtab) => {
         updatePinvouModeState({
           type: 'set-design-subtab',
@@ -623,11 +681,37 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }, [updatePinvouModeState]);
       const handleClearActiveScene = useCallback(() => {
         if (pinvouModeStateRef.current.mode === 'work') {
+          clearPersonalWorkbenchTemplateDraft();
           updatePinvouModeState({ type: 'set-work-subtab', subtab: 'general' });
         } else if (pinvouModeStateRef.current.mode === 'design') {
           updatePinvouModeState({ type: 'set-design-subtab', subtab: 'general' });
         }
-      }, [updatePinvouModeState]);
+      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
+      const handlePersonalWorkbenchTemplateSelect = useCallback((index) => {
+        const template = getPersonalWorkbenchTemplate(index);
+        const normalized = template ? template.id : null;
+        personalWorkbenchTemplateIdRef.current = normalized;
+        setPersonalWorkbenchTemplateId(normalized);
+        if (template) {
+          setInputText(template.prompt);
+          window.requestAnimationFrame(() => {
+            if (composerRef.current) {
+              composerRef.current.focus();
+              composerRef.current.selectionStart = composerRef.current.value.length;
+              composerRef.current.selectionEnd = composerRef.current.value.length;
+            }
+          });
+        }
+      }, [setInputText]);
+      const handleComposerInputChange = useCallback((value) => {
+        setInputText(value);
+        const currentTemplate = getPersonalWorkbenchTemplateById(personalWorkbenchTemplateIdRef.current);
+        if (!currentTemplate) return;
+        if (!isPersonalWorkbenchTemplateDraftForTemplate(value, currentTemplate)) {
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        }
+      }, [setInputText]);
       const handleDesignRuntimeStatus = useCallback((status) => {
         updatePinvouModeState({ type: 'set-design-runtime-status', status });
       }, [updatePinvouModeState]);
@@ -716,6 +800,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }, [reduceCurrentDesignChanges]);
       const visualPosterSceneActive = shouldUseVisualPosterScene(pinvouMode, designSubtab);
       const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
+      const personalWorkbenchSceneActive = shouldUsePersonalWorkbenchScene(pinvouMode, workSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
       const activeScene = pinvouMode === 'work'
         ? workModeSubtabs.find(item => item.key === workSubtab)
@@ -731,9 +816,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             ? chatViewCopy.placeholderDesignPoster
             : sceneCopy.designGeneralPlaceholder
         : pinvouMode === 'work'
-          ? documentWritingSceneActive
-            ? chatViewCopy.placeholderWorkDocument
-            : t.placeholder
+          ? personalWorkbenchSceneActive
+            ? chatViewCopy.placeholderPersonalWorkbench
+            : documentWritingSceneActive
+              ? chatViewCopy.placeholderWorkDocument
+              : t.placeholder
         : t.placeholder;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
@@ -923,11 +1010,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
+        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
+        const templateId = personalWorkbenchTemplateIdRef.current
+          || (matchedPersonalWorkbenchDraft && matchedPersonalWorkbenchDraft.template
+            ? matchedPersonalWorkbenchDraft.template.id
+            : null);
+        const visibleOutgoing = outgoing;
         let meta;
-        if (outgoing || hasReadyAttachment) {
+        if (visibleOutgoing || hasReadyAttachment) {
           const scenePrompt = outgoing || '请根据附件内容继续处理。';
           if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
           else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
+          else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
@@ -967,18 +1061,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
         if (!activeSessionId) {
           pendingModeScopeMigrationRef.current = {
-            text: outgoing,
+            text: visibleOutgoing,
             state: pinvouModeStateRef.current,
           };
         }
         try {
-          await bridge.chat.sendMessage(outgoing, meta);
+          await bridge.chat.sendMessage(visibleOutgoing, meta);
         } catch (error) {
           pendingModeScopeMigrationRef.current = null;
           throw error;
         }
         return true;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, t, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
@@ -1093,7 +1187,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           return;
         }
         const accepted = await sendChatMessage(constrained.text);
-        if (accepted) setInputText('');
+        if (accepted) {
+          setInputText('');
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        }
       }
 
       function handleKeyDown(e) {
@@ -1185,6 +1283,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       function handleClearInput() {
         if (!canClearInput) return;
         setInputText('');
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
       }
 
       function handleVoiceCancel() {
@@ -1465,6 +1565,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   comingSoonLabel={chatViewCopy.comingSoon}
                 />
               )}
+              {personalWorkbenchSceneActive && !conversationStarted && (
+                <PersonalWorkbenchTemplatePicker
+                  isDark={isDark}
+                  selectedIndex={PERSONAL_WORKBENCH_TEMPLATES.findIndex(template => template.id === personalWorkbenchTemplateId)}
+                  onSelect={handlePersonalWorkbenchTemplateSelect}
+                  templates={PERSONAL_WORKBENCH_TEMPLATES}
+                />
+              )}
               {pinvouMode === 'design' && !conversationStarted && (
                 <SubModePicker
                   isDark={isDark}
@@ -1627,7 +1735,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 ref={composerRef}
                 data-testid="chat-composer-input"
                 value={inputText}
-                onChange={e => setInputText(e.target.value)}
+                onChange={e => handleComposerInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 maxLength={CHAT_INPUT_MAX_LENGTH}

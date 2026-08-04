@@ -103,6 +103,30 @@ function rec(name, pass, detail = '') {
   }
 
   {
+    const { feature, state, invokes, sceneEvents } = createFeature();
+    await feature.sendMessage('运动', {
+      pinvouScene: 'work:personal-workbench',
+      pinvouPayloadText: '隐藏默认专家 prompt\n\n用户需求：\n运动',
+    });
+    const user = state.chatItems.find(item => item.type === 'user');
+    const chatInvoke = invokes.find(item => item.command === 'chat');
+    const messageText = state.messages[0] &&
+      state.messages[0].content &&
+      state.messages[0].content[0] &&
+      state.messages[0].content[0].text;
+    rec('个人工作台隐藏 payload 只进模型请求，不进入用户气泡和 messages',
+      user &&
+        user.text === '运动' &&
+        user.pinvouScene === 'work:personal-workbench' &&
+        messageText === '运动' &&
+        chatInvoke &&
+        chatInvoke.args.message === '隐藏默认专家 prompt\n\n用户需求：\n运动' &&
+        sceneEvents.length === 1 &&
+        sceneEvents[0].scene === 'work:personal-workbench',
+      JSON.stringify({ user, message: state.messages[0], chatInvoke, sceneEvents }));
+  }
+
+  {
     const { feature, state, sceneEvents } = createFeature({ failChat: true });
     let rejected = false;
     try {
@@ -205,9 +229,9 @@ function rec(name, pass, detail = '') {
   }
 
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
-    /if \(outgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
+    /if \(visibleOutgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
       /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
-      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, t, visualPosterSceneActive\]\);/.test(chatViewSource),
+      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
