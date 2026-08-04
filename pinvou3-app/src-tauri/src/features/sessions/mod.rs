@@ -32,7 +32,9 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::core::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
+use crate::core::mode_state::{
+    ActiveSkillBinding, MountedCollection, SerializableMode, SessionModeState,
+};
 use crate::platform::paths;
 
 const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
@@ -1500,14 +1502,67 @@ impl SessionStore {
 
     // ── 知识库挂载(会话级粘连,仿 persona,仅驻内存) ──
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
-        self.mode_states
-            .write()
-            .entry(id.to_string())
-            .or_default()
-            .mounted_collection = collection_id;
+        let mounted = collection_id
+            .filter(|collection_id| *collection_id > 0)
+            .map(|collection_id| MountedCollection {
+                collection_id,
+                enabled: true,
+            })
+            .into_iter()
+            .collect();
+        self.set_mounted_collections(id, mounted);
     }
+
+    pub fn set_mounted_collections(&self, id: &str, collections: Vec<MountedCollection>) {
+        let mut normalized = Vec::new();
+        for collection in collections {
+            if collection.collection_id <= 0
+                || normalized.iter().any(|mounted: &MountedCollection| {
+                    mounted.collection_id == collection.collection_id
+                })
+            {
+                continue;
+            }
+            normalized.push(collection);
+        }
+        let legacy = normalized
+            .iter()
+            .find(|collection| collection.enabled)
+            .map(|collection| collection.collection_id);
+        let mut states = self.mode_states.write();
+        let state = states.entry(id.to_string()).or_default();
+        state.mounted_collection = legacy;
+        state.mounted_collections = normalized;
+    }
+
+    pub fn mounted_collections(&self, id: &str) -> Vec<MountedCollection> {
+        let states = self.mode_states.read();
+        let Some(state) = states.get(id) else {
+            return Vec::new();
+        };
+        if !state.mounted_collections.is_empty() {
+            return state.mounted_collections.clone();
+        }
+        state
+            .mounted_collection
+            .map(|collection_id| MountedCollection {
+                collection_id,
+                enabled: true,
+            })
+            .into_iter()
+            .collect()
+    }
+
+    pub fn mounted_collection_ids(&self, id: &str) -> Vec<i64> {
+        self.mounted_collections(id)
+            .into_iter()
+            .filter(|collection| collection.enabled)
+            .map(|collection| collection.collection_id)
+            .collect()
+    }
+
     pub fn mounted_collection(&self, id: &str) -> Option<i64> {
-        self.mode_states.read().get(id)?.mounted_collection
+        self.mounted_collection_ids(id).into_iter().next()
     }
 
     pub fn unbind_skill(&self, id: &str) {
@@ -3589,6 +3644,57 @@ mod tests {
             st.active_skill.map(|s| s.name),
             Some("legacy-ppt-workflow".to_string()),
             "切 mode 解绑了 skill"
+        );
+    }
+
+    #[test]
+    fn mounted_collections_are_ordered_deduplicated_and_legacy_compatible() {
+        let (store, _g) = isolated_store();
+        let sid = "s-multi-kb";
+        store.set_mounted_collections(
+            sid,
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: -1,
+                    enabled: true,
+                },
+            ],
+        );
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+            ]
+        );
+        assert_eq!(store.mounted_collection_ids(sid), vec![7]);
+        assert_eq!(store.mounted_collection(sid), Some(7));
+
+        store.set_mounted_collection(sid, Some(42));
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![MountedCollection {
+                collection_id: 42,
+                enabled: true,
+            }]
         );
     }
 

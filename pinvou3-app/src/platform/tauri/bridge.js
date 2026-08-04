@@ -266,6 +266,7 @@
     // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
+    mountedCollections: [],
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -1157,7 +1158,7 @@
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection"],
+    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -1909,6 +1910,8 @@
   var unequipPersona = personasFeature.unequipPersona;
   var syncActivePersona = personasFeature.syncActivePersona;
   var mountCollection = personasFeature.mountCollection;
+  var setCollectionEnabled = personasFeature.setCollectionEnabled;
+  var removeCollection = personasFeature.removeCollection;
   var unmountCollection = personasFeature.unmountCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
   var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
@@ -2055,6 +2058,8 @@
       downloadKbModel: downloadKbModel,
       cancelKbModel: cancelKbModel,
       mountCollection: mountCollection,
+      setCollectionEnabled: setCollectionEnabled,
+      removeCollection: removeCollection,
       unmountCollection: unmountCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },

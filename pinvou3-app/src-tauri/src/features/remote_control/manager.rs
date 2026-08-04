@@ -3027,6 +3027,8 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "save_session_pinvou_scene_events"
         | "session_mount_collection"
         | "session_mounted_collection"
+        | "session_mounted_collections"
+        | "session_set_mounted_collections"
         | "session_unmount_collection"
         | "set_plan_mode_next"
         | "set_session_model"

@@ -161,8 +161,10 @@ command_protocol!(
     "knowledge.rs",
     [
         "session_mount_collection",
+        "session_set_mounted_collections",
         "session_unmount_collection",
         "session_mounted_collection",
+        "session_mounted_collections",
         "kb_start_scan",
         "kb_scan_status",
         "kb_cancel_scan",

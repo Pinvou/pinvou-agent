@@ -221,7 +221,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const triggerRef = useRef(null);
       const [collections, setCollections] = useState(null); // null=未加载
       const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
-      const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
+      const mountedEntries = (bs && Array.isArray(bs.mountedCollections))
+        ? bs.mountedCollections
+        : ((bs && bs.mountedCollection != null) ? [{ collectionId: bs.mountedCollection, enabled: true }] : []);
+      const mountedEntry = id => mountedEntries.find(entry => String(entry.collectionId) === String(id)) || null;
 
       const loadList = async () => {
         if (!bridge.available || !bridge.knowledge.listCollections) { setCollections([]); return; }
@@ -239,21 +242,40 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       useEffect(() => { if (setupInstalled) setInstalled(true); }, [setupInstalled]);
       // 已挂载但还没列表 → 拉一次用于显示名字。
       useEffect(() => {
-        if (mountedId != null && collections === null) loadList();
-      }, [mountedId]);
+        if (mountedEntries.length > 0 && collections === null) loadList();
+      }, [mountedEntries.length]);
 
-      const mounted = (collections || []).find(c => c.id === mountedId) || null;
-      const mountedName = mounted ? mounted.name : (mountedId != null ? ('#' + mountedId) : null);
-      const active = mountedId != null;
+      const mountedNames = mountedEntries.map(entry => {
+        const collection = (collections || []).find(c => String(c.id) === String(entry.collectionId));
+        return collection ? collection.name : ('#' + entry.collectionId);
+      });
+      const displayedCollections = (collections || []).concat(
+        mountedEntries
+          .filter(entry => !(collections || []).some(c => String(c.id) === String(entry.collectionId)))
+          .map(entry => ({ id: entry.collectionId, name: '#' + entry.collectionId, docCount: 0 })),
+      );
+      const mountedName = mountedEntries.length === 1
+        ? mountedNames[0]
+        : (mountedEntries.length > 1 ? t.kbMountCount(mountedEntries.length) : null);
+      const mountedTitle = mountedEntries.map((entry, index) => (
+        `${mountedNames[index]} (${entry.enabled ? t.kbMountEnabled : t.kbMountDisabled})`
+      )).join(' · ');
+      const active = mountedEntries.length > 0;
       const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
 
       function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
-      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.knowledge.mountCollection(id); }
-      function unmount() { setOpen(false); if (bridge.available) bridge.knowledge.unmountCollection(); }
+      function pick(id) { if (modelMissing || mountedEntry(id)) return; if (bridge.available) bridge.knowledge.mountCollection(id); }
+      function toggleEnabled(id) {
+        const entry = mountedEntry(id);
+        if (!entry || (modelMissing && !entry.enabled) || !bridge.available) return;
+        bridge.knowledge.setCollectionEnabled(id, !entry.enabled);
+      }
+      function remove(id) { if (bridge.available) bridge.knowledge.removeCollection(id); }
+      function unmount() { if (bridge.available) bridge.knowledge.unmountCollection(); }
 
       return (
         <div className="relative">
-          <button ref={triggerRef} onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
+          <button ref={triggerRef} onClick={toggle} data-testid="kb-mount-trigger" title={active ? mountedTitle : (modelMissing ? t.kbMountNoModel : t.kbMountTitle)}
             className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold'} ${active
               ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
               : modelMissing
@@ -266,24 +288,44 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           </button>
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {modelMissing ? (
+                {modelMissing && (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
-                ) : collections === null ? (
+                )}
+                {collections === null ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
-                ) : collections.length === 0 ? (
+                ) : displayedCollections.length === 0 ? (
                   <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>
-                ) : collections.map(c => (
-                  <button key={c.id} onClick={() => pick(c.id)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <BookOpen size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-                      <span className="truncate">{c.name}</span>
-                    </span>
-                    {c.id === mountedId
-                      ? <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />
-                      : <span className="text-[11px] text-gray-400 group-hover:text-white/80 shrink-0">{c.docCount}</span>}
-                  </button>
-                ))}
+                ) : displayedCollections.map(c => {
+                  const entry = mountedEntry(c.id);
+                  const disabled = modelMissing && (!entry || !entry.enabled);
+                  return (
+                    <div key={c.id} data-testid="kb-mount-row"
+                      className="flex items-center rounded-xl text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white transition-colors group">
+                      <button onClick={() => entry ? toggleEnabled(c.id) : pick(c.id)} disabled={disabled} data-testid="kb-mount-toggle"
+                        title={entry ? (entry.enabled ? t.kbMountDisable : t.kbMountEnable) : t.kbMountPick}
+                        className="min-w-0 flex-1 flex items-center justify-between gap-2.5 px-3 py-2.5 text-[13px] text-left disabled:cursor-not-allowed disabled:opacity-50">
+                        <span className="flex items-center gap-2.5 min-w-0">
+                          <BookOpen size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                          <span className="min-w-0 flex flex-col">
+                            <span className="truncate">{c.name}</span>
+                            {entry && <span className="text-[10px] text-gray-400 group-hover:text-white/80">{entry.enabled ? t.kbMountEnabled : t.kbMountDisabled}</span>}
+                          </span>
+                        </span>
+                        {entry
+                          ? (entry.enabled
+                            ? <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />
+                            : <span className="shrink-0 w-3.5 h-3.5 rounded border border-gray-300 dark:border-gray-600 group-hover:border-white/80" />)
+                          : <span className="text-[11px] text-gray-400 group-hover:text-white/80 shrink-0">{c.docCount}</span>}
+                      </button>
+                      {entry && (
+                        <button onClick={() => remove(c.id)} title={t.kbMountRemoveOne} aria-label={`${t.kbMountRemoveOne}: ${c.name}`}
+                          data-testid="kb-mount-remove" className="shrink-0 p-2.5 mr-0.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/15">
+                          <X size={14} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
                 {active && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />

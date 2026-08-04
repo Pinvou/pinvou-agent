@@ -859,17 +859,25 @@
   });
 
   // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
-  // 桌面前端 state.mountedCollection(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
+  // 桌面前端多知识库状态(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
   // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
-  // payload 形状:{ session_id, collection_id } 或 { session_id, collection_id: null }。
+  // 新 payload 带 collections；collection_id 保留给旧远程端兼容。
   // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
     if (p.session_id !== state.activeSessionId) return;
-    var cid = (p.collection_id == null) ? null : p.collection_id;
-    if (state.mountedCollection === cid) return;
-    state.mountedCollection = cid;
+    var mounted = Array.isArray(p.collections)
+      ? p.collections.map(function (entry) {
+          return {
+            collectionId: entry.collectionId != null ? entry.collectionId : entry.collection_id,
+            enabled: entry.enabled !== false,
+          };
+        })
+      : (p.collection_id == null ? [] : [{ collectionId: p.collection_id, enabled: true }]);
+    state.mountedCollections = mounted;
+    var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
+    state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
     notify();
   });
 

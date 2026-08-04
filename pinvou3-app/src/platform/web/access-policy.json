@@ -91,6 +91,8 @@
     "scheduled_task_chat_prompt",
     "session_mount_collection",
     "session_mounted_collection",
+    "session_mounted_collections",
+    "session_set_mounted_collections",
     "session_unmount_collection",
     "set_plan_mode_next",
     "set_scheduled_task_pinned",

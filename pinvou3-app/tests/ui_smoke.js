@@ -57,6 +57,7 @@ function injectSource() {
     ];
     let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
+    let MOUNTED_COLLECTIONS=[];
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -128,6 +129,15 @@ function injectSource() {
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
+        case 'session_mounted_collections': return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_mounted_collection': return Promise.resolve(MOUNTED_COLLECTIONS.find(function(entry){ return entry.enabled; })?.collectionId || null);
+        case 'session_set_mounted_collections': MOUNTED_COLLECTIONS=(args.collections||[]).map(function(entry){ return {collectionId:entry.collectionId,enabled:entry.enabled!==false}; }); return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_unmount_collection': MOUNTED_COLLECTIONS=[]; return Promise.resolve(null);
+        case 'kb_model_status': return Promise.resolve({installed:true});
+        case 'kb_collection_list': return Promise.resolve([
+          {id:7,name:'项目资料',docCount:3},
+          {id:8,name:'团队规范',docCount:5},
+        ]);
         case 'list_workflows': return Promise.resolve([WF_TEMPLATE]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
@@ -691,6 +701,41 @@ async function expand(page) {
     restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
+
+  const multiKb = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    document.querySelector('[data-testid="kb-mount-trigger"]')?.click();
+    await wait(100);
+    const row = name => [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes(name));
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-remove"]')?.click();
+    await wait(100);
+    const knowledge = window.TauriBridge.state.get('knowledge');
+    return {
+      mountedCollections: knowledge.mountedCollections,
+      mountedCollection: knowledge.mountedCollection,
+      menuText: document.body.innerText,
+      updates: window.__TAURI_INVOKES__
+        .filter(call => call.cmd === 'session_set_mounted_collections')
+        .map(call => call.args.collections),
+    };
+  });
+  rec('③a 多知识库可追加、单独停用和移除且不覆盖其他挂载项',
+    multiKb.updates.length === 4 &&
+    multiKb.updates[1].length === 2 &&
+    multiKb.updates[2][0].enabled === false &&
+    multiKb.mountedCollections.length === 1 &&
+    multiKb.mountedCollections[0].collectionId === 7 &&
+    multiKb.mountedCollections[0].enabled === false &&
+    multiKb.mountedCollection === null &&
+    multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
+    JSON.stringify(multiKb));
 
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。

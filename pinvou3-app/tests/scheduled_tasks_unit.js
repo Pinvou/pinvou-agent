@@ -3403,7 +3403,51 @@ async function remoteSessionDeletionConvergesPresentationState() {
   assert.strictEqual(state.archivedSessions.some(function (session) { return session.id === deletedId; }), false);
 }
 
+async function multipleKnowledgeMountBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
+  harness.handlers.session_set_mounted_collections = function (args) {
+    return args.collections;
+  };
+
+  await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountCollection(8);
+  var mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: true },
+      { collectionId: 8, enabled: true },
+    ],
+    "adding a knowledge base must preserve existing mounts"
+  );
+  assert.strictEqual(mounted.mountedCollection, 7, "legacy field keeps the first enabled mount");
+
+  await bridge.knowledge.setCollectionEnabled(7, false);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, false);
+  assert.strictEqual(mounted.mountedCollection, 8, "disabled mounts must not remain active for retrieval");
+
+  await bridge.knowledge.removeCollection(8);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections.length, 1);
+  assert.strictEqual(mounted.mountedCollections[0].collectionId, 7);
+  assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
+
+  await bridge.knowledge.mountCollection(7);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
+  assert.strictEqual(mounted.mountedCollection, 7);
+
+  await bridge.knowledge.unmountCollection();
+  mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
+}
+
 Promise.resolve()
+  .then(multipleKnowledgeMountBehavior)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)

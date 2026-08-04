@@ -26,7 +26,7 @@ mod watcher;
 
 pub use exclude::Excluder;
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
-pub use l1::{ChunkHit, Collection, Document};
+pub use l1::{Collection, Document};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

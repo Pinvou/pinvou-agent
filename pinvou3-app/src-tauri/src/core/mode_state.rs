@@ -29,6 +29,14 @@ pub struct ActiveSkillBinding {
     pub project_dir: Option<String>,
 }
 
+/// 会话挂载的单个本地知识集。`enabled=false` 保留挂载关系，但不参与检索。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedCollection {
+    pub collection_id: i64,
+    pub enabled: bool,
+}
+
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
@@ -78,6 +86,9 @@ pub struct SessionModeState {
     /// 不落盘——重启 app 后回到未挂载。
     #[serde(default)]
     pub mounted_collection: Option<i64>,
+    /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
+    #[serde(default)]
+    pub mounted_collections: Vec<MountedCollection>,
 }
 
 impl Default for SessionModeState {
@@ -91,6 +102,7 @@ impl Default for SessionModeState {
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
+            mounted_collections: Vec::new(),
         }
     }
 }
@@ -146,6 +158,7 @@ mod tests {
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
+            mounted_collections: Vec::new(),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

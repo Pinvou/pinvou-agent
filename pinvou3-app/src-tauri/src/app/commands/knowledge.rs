@@ -1,8 +1,16 @@
-pub(super) fn build_kb_agentic_guide(collection_name: Option<&str>) -> String {
-    let title = collection_name.unwrap_or("本地知识集");
+pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
+    let titles = if collection_names.is_empty() {
+        "《本地知识集》".to_string()
+    } else {
+        collection_names
+            .iter()
+            .map(|name| format!("《{name}》"))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
     format!(
         "<system-reminder>\n\
-         本会话挂载了知识集《{title}》。涉及用户本地资料/文档的问题,你**必须先调用 \
+         本会话启用了知识集{titles}。涉及用户本地资料/文档的问题,你**必须先调用 \
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
          内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
          只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
@@ -27,12 +35,46 @@ pub fn session_mount_collection(
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
     store.set_mounted_collection(&session_id, Some(collection_id));
-    let _ = app.emit(
-        "remote_control:kb_mount_changed",
-        serde_json::json!({ "session_id": session_id, "collection_id": collection_id }),
-    );
-    broadcast_kb_mount_to_mobile(&app, &session_id, Some(collection_id));
+    publish_kb_mount_change(&app, &session_id, &store.mounted_collections(&session_id));
     Ok(())
+}
+
+/// 原子更新会话挂载的多个知识集。顺序由前端维护，并作为跨库同分结果的稳定排序依据。
+#[tauri::command]
+pub fn session_set_mounted_collections(
+    session_id: String,
+    collections: Vec<crate::core::mode_state::MountedCollection>,
+    store: State<'_, SessionStore>,
+    knowledge: State<'_, KnowledgeService>,
+    app: AppHandle,
+) -> Result<Vec<crate::core::mode_state::MountedCollection>, String> {
+    if collections.iter().any(|collection| collection.enabled) && !knowledge.semantic_ready() {
+        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
+    }
+    let mut normalized = Vec::new();
+    for collection in collections {
+        if collection.collection_id <= 0
+            || normalized
+                .iter()
+                .any(|mounted: &crate::core::mode_state::MountedCollection| {
+                    mounted.collection_id == collection.collection_id
+                })
+        {
+            continue;
+        }
+        if knowledge
+            .l1()
+            .collection_name(collection.collection_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            continue;
+        }
+        normalized.push(collection);
+    }
+    store.set_mounted_collections(&session_id, normalized.clone());
+    publish_kb_mount_change(&app, &session_id, &normalized);
+    Ok(normalized)
 }
 
 /// 摘下会话的知识集挂载。
@@ -43,18 +85,24 @@ pub fn session_unmount_collection(
     app: AppHandle,
 ) {
     store.set_mounted_collection(&session_id, None);
-    let _ = app.emit(
-        "remote_control:kb_mount_changed",
-        serde_json::json!({ "session_id": session_id, "collection_id": null }),
-    );
-    broadcast_kb_mount_to_mobile(&app, &session_id, None);
+    publish_kb_mount_change(&app, &session_id, &[]);
 }
 
-fn broadcast_kb_mount_to_mobile(app: &AppHandle, session_id: &str, collection_id: Option<i64>) {
+fn publish_kb_mount_change(
+    app: &AppHandle,
+    session_id: &str,
+    collections: &[crate::core::mode_state::MountedCollection],
+) {
+    let collection_id = collections
+        .iter()
+        .find(|collection| collection.enabled)
+        .map(|collection| collection.collection_id);
     let payload = serde_json::json!({
         "session_id": session_id,
         "collection_id": collection_id,
+        "collections": collections,
     });
+    let _ = app.emit("remote_control:kb_mount_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
         app,
         "remote_control:kb_mount_changed",
@@ -69,6 +117,15 @@ pub fn session_mounted_collection(
     store: State<'_, SessionStore>,
 ) -> Option<i64> {
     store.mounted_collection(&session_id)
+}
+
+/// 读会话当前挂载的全部知识集及启用状态。
+#[tauri::command]
+pub fn session_mounted_collections(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Vec<crate::core::mode_state::MountedCollection> {
+    store.mounted_collections(&session_id)
 }
 
 use crate::features::knowledge as knowledge_domain;
