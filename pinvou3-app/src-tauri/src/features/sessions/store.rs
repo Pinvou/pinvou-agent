@@ -1,0 +1,360 @@
+//! Session store CRUD and lifecycle.
+//!
+//! [`SessionStore`] is the central facade value: every field is `Arc`-wrapped
+//! so the whole store clones cheaply into Tauri State and is shared across
+//! background tasks. The struct definition itself lives in [`super`] (the
+//! facade), while this module owns the conversational CRUD and engine-state
+//! persistence entry points. Retention, mode state, sidecars, and the
+//! scheduled-profile registry are split into their own sibling modules.
+
+use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use chrono::Utc;
+use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
+use deepseek_tui::models::Message;
+use deepseek_tui::session_manager::{
+    create_saved_session_with_id_and_mode, SavedSession, SessionManager, SessionMetadata,
+};
+use parking_lot::{Mutex, RwLock};
+
+use crate::platform::paths;
+
+use super::scheduled::{
+    ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
+};
+use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
+use super::validators::{
+    generate_session_id, persisted_system_prompt, validate_scheduled_session_id,
+    validate_session_id,
+};
+use super::{session_roots_for, ExecutionRootResolver, SessionKind, SessionRoots, SessionStore};
+use crate::core::mode_state::{MountedCollection, MountedCollectionsSnapshot};
+
+/// Cap on the number of ordinary chat sessions retained on disk before the
+/// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
+pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+
+impl SessionStore {
+    pub fn boot() -> Result<Self> {
+        let store = Self::from_paths(
+            paths::sessions_root(),
+            paths::scheduled_run_profiles_path(),
+            paths::scheduled_tasks_root(),
+        )?;
+        // Sidecars historically load later in the Tauri setup hook. Loading
+        // them here too lets reconciliation discard scheduled-only runtime
+        // state immediately instead of resurrecting it after stale profiles
+        // have already been removed.
+        store.load_skill_bindings();
+        store.load_multi_agent_flags();
+        store.load_session_models();
+        store.load_pinned_sessions();
+        store.load_hidden_sessions();
+        store.load_session_mode_states();
+        {
+            let _mutation = store.scheduled_mutation.lock();
+            store.enforce_session_retention_locked()?;
+        }
+        store.purge_all_scheduled_side_maps();
+        Ok(store)
+    }
+
+    pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
+        Self::from_paths(
+            root.join("sessions"),
+            root.join("scheduled-run-profiles.json"),
+            root.join("scheduled"),
+        )
+    }
+
+    pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
+        let store = Self::from_paths(
+            paths::sessions_root(),
+            paths::scheduled_run_profiles_path(),
+            scheduled_root,
+        )?;
+        store.load_skill_bindings();
+        store.load_multi_agent_flags();
+        store.load_session_models();
+        store.load_pinned_sessions();
+        store.load_hidden_sessions();
+        store.load_session_mode_states();
+        {
+            let _mutation = store.scheduled_mutation.lock();
+            store.enforce_session_retention_locked()?;
+        }
+        store.purge_all_scheduled_side_maps();
+        Ok(store)
+    }
+
+    fn from_paths(
+        sessions_dir: PathBuf,
+
+    pub fn list(&self) -> Result<Vec<SessionMetadata>> {
+        let mut out = self
+            .manager
+            .list_sessions()
+            .context("list_sessions failed")?;
+        // Scheduled conversations share the durable store so detail/history can
+        // load them normally, but remain owned by the Scheduled Tasks surface.
+        // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
+        // 会话，其余历史统一进入普通列表。
+        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(out)
+    }
+
+    pub fn load(&self, id: &str) -> Result<SavedSession> {
+        self.manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id})"))
+    }
+
+    pub(crate) fn persisted_size(&self, id: &str) -> Result<u64> {
+        validate_session_id(id)?;
+        let path = self.manager.sessions_dir().join(format!("{id}.json"));
+        std::fs::metadata(&path)
+            .with_context(|| format!("read Session metadata {}", path.display()))
+            .map(|metadata| metadata.len())
+    }
+
+    pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(&session.metadata.id)? {
+            return self.persist_then_reconcile(session, "committed save");
+        }
+        self.persist_then_reconcile(session, "session save")
+    }
+
+    pub fn delete(&self, id: &str) -> Result<()> {
+        if self.is_scheduled_session(id)? {
+            bail!("Scheduled-run sessions are deleted through their automation");
+        }
+        match self.manager.delete_session(id) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                // The session JSON may already have been removed by an earlier
+                // delete or interrupted cleanup. Treat that as success, but
+                // still remove an orphaned workspace/artifacts directory.
+                validate_session_id(id)?;
+                let session_dir = self.manager.sessions_dir().join(id);
+                match std::fs::remove_dir_all(&session_dir) {
+                    Ok(()) => {}
+                    Err(dir_err) if dir_err.kind() == ErrorKind::NotFound => {}
+                    Err(dir_err) => {
+                        return Err(dir_err).with_context(|| {
+                            format!("remove stale session dir {}", session_dir.display())
+                        });
+                    }
+                }
+            }
+            Err(err) => return Err(err).with_context(|| format!("delete_session({id})")),
+        }
+        // 如果删的是 active session，清理 active 标记
+        let mut active = self.active.write();
+        if active.as_deref() == Some(id) {
+            *active = None;
+        }
+        drop(active);
+        let removed_multi_agent = self
+            .mode_states
+            .write()
+            .remove(id)
+            .is_some_and(|state| state.multi_agent);
+        if removed_multi_agent {
+            if let Err(error) = self.save_multi_agent_flags() {
+                eprintln!(
+                    "[sessions] update _multi_agent.json after delete({id}) failed: {error:#}"
+                );
+            }
+        }
+        if self.session_mode_states.write().remove(id).is_some() {
+            self.save_session_mode_states();
+        }
+        let removed_session_model = {
+            let mut session_models = self.session_models.write();
+            session_models.remove(id).is_some()
+        };
+        if removed_session_model {
+            self.save_session_models();
+        }
+        let removed_pin = {
+            let mut pinned_sessions = self.pinned_sessions.write();
+            pinned_sessions.remove(id).is_some()
+        };
+        if removed_pin {
+            self.save_pinned_sessions();
+        }
+        let removed_hidden = {
+            let mut hidden_sessions = self.hidden_sessions.write();
+            hidden_sessions.remove(id).is_some()
+        };
+        if removed_hidden {
+            self.save_hidden_sessions();
+        }
+        Ok(())
+    }
+
+    pub fn session_kind(&self, id: &str) -> Result<SessionKind> {
+        if self.is_scheduled_session(id)? {
+            Ok(SessionKind::ScheduledRun)
+        } else {
+            Ok(SessionKind::Chat)
+        }
+    }
+
+    pub fn set_execution_root_resolver(&self, resolver: ExecutionRootResolver) {
+        *self.execution_root_resolver.write() = Some(resolver);
+    }
+
+    pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
+        *self.code_session_predicate.write() = Some(predicate);
+        self.reconcile_code_default_modes();
+    }
+
+    fn reconcile_code_default_modes(&self) {
+        // 有显式 per-session 记录的 code 会话：交给 load_session_mode_states 覆盖，
+        // 不在此处理。
+        let persisted: HashSet<String> = self.session_mode_states.read().keys().cloned().collect();
+        let mut m = self.mode_states.write();
+        for (id, state) in m.iter_mut() {
+            if state.mode == SerializableMode::Yolo
+                && !persisted.contains(id)
+                && self.is_code_session(id)
+            {
+                state.mode = SerializableMode::Plan;
+            }
+        }
+    }
+
+    pub fn session_roots(&self, id: &str) -> Result<SessionRoots> {
+        // This helper is a path authority boundary, not merely a convenience
+        // accessor. Validate before any join so callers can never turn a
+        // Session id such as `../outside` into an escaping workspace path.
+        validate_session_id(id)?;
+        if let Some(profile) = self.scheduled_profile(id) {
+            return Ok(SessionRoots {
+                execution: profile.workspace.clone(),
+                ledger: profile.workspace,
+            });
+        }
+        if self.is_scheduled_session(id)? {
+            bail!("Scheduled-run session '{id}' has no persisted execution profile");
+        }
+        let bound_project_root = self
+            .execution_root_resolver
+            .read()
+            .as_ref()
+            .and_then(|resolver| resolver(id));
+        Ok(session_roots_for(id, bound_project_root))
+    }
+
+    pub fn ledger_root(&self, id: &str) -> Result<PathBuf> {
+        Ok(self.session_roots(id)?.ledger)
+    }
+
+    pub fn set_title(&self, id: &str, title: String) -> Result<()> {
+        // 标题和 transcript 存在同一个 JSON 中。定时会话生成期间 Engine 也会写这个
+        // 文件，所以必须把 load / modify / save 放在同一把锁里；否则重命名可能把
+        // Engine 刚落盘的新消息用旧快照覆盖掉。
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for title update"))?;
+        session.metadata.title = title;
+        self.persist_then_reconcile(&session, "title update")?;
+        Ok(())
+    }
+
+    pub fn touch_activity(&self, id: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        validate_session_id(id)?;
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for activity update"))?;
+        session.metadata.updated_at = Utc::now();
+        self.persist_then_reconcile(&session, "activity update")?;
+        Ok(())
+    }
+
+    pub fn create_new(
+        &self,
+
+    pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for transcript update"))?;
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            anyhow::bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
+        session.metadata.message_count = messages.len();
+        session.metadata.updated_at = Utc::now();
+        session.messages = messages;
+        self.persist_then_reconcile(&session, "transcript update")?;
+        Ok(())
+    }
+
+    pub fn compare_and_swap_messages(
+        &self,
+
+    pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace artifacts for scheduled-run session '{id}'");
+        }
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for artifact update"))?;
+        let session_id = session.metadata.id.clone();
+        let now = Utc::now();
+        session.artifacts = paths
+            .into_iter()
+            .enumerate()
+            .map(|(idx, p)| {
+                let path = PathBuf::from(&p);
+                let byte_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                ArtifactRecord {
+                    id: format!("p3art_{session_id}_{idx}"),
+                    kind: ArtifactKind::ToolOutput,
+                    session_id: session_id.clone(),
+                    tool_call_id: format!("p3_{idx}"),
+                    tool_name: "write_file".into(),
+                    created_at: now,
+                    byte_size,
+                    preview: String::new(),
+                    storage_path: path,
+                }
+            })
+            .collect();
+        session.metadata.updated_at = now;
+        self.persist_then_reconcile(&session, "artifact update")?;
+        Ok(())
+    }
+
+    pub fn active_id(&self) -> Option<String> {
+        self.active.read().clone()
+    }
+
+    pub fn set_active(&self, id: Option<String>) {
+        *self.active.write() = id;
+    }
+
+    pub fn persist_chat_engine_state(
+        &self,
+
+    pub(crate) fn persist_admitted_chat_display(
+        &self,
+}
