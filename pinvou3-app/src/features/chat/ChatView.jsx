@@ -10,7 +10,7 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
-import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
@@ -75,6 +75,12 @@ import {
 } from './composer-controls.jsx';
 
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+// Inlined from cardBtnCls(isDark, variant) in tool-renderers.jsx so ChatView can drop its
+// local isDark. P1-7/P3 may collapse these back to cardBtnCls(variant) once that helper
+// no longer takes a theme arg. Non-primary dark originally had no border → dark:border-transparent
+// suppresses the light-side border in dark.
+const CARD_BTN = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746] dark:border-transparent';
+const CARD_BTN_PRIMARY = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]';
 
 function unifiedConversationUiEnabled() {
   try {
@@ -128,7 +134,6 @@ const openChatExternalUrl = (url) => {
 };
 
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
-      const isDark = theme === 'dark';
       const [hovered, setHovered] = useState(null);
       const tool = localizeTool(tsToolsData.find(item => item.backendId === toolId), t);
       if (!tool || !tool.welcomeQueries) return null;
@@ -136,17 +141,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return (
         <div className="flex justify-start">
           <div className={`max-w-[800px] w-full rounded-[2rem] overflow-hidden border transition-all ${
-            isDark ? 'bg-[#1E1F20] border-[#3A3A3C]/60' : 'bg-white border-slate-100 shadow-lg shadow-slate-200/30'
+            'bg-white border-slate-100 shadow-lg shadow-slate-200/30 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
           }`}>
             <div className={`relative p-5 border-b flex items-center gap-3.5 ${
-              isDark ? 'bg-[#1E1F20] border-[#3A3A3C]/60' : 'bg-gradient-to-b from-blue-50/80 to-white border-slate-100'
+              'bg-gradient-to-b from-blue-50/80 to-white border-slate-100 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
             }`}>
               <div className="bg-gradient-to-tr from-blue-600 to-indigo-500 p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
                 <ToolIcon size={22} className="text-white" />
               </div>
               <div>
-                <div className={`text-[1.05rem] font-bold tracking-tight ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{tool.title}</div>
-                <div className={`flex items-center text-xs mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                <div className={`text-[1.05rem] font-bold tracking-tight ${'text-slate-800 dark:text-slate-100'}`}>{tool.title}</div>
+                <div className={`flex items-center text-xs mt-0.5 ${'text-slate-500 dark:text-slate-400'}`}>
                   <span className="relative flex h-2 w-2 mr-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -156,16 +161,16 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               </div>
             </div>
             <div className="p-5">
-              <p className={`leading-relaxed text-[15px] ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+              <p className={`leading-relaxed text-[15px] ${'text-slate-600 dark:text-slate-300'}`}>
                 {tool.desc.split('。')[0]}。{t.uiChat.naturalQuestion}
               </p>
               <div className="flex items-center my-5">
-                <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
-                <span className={`px-4 text-[11px] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                <div className={`flex-grow h-px ${'bg-gradient-to-r from-transparent via-slate-200 to-transparent dark:bg-gradient-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
+                <span className={`px-4 text-[11px] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${'text-slate-400 dark:text-slate-500'}`}>
                   <Sparkles size={13} />
                   <span>{t.uiChat.askMe}</span>
                 </span>
-                <div className={`flex-grow h-px ${isDark ? 'bg-gradient-to-r from-transparent via-[#3A3A3C] to-transparent' : 'bg-gradient-to-r from-transparent via-slate-200 to-transparent'}`}></div>
+                <div className={`flex-grow h-px ${'bg-gradient-to-r from-transparent via-slate-200 to-transparent dark:bg-gradient-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {tool.welcomeQueries.map((q, i) => (
@@ -176,15 +181,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     onClick={() => onSend && onSend(q)}
                     className={`group relative flex items-center justify-between p-3 rounded-2xl border text-left transition-all duration-200 ${
                       hovered === i
-                        ? (isDark ? 'border-blue-500/30 bg-blue-500/10 shadow-sm' : 'border-blue-200/80 bg-blue-50/50 shadow-sm')
-                        : (isDark ? 'border-[#3A3A3C]/50 bg-[#2A2B2D]/30 hover:border-[#555]' : 'border-slate-200/60 bg-slate-50/30 hover:border-blue-200')
+                        ? 'border-blue-200/80 bg-blue-50/50 shadow-sm dark:border-blue-500/30 dark:bg-blue-500/10'
+                        : 'border-slate-200/60 bg-slate-50/30 hover:border-blue-200 dark:border-[#3A3A3C]/50 dark:bg-[#2A2B2D]/30 dark:hover:border-[#555]'
                     }`}
                   >
                     <span className={`text-sm font-medium transition-colors ${
-                      hovered === i ? (isDark ? 'text-blue-300' : 'text-blue-700') : (isDark ? 'text-slate-300' : 'text-slate-700')
+                      hovered === i ? 'text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-300'
                     }`}>{q}</span>
                     <ChevronRight size={15} className={`transition-all duration-200 ${
-                      hovered === i ? (isDark ? 'text-blue-400 opacity-100' : 'text-blue-500 opacity-100') : 'opacity-0 -translate-x-2'
+                      hovered === i ? 'text-blue-500 opacity-100 dark:text-blue-400' : 'opacity-0 -translate-x-2'
                     }`} />
                   </button>
                 ))}
@@ -246,7 +251,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker', comingSoonLabel = '' }) => {
+    const SubModePicker = ({ value, onChange, items, icons, testId = 'mode-subtab-picker', comingSoonLabel = '' }) => {
       const trackRef = useRef(null);
       const buttonRefs = useRef({});
       const [indicator, setIndicator] = useState({ left: 0, width: 20, ready: false });
@@ -282,7 +287,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           <div ref={trackRef} className="relative inline-flex max-w-full items-center justify-center gap-5 overflow-x-auto px-2 py-1">
             <span
               aria-hidden="true"
-              className={`absolute bottom-0 h-0.5 rounded-full transition-all duration-200 ease-out ${isDark ? 'bg-[#F5F5F7]' : 'bg-[#1D1D1F]'}`}
+              className={`absolute bottom-0 h-0.5 rounded-full transition-all duration-200 ease-out ${'bg-[#1D1D1F] dark:bg-[#F5F5F7]'}`}
               style={{
                 left: `${indicator.left}px`,
                 width: `${indicator.width}px`,
@@ -310,16 +315,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   }}
                   className={`relative flex h-7 min-w-0 items-center justify-center gap-1.5 px-0.5 text-[13px] font-medium transition-colors duration-200 ${
                     disabled
-                      ? isDark
-                        ? 'cursor-not-allowed text-[#5F6368] opacity-60'
-                        : 'cursor-not-allowed text-[#A0A4AA] opacity-65'
+                      ? 'cursor-not-allowed text-[#A0A4AA] opacity-65 dark:text-[#5F6368] dark:opacity-60'
                       : selected
-                      ? isDark
-                        ? 'text-[#F5F5F7]'
-                        : 'text-[#1D1D1F]'
-                      : isDark
-                        ? 'text-[#8E8E93] hover:text-[#F5F5F7]'
-                        : 'text-[#8E8E93] hover:text-[#1D1D1F]'
+                      ? 'text-[#1D1D1F] dark:text-[#F5F5F7]'
+                      : 'text-[#8E8E93] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
                   }`}
                 >
                   {ItemIcon && (
@@ -327,7 +326,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   )}
                   {icon && (
                     <span className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-white ${
-                      isDark ? 'shadow-[0_0_0_1px_rgba(255,255,255,.14)]' : 'ring-1 ring-black/[0.06]'
+                      'ring-1 ring-black/[0.06] dark:shadow-[0_0_0_1px_rgba(255,255,255,.14)]'
                     }`}>
                       <img src={icon} alt="" className="h-[13px] w-[13px] object-contain" />
                     </span>
@@ -341,7 +340,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const PersonalWorkbenchTemplatePicker = ({ isDark, selectedIndex, onSelect, templates }) => {
+    const PersonalWorkbenchTemplatePicker = ({ selectedIndex, onSelect, templates }) => {
       return (
         <div
           data-testid="personal-workbench-template-picker"
@@ -359,12 +358,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   onClick={() => onSelect(index)}
                   className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors ${
                     selected
-                      ? isDark
-                        ? 'bg-[#F5F5F7] text-[#1D1D1F]'
-                        : 'bg-[#1D1D1F] text-white'
-                      : isDark
-                        ? 'bg-[#2A2B2D] text-[#C7C7CC] hover:bg-[#333537] hover:text-white'
-                        : 'bg-[#EEF0F2] text-[#3C4043] hover:bg-[#E3E5E8] hover:text-[#1D1D1F]'
+                      ? 'bg-[#1D1D1F] text-white dark:bg-[#F5F5F7] dark:text-[#1D1D1F]'
+                      : 'bg-[#EEF0F2] text-[#3C4043] hover:bg-[#E3E5E8] hover:text-[#1D1D1F] dark:bg-[#2A2B2D] dark:text-[#C7C7CC] dark:hover:bg-[#333537] dark:hover:text-white'
                   }`}
                 >
                   {template.title}
@@ -376,15 +371,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SceneModeTag = ({ isDark, scene, onClear, clearLabel }) => {
+    const SceneModeTag = ({ scene, onClear, clearLabel }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
         <div className="mb-2 flex flex-wrap justify-start gap-2 px-1" data-testid="pinvou-scene-tag">
           <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-sm ${
-            isDark
-              ? 'bg-[#2A2B2D] text-[#F5F5F7] ring-1 ring-white/10'
-              : 'bg-[#F5F5F7] text-[#1D1D1F] ring-1 ring-black/[0.06]'
+            'bg-[#F5F5F7] text-[#1D1D1F] ring-1 ring-black/[0.06] dark:bg-[#2A2B2D] dark:text-[#F5F5F7] dark:ring-white/10'
           }`}>
             <SceneIcon size={15} className="shrink-0" />
             <span>{scene.label}</span>
@@ -400,7 +393,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   onClear();
                 }}
                 className={`-mr-1 flex h-5 w-5 items-center justify-center rounded-full transition-colors ${
-                  isDark ? 'text-[#C7C7CC] hover:bg-white/10 hover:text-white' : 'text-[#5F6368] hover:bg-black/10 hover:text-[#1D1D1F]'
+                  'text-[#5F6368] hover:bg-black/10 hover:text-[#1D1D1F] dark:text-[#C7C7CC] dark:hover:bg-white/10 dark:hover:text-white'
                 }`}
               >
                 <X size={13} />
@@ -412,7 +405,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     };
 
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
-      const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -1322,7 +1314,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
             <AttachmentDropOverlay
               active={attachmentDragActive}
-              dark={isDark}
+              dark={theme === 'dark'}
               variant={isWeb ? 'web' : 'desktop'}
               releaseLabel={t.uiAttachments.dropRelease}
               webTitle={t.uiAttachments.dropWebTitle}
@@ -1337,10 +1329,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   data-testid="scheduled-run-back"
                   aria-label={chatCopy.backRuns}
                   title={chatCopy.backRuns}
-                  className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${isDark ? 'bg-[#1E1F20] border-[#333537] text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm'}`}>
+                  className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm dark:bg-[#1E1F20] dark:border-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]'}`}>
                   <ArrowLeft size={16} className="shrink-0" />
                   <span className="truncate">{scheduledRunContext.taskName || chatCopy.scheduledRun}</span>
-                  <span className={`shrink-0 text-[12px] max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#85888D]'}`}>{chatCopy.runRecords}</span>
+                  <span className={`shrink-0 text-[12px] max-sm:hidden ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{chatCopy.runRecords}</span>
                 </button>
               )}
             </div>
@@ -1350,9 +1342,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <button
                   data-testid="chat-artifacts-entry"
                   onClick={openArtifactsPreview}
-                  className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm'}`}>
+                  className={`pointer-events-auto px-4 max-sm:px-3 py-2 rounded-full text-[14px] font-medium flex items-center gap-2 whitespace-nowrap shrink-0 ${'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9] shadow-sm dark:bg-[#1E1F20] dark:text-[#E3E3E3] dark:hover:bg-[#333537]'}`}>
                   <Package size={16} /> <span className="max-sm:hidden">{t.artifacts}</span>
-                  {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{artifactCount}</span>}
+                  {artifactCount > 0 && <span className={`text-[11px] px-1.5 rounded-full ${'bg-[#0B57D0] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]'}`}>{artifactCount}</span>}
                 </button>
               )}
             </div>
@@ -1370,7 +1362,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
               <div className="w-full max-w-[760px] px-4 text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
-                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}>
                   {t.chatGreeting}
                 </h1>
               </div>
@@ -1470,7 +1462,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           </div>
 
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
-          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${isDark ? 'from-[#131314] via-[#131314]/95' : 'from-white via-white/95'}`}
+          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${'from-white via-white/95 dark:from-[#131314] dark:via-[#131314]/95'}`}
             style={{ height: (composerH ? composerH + 48 : 172) + 'px' }} />
           {hasMessages && showScrollBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
@@ -1481,7 +1473,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 aria-label={t.backToBottom}
                 title={t.backToBottom}
                 className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 ${
-                  isDark ? 'bg-[#2B2C2F]/95 text-[#E3E3E3] border border-white/10 hover:bg-[#34363A]' : 'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF]'
+                  'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF] dark:bg-[#2B2C2F]/95 dark:text-[#E3E3E3] dark:border-white/10 dark:hover:bg-[#34363A]'
                 }`}>
                 <ChevronDown size={15} />
               </button>
@@ -1517,10 +1509,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   voiceRecording
                     ? 'bg-[#C5221F] text-white shadow-red-500/25 hover:bg-[#A50E0E]'
                     : voiceBusy
-                      ? (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA] cursor-wait' : 'bg-[#E8F0FE] text-[#174EA6] cursor-wait')
+                      ? 'bg-[#E8F0FE] text-[#174EA6] cursor-wait dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'
                       : voiceInput.status === 'failed'
-                        ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82] hover:bg-[#4A2525]' : 'bg-[#FCE8E6] text-[#C5221F] hover:bg-[#FAD2CF]')
-                        : (isDark ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#D3E3FD]' : 'bg-[#0B57D0] text-white hover:bg-[#0842A0] shadow-blue-500/25')
+                        ? 'bg-[#FCE8E6] text-[#C5221F] hover:bg-[#FAD2CF] dark:bg-[#3A1F1F] dark:text-[#F28B82] dark:hover:bg-[#4A2525]'
+                        : 'bg-[#0B57D0] text-white hover:bg-[#0842A0] shadow-blue-500/25 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#D3E3FD]'
                 } ${primaryVoiceDisabled ? 'opacity-80' : 'active:scale-95'}`}>
                 {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
               </button>
@@ -1528,7 +1520,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                   className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
                     canClearInput
-                      ? (isDark ? 'bg-[#161618]/90 border-white/10 text-[#C4C7C5] hover:bg-[#252629]' : 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4]')
+                      ? 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4] dark:bg-[#161618]/90 dark:border-white/10 dark:text-[#C4C7C5] dark:hover:bg-[#252629]'
                       : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed opacity-60'
                   }`}>
                   <Trash2 size={20} />
@@ -1553,14 +1545,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <HomeModeSwitcher
                   mode={pinvouMode}
                   codeSupported={codeModeAvailable}
-                  isDark={isDark}
+                  isDark={theme === 'dark'}
                   onChange={handleHomeModeChange}
                   copy={t.uiHomeMode}
                 />
               )}
               {pinvouMode === 'work' && !conversationStarted && (
                 <SubModePicker
-                  isDark={isDark}
                   value={workSubtab}
                   onChange={handleWorkSubtabChange}
                   items={workModeSubtabs}
@@ -1570,7 +1561,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               )}
               {personalWorkbenchSceneActive && !conversationStarted && (
                 <PersonalWorkbenchTemplatePicker
-                  isDark={isDark}
                   selectedIndex={PERSONAL_WORKBENCH_TEMPLATES.findIndex(template => template.id === personalWorkbenchTemplateId)}
                   onSelect={handlePersonalWorkbenchTemplateSelect}
                   templates={PERSONAL_WORKBENCH_TEMPLATES}
@@ -1578,7 +1568,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               )}
               {pinvouMode === 'design' && !conversationStarted && (
                 <SubModePicker
-                  isDark={isDark}
                   value={designSubtab}
                   onChange={handleDesignSubtabChange}
                   items={designModeSubtabs}
@@ -1590,10 +1579,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {queued.length > 0 && (
               <div className="flex flex-col gap-1 mb-2 px-2">
                 {queued.map((q) => (
-                  <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${isDark ? 'bg-[#2A2B2D] text-[#C4C7C5]' : 'bg-[#EAEDF1] text-[#444746]'}`}>
+                  <div key={q.id} className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-[12px] self-start max-w-full ${'bg-[#EAEDF1] text-[#444746] dark:bg-[#2A2B2D] dark:text-[#C4C7C5]'}`}>
                     <span className="opacity-60">{t.queuedTag}</span>
                     <span className="max-w-[480px] truncate">{q.displayText}</span>
-                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537]' : 'hover:bg-[#F0F4F9]'}`}>×</button>
+                    <button onClick={() => bridge.chat.removeQueued(q.id)} title={t.queuedCancel} className={`w-5 h-5 rounded-full flex items-center justify-center ${'hover:bg-[#F0F4F9] dark:hover:bg-[#333537]'}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -1603,7 +1592,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <AttachmentChips
               attachments={attachments}
               onRemove={id => bridge.attachments.removeAttachment(id)}
-              dark={isDark}
+              dark={theme === 'dark'}
               parsingLabel={t.attachParsing}
               uploadingLabel={t.attachUploading}
               failedLabel={t.attachFailed}
@@ -1614,8 +1603,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'
-                  ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
-                  : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+                  ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3A1F1F] dark:text-[#F28B82]'
+                  : 'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'
               }`}>
                 <span className="min-w-0 truncate">
                   {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
@@ -1626,24 +1615,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
                   {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && canInstallLocalAsr && onGotoSettings && (
-                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${isDark ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${'bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'}`}>{t.voiceGotoDeps}</button>
                   )}
                   {voiceInput.status === 'failed' && (
-                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
                   )}
                   {voiceActive && (
-                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceCancel}</button>
                   )}
                   {!voiceActive && (
-                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>×</button>
                   )}
                 </div>
               </div>
             )}
             {voiceAsrSetup.open && !canInstallLocalAsr && (
-              <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
+              <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'}`}>
                 <span>{chatCopy.asrUnavailable}</span>
-                <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
+                <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
             {voiceAsrSetup.open && canInstallLocalAsr && (() => {
@@ -1658,7 +1647,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               return (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) bridge.voice.closeVoiceAsrSetup(); }}>
-                  <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
+                  <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${'bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]'}`}
                     onClick={e => e.stopPropagation()}>
                     <h3 className="text-[16px] font-semibold mb-2">
                       {su.installing ? chatCopy.asrDownloadTitle : chatCopy.asrEnableTitle}
@@ -1677,7 +1666,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                             ? chatCopy.downloadingModel(pct != null ? pct + '%' : '…')
                             : (chatCopy.asrStages[prog.stage] || chatCopy.asrStages.preparing)}
                         </div>
-                        <div className={`h-2 rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-black/10'}`}>
+                        <div className={`h-2 rounded-full overflow-hidden ${'bg-black/10 dark:bg-white/10'}`}>
                           <div className="h-full bg-[#0B57D0] transition-all" style={{ width: (pct != null ? pct : 30) + '%' }} />
                         </div>
                       </div>
@@ -1685,11 +1674,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     {su.error && <div className="text-[13px] text-[#EA4335] mb-3">❌ {su.error}</div>}
                     <div className="flex items-center justify-end gap-2">
                       <button onClick={() => bridge.voice.cancelVoiceAsrSetup()} disabled={su.cancelling}
-                        className={`text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'} ${su.cancelling ? 'opacity-50' : ''}`}>
+                        className={`text-[13px] px-4 py-2 rounded-full ${'bg-[#E1E5EA] hover:bg-[#D3D9E0] dark:bg-[#333537] dark:hover:bg-[#444746]'} ${su.cancelling ? 'opacity-50' : ''}`}>
                         {su.installing ? (su.cancelling ? chatCopy.cancelling : chatCopy.cancelDownload) : chatCopy.cancel}</button>
                       {!su.installing && (
                         <button onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
-                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
+                          className={`text-[13px] font-medium px-4 py-2 rounded-full ${'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]'} ${!su.status?.installable ? 'opacity-50' : ''}`}>
                           {!su.status?.installable ? chatCopy.repairInstall : (needModel ? chatCopy.downloadModel : chatCopy.install)}</button>
                       )}
                     </div>
@@ -1703,10 +1692,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   data-testid="scene-capability-status"
                   className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] ${
                     sceneCapabilityStatus.kind === 'error'
-                      ? (isDark ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                      ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3A1F1F] dark:text-[#F28B82]'
                       : sceneCapabilityStatus.kind === 'ready'
-                        ? (isDark ? 'bg-[#10281D] text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]')
-                        : (isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+                        ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#10281D] dark:text-[#81C995]'
+                        : 'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'
                   }`}
                 >
                   <span className={`h-2 w-2 shrink-0 rounded-full ${
@@ -1721,7 +1710,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (
                 <SceneModeTag
-                  isDark={isDark}
                   scene={activeScene}
                   onClear={handleClearActiveScene}
                   clearLabel={sceneCopy.clear(activeScene.label)}
@@ -1749,7 +1737,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} theme={theme} t={t} />
               {inputLimitReached && (
                 <div role="status" aria-live="polite" data-testid="chat-input-limit-notice"
-                  className={`px-1 pb-1 text-[12px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+                  className={`px-1 pb-1 text-[12px] ${'text-[#C5221F] dark:text-[#F28B82]'}`}>
                   {t.chatInputLimitReached(CHAT_INPUT_MAX_LENGTH.toLocaleString())}
                 </div>
               )}
@@ -1775,7 +1763,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
-                        ? (isDark ? 'text-[#C4C7C5] hover:bg-white/10' : 'text-[#5F6368] hover:bg-black/5')
+                        ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
                         : 'text-gray-400 cursor-not-allowed opacity-60'
                     }`}>
                     <Trash2 size={18} />
@@ -1799,14 +1787,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
-                ctxPct >= 0.9 ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
-                : ctxPct >= 0.75 ? (isDark ? 'text-[#F9AB00]' : 'text-[#B06000]')
-                : (isDark ? 'text-[#5F6368]' : 'text-[#9AA0A6]')}`}>
+                ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
+                : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
+                : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
                 {t.ctxUsage} {fmtCtxTok(ctxTokens.input)} / {fmtCtxTok(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
-               <p data-testid="chat-disclaimer" className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.disclaimer}</p>
+               <p data-testid="chat-disclaimer" className={`text-[12px] ${'text-[#757575] dark:text-[#8E8E8E]'}`}>{t.disclaimer}</p>
             </div>
             </div>
           </div>
@@ -1850,7 +1838,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           {artifactsVisible && isWide && !artifactsFullscreen && (
             <>
               <div onMouseDown={startArtifactDrag} onDoubleClick={resetArtifactW} role="separator" aria-orientation="vertical"
-                className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${isDark ? 'bg-white/10 hover:bg-[#A8C7FA]/60' : 'bg-black/10 hover:bg-[#0B57D0]/50'}`} />
+                className={`shrink-0 w-1.5 h-full cursor-col-resize transition-colors ${'bg-black/10 hover:bg-[#0B57D0]/50 dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60'}`} />
               <div
                 ref={artColRef}
                 className="shrink-0 h-full relative"
@@ -1918,7 +1906,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // Chat Bubble (message rendering)
     // ==========================================
     const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
-      const isDark = theme === 'dark';
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
       const hideTimerRef = useRef(null);
 
@@ -2012,7 +1999,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
           className={`absolute z-30 h-9 min-w-[92px] px-3 rounded-[10px] flex items-center justify-start gap-2 text-[13px] font-medium shadow-lg backdrop-blur transition-colors ${
-            isDark ? 'bg-[#2B2C2F] text-[#E3E3E3] hover:bg-[#34363A] border border-white/10' : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10'
+            'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10 dark:bg-[#2B2C2F] dark:text-[#E3E3E3] dark:hover:bg-[#34363A] dark:border-white/10'
           }`}
           style={{ left: selCopy.x + 'px', top: selCopy.y + 'px' }}
         >
@@ -2023,7 +2010,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     };
 
     const TextareaContextMenu = ({ inputRef, setValue, theme, t }) => {
-      const isDark = theme === 'dark';
       const [menu, setMenu] = useState({ visible: false, x: 0, y: 0, canCopy: false });
 
       const closeMenu = useCallback(() => {
@@ -2099,8 +2085,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       const menuItemCls = (disabled) => `w-full h-9 px-3 flex items-center gap-2 text-left text-[13px] transition-colors ${
         disabled
-          ? (isDark ? 'text-white/30 cursor-not-allowed' : 'text-black/30 cursor-not-allowed')
-          : (isDark ? 'text-[#E3E3E3] hover:bg-white/10' : 'text-[#1F1F1F] hover:bg-black/[0.06]')
+          ? 'text-black/30 cursor-not-allowed dark:text-white/30'
+          : 'text-[#1F1F1F] hover:bg-black/[0.06] dark:text-[#E3E3E3] dark:hover:bg-white/10'
       }`;
 
       const selectAll = () => {
@@ -2129,7 +2115,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         <div
           data-textarea-context-menu="true"
           className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
-            isDark ? 'bg-[#2B2C2F] border-white/10' : 'bg-white border-black/10'
+            'bg-white border-black/10 dark:bg-[#2B2C2F] dark:border-white/10'
           }`}
           style={{ position: 'fixed', zIndex: 9999, left: menu.x + 'px', top: menu.y + 'px' }}
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -2148,7 +2134,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     };
 
     const UserBubble = ({ item, sessionId, theme, editable, t, conversationVariant }) => {
-      const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -2178,12 +2163,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
-                    ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
-                    : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+                    ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
+                    : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>{t.resend}</button>
+                <button className={CARD_BTN} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button className={CARD_BTN_PRIMARY} onClick={commit}>{t.resend}</button>
               </div>
             </div>
           </div>
@@ -2191,22 +2176,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
       if (item.pinvouTransfer) {
         const isWu = item.pinvouTransfer === '悟';
-        const tint = isWu ? (isDark ? '#8AB4F8' : '#1967D2') : (isDark ? '#D0BCFF' : '#7C3AED');
-        const tintBg = isWu ? (isDark ? 'bg-[#1A73E8]/10' : 'bg-[#1A73E8]/[0.06]') : (isDark ? 'bg-[#D0BCFF]/10' : 'bg-[#7C3AED]/[0.07]');
+        const tintCls = isWu
+          ? 'text-[#1967D2] dark:text-[#8AB4F8]'
+          : 'text-[#7C3AED] dark:text-[#D0BCFF]';
+        const tintBg = isWu
+          ? 'bg-[#1A73E8]/[0.06] dark:bg-[#1A73E8]/10'
+          : 'bg-[#7C3AED]/[0.07] dark:bg-[#D0BCFF]/10';
         return (
           <div className="flex justify-end min-w-0 max-w-full">
             <div className="max-w-[85%] min-w-0">
-              <div className="flex items-center justify-end gap-1 mb-1 text-[11px] font-medium" style={{ color: tint }}>
+              <div className={`flex items-center justify-end gap-1 mb-1 text-[11px] font-medium ${tintCls}`}>
                 <span>{isWu ? '✨' : '📋'}</span><span>{t.uiChatExtra.transferRevision(item.pinvouTransfer)}</span>
               </div>
-              <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{item.text}</div>
+              <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} text-[#1F1F1F] dark:text-[#E3E3E3]`}>{item.text}</div>
             </div>
           </div>
         );
       }
-      const actBtn = isDark
-        ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
-        : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
+      const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
       const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
       return (
@@ -2223,7 +2210,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       messageIndex={item.messageIndex}
                       attachmentIndex={index}
                       sessionId={sessionId}
-                      isDark={isDark}
+                      isDark={theme === 'dark'}
                       copyText={copyClipboardText}
                       labels={{
                         open: t.attachmentOpen,
@@ -2239,14 +2226,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             )}
             {bodyText && <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
               unified
-                ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
-                : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
+                ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
+                : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
             }`}>
               {sceneDisplay && (
                 <span
                   data-testid="user-message-scene-tag"
                   className={`mr-2 inline-flex align-middle items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-semibold leading-5 ${
-                    isDark ? 'bg-black/35 text-white' : 'bg-black text-white'
+                    'bg-black text-white dark:bg-black/35'
                   }`}
                 >
                   {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
@@ -2258,10 +2245,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {deliveryState && (
               <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
                 deliveryState === 'failed' || deliveryState === 'unknown'
-                  ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
+                  ? 'text-[#C5221F] dark:text-[#F28B82]'
                   : deliveryState === 'accepted'
-                    ? (isDark ? 'text-[#81C995]' : 'text-[#188038]')
-                    : (isDark ? 'text-[#9AA0A6]' : 'text-[#747775]')
+                    ? 'text-[#188038] dark:text-[#81C995]'
+                    : 'text-[#747775] dark:text-[#9AA0A6]'
               }`}>
                 {deliveryState === 'sending' && <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />}
                 <span>
@@ -2301,7 +2288,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 思考指示器：Braille 转圈 + 思考中/调用工具 + 计时（每阶段切换重置）
     const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     const ThinkingBubble = ({ thinking, theme, t, isLocal }) => {
-      const isDark = theme === 'dark';
       const [frame, setFrame] = useState(0);
       const [elapsed, setElapsed] = useState(0);
       const phase = thinking ? thinking.phase : 'thinking';
@@ -2324,7 +2310,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
       return (
         <div className="flex justify-start">
-          <div className={`text-[13px] font-mono px-3 py-1.5 rounded-full ${isDark ? 'bg-[#1E1F20] text-[#A8C7FA]' : 'bg-[#F0F4F9] text-[#0B57D0]'}`}>
+          <div className={`text-[13px] font-mono px-3 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#0B57D0] dark:bg-[#1E1F20] dark:text-[#A8C7FA]'}`}>
             {BRAILLE[frame]} {text}
           </div>
         </div>
@@ -2419,7 +2405,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     }
 
     const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
-      const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
@@ -2449,7 +2434,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'card_creator_intro') {
         return (
           <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-            <div className="rounded-[14px] px-4 py-3 max-w-[440px] text-[15px] font-medium" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}>{t.cpIntroTitle}</div>
+            <div className="rounded-[14px] px-4 py-3 max-w-[440px] text-[15px] font-medium" style={{ background: theme === 'dark' ? '#1C1C1E' : '#F2F2F7', color: theme === 'dark' ? '#fff' : '#000' }}>{t.cpIntroTitle}</div>
           </div>
         );
       }
@@ -2468,10 +2453,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
         return (
           <div className="flex justify-start">
-            <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} ${isDark ? 'dark-code' : 'light-code'}`}>
+            <div ref={assistantSelectionHostRef} className={`relative ${cq.q ? 'w-full' : 'max-w-[95%]'} light-code dark-code`}>
               <div
                 ref={assistantSelectionTargetRef}
-                className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}
+                className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}
                 onClick={(e) => {
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
                   const a = e.target && e.target.closest && e.target.closest('a[href]');
@@ -2487,14 +2472,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} theme={theme} t={t} />
               {cq.q ? (
                 <div className="mt-2 w-full" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-                  <div className="text-[14px] font-medium mb-2" style={{ color: isDark ? '#fff' : '#000' }}>{cq.q.question}</div>
-                  <div className="rounded-[14px] overflow-hidden" style={{ background: isDark ? '#1C1C1E' : '#fff', border: isDark ? 'none' : '0.5px solid rgba(60,60,67,.12)' }}>
+                  <div className="text-[14px] font-medium mb-2" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{cq.q.question}</div>
+                  <div className="rounded-[14px] overflow-hidden" style={{ background: theme === 'dark' ? '#1C1C1E' : '#fff', border: theme === 'dark' ? 'none' : '0.5px solid rgba(60,60,67,.12)' }}>
                     {cq.q.options.map((opt, i) => (
                       <button key={i} onClick={()=> onSend && onSend(optionAnswer(opt))}
                         className="w-full flex items-center gap-3 px-4 py-3 text-left transition-opacity active:opacity-60 hover:opacity-90"
-                        style={i ? { borderTop: '0.5px solid ' + (isDark ? 'rgba(84,84,88,.45)' : 'rgba(60,60,67,.12)') } : undefined}>
+                        style={i ? { borderTop: '0.5px solid ' + (theme === 'dark' ? 'rgba(84,84,88,.45)' : 'rgba(60,60,67,.12)') } : undefined}>
                         <span className="text-[15px] shrink-0 text-right" style={{ color: '#8E8E93', width: 15, fontVariantNumeric: 'tabular-nums' }}>{i + 1}</span>
-                        <span className="text-[15px] flex-1 min-w-0" style={{ color: isDark ? '#fff' : '#000' }}>{opt}</span>
+                        <span className="text-[15px] flex-1 min-w-0" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{opt}</span>
                         <ChevronRight size={16} className="shrink-0" style={{ color: '#C7C7CC' }} />
                       </button>
                     ))}
@@ -2502,15 +2487,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </div>
               ) : null}
               {pd.draft ? (
-                <div className="mt-2 rounded-[14px] p-3 flex items-center gap-3 max-w-[460px]" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7' }}>
-                  <AppIcon card={pd.draft} isDark={isDark} cls="w-11 h-11 rounded-[12px]" fb={22} />
+                <div className="mt-2 rounded-[14px] p-3 flex items-center gap-3 max-w-[460px]" style={{ background: theme === 'dark' ? '#1C1C1E' : '#F2F2F7' }}>
+                  <AppIcon card={pd.draft} isDark={theme === 'dark'} cls="w-11 h-11 rounded-[12px]" fb={22} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-[15px] font-semibold leading-snug truncate" style={{ color: isDark ? '#fff' : '#000' }}>{pd.draft.name}</div>
-                    <div className="text-[13px] truncate" style={{ color: isDark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{pd.draft.description || deptLabelFor(t, pd.draft.dept)}</div>
+                    <div className="text-[15px] font-semibold leading-snug truncate" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{pd.draft.name}</div>
+                    <div className="text-[13px] truncate" style={{ color: theme === 'dark' ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{pd.draft.description || deptLabelFor(t, pd.draft.dept)}</div>
                   </div>
                   {draftSaved
                     ? <span className="shrink-0 inline-flex items-center gap-1 h-8 px-1 text-[13px] font-medium" style={{ color:'#8E8E93' }} title={t.cpDraftSavedTitle}><Check size={15} strokeWidth={2.5} style={{ color:'#34C759' }} />{t.cpDraftSaved}</span>
-                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
+                    : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: theme === 'dark' ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
               {showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>
@@ -2518,7 +2503,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   resolveText={() => assistantItemCopyText(item, { allowScheduledTaskDraft })}
                   copy={t.uiConversation}
                 />
-                {item.time && <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</span>}
+                {item.time && <span className={`text-[11px] ${'text-[#757575] dark:text-[#8E8E8E]'}`}>{item.time}</span>}
               </AssistantMessageFooter>}
             </div>
           </div>
@@ -2537,13 +2522,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return (
           <div className="flex flex-col gap-1.5" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
             <div className="text-[12px] font-medium" style={{ color: '#8E8E93' }}>{t.cpEquipBubbleSys}</div>
-            <div className="rounded-[14px] p-4 max-w-[560px]" style={{ background: isDark ? '#1C1C1E' : '#F2F2F7' }}>
+            <div className="rounded-[14px] p-4 max-w-[560px]" style={{ background: theme === 'dark' ? '#1C1C1E' : '#F2F2F7' }}>
               <div className="flex items-center gap-3 mb-3">
-                <AppIcon card={c} isDark={isDark} cls="w-11 h-11 rounded-[12px]" fb={22} />
-                <div className="text-[15px] font-semibold leading-snug" style={{ color: isDark ? '#fff' : '#000' }}>{t.cpEquipBubbleTitle(cd.name)}</div>
+                <AppIcon card={c} isDark={theme === 'dark'} cls="w-11 h-11 rounded-[12px]" fb={22} />
+                <div className="text-[15px] font-semibold leading-snug" style={{ color: theme === 'dark' ? '#fff' : '#000' }}>{t.cpEquipBubbleTitle(cd.name)}</div>
               </div>
-              <div className="text-[13px] space-y-1" style={{ color: isDark ? '#C7C7CC' : '#3C3C43' }}>
-                <div>{t.cpDept}: <span style={{ color: isDark ? '#0A84FF' : '#007AFF', fontWeight: 600 }}>{deptLabel}</span></div>
+              <div className="text-[13px] space-y-1" style={{ color: theme === 'dark' ? '#C7C7CC' : '#3C3C43' }}>
+                <div>{t.cpDept}: <span style={{ color: theme === 'dark' ? '#0A84FF' : '#007AFF', fontWeight: 600 }}>{deptLabel}</span></div>
                 <div>{t.cpDescLabel}: {cd.description}</div>
               </div>
               <div className="text-[12px] mt-2.5" style={{ color: '#8E8E93' }}>{t.cpEquipBubbleNote}</div>
@@ -2554,7 +2539,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'system') {
         return (
           <div className="flex justify-center">
-            <div className={`text-[13px] px-4 py-1.5 rounded-full ${isDark ? 'bg-[#1E1F20] text-[#8E8E8E]' : 'bg-[#F0F4F9] text-[#757575]'}`}>
+            <div className={`text-[13px] px-4 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#757575] dark:bg-[#1E1F20] dark:text-[#8E8E8E]'}`}>
               {item.text}
             </div>
           </div>
@@ -2625,7 +2610,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div
               data-testid="memory-candidate-card"
               data-memory-id={item.memoryId || ''}
-              className={`max-w-[480px] w-full rounded-[18px] px-4 py-3.5 ${isDark ? 'text-[#F2F3F5]' : 'text-[#F8FAFC]'}`}
+              className={`max-w-[480px] w-full rounded-[18px] px-4 py-3.5 ${'text-[#F8FAFC] dark:text-[#F2F3F5]'}`}
               style={{
                 background: 'rgba(32, 34, 38, 0.92)',
                 border: '1px solid rgba(255,255,255,0.08)',
