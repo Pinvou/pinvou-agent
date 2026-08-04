@@ -57,10 +57,10 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const label = phase === 'done' ? t.clearDone : phase === 'holding' ? t.clearHolding : t.clearHold;
       const fillColor = isDark ? 'rgba(220,47,68,0.24)' : '#fce7ea';
       const toneClass = phase === 'done'
-        ? (isDark ? 'text-[#93D5A6] border-[#2c5234]' : 'text-[#1f9d51] border-[#bfe7cc]')
+        ? 'text-[#1f9d51] border-[#bfe7cc] dark:text-[#93D5A6] dark:border-[#2c5234]'
         : phase === 'holding'
-          ? (isDark ? 'text-[#F28B82] border-[#7a3b3b]' : 'text-[#dc2f44] border-[#f1c4cb]')
-          : (isDark ? 'text-[#C4C7C5] border-[#3c4043] hover:bg-[#2a2b2d]' : 'text-[#5b6473] border-[#e3e7ec] hover:bg-[#fafbfc]');
+          ? 'text-[#dc2f44] border-[#f1c4cb] dark:text-[#F28B82] dark:border-[#7a3b3b]'
+          : 'text-[#5b6473] border-[#e3e7ec] hover:bg-[#fafbfc] dark:text-[#C4C7C5] dark:border-[#3c4043] dark:hover:bg-[#2a2b2d]';
       return (
         <button
           type="button"
@@ -74,7 +74,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
           onKeyDown={(e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); begin(); } }}
           onKeyUp={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); cancel(); } }}
           onBlur={cancel}
-          className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} ${isDark ? 'bg-[#1a1b1c]' : 'bg-white'}`}
+          className={`relative overflow-hidden flex-shrink-0 inline-flex items-center text-[13px] font-medium px-4 py-2 rounded-[9px] border select-none transition-colors ${toneClass} bg-white dark:bg-[#1a1b1c]`}
         >
           <span
             className="absolute left-0 top-0 bottom-0 z-0"
