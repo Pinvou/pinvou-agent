@@ -95,6 +95,7 @@ const DEFAULT_COPY = {
   copyReply: '复制回复',
   copyReplySuccess: '已复制',
   copyReplyFailed: '复制失败',
+  technicalDetails: '技术详情',
 };
 
 function conversationCopy(copy) {
@@ -766,7 +767,27 @@ export function ConversationTurn({
                 </span>
               )}
               {usageLabel && <span className="text-[11px] text-gray-400">{usageLabel}</span>}
-              {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
+              {turn.userError ? (
+                <div className="basis-full mt-2">
+                  <div className="w-fit max-w-[640px] rounded-[22px] bg-[rgba(38,38,42,0.78)] px-4 py-3 text-[13px] shadow-[0_16px_48px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl">
+                    <div className="flex items-start gap-3">
+                      <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[rgba(255,105,97,0.16)] text-[#ff9f9a]">
+                        <AlertTriangle className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="leading-5 font-semibold text-[rgba(255,255,255,0.94)]">{turn.userError.title}</div>
+                        <div className="mt-1.5 leading-5 text-[rgba(255,255,255,0.72)]">{turn.userError.message}</div>
+                      </div>
+                    </div>
+                    {turn.userError.technicalDetail && (
+                      <details className="mt-2.5 pl-10 text-[11px] text-[rgba(255,255,255,0.48)]">
+                        <summary className="inline-flex cursor-pointer select-none rounded-full px-0 py-1 transition-colors hover:text-[rgba(255,255,255,0.72)]">{c.technicalDetails}</summary>
+                        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-black/20 p-2.5 font-mono text-[10.5px] leading-4 text-[rgba(255,255,255,0.52)]">{turn.userError.technicalDetail}</pre>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              ) : turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
             </>}
           </AssistantMessageFooter>}
         </div>

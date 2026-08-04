@@ -17,6 +17,20 @@ const settingsViewSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
+const settingsI18nSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'settings-i18n.js'),
+  'utf8',
+);
+assert.match(
+  settingsViewSource,
+  /status === 402 \? 'billing'/,
+  'settings connection test must classify HTTP 402 as billing',
+);
+assert.match(
+  settingsI18nSource,
+  /billing:'账户余额不足，请充值后重试，或切换到其他模型'/,
+  'settings connection test must provide a user-friendly billing message',
+);
 const detectStart = settingsViewSource.indexOf('async function handleDetect()');
 const detectEnd = settingsViewSource.indexOf('function vllmStatusLabel(', detectStart);
 assert.notStrictEqual(detectStart, -1, 'local model detect handler must exist');
