@@ -557,7 +557,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!open) setMultiAgentRevealing(false);
       }, [open]);
       async function toggleMultiAgent() {
-        if (multiAgentBusy) return;
+        if (multiAgentBusy || busy) return;
         if (!(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
         setMultiAgentRevealing(!multiAgentOn);
         setMultiAgentBusy(true);
@@ -633,7 +633,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                     <button type="button" data-testid="multiagent-toggle" onClick={toggleMultiAgent}
-                      disabled={multiAgentBusy}
+                      disabled={multiAgentBusy || busy}
                       title={multiAgentCopy.toggleHint || ''}
                       onAnimationEnd={(event) => {
                         if (event.animationName === 'pinvou-ultra-reveal') setMultiAgentRevealing(false);

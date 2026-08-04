@@ -62,6 +62,9 @@ pub struct AppEngine {
     /// 发送 op 构造按它取会话策略。headless harness 无 session 概念,置空。
     pub(crate) session_id: String,
     pub(crate) workspace: PathBuf,
+    /// 启动本引擎时会话是否处于多智能体模式。开关切换会先回收旧引擎，
+    /// 因而该值在一个引擎实例的生命周期内保持稳定。
+    multi_agent_enabled: bool,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
@@ -865,14 +868,15 @@ impl AppEngine {
             None
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
-        let multi_agent_enabled = store.mode_state(session_id).multi_agent;
+        let multi_agent_enabled =
+            scheduled_profile.is_none() && store.mode_state(session_id).multi_agent;
         let workspace = store
             .session_roots(session_id)
             .map(|roots| roots.execution)
             .unwrap_or_else(|_| bridge.session_workspace(session_id));
         let mut engine_config = if multi_agent_enabled {
-            // 多智能体面：只多一册专家名册（roster 落进本会话工作区）；
-            // 工具面与普通会话完全一致。
+            // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
+            // 完全一致，普通会话不继承这些限制。
             bridge.build_engine_config_for_multi_agent(session_id, workspace)
         } else {
             bridge.build_engine_config_for_session_at(session_id, workspace)
@@ -945,6 +949,7 @@ impl AppEngine {
                 bridge,
                 session_id: session_id.to_string(),
                 workspace,
+                multi_agent_enabled,
                 turn_events,
                 scheduled_unattended,
                 turn_lifecycle,
@@ -977,6 +982,7 @@ impl AppEngine {
             bridge,
             session_id: String::new(),
             workspace,
+            multi_agent_enabled: false,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
@@ -997,8 +1003,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
-            &self.session_id,
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
@@ -1015,14 +1020,39 @@ impl AppEngine {
         restrict_tools: bool,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
-            &self.session_id,
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
             restrict_tools,
         )?;
         self.send_reserved_turn_op(op, reservation).await
+    }
+
+    fn build_interactive_send_message_op(
+        &self,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<Op> {
+        if self.multi_agent_enabled {
+            self.bridge.build_multi_agent_send_message_op(
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                &self.workspace,
+            )
+        } else {
+            self.bridge.build_send_message_op(
+                &self.session_id,
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+            )
+        }
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable

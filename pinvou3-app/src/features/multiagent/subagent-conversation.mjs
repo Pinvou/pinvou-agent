@@ -275,6 +275,83 @@ export function subagentRoleOrdinals(summaries) {
   return out;
 }
 
+/**
+ * 把底座按创建顺序给出的平面 worker ledger 投影成当前可见的树行。
+ * `expandedAgentIds` 只控制后代是否展开；父记录已被 ledger 裁剪的孤儿会作为
+ * 根节点保留，坏数据形成环时也不会递归卡死。
+ */
+export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
+  const ordered = (summaries || []).filter(entry => entry && entry.agent_id);
+  const byId = new Map(ordered.map(entry => [String(entry.agent_id), entry]));
+  const childrenByParent = new Map();
+  const roots = [];
+
+  for (const entry of ordered) {
+    const agentId = String(entry.agent_id);
+    const parentId = String(entry.parent_run_id || '').trim();
+    if (parentId && parentId !== agentId && byId.has(parentId)) {
+      const children = childrenByParent.get(parentId) || [];
+      children.push(entry);
+      childrenByParent.set(parentId, children);
+    } else {
+      roots.push(entry);
+    }
+  }
+
+  // 正常 ledger 一定能从根遍历完。额外把环或损坏关系中的剩余分量提升为根，
+  // 保证数据异常时只是层级降级，不会让代理凭空消失。
+  const structurallySeen = new Set();
+  const markStructure = (entry) => {
+    const agentId = String(entry.agent_id);
+    if (structurallySeen.has(agentId)) return;
+    structurallySeen.add(agentId);
+    for (const child of childrenByParent.get(agentId) || []) markStructure(child);
+  };
+  for (const root of roots) markStructure(root);
+  for (const entry of ordered) {
+    if (structurallySeen.has(String(entry.agent_id))) continue;
+    roots.push(entry);
+    markStructure(entry);
+  }
+
+  const expanded = expandedAgentIds instanceof Set
+    ? expandedAgentIds
+    : new Set(expandedAgentIds || []);
+  const rows = [];
+  const visiblySeen = new Set();
+  const append = (entry, depth) => {
+    const agentId = String(entry.agent_id);
+    if (visiblySeen.has(agentId)) return;
+    visiblySeen.add(agentId);
+    const children = childrenByParent.get(agentId) || [];
+    rows.push({ entry, depth, childCount: children.length });
+    if (!expanded.has(agentId)) return;
+    for (const child of children) append(child, depth + 1);
+  };
+  for (const root of roots) append(root, 0);
+  return rows;
+}
+
+/** 返回某代理从直属根到直接父级的祖先 ID，供详情返回列表时展开所在路径。 */
+export function subagentAncestorIds(summaries, agentId) {
+  const byId = new Map(
+    (summaries || [])
+      .filter(entry => entry && entry.agent_id)
+      .map(entry => [String(entry.agent_id), entry]),
+  );
+  const ancestors = [];
+  const seen = new Set([String(agentId || '')]);
+  let current = byId.get(String(agentId || ''));
+  while (current && current.parent_run_id) {
+    const parentId = String(current.parent_run_id);
+    if (seen.has(parentId) || !byId.has(parentId)) break;
+    seen.add(parentId);
+    ancestors.unshift(parentId);
+    current = byId.get(parentId);
+  }
+  return ancestors;
+}
+
 const ORDINAL_GLYPHS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩'];
 
 /** 序号后缀：同角色仅一个实例不加；超出 ⑩ 回退 #N。 */
