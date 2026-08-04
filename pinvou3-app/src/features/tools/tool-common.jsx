@@ -170,8 +170,8 @@ const AcFmtIcon = FileTypeIcon;
     };
     const ReceiptBlock = ({ text, isDark, t }) => {
       const f = parseReceipt(text);
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const body = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
+      const body = 'text-[#444746] dark:text-[#C4C7C5]';
       // 输出超大被底座存档、只回传 preview。存档/压缩机制对用户无意义 ——
       // 只展示内容开头 + 一句不带术语的诚实提示（避免误以为是完整输出）。
       const pv = (f.preview && f.preview !== '(none)') ? f.preview.replace(/\\n/g, '\n') : '';
@@ -197,7 +197,8 @@ const AcFmtIcon = FileTypeIcon;
     };
     const looksDiff = (text) => typeof text === 'string'
       && /(^|\n)--- /.test(text) && /(^|\n)\+\+\+ /.test(text);
-    const outBox = (isDark) => `tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-white text-[#444746]'}`;
+    // P3: isDark 参数现已 vestigial(内部三元式已迁 dark:);保留函数签名以免改 tool-renderers 调用点 outBox(isDark)。
+    const outBox = (isDark) => 'tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] bg-white text-[#444746] dark:bg-[#131314] dark:text-[#C4C7C5]';
     const TODO_SYM = { completed: '☑', in_progress: '◐', pending: '☐' };
     const TODO_TOOLS = ['checklist_write', 'checklist_update', 'checklist_add', 'checklist_list', 'todo_write', 'todo_update', 'todo_add', 'todo_list', 'update_plan'];
 
@@ -207,12 +208,12 @@ const AcFmtIcon = FileTypeIcon;
       </pre>
     );
     const OutputError = ({ text, isDark }) => (
-      <pre className={`tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] ${isDark ? 'bg-[#131314] text-[#F28B82]' : 'bg-white text-[#C5221F]'}`} style={{ whiteSpace: 'pre-wrap' }}>
+      <pre className={`tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] bg-white text-[#C5221F] dark:bg-[#131314] dark:text-[#F28B82]`} style={{ whiteSpace: 'pre-wrap' }}>
         {typeof text === 'string' ? text : JSON.stringify(text, null, 2)}
       </pre>
     );
     const ListDirView = ({ items, isDark, t }) => {
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const sorted = items.slice().sort((a, b) => ((b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
       return (
         <div className={outBox(isDark)} style={{ fontFamily: 'monospace' }}>
@@ -222,7 +223,7 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
     const GrepView = ({ data, isDark, t }) => {
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const matches = Array.isArray(data.matches) ? data.matches : [];
       return (
         <div className={outBox(isDark)}>
@@ -259,8 +260,8 @@ const AcFmtIcon = FileTypeIcon;
       // 解析失败(非 diff 文本 / 大文件 [diff omitted] / 截断 receipt preview):走文本兜底。
       if (!parsed.ok) {
         if (parsed.omitReason) {
-          const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-          const body = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
+          const muted = 'text-[#757575] dark:text-[#8E8E8E]';
+          const body = 'text-[#444746] dark:text-[#C4C7C5]';
           // H5:omitReason 现在可能同时含 summary("Wrote N bytes")和
           // "[diff omitted] ..." 原因(summary 在前)。summary 走正常字色,
           // omitReason 整段保持灰字提示。
@@ -272,10 +273,10 @@ const AcFmtIcon = FileTypeIcon;
           );
         }
         const lines = String(text).split('\n');
-        const add = isDark ? 'text-[#93D5A6]' : 'text-[#137333]';
-        const del = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
-        const hunk = isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]';
-        const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+        const add = 'text-[#137333] dark:text-[#93D5A6]';
+        const del = 'text-[#C5221F] dark:text-[#F28B82]';
+        const hunk = 'text-[#0B57D0] dark:text-[#A8C7FA]';
+        const muted = 'text-[#757575] dark:text-[#8E8E8E]';
         const color = (l) => /^(\+\+\+|---)/.test(l) ? muted : l.startsWith('+') ? add : l.startsWith('-') ? del : l.startsWith('@@') ? hunk : '';
         return (
           <pre className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
@@ -284,15 +285,15 @@ const AcFmtIcon = FileTypeIcon;
         );
       }
       // 配色:沿用原 DiffView 的 iOS 风格调色板,新增行级背景色提升可读性。
-      const addText = isDark ? 'text-[#93D5A6]' : 'text-[#137333]';
-      const delText = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
-      const ctxText = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-      const mutedText = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const addBg = isDark ? 'bg-[#0e1f0e]' : 'bg-[#e6f4ea]';
-      const delBg = isDark ? 'bg-[#2a0e0e]' : 'bg-[#fce8e6]';
-      const hunkBg = isDark ? 'bg-[#0d1a2e]' : 'bg-[#e8f0fe]';
-      const headerBg = isDark ? 'bg-[#1b1b1d]' : 'bg-[#f1f3f4]';
-      const metaText = isDark ? 'text-[#8E8E8E]' : 'text-[#5f6368]';
+      const addText = 'text-[#137333] dark:text-[#93D5A6]';
+      const delText = 'text-[#C5221F] dark:text-[#F28B82]';
+      const ctxText = 'text-[#444746] dark:text-[#C4C7C5]';
+      const mutedText = 'text-[#757575] dark:text-[#8E8E8E]';
+      const addBg = 'bg-[#e6f4ea] dark:bg-[#0e1f0e]';
+      const delBg = 'bg-[#fce8e6] dark:bg-[#2a0e0e]';
+      const hunkBg = 'bg-[#e8f0fe] dark:bg-[#0d1a2e]';
+      const headerBg = 'bg-[#f1f3f4] dark:bg-[#1b1b1d]';
+      const metaText = 'text-[#5f6368] dark:text-[#8E8E8E]';
 
       const noStyle = { whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' };
 
@@ -314,9 +315,9 @@ const AcFmtIcon = FileTypeIcon;
           {files.map((file, fi) => {
             const fst = fileStatsList[fi] || { add: 0, del: 0, ctx: 0 };
             return (
-              <div key={fi} className={fi > 0 ? `border-t ${isDark ? 'border-white/10' : 'border-black/10'}` : ''}>
+              <div key={fi} className={fi > 0 ? `border-t border-black/10 dark:border-white/10` : ''}>
                 {/* 文件头:旧路径 → 新路径(同文件只显示一个)。add/del 统计胶囊 + 展开按钮。 */}
-                <div data-testid="diff-file-header" className={`flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] border-b ${isDark ? 'border-white/5' : 'border-black/5'} ${headerBg}`}>
+                <div data-testid="diff-file-header" className={`flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] border-b border-black/5 dark:border-white/5 ${headerBg}`}>
                   <div className={`flex items-center gap-1.5 min-w-0 ${metaText}`}>
                     <span aria-hidden>📄</span>
                     <span className="truncate font-mono">{file.newPath || file.oldPath || ''}</span>
@@ -329,7 +330,7 @@ const AcFmtIcon = FileTypeIcon;
                       onClick={() => setExpanded((v) => !v)}
                       title={expanded ? T.diffCollapse : T.diffExpand}
                       aria-label={expanded ? T.diffCollapseAria : T.diffExpand}
-                      className={`px-1 py-0.5 rounded ${mutedText} ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                      className={`px-1 py-0.5 rounded ${mutedText} hover:bg-black/5 dark:hover:bg-white/10`}
                     >
                       <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
                     </button>
@@ -374,14 +375,14 @@ const AcFmtIcon = FileTypeIcon;
 
           {/* 摘要脚注:Replaced N occurrences / Created ... / Wrote ... bytes */}
           {parsed.summary ? (
-            <div data-testid="diff-summary" className={`px-3 py-1.5 text-[11px] border-t ${isDark ? 'border-white/5' : 'border-black/5'} ${mutedText}`}>
+            <div data-testid="diff-summary" className={`px-3 py-1.5 text-[11px] border-t border-black/5 dark:border-white/5 ${mutedText}`}>
               {parsed.summary}
             </div>
           ) : null}
 
           {/* LSP 诊断块(若后端 append),单独样式 */}
           {parsed.trailingDiagnostics ? (
-            <div data-testid="diff-diagnostics" className={`px-3 py-1.5 text-[11px] border-t ${isDark ? 'border-white/5' : 'border-black/5'} ${delText}`} style={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}>
+            <div data-testid="diff-diagnostics" className={`px-3 py-1.5 text-[11px] border-t border-black/5 dark:border-white/5 ${delText}`} style={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' }}>
               {parsed.trailingDiagnostics}
             </div>
           ) : null}
@@ -389,8 +390,8 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
     const ShellView = ({ data, isDark, t }) => {
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const del = isDark ? 'text-[#F28B82]' : 'text-[#C5221F]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
+      const del = 'text-[#C5221F] dark:text-[#F28B82]';
       return (
         <div className={outBox(isDark)}>
           <div className={`mb-1 ${muted}`}>
@@ -405,7 +406,7 @@ const AcFmtIcon = FileTypeIcon;
     };
     // exec_shell 的 content 其实是纯 stdout 文本（结构化字段在 metadata，前端没拿）→ 给终端样式
     const ShellTextView = ({ cmd, text, isDark }) => {
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       return (
         <div className={outBox(isDark)} style={{ fontFamily: 'monospace' }}>
           {cmd && <div className={muted} style={{ whiteSpace: 'pre-wrap' }}>$ {cmd}</div>}
@@ -414,7 +415,7 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
     const TodoView = ({ snap, isDark, t }) => {
-      const muted = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const items = Array.isArray(snap.items) ? snap.items : [];
       return (
         <div className={outBox(isDark)}>
@@ -422,7 +423,7 @@ const AcFmtIcon = FileTypeIcon;
           {snap.explanation && <div className="mb-1">{snap.explanation}</div>}
           {items.map((it, i) => (
             <div key={i} className={it.status === 'completed' ? muted : ''}>
-              <span className={it.status === 'in_progress' ? (isDark ? 'text-[#FDD663]' : 'text-[#E37400]') : ''}>{TODO_SYM[it.status] || '☐'}</span> {it.content || it.step || ''}
+              <span className={it.status === 'in_progress' ? 'text-[#E37400] dark:text-[#FDD663]' : ''}>{TODO_SYM[it.status] || '☐'}</span> {it.content || it.step || ''}
             </div>
           ))}
         </div>
@@ -552,22 +553,20 @@ const AcFmtIcon = FileTypeIcon;
       const isPositive = changePercent >= 0;
       const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
       const bgGradient = isPositive
-        ? (isDark ? 'bg-gradient-to-br from-red-950/30 to-[#1C1C1E]' : 'bg-gradient-to-br from-red-50 to-white')
-        : (isDark ? 'bg-gradient-to-br from-green-950/30 to-[#1C1C1E]' : 'bg-gradient-to-br from-green-50 to-white');
+        ? 'bg-gradient-to-br from-red-50 to-white dark:from-red-950/30 dark:to-[#1C1C1E]'
+        : 'bg-gradient-to-br from-green-50 to-white dark:from-green-950/30 dark:to-[#1C1C1E]';
       const badgeColor = isPositive
-        ? (isDark ? 'bg-red-900/40 text-red-400' : 'bg-red-100 text-red-600')
-        : (isDark ? 'bg-green-900/40 text-green-400' : 'bg-green-100 text-green-600');
+        ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
+        : 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400';
       const TrendIcon = isPositive ? TrendingUp : TrendingDown;
       const fmt = (v) => isNaN(v) ? '--' : v.toFixed(2);
       return (
-        <div className={`w-full max-w-md rounded-[24px] shadow-xl overflow-hidden border transition-all ${
-          isDark ? 'bg-[#1C1C1E] border-white/10 shadow-none' : 'bg-white border-slate-100 shadow-slate-200/50'
-        }`}>
+        <div className={`w-full max-w-md rounded-[24px] shadow-xl overflow-hidden border transition-all bg-white border-slate-100 shadow-slate-200/50 dark:bg-[#1C1C1E] dark:border-white/10 dark:shadow-none`}>
           <div className={`p-6 pb-5 ${bgGradient}`}>
             <div className="flex justify-between items-start mb-4">
               <div>
-                <h2 className={`text-2xl font-extrabold tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>{data.name}</h2>
-                <span className={`text-sm font-mono tracking-wider mt-1 block ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{data.code}</span>
+                <h2 className={`text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white`}>{data.name}</h2>
+                <span className={`text-sm font-mono tracking-wider mt-1 block text-slate-500 dark:text-slate-400`}>{data.code}</span>
               </div>
             </div>
             <div className="flex items-end justify-between mt-6">
@@ -580,8 +579,8 @@ const AcFmtIcon = FileTypeIcon;
               <TrendIcon className={`w-12 h-12 mb-2 opacity-15 ${mainColor}`} />
             </div>
           </div>
-          <div className={`h-px bg-gradient-to-r from-transparent via-current to-transparent ${isDark ? 'text-white/10' : 'text-slate-200'}`}></div>
-          <div className={`p-6 ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}>
+          <div className={`h-px bg-gradient-to-r from-transparent via-current to-transparent text-slate-200 dark:text-white/10`}></div>
+          <div className={`p-6 bg-white dark:bg-[#1C1C1E]`}>
             <div className="grid grid-cols-3 gap-y-4 gap-x-4">
               {[
                 { label: T.stockOpen, value: fmt(open) },
@@ -589,8 +588,8 @@ const AcFmtIcon = FileTypeIcon;
                 { label: T.stockLow, value: fmt(low) },
               ].map((item, i) => (
                 <div key={i} className="flex flex-col space-y-1">
-                  <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{item.label}</span>
-                  <span className={`text-sm font-mono ${isDark ? 'text-slate-200 font-medium' : 'text-slate-800 font-medium'}`}>{item.value}</span>
+                  <span className={`text-xs font-medium text-slate-500 dark:text-slate-400`}>{item.label}</span>
+                  <span className={`text-sm font-mono text-slate-800 font-medium dark:text-slate-200`}>{item.value}</span>
                 </div>
               ))}
             </div>
