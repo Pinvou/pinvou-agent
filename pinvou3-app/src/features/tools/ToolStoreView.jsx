@@ -623,7 +623,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     const ToolStoreView = ({ theme, t, onNewChat }) => {
-      const isDark = theme === 'dark';
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
@@ -1797,10 +1796,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <button
                               key={cat.id}
                               onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className="h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors"
-                              style={isActive
-                                ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
-                                : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}
+                              className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
+                                ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
+                                : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
                             >
                               {cat.label}
                             </button>
