@@ -835,6 +835,9 @@ const ToolOutput = ({ item, isDark, t }) => {
     };
 
     const UserInputCard = ({ item, t }) => {
+      // Web 只读会话：呈现为锁定卡并说明去桌面端操作（后端漏斗是权威拦截，
+      // 这里避免"能点但必败"的按钮，复核 P2）。
+      const webReadOnly = multiAgentWebReadOnly();
       const questions = item.questions || [];
       const normalizedQuestions = questions.map((question, index) => {
         const allowOther = question.allow_free_text !== false;
@@ -856,6 +859,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       });
 
       function submit(groups) {
+        if (webReadOnly) return;
         const answers = groups.flatMap(group => group.answers.map(answer => ({
           id: group.questionId,
           label: answer.other ? t.uiToolRender.other : answer.label,
@@ -864,7 +868,9 @@ const ToolOutput = ({ item, isDark, t }) => {
         bridge.interaction.submitUserInput(item.id, item.toolCallId, answers, questions);
       }
 
-      const statusText = item.cardState === 'submitted' ? t.uiSubmitted
+      const statusText = webReadOnly && !item.resolved
+        ? t.uiMultiAgent.webActionHint
+        : item.cardState === 'submitted' ? t.uiSubmitted
         : item.cardState === 'cancelled' ? t.uiCancelled
         : item.submitting ? t.uiSubmitting : item.error ? t.uiSubmitFailed(item.error) : '';
 
@@ -873,7 +879,7 @@ const ToolOutput = ({ item, isDark, t }) => {
           title={t.uiqTitle}
           questions={normalizedQuestions}
           initialAnswers={item.restoredAnswers || []}
-          resolved={Boolean(item.resolved)}
+          resolved={Boolean(item.resolved) || webReadOnly}
           submitting={Boolean(item.submitting)}
           statusText={statusText}
           error={Boolean(item.error)}
@@ -883,7 +889,7 @@ const ToolOutput = ({ item, isDark, t }) => {
           otherAnswerLabel={t.uiToolRender.other}
           inputPlaceholder={t.uiConversation.inputPlaceholder}
           onSubmit={submit}
-          onCancel={!item.resolved
+          onCancel={!item.resolved && !webReadOnly
             ? () => bridge.interaction.cancelUserInput(item.id, item.toolCallId)
             : undefined}
         />

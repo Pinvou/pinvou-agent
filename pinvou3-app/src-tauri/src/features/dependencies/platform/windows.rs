@@ -141,12 +141,17 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         todo.push(entry);
     }
 
+    // 一次跑完整批（复核 P2）：装完第一个后新 PATH 对本进程不可见，若在
+    // 验证处早退，同批其余缺失依赖就得"装一个、重启一次"。逐个尝试并
+    // 汇总：真失败如实报；仅"装好待重启可见"的不中断后续安装。
+    let mut pending_restart: Vec<&str> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
     for entry in todo {
         if (entry.installed)() {
             continue;
         }
         let script = winget_install_script(entry.winget_id);
-        let output = HiddenCommand::new("powershell.exe")
+        let output = match HiddenCommand::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -155,24 +160,35 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
                 &script,
             ])
             .output()
-            .map_err(|e| format!("启动 {} 安装器失败: {e}", entry.display))?;
-
+        {
+            Ok(output) => output,
+            Err(e) => {
+                failures.push(format!("启动 {} 安装器失败: {e}", entry.display));
+                continue;
+            }
+        };
         if !output.status.success() {
             let code = output.status.code().unwrap_or(-1);
-            return Err(install_failure_message(
+            failures.push(install_failure_message(
                 entry.display,
                 code,
                 &output.stdout,
                 &output.stderr,
             ));
+            continue;
         }
-
         if !(entry.installed)() {
-            return Err(format!(
-                "{} 已安装完成，但新的 PATH 对正在运行的应用不可见——重启应用后生效。",
-                entry.display
-            ));
+            pending_restart.push(entry.display);
         }
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("；"));
+    }
+    if !pending_restart.is_empty() {
+        return Err(format!(
+            "{} 已安装完成，但新的 PATH 对正在运行的应用不可见——重启应用后生效。",
+            pending_restart.join("、")
+        ));
     }
     Ok(())
 }

@@ -458,11 +458,28 @@
       state.composerDraft = composerDraft;
       sessionStates[meta.id].composerDraft = composerDraft;
       if (pendingMultiAgent) {
-        // 失败如实提示；随后的 syncModeState 会把开关行拉回真实状态。
         try {
           await invoke("set_multi_agent_mode", { sessionId: meta.id, enabled: true });
         } catch (toggleError) {
+          // 开关落盘失败不得让首条消息静默退化成普通对话（复核 P1）：
+          // 中止物化——删掉刚建的空会话、回到草稿并保留开关意图，等用户
+          // 处理（如安装 git）后重试。调用方以 activeSessionId 为空判定
+          // 中止，不发送本条消息。
+          try {
+            await invoke("delete_session", { id: meta.id });
+          } catch (cleanupError) {
+            // 空会话残留可手动删除，不掩盖主错误。
+          }
+          enterDraft();
+          state.pendingDraftMultiAgent = true;
+          state.modeState = {
+            mode: (state.modeState && state.modeState.mode) || "yolo",
+            multiAgent: true,
+          };
           addSystemItem(bt("switchModeFailed") + toggleError);
+          await refreshHistoryList();
+          notify();
+          return null;
         }
       }
       await refreshHistoryList();
