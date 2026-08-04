@@ -463,6 +463,65 @@ impl SessionStore {
         }
     }
 
+    /// Persist `session` atomically, then run retention reconciliation.
+    ///
+    /// This collapses the shared tail (`save_session_atomic` succeeded by an
+    /// `enforce_session_retention_locked` whose failure is logged and swallowed)
+    /// that 13 public methods previously inlined. Retention reconciliation never
+    /// invalidates a committed save: it runs after the atomic write has landed,
+    /// mirroring the historical "save first, best-effort cleanup" contract.
+    ///
+    /// `event` describes the mutating operation (e.g. "committed save",
+    /// "title update") so the diagnostic uniquely identifies which call failed.
+    /// The helper deliberately does NOT re-check `is_scheduled_session`: callers
+    /// that branch on it (notably [`Self::save`]) decide scheduling before
+    /// delegating here.
+    fn persist_then_reconcile(
+        &self,
+        session: &SavedSession,
+        event: &'static str,
+    ) -> Result<PathBuf> {
+        let path = self.save_session_atomic(session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        }
+        Ok(path)
+    }
+
+    /// Atomically persist `session` (enriching any failure with `save_context`),
+    /// then run best-effort retention reconciliation.
+    ///
+    /// Variant of [`persist_then_reconcile`] for callers that attach a
+    /// session-specific error context to the atomic save (engine-state, token,
+    /// artifact persistence). Reconciliation keeps the same "log and swallow"
+    /// contract as the other variant.
+    fn persist_then_reconcile_with(
+        &self,
+        session: &SavedSession,
+        save_context: impl FnOnce() -> String,
+        event: &'static str,
+    ) -> Result<PathBuf> {
+        let path = self
+            .save_session_atomic(session)
+            .with_context(save_context)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        }
+        Ok(path)
+    }
+
+    /// Run best-effort retention reconciliation after a committed mutation.
+    ///
+    /// Used by methods (notably [`Self::create_scheduled_run`]) where the atomic
+    /// save is followed by side effects (profile insertion + rollback) before
+    /// the retention tail, so [`persist_then_reconcile`] cannot couple them.
+    /// Same "log and swallow" contract as the persist variants.
+    fn reconcile_retention(&self, event: &'static str) {
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        }
+    }
+
     /// Open `~/.pinvou3/sessions/` without inferring that a live tool call
     /// crashed. This constructor is safe for secondary stores opened while the
     /// application process is already running.
@@ -613,24 +672,11 @@ impl SessionStore {
 
     /// 落盘整个 session（atomic write 由上游处理）。
     pub fn save(&self, session: &SavedSession) -> Result<PathBuf> {
-        if self.is_scheduled_session(&session.metadata.id)? {
-            let _mutation = self.scheduled_mutation.lock();
-            let path = self.save_session_atomic(session)?;
-            if let Err(error) = self.enforce_session_retention_locked() {
-                eprintln!(
-                    "[sessions] scheduled retention reconciliation failed after committed save: {error:#}"
-                );
-            }
-            return Ok(path);
-        }
         let _mutation = self.scheduled_mutation.lock();
-        let path = self.save_session_atomic(session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] session retention reconciliation failed after session save: {error:#}"
-            );
+        if self.is_scheduled_session(&session.metadata.id)? {
+            return self.persist_then_reconcile(session, "committed save");
         }
-        Ok(path)
+        self.persist_then_reconcile(session, "session save")
     }
 
     /// 删除 session（含 artifacts 子目录）。
@@ -860,13 +906,11 @@ impl SessionStore {
         session.messages = state.messages;
         session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
 
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist scheduled engine state for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] scheduled retention reconciliation failed after committed engine state save: {error:#}"
-            );
-        }
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist scheduled engine state for {id}"),
+            "committed engine state save",
+        )?;
         Ok(session)
     }
 
@@ -899,13 +943,11 @@ impl SessionStore {
         session.messages = state.messages;
         session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
 
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist chat engine state for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] chat retention reconciliation failed after committed engine state save: {error:#}"
-            );
-        }
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist chat engine state for {id}"),
+            "committed engine state save",
+        )?;
         Ok(session)
     }
 
@@ -943,13 +985,11 @@ impl SessionStore {
         session.messages.push(display_message);
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist admitted chat display for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] chat retention reconciliation failed after admitted display save: {error:#}"
-            );
-        }
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist admitted chat display for {id}"),
+            "admitted display save",
+        )?;
         Ok(session)
     }
 
@@ -977,13 +1017,11 @@ impl SessionStore {
         session.metadata.updated_at = Utc::now();
         session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
 
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist scheduled token total for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] scheduled retention reconciliation failed after committed token save: {error:#}"
-            );
-        }
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist scheduled token total for {id}"),
+            "committed token save",
+        )?;
         Ok(session)
     }
 
@@ -1032,11 +1070,7 @@ impl SessionStore {
             }
             return Err(err).context("save scheduled session profile");
         }
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] scheduled retention reconciliation failed after committed create: {error:#}"
-            );
-        }
+        self.reconcile_retention("committed create");
         Ok(session)
     }
 
@@ -1317,10 +1351,7 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for title update"))?;
         session.metadata.title = title;
-        self.save_session_atomic(&session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!("[sessions] retention reconciliation failed after title update: {error:#}");
-        }
+        self.persist_then_reconcile(&session, "title update")?;
         Ok(())
     }
 
@@ -1337,12 +1368,7 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for activity update"))?;
         session.metadata.updated_at = Utc::now();
-        self.save_session_atomic(&session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] retention reconciliation failed after activity update: {error:#}"
-            );
-        }
+        self.persist_then_reconcile(&session, "activity update")?;
         Ok(())
     }
 
@@ -1402,12 +1428,7 @@ impl SessionStore {
         session.metadata.message_count = messages.len();
         session.metadata.updated_at = Utc::now();
         session.messages = messages;
-        self.save_session_atomic(&session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] retention reconciliation failed after transcript update: {error:#}"
-            );
-        }
+        self.persist_then_reconcile(&session, "transcript update")?;
         Ok(())
     }
 
@@ -1447,10 +1468,7 @@ impl SessionStore {
         session.metadata.message_count = messages.len();
         session.metadata.updated_at = Utc::now();
         session.messages = messages;
-        self.save_session_atomic(&session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!("[sessions] retention reconciliation failed after transcript CAS: {error:#}");
-        }
+        self.persist_then_reconcile(&session, "transcript CAS")?;
         Ok(next_revision)
     }
 
@@ -1488,12 +1506,7 @@ impl SessionStore {
             })
             .collect();
         session.metadata.updated_at = now;
-        self.save_session_atomic(&session)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] retention reconciliation failed after artifact update: {error:#}"
-            );
-        }
+        self.persist_then_reconcile(&session, "artifact update")?;
         Ok(())
     }
 
@@ -1534,13 +1547,11 @@ impl SessionStore {
             storage_path: path,
         });
         session.metadata.updated_at = now;
-        self.save_session_atomic(&session)
-            .with_context(|| format!("persist scheduled artifact for {id}"))?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!(
-                "[sessions] scheduled retention reconciliation failed after committed artifact append: {error:#}"
-            );
-        }
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist scheduled artifact for {id}"),
+            "committed artifact append",
+        )?;
         Ok(())
     }
 
