@@ -751,6 +751,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
+      const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
       const [box, setBox] = useState(null); // { w, h, scale }
       const [ready, setReady] = useState(false);
       const managedZoom = zoomMode !== 'auto-width';
@@ -761,11 +762,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (!fr || !wrap || !fr.contentWindow) return;
           const doc = fr.contentWindow.document;
           const de = doc.documentElement, bd = doc.body;
-          const naturalW = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
-          const h = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
           const panelW = wrap.clientWidth;
           const panelH = wrap.clientHeight;
-          const w = managedZoom ? Math.max(canvasW, naturalW || 0) : naturalW;
+          // 内容自然尺寸只在面板参考宽度下测量一次并缓存；后续仅依据面板尺寸重算缩放。
+          // 若把「已按自然宽度撑开的 iframe 视口」每次再喂回测量，弹层里的 vw/vh 与
+          // 溢出内容（如 right:-120px 的绝对定位元素）会让 scrollWidth/scrollHeight 随 iframe
+          // 被撑大而继续放大，触发 ResizeObserver 无限反馈 → 预览无限放大。
+          let nat = naturalRef.current;
+          if (!nat) {
+            const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
+            const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
+            nat = { w: cw, h: ch };
+            // iframe 内容可能尚未真正加载(scrollWidth=0)：这种空测量不写入缓存，
+            // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
+            if (cw > 0) naturalRef.current = nat;
+          }
+          const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
+          const h = nat.h;
           let scale = 1;
           if (zoomMode === 'fit') {
             const widthScale = w > 0 && panelW > 0 ? panelW / w : 1;
@@ -791,7 +804,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (onScaleChange) onScaleChange(scale);
         } catch (e) { /* 未就绪/跨域，忽略 */ }
       };
-      useEffect(() => { setReady(false); setBox(null); }, [html]);
+      useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]);
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {
         if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
