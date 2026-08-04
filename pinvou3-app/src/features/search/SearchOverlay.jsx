@@ -53,16 +53,14 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
               background: isDark ? 'rgba(255,255,255,.08)' : 'rgba(118,118,128,.12)',
             }}
           >
-            <Search size={20} className={isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'} />
+            <Search size={20} className="text-[#6E6E73] dark:text-[#C7C7CC]" />
             <input
               ref={inputRef}
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={t.searchPlaceholder}
-              className={`min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 ${
-                isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1D1D1F] placeholder:text-[#8A8A8E]'
-              }`}
+              className="min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 text-[#1D1D1F] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#8E8E93]"
             />
             {query && (
               <button
@@ -96,7 +94,7 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
         </div>
 
         <div className="max-h-[min(620px,calc(100vh-180px))] overflow-y-auto custom-scrollbar px-2 pb-2">
-          <div className={`px-4 pb-2 pt-1 text-[13px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+          <div className="px-4 pb-2 pt-1 text-[13px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]">
             {t.recent}
           </div>
           {filtered.length > 0 ? filtered.map(chat => (
@@ -104,18 +102,16 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
               key={chat.id}
               type="button"
               onClick={() => onSelect && onSelect(chat.id)}
-              className={`w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors ${
-                isDark ? 'hover:bg-white/[.08]' : 'hover:bg-black/[.05]'
-              }`}
+              className="w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors hover:bg-black/[.05] dark:hover:bg-white/[.08]"
               style={{ color: isDark ? '#F2F2F7' : '#1D1D1F' }}
             >
               <div className="flex min-w-0 items-center justify-between gap-4">
                 <span className="min-w-0 truncate text-[16px] leading-6">{chat.title}</span>
-                <span className={`shrink-0 text-[13px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{chat.date}</span>
+                <span className="shrink-0 text-[13px] text-[#8A8A8E] dark:text-[#8E8E93]">{chat.date}</span>
               </div>
             </button>
           )) : (
-            <div className={`px-4 py-8 text-center text-[14px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+            <div className="px-4 py-8 text-center text-[14px] text-[#8A8A8E] dark:text-[#8E8E93]">
               {t.sidebarTaskEmpty}
             </div>
           )}
