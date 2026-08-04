@@ -547,5 +547,5 @@ pub async fn edit_last_turn(
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
     pool.edit_last_turn(&sid, new_message)
         .await
-        .map_err(|e| format!("edit_last_turn: {e:?}"))
+        .map_err(|e| format!("edit_last_turn: {e:#}"))
 }

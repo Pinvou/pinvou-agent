@@ -1122,7 +1122,7 @@ pub async fn reveal_session_folder(
     }
     store
         .load(&session_id)
-        .map_err(|e| format!("load_session({session_id}): {e:?}"))?;
+        .map_err(|e| format!("load_session({session_id}): {e:#}"))?;
     // 定时运行会话没有独立 runtime 目录，打开它所属任务的共享工作间。
     if store.scheduled_profile(&session_id).is_some() {
         let dir = store

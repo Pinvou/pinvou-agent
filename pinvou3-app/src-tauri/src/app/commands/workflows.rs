@@ -156,7 +156,7 @@ pub async fn start_skill_session(
         }
         let session_data = store
             .load(&sid)
-            .map_err(|e| format!("load existing session: {e:?}"))?;
+            .map_err(|e| format!("load existing session: {e:#}"))?;
 
         return Ok(StartSkillSessionResult {
             session: session_data.metadata,
@@ -173,7 +173,7 @@ pub async fn start_skill_session(
     let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, model_id, workspace)
-        .map_err(|e| format!("create_session: {e:?}"))?;
+        .map_err(|e| format!("create_session: {e:#}"))?;
     let sid = session.metadata.id.clone();
     if set_active.unwrap_or(true) {
         store.set_active(Some(sid.clone()));
@@ -281,7 +281,7 @@ pub async fn start_workflow(
         let (model, model_id) = pool.default_model_for_new_session();
         let session = store
             .create_new(model, model_id, pool.bridge.workspace.clone())
-            .map_err(|e| format!("create_session: {e:?}"))?;
+            .map_err(|e| format!("create_session: {e:#}"))?;
         let sid = session.metadata.id.clone();
         // 人话 title，工作流页/调试时一眼看出是哪个 PPT 项目
         store.set_title(&sid, session_title.clone()).ok();
@@ -391,7 +391,7 @@ pub async fn kick_workflow(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -413,7 +413,7 @@ pub async fn kick_workflow(
                 .handle
                 .send(op)
                 .await
-                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+                .map_err(|e| format!("spawn subagent: {e:#}"))?;
             Ok(format!("spawning {role_name}"))
         }
         // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
@@ -425,7 +425,7 @@ pub async fn kick_workflow(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -451,7 +451,7 @@ pub async fn kick_workflow(
                     .handle
                     .send(op)
                     .await
-                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                    .map_err(|e| format!("fan-out spawn: {e:#}"))?;
             }
             crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
@@ -522,7 +522,7 @@ pub async fn retry_workflow_role(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -544,7 +544,7 @@ pub async fn retry_workflow_role(
                 .handle
                 .send(op)
                 .await
-                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+                .map_err(|e| format!("spawn subagent: {e:#}"))?;
             Ok(format!("retry → spawning {role_name}"))
         }
         // [per_page] retry 重派整批（fan-out）。
@@ -556,7 +556,7 @@ pub async fn retry_workflow_role(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -582,7 +582,7 @@ pub async fn retry_workflow_role(
                     .handle
                     .send(op)
                     .await
-                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                    .map_err(|e| format!("fan-out spawn: {e:#}"))?;
             }
             crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!(
@@ -1171,7 +1171,7 @@ pub async fn stop_workflow(
         {
             // stop marker 已成功落盘，是不可回滚的调度真相；engine 恰好退出只表示
             // 没有存活 worker 可取消，不应把 UI 留在“停止失败”。
-            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:?}");
+            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:#}");
         }
     }
 
@@ -1203,7 +1203,7 @@ pub async fn approve_workflow_gate(
     let engine = pool
         .get_or_spawn(&sid)
         .await
-        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+        .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
     let rid = role_id.clone();
     let action = tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::approve_gate(&workspace, &rid)
@@ -1247,7 +1247,7 @@ pub async fn reject_workflow_gate(
     let engine = pool
         .get_or_spawn(&sid)
         .await
-        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+        .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
     let rid = role_id.clone();
     let r = reason.clone();
     let action = tokio::task::spawn_blocking(move || {
@@ -1300,7 +1300,7 @@ pub async fn get_workflow_state(
 pub async fn find_resumable_run(
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
+    let metas = store.list().map_err(|e| format!("list: {e:#}"))?;
     let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
     for m in metas {
         let Some(binding) = store.active_skill(&m.id) else {
@@ -1421,7 +1421,7 @@ pub async fn get_session_active_skill(
 pub async fn list_session_skill_bindings(
     store: State<'_, SessionStore>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     let mut out = std::collections::HashMap::new();
     for m in metas {
         if let Some(b) = store.active_skill(&m.id) {
