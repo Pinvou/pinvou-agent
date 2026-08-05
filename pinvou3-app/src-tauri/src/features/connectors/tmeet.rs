@@ -419,6 +419,9 @@ impl ConnectorSkillGate for TmeetGate {
     fn id(&self) -> &'static str {
         ID
     }
+    fn display_name(&self) -> &'static str {
+        "腾讯会议"
+    }
     fn disabled_filename(&self) -> &'static str {
         "tmeet_disabled"
     }

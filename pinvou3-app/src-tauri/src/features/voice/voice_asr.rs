@@ -234,6 +234,7 @@ pub async fn download_asr_model(
             expected_sha256: spec.sha256,
             max_bytes,
             is_cancelled,
+            user_agent: Some("pinvou3-asr/1.0"),
             on_progress,
             on_pre_verify,
         };

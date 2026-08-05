@@ -28,6 +28,12 @@ pub(crate) trait ConnectorSkillGate {
     /// `Pinvou3Bundle::apply_*_skills`。返回 `Result` 以传播写盘失败。
     fn apply_skills(&self, visible: bool) -> Result<(), String>;
 
+    /// 用户可见的中文产品名(如「腾讯会议」「钉钉」),用于错误文案。
+    /// 默认回退到 `id()`(ASCII),各连接器按需覆盖以保留原中文文案。
+    fn display_name(&self) -> &'static str {
+        self.id()
+    }
+
     /// 停用标志文件完整路径:`~/.pinvou3/<disabled_filename>`。
     fn disabled_path(&self) -> PathBuf {
         crate::platform::paths::pinvou3_home().join(self.disabled_filename())
@@ -42,11 +48,11 @@ pub(crate) trait ConnectorSkillGate {
     /// 写盘失败传播给调用方,不再静默 `let _ =` 忽略。
     fn set_disabled_flag(&self, disabled: bool) -> Result<(), String> {
         let p = self.disabled_path();
-        let id = self.id();
+        let name = self.display_name();
         if disabled {
-            std::fs::write(&p, b"1").map_err(|e| format!("保存{id}技能停用状态失败: {e}"))?;
+            std::fs::write(&p, b"1").map_err(|e| format!("保存{name}技能停用状态失败: {e}"))?;
         } else if p.exists() {
-            std::fs::remove_file(&p).map_err(|e| format!("清除{id}技能停用状态失败: {e}"))?;
+            std::fs::remove_file(&p).map_err(|e| format!("清除{name}技能停用状态失败: {e}"))?;
         }
         Ok(())
     }

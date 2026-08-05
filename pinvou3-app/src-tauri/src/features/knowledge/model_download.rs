@@ -278,7 +278,8 @@ pub async fn kb_model_download(
             );
         }
     });
-    let is_cancelled: Box<dyn Fn() -> bool + Send> = Box::new(|| CANCEL.load(Ordering::Relaxed));
+    let is_cancelled: Box<dyn Fn() -> bool + Send + Sync> =
+        Box::new(|| CANCEL.load(Ordering::Relaxed));
     // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
     // sync_all 后、sha256_file 前调用此闭包)。原实现仅在 sha256 存在时 emit
     // (空串跳过校验的 dev 兜底不发 verify),这里保持一致。frontend 据此从下载进度
@@ -300,6 +301,7 @@ pub async fn kb_model_download(
         expected_sha256,
         max_bytes: MODEL_TARGZ_SIZE,
         is_cancelled,
+        user_agent: Some("pinvou3-kb/1.0"),
         on_progress,
         on_pre_verify,
     };

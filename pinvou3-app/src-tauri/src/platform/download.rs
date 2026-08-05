@@ -35,7 +35,12 @@ pub struct DownloadRequest<'a> {
     /// 设为 `u64::MAX` 等价于不设硬上限。
     pub max_bytes: u64,
     /// 取消谓词:返回 `true` 时中止下载并清理 `.part`。
-    pub is_cancelled: Box<dyn Fn() -> bool + Send + 'a>,
+    /// 需 `Sync` 以便在 `tokio::select!` 中与网络 future 并发轮询(恢复重构前
+    /// voice 的 `tokio::select!{ send(), wait_for_cancel() }` 响应性)。
+    pub is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
+    /// 可选 `User-Agent`。重构前 voice/knowledge 各自设置 `pinvou3-asr/1.0`、
+    /// `pinvou3-kb/1.0`;helper 通过该字段透传,`None` 时不设置。
+    pub user_agent: Option<&'a str>,
     /// 进度回调 `(downloaded, total)`。`total` 为 `Content-Length`(缺省/为 0 时由调用方
     /// 在构造请求时填入估算值)。
     pub on_progress: Box<dyn Fn(u64, u64) + Send + 'a>,
@@ -82,6 +87,14 @@ impl<'a> Drop for PartGuard<'a> {
 ///
 /// 事件顺序:`on_progress`(下载中,0–95%)→ `on_pre_verify`(下载完成、校验开始前,
 /// 用于 emit `verify`)→ 校验 → rename → done。该顺序恢复重构前的 frontend 事件时序。
+/// 取消轮询间隔,与重构前 voice 的 `ASR_CANCEL_POLL_INTERVAL` 一致(50ms)。
+///
+/// 重构前的 voice 下载用 `tokio::select!` 把 `client.get(url).send()` 与每个
+/// `resp.chunk()` 都包在 `wait_for_asr_cancel()` 轮询 future 上,这样取消标志翻转后
+/// 即便服务器中途停顿(无 chunk 到达)、或连接阶段卡住,也能在一个轮询周期内中止。
+/// helper 以闭包承载各调用方的取消源,这里在 select 分支内轮询该闭包恢复响应性。
+const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
 pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Result<(), String> {
     // 下载开始前先查一次取消(与 voice 原循环语义一致)。
     if (req.is_cancelled)() {
@@ -89,18 +102,42 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
         return Err("已取消".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::default())
-        .build()
-        .map_err(|e| format!("创建下载客户端失败: {e}"))?;
-    let response = client
-        .get(req.url)
-        .send()
-        .await
-        .map_err(|e| format!("连接下载源失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("下载源响应异常: {e}"))?;
+    let client = {
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::default());
+        if let Some(ua) = req.user_agent {
+            builder = builder.user_agent(ua);
+        }
+        builder
+            .build()
+            .map_err(|e| format!("创建下载客户端失败: {e}"))?
+    };
+    let response = {
+        // 与重构前 voice 一致:连接阶段也用 select! 竞速取消轮询,
+        // 避免服务器响应慢时无法及时中止。轮询闭包每个 poll 周期重新借用 req,
+        // 不跨 await 持有,故对非 Sync 的取消源也安全。
+        let send_fut = client.get(req.url).send();
+        tokio::pin!(send_fut);
+        let result = tokio::select! {
+            result = &mut send_fut => result,
+            _ = async {
+                loop {
+                    if (req.is_cancelled)() {
+                        return;
+                    }
+                    tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+                }
+            } => {
+                let _ = std::fs::remove_file(req.part);
+                return Err("已取消".to_string());
+            }
+        };
+        result
+            .map_err(|e| format!("连接下载源失败: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("下载源响应异常: {e}"))?
+    };
 
     // 上限以 max_bytes 为准:Content-Length 申报超限直接拒(此时 `.part` 尚未创建,
     // 仍清理一次以兜底历史残留)。
@@ -121,12 +158,29 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
     let mut file =
         std::fs::File::create(req.part).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
     let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream
-        .next()
-        .await
-        .transpose()
-        .map_err(|e| format!("下载中断: {e}"))?
-    {
+    loop {
+        // 与重构前 voice 一致:每个 chunk 的到达也用 select! 竞速取消轮询,
+        // 这样服务器中途停顿(无 chunk 到达)时仍能在一个轮询周期内中止。
+        let chunk = {
+            let next_fut = stream.next();
+            tokio::pin!(next_fut);
+            tokio::select! {
+                item = &mut next_fut => item,
+                _ = async {
+                    loop {
+                        if (req.is_cancelled)() {
+                            return;
+                        }
+                        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+                    }
+                } => {
+                    return Err("已取消".to_string());
+                }
+            }
+        };
+        let Some(chunk) = chunk.transpose().map_err(|e| format!("下载中断: {e}"))? else {
+            break;
+        };
         // 写盘后查取消(与原实现一致:已写的不丢,但停止接收后续 chunk)。
         use std::io::Write;
         file.write_all(&chunk)
@@ -253,7 +307,7 @@ mod tests {
         (url, handle)
     }
 
-    fn never_cancel<'a>() -> Box<dyn Fn() -> bool + Send + 'a> {
+    fn never_cancel<'a>() -> Box<dyn Fn() -> bool + Send + Sync + 'a> {
         Box::new(|| false)
     }
     fn noop_progress<'a>() -> Box<dyn Fn(u64, u64) + Send + 'a> {
@@ -277,6 +331,7 @@ mod tests {
             expected_sha256: HELLO_SHA,
             max_bytes: 1024,
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress: noop_progress(),
             on_pre_verify: None,
         };
@@ -306,6 +361,7 @@ mod tests {
             expected_sha256: HELLO_SHA, // 故意不匹配 "abc"
             max_bytes: 1024,
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress: noop_progress(),
             on_pre_verify: None,
         };
@@ -335,6 +391,7 @@ mod tests {
             expected_sha256: "", // 跳过校验(dev 兜底)
             max_bytes: 1024,
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress: noop_progress(),
             on_pre_verify: None,
         };
@@ -363,7 +420,7 @@ mod tests {
         let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |_d, _t| {
             cancel.store(true, Ordering::SeqCst);
         });
-        let is_cancelled: Box<dyn Fn() -> bool + Send> = {
+        let is_cancelled: Box<dyn Fn() -> bool + Send + Sync> = {
             let f = Arc::clone(&flag);
             Box::new(move || f.load(Ordering::SeqCst))
         };
@@ -375,6 +432,7 @@ mod tests {
             expected_sha256: "",
             max_bytes: 10 * 1024 * 1024,
             is_cancelled,
+            user_agent: None,
             on_progress,
             on_pre_verify: None,
         };
@@ -405,6 +463,7 @@ mod tests {
             expected_sha256: ABC_SHA,
             max_bytes: 1024, // body 2048 > 上限 → Content-Length 即拒
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress: noop_progress(),
             on_pre_verify: None,
         };
@@ -438,6 +497,7 @@ mod tests {
             expected_sha256: "",
             max_bytes: 1024 * 1024,
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress: noop_progress(),
             on_pre_verify: None,
         };
@@ -486,6 +546,7 @@ mod tests {
             expected_sha256: "",
             max_bytes: 1024 * 1024,
             is_cancelled: never_cancel(),
+            user_agent: None,
             on_progress,
             on_pre_verify,
         };
