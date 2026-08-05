@@ -1878,7 +1878,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               data-testid="artifact-fullscreen-panel">
               <ArtifactsPanel
                 bs={bs}
-                theme={theme}
                 t={t}
                 onClose={closeArtifactsPanel}
                 isWide={true}
@@ -1915,7 +1914,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 style={{ width: artifactW + 'px' }}>
                 <ArtifactsPanel
                   bs={bs}
-                  theme={theme}
                   t={t}
                   onClose={closeArtifactsPanel}
                   isWide={true}
@@ -1944,7 +1942,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           {artifactsVisible && !isWide && !artifactsFullscreen && (
             <ArtifactsPanel
               bs={bs}
-              theme={theme}
               t={t}
               onClose={closeArtifactsPanel}
               isWide={false}
@@ -2502,10 +2499,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const assistantSelectionTargetRef = useRef(null);
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
-      if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
-      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
-      if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
-      if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
+      if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
+      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} />;
+      if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
+      if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
         return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }

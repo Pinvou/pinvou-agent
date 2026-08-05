@@ -44,7 +44,6 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   artifact,
   initialText,
   initialInfo,
-  isDark,
   t,
   onSaved,
   onReloaded,
