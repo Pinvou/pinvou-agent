@@ -891,14 +891,44 @@ impl EnginePool {
     }
 
     /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
+    ///
+    /// 分两阶段执行，避免与 `send_reserved_user_message` 争抢 `turn_lock` 导致
+    /// 「停止按钮无响应」：cancel_token 是独立原子，置位不需要 turn_lock 保护，
+    /// 因此第一步无锁先触发，turn_loop 的 biased select 会立即跳出并正常发
+    /// `TurnComplete`(→ chat:done)；第二步再持锁清理 shell/lifecycle 状态。
+    /// 若 engine 尚未 spawn(send 仍持锁中)，第二步持锁后走 invalidate 并补发
+    /// Interrupted 终态，保证前端 busy 一定能复位。
     pub async fn cancel(&self, session_id: &str) {
+        // 阶段一：无锁先触发 cancel_token。
+        // handle_for 只瞬时取 entries 锁(与 send 内部瞬时取 entries 锁不冲突)，
+        // 不等 turn_lock——即使 send 正持锁，cancel 也能立刻让 turn_loop 跳出。
+        if let Some(engine) = self.handle_for(session_id).await {
+            engine.cancel_current();
+        }
+        // 阶段二：持锁清理 turn 状态与 shell 任务。
+        let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
-        let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
+        // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
+        // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
+        // 这里拿到刚注册的 engine 补 cancel。
         if let Some(engine) = self.handle_for(session_id).await {
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-            lifecycle.invalidate_unsubmitted_reservation();
+            // engine 不存在 = 该 session 的 turn 还在「reserved 未 submitted」阶段
+            // (send 仍在 get_or_spawn/probe 中)。invalidate 清理 reservation 但不
+            // emit chat:done(原设计)，导致前端 busy 永不复位。这里补发 Interrupted
+            // 终态，让前端立即解锁——cancel_generation 命令的文档注释本就承诺
+            // 「会补发 Interrupted 终态」，之前实现与注释不符，此处修正。
+            if lifecycle.invalidate_unsubmitted_reservation() {
+                crate::features::assistant::engine::emit_chat_terminal(
+                    &self.app,
+                    session_id,
+                    TurnOutcomeStatus::Interrupted,
+                    None,
+                    false,
+                );
+            }
         }
         if let Some(cancellation) = shell_cancellation {
             cancellation.cleanup().await;

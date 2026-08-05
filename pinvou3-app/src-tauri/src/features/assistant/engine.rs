@@ -1536,6 +1536,13 @@ fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        // 连续 recoverable 错误兜底计数（修复本地端点 0-token 反复超时导致的
+        // 「永远正在处理」）：recoverable 错误(如 SSE idle timeout)按原设计不发
+        // chat:done(引擎还会 retry)，但若同一 turn 连续 N 次都 recoverable 且
+        // 从未产出任何 token，说明端点根本没在响应——此时应升级为终态，让前端
+        // 收到明确错误并复位 busy，而不是让用户干等数十分钟的重试预算耗尽。
+        let mut recoverable_error_streak: u32 = 0;
+        let mut any_delta_this_turn = false;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -1550,6 +1557,8 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    recoverable_error_streak = 0;
+                    any_delta_this_turn = false;
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
                         log::error!(
                             "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
@@ -1564,6 +1573,10 @@ fn spawn_event_forwarder(
                     }
                 }
                 Event::MessageDelta { content, .. } => {
+                    // 模型产出了真实 token → 端点在正常工作，清空 recoverable
+                    // 错误连续计数（后续若再次 idle timeout 才重新累计）。
+                    any_delta_this_turn = true;
+                    recoverable_error_streak = 0;
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
@@ -2752,6 +2765,28 @@ fn spawn_event_forwarder(
                             "chat:transient_error",
                             payload,
                         );
+                        // 连续 recoverable 错误兜底：若同一 turn 连续 3 次 recoverable
+                        // 错误且从未产出任何 token，说明端点根本没在响应(典型：本地/
+                        // 局域网端点 prefill 卡住或 SSE 格式不兼容，反复 idle timeout)。
+                        // 底座虽然还会按重试预算继续跑(最长数十分钟)，但用户已干等
+                        // 三个超时周期——此时主动 cancel，让 turn_loop 正常跳出并发
+                        // TurnComplete(Interrupted) → chat:done，前端收到明确反馈而非
+                        // 无限「正在处理」。阈值取 3：单次瞬态错误(云端代理抖动)不会
+                        // 误杀，连续 3 次几乎必然是端点问题。
+                        if !any_delta_this_turn {
+                            recoverable_error_streak = recoverable_error_streak.saturating_add(1);
+                            if recoverable_error_streak >= 3 {
+                                log::warn!(
+                                    "[pinvou3][chat] aborting turn after {recoverable_error_streak} \
+                                     consecutive recoverable errors with zero output sid={} — \
+                                     endpoint likely unresponsive: {}",
+                                    session_id,
+                                    envelope.message
+                                );
+                                approve_handle.cancel();
+                                recoverable_error_streak = 0;
+                            }
+                        }
                     } else {
                         // 底座在致命 Error 后仍会发权威 TurnComplete(Failed)。这里只缓存
                         // 文本；完成、持久化和 chat:done 全部由 TurnComplete 单点处理。
@@ -2923,6 +2958,32 @@ mod turn_lifecycle_tests {
         let activated = lifecycle.on_submitted();
         lifecycle.on_submission_failed(activated);
         assert_eq!(lifecycle.finish_once(|| panic!("must remain idle")), None);
+    }
+
+    #[test]
+    fn invalidate_unsubmitted_reservation_returns_true_only_for_reserved_unsubmitted() {
+        // 修复 2 的核心依赖：cancel 在 engine 未 spawn（reservation 仍处于
+        // reserved 未 submitted 阶段）时调用 invalidate，必须返回 true 让调用方
+        // 据此补发 chat:done 终态（否则前端 busy 永不复位）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve → active=true, submitted=false → invalidate 返回 true。
+        // 必须把 reservation 绑定到变量并保持存活到 invalidate 之后，否则 Drop
+        // 会先触发 on_reservation_failed 把 active 复位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle.invalidate_unsubmitted_reservation());
+        // invalidate 已收尾，标记 reservation submitted 以免 Drop 二次清理。
+        reservation.mark_submitted();
+
+        // reserve → on_started_transition（引擎真正接手，设 submitted=true）
+        // → invalidate 必须返回 false：engine 已在跑，cancel 应走 cancel_current
+        // 路径（TurnComplete 终态），不能再由 invalidate 补发，否则会双发 chat:done。
+        let reservation2 = lifecycle.reserve().expect("reserve again");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.invalidate_unsubmitted_reservation());
+        reservation2.mark_submitted();
     }
 
     #[test]
