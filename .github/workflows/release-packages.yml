@@ -312,6 +312,10 @@ jobs:
         working-directory: pinvou3-app
         run: npm run runtime:windows:init
 
+      - name: 验证 Windows ONNX Runtime 可加载
+        working-directory: pinvou3-app
+        run: npm run runtime:windows:onnx-smoke
+
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
