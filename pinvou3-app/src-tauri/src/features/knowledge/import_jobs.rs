@@ -11,6 +11,9 @@ use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
+const FAILED_FILES_PREVIEW_LIMIT: usize = 20;
+const FAILED_FILES_PAGE_MAX: usize = 50;
+
 #[derive(Debug, Clone)]
 pub(super) struct ImportItem {
     pub id: i64,
@@ -24,6 +27,13 @@ pub struct FailedImportFile {
     pub name: String,
     pub path: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedImportFilePage {
+    pub files: Vec<FailedImportFile>,
+    pub next_offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Default, PartialEq)]
@@ -223,10 +233,14 @@ impl ImportJobStore {
         }))
     }
 
-    pub fn mark_failed(&self, item_id: i64, error: &str) {
+    /// 只允许当前任务仍在运行时把它已 claim 的文件标为失败。取消任务或删除知识集后，
+    /// 晚到的后台结果必须成为 no-op，不能把 cancelled 状态复活为 failed。
+    pub fn mark_failed(&self, job_id: &str, item_id: i64, error: &str) {
         let _ = self.conn.lock().execute(
-            "UPDATE knowledge_import_items SET state='failed',error=?2,updated_at=?3 WHERE id=?1",
-            params![item_id, error, now()],
+            "UPDATE knowledge_import_items SET state='failed',error=?3,updated_at=?4 \
+             WHERE id=?2 AND job_id=?1 AND state='running' \
+             AND EXISTS(SELECT 1 FROM knowledge_import_jobs WHERE id=?1 AND state='running')",
+            params![job_id, item_id, error, now()],
         );
     }
 
@@ -321,6 +335,43 @@ impl ImportJobStore {
         self.read_state(None)
     }
 
+    pub fn failed_files_page(
+        &self,
+        job_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<FailedImportFilePage> {
+        let limit = limit.clamp(1, FAILED_FILES_PAGE_MAX);
+        let c = self.conn.lock();
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_import_jobs WHERE id=?1)",
+            params![job_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        let mut stmt = c.prepare(
+            "SELECT id,name,path,COALESCE(error,'') FROM knowledge_import_items \
+             WHERE job_id=?1 AND state='failed' ORDER BY id LIMIT ?2 OFFSET ?3",
+        )?;
+        let files = stmt
+            .query_map(params![job_id, (limit + 1) as i64, offset as i64], |r| {
+                Ok(FailedImportFile {
+                    item_id: r.get(0)?,
+                    name: r.get(1)?,
+                    path: r.get(2)?,
+                    error: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = files.len() > limit;
+        Ok(FailedImportFilePage {
+            files: files.into_iter().take(limit).collect(),
+            next_offset: has_more.then_some((offset + limit) as u64),
+        })
+    }
+
     fn read_state(&self, job_id: Option<&str>) -> rusqlite::Result<Option<ImportJobState>> {
         let c = self.conn.lock();
         let row = if let Some(id) = job_id {
@@ -332,9 +383,15 @@ impl ImportJobStore {
             )
             .optional()?
         } else {
+            // 当前运行/可恢复/有失败项的任务始终优先于普通历史任务，避免新的成功任务
+            // 遮蔽仍需用户处理的旧失败任务。多个失败任务按更新时间依次处理即可。
             c.query_row(
                 "SELECT id,collection_id,state,created_at,COALESCE(finished_at,0) \
-                 FROM knowledge_import_jobs ORDER BY updated_at DESC LIMIT 1",
+                 FROM knowledge_import_jobs ORDER BY \
+                 CASE state \
+                   WHEN 'preparing' THEN 0 WHEN 'running' THEN 0 \
+                   WHEN 'interrupted' THEN 1 WHEN 'done_with_errors' THEN 2 \
+                   ELSE 3 END, updated_at DESC LIMIT 1",
                 [],
                 read_job_row,
             )
@@ -369,10 +426,10 @@ impl ImportJobStore {
             .optional()?;
         let mut stmt = c.prepare(
             "SELECT id,name,path,COALESCE(error,'') FROM knowledge_import_items \
-             WHERE job_id=?1 AND state='failed' ORDER BY id LIMIT 100",
+             WHERE job_id=?1 AND state='failed' ORDER BY id LIMIT ?2",
         )?;
         let failed_files = stmt
-            .query_map(params![id], |r| {
+            .query_map(params![id, FAILED_FILES_PREVIEW_LIMIT as i64], |r| {
                 Ok(FailedImportFile {
                     item_id: r.get(0)?,
                     name: r.get(1)?,
@@ -518,9 +575,9 @@ mod tests {
         )
         .unwrap();
         let first = jobs.claim_next(&job_id).unwrap().unwrap();
-        jobs.mark_failed(first.id, "失败 A");
+        jobs.mark_failed(&job_id, first.id, "失败 A");
         let second = jobs.claim_next(&job_id).unwrap().unwrap();
-        jobs.mark_failed(second.id, "失败 B");
+        jobs.mark_failed(&job_id, second.id, "失败 B");
         jobs.finish(&job_id).unwrap();
 
         jobs.retry_item(&job_id, first.id).unwrap();
@@ -536,5 +593,77 @@ mod tests {
         };
         assert_eq!(states[0], (first.id, "pending".into()));
         assert_eq!(states[1], (second.id, "failed".into()));
+    }
+
+    #[test]
+    fn actionable_job_is_not_hidden_and_all_failed_items_are_returned() {
+        let (jobs, _l1, collection_id) = setup();
+        let failed_job = jobs.create(collection_id, &[]).unwrap();
+        let files: Vec<PathBuf> = (0..105)
+            .map(|n| PathBuf::from(format!("/tmp/failed-{n}.md")))
+            .collect();
+        jobs.prepare_items(&failed_job, &files).unwrap();
+        while let Some(item) = jobs.claim_next(&failed_job).unwrap() {
+            jobs.mark_failed(&failed_job, item.id, "解析失败");
+        }
+        jobs.finish(&failed_job).unwrap();
+
+        let successful_job = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&successful_job, &[]).unwrap();
+        jobs.finish(&successful_job).unwrap();
+
+        let visible = jobs.latest_state().unwrap().unwrap();
+        assert_eq!(visible.job_id.as_deref(), Some(failed_job.as_str()));
+        assert_eq!(visible.failed, 105);
+        assert_eq!(visible.failed_files.len(), FAILED_FILES_PREVIEW_LIMIT);
+        let first = jobs.failed_files_page(&failed_job, 0, 50).unwrap();
+        let second = jobs
+            .failed_files_page(&failed_job, first.next_offset.unwrap() as usize, 50)
+            .unwrap();
+        let third = jobs
+            .failed_files_page(&failed_job, second.next_offset.unwrap() as usize, 50)
+            .unwrap();
+        assert_eq!(first.files.len(), 50);
+        assert_eq!(second.files.len(), 50);
+        assert_eq!(third.files.len(), 5);
+        assert_eq!(third.next_offset, None);
+    }
+
+    #[test]
+    fn late_failure_does_not_revive_cancelled_item() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&job_id, &[PathBuf::from("/tmp/a.md")])
+            .unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        jobs.cancel(&job_id).unwrap();
+        jobs.mark_failed(&job_id, item.id, "晚到的错误");
+
+        let state: String = jobs
+            .conn
+            .lock()
+            .query_row(
+                "SELECT state FROM knowledge_import_items WHERE id=?1",
+                params![item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "cancelled");
+    }
+
+    #[test]
+    fn cancel_propagates_sqlite_failure_and_rolls_back_state() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&job_id, &[PathBuf::from("/tmp/a.md")])
+            .unwrap();
+        jobs.conn
+            .lock()
+            .execute("DROP TABLE knowledge_import_staged_chunks", [])
+            .unwrap();
+
+        assert!(jobs.cancel(&job_id).is_err());
+        let state = jobs.state(&job_id).unwrap();
+        assert!(state.running, "取消事务失败时不得伪装为已取消");
     }
 }

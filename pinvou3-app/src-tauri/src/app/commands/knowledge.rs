@@ -86,7 +86,8 @@ async_command_passthrough!(knowledge_domain, kb_collection_update(state: State<'
 async_command_passthrough!(knowledge_domain, kb_collection_delete(state: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, id: i64) -> Result<(), String>);
 sync_command_passthrough!(knowledge_domain, kb_collection_add_sources(state: State<'_, KnowledgeService>, collection_id: i64, paths: Vec<String>) -> IndexState);
 sync_command_passthrough!(knowledge_domain, kb_index_status(state: State<'_, KnowledgeService>) -> IndexState);
-sync_command_passthrough!(knowledge_domain, kb_index_cancel(state: State<'_, KnowledgeService>));
+sync_command_passthrough!(knowledge_domain, kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String>);
+sync_command_passthrough!(knowledge_domain, kb_index_failed_files(state: State<'_, KnowledgeService>, job_id: String, offset: usize, limit: usize) -> Result<FailedImportFilePage, String>);
 sync_command_passthrough!(knowledge_domain, kb_index_resume(state: State<'_, KnowledgeService>, job_id: String) -> Result<IndexState, String>);
 sync_command_passthrough!(knowledge_domain, kb_index_retry_file(state: State<'_, KnowledgeService>, job_id: String, item_id: i64) -> Result<IndexState, String>);
 async_command_passthrough!(knowledge_domain, kb_documents(state: State<'_, KnowledgeService>, collection_id: i64, limit: Option<usize>) -> Result<Vec<Document>, String>);

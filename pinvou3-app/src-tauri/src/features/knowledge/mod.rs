@@ -26,7 +26,7 @@ mod store;
 mod watcher;
 
 pub use exclude::Excluder;
-pub use import_jobs::ImportJobState as IndexState;
+pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
 pub use l1::{ChunkHit, Collection, Document};
 
@@ -160,28 +160,40 @@ impl KnowledgeService {
             })
     }
 
-    pub fn cancel_index(&self) {
-        self.index_cancel.store(true, Ordering::Relaxed);
+    pub fn cancel_index(&self) -> Result<(), String> {
         let job_id = self
             .active_import
             .lock()
             .clone()
             .or_else(|| self.index_status().job_id);
         if let Some(job_id) = job_id {
-            if let Ok(st) = self.imports.state(&job_id) {
-                if st.running || st.resumable {
-                    let _ = self.imports.cancel(&job_id);
-                    self.l1.set_collection_status(st.collection_id, "ready");
-                }
+            let st = self.imports.state(&job_id).map_err(|e| e.to_string())?;
+            if st.running || st.resumable {
+                self.imports.cancel(&job_id).map_err(|e| e.to_string())?;
+                self.index_cancel.store(true, Ordering::Relaxed);
+                self.l1.set_collection_status(st.collection_id, "ready");
             }
         }
+        Ok(())
     }
 
-    pub fn cancel_index_for_collection(&self, collection_id: i64) {
+    pub fn cancel_index_for_collection(&self, collection_id: i64) -> Result<(), String> {
         let status = self.index_status();
         if status.collection_id == collection_id && (status.running || status.resumable) {
-            self.cancel_index();
+            self.cancel_index()?;
         }
+        Ok(())
+    }
+
+    pub fn failed_index_files(
+        &self,
+        job_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<FailedImportFilePage, String> {
+        self.imports
+            .failed_files_page(job_id, offset, limit)
+            .map_err(|e| e.to_string())
     }
 
     /// 后台把若干路径(文件或目录)加入知识集：先持久化任务，再展开目录→解析→切块→入库。
@@ -288,7 +300,7 @@ impl KnowledgeService {
                     l1::ImportIngestOutcome::Completed | l1::ImportIngestOutcome::Skipped => {}
                     l1::ImportIngestOutcome::Cancelled => break,
                     l1::ImportIngestOutcome::Failed(error) => {
-                        imports.mark_failed(item.id, &error);
+                        imports.mark_failed(&job_id, item.id, &error);
                     }
                 }
                 std::thread::sleep(Duration::from_millis(3));
@@ -553,7 +565,7 @@ pub async fn kb_collection_delete(
     pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
     id: i64,
 ) -> Result<(), String> {
-    state.cancel_index_for_collection(id);
+    state.cancel_index_for_collection(id)?;
     let l1 = state.l1().clone();
     spawn_db(move || l1.delete_collection(id).map_err(|e| e.to_string())).await?;
     refresh_kb_tool_gate(&pool).await;
@@ -578,8 +590,16 @@ pub fn kb_collection_add_sources(
 pub fn kb_index_status(state: State<'_, KnowledgeService>) -> IndexState {
     state.index_status()
 }
-pub fn kb_index_cancel(state: State<'_, KnowledgeService>) {
-    state.cancel_index();
+pub fn kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String> {
+    state.cancel_index()
+}
+pub fn kb_index_failed_files(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+    offset: usize,
+    limit: usize,
+) -> Result<FailedImportFilePage, String> {
+    state.failed_index_files(&job_id, offset, limit)
 }
 pub fn kb_index_resume(
     state: State<'_, KnowledgeService>,

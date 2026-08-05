@@ -52,6 +52,7 @@
     "kb_documents",
     "kb_embed_info",
     "kb_index_status",
+    "kb_index_failed_files",
     "kb_model_status",
     "kb_remove_document",
     "kb_scan_status",

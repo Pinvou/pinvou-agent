@@ -175,6 +175,7 @@ command_protocol!(
         "kb_collection_add_sources",
         "kb_index_status",
         "kb_index_cancel",
+        "kb_index_failed_files",
         "kb_index_resume",
         "kb_index_retry_file",
         "kb_documents",
