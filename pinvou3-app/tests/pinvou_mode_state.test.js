@@ -10,6 +10,11 @@ const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const workScenePath = path.join(__dirname, '..', 'src', 'features', 'chat', 'work-scene-routes.js');
 const workSceneCode = fs.readFileSync(workScenePath, 'utf8')
+  .replace(/import[\s\S]+?from '\.\/personal-workbench-scene\.js';\n/, '')
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
+const personalWorkbenchPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');
+const personalWorkbenchCode = fs.readFileSync(personalWorkbenchPath, 'utf8')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
@@ -27,8 +32,10 @@ this.normalizePinvouMode = normalizePinvouMode;
 this.normalizeWorkSubtab = normalizeWorkSubtab;
 this.reducePinvouModeState = reducePinvouModeState;
 this.savePinvouModeState = savePinvouModeState;
+${personalWorkbenchCode}
 ${workSceneCode}
-this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;`, ctx, {
+this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;
+this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
   filename: logicPath,
 });
 
@@ -45,6 +52,7 @@ const {
   reducePinvouModeState,
   savePinvouModeState,
   shouldUseDocumentWritingScene,
+  shouldUsePersonalWorkbenchScene,
 } = ctx;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -55,6 +63,7 @@ assert.strictEqual(normalizePinvouMode('design'), 'design');
 assert.strictEqual(normalizePinvouMode('code'), 'work');
 assert.strictEqual(normalizePinvouMode('invalid'), 'work');
 assert.strictEqual(normalizeWorkSubtab('invalid'), 'general');
+assert.strictEqual(normalizeWorkSubtab('personal-workbench'), 'personal-workbench');
 assert.strictEqual(normalizeDesignSubtab('invalid'), 'general');
 
 let state = createPinvouModeState();
@@ -64,6 +73,10 @@ assert.strictEqual(state.designSubtab, 'general');
 assert.strictEqual(
   shouldUseDocumentWritingScene(state.mode, state.workSubtab),
   false,
+);
+assert.strictEqual(
+  shouldUsePersonalWorkbenchScene(state.mode, 'personal-workbench'),
+  true,
 );
 assert.strictEqual(state.selectedDesignElementId, undefined);
 assert.strictEqual(state.designRuntimeStatus, 'idle');

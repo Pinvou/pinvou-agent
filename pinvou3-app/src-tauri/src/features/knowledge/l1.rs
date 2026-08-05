@@ -6,12 +6,16 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::embed::{self, Embedder};
 
@@ -80,12 +84,22 @@ pub struct ScopedChunkHit {
     pub hit: ChunkHit,
 }
 
+pub(super) enum ImportIngestOutcome {
+    Completed,
+    Skipped,
+    Cancelled,
+    Failed(String),
+}
+
 #[derive(Clone)]
 pub struct L1Store {
     conn: Arc<Mutex<Connection>>,
     /// 配了 embedding 模型则启用向量;None → 纯全文 fts。**可换共享槽**:模型按需下载完成后
     /// `set_embedder` 热加载,所有 L1Store clone(含已在跑的后台线程/会话)立即见新,免重启。
     embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
+    /// 单测专用：把后台导入稳定阻塞在 embedding 完成、写检查点之前，以覆盖取消/删除竞态。
+    #[cfg(test)]
+    checkpoint_gate: Arc<RwLock<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
 }
 
 impl L1Store {
@@ -93,6 +107,21 @@ impl L1Store {
         Self {
             conn,
             embedder: Arc::new(RwLock::new(embedder)),
+            #[cfg(test)]
+            checkpoint_gate: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_checkpoint_gate(&self, entered: Arc<Barrier>, release: Arc<Barrier>) {
+        *self.checkpoint_gate.write() = Some((entered, release));
+    }
+
+    #[cfg(test)]
+    fn wait_at_checkpoint_gate(&self) {
+        if let Some((entered, release)) = self.checkpoint_gate.read().clone() {
+            entered.wait();
+            release.wait();
         }
     }
 
@@ -190,11 +219,26 @@ impl L1Store {
 
     /// 删知识集 + 其全部文档/块（chunks_fts 由触发器同步）。
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
-        let c = self.conn.lock();
-        c.execute("DELETE FROM chunks WHERE collection_id=?1", params![id])?;
-        c.execute("DELETE FROM documents WHERE collection_id=?1", params![id])?;
-        c.execute("DELETE FROM collections WHERE id=?1", params![id])?;
-        Ok(())
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM knowledge_import_staged_chunks WHERE job_id IN \
+             (SELECT id FROM knowledge_import_jobs WHERE collection_id=?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM knowledge_import_items WHERE job_id IN \
+             (SELECT id FROM knowledge_import_jobs WHERE collection_id=?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM knowledge_import_jobs WHERE collection_id=?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM chunks WHERE collection_id=?1", params![id])?;
+        tx.execute("DELETE FROM documents WHERE collection_id=?1", params![id])?;
+        tx.execute("DELETE FROM collections WHERE id=?1", params![id])?;
+        tx.commit()
     }
 
     pub fn set_collection_status(&self, id: i64, status: &str) {
@@ -317,7 +361,8 @@ impl L1Store {
         let c = self.conn.lock();
         c.execute(
             "INSERT INTO documents(collection_id,path,name,ext,size,mtime,parse_status,parsed_at) \
-             VALUES(?1,?2,?3,?4,?5,?6,'pending',0) \
+             SELECT ?1,?2,?3,?4,?5,?6,'pending',0 \
+             WHERE EXISTS(SELECT 1 FROM collections WHERE id=?1) \
              ON CONFLICT(collection_id,path) DO UPDATE SET \
                name=excluded.name,ext=excluded.ext,size=excluded.size,mtime=excluded.mtime",
             params![collection_id, path, name, ext, size, mtime],
@@ -442,6 +487,274 @@ impl L1Store {
                 self.set_doc_status(doc_id, "skipped", 0);
                 "skipped".into()
             }
+        }
+    }
+
+    /// 可恢复任务使用的单文件入库：每个 embedding 批次先写暂存表；全部完成后，在同一
+    /// 事务中替换正式 chunks 并把任务文件标记为 completed。崩溃只会留下不可检索的暂存
+    /// 块，续跑会跳过它们，绝不会暴露半份文档或重复正式块。
+    pub(super) fn ingest_import_item(
+        &self,
+        job_id: &str,
+        item_id: i64,
+        collection_id: i64,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> ImportIngestOutcome {
+        let path_str = path.to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(unnamed)")
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let (size, mtime) = match std::fs::metadata(path) {
+            Ok(m) => (
+                m.len() as i64,
+                m.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+            ),
+            Err(e) => return ImportIngestOutcome::Failed(format!("读取文件信息失败: {e}")),
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return ImportIngestOutcome::Cancelled;
+        }
+
+        let res = crate::features::files::file_ingest::ingest(path);
+        let warning = res.warning.clone();
+        let body = match res.markdown {
+            Some(md) if !md.trim().is_empty() => Some(md),
+            _ if res.kind == "image" => crate::features::files::file_ingest::ocr_image_for_kb(path),
+            _ => None,
+        };
+        let Some(markdown) = body.filter(|v| !v.trim().is_empty()) else {
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                ensure_import_item_running(&tx, job_id, item_id)?;
+                let doc_id = upsert_import_document(
+                    &tx,
+                    collection_id,
+                    &path_str,
+                    &name,
+                    ext.as_deref(),
+                    size,
+                    mtime,
+                )?;
+                tx.execute("DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2", params![job_id, item_id])?;
+                // 重导同一路径但新内容为空/不可解析时，旧正式块必须与 skipped 状态原子清除，
+                // 否则检索仍会命中已经不存在的旧内容。
+                tx.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
+                tx.execute("UPDATE documents SET parse_status='skipped',n_chunks=0,parsed_at=?2 WHERE id=?1", params![doc_id, now()])?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET state='skipped',error=?3,total_chunks=0,completed_chunks=0,updated_at=?4 WHERE id=?1 AND job_id=?2 AND state='running'",
+                    params![item_id, job_id, warning, now()],
+                )?;
+                tx.commit()
+            });
+            return match result {
+                Ok(()) => ImportIngestOutcome::Skipped,
+                Err(rusqlite::Error::QueryReturnedNoRows) => ImportIngestOutcome::Cancelled,
+                Err(e) => ImportIngestOutcome::Failed(format!("保存跳过状态失败: {e}")),
+            };
+        };
+        let chunks = chunk_text(&markdown, CHUNK_CHARS, CHUNK_OVERLAP);
+        let content_hash = {
+            let mut hasher = Sha256::new();
+            for chunk in &chunks {
+                hasher.update((chunk.len() as u64).to_le_bytes());
+                hasher.update(chunk.as_bytes());
+            }
+            crate::platform::encoding::hex_lower(&hasher.finalize())
+        };
+
+        // 源内容变化时丢弃旧检查点；内容相同则保留已经完成的分块。
+        {
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                let previous: Option<String> = tx.query_row(
+                    "SELECT i.content_hash FROM knowledge_import_items i \
+                     JOIN knowledge_import_jobs j ON j.id=i.job_id \
+                     WHERE i.id=?1 AND i.job_id=?2 AND i.state='running' AND j.state='running'",
+                    params![item_id, job_id],
+                    |r| r.get(0),
+                )?;
+                if previous.as_deref() != Some(content_hash.as_str()) {
+                    tx.execute("DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2", params![job_id, item_id])?;
+                }
+                let staged: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET content_hash=?3,total_chunks=?4,completed_chunks=?5,updated_at=?6 WHERE id=?1 AND job_id=?2",
+                    params![item_id, job_id, content_hash, chunks.len() as i64, staged, now()],
+                )?;
+                tx.commit()
+            });
+            if let Err(e) = result {
+                if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                    return ImportIngestOutcome::Cancelled;
+                }
+                return ImportIngestOutcome::Failed(format!("初始化分块检查点失败: {e}"));
+            }
+        }
+
+        let (staged_ords, staged_has_null): (std::collections::HashSet<usize>, bool) = {
+            let c = self.conn.lock();
+            let mut stmt = match c.prepare(
+                "SELECT ord FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+            ) {
+                Ok(v) => v,
+                Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+            };
+            let ords = match stmt.query_map(params![job_id, item_id], |r| r.get::<_, i64>(0)) {
+                Ok(rows) => match rows.collect::<rusqlite::Result<Vec<_>>>() {
+                    Ok(v) => v.into_iter().map(|n| n as usize).collect(),
+                    Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+                },
+                Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+            };
+            let has_null: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM knowledge_import_staged_chunks \
+                     WHERE job_id=?1 AND item_id=?2 AND vec IS NULL)",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            (ords, has_null)
+        };
+        let missing: Vec<usize> = (0..chunks.len())
+            .filter(|ord| !staged_ords.contains(ord))
+            .collect();
+        // 同一文档保持“全向量或全全文”语义。若上次某批已降级为 NULL，续跑不能再形成
+        // 一半有向量、一半无向量的文档；模型未就绪或超限时也清除既有暂存向量。
+        let mut use_vectors = if staged_has_null {
+            None
+        } else {
+            self.embedder().filter(|_| chunks.len() <= MAX_EMBED_CHUNKS)
+        };
+        if use_vectors.is_none() && !staged_ords.is_empty() {
+            let _ = self.conn.lock().execute(
+                "UPDATE knowledge_import_staged_chunks SET vec=NULL WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+            );
+        }
+
+        for ord_batch in missing.chunks(EMBED_BATCH) {
+            if cancel.load(Ordering::Relaxed) {
+                return ImportIngestOutcome::Cancelled;
+            }
+            let texts: Vec<String> = ord_batch.iter().map(|ord| chunks[*ord].clone()).collect();
+            let vectors = if let Some(emb) = &use_vectors {
+                match emb.embed(&texts) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("[knowledge] embedding 批失败，该文档降级仅全文: {e}");
+                        use_vectors = None;
+                        let _ = self.conn.lock().execute(
+                            "UPDATE knowledge_import_staged_chunks SET vec=NULL WHERE job_id=?1 AND item_id=?2",
+                            params![job_id, item_id],
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(test)]
+            self.wait_at_checkpoint_gate();
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                ensure_import_item_running(&tx, job_id, item_id)?;
+                {
+                    let mut stmt = tx.prepare_cached(
+                        "INSERT OR REPLACE INTO knowledge_import_staged_chunks(job_id,item_id,ord,text,n_tokens,vec) VALUES(?1,?2,?3,?4,?5,?6)",
+                    )?;
+                    for (batch_pos, ord) in ord_batch.iter().enumerate() {
+                        let text = &chunks[*ord];
+                        let vec = vectors
+                            .as_ref()
+                            .and_then(|all| all.get(batch_pos))
+                            .map(|v| embed::vec_to_blob(v));
+                        stmt.execute(params![job_id, item_id, *ord as i64, text, text.chars().count() as i64, vec])?;
+                    }
+                }
+                let completed: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET completed_chunks=?2,updated_at=?3 WHERE id=?1",
+                    params![item_id, completed, now()],
+                )?;
+                tx.commit()
+            });
+            if let Err(e) = result {
+                if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                    return ImportIngestOutcome::Cancelled;
+                }
+                return ImportIngestOutcome::Failed(format!("保存分块检查点失败: {e}"));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            return ImportIngestOutcome::Cancelled;
+        }
+        let mut c = self.conn.lock();
+        let result = c.transaction().and_then(|tx| {
+            ensure_import_item_running(&tx, job_id, item_id)?;
+            let staged: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+                |r| r.get(0),
+            )?;
+            if staged != chunks.len() as i64 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            let doc_id = upsert_import_document(
+                &tx,
+                collection_id,
+                &path_str,
+                &name,
+                ext.as_deref(),
+                size,
+                mtime,
+            )?;
+            tx.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
+            tx.execute(
+                "INSERT INTO chunks(document_id,collection_id,ord,text,n_tokens,vec) \
+                 SELECT ?3,?4,ord,text,n_tokens,vec FROM knowledge_import_staged_chunks \
+                 WHERE job_id=?1 AND item_id=?2 ORDER BY ord",
+                params![job_id, item_id, doc_id, collection_id],
+            )?;
+            tx.execute(
+                "UPDATE documents SET parse_status='parsed',n_chunks=?2,parsed_at=?3 WHERE id=?1",
+                params![doc_id, chunks.len() as i64, now()],
+            )?;
+            tx.execute(
+                "UPDATE knowledge_import_items SET state='completed',completed_chunks=total_chunks,error=NULL,updated_at=?2 WHERE id=?1",
+                params![item_id, now()],
+            )?;
+            tx.execute(
+                "DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+            )?;
+            tx.commit()
+        });
+        match result {
+            Ok(()) => ImportIngestOutcome::Completed,
+            Err(rusqlite::Error::QueryReturnedNoRows) => ImportIngestOutcome::Cancelled,
+            Err(e) => ImportIngestOutcome::Failed(format!("提交文档失败: {e}")),
         }
     }
 
@@ -788,6 +1101,51 @@ impl L1Store {
     }
 }
 
+fn ensure_import_item_running(
+    tx: &rusqlite::Transaction<'_>,
+    job_id: &str,
+    item_id: i64,
+) -> rusqlite::Result<()> {
+    let running: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_import_items i \
+         JOIN knowledge_import_jobs j ON j.id=i.job_id \
+         WHERE i.id=?2 AND i.job_id=?1 AND i.state='running' AND j.state='running')",
+        params![job_id, item_id],
+        |r| r.get(0),
+    )?;
+    if running {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    }
+}
+
+/// 可恢复导入只在最终提交事务里创建/更新文档元数据。这样取消新文件不会留下 pending
+/// 文档，取消重导也不会提前改动既有文档状态或正式 chunks。
+fn upsert_import_document(
+    tx: &rusqlite::Transaction<'_>,
+    collection_id: i64,
+    path: &str,
+    name: &str,
+    ext: Option<&str>,
+    size: i64,
+    mtime: i64,
+) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO documents(collection_id,path,name,ext,size,mtime,parse_status,parsed_at) \
+         SELECT ?1,?2,?3,?4,?5,?6,'pending',0 \
+         WHERE EXISTS(SELECT 1 FROM collections WHERE id=?1) \
+         ON CONFLICT(collection_id,path) DO UPDATE SET \
+           name=excluded.name,ext=excluded.ext,size=excluded.size,mtime=excluded.mtime",
+        params![collection_id, path, name, ext, size, mtime],
+    )?;
+    tx.query_row(
+        "SELECT id FROM documents WHERE collection_id=?1 AND path=?2",
+        params![collection_id, path],
+        |r| r.get(0),
+    )
+}
+
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -861,8 +1219,10 @@ pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::knowledge::import_jobs::ImportJobStore;
     use crate::features::knowledge::store::Store;
     use std::fs;
+    use std::thread;
 
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
@@ -1124,6 +1484,238 @@ mod tests {
         assert!(coll.chunk_count >= 1);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn prepare_import(
+        l1: &L1Store,
+        collection_id: i64,
+        file: &Path,
+    ) -> (ImportJobStore, String, i64) {
+        let jobs = ImportJobStore::new(l1.conn.clone());
+        let job_id = jobs.create(collection_id, &[file.to_path_buf()]).unwrap();
+        jobs.prepare_items(&job_id, &[file.to_path_buf()]).unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        (jobs, job_id, item.id)
+    }
+
+    #[test]
+    fn cancel_while_embedding_cannot_write_a_late_checkpoint() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("并发取消", None, None).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_import_cancel_{}_{}",
+            std::process::id(),
+            now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cancel.md");
+        fs::write(&file, "需要在取消后保持不可见的导入内容").unwrap();
+        let (jobs, job_id, item_id) = prepare_import(&l1, collection_id, &file);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        l1.set_checkpoint_gate(entered.clone(), release.clone());
+        let worker_l1 = l1.clone();
+        let worker_job = job_id.clone();
+        let worker_file = file.clone();
+        let worker = thread::spawn(move || {
+            worker_l1.ingest_import_item(
+                &worker_job,
+                item_id,
+                collection_id,
+                &worker_file,
+                &AtomicBool::new(false),
+            )
+        });
+
+        entered.wait();
+        jobs.cancel(&job_id).unwrap();
+        release.wait();
+        assert!(matches!(
+            worker.join().unwrap(),
+            ImportIngestOutcome::Cancelled
+        ));
+        let c = l1.conn.lock();
+        let state: String = c
+            .query_row(
+                "SELECT state FROM knowledge_import_items WHERE id=?1",
+                params![item_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let staged: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE item_id=?1",
+                params![item_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "cancelled");
+        assert_eq!(staged, 0);
+        let documents: i64 = c
+            .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(documents, 0, "取消新文件不能遗留 pending 文档");
+        drop(c);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delete_collection_while_embedding_cannot_recreate_import_rows() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("并发删除", None, None).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_import_delete_{}_{}",
+            std::process::id(),
+            now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("delete.md");
+        fs::write(&file, "知识集删除后不能被后台结果复活").unwrap();
+        let (_jobs, job_id, item_id) = prepare_import(&l1, collection_id, &file);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        l1.set_checkpoint_gate(entered.clone(), release.clone());
+        let worker_l1 = l1.clone();
+        let worker_job = job_id.clone();
+        let worker_file = file.clone();
+        let worker = thread::spawn(move || {
+            worker_l1.ingest_import_item(
+                &worker_job,
+                item_id,
+                collection_id,
+                &worker_file,
+                &AtomicBool::new(false),
+            )
+        });
+
+        entered.wait();
+        l1.delete_collection(collection_id).unwrap();
+        release.wait();
+        assert!(matches!(
+            worker.join().unwrap(),
+            ImportIngestOutcome::Cancelled
+        ));
+        let c = l1.conn.lock();
+        for table in [
+            "collections",
+            "documents",
+            "chunks",
+            "knowledge_import_jobs",
+            "knowledge_import_items",
+            "knowledge_import_staged_chunks",
+        ] {
+            let count: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} 不应被晚到的 checkpoint 复活");
+        }
+        drop(c);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reimporting_empty_content_removes_old_searchable_chunks() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("空内容重导", None, None).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_import_empty_{}_{}",
+            std::process::id(),
+            now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("same.md");
+        fs::write(&file, "旧内容应该能够被检索命中").unwrap();
+        let (_first_jobs, first_job, first_item) = prepare_import(&l1, collection_id, &file);
+        assert!(matches!(
+            l1.ingest_import_item(
+                &first_job,
+                first_item,
+                collection_id,
+                &file,
+                &AtomicBool::new(false)
+            ),
+            ImportIngestOutcome::Completed
+        ));
+        assert!(!l1
+            .retrieve_for_chat(collection_id, "旧内容", 5, 0)
+            .unwrap()
+            .is_empty());
+
+        fs::write(&file, "   \n").unwrap();
+        let (_second_jobs, second_job, second_item) = prepare_import(&l1, collection_id, &file);
+        assert!(matches!(
+            l1.ingest_import_item(
+                &second_job,
+                second_item,
+                collection_id,
+                &file,
+                &AtomicBool::new(false)
+            ),
+            ImportIngestOutcome::Skipped
+        ));
+        assert!(l1
+            .retrieve_for_chat(collection_id, "旧内容", 5, 0)
+            .unwrap()
+            .is_empty());
+        let document = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+        assert_eq!(document.parse_status, "skipped");
+        assert_eq!(document.n_chunks, 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancelling_reimport_preserves_existing_document_and_chunks() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("取消重导", None, None).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_import_reimport_cancel_{}_{}",
+            std::process::id(),
+            now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("existing.md");
+        fs::write(&file, "旧正式内容必须保留").unwrap();
+        assert_eq!(l1.ingest_file(collection_id, &file), "parsed");
+        let before = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+
+        fs::write(&file, "取消后不能覆盖的全新内容").unwrap();
+        let (jobs, job_id, item_id) = prepare_import(&l1, collection_id, &file);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        l1.set_checkpoint_gate(entered.clone(), release.clone());
+        let worker_l1 = l1.clone();
+        let worker_job = job_id.clone();
+        let worker_file = file.clone();
+        let worker = thread::spawn(move || {
+            worker_l1.ingest_import_item(
+                &worker_job,
+                item_id,
+                collection_id,
+                &worker_file,
+                &AtomicBool::new(false),
+            )
+        });
+        entered.wait();
+        jobs.cancel(&job_id).unwrap();
+        release.wait();
+        assert!(matches!(
+            worker.join().unwrap(),
+            ImportIngestOutcome::Cancelled
+        ));
+
+        let after = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.parse_status, before.parse_status);
+        assert_eq!(after.n_chunks, before.n_chunks);
+        assert!(!l1
+            .retrieve_for_chat(collection_id, "旧正式内容", 5, 0)
+            .unwrap()
+            .is_empty());
+        assert!(l1
+            .retrieve_for_chat(collection_id, "全新内容", 5, 0)
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

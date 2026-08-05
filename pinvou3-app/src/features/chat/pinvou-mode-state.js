@@ -9,7 +9,7 @@ const MAX_SESSION_MODE_STATES = 200;
 const UNROUTED_WORK_SUBTAB = 'general';
 const DEFAULT_WORK_SUBTAB = UNROUTED_WORK_SUBTAB;
 const DEFAULT_DESIGN_SUBTAB = UNROUTED_WORK_SUBTAB;
-const WORK_SUBTABS = [UNROUTED_WORK_SUBTAB, 'document-writing'];
+const WORK_SUBTABS = [UNROUTED_WORK_SUBTAB, 'personal-workbench', 'document-writing'];
 const DESIGN_SUBTABS = [UNROUTED_WORK_SUBTAB, 'poster', 'data-visualization'];
 
 function normalizePinvouMode(value) {
