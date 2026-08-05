@@ -213,9 +213,10 @@ pub async fn download_asr_model(
             }
         });
         let is_cancelled = Box::new(|| ASR_CANCEL.load(Ordering::Acquire));
-        // 原实现无硬性 Content-Length 上限,靠下载后 expected_size+sha256 精确校验兜底。
-        // 这里给一个 generous 上限(预期大小的 2 倍,且不少于 16 MiB),仅挡离谱大文件,
-        // 不影响真实模型(expected_size 即其精确大小)。
+        // 进度 total 的回退估算:与重构前一致用 `expected_size`(缺 Content-Length 时
+        // 进度按它算 100%)。max_bytes 只做离谱大文件挡板,刻意与 total 分开——此前
+        // 复用单字段会让进度停在约 50%(2*expected_size 当 total)。
+        let total_hint = spec.expected_size;
         let max_bytes = spec.expected_size.max(16 * 1024 * 1024) * 2;
         // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
         // sync_all 后、sha256_file 前调用此闭包)。frontend 据此从下载进度(0–95%)
@@ -233,6 +234,7 @@ pub async fn download_asr_model(
             part: &tmp,
             expected_sha256: spec.sha256,
             max_bytes,
+            total_hint,
             is_cancelled,
             user_agent: Some("pinvou3-asr/1.0"),
             on_progress,

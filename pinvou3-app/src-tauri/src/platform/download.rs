@@ -31,9 +31,15 @@ pub struct DownloadRequest<'a> {
     pub part: &'a Path,
     /// 期望的 sha256(小写十六进制);空串表示跳过校验(dev 本地包常用)。
     pub expected_sha256: &'a str,
-    /// 内容长度上限(字节数)。`Content-Length` 超过此值即拒绝;流式累计超过即中止。
-    /// 设为 `u64::MAX` 等价于不设硬上限。
+    /// 内容长度**硬上限**(字节数)。`Content-Length` 超过此值即拒绝;流式累计超过即中止。
+    /// 设为 `u64::MAX` 等价于不设硬上限。仅用于挡离谱大文件,与进度估算无关。
     pub max_bytes: u64,
+    /// 进度 total 的**回退估算值**:仅当响应缺 `Content-Length`(或为 0)时,
+    /// 才用此值作为 `on_progress` 的 `total` 参数。二者刻意拆开——voice 把
+    /// `expected_size` 当估算、把 `2*expected_size` 当上限;knowledge 把
+    /// `MODEL_TARGZ_SIZE` 当估算、把 `2*MODEL_TARGZ_SIZE` 当上限——避免复用单字段
+    /// 导致进度停在约 50% 或合法镜像被拒。
+    pub total_hint: u64,
     /// 取消谓词:返回 `true` 时中止下载并清理 `.part`。
     /// 需 `Sync` 以便在 `tokio::select!` 中与网络 future 并发轮询(恢复重构前
     /// voice 的 `tokio::select!{ send(), wait_for_cancel() }` 响应性)。
@@ -41,13 +47,17 @@ pub struct DownloadRequest<'a> {
     /// 可选 `User-Agent`。重构前 voice/knowledge 各自设置 `pinvou3-asr/1.0`、
     /// `pinvou3-kb/1.0`;helper 通过该字段透传,`None` 时不设置。
     pub user_agent: Option<&'a str>,
-    /// 进度回调 `(downloaded, total)`。`total` 为 `Content-Length`(缺省/为 0 时由调用方
-    /// 在构造请求时填入估算值)。
+    /// 进度回调 `(downloaded, total)`。`total` 为 `Content-Length`(缺省/为 0 时回退到
+    /// [`DownloadRequest::total_hint`])。
     pub on_progress: Box<dyn Fn(u64, u64) + Send + 'a>,
     /// 下载流完成(`sync_all` 后)、sha256 校验**开始前**触发的一次性回调。
     /// 用于在原始时点(下载完成 → verify 事件 → 校验)emit `verify` 进度事件,恢复
     /// 「下载 0–95% → verify → done」的 frontend 事件顺序。`None` = 不触发。
-    pub on_pre_verify: Option<Box<dyn FnOnce() + Send + 'a>>,
+    ///
+    /// 必须为 `'static`:helper 把刷盘/校验/提升整体挪进 `spawn_blocking`,此回调
+    /// 在阻塞任务内触发;调用方需捕获 owned 数据(如克隆的 `AppHandle`),不借用 `req`
+    /// 的生命周期参数。voice/knowledge 两处实现均已是 `'static`。
+    pub on_pre_verify: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 /// `.part` 清理守卫:覆盖所有非成功退出路径(取消 / 网络错误 / 超长 / sha256 不匹配 /
@@ -95,7 +105,9 @@ impl<'a> Drop for PartGuard<'a> {
 /// helper 以闭包承载各调用方的取消源,这里在 select 分支内轮询该闭包恢复响应性。
 const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Result<(), String> {
+pub(crate) async fn download_to_part_with_verify(
+    mut req: DownloadRequest<'_>,
+) -> Result<(), String> {
     // 下载开始前先查一次取消(与 voice 原循环语义一致)。
     if (req.is_cancelled)() {
         let _ = std::fs::remove_file(req.part);
@@ -139,12 +151,15 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
             .map_err(|e| format!("下载源响应异常: {e}"))?
     };
 
-    // 上限以 max_bytes 为准:Content-Length 申报超限直接拒(此时 `.part` 尚未创建,
-    // 仍清理一次以兜底历史残留)。
+    // 进度 total 与硬上限解耦:
+    // - `total`(进度估算)= 真实 `Content-Length`,缺省/为 0 时回退 `total_hint`;
+    // - `max_bytes`(硬上限)只用于挡离谱大文件。二者复用同一字段会把 voice 进度停在
+    //   约 50%(expected_size*2 当 total)、或让 knowledge 的合法镜像(略大于
+    //   MODEL_TARGZ_SIZE)被拒。
     let total = response
         .content_length()
         .filter(|n| *n > 0)
-        .unwrap_or(req.max_bytes);
+        .unwrap_or(req.total_hint);
     if total > req.max_bytes {
         let _ = std::fs::remove_file(req.part);
         return Err(format!("下载内容超过 {} 字节上限", req.max_bytes));
@@ -194,41 +209,62 @@ pub(crate) async fn download_to_part_with_verify(req: DownloadRequest<'_>) -> Re
             return Err("已取消".to_string());
         }
     }
-    // 刷盘后再做校验(rename 前确保数据落盘)。
-    file.sync_all()
-        .map_err(|e| format!("同步下载文件失败: {e}"))?;
+    // 刷盘、sha256 校验、原子 rename 都是**同步**文件 I/O:原 knowledge 流程把它们
+    // 一起放在 `spawn_blocking` 里(对约 389MB 的模型包做 sha256 会长时间占满 worker)。
+    // 这里把文件句柄的 sync + 校验 + 提升整体挪进 `spawn_blocking`,避免在 async
+    // runtime 上做阻塞 I/O(影响其他命令与事件处理)。`on_pre_verify` 是 `Send` 的
+    // `FnOnce`,可安全带进阻塞任务,在 sync 后、SHA 前触发,恢复重构前事件时序。
     drop(file);
+    let part = req.part.to_path_buf();
+    let dest = req.dest.to_path_buf();
+    let expected_sha256 = req.expected_sha256.to_string();
+    let on_pre_verify = req.on_pre_verify.take();
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // 重新打开句柄做 sync_all(create 后未 sync 的句柄已 Drop)。
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&part)
+            .map_err(|e| format!("同步下载文件失败: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("同步下载文件失败: {e}"))?;
+        drop(file);
 
-    // 下载流已完成、校验即将开始:触发调用方的 `verify` 进度事件,恢复重构前的
-    // frontend 事件顺序(下载 0–95% → verify → 校验 → done)。
-    if let Some(on_pre_verify) = req.on_pre_verify {
-        on_pre_verify();
-    }
-
-    // sha256 校验:空串跳过(与 knowledge/voice 的 dev 兜底一致)。
-    if !req.expected_sha256.trim().is_empty() {
-        let got = crate::platform::hashing::sha256_file(req.part)
-            .map_err(|e| format!("读取下载文件失败: {e}"))?;
-        if !got.eq_ignore_ascii_case(req.expected_sha256) {
-            return Err(format!(
-                "下载校验失败(expected {}, got {})",
-                req.expected_sha256, got
-            ));
+        // 下载流已完成、校验即将开始:触发调用方的 `verify` 进度事件,恢复重构前的
+        // frontend 事件顺序(下载 0–95% → verify → 校验 → done)。
+        if let Some(on_pre_verify) = on_pre_verify {
+            on_pre_verify();
         }
-    }
+
+        // sha256 校验:空串跳过(与 knowledge/voice 的 dev 兜底一致)。
+        if !expected_sha256.trim().is_empty() {
+            let got = crate::platform::hashing::sha256_file(&part)
+                .map_err(|e| format!("读取下载文件失败: {e}"))?;
+            if !got.eq_ignore_ascii_case(&expected_sha256) {
+                return Err(format!(
+                    "下载校验失败(expected {}, got {})",
+                    expected_sha256, got
+                ));
+            }
+        }
+
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目标目录失败: {e}"))?;
+        }
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::fs::rename(&part, &dest).map_err(|e| format!("保存下载文件失败: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("下载校验任务异常: {e}"))?;
 
     // 校验后再查一次取消(rename 是不可逆的最后一步)。
     if (req.is_cancelled)() {
         return Err("已取消".to_string());
     }
 
-    if let Some(parent) = req.dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目标目录失败: {e}"))?;
-    }
-    if req.dest.exists() {
-        let _ = std::fs::remove_file(req.dest);
-    }
-    std::fs::rename(req.part, req.dest).map_err(|e| format!("保存下载文件失败: {e}"))?;
+    result?;
     // rename 成功:`.part` 已被消费为 `dest`,解除守卫,避免 Drop 时误删。
     guard.disarm();
     Ok(())
@@ -307,6 +343,27 @@ mod tests {
         (url, handle)
     }
 
+    /// 起 HTTP/1.1 fixture 但**不声明 `Content-Length`**,改用 `Connection: close`
+    /// 让 body 长度由连接结束隐含。用于验证缺 `Content-Length` 时进度 total 回退到
+    /// `total_hint`(而非 `max_bytes`,否则进度会停在约 50%)。
+    fn serve_without_content_length(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let url = format!("http://{addr}/payload");
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let header =
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        (url, handle)
+    }
+
     fn never_cancel<'a>() -> Box<dyn Fn() -> bool + Send + Sync + 'a> {
         Box::new(|| false)
     }
@@ -330,6 +387,7 @@ mod tests {
             part: &part,
             expected_sha256: HELLO_SHA,
             max_bytes: 1024,
+            total_hint: 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress: noop_progress(),
@@ -360,6 +418,7 @@ mod tests {
             part: &part,
             expected_sha256: HELLO_SHA, // 故意不匹配 "abc"
             max_bytes: 1024,
+            total_hint: 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress: noop_progress(),
@@ -390,6 +449,7 @@ mod tests {
             part: &part,
             expected_sha256: "", // 跳过校验(dev 兜底)
             max_bytes: 1024,
+            total_hint: 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress: noop_progress(),
@@ -431,6 +491,7 @@ mod tests {
             part: &part,
             expected_sha256: "",
             max_bytes: 10 * 1024 * 1024,
+            total_hint: 10 * 1024 * 1024,
             is_cancelled,
             user_agent: None,
             on_progress,
@@ -462,6 +523,7 @@ mod tests {
             part: &part,
             expected_sha256: ABC_SHA,
             max_bytes: 1024, // body 2048 > 上限 → Content-Length 即拒
+            total_hint: 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress: noop_progress(),
@@ -496,6 +558,7 @@ mod tests {
             part: &part,
             expected_sha256: "",
             max_bytes: 1024 * 1024,
+            total_hint: 1024 * 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress: noop_progress(),
@@ -545,6 +608,7 @@ mod tests {
             part: &part,
             expected_sha256: "",
             max_bytes: 1024 * 1024,
+            total_hint: 1024 * 1024,
             is_cancelled: never_cancel(),
             user_agent: None,
             on_progress,
@@ -564,6 +628,51 @@ mod tests {
             verify_idx.is_some_and(|v| v > last_progress.unwrap()),
             "verify must fire AFTER last download progress, got events = {:?}",
             *events
+        );
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 缺 `Content-Length` 时,进度 total 必须回退到 `total_hint`(而非 `max_bytes`)。
+    /// 此前复用单字段会让进度停在约 50%(voice 的 max_bytes=2*expected_size)。
+    #[tokio::test]
+    async fn missing_content_length_falls_back_to_total_hint() {
+        let dir = scratch_dir("hint");
+        let body = vec![0u8; 32 * 1024];
+        let (url, handle) = serve_without_content_length(body.clone());
+        let part = dir.join("payload.part");
+        let dest = dir.join("payload");
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+
+        // 故意让 max_bytes 远大于 total_hint:若 helper 错把 max_bytes 当 total,
+        // 进度回调收到的 t 会是 1 GiB;正确实现应回退到 total_hint=32 KiB。
+        let seen_total = Arc::new(std::sync::Mutex::new(0u64));
+        let seen_total_clone = Arc::clone(&seen_total);
+        let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |_d, t| {
+            let mut g = seen_total_clone.lock().unwrap();
+            *g = (*g).max(t);
+        });
+
+        let req = DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &part,
+            expected_sha256: "",
+            max_bytes: 1024 * 1024 * 1024,
+            total_hint: 32 * 1024,
+            is_cancelled: never_cancel(),
+            on_progress,
+            on_pre_verify: None,
+            user_agent: None,
+        };
+        let result = download_to_part_with_verify(req).await;
+
+        assert!(result.is_ok(), "err = {:?}", result.err());
+        assert_eq!(
+            *seen_total.lock().unwrap(),
+            32 * 1024,
+            "missing Content-Length should fall back to total_hint, not max_bytes"
         );
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);

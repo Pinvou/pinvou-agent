@@ -299,7 +299,12 @@ pub async fn kb_model_download(
         dest: &archive,
         part: &part,
         expected_sha256,
-        max_bytes: MODEL_TARGZ_SIZE,
+        // 进度 total 的回退估算(缺 Content-Length 时按它算 100%),与重构前一致。
+        total_hint: MODEL_TARGZ_SIZE,
+        // 原实现无硬上限,靠 sha256 精确校验兜底;这里给 2 倍的宽松挡板,既挡离谱
+        // 大文件,也放行合法的自定义镜像/重发包(略大于 MODEL_TARGZ_SIZE 仍可用,
+        // 只需 SHA 匹配)。此前复用 MODEL_TARGZ_SIZE 当 max_bytes 会误拒这些镜像。
+        max_bytes: MODEL_TARGZ_SIZE.saturating_mul(2),
         is_cancelled,
         user_agent: Some("pinvou3-kb/1.0"),
         on_progress,
