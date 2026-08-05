@@ -398,6 +398,45 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    /// RAII 守卫:在 `$HOME` 下创建 PID + 唯一后缀的专属目录,Drop 时仅清理该目录。
+    ///
+    /// `validate_upload_location` 要求路径位于 `$HOME` 下,而 `check_sensitive_components`
+    /// 按路径组件(如 `id_rsa` / `.env`)判定,与目录位置无关。因此把测试文件放进
+    /// `$HOME/.pinvou3-file-ingest-test-<pid>-<rand>/` 即可同时满足两者,且绝不触碰
+    /// 开发者 `$HOME` 下可能存在的真实 `~/keys/id_rsa`、`~/project/.env`。
+    /// Drop 时整目录删除(含 panic 路径),不会遗留文件。
+    struct ScopedHomeDir {
+        dir: std::path::PathBuf,
+    }
+
+    impl ScopedHomeDir {
+        /// 在 `$HOME` 下创建 `subdir` 子目录(如 `keys`),返回其完整路径。
+        fn subdir(&self, subdir: &str) -> std::path::PathBuf {
+            let p = self.dir.join(subdir);
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        }
+    }
+
+    impl Drop for ScopedHomeDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn scoped_home_dir(label: &str) -> ScopedHomeDir {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = crate::platform::os::user_home_dir().join(format!(
+            ".pinvou3-file-ingest-test-{label}-{}-{}",
+            std::process::id(),
+            nonce
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        ScopedHomeDir { dir }
+    }
+
     #[test]
     fn ingest_result_constructors_match_equivalent_literals() {
         // 构造器产出必须与等价字面量逐字段相等（含 None 默认值）。
@@ -807,14 +846,14 @@ mod tests {
         // Wave 3 收紧：id_rsa 不在任何敏感目录里，但文件名本身是凭据。
         // 必须先创建文件，使路径通过 metadata 检查，从而真正命中的是
         // check_sensitive_components 的组件黑名单（而非 "not readable"）。
-        let home = crate::platform::os::user_home_dir();
-        let dir = home.join("keys");
-        std::fs::create_dir_all(&dir).unwrap();
+        //
+        // 用 ScopedHomeDir 在 $HOME 下开 PID+nonce 专属目录，绝不触碰开发者
+        // 真实的 ~/keys/id_rsa；Drop 时（含 panic）整目录清理。
+        let scope = scoped_home_dir("cred");
+        let dir = scope.subdir("keys");
         let id_rsa = dir.join("id_rsa");
         std::fs::write(&id_rsa, b"dummy").unwrap();
         let result = validate_browsable_path(id_rsa.to_str().unwrap());
-        let _ = std::fs::remove_file(&id_rsa);
-        let _ = std::fs::remove_dir(&dir);
         let err = result.expect_err("id_rsa outside .ssh should be rejected");
         assert!(
             err.contains("sensitive"),
@@ -825,18 +864,31 @@ mod tests {
     #[test]
     fn validate_browsable_path_rejects_env_file() {
         // 同上：先创建 .env 文件，确保拒绝原因来自组件黑名单。
-        let home = crate::platform::os::user_home_dir();
-        let dir = home.join("project");
-        std::fs::create_dir_all(&dir).unwrap();
+        let scope = scoped_home_dir("env");
+        let dir = scope.subdir("project");
         let env_file = dir.join(".env");
         std::fs::write(&env_file, b"dummy").unwrap();
         let result = validate_browsable_path(env_file.to_str().unwrap());
-        let _ = std::fs::remove_file(&env_file);
-        let _ = std::fs::remove_dir(&dir);
         let err = result.expect_err(".env file should be rejected");
         assert!(
             err.contains("sensitive"),
             "should fail on sensitive component, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_browsable_path_accepts_adjacent_normal_file() {
+        // 正向用例：同一隔离目录下的普通文件（非凭据组件）必须通过校验，
+        // 证明上面两个拒绝用例确实命中的是组件黑名单，而非「任何文件都失败」。
+        let scope = scoped_home_dir("ok");
+        let dir = scope.subdir("project");
+        let normal = dir.join("notes.md");
+        std::fs::write(&normal, b"# notes").unwrap();
+        let result = validate_browsable_path(normal.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "adjacent normal file should be accepted: {:?}",
+            result.err()
         );
     }
 

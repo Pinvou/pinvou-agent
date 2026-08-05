@@ -180,9 +180,7 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 }
 
 // Unix 通用 helper 从 posix.rs 继承（Wave 3 去重，与 linux_path.rs 一致）。
-pub use super::posix::{
-    filesystem_path_identity_key, path_component_eq, platform_compat_path, python_command,
-};
+pub use super::posix::{path_component_eq, platform_compat_path, python_command};
 
 pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
     Command::new(program)

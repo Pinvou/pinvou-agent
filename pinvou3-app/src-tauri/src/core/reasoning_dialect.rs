@@ -12,13 +12,17 @@
 //! 各 feature 的 wrapper（`review_reasoning_dialect` / `memory_review_reasoning_dialect`）
 //! 仍保留各自的 preset 分发逻辑，但 URL 回退统一委托此模块。
 
-/// 推理 dialect 枚举。review 与 memory 变体集完全相同，统一于此。
+/// 推理 dialect 枚举：仅描述 [`reasoning_dialect_from_base_url`] 实际能嗅探出的
+/// URL 结果（None / ThinkingDisabled / QwenEnableThinking / Minimax）。
+///
+/// VllmChatTemplate 不在此列：它只能由调用方按 `provider`/`preset`（`vllm` /
+/// `LocalVllm`）判定，永远不来自 URL 嗅探。各 feature 保留各自的本地枚举承载该
+/// 变体，并在 OpenAI 兼容 URL 回退分支经 `From<ReasoningDialect>` 转换共享结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningDialect {
     None,
     ThinkingDisabled,
     QwenEnableThinking,
-    VllmChatTemplate,
     Minimax,
 }
 

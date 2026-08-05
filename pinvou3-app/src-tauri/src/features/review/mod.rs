@@ -597,7 +597,6 @@ impl From<crate::core::reasoning_dialect::ReasoningDialect> for ReviewReasoningD
             D::None => ReviewReasoningDialect::None,
             D::ThinkingDisabled => ReviewReasoningDialect::ThinkingDisabled,
             D::QwenEnableThinking => ReviewReasoningDialect::QwenEnableThinking,
-            D::VllmChatTemplate => ReviewReasoningDialect::VllmChatTemplate,
             D::Minimax => ReviewReasoningDialect::Minimax,
         }
     }
