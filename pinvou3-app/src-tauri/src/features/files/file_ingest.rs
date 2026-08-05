@@ -805,23 +805,38 @@ mod tests {
     #[test]
     fn validate_browsable_path_rejects_credential_file() {
         // Wave 3 收紧：id_rsa 不在任何敏感目录里，但文件名本身是凭据。
+        // 必须先创建文件，使路径通过 metadata 检查，从而真正命中的是
+        // check_sensitive_components 的组件黑名单（而非 "not readable"）。
         let home = crate::platform::os::user_home_dir();
-        let id_rsa = home.join("keys").join("id_rsa");
+        let dir = home.join("keys");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id_rsa = dir.join("id_rsa");
+        std::fs::write(&id_rsa, b"dummy").unwrap();
         let result = validate_browsable_path(id_rsa.to_str().unwrap());
+        let _ = std::fs::remove_file(&id_rsa);
+        let _ = std::fs::remove_dir(&dir);
+        let err = result.expect_err("id_rsa outside .ssh should be rejected");
         assert!(
-            result.is_err(),
-            "id_rsa outside .ssh should be rejected by tightened component check"
+            err.contains("sensitive"),
+            "should fail on sensitive component, got: {err}"
         );
     }
 
     #[test]
     fn validate_browsable_path_rejects_env_file() {
+        // 同上：先创建 .env 文件，确保拒绝原因来自组件黑名单。
         let home = crate::platform::os::user_home_dir();
-        let env_file = home.join("project").join(".env");
+        let dir = home.join("project");
+        std::fs::create_dir_all(&dir).unwrap();
+        let env_file = dir.join(".env");
+        std::fs::write(&env_file, b"dummy").unwrap();
         let result = validate_browsable_path(env_file.to_str().unwrap());
+        let _ = std::fs::remove_file(&env_file);
+        let _ = std::fs::remove_dir(&dir);
+        let err = result.expect_err(".env file should be rejected");
         assert!(
-            result.is_err(),
-            ".env file should be rejected by tightened component check"
+            err.contains("sensitive"),
+            "should fail on sensitive component, got: {err}"
         );
     }
 
