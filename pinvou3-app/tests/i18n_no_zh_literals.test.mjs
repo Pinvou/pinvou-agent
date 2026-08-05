@@ -11,7 +11,7 @@ const files = [
   'src/features/tools/ToolStoreView.jsx',
   'src/features/workflow/WorkflowView.jsx',
 ];
-// 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
+// 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...'，
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。
 const root = fileURLToPath(new URL('../', import.meta.url));
 
