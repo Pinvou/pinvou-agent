@@ -96,6 +96,10 @@ assert.throws(() => api.state.get('unknown'), /Unknown Tauri bridge state slice/
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 assert.ok(
+  indexSource.indexOf('shared/model-service-errors.js') < indexSource.indexOf('shared/bridge-messages.js'),
+  'model service error classifier must load before shared bridge messages',
+);
+assert.ok(
   indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/web/bridge.js'),
   'shared bridge messages must load before the web bridge',
 );

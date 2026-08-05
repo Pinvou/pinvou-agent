@@ -14,6 +14,7 @@ const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
 const webTurnTerminalSource = read('src', 'platform', 'web', 'bridge', 'turn-terminal.js');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
+const modelServiceErrorsSource = read('src', 'shared', 'model-service-errors.js');
 const bridgeMessagesSource = read('src', 'shared', 'bridge-messages.js');
 const { conversationItemsForMode } = await import(
   '../src/features/conversation/deepseek-conversation.js'
@@ -24,7 +25,22 @@ vm.runInNewContext(chatSource, sandbox, { filename: 'chat.js' });
 const installChat = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 
 const messageSandbox = { window: {} };
+vm.runInNewContext(modelServiceErrorsSource, messageSandbox, { filename: 'model-service-errors.js' });
 vm.runInNewContext(bridgeMessagesSource, messageSandbox, { filename: 'bridge-messages.js' });
+const modelErrors = messageSandbox.window.PinvouModelServiceErrors;
+assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
+assert.equal(modelErrors.classify('HTTP 429 quota exceeded').kind, 'quota');
+assert.equal(modelErrors.classify('HTTP 429 insufficient_quota').kind, 'quota');
+assert.equal(modelErrors.classify('insufficient_quota').kind, 'quota');
+assert.equal(modelErrors.classify('HTTP 429 too many requests').kind, 'rate_limit');
+assert.equal(modelErrors.classify('HTTP 500 insufficient balance').kind, 'billing');
+assert.equal(modelErrors.classify('permission denied while reading local file').kind, 'unknown');
+assert.equal(modelErrors.isModelServiceError('permission denied while reading local file'), false);
+assert.equal(modelErrors.isModelServiceError('insufficient_quota'), true);
+assert.match(
+  modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
+  /\[敏感信息已隐藏\]/,
+);
 const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
 const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
@@ -42,7 +58,49 @@ messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
 assert.equal(cleanupState.chatItems.length, 1, 'cleanup warning must be deduplicated');
 assert.equal(cleanupState.chatItems[0].legacyConversationOnly, true);
 
+const modelErrorState = {
+  settings: { language: 'zh-Hans' },
+  currentSessionModelId: 'deepseek-main',
+  savedModels: [{ id: 'deepseek-main', preset: 'deepseek', model: 'deepseek-chat' }],
+  chatItems: [],
+};
+const addModelErrorItem = (text, metadata) => modelErrorState.chatItems.push({ text, ...metadata });
+const rawBillingError = 'SSE stream request failed: HTTP 402 {"error":{"message":"insufficient balance","api_key":"sk-secret"}}';
+const billingAdded = messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: rawBillingError },
+  modelErrorState,
+  addModelErrorItem,
+  true,
+);
+assert.equal(billingAdded, true);
+assert.equal(modelErrorState.chatItems.length, 1);
+assert.equal(modelErrorState.chatItems[0].userError.kind, 'billing');
+assert.match(modelErrorState.chatItems[0].text, /DeepSeek账户余额不足/);
+assert.doesNotMatch(modelErrorState.chatItems[0].text, /SSE stream request failed/);
+assert.match(modelErrorState.chatItems[0].userError.technicalDetail, /\[敏感信息已隐藏\]/);
+assert.equal(modelErrorState.chatItems[0].legacyConversationOnly, true);
+messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+  { error: rawBillingError },
+  modelErrorState,
+  addModelErrorItem,
+  true,
+);
+assert.equal(modelErrorState.chatItems.length, 1, 'model service notices must be deduplicated');
+assert.equal(
+  messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
+    { error: 'permission denied while reading local file' },
+    modelErrorState,
+    addModelErrorItem,
+    false,
+  ),
+  false,
+  'non-model-service errors must fall back to the raw chat error notice',
+);
+assert.equal(modelErrorState.chatItems.length, 1, 'non-model-service errors must not add model service notices');
+
 const terminalSandbox = { window: {}, Date };
+vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });
+vm.runInNewContext(bridgeMessagesSource, terminalSandbox, { filename: 'bridge-messages.js' });
 vm.runInNewContext(webTurnTerminalSource, terminalSandbox, { filename: 'turn-terminal.js' });
 const timelineState = {
   activeTurnTimelineId: 'turn-1',
@@ -57,6 +115,15 @@ assert.equal(timelineState.activeTurnTimelineId, null);
 assert.equal(timelineState.turnTimeline[1].event, 'assistant_done');
 assert.equal(timelineState.turnTimeline[1].status, 'Interrupted');
 assert.equal(timelineState.turnTimeline[1].ui_turn_index, 2);
+timelineState.activeTurnTimelineId = 'turn-2';
+timelineState.turnTimeline.push({ turn_id: 'turn-2', event: 'user_start', ui_turn_index: 3 });
+terminalSandbox.window.PinvouWebTurnTerminal.recordCompleted(
+  timelineState,
+  timelineState.turnTimeline[2],
+  { status: 'Failed', error: rawBillingError },
+);
+assert.equal(timelineState.turnTimeline[3].user_error.kind, 'billing');
+assert.match(timelineState.turnTimeline[3].user_error.message, /充值/);
 
 const state = {
   activeSessionId: 'session-1',
@@ -152,7 +219,10 @@ const doneSection = chatEventsSource.slice(
 );
 assert.match(doneSection, /legacyConversationOnly: true/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
-assert.match(doneSection, /PinvouBridgeMessages\.showShellCleanupFailure/);
+assert.match(doneSection, /messages\.addModelServiceErrorNotice/);
+assert.match(doneSection, /typeof messages\.addModelServiceErrorNotice === "function"/);
+assert.match(doneSection, /shellMessages\.showShellCleanupFailure/);
+assert.match(doneSection, /typeof shellMessages\.showShellCleanupFailure === "function"/);
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
 assert.match(
@@ -175,6 +245,7 @@ assert.match(
 );
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(webBridgeSource, /PinvouBridgeMessages\.showShellCleanupFailure/);
+assert.match(webBridgeSource, /PinvouBridgeMessages\.addModelServiceErrorNotice/);
 assert.equal(
   (bridgeMessagesSource.match(/^    (zh|en|ja):/gm) || []).length,
   3,

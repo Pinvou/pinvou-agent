@@ -16,6 +16,52 @@
   }
 
   window.PinvouBridgeMessages = Object.freeze({
+    modelServiceUserError: function (payload, state) {
+      payload = payload || {};
+      state = state || {};
+      var raw = payload && (payload.user_error || payload.userError);
+      var error = payload && payload.error;
+      if (!raw && !error) return null;
+      var helper = window.PinvouModelServiceErrors;
+      if (!helper || typeof helper.build !== "function") return null;
+      if (!raw && typeof helper.isModelServiceError === "function" && !helper.isModelServiceError(error)) {
+        return null;
+      }
+      return helper.build(raw || error, {
+        language: state.settings && state.settings.language,
+        providerLabel: helper.providerLabelFromState(state),
+      });
+    },
+
+    addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly) {
+      payload = payload || {};
+      state = state || {};
+      var helper = window.PinvouModelServiceErrors;
+      var userError = window.PinvouBridgeMessages.modelServiceUserError(payload, state);
+      if (!helper || !userError) return false;
+      var notice = helper.noticeText(userError);
+      var chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+      var existing = chatItems.find(function (item) {
+        return item && item.turnErrorNotice && (
+          item.text === notice ||
+          (item.userError && item.userError.technicalDetail === userError.technicalDetail)
+        );
+      });
+      if (existing) {
+        if (legacyConversationOnly) existing.legacyConversationOnly = true;
+        existing.userError = userError;
+      } else {
+        addSystemItem(notice, {
+          turnErrorNotice: true,
+          legacyConversationOnly: !!legacyConversationOnly,
+          userError: userError,
+        });
+      }
+      payload.user_error = userError;
+      payload.userError = userError;
+      return true;
+    },
+
     showShellCleanupFailure: function (payload, state, addSystemItem) {
       if (!payload || !payload.shell_cleanup_failed) return;
       var notice = shellCleanupFailedText(state.settings && state.settings.language);

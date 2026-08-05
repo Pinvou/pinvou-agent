@@ -68,5 +68,10 @@ assert.match(
   /'shared\/bridge-messages\.js'/,
   'classic shared bridge dependencies must be copied into built UI assets',
 );
+assert.match(
+  viteConfig,
+  /'shared\/model-service-errors\.js'/,
+  'model service error classifier must be copied into built UI assets',
+);
 
 console.log('web asset base-path tests passed');

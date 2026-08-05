@@ -7,7 +7,7 @@ Object.assign(dict.zh.uiSettingsDetail, {
   addProvider:provider=>`添加 ${provider}`, editProvider:provider=>`编辑 ${provider}`,
   autoDetectLocalModel:'自动检测本地模型',
   codingPlanTestUnavailable:'当前厂商接口暂时无法完成测试，但不影响保存配置',
-  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
+  connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', billing:'账户余额不足，请充值后重试，或切换到其他模型', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'官方 API', custom:'自定义兼容接口' },
   providerCatalog:{},
 });
@@ -21,7 +21,7 @@ Object.assign(dict.en.uiSettingsDetail, {
   addProvider:provider=>`Add ${provider}`, editProvider:provider=>`Edit ${provider}`,
   autoDetectLocalModel:'Automatically detect local models',
   codingPlanTestUnavailable:'This provider endpoint cannot be tested right now, but you can still save the configuration',
-  connectionMessages:{ ok:'Connection successful; service available', auth_invalid:'Invalid API Key. Check it and try again', auth_forbidden:'This API Key does not have access', rate_limited:'Too many requests or insufficient quota. Try again later', endpoint_not_found:'Endpoint unavailable', method_not_allowed:'The endpoint does not support test requests', http_error:'Connection failed. Check the configuration and retry', unknown:'Connection failed. Try again later' },
+  connectionMessages:{ ok:'Connection successful; service available', auth_invalid:'Invalid API Key. Check it and try again', auth_forbidden:'This API Key does not have access', billing:'Account balance is insufficient. Add balance or switch to another model', rate_limited:'Too many requests or insufficient quota. Try again later', endpoint_not_found:'Endpoint unavailable', method_not_allowed:'The endpoint does not support test requests', http_error:'Connection failed. Check the configuration and retry', unknown:'Connection failed. Try again later' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'Official APIs', custom:'Custom compatible endpoints' },
   providerCatalog:{
     local:{title:'Local Model',desc:'Default model for the local service'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'Dedicated endpoint for coding and agent tasks'},
@@ -54,7 +54,7 @@ Object.assign(dict.ja.uiSettingsDetail, {
   addProvider:provider=>`${provider} を追加`, editProvider:provider=>`${provider} を編集`,
   autoDetectLocalModel:'ローカルモデルを自動検出',
   codingPlanTestUnavailable:'現在このプロバイダーの接続テストはできませんが、設定は保存できます',
-  connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
+  connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', billing:'アカウント残高が不足しています。チャージするか、別のモデルに切り替えてください', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', custom:'カスタム互換エンドポイント' },
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},

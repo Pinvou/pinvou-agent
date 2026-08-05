@@ -16,7 +16,7 @@ const conversationZh = {
   permissionRequest:agent=>`${agent} 请求权限`, protectedOperation:'执行受保护操作', operationArguments:'操作参数',
   allowOnce:'允许一次', allowSession:'本会话允许', reject:'拒绝', handled:'已处理', expired:'该请求已过期',
   usage:(input,output)=>`输入 ${input} · 输出 ${output}`, contextUsage:(used,size)=>`上下文 ${used} / ${size}`,
-  attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败',
+  attachment:'附件', operations:(count,failedCount)=>`执行 ${count} 项${failedCount?` · ${failedCount} 项失败`:''}`, copyReply:'复制回复', copyReplySuccess:'已复制', copyReplyFailed:'复制失败', technicalDetails:'技术详情',
 };
 
 const conversationEn = {
@@ -36,7 +36,7 @@ const conversationEn = {
   permissionRequest:agent=>`${agent} requests permission`, protectedOperation:'Run a protected operation', operationArguments:'Operation arguments',
   allowOnce:'Allow once', allowSession:'Allow for this session', reject:'Reject', handled:'Handled', expired:'This request has expired',
   usage:(input,output)=>`Input ${input} · Output ${output}`, contextUsage:(used,size)=>`Context ${used} / ${size}`,
-  attachment:'Attachment', operations:(count,failedCount)=>`${count} operations${failedCount?` · ${failedCount} failed`:''}`, copyReply:'Copy response', copyReplySuccess:'Copied', copyReplyFailed:'Copy failed',
+  attachment:'Attachment', operations:(count,failedCount)=>`${count} operations${failedCount?` · ${failedCount} failed`:''}`, copyReply:'Copy response', copyReplySuccess:'Copied', copyReplyFailed:'Copy failed', technicalDetails:'Technical details',
 };
 
 const conversationJa = {
@@ -56,7 +56,7 @@ const conversationJa = {
   permissionRequest:agent=>`${agent} が権限を要求しています`, protectedOperation:'保護された操作を実行', operationArguments:'操作引数',
   allowOnce:'今回のみ許可', allowSession:'このセッションで許可', reject:'拒否', handled:'処理済み', expired:'このリクエストは期限切れです',
   usage:(input,output)=>`入力 ${input} · 出力 ${output}`, contextUsage:(used,size)=>`コンテキスト ${used} / ${size}`,
-  attachment:'添付ファイル', operations:(count,failedCount)=>`${count} 件実行${failedCount?` · ${failedCount} 件失敗`:''}`, copyReply:'返信をコピー', copyReplySuccess:'コピーしました', copyReplyFailed:'コピーに失敗しました',
+  attachment:'添付ファイル', operations:(count,failedCount)=>`${count} 件実行${failedCount?` · ${failedCount} 件失敗`:''}`, copyReply:'返信をコピー', copyReplySuccess:'コピーしました', copyReplyFailed:'コピーに失敗しました', technicalDetails:'技術詳細',
 };
 
 const codexZh = {
