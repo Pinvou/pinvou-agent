@@ -323,7 +323,7 @@ const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onAppl
                 onChange={(e) => setColorDraft(e.target.value)}
                 onBlur={submitColorDraft}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     submitColorDraft();
                     setColorMenu(null);
@@ -456,7 +456,7 @@ const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onAppl
                   value={textDraft}
                   onChange={(e) => setTextDraft(e.target.value)}
                   onBlur={commitText}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.blur(); } }}
                 />
               </label>
             )}

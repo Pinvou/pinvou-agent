@@ -1195,7 +1195,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       function handleKeyDown(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
+        // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           handleSend();
         }
@@ -2172,7 +2174,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div className="max-w-[85%] w-full min-w-0">
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')

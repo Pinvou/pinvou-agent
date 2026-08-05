@@ -360,7 +360,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                 value={aiInstruction}
                 onChange={(e) => setAiInstruction(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitAiEdit();
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) submitAiEdit();
                   if (e.key === 'Escape') clearAiUi();
                 }}
                 placeholder={t.apMdAiInstructionPlaceholder}

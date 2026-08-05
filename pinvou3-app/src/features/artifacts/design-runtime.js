@@ -751,7 +751,7 @@ function buildDesignRuntimeScript() {
         event.preventDefault();
         event.stopPropagation();
         finishTextEdit(false);
-      } else if (event.key === 'Enter' && !event.shiftKey) {
+      } else if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         event.stopPropagation();
         finishTextEdit(true);

@@ -302,7 +302,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
               onClick={e => e.stopPropagation()}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
               className={`w-full px-3 py-1 rounded-full text-[15px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
           </div>
