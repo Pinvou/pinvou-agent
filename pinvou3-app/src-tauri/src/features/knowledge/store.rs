@@ -17,10 +17,11 @@ use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::Serialize;
 
-/// schema 版本。bump 后旧库会被删除重建（L0 是可重建缓存，无数据损失）。
+/// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
 /// v2：FTS 砍掉 path 列（path-trigram 实测占 2/3 库体积、是写入 CPU 大头）。
 /// v3：新增 L1 知识库表（collections/documents/chunks/chunks_fts）。
-const SCHEMA_VERSION: i64 = 3;
+/// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。
+const SCHEMA_VERSION: i64 = 4;
 
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
 const SCHEMA: &str = r#"
@@ -125,6 +126,47 @@ END;
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.id, old.text);
 END;
+
+-- ============ 可恢复的知识集批量导入任务 ============
+CREATE TABLE IF NOT EXISTS knowledge_import_jobs (
+    id              TEXT PRIMARY KEY,
+    collection_id   INTEGER NOT NULL,
+    roots_json      TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_import_jobs_collection
+    ON knowledge_import_jobs(collection_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_import_items (
+    id               INTEGER PRIMARY KEY,
+    job_id           TEXT NOT NULL,
+    path             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    state            TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    total_chunks     INTEGER NOT NULL DEFAULT 0,
+    completed_chunks INTEGER NOT NULL DEFAULT 0,
+    content_hash     TEXT,
+    error            TEXT,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE(job_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_import_items_job_state
+    ON knowledge_import_items(job_id, state, id);
+
+-- 未完成文件的分块暂存区。全部分块就绪后再原子替换正式 chunks，避免半成品被检索。
+CREATE TABLE IF NOT EXISTS knowledge_import_staged_chunks (
+    job_id    TEXT NOT NULL,
+    item_id   INTEGER NOT NULL,
+    ord       INTEGER NOT NULL,
+    text      TEXT NOT NULL,
+    n_tokens  INTEGER NOT NULL DEFAULT 0,
+    vec       BLOB,
+    PRIMARY KEY(job_id, item_id, ord)
+);
 "#;
 
 const UPSERT_SQL: &str = r#"
@@ -208,22 +250,25 @@ impl Store {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let stale = {
+        let existed = db_path.exists();
+        let current_version = {
             match Connection::open(db_path) {
-                Ok(c) => {
-                    c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                        .unwrap_or(0)
-                        != SCHEMA_VERSION
-                }
-                Err(_) => false,
+                Ok(c) => c
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap_or(0),
+                Err(_) => 0,
             }
         }; // 连接在此 drop，才能删文件
+           // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
+        let stale = existed && !matches!(current_version, 3 | SCHEMA_VERSION);
         if stale {
             let p = db_path.display().to_string();
             let _ = std::fs::remove_file(db_path);
             let _ = std::fs::remove_file(format!("{p}-wal"));
             let _ = std::fs::remove_file(format!("{p}-shm"));
-            eprintln!("[knowledge] schema 升级到 v{SCHEMA_VERSION}，旧索引库已清空，需重新扫描");
+            eprintln!(
+                "[knowledge] 不兼容 schema 升级到 v{SCHEMA_VERSION}，旧索引库已清空，需重新扫描"
+            );
         }
         let w = Connection::open(db_path)?;
         w.execute_batch(SCHEMA)?;
@@ -639,5 +684,60 @@ mod tests {
 
         s.set_last_scan_finished_at(12345).unwrap();
         assert_eq!(s.last_scan_finished_at().unwrap(), 12345);
+    }
+
+    #[test]
+    fn v3_database_is_migrated_without_losing_collections() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_v3_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE collections(\
+               id INTEGER PRIMARY KEY,name TEXT NOT NULL,category TEXT,description TEXT,\
+               created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,embed_model TEXT,\
+               embed_dim INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'ready'\
+             );\
+             INSERT INTO collections(id,name,created_at,updated_at,status)\
+             VALUES(7,'保留的知识集',1,1,'ready');\
+             PRAGMA user_version=3;",
+        )
+        .unwrap();
+        drop(c);
+
+        let store = Store::open(&path).unwrap();
+        let conn = store.conn_arc();
+        let name: String = conn
+            .lock()
+            .query_row("SELECT name FROM collections WHERE id=7", [], |r| r.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        let import_table: i64 = conn
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='knowledge_import_jobs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "保留的知识集");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(import_table, 1);
+        drop(conn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

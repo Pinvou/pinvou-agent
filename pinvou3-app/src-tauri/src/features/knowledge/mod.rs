@@ -11,6 +11,7 @@
 mod e2e_test;
 mod embed;
 mod exclude;
+mod import_jobs;
 mod kb_tool;
 mod l1;
 /// embedding 模型按需下载命令（pub mod：tauri::command 宏生成的 `__cmd__` 助手需经全路径
@@ -25,9 +26,11 @@ mod store;
 mod watcher;
 
 pub use exclude::Excluder;
+pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
 pub use l1::{ChunkHit, Collection, Document};
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -57,27 +60,14 @@ pub struct ScanState {
     pub finished_at: i64,
 }
 
-/// L1 知识集索引进度（解析+切块，回前端轮询）。
-#[derive(Debug, Clone, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct IndexState {
-    pub running: bool,
-    pub collection_id: i64,
-    /// idle / parsing / done / cancelled
-    pub phase: String,
-    pub done: u64,
-    pub total: u64,
-    pub started_at: i64,
-    pub finished_at: i64,
-}
-
 /// 知识服务：L0 元数据库 + 后台扫描状态 + L1 知识库(共享同一连接)。Tauri managed state。
 pub struct KnowledgeService {
     store: Store,
     l1: l1::L1Store,
     scan_state: Arc<Mutex<ScanState>>,
     cancel: Arc<AtomicBool>,
-    index_state: Arc<Mutex<IndexState>>,
+    imports: import_jobs::ImportJobStore,
+    active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
 }
 
@@ -87,7 +77,15 @@ impl KnowledgeService {
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
-        let l1 = l1::L1Store::new(store.conn_arc(), None);
+        let conn = store.conn_arc();
+        let l1 = l1::L1Store::new(conn.clone(), None);
+        let imports = import_jobs::ImportJobStore::new(conn);
+        let interrupted = imports.recover_interrupted()?;
+        if let Some(job) = &interrupted {
+            if job.resumable {
+                l1.set_collection_status(job.collection_id, "pending");
+            }
+        }
         Ok(Self {
             store,
             l1,
@@ -101,10 +99,8 @@ impl KnowledgeService {
                 ..Default::default()
             })),
             cancel: Arc::new(AtomicBool::new(false)),
-            index_state: Arc::new(Mutex::new(IndexState {
-                phase: "idle".into(),
-                ..Default::default()
-            })),
+            imports,
+            active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -155,84 +151,195 @@ impl KnowledgeService {
     }
 
     pub fn index_status(&self) -> IndexState {
-        self.index_state.lock().clone()
-    }
-
-    pub fn cancel_index(&self) {
-        self.index_cancel.store(true, Ordering::Relaxed);
-    }
-
-    /// 后台把若干路径(文件或目录)加入知识集：展开目录→解析→切块→入库。限速、可中断。
-    pub fn start_index(&self, collection_id: i64, roots: Vec<PathBuf>) -> IndexState {
-        {
-            let mut st = self.index_state.lock();
-            if st.running {
-                return st.clone();
-            }
-            self.index_cancel.store(false, Ordering::Relaxed);
-            *st = IndexState {
-                running: true,
-                collection_id,
-                phase: "parsing".into(),
-                started_at: now(),
+        self.imports
+            .latest_state()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| IndexState {
+                phase: "idle".into(),
                 ..Default::default()
-            };
+            })
+    }
+
+    pub fn cancel_index(&self) -> Result<(), String> {
+        let job_id = self
+            .active_import
+            .lock()
+            .clone()
+            .or_else(|| self.index_status().job_id);
+        if let Some(job_id) = job_id {
+            let st = self.imports.state(&job_id).map_err(|e| e.to_string())?;
+            if st.running || st.resumable {
+                self.imports.cancel(&job_id).map_err(|e| e.to_string())?;
+                self.index_cancel.store(true, Ordering::Relaxed);
+                self.l1.set_collection_status(st.collection_id, "ready");
+            }
         }
-        self.l1.set_collection_status(collection_id, "indexing");
+        Ok(())
+    }
 
+    pub fn cancel_index_for_collection(&self, collection_id: i64) -> Result<(), String> {
+        let status = self.index_status();
+        if status.collection_id == collection_id && (status.running || status.resumable) {
+            self.cancel_index()?;
+        }
+        Ok(())
+    }
+
+    pub fn failed_index_files(
+        &self,
+        job_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<FailedImportFilePage, String> {
+        self.imports
+            .failed_files_page(job_id, offset, limit)
+            .map_err(|e| e.to_string())
+    }
+
+    /// 后台把若干路径(文件或目录)加入知识集：先持久化任务，再展开目录→解析→切块→入库。
+    pub fn start_index(&self, collection_id: i64, roots: Vec<PathBuf>) -> IndexState {
+        let mut active = self.active_import.lock();
+        if active.is_some() {
+            return self.index_status();
+        }
+        if let Ok(Some(previous)) = self.imports.latest_state() {
+            if previous.resumable {
+                return previous;
+            }
+        }
+        let job_id = match self.imports.create(collection_id, &roots) {
+            Ok(id) => id,
+            Err(_) => return self.index_status(),
+        };
+        *active = Some(job_id.clone());
+        drop(active);
+        self.launch_import(job_id.clone());
+        self.imports
+            .state(&job_id)
+            .unwrap_or_else(|_| self.index_status())
+    }
+
+    pub fn resume_index(&self, job_id: String) -> Result<IndexState, String> {
+        let mut active = self.active_import.lock();
+        if active.is_some() {
+            return Err("已有知识集导入任务正在运行".into());
+        }
+        self.imports.resume(&job_id).map_err(|e| e.to_string())?;
+        *active = Some(job_id.clone());
+        drop(active);
+        self.launch_import(job_id.clone());
+        self.imports.state(&job_id).map_err(|e| e.to_string())
+    }
+
+    pub fn retry_index_item(&self, job_id: String, item_id: i64) -> Result<IndexState, String> {
+        let mut active = self.active_import.lock();
+        if active.is_some() {
+            return Err("已有知识集导入任务正在运行".into());
+        }
+        self.imports
+            .retry_item(&job_id, item_id)
+            .map_err(|e| e.to_string())?;
+        *active = Some(job_id.clone());
+        drop(active);
+        self.launch_import(job_id.clone());
+        self.imports.state(&job_id).map_err(|e| e.to_string())
+    }
+
+    fn launch_import(&self, job_id: String) {
+        self.index_cancel.store(false, Ordering::Relaxed);
+        let imports = self.imports.clone();
         let l1 = self.l1.clone();
-        let index_state = self.index_state.clone();
         let cancel = self.index_cancel.clone();
+        let active = self.active_import.clone();
+        // panic 兜底需要一份不被闭包 move 走的句柄，否则 panic 后无法清理。
+        let panic_imports = imports.clone();
+        let panic_active = active.clone();
+        let panic_job_id = job_id.clone();
         thread::spawn(move || {
-            // 展开目录(复用 Excluder 跳过 churn/隐私)，收集待解析文件。
-            let ex = Excluder::default();
-            let mut files: Vec<PathBuf> = Vec::new();
-            for root in &roots {
-                if root.is_file() {
-                    files.push(root.clone());
-                    continue;
-                }
-                let walker = WalkDir::new(root)
-                    .follow_links(false)
-                    .into_iter()
-                    .filter_entry(|e| {
-                        let name = e.file_name().to_str().unwrap_or("");
-                        let is_dir = e.file_type().is_dir();
-                        let ext = if is_dir {
-                            None
-                        } else {
-                            e.path()
-                                .extension()
-                                .and_then(|s| s.to_str())
-                                .map(|s| s.to_lowercase())
-                        };
-                        !ex.is_skipped(name, is_dir, ext.as_deref())
-                    });
-                for entry in walker.flatten() {
-                    if entry.file_type().is_file() {
-                        files.push(entry.path().to_path_buf());
+            // 导入线程处理任意用户文件（PDF/Office/图片 OCR 等），底层解析可能 panic。
+            // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
+            // 触发它：若不在此兜住，active_import 会永久卡在已死的任务上，直到完全重启。
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let state = match imports.state(&job_id) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        imports.interrupt(&job_id);
+                        *active.lock() = None;
+                        return;
                     }
+                };
+                l1.set_collection_status(state.collection_id, "indexing");
+                let mut infrastructure_error = false;
+                let prepare_result = imports.item_count(&job_id).and_then(|count| {
+                    if count > 0 {
+                        return Ok(());
+                    }
+                    let roots = imports.roots(&job_id)?;
+                    let files = expand_import_roots(&roots, &cancel);
+                    imports.prepare_items(&job_id, &files)
+                });
+                if prepare_result.is_err() {
+                    imports.interrupt(&job_id);
+                    infrastructure_error = true;
+                }
+                loop {
+                    if infrastructure_error
+                        || cancel.load(Ordering::Relaxed)
+                        || imports.is_cancelled(&job_id)
+                    {
+                        break;
+                    }
+                    let item = match imports.claim_next(&job_id) {
+                        Ok(Some(v)) => v,
+                        Ok(None) => break,
+                        Err(_) => {
+                            imports.interrupt(&job_id);
+                            infrastructure_error = true;
+                            break;
+                        }
+                    };
+                    match l1.ingest_import_item(
+                        &job_id,
+                        item.id,
+                        state.collection_id,
+                        &item.path,
+                        &cancel,
+                    ) {
+                        l1::ImportIngestOutcome::Completed | l1::ImportIngestOutcome::Skipped => {}
+                        l1::ImportIngestOutcome::Cancelled => break,
+                        l1::ImportIngestOutcome::Failed(error) => {
+                            imports.mark_failed(&job_id, item.id, &error);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(3));
+                }
+                if !infrastructure_error {
+                    let _ = imports.finish(&job_id);
+                }
+                let pending = imports
+                    .state(&job_id)
+                    .map(|s| s.resumable)
+                    .unwrap_or(infrastructure_error);
+                l1.set_collection_status(
+                    state.collection_id,
+                    if pending { "pending" } else { "ready" },
+                );
+                let mut current = active.lock();
+                if current.as_deref() == Some(job_id.as_str()) {
+                    *current = None;
+                }
+            }));
+            if outcome.is_err() {
+                // panic 与正常退出走同样的中断+清理：把任务退回 interrupted，清空 active_import，
+                // 下次启动（或用户续作）仍可恢复，导入子系统不会卡死。
+                panic_imports.interrupt(&panic_job_id);
+                let mut current = panic_active.lock();
+                if current.as_deref() == Some(panic_job_id.as_str()) {
+                    *current = None;
                 }
             }
-            index_state.lock().total = files.len() as u64;
-
-            for (i, f) in files.iter().enumerate() {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = l1.ingest_file(collection_id, f);
-                index_state.lock().done = (i + 1) as u64;
-                std::thread::sleep(Duration::from_millis(3)); // 让步前台
-            }
-
-            let cancelled = cancel.load(Ordering::Relaxed);
-            l1.set_collection_status(collection_id, "ready");
-            let mut st = index_state.lock();
-            st.running = false;
-            st.finished_at = now();
-            st.phase = if cancelled { "cancelled" } else { "done" }.into();
         });
-        self.index_state.lock().clone()
     }
 
     /// 启动一轮增量扫描（后台线程，立即返回；已在跑则原样返回当前状态）。**懒触发**：由前端
@@ -311,6 +418,46 @@ impl KnowledgeService {
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
     }
+}
+
+fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
+    let ex = Excluder::default();
+    let mut files = Vec::new();
+    for root in roots {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if root.is_file() {
+            files.push(root.clone());
+            continue;
+        }
+        let walker = WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_str().unwrap_or("");
+                let is_dir = entry.file_type().is_dir();
+                let ext = if is_dir {
+                    None
+                } else {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_lowercase())
+                };
+                !ex.is_skipped(name, is_dir, ext.as_deref())
+            });
+        for entry in walker.flatten() {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            if entry.file_type().is_file() {
+                files.push(entry.path().to_path_buf());
+            }
+        }
+    }
+    import_jobs::unique_existing_files(files)
 }
 
 /// `~/.pinvou3/knowledge/index.db`。
@@ -437,6 +584,7 @@ pub async fn kb_collection_delete(
     pool: State<'_, crate::features::assistant::engine_pool::EnginePool>,
     id: i64,
 ) -> Result<(), String> {
+    state.cancel_index_for_collection(id)?;
     let l1 = state.l1().clone();
     spawn_db(move || l1.delete_collection(id).map_err(|e| e.to_string())).await?;
     refresh_kb_tool_gate(&pool).await;
@@ -461,8 +609,29 @@ pub fn kb_collection_add_sources(
 pub fn kb_index_status(state: State<'_, KnowledgeService>) -> IndexState {
     state.index_status()
 }
-pub fn kb_index_cancel(state: State<'_, KnowledgeService>) {
-    state.cancel_index();
+pub fn kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String> {
+    state.cancel_index()
+}
+pub fn kb_index_failed_files(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+    offset: usize,
+    limit: usize,
+) -> Result<FailedImportFilePage, String> {
+    state.failed_index_files(&job_id, offset, limit)
+}
+pub fn kb_index_resume(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+) -> Result<IndexState, String> {
+    state.resume_index(job_id)
+}
+pub fn kb_index_retry_file(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+    item_id: i64,
+) -> Result<IndexState, String> {
+    state.retry_index_item(job_id, item_id)
 }
 
 /// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。

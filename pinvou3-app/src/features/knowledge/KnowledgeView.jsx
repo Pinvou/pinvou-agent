@@ -574,6 +574,30 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const [docs, setDocs] = useState([]);
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
       const [idx, setIdx] = useState(null);
+      const [importError, setImportError] = useState('');
+      const [failedFilesLoading, setFailedFilesLoading] = useState(false);
+      const failedPaginationRef = useRef({ jobId: null, generation: 0, initialized: false, nextOffset: 0 });
+      const replaceIndexState = useCallback((next) => {
+        const generation = failedPaginationRef.current.generation + 1;
+        failedPaginationRef.current = {
+          jobId: next && next.jobId ? next.jobId : null,
+          generation,
+          initialized: false,
+          nextOffset: 0,
+        };
+        setFailedFilesLoading(false);
+        setIdx(next);
+      }, []);
+      const invalidateFailedPagination = useCallback(() => {
+        const current = failedPaginationRef.current;
+        failedPaginationRef.current = {
+          jobId: current.jobId,
+          generation: current.generation + 1,
+          initialized: false,
+          nextOffset: 0,
+        };
+        setFailedFilesLoading(false);
+      }, []);
       const [newColl, setNewColl] = useState(null);
       const [delColl, setDelColl] = useState(null); // 待删除知识集(二次确认),null=无
       const [confirmDoc, setConfirmDoc] = useState(null); // 行内二次确认中的文档 id,null=无
@@ -587,7 +611,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch (e) {}
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
-      }, []);
+        try { replaceIndexState(await inv('kb_index_status')); } catch (e) {}
+      }, [replaceIndexState]);
       // 本地知识的两个 subtab 都依赖知识集数据；随 sub 切换刷新一次。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
@@ -632,12 +657,91 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (!indexing) return;
         const id = setInterval(async () => {
           try {
-            const s = await inv('kb_index_status'); setIdx(s);
+            const s = await inv('kb_index_status'); replaceIndexState(s);
             if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
           } catch (e) {}
         }, 1000);
         return () => clearInterval(id);
-      }, [indexing]);
+      }, [indexing, replaceIndexState]);
+
+      const resumeImport = async () => {
+        if (!idx || !idx.jobId || failedFilesLoading) return;
+        invalidateFailedPagination();
+        setImportError('');
+        try {
+          replaceIndexState(await inv('kb_index_resume', { jobId: idx.jobId }));
+        } catch (e) {
+          setImportError(`${t.kbResumeImportFailed}: ${String((e && e.message) || e)}`);
+          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+        }
+      };
+      const cancelImport = async () => {
+        if (failedFilesLoading) return;
+        invalidateFailedPagination();
+        setImportError('');
+        try {
+          await inv('kb_index_cancel');
+          replaceIndexState(await inv('kb_index_status'));
+          loadColls();
+        } catch (e) {
+          setImportError(`${t.kbCancelImportFailed}: ${String((e && e.message) || e)}`);
+          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+        }
+      };
+      const retryImportFile = async (itemId) => {
+        if (!idx || !idx.jobId || failedFilesLoading) return;
+        invalidateFailedPagination();
+        setImportError('');
+        try {
+          replaceIndexState(await inv('kb_index_retry_file', { jobId: idx.jobId, itemId }));
+        } catch (e) {
+          setImportError(`${t.kbRetryImportFailed}: ${String((e && e.message) || e)}`);
+          try { replaceIndexState(await inv('kb_index_status')); } catch (_) {}
+        }
+      };
+      const loadMoreFailedFiles = async () => {
+        if (!idx || !idx.jobId || failedFilesLoading) return;
+        setFailedFilesLoading(true);
+        setImportError('');
+        const pagination = failedPaginationRef.current;
+        const request = {
+          jobId: idx.jobId,
+          generation: pagination.generation,
+          initialized: pagination.initialized,
+          offset: pagination.initialized ? pagination.nextOffset : 0,
+        };
+        if (request.jobId !== pagination.jobId || request.offset == null) {
+          setFailedFilesLoading(false);
+          return;
+        }
+        try {
+          const page = await inv('kb_index_failed_files', { jobId: request.jobId, offset: request.offset, limit: 50 });
+          const currentPage = failedPaginationRef.current;
+          if (currentPage.jobId !== request.jobId || currentPage.generation !== request.generation) return;
+          failedPaginationRef.current = {
+            ...currentPage,
+            initialized: true,
+            nextOffset: page.nextOffset == null ? null : page.nextOffset,
+          };
+          setIdx((current) => {
+            if (!current || current.jobId !== request.jobId) return current;
+            if (!request.initialized) return { ...current, failedFiles: page.files || [] };
+            const known = new Set((current.failedFiles || []).map((file) => file.itemId));
+            const added = (page.files || []).filter((file) => !known.has(file.itemId));
+            return { ...current, failedFiles: [...(current.failedFiles || []), ...added] };
+          });
+        } catch (e) {
+          const currentPage = failedPaginationRef.current;
+          if (currentPage.jobId === request.jobId && currentPage.generation === request.generation) {
+            setImportError(`${t.kbLoadFailedFilesFailed}: ${String((e && e.message) || e)}`);
+          }
+        } finally {
+          const currentPage = failedPaginationRef.current;
+          if (currentPage.jobId === request.jobId && currentPage.generation === request.generation) {
+            setFailedFilesLoading(false);
+          }
+        }
+      };
 
       // newColl 带 id=编辑(改名/改分类),否则新建。编辑时透传原 description(后端 UPDATE 会覆盖该列)。
       const createColl = async () => {
@@ -665,7 +769,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         let paths = [];
         try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
-        try { setIdx(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
+        try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
       };
       // 知识库页底部入口：选文件 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
       const dzPick = async () => {
@@ -673,7 +777,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         let paths = [];
         try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
-        if (colls.length === 1) { try { setIdx(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
+        if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
         else { setAddToKb(paths); }
       };
       const StatusPill = ({ s }) => {
@@ -1165,6 +1269,71 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </span>
                 </div>
 
+                {importError && (
+                  <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#d63a3a]">
+                    {importError}
+                  </div>
+                )}
+                {idx && (idx.running || idx.resumable || idx.failed > 0) && (
+                  <div className={`mb-5 rounded-2xl border p-4 ${isDark ? 'border-white/10 bg-white/[0.04]' : 'border-[#dfe3ee] bg-[#f8f9fd]'}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className={`text-[14px] font-bold ${ink}`}>
+                          {idx.resumable ? t.kbImportInterrupted : (idx.running ? t.kbIndexing : t.kbImportDoneWithErrors)}
+                        </div>
+                        {idx.resumable && <div className={`mt-1 text-[12px] ${muted}`}>{t.kbImportInterruptedHint}</div>}
+                        <div className={`mt-2 text-[12px] ${muted}`}>
+                          {t.kbImportProgress} {idx.done || 0}/{idx.total || 0}
+                          {idx.failed > 0 ? ` · ${t.kbImportErrors} ${idx.failed}` : ''}
+                        </div>
+                        {idx.currentPath && (
+                          <div className={`mt-1 max-w-[760px] truncate text-[12px] ${muted}`} title={idx.currentPath}>
+                            {t.kbCurrentFile} {idx.currentPath}
+                            {idx.currentChunksTotal > 0 ? ` · ${t.kbChunkProgress} ${idx.currentChunksDone}/${idx.currentChunksTotal}` : ''}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {idx.resumable && (
+                          <button onClick={resumeImport} disabled={failedFilesLoading}
+                            className={`rounded-full px-4 py-2 text-[13px] font-semibold ${accent} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>{t.kbResumeImport}</button>
+                        )}
+                        {(idx.running || idx.resumable) && (
+                          <button onClick={cancelImport} disabled={failedFilesLoading}
+                            className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>{t.kbCancelImport}</button>
+                        )}
+                      </div>
+                    </div>
+                    {idx.failedFiles && idx.failedFiles.length > 0 && (
+                      <div className="mt-4 border-t border-gray-400/15 pt-3">
+                        <div className={`mb-2 text-[12px] font-semibold ${ink}`}>{t.kbFailedFiles}</div>
+                        <div className="flex flex-col gap-2">
+                          {idx.failedFiles.map((file) => (
+                            <div key={file.itemId} className="flex items-center gap-3 text-[12px]">
+                              <div className="min-w-0 flex-1">
+                                <div className={`truncate font-medium ${ink}`} title={file.path}>{file.name}</div>
+                                <div className="truncate text-[#d63a3a]" title={file.error}>{file.error}</div>
+                              </div>
+                              <button onClick={() => retryImportFile(file.itemId)} disabled={indexing || failedFilesLoading}
+                                className={`shrink-0 rounded-full px-3 py-1.5 font-medium ${soft} ${indexing || failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>
+                                {t.kbRetryFile}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        {((failedPaginationRef.current.jobId === idx.jobId && failedPaginationRef.current.initialized)
+                          ? failedPaginationRef.current.nextOffset != null
+                          : idx.failedFiles.length < idx.failed) && (
+                          <button onClick={loadMoreFailedFiles} disabled={failedFilesLoading}
+                            className={`mt-3 rounded-full px-3 py-1.5 text-[12px] font-medium ${soft} ${failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>
+                            {failedFilesLoading ? t.kbLoadingFailedFiles : t.kbLoadMoreFailedFiles}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {colls.length === 0 ? (
                   <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoColls}</div>
                 ) : (() => {
@@ -1339,7 +1508,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 ) : (
                   <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                     {colls.map((c) => (
-                      <button key={c.id} onClick={async () => { try { setIdx(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch (e) {} setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                      <button key={c.id} onClick={async () => { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch (e) {} setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
                         className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                     ))}
                   </div>

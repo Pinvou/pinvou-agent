@@ -75,6 +75,18 @@ for (const command of [
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
 
+// 知识库批量导入的进度查看与继续/取消/重试/失败文件分页是一组协同命令：Web 端知识库
+// 已开放（kb_collection_add_sources 等），任一导入控制命令遗漏会让对应按钮静默失败。
+for (const command of [
+  'kb_index_status',
+  'kb_index_cancel',
+  'kb_index_resume',
+  'kb_index_retry_file',
+  'kb_index_failed_files',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
+}
+
 for (const command of [
   'web_access_chat',
   'web_access_create_session_and_chat',
