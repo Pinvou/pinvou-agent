@@ -47,8 +47,10 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
 // 会话收紧资源预算。
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
-const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
-const MULTI_AGENT_MAX_ADMITTED: usize = 8;
+const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
+const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
+const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
+const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -1334,7 +1336,9 @@ impl Pinvou3Bridge {
     /// 说明裸派（用户决策：不内置兜底角色）。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
     /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆
-    /// 一层，第二层不得继续派生。全树同时运行最多 4 个，排队 + 运行最多 8 个。
+    /// 一层，第二层不得继续派生。工作模式直属并行 4 / 全树准入 8；原生 Code
+    /// 模式直属并行 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch
+    /// gate，但仍受整棵树的准入上限约束。
     pub fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
@@ -1348,18 +1352,35 @@ impl Pinvou3Bridge {
             eprintln!("[multiagent] {err}");
         }
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
-        // depth=2；第二层不能继续。单次调用的正数深度覆盖由专用 hook
-        // 拦截，避免每一层重新抬高继承上限。
+        // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
+        // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
+        // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
-        // 只做上限，不抬高用户原本更保守（包括 0 = 禁用）的配置。
-        cfg.max_subagents = cfg.max_subagents.min(MULTI_AGENT_MAX_ADMITTED);
+        let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
+            (
+                MULTI_AGENT_CODE_MAX_CONCURRENT,
+                MULTI_AGENT_CODE_MAX_ADMITTED,
+            )
+        } else {
+            (
+                MULTI_AGENT_WORK_MAX_CONCURRENT,
+                MULTI_AGENT_WORK_MAX_ADMITTED,
+            )
+        };
+        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
+        // 使用当前场景的产品默认，因此 Code 能取得完整 12 个准入额度。
+        cfg.max_subagents = self
+            .prefs
+            .advanced
+            .max_subagents
+            .map_or(max_admitted, |configured| configured.min(max_admitted));
         cfg.max_admitted_subagents = cfg
             .max_admitted_subagents
-            .min(MULTI_AGENT_MAX_ADMITTED)
+            .min(max_admitted)
             .max(cfg.max_subagents);
         cfg.launch_concurrency = cfg
             .launch_concurrency
-            .min(MULTI_AGENT_MAX_CONCURRENT)
+            .min(max_concurrent)
             .min(cfg.max_subagents);
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
         cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
@@ -1539,9 +1560,11 @@ impl Pinvou3Bridge {
     }
 
     /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 2` 允许直属
-    /// 代理为复杂任务再拆一层；该 hook 同时拦住模型在 `agent` / `workflow`
-    /// 调用中用正数深度覆盖参数逐层扩大上限，并要求 Workflow 文件调用改用
-    /// 可检查的 inline 输入。普通对话不挂载此 hook。
+    /// 代理为复杂任务再拆一层；该 hook 拦住**主会话**在 `agent` / `workflow`
+    /// 调用中用正数深度覆盖参数扩大上限，并要求 Workflow 文件调用改用
+    /// 可检查的 inline 输入。嵌套子代理的工具调用不经过 ToolCallBefore
+    /// hook——那一层由继承上限与全局准入/并发额度兜底，提醒词只作教学。
+    /// 普通对话不挂载此 hook。
     fn build_multi_agent_hook_executor(&self, workspace: &std::path::Path) -> Arc<HookExecutor> {
         #[cfg(windows)]
         let command = {
@@ -4242,9 +4265,9 @@ mod tests {
             "多智能体会话的禁用列表必须与普通对话一字不差"
         );
         assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
-        assert_eq!(cfg.max_subagents, MULTI_AGENT_MAX_ADMITTED);
-        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
-        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
+        assert_eq!(cfg.max_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_WORK_MAX_CONCURRENT);
         assert_ne!(
             ordinary.max_spawn_depth, cfg.max_spawn_depth,
             "普通对话应保持底座原有深度，只收紧多智能体会话"
@@ -4290,6 +4313,20 @@ mod tests {
             disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", workspace.clone());
         assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
         assert_eq!(disabled.launch_concurrency, 0);
+
+        let mut code_bridge = fixture_bridge();
+        code_bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "ma-code"
+        }));
+        let code_cfg =
+            code_bridge.build_engine_config_for_multi_agent("ma-code", workspace.clone());
+        assert_eq!(code_cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
+        assert_eq!(code_cfg.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
+        assert_eq!(
+            code_cfg.max_admitted_subagents,
+            MULTI_AGENT_CODE_MAX_ADMITTED
+        );
+        assert_eq!(code_cfg.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

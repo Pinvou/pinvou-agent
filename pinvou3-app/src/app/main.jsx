@@ -2055,6 +2055,7 @@ function workspaceDisplayName(path) {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 bs={bs}
+                onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
                 onGotoModelSettings={() => openSettingsSection('model')}
               />

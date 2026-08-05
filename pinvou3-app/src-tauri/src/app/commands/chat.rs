@@ -219,9 +219,14 @@ pub(crate) async fn chat_with_reservation(
     // 每轮重申而非首轮一次性教学——长上下文里开头信号的遵循率会衰减
     // （skill phase marker 同款教训），关掉开关即停止注入。
     if mode_state.multi_agent {
+        let delegation_context = if pool.is_code_session(&sid) {
+            super::multiagent::DelegationContext::Code
+        } else {
+            super::multiagent::DelegationContext::Work
+        };
         full = format!(
             "{}\n\n---\n\n{full}",
-            super::multiagent::delegation_reminder()
+            super::multiagent::delegation_reminder(delegation_context)
         );
     }
     let mode = mode_state.mode;
