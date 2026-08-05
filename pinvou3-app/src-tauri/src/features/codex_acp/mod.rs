@@ -57,7 +57,7 @@ use runtime::{
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
 };
-use store::{AcpConfigDefaultsStore, SessionAgentRecord};
+use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
 pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
@@ -236,7 +236,7 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
-        code_session: false,
+        mode: SessionMode::Plain,
     })
 }
 
@@ -297,7 +297,7 @@ struct SidecarRecoverySummary {
 /// sidecar（`code-session.json`）随会话存续，是跨进程的权威真相源；辅助索引
 /// `session-agents.json` 可损坏/丢失后据此重建。扫描根与 sidecar 读取根同源
 /// （均由辅助索引路径派生，见 `store::code_session_sidecar_root`），避免两处
-/// 根定义漂移。对每个 sidecar：索引已持有 code_session 记录时跳过（不误报
+/// 根定义漂移。对每个 sidecar：索引已持有 code 模式记录时跳过（不误报
 /// 恢复）；会话已被 ACP 占用时 sidecar 属历史残留，直接清理而非反复重试；
 /// 其余情况据 sidecar 恢复索引。
 fn restore_code_native_sessions_from_sidecars(
@@ -340,7 +340,7 @@ fn restore_code_native_sessions_from_sidecars(
             continue;
         };
         let record = agents.get(session_id);
-        if record.code_session {
+        if record.mode.is_code() {
             // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
             continue;
         }
@@ -990,7 +990,7 @@ impl AcpPool {
 
     pub fn workspace_info(&self, session_id: &str) -> Result<CodexAcpWorkspaceInfo> {
         let record = self.agents.get(session_id);
-        if record.code_session {
+        if record.mode.is_code() {
             return code_native_workspace_info(&self.session_store, session_id, &record);
         }
         if !record.backend.is_acp() {
@@ -1028,8 +1028,8 @@ impl AcpPool {
         let record = self.agents.get(session_id);
         // 防御性保留，当前不可达：两个调用方（prompt / ensure ACP runtime）都在
         // 上游通过 is_acp / acp_record 拒绝了原生代码会话；保留本分支是为了让
-        // 未来直接使用本方法的路径对 code_session 也有正确语义。
-        if record.code_session {
+        // 未来直接使用本方法的路径对 code 模式会话也有正确语义。
+        if record.mode.is_code() {
             if record.workspace_kind == CodexWorkspaceKind::Project {
                 let path = record
                     .workspace_path
@@ -4500,7 +4500,7 @@ mod tests {
     fn code_native_workspace_info_returns_temporary_execution_workspace() {
         let session_store = crate::features::sessions::SessionStore::boot().expect("session store");
         let record = SessionAgentRecord {
-            code_session: true,
+            mode: SessionMode::Code,
             ..SessionAgentRecord::default()
         };
         let info =
@@ -4527,7 +4527,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let record = SessionAgentRecord {
-            code_session: true,
+            mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: Some(root.clone()),
             ..SessionAgentRecord::default()
@@ -4546,7 +4546,7 @@ mod tests {
 
         // 记录缺失目录属于数据损坏，必须显式报错。
         let broken = SessionAgentRecord {
-            code_session: true,
+            mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: None,
             ..SessionAgentRecord::default()

@@ -77,6 +77,37 @@ pub enum CodexWorkspaceKind {
     Project,
 }
 
+/// 产品模式类型已上移到 core（store/bridge 策略等多 feature 共用）；
+/// 这里 re-export 保持既有 `store::SessionMode` 路径可用。持久化关注点
+/// （`code_session` 键的布尔兼容 serde）留在本模块（见 `session_mode_serde`）。
+pub use crate::core::session_mode::SessionMode;
+
+/// `code_session` 键的兼容 serde：写布尔（旧格式），读布尔或字符串。
+mod session_mode_serde {
+    use super::SessionMode;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(mode: &SessionMode, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(mode.is_code())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SessionMode, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Compat {
+            Bool(bool),
+            Mode(SessionMode),
+        }
+        Ok(match Compat::deserialize(deserializer)? {
+            Compat::Bool(true) => SessionMode::Code,
+            Compat::Bool(false) => SessionMode::Plain,
+            Compat::Mode(mode) => mode,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionAgentRecord {
     #[serde(default)]
@@ -101,13 +132,15 @@ pub struct SessionAgentRecord {
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
-    /// “代码”模块原生（品悟 Engine）会话标记。旧记录没有该字段时按普通会话兼容。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub code_session: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
+    /// 产品模式（plain/code）。旧记录没有该字段时按 plain 兼容；
+    /// 序列化保持原布尔格式（true=code），旧版本应用读新文件不误判。
+    #[serde(
+        default,
+        rename = "code_session",
+        with = "session_mode_serde",
+        skip_serializing_if = "SessionMode::is_plain"
+    )]
+    pub mode: SessionMode,
 }
 
 /// 原生代码会话的权威 sidecar（per-session 持久化真相源）。
@@ -380,9 +413,9 @@ impl SessionAgentStore {
             record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
-            // ACP 会话不是原生代码会话：绑定 ACP 时清除 code_session 标志，
+            // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
-            record.code_session = false;
+            record.mode = SessionMode::Plain;
         }
         // 先持久化辅助索引，再清理权威 sidecar：persist 失败时 sidecar 仍在，与
         // 磁盘索引保持一致，不会出现「sidecar 已删、索引未更新」的中间态；若 sidecar
@@ -416,7 +449,7 @@ impl SessionAgentStore {
                 anyhow::bail!("ACP 会话已开始，不能更换 Agent；请新建会话");
             }
             // 已绑定的原生代码会话不允许改绑到其他工作区（同值重复绑定幂等放行）。
-            if record.code_session
+            if record.mode.is_code()
                 && (record.workspace_kind != kind || record.workspace_path != workspace_path)
             {
                 anyhow::bail!("代码会话已开始，不能更换工作目录；请新建会话");
@@ -424,7 +457,7 @@ impl SessionAgentStore {
             record.backend = AgentBackend::Deepseek;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path.clone();
-            record.code_session = true;
+            record.mode = SessionMode::Code;
         }
         self.persist()?;
         // 权威 sidecar：辅助索引损坏/丢失后据此恢复原生代码会话类型与项目绑定。
@@ -433,12 +466,19 @@ impl SessionAgentStore {
         Ok(())
     }
 
-    /// 是否为“代码”模块的原生（品悟 Engine）会话。
-    pub fn is_code_session(&self, session_id: &str) -> bool {
+    /// 该会话的产品模式（plain/code）；无记录时按 plain 缺省
+    /// （与历史 `is_code_session` 缺省 false 等价）。
+    pub fn session_mode(&self, session_id: &str) -> SessionMode {
         self.records
             .read()
             .get(session_id)
-            .is_some_and(|record| record.code_session)
+            .map(|record| record.mode)
+            .unwrap_or_default()
+    }
+
+    /// 是否为“代码”模块的原生（品悟 Engine）会话。
+    pub fn is_code_session(&self, session_id: &str) -> bool {
+        self.session_mode(session_id).is_code()
     }
 
     /// 原生代码会话绑定的项目目录；非代码会话或临时会话返回 None。
@@ -446,7 +486,7 @@ impl SessionAgentStore {
     /// 账本根（附件/审计/产物）命中它时必须改用会话私有目录。
     pub fn code_project_workspace(&self, session_id: &str) -> Option<PathBuf> {
         let record = self.get(session_id);
-        if record.code_session && record.workspace_kind == CodexWorkspaceKind::Project {
+        if record.mode.is_code() && record.workspace_kind == CodexWorkspaceKind::Project {
             record.workspace_path
         } else {
             None
@@ -579,7 +619,7 @@ impl SessionAgentStore {
         let records = self.records.read().clone();
         let mut backfilled = 0usize;
         for (session_id, record) in records {
-            if !record.code_session {
+            if !record.mode.is_code() {
                 continue;
             }
             if read_code_session_sidecar(&self.path, &session_id).is_some() {
@@ -603,7 +643,7 @@ impl SessionAgentStore {
     /// 与 ACP 的 [`Self::restore_missing_acp_record`] 对称：sidecar 是长期权威
     /// 依据，辅助索引只负责加速。恢复成功即持久化回 `session-agents.json`，
     /// 使后续读取不再依赖 sidecar。返回是否真实发生了恢复：索引已持有
-    /// code_session 记录时返回 `Ok(false)`，调用方不得把它计入恢复信号。
+    /// code 模式记录时返回 `Ok(false)`，调用方不得把它计入恢复信号。
     pub fn restore_missing_code_session_record(
         &self,
         session_id: &str,
@@ -613,7 +653,7 @@ impl SessionAgentStore {
             backend: AgentBackend::Deepseek,
             workspace_kind: recovered.workspace_kind,
             workspace_path: recovered.workspace_path,
-            code_session: true,
+            mode: SessionMode::Code,
             ..Default::default()
         };
         if record.workspace_kind == CodexWorkspaceKind::Project && record.workspace_path.is_none() {
@@ -627,7 +667,7 @@ impl SessionAgentStore {
             let mut records = self.records.write();
             if records
                 .get(session_id)
-                .is_some_and(|record| record.code_session)
+                .is_some_and(|record| record.mode.is_code())
             {
                 return Ok(false);
             }
@@ -839,7 +879,38 @@ mod tests {
         assert_eq!(record.workspace_path, None);
         assert_eq!(record.acp_mode_id, None);
         assert!(record.acp_config_values.is_empty());
-        assert!(!record.code_session);
+        assert!(!record.mode.is_code());
+    }
+
+    #[test]
+    fn session_mode_deserializes_legacy_bool_and_serializes_as_bool() {
+        // 旧格式布尔键：true=code、false=plain，缺字段按 plain 兼容（缺字段
+        // 已由 legacy_record_defaults_to_temporary_workspace 覆盖）。
+        let code: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": true
+        }))
+        .unwrap();
+        assert_eq!(code.mode, SessionMode::Code);
+        let plain: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": false
+        }))
+        .unwrap();
+        assert_eq!(plain.mode, SessionMode::Plain);
+        // 序列化保持原布尔键与省略语义：code 写 true，plain 不写该键，
+        // 旧版本应用读新文件不误判。
+        let code_json = serde_json::to_value(&code).unwrap();
+        assert_eq!(code_json["code_session"], serde_json::json!(true));
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json.get("code_session").is_none());
+        // 前向兼容：未来 kebab-case 字符串格式也能读出。
+        let future: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": "code"
+        }))
+        .unwrap();
+        assert_eq!(future.mode, SessionMode::Code);
     }
 
     #[test]
@@ -935,7 +1006,7 @@ mod tests {
         assert_eq!(record.backend, AgentBackend::Deepseek);
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Temporary);
         assert_eq!(record.workspace_path, None);
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert!(store.is_code_session("session-1"));
         // 原生绑定不需要 Agent 上下文，同值重复绑定保持幂等。
         store
@@ -945,7 +1016,7 @@ mod tests {
 
         let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let record = persisted.sessions.get("session-1").unwrap();
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert_eq!(record.backend, AgentBackend::Deepseek);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -978,7 +1049,7 @@ mod tests {
             .is_err());
         let record = store.get("session-1");
         assert_eq!(record.backend, AgentBackend::CodexAcp);
-        assert!(!record.code_session);
+        assert!(!record.mode.is_code());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1013,7 +1084,7 @@ mod tests {
         let record = store.get("session-1");
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
 
         // 已绑定的代码会话不可改绑工作区；同值重复绑定幂等。
         assert!(store
@@ -1062,7 +1133,7 @@ mod tests {
                     )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
-                    code_session: false,
+                    mode: SessionMode::Plain,
                 },
             )
             .unwrap();
@@ -1216,13 +1287,13 @@ mod tests {
             .restore_missing_code_session_record("session-1", sidecar)
             .unwrap();
         let record = recovered_store.get("session-1");
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
         // 恢复持久化回索引文件，后续读取不再依赖 sidecar。
         let persisted: AgentStoreFile =
             serde_json::from_slice(&fs::read(recovered_store.path()).unwrap()).unwrap();
-        assert!(persisted.sessions["session-1"].code_session);
+        assert!(persisted.sessions["session-1"].mode.is_code());
         fs::remove_dir_all(&root).unwrap();
     }
 
