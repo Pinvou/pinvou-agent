@@ -1,6 +1,8 @@
 use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -19,14 +21,47 @@ const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
 /// (用户点"允许"后本次成功读取并缓存),之后命中缓存即不触碰 Keychain,应用使用期间不再
 /// 反复弹窗。重启应用后首次访问仍会弹一次(详见 `docs/macos-keychain-弹窗说明.md`)。
 ///
-/// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与 `RuntimeModelCredential`
-/// 在 bridge 层的内存缓存(见 `bridge.rs` 的 `api_key`)同级。Keychain 仍是单一真相源:
-/// `set`/`delete` 同步更新缓存;环境变量路径不经过此缓存。仅 `Ok` 结果缓存(含 `Ok(None)`),
-/// `Err` 不缓存,允许临时性 Keychain 故障恢复后自愈。
+/// **并发正确性**:Keychain 读取可能因授权弹窗阻塞数秒至数分钟。若 `get` 在"读缓存未命中
+/// → 访问 Keychain → 回写缓存"期间释放锁,并发场景会出两类问题:① 多线程同时未命中同一
+/// key → 都访问 Keychain → 都弹窗(重复弹窗);② 线程 A 读到旧值阻塞中、线程 B `set` 新值
+/// 已更新缓存,A 读完后用旧值覆盖缓存 → 此后进程持续返回陈旧密钥(凭据正确性 bug)。为此
+/// `KEY_LOCKS` 为每个 `(service, account)` 维护一把 `Arc<Mutex<()>>`,`get`/`set`/`delete`
+/// 在"访问 Keychain + 读写值缓存"整段持有对应 key 的锁,串行化同一凭据的所有操作;不同 key
+/// 互不阻塞。锁内部从不嵌套 `value_cache`/`KEY_LOCKS` 之外的锁,无死锁风险。
+///
+/// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与本 crate 内其他明文 secret
+/// 在内存中的驻留(如 bridge 注入给引擎的 api_key、marketplace 重灌进进程 env 的 mcp
+/// secret)同等敏感等级,均仅驻留进程内存、不落盘。Keychain 仍是单一真相源:`set`/`delete`
+/// 同步更新缓存;环境变量路径不经过此缓存。仅 `Ok` 结果缓存(含 `Ok(None)`),`Err` 不缓存,
+/// 允许临时性 Keychain 故障(或用户在授权弹窗上点"拒绝")后下次重试自愈。
+///
+/// **陈旧边界**:`Ok(None)`("已知不存在")会缓存整个进程生命周期;若运行期间用户经"钥匙串
+/// 访问"App 或其它进程新增了该 item,本应用在重启前仍读到 `None`(设置页误显示"未配置")。
+/// 这是进程级内存缓存的固有边界,正常改 keychain 的路径走应用 UI(经 `set`/`delete` 同步
+/// 更新缓存),故影响有限。
 static VALUE_CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
 
 fn value_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
     VALUE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 每个 `(service, account)` 一把锁,串行化同一凭据的"访问 Keychain + 读写值缓存",
+/// 消除并发下的重复弹窗与陈旧覆盖(见 `VALUE_CACHE` 的"并发正确性"小节)。不同 key 互不阻塞。
+static KEY_LOCKS: OnceLock<Mutex<HashMap<(String, String), Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn key_locks() -> &'static Mutex<HashMap<(String, String), Arc<Mutex<()>>>> {
+    KEY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 取(或惰性创建)某 `(service, account)` 对应的 per-key 锁。锁句柄为 `Arc`,克隆后
+/// 在释放 `key_locks` 自身锁的前提下被调用方持有,确保"取锁"不与"持锁"嵌套、无死锁。
+fn key_lock_for(service: &str, account: &str) -> Arc<Mutex<()>> {
+    let key = (service.to_string(), account.to_string());
+    let mut locks = key_locks().lock().expect("key locks poisoned");
+    locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
@@ -227,12 +262,27 @@ impl std::fmt::Debug for SystemCredentialStore {
 impl CredentialStore for SystemCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
         let cache_key = (reference.service.clone(), reference.account.clone());
-        // 命中进程级缓存(含"已知不存在"的 None)即直接返回,不触碰 Keychain —— 这是
+        // 快路径:命中进程级缓存(含"已知不存在"的 None)即直接返回,不触碰 Keychain —— 这是
         // macOS ad-hoc 签名下避免反复弹窗的关键(见 VALUE_CACHE 注释)。
         if let Ok(cache) = value_cache().lock() {
             if let Some(cached) = cache.get(&cache_key) {
                 log::info!(
                     "[credential_store] get cache hit service={} account={}",
+                    reference.service,
+                    reference.account
+                );
+                return Ok(cached.clone());
+            }
+        }
+        // 未命中:取 per-key 锁,在持锁临界区内"再次检查缓存(double-check)→ 访问 Keychain
+        // → 回写缓存",串行化同一凭据的所有并发 get/set/delete(见 VALUE_CACHE 并发小节)。
+        let lock = key_lock_for(&reference.service, &reference.account);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // double-check:另一线程可能刚把结果写入缓存,命中即避免重复访问 Keychain/重复弹窗。
+        if let Ok(cache) = value_cache().lock() {
+            if let Some(cached) = cache.get(&cache_key) {
+                log::info!(
+                    "[credential_store] get cache hit (double-check) service={} account={}",
                     reference.service,
                     reference.account
                 );
@@ -294,7 +344,10 @@ impl CredentialStore for SystemCredentialStore {
             started_at.elapsed().as_millis()
         );
         // 写入成功后同步更新缓存:后续 get 命中即不再访问 Keychain。
+        // 持 per-key 锁串行化,避免与正在进行的 get 竞争回写陈旧值(见 VALUE_CACHE 并发小节)。
         if result.is_ok() {
+            let lock = key_lock_for(&reference.service, &reference.account);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Ok(mut cache) = value_cache().lock() {
                 cache.insert(
                     (reference.service.clone(), reference.account.clone()),
@@ -322,12 +375,12 @@ impl CredentialStore for SystemCredentialStore {
             started_at.elapsed().as_millis()
         );
         // 删除成功后缓存为 None,避免下次 get 再次访问 Keychain(命中"已知不存在")。
+        // 持 per-key 锁串行化,语义与 set 一致。
         if result.is_ok() {
+            let lock = key_lock_for(&reference.service, &reference.account);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Ok(mut cache) = value_cache().lock() {
-                cache.insert(
-                    (reference.service.clone(), reference.account.clone()),
-                    None,
-                );
+                cache.insert((reference.service.clone(), reference.account.clone()), None);
             }
         }
         result
@@ -446,91 +499,200 @@ pub fn is_secret_like(value: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// 测试间清空进程级凭据值缓存,避免 static 状态串扰。
-    /// (生产代码不需要清空;缓存跨整个进程生命周期持久是设计意图。)
-    fn reset_value_cache() {
-        value_cache()
+    /// 内存 `KeyringStore` 兼 spy:记录 `get` 调用次数,用于断言"命中缓存后不再触底层"。
+    /// 仅用于测试;不触碰真实 Keychain。
+    struct FakeKeyringStore {
+        values: Mutex<HashMap<String, String>>,
+        get_count: AtomicU64,
+    }
+
+    impl FakeKeyringStore {
+        fn new() -> Self {
+            Self {
+                values: Mutex::new(HashMap::new()),
+                get_count: AtomicU64::new(0),
+            }
+        }
+
+        fn get_count(&self) -> u64 {
+            self.get_count.load(Ordering::Relaxed)
+        }
+
+        fn seed(&self, key: &str, value: &str) {
+            self.values
+                .lock()
+                .expect("fake store values lock")
+                .insert(key.to_string(), value.to_string());
+        }
+    }
+
+    impl codewhale_secrets::KeyringStore for FakeKeyringStore {
+        fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
+            self.get_count.fetch_add(1, Ordering::Relaxed);
+            Ok(self
+                .values
+                .lock()
+                .expect("fake store values lock")
+                .get(key)
+                .cloned())
+        }
+
+        fn set(&self, key: &str, value: &str) -> Result<(), SecretsError> {
+            self.values
+                .lock()
+                .expect("fake store values lock")
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), SecretsError> {
+            self.values
+                .lock()
+                .expect("fake store values lock")
+                .remove(key);
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "in-memory (test)"
+        }
+    }
+
+    /// 把一个 fake `Secrets` 注入 store 的 service 缓存,使 `secrets_for` 命中它而不
+    /// 触碰真实 Keychain。借此可断言"缓存命中后不再访问底层后端"。
+    fn inject_fake_secrets(store: &SystemCredentialStore, service: &str, fake: Arc<Secrets>) {
+        store
+            .cache
             .lock()
-            .expect("value cache lock")
-            .clear();
+            .expect("credential store cache lock")
+            .insert(service.to_string(), fake);
     }
 
+    /// 核心契约:首次 `get` 访问底层后端并缓存结果;第二次 `get` 命中缓存,
+    /// **不再触碰底层后端**(这正是缓解反复弹窗的关键)。
     #[test]
-    fn value_cache_roundtrip_set_get_delete_consistency() {
-        reset_value_cache();
-        let key = ("pinvou3-model-api-key".to_string(), "model:m1".to_string());
+    fn system_store_second_get_hits_cache_without_touching_backend() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        backend.seed("model:cache-hit-probe", "sk-cached-1234567890");
+        let store = SystemCredentialStore::new();
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
+        );
 
-        // 初始:缓存未命中(value_cache.get 返回 None 表示"未缓存")。
-        {
-            let cache = value_cache().lock().unwrap();
-            assert!(cache.get(&key).is_none(), "缓存应为空");
-        }
-
-        // 模拟 get 成功后缓存 Ok(None) —— "已知不存在"。
-        {
-            let mut cache = value_cache().lock().unwrap();
-            cache.insert(key.clone(), None);
-        }
-        {
-            let cache = value_cache().lock().unwrap();
-            assert_eq!(cache.get(&key), Some(&None), "应缓存为已知不存在");
-        }
-
-        // 模拟 set 成功后更新为 Some(value)。
-        {
-            let mut cache = value_cache().lock().unwrap();
-            cache.insert(key.clone(), Some("sk-secret-1234567890".to_string()));
-        }
-        {
-            let cache = value_cache().lock().unwrap();
-            assert_eq!(
-                cache.get(&key),
-                Some(&Some("sk-secret-1234567890".to_string())),
-                "set 后缓存应反映新值"
-            );
-        }
-
-        // 模拟 delete 成功后回退为 None。
-        {
-            let mut cache = value_cache().lock().unwrap();
-            cache.insert(key.clone(), None);
-        }
-        {
-            let cache = value_cache().lock().unwrap();
-            assert_eq!(cache.get(&key), Some(&None), "delete 后应缓存为不存在");
-        }
-
-        reset_value_cache();
+        let reference = CredentialReference::for_model("cache-hit-probe");
+        // 首次:未命中缓存,触达底层后端。
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-cached-1234567890")
+        );
+        assert_eq!(backend.get_count(), 1, "首次 get 应访问后端一次");
+        // 第二次:命中进程级缓存,不再访问后端。
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-cached-1234567890")
+        );
+        assert_eq!(
+            backend.get_count(),
+            1,
+            "第二次 get 命中缓存,后端访问次数不应增加"
+        );
     }
 
+    /// `set` 成功后同步更新缓存,使得后续 `get` 命中缓存而不再访问后端。
     #[test]
-    fn value_cache_distinguishes_services() {
-        reset_value_cache();
-        let model_key = (
-            "pinvou3-model-api-key".to_string(),
-            "model:m1".to_string(),
+    fn system_store_set_updates_cache_so_subsequent_get_skips_backend() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        let store = SystemCredentialStore::new();
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
         );
-        let search_key = (
-            "pinvou3-search-api-key".to_string(),
-            "search:metaso".to_string(),
+
+        let reference = CredentialReference::for_model("set-sync-probe");
+        store.set(&reference, "sk-new-9999999999").unwrap();
+        assert_eq!(backend.get_count(), 0, "set 不应触发后端 get");
+        // set 已更新缓存,后续 get 命中缓存,不触后端。
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-new-9999999999")
         );
-        {
-            let mut cache = value_cache().lock().unwrap();
-            cache.insert(model_key.clone(), Some("sk-model".to_string()));
-            cache.insert(search_key.clone(), Some("mk-search".to_string()));
-        }
-        {
-            let cache = value_cache().lock().unwrap();
-            assert_eq!(
-                cache.get(&model_key),
-                Some(&Some("sk-model".to_string()))
-            );
-            assert_eq!(
-                cache.get(&search_key),
-                Some(&Some("mk-search".to_string()))
-            );
-        }
-        reset_value_cache();
+        assert_eq!(backend.get_count(), 0, "set 后 get 应命中缓存,不访问后端");
+    }
+
+    /// `delete` 成功后缓存为"已知不存在"(None),后续 `get` 命中缓存返回 None,
+    /// 不再访问后端(命中"已知不存在"分支)。
+    #[test]
+    fn system_store_delete_marks_cache_known_absent() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        backend.seed("model:delete-probe", "sk-will-be-deleted-12345");
+        let store = SystemCredentialStore::new();
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
+        );
+
+        let reference = CredentialReference::for_model("delete-probe");
+        // 先填充缓存(首次 get 触达后端)。
+        assert_eq!(
+            store.get(&reference).unwrap().as_deref(),
+            Some("sk-will-be-deleted-12345")
+        );
+        let count_before_delete = backend.get_count();
+        // delete 后缓存更新为 None。
+        store.delete(&reference).unwrap();
+        // 后续 get 命中"已知不存在",返回 None 且不触后端。
+        assert_eq!(store.get(&reference).unwrap(), None);
+        assert_eq!(
+            backend.get_count(),
+            count_before_delete,
+            "delete 后 get 应命中缓存,不访问后端"
+        );
+    }
+
+    /// 缓存按 `(service, account)` 隔离:一个凭据的缓存不影响另一凭据的后端访问。
+    #[test]
+    fn system_store_cache_isolates_services() {
+        let model_backend = Arc::new(FakeKeyringStore::new());
+        model_backend.seed("model:isolate-probe", "sk-model-isolated-123");
+        let search_backend = Arc::new(FakeKeyringStore::new());
+        search_backend.seed("search:isolate-probe", "mk-search-isolated-123");
+
+        let store = SystemCredentialStore::new();
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(model_backend.clone())),
+        );
+        inject_fake_secrets(
+            &store,
+            SEARCH_API_KEY_SERVICE,
+            Arc::new(Secrets::new(search_backend.clone())),
+        );
+
+        let model_ref = CredentialReference::for_model("isolate-probe");
+        let search_ref = CredentialReference::for_search_provider("isolate-probe");
+
+        // 各自首次 get 触达各自后端。
+        assert_eq!(
+            store.get(&model_ref).unwrap().as_deref(),
+            Some("sk-model-isolated-123")
+        );
+        assert_eq!(
+            store.get(&search_ref).unwrap().as_deref(),
+            Some("mk-search-isolated-123")
+        );
+        assert_eq!(model_backend.get_count(), 1);
+        assert_eq!(search_backend.get_count(), 1);
+
+        // 再次 get 均命中各自缓存,两个后端访问次数都不增加。
+        store.get(&model_ref).unwrap();
+        store.get(&search_ref).unwrap();
+        assert_eq!(model_backend.get_count(), 1, "model 后端不应被重复访问");
+        assert_eq!(search_backend.get_count(), 1, "search 后端不应被重复访问");
     }
 
     #[test]
