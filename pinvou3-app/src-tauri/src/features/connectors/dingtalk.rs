@@ -408,6 +408,9 @@ impl ConnectorSkillGate for DingtalkGate {
     fn id(&self) -> &'static str {
         ID
     }
+    fn display_name(&self) -> &'static str {
+        "钉钉"
+    }
     fn disabled_filename(&self) -> &'static str {
         "dingtalk_disabled"
     }
