@@ -532,6 +532,7 @@ fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json
             .ok_or_else(|| "pinvou scene event 缺少有效 pos".to_string())?;
         let scene = match entry.get("scene").and_then(serde_json::Value::as_str) {
             Some("work:document-writing") => "work:document-writing",
+            Some("work:personal-workbench") => "work:personal-workbench",
             Some("design:poster") => "design:poster",
             Some("design:data-visualization") => "design:data-visualization",
             _ => return Err("pinvou scene event 包含无效 scene".to_string()),
@@ -615,6 +616,22 @@ mod pinvou_scene_event_tests {
             { "pos": -1, "scene": "design:poster" }
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn scene_events_accept_personal_workbench_scene() {
+        // 个人工作台场景标签必须被后端接受并持久化，
+        // 否则 sidecar 重载后该消息的工作台标签会丢失。
+        let normalized = normalize_pinvou_scene_events(serde_json::json!([
+            { "pos": 3, "scene": "work:personal-workbench" }
+        ]))
+        .expect("personal-workbench scene must be accepted");
+        assert_eq!(
+            normalized,
+            serde_json::json!([
+                { "pos": 3, "scene": "work:personal-workbench" }
+            ])
+        );
     }
 }
 
