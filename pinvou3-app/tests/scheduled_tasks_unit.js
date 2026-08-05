@@ -3521,6 +3521,46 @@ async function staleKnowledgeSnapshotDoesNotCrossSessions() {
   assert.strictEqual(mounted.mountedCollectionsRevision, 1);
 }
 
+async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote"), true);
+  harness.handlers.session_mounted_collections_snapshot = function () {
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: false },
+        { collection_id: 7, enabled: true },
+        { collection_id: 8, enabled: true },
+      ],
+    };
+  };
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote",
+    revision: 2,
+    collections: [
+      { collection_id: 7, enabled: false },
+      { collection_id: 7, enabled: true },
+      { collection_id: 8, enabled: true },
+    ],
+  });
+  await tick();
+  await tick();
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: false },
+      { collectionId: 8, enabled: true },
+    ],
+    "remote mount snapshots must use the same first-entry-wins normalization as local mutations"
+  );
+  assert.strictEqual(mounted.mountedCollection, 8);
+  assert.strictEqual(mounted.mountedCollectionsRevision, 2);
+}
+
 async function draftKnowledgeMountsCreateOneSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3598,6 +3638,7 @@ Promise.resolve()
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
+  .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)

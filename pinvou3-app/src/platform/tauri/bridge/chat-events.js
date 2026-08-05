@@ -866,6 +866,19 @@
   // 新 payload 带 collections；collection_id 保留给旧远程端兼容。
   // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
   var kbMountSyncGeneration = 0;
+  function normalizeMountedCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (entry == null) return null;
+      var collectionId = typeof entry === "object"
+        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+        : entry;
+      if (collectionId == null || seen[String(collectionId)]) return null;
+      seen[String(collectionId)] = true;
+      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+    }).filter(Boolean);
+  }
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
@@ -873,12 +886,7 @@
     var sessionId = p.session_id;
     var generation = ++kbMountSyncGeneration;
     var payloadMounted = Array.isArray(p.collections)
-      ? p.collections.map(function (entry) {
-          return {
-            collectionId: entry.collectionId != null ? entry.collectionId : entry.collection_id,
-            enabled: entry.enabled !== false,
-          };
-        })
+      ? normalizeMountedCollections(p.collections)
       : (p.collection_id == null ? [] : [{ collectionId: p.collection_id, enabled: true }]);
     function normalizeSnapshot(value) {
       if (value && !Array.isArray(value) && Array.isArray(value.collections)) {
@@ -890,12 +898,7 @@
       if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
       var snapshot = normalizeSnapshot(value);
       if (snapshot.revision < Number(state.mountedCollectionsRevision || 0)) return;
-      var mounted = snapshot.collections.map(function (entry) {
-        return {
-          collectionId: entry.collectionId != null ? entry.collectionId : entry.collection_id,
-          enabled: entry.enabled !== false,
-        };
-      });
+      var mounted = normalizeMountedCollections(snapshot.collections);
       state.mountedCollections = mounted;
       state.mountedCollectionsRevision = snapshot.revision;
       var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
