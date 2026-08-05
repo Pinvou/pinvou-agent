@@ -773,9 +773,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
             const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
             nat = { w: cw, h: ch };
-            // iframe 内容可能尚未真正加载(scrollWidth=0)：这种空测量不写入缓存，
+            // iframe 内容可能尚未真正加载(scrollWidth=0 或 scrollHeight=0)：这种空测量不写入缓存，
             // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
-            if (cw > 0) naturalRef.current = nat;
+            if (cw > 0 && ch > 0) naturalRef.current = nat;
           }
           const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
           const h = nat.h;
