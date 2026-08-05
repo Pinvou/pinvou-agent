@@ -1011,6 +1011,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (typeof window === 'undefined') return undefined;
         const onOpen = (event) => {
           const detail = event && event.detail;
+          if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
           rememberScrollBeforeSubagentPanelChange();
           setSubagentPanel((current) => ({
             agentId: (detail && detail.agentId) || null,
@@ -1020,7 +1021,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         };
         window.addEventListener('pinvou:open-subagent', onOpen);
         return () => window.removeEventListener('pinvou:open-subagent', onOpen);
-      }, [closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
+      }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
       useEffect(() => {
         if (artifactsVisible) setSubagentPanel(null);
       }, [artifactsVisible]);
@@ -1493,7 +1494,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     renderToolItem={(item) => item.legacyItem
                       && !isSearchTool(item.tool)
                       && !isFetchTool(item.tool)
-                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
+                      ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} theme={theme} t={t} variant="timeline" />
                       : undefined}
                     onOpenExternal={openChatExternalUrl}
                   />
@@ -2607,7 +2608,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       if (item.type === 'tool') {
-        return <ToolCard item={item} theme={theme} t={t} />;
+        return <ToolCard item={item} sessionId={sessionId} theme={theme} t={t} />;
       }
 
       if (item.type === 'persona_equip') {

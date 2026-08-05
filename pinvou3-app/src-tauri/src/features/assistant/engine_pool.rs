@@ -786,7 +786,7 @@ impl EnginePool {
         if enabled {
             // 先占 lifecycle 再写名册：慢磁盘期间若允许发送抢先 reserve，首轮会
             // 落进旧引擎，随后切换失败并回滚，形成界面已开但该轮未受限的竞态。
-            let workspace = crate::platform::paths::session_workspace_dir(session_id);
+            let workspace = self.bridge.session_workspace(session_id);
             let sid = session_id.to_string();
             tokio::task::spawn_blocking(move || -> Result<()> {
                 std::fs::create_dir_all(&workspace)
@@ -819,6 +819,17 @@ impl EnginePool {
         self.turn_lifecycles
             .get(session_id)
             .is_some_and(|lifecycle| lifecycle.is_active())
+    }
+
+    /// Whether this session uses Pinvou's native Code execution lane.
+    pub(crate) fn is_code_session(&self, session_id: &str) -> bool {
+        self.bridge.is_code_session(session_id)
+    }
+
+    /// Resolve the Engine workspace, including a project-bound native Code
+    /// session. CodeWhale keeps its project-scoped `.codewhale` state here.
+    pub(crate) fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
+        self.bridge.session_workspace(session_id)
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
@@ -1102,13 +1113,13 @@ impl EnginePool {
             .cloned()
             .collect::<Vec<_>>();
         for session_id in live_session_ids {
-            let workspace = crate::platform::paths::session_workspace_dir(&session_id);
+            let workspace = self.bridge.session_workspace(&session_id);
             if crate::features::multiagent::roster::has_expert_role_projection(&workspace) {
                 targets.insert(session_id);
             }
         }
         for session_id in targets {
-            let workspace = crate::platform::paths::session_workspace_dir(&session_id);
+            let workspace = self.bridge.session_workspace(&session_id);
             if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&workspace) {
                 failures.push(format!("{session_id}: {err}"));
                 continue;
@@ -1134,7 +1145,7 @@ impl EnginePool {
             // 引擎没起不是错误：下次 spawn 从工作区装配。
             return Ok(());
         };
-        let workspace = crate::platform::paths::session_workspace_dir(session_id);
+        let workspace = self.bridge.session_workspace(session_id);
         let roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
             &workspace,

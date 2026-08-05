@@ -29,10 +29,16 @@ use crate::features::multiagent;
 ///   只认内置别名），不带的话专家角色等于隐身；专家池为空时名单省略。
 /// - 资源护栏：主会话是总协调者，普通委派使用 `max_depth=0` 成为叶子；只有
 ///   任务本身足够复杂时，第一层调用省略深度参数以继承会话上限并允许再拆
-///   一层。第二层不得继续派生；全树最多 4 个同时执行、8 个排队 + 执行。
+///   一层。第二层不得继续派生；工作与 Code 使用各自的直属并行/全树准入额度。
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
 ///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
-pub(crate) fn delegation_reminder() -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DelegationContext {
+    Work,
+    Code,
+}
+
+pub(crate) fn delegation_reminder(context: DelegationContext) -> String {
     // 名册只来自专家池（用户决策：不内置兜底角色）。空名册不渲染空列表，
     // 转而教模型自拟任务说明裸派。
     let roles = multiagent::roster::available_role_lines();
@@ -41,9 +47,21 @@ pub(crate) fn delegation_reminder() -> String {
     } else {
         format!("，可派 profile：\n{}", roles.join("\n"))
     };
+    let (mode_guidance, max_concurrent, max_admitted) = match context {
+        DelegationContext::Work => (
+            "这是工作会话：保持克制，只在任务边界清楚且并行收益明确时委派；简单任务直接完成。",
+            4,
+            8,
+        ),
+        DelegationContext::Code => (
+            "这是原生 Code 会话：遇到跨模块审查、复杂调试、大范围修改或需要独立验证的任务时，可更积极地并行委派；简单局部改动仍直接完成。",
+            6,
+            12,
+        ),
+    };
     format!(
         "本会话已开启多智能体模式：请按任务形态**主动委派**，工具面与普通\
-         对话完全一致（联网检索、读取网页等照常）：\n\
+         对话完全一致（联网检索、读取网页等照常）。{mode_guidance}\n\
          1. 单个有边界的独立任务：用 `agent` 工具派一个子智能体去办，任务\
          说明写完整，交付物说清楚；\n\
          2. 多阶段任务（并行调研再汇总等）：并行的部分各派一个子智能体\
@@ -52,8 +70,9 @@ pub(crate) fn delegation_reminder() -> String {
          3. 资源边界：你是总协调者。普通委派调用 `agent` 时设 `max_depth=0`，\
          让直属子智能体成为叶子；只有任务本身足够复杂、确实需要它再拆分时，\
          第一层调用才省略 `max_depth`，并在任务说明中明确可按需再派一层。\
-         第二层子智能体不得继续派生；不要传任何正数深度覆盖值。全树同时\
-         执行最多 4 个，排队与执行合计最多 8 个；不要递归裂变；\n\
+         第二层子智能体不得继续派生；不要传任何正数深度覆盖值。直属子智能体\
+         同时执行最多 {max_concurrent} 个，整棵树排队与执行合计最多 {max_admitted} 个；\
+         不要递归裂变；\n\
          4. Git 与工作区策略由你按任务自主完成：只读或不会互相覆盖的任务可用\
          默认共享工作区；同一 Git 仓库内有多个并行写入者、确需隔离时可传\
          `workspace_policy=worktree`。采用 worktree 前自行确认 Git 可用并准备好\
@@ -75,8 +94,10 @@ pub(crate) fn delegation_reminder() -> String {
     )
 }
 
-/// 会话的子智能体工作区（底座 transcripts / worker ledger 都落在这里）。
-fn subagent_workspace(session_id: &str) -> Result<std::path::PathBuf, String> {
+/// 会话实际使用的 CodeWhale 工作区。绑定项目的原生 Code 会话返回项目目录，
+/// 因而名册、transcripts 与 worker ledger 都遵循基座落在项目 `.codewhale/`；
+/// 其他会话仍返回各自的会话工作区。
+fn subagent_workspace(session_id: &str, pool: &EnginePool) -> Result<std::path::PathBuf, String> {
     if session_id.is_empty()
         || !session_id
             .chars()
@@ -84,7 +105,7 @@ fn subagent_workspace(session_id: &str) -> Result<std::path::PathBuf, String> {
     {
         return Err(format!("非法会话 id: {session_id}"));
     }
-    Ok(crate::platform::paths::session_workspace_dir(session_id))
+    Ok(pool.session_workspace(session_id))
 }
 
 /// 列出一次会话派发过的子智能体（读工作区对话记录的表头）。
@@ -96,7 +117,7 @@ pub async fn list_subagent_transcripts(
     run_id: String,
     pool: State<'_, EnginePool>,
 ) -> Result<Vec<multiagent::transcripts::SubagentTranscriptSummary>, String> {
-    let workspace = subagent_workspace(&run_id)?;
+    let workspace = subagent_workspace(&run_id, &pool)?;
     // 传引擎纪元而非"引擎是否存在"：重启后父会话重建引擎时，上一进程的
     // 僵尸 worker（落盘仍是 running）必须继续判 interrupted，见
     // transcripts::projected_worker_status。
@@ -112,8 +133,9 @@ pub async fn list_subagent_transcripts(
 pub async fn read_subagent_transcript(
     run_id: String,
     agent_id: String,
+    pool: State<'_, EnginePool>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let workspace = subagent_workspace(&run_id)?;
+    let workspace = subagent_workspace(&run_id, &pool)?;
     tokio::task::spawn_blocking(move || multiagent::transcripts::read(&workspace, &agent_id))
         .await
         .map_err(|join| format!("读取子智能体记录失败: {join}"))?
@@ -121,13 +143,13 @@ pub async fn read_subagent_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::delegation_reminder;
+    use super::{delegation_reminder, DelegationContext};
 
     /// 每轮提醒教的是**主动委派**（ADR-0006）：只教裸 `agent` 集群（单任务
     /// 一个、多阶段一群、父模型亲自协调汇总），简单任务不委派。
     #[test]
     fn delegation_reminder_teaches_delegation() {
-        let msg = delegation_reminder();
+        let msg = delegation_reminder(DelegationContext::Work);
         assert!(msg.contains("主动委派"), "必须点名主动委派的行事方式");
         assert!(
             msg.contains("`agent` 工具"),
@@ -185,7 +207,7 @@ mod tests {
     /// role 字段只收 ASCII token，中文名只能走文本约定，界面据此显示身份。
     #[test]
     fn delegation_reminder_relies_on_expert_pool_only() {
-        let msg = delegation_reminder();
+        let msg = delegation_reminder(DelegationContext::Work);
         assert!(
             msg.contains("写好提示词"),
             "必须教模型自拟任务说明（无合适专家时裸派）"
@@ -204,7 +226,7 @@ mod tests {
     /// 也不得再教手写 script / plan 协议的任何碎片（真机事故的根因）。
     #[test]
     fn delegation_reminder_never_mentions_the_workflow_path() {
-        let msg = delegation_reminder();
+        let msg = delegation_reminder(DelegationContext::Work);
         assert!(
             !msg.contains("workflow"),
             "底座 read_only 工具钳制与阶段结果不传递未修，不得推荐 workflow：{msg}"
@@ -228,7 +250,23 @@ mod tests {
     /// （回归：此前正是因为字符串断行丢了 `\`，提示语里混进大段缩进。）
     #[test]
     fn delegation_reminder_contains_no_stray_indentation() {
-        let msg = delegation_reminder();
+        let msg = delegation_reminder(DelegationContext::Work);
         assert!(!msg.contains("  "), "提示语混入了源码缩进空格:\n{msg}");
+    }
+
+    #[test]
+    fn delegation_reminder_varies_strategy_and_budget_by_session_kind() {
+        let work = delegation_reminder(DelegationContext::Work);
+        let code = delegation_reminder(DelegationContext::Code);
+
+        assert!(work.contains("工作会话：保持克制"));
+        assert!(work.contains("同时执行最多 4 个"));
+        assert!(work.contains("合计最多 8 个"));
+        assert!(code.contains("原生 Code 会话"));
+        assert!(code.contains("跨模块审查"));
+        assert!(code.contains("同时执行最多 6 个"));
+        assert!(code.contains("合计最多 12 个"));
+        assert!(work.contains("第二层子智能体不得继续派生"));
+        assert!(code.contains("第二层子智能体不得继续派生"));
     }
 }

@@ -534,15 +534,29 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
     // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
     // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact, sessionId: sessionIdProp, sessionModelId: sessionModelIdProp, busy: busyProp, onSwitchModel }) => {
+    const ComposerModelSelector = ({
+      t,
+      bs,
+      onGotoSettings,
+      compact,
+      sessionId: sessionIdProp,
+      sessionModelId: sessionModelIdProp,
+      busy: busyProp,
+      onSwitchModel,
+      multiAgentEnabled: multiAgentEnabledProp,
+      multiAgentAvailable: multiAgentAvailableProp,
+      onToggleMultiAgent,
+    }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canManageModels = can('modelManagement');
       const canSwitchModels = can('sessionModelSwitch');
       // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
       // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
-      const canMultiAgent = can('multiAgent');
-      const multiAgentOn = !!(bs && bs.modeState && bs.modeState.multiAgent);
+      const canMultiAgent = can('multiAgent') && multiAgentAvailableProp !== false;
+      const multiAgentOn = multiAgentEnabledProp !== undefined
+        ? Boolean(multiAgentEnabledProp)
+        : !!(bs && bs.modeState && bs.modeState.multiAgent);
       const multiAgentCopy = (t && t.uiMultiAgent) || {};
       // 防重入（复核点名）：后端事务完成前再点会带着旧状态重复提交，
       // 其中一次名册推送失败的回滚还会覆盖另一次已开启的状态。切换期间
@@ -558,11 +572,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       }, [open]);
       async function toggleMultiAgent() {
         if (multiAgentBusy || busy) return;
-        if (!(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
+        if (!onToggleMultiAgent
+          && !(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
         setMultiAgentRevealing(!multiAgentOn);
         setMultiAgentBusy(true);
         try {
-          await bridge.interaction.setMultiAgentMode(!multiAgentOn);
+          if (onToggleMultiAgent) await onToggleMultiAgent(!multiAgentOn);
+          else await bridge.interaction.setMultiAgentMode(!multiAgentOn);
         } finally {
           setMultiAgentBusy(false);
         }

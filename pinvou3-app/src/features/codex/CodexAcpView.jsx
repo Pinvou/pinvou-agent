@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
@@ -7,6 +7,8 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
+import { ToolCard } from '../tools/tool-renderers.jsx';
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
@@ -39,11 +41,18 @@ import {
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import {
+  ComposerModelSelector,
   ComposerToolMenu,
 } from '../settings/SettingsView.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
-import { isNearConversationBottom } from '../conversation/conversation-model.js';
+import {
+  captureConversationScrollPosition,
+  isFetchTool,
+  isNearConversationBottom,
+  isSearchTool,
+  restoreConversationScrollPosition,
+} from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -1085,6 +1094,7 @@ export function CodexAcpView({
   onSessionsChange,
   onSwitchHomeMode,
   bs = null,
+  onGotoModelSettings,
   onGotoTools,
 }) {
   const codexCopy = t.uiCodex;
@@ -1101,6 +1111,7 @@ export function CodexAcpView({
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
@@ -1126,6 +1137,7 @@ export function CodexAcpView({
   const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
+  const rightPanelScrollRef = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
@@ -1230,7 +1242,12 @@ export function CodexAcpView({
   // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
-  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: 'yolo' });
+  const [nativeControls, setNativeControls] = useState({
+    modelId: null,
+    mountedId: null,
+    mode: 'yolo',
+    multiAgent: false,
+  });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
@@ -1272,6 +1289,9 @@ export function CodexAcpView({
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
+  const nativeMultiAgentEnabled = activeId
+    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgent))
+    : Boolean(nativeDraftControls.multiAgent);
   const nativeKbChoices = [
     { value: '', name: t.kbMountRemove },
     ...nativeKbCollections.map(collection => ({
@@ -1284,6 +1304,58 @@ export function CodexAcpView({
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
+  const rememberScrollBeforeRightPanelChange = useCallback(() => {
+    rightPanelScrollRef.current = captureConversationScrollPosition(
+      scroller.current,
+      autoScrollRef.current,
+    );
+  }, []);
+  const closeSubagentPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const toggleWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+    setWorkspaceOpen(value => !value);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const closeWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setWorkspaceOpen(false);
+  }, [rememberScrollBeforeRightPanelChange]);
+  useLayoutEffect(() => {
+    const snapshot = rightPanelScrollRef.current;
+    if (!snapshot) return;
+    rightPanelScrollRef.current = null;
+    const element = scroller.current;
+    if (!element) return;
+    restoreConversationScrollPosition(element, snapshot);
+    lastScrollTopRef.current = element.scrollTop;
+    if (snapshot.stickToBottom) {
+      autoScrollRef.current = true;
+      setShowScrollBottom(false);
+    }
+  }, [subagentPanel, workspaceOpen]);
+  useEffect(() => {
+    setSubagentPanel(null);
+  }, [activeId]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isNativeAgent) return undefined;
+    const onOpen = (event) => {
+      const detail = event && event.detail;
+      const sessionId = detail && detail.sessionId;
+      if (!detail?.agentId || !activeIdRef.current) return;
+      if (sessionId && sessionId !== activeIdRef.current) return;
+      rememberScrollBeforeRightPanelChange();
+      setWorkspaceOpen(false);
+      setSubagentPanel(current => ({
+        agentId: detail.agentId,
+        selectionRequestId: (current?.selectionRequestId || 0) + 1,
+      }));
+    };
+    window.addEventListener('pinvou:open-subagent', onOpen);
+    return () => window.removeEventListener('pinvou:open-subagent', onOpen);
+  }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
   const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
@@ -1391,6 +1463,7 @@ export function CodexAcpView({
       modelId: modelId || null,
       mountedId: mountedId ?? null,
       mode: (modeState && modeState.mode) || 'yolo',
+      multiAgent: Boolean(modeState && modeState.multiAgent),
     });
     nativeControlsSessionRef.current = sessionId;
   }
@@ -1398,7 +1471,8 @@ export function CodexAcpView({
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
   async function applyNativeDraftControls(sessionId) {
     const staged = nativeDraftControls;
-    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode;
+    const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
+    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return;
     try {
       if (staged.modelId) {
@@ -1410,9 +1484,15 @@ export function CodexAcpView({
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
       }
+      if (hasMultiAgentSelection) {
+        await invoke('set_multi_agent_mode', {
+          sessionId,
+          enabled: Boolean(staged.multiAgent),
+        });
+      }
       setNativeDraftControls({});
     } catch (err) {
-      showError(err);
+      throw err;
     }
   }
 
@@ -1427,6 +1507,29 @@ export function CodexAcpView({
       await invoke('set_session_model', { sessionId, modelId });
       await refreshNativeControls(sessionId);
     } catch (err) { showError(err); }
+  }
+
+  async function switchNativeMultiAgent(enabled) {
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+      return;
+    }
+    if (busy || working) return;
+    const previous = nativeMultiAgentEnabled;
+    setError('');
+    setWorking(true);
+    setConfigApplying('multiagent');
+    setNativeControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+    try {
+      await invoke('set_multi_agent_mode', { sessionId: activeId, enabled: Boolean(enabled) });
+      await refreshNativeControls(activeId);
+    } catch (err) {
+      setNativeControls(current => ({ ...current, multiAgent: previous }));
+      showError(err);
+    } finally {
+      setWorking(false);
+      setConfigApplying('');
+    }
   }
 
   async function mountNativeKb(collectionId) {
@@ -2436,7 +2539,7 @@ export function CodexAcpView({
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2459,7 +2562,7 @@ export function CodexAcpView({
           <button
             type="button"
             data-testid="codex-workspace-toggle"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2567,6 +2670,21 @@ export function CodexAcpView({
                             />
                           )
                         : undefined}
+                    renderToolItem={isNativeAgent
+                      ? (item) => item.legacyItem
+                        && !isSearchTool(item.tool)
+                        && !isFetchTool(item.tool)
+                        ? (
+                            <ToolCard
+                              item={{ ...item.legacyItem, sessionId: activeId }}
+                              sessionId={activeId}
+                              theme={theme}
+                              t={t}
+                              variant="timeline"
+                            />
+                          )
+                        : undefined
+                      : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
                   />
@@ -2777,18 +2895,21 @@ export function CodexAcpView({
                         })}
                         title={`${t.modeSwitchTitle} · ${nativeModeValue === 'plan' ? t.modePlan : t.modeYolo}`}
                       />
-                      {nativeModelChoices.length > 0 && (
-                        <CodexComposerConfigSelect
-                          id="native-model"
-                          testId="native-model"
-                          label={codexCopy.model}
-                          value={nativeModelValue}
-                          choices={nativeModelChoices}
-                          onChange={modelId => switchNativeModel(activeId, String(modelId))}
-                          disabled={busy || working}
-                          title={busy || working ? t.modelSwitchBusy : undefined}
-                        />
-                      )}
+                      <ComposerModelSelector
+                        t={t}
+                        bs={bs}
+                        onGotoSettings={onGotoModelSettings}
+                        compact={false}
+                        sessionId={activeId}
+                        sessionModelId={nativeModelValue}
+                        busy={busy || working}
+                        onSwitchModel={(sessionId, modelId) => (
+                          switchNativeModel(sessionId, String(modelId))
+                        )}
+                        multiAgentEnabled={nativeMultiAgentEnabled}
+                        multiAgentAvailable
+                        onToggleMultiAgent={switchNativeMultiAgent}
+                      />
                       <ComposerToolMenu
                         t={t}
                         onGotoTools={onGotoTools}
@@ -3000,17 +3121,27 @@ export function CodexAcpView({
           </div>
         </div>
         </div>
-        {(activeSession || draftWorkspacePath) && (
+        {!subagentPanel && (activeSession || draftWorkspacePath) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}
             visible={workspaceOpen}
-            onClose={() => setWorkspaceOpen(false)}
+            onClose={closeWorkspacePanel}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}
             refreshToken={isNativeAgent ? nativeLaneTick : events.length}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
+          />
+        )}
+        {subagentPanel && activeSession && isNativeAgent && (
+          <SubagentTranscriptPanel
+            sessionId={activeSession.id}
+            initialAgentId={subagentPanel.agentId}
+            selectionRequestId={subagentPanel.selectionRequestId}
+            t={t}
+            theme={theme}
+            onClose={closeSubagentPanel}
           />
         )}
         </div>
