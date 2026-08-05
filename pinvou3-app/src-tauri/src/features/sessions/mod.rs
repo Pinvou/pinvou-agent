@@ -48,8 +48,16 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::platform::paths;
 
-use crate::core::mode_state::SessionModeState;
-
+/// Re-export the session-domain mode-state types so they are owned by the
+/// sessions feature. These were historically re-exported through a `core`
+/// shim (`core::mode_state`), but they are feature-domain aggregates
+/// (persona/review/workflow/knowledge) and must not form a `core → features`
+/// reverse dependency. Consumers should import from
+/// `crate::features::sessions::{...}`.
+pub use self::mode_state::{
+    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
+    SessionModeState,
+};
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{

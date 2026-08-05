@@ -3,8 +3,9 @@
 //! `SessionModeState` / `ActiveSkillBinding` / `SerializableMode` 的**类型定义**
 //! 原先在 `core/mode_state.rs`，但它们是 session 域聚合（persona/review/workflow/
 //! knowledge 四特性字段），违反 `core/README.md` 的"feature 内部类型不入 core"准则。
-//! Wave 3 将类型定义迁回此文件（行为 impl 一直在此），`core/mode_state.rs` 退化为
-//! 重新导出垫片以保持外部 import 兼容。
+//! Wave 3 将类型定义迁回此文件（行为 impl 一直在此），并由 `features::sessions`
+//! 正式 re-export，消费方一律从 `crate::features::sessions::{...}` 导入，
+//! 不再经过 `core` 垫片（避免形成 `core → features` 反向依赖）。
 //!
 //! These methods drive the in-memory `mode_states` map (mode, pinvou_review,
 //! pending Plan ticket + claim-in-flight, active skill binding, persona,
@@ -21,7 +22,7 @@ use anyhow::{bail, Result};
 use super::injections::{PendingPlanClaim, PendingTurnInjections};
 use super::SessionStore;
 
-// ── 类型定义（自 core/mode_state.rs 迁入） ──
+// ── 类型定义（session 域聚合，由 sessions 正式 re-export） ──
 
 /// Per-session 绑定的 skill。在 session 上点工作流卡片"启用"时,
 /// `commands::start_skill_session` 先查找已有绑定同名 skill 的 session，

@@ -14,8 +14,7 @@
 
 use anyhow::Result;
 
-use crate::core::mode_state::SessionModeState;
-
+use super::SessionModeState;
 use super::SessionStore;
 
 /// Transactional checkout of the two per-session one-shot prompt injections.

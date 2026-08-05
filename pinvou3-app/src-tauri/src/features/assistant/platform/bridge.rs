@@ -11,7 +11,6 @@
 //! 用户层面看不到这一层；这层只服务 GUI 与 deepseek-tui engine 之间的
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
-pub use crate::core::mode_state;
 pub use crate::features::marketplace;
 pub use crate::features::marketplace::skill_marketplace;
 pub(crate) use crate::features::runtime_bundle::platform as bundle;
