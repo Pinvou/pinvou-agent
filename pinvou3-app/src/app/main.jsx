@@ -9,6 +9,7 @@ import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
+import { getCurrent as getDeepLinkCurrent, onOpenUrl as onDeepLinkOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
@@ -40,6 +41,20 @@ import {
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+
+function extractCollaborationInviteDeepLink(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'pinvou:') return '';
+    const path = url.pathname.replace(/^\/+/, '');
+    const isJoin = url.hostname === 'join' || path === 'join';
+    const token = url.searchParams.get('token') || '';
+    if (!isJoin || !token.trim()) return '';
+    return `pinvou://join?token=${token.trim()}`;
+  } catch (_) {
+    return '';
+  }
+}
 
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
 // 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
@@ -177,6 +192,7 @@ function hasPendingCollaborationTasks(bs) {
       }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
+      const [pendingCollaborationInvite, setPendingCollaborationInvite] = useState(null);
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
@@ -273,6 +289,32 @@ function hasPendingCollaborationTasks(bs) {
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
       currentViewRef.current = currentView;
+      useEffect(() => {
+        if (!isTauriAvailable()) return undefined;
+        let disposed = false;
+        let unlisten = null;
+        const handleDeepLinkUrls = (urls) => {
+          const list = Array.isArray(urls) ? urls : [urls];
+          const inviteUrl = list.map(extractCollaborationInviteDeepLink).find(Boolean);
+          if (!inviteUrl || disposed) return;
+          setPendingCollaborationInvite({ url: inviteUrl, nonce: Date.now() });
+          setCurrentView('collaboration');
+          closeMobileSidebar();
+        };
+        getDeepLinkCurrent()
+          .then(handleDeepLinkUrls)
+          .catch(error => console.warn('[deep-link] get current failed', error));
+        onDeepLinkOpenUrl(handleDeepLinkUrls)
+          .then(fn => {
+            if (disposed) fn();
+            else unlisten = fn;
+          })
+          .catch(error => console.warn('[deep-link] listen failed', error));
+        return () => {
+          disposed = true;
+          if (unlisten) unlisten();
+        };
+      }, []);
       useEffect(() => {
         if (!isTauriAvailable()) return undefined;
         const guard = createPetActivationGuard();
@@ -2150,6 +2192,8 @@ function hasPendingCollaborationTasks(bs) {
                 onCreateTaskGuide={handleCreateCollaborationTaskGuide}
                 onStartCollaboration={() => setPinvouRegistrationOpen(true)}
                 onOpenAbilityPool={() => navigateFromScheduledRun('toolStore')}
+                pendingInvite={pendingCollaborationInvite}
+                onPendingInviteConsumed={() => setPendingCollaborationInvite(null)}
               />
             )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}

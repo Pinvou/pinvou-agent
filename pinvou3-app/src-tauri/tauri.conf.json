@@ -43,5 +43,12 @@
     "resources": {
       "resources/common/web-template/": "web-template"
     }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["pinvou"]
+      }
+    }
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
@@ -823,9 +823,15 @@ const InviteMembersModal = ({ members, loading, invite, error, copied, onClose, 
   return createPortal(modal, document.body);
 };
 
-const JoinInviteModal = ({ loading, error, onClose, onSubmit }) => {
-  const [token, setToken] = useState('');
-  const [displayName, setDisplayName] = useState('');
+const JoinInviteModal = ({ loading, error, initialToken, initialDisplayName, onClose, onSubmit }) => {
+  const [token, setToken] = useState(initialToken || '');
+  const [displayName, setDisplayName] = useState(initialDisplayName || '');
+  useEffect(() => {
+    if (initialToken) setToken(initialToken);
+  }, [initialToken]);
+  useEffect(() => {
+    if (initialDisplayName) setDisplayName(initialDisplayName);
+  }, [initialDisplayName]);
   const canSubmit = token.trim().length > 0 && displayName.trim().length > 0 && !loading;
   const modal = (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/25 px-4 backdrop-blur-[10px]" onClick={onClose}>
@@ -916,7 +922,7 @@ const TaskRecipientModal = ({ members, onClose, onSelect }) => {
   return createPortal(modal, document.body);
 };
 
-export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateTaskGuide, onStartCollaboration, onOpenAbilityPool }) => {
+export const CollaborationView = ({ theme, bs, pendingInvite, onPendingInviteConsumed, onOpenChat, onOpenTask, onCreateTaskGuide, onStartCollaboration, onOpenAbilityPool }) => {
   const userAvatarUrl = getUserAvatarUrl(bs);
   const collaborationBridge = bridge.collaboration || {};
   const [activeSheetId, setActiveSheetId] = useState(null);
@@ -931,6 +937,7 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
   const [joinModalOpen, setJoinModalOpen] = useState(false);
   const [joinLoading, setJoinLoading] = useState(false);
   const [joinError, setJoinError] = useState('');
+  const [joinInitialToken, setJoinInitialToken] = useState('');
   const [taskRecipientOpen, setTaskRecipientOpen] = useState(false);
   const [taskHint, setTaskHint] = useState('');
   const collaboration = bs?.collaboration || {};
@@ -977,6 +984,15 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
     waiting_peer: { ...sheetConfigs.waiting_peer, items: waitingPeerItems },
   };
   const activeSheetConfig = dynamicSheetConfigs[activeSheetId] || null;
+
+  useEffect(() => {
+    const url = pendingInvite?.url || '';
+    if (!url) return;
+    setJoinInitialToken(url);
+    setJoinError('');
+    setJoinModalOpen(true);
+    if (onPendingInviteConsumed) onPendingInviteConsumed();
+  }, [pendingInvite, onPendingInviteConsumed]);
 
   const handleQuickAction = item => {
     setActionFeedback(previous => ({ ...previous, [item.id]: true }));
@@ -1120,6 +1136,8 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
           <JoinInviteModal
             loading={joinLoading}
             error={joinError}
+            initialToken={joinInitialToken}
+            initialDisplayName={configState.identity?.name || ''}
             onClose={() => {
               if (!joinLoading) setJoinModalOpen(false);
             }}
@@ -1271,6 +1289,8 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
         <JoinInviteModal
           loading={joinLoading}
           error={joinError}
+          initialToken={joinInitialToken}
+          initialDisplayName={configState.identity?.name || ''}
           onClose={() => {
             if (!joinLoading) setJoinModalOpen(false);
           }}
