@@ -1,10 +1,33 @@
 use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
+
+/// 进程级凭据值缓存(键 = `(service, account)`,值 = 缓存的凭据,`None` 表示"已知不存在")。
+///
+/// **目的**:缓解 macOS ad-hoc 签名下 Keychain 反复弹窗(#175)。macOS Keychain 的 ACL
+/// 以应用代码签名身份(designated requirement)识别可信应用;社区版 DMG 是 ad-hoc 签名
+/// (`signingIdentity = "-"`),只有 cdhash、无稳定证书身份,无法建立持久 ACL —— 导致
+/// "始终允许"无效、每次访问 keychain item 都重新判定为未授权应用并弹窗。`keyring` crate
+/// 的 macOS 后端用经典 `SecKeychainAddGenericPassword` API,创建 item 时不设自定义 ACL,
+/// 完全依赖默认访问控制,ad-hoc 下默认访问控制无法稳定放行。
+///
+/// 缓存让同一凭据在一次进程生命周期内只访问 Keychain 一次:首次 `get` 触发授权弹窗
+/// (用户点"允许"后本次成功读取并缓存),之后命中缓存即不触碰 Keychain,应用使用期间不再
+/// 反复弹窗。重启应用后首次访问仍会弹一次(详见 `docs/macos-keychain-弹窗说明.md`)。
+///
+/// **安全权衡**:缓存值为明文 secret,仅在进程内存(不落盘),与 `RuntimeModelCredential`
+/// 在 bridge 层的内存缓存(见 `bridge.rs` 的 `api_key`)同级。Keychain 仍是单一真相源:
+/// `set`/`delete` 同步更新缓存;环境变量路径不经过此缓存。仅 `Ok` 结果缓存(含 `Ok(None)`),
+/// `Err` 不缓存,允许临时性 Keychain 故障恢复后自愈。
+static VALUE_CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
+
+fn value_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
+    VALUE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 const IMA_SECRET_SERVICE: &str = "pinvou3-ima-secret";
@@ -203,6 +226,19 @@ impl std::fmt::Debug for SystemCredentialStore {
 
 impl CredentialStore for SystemCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+        let cache_key = (reference.service.clone(), reference.account.clone());
+        // 命中进程级缓存(含"已知不存在"的 None)即直接返回,不触碰 Keychain —— 这是
+        // macOS ad-hoc 签名下避免反复弹窗的关键(见 VALUE_CACHE 注释)。
+        if let Ok(cache) = value_cache().lock() {
+            if let Some(cached) = cache.get(&cache_key) {
+                log::info!(
+                    "[credential_store] get cache hit service={} account={}",
+                    reference.service,
+                    reference.account
+                );
+                return Ok(cached.clone());
+            }
+        }
         let started_at = Instant::now();
         log::info!(
             "[credential_store] get start service={} account={}",
@@ -224,6 +260,12 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
+        // 仅缓存 Ok 结果(含 Ok(None));Err 不缓存,允许下次重试自愈。
+        if let Ok(value) = &result {
+            if let Ok(mut cache) = value_cache().lock() {
+                cache.insert(cache_key, value.clone());
+            }
+        }
         result
     }
 
@@ -251,6 +293,15 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
+        // 写入成功后同步更新缓存:后续 get 命中即不再访问 Keychain。
+        if result.is_ok() {
+            if let Ok(mut cache) = value_cache().lock() {
+                cache.insert(
+                    (reference.service.clone(), reference.account.clone()),
+                    Some(value.to_string()),
+                );
+            }
+        }
         result
     }
 
@@ -270,6 +321,15 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
+        // 删除成功后缓存为 None,避免下次 get 再次访问 Keychain(命中"已知不存在")。
+        if result.is_ok() {
+            if let Ok(mut cache) = value_cache().lock() {
+                cache.insert(
+                    (reference.service.clone(), reference.account.clone()),
+                    None,
+                );
+            }
+        }
         result
     }
 }
@@ -385,6 +445,93 @@ pub fn is_secret_like(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试间清空进程级凭据值缓存,避免 static 状态串扰。
+    /// (生产代码不需要清空;缓存跨整个进程生命周期持久是设计意图。)
+    fn reset_value_cache() {
+        value_cache()
+            .lock()
+            .expect("value cache lock")
+            .clear();
+    }
+
+    #[test]
+    fn value_cache_roundtrip_set_get_delete_consistency() {
+        reset_value_cache();
+        let key = ("pinvou3-model-api-key".to_string(), "model:m1".to_string());
+
+        // 初始:缓存未命中(value_cache.get 返回 None 表示"未缓存")。
+        {
+            let cache = value_cache().lock().unwrap();
+            assert!(cache.get(&key).is_none(), "缓存应为空");
+        }
+
+        // 模拟 get 成功后缓存 Ok(None) —— "已知不存在"。
+        {
+            let mut cache = value_cache().lock().unwrap();
+            cache.insert(key.clone(), None);
+        }
+        {
+            let cache = value_cache().lock().unwrap();
+            assert_eq!(cache.get(&key), Some(&None), "应缓存为已知不存在");
+        }
+
+        // 模拟 set 成功后更新为 Some(value)。
+        {
+            let mut cache = value_cache().lock().unwrap();
+            cache.insert(key.clone(), Some("sk-secret-1234567890".to_string()));
+        }
+        {
+            let cache = value_cache().lock().unwrap();
+            assert_eq!(
+                cache.get(&key),
+                Some(&Some("sk-secret-1234567890".to_string())),
+                "set 后缓存应反映新值"
+            );
+        }
+
+        // 模拟 delete 成功后回退为 None。
+        {
+            let mut cache = value_cache().lock().unwrap();
+            cache.insert(key.clone(), None);
+        }
+        {
+            let cache = value_cache().lock().unwrap();
+            assert_eq!(cache.get(&key), Some(&None), "delete 后应缓存为不存在");
+        }
+
+        reset_value_cache();
+    }
+
+    #[test]
+    fn value_cache_distinguishes_services() {
+        reset_value_cache();
+        let model_key = (
+            "pinvou3-model-api-key".to_string(),
+            "model:m1".to_string(),
+        );
+        let search_key = (
+            "pinvou3-search-api-key".to_string(),
+            "search:metaso".to_string(),
+        );
+        {
+            let mut cache = value_cache().lock().unwrap();
+            cache.insert(model_key.clone(), Some("sk-model".to_string()));
+            cache.insert(search_key.clone(), Some("mk-search".to_string()));
+        }
+        {
+            let cache = value_cache().lock().unwrap();
+            assert_eq!(
+                cache.get(&model_key),
+                Some(&Some("sk-model".to_string()))
+            );
+            assert_eq!(
+                cache.get(&search_key),
+                Some(&Some("mk-search".to_string()))
+            );
+        }
+        reset_value_cache();
+    }
 
     #[test]
     fn memory_store_roundtrip_and_delete() {
