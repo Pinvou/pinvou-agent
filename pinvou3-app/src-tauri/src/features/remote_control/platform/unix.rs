@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) fn configure_private_open_options(options: &mut OpenOptions) {
     options.mode(0o600);
@@ -20,6 +20,10 @@ pub(super) fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
 
 pub(super) fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
+    Vec::new()
 }
 
 #[cfg(test)]
