@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn parse_connector_scope_defaults_to_plain() {
         assert_eq!(parse_connector_scope(None).unwrap(), ConnectorScope::Plain);
-        assert_eq!(parse_connector_scope(Some("")).unwrap(), ConnectorScope::Plain);
+        assert_eq!(
+            parse_connector_scope(Some("")).unwrap(),
+            ConnectorScope::Plain
+        );
         assert_eq!(
             parse_connector_scope(Some("plain")).unwrap(),
             ConnectorScope::Plain
