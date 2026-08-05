@@ -5,7 +5,10 @@ pub(crate) mod macos;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+// `unsupported` 是「尚未实现能力」的桩集合,供 macos 借用未实现的符号(见
+// `macos/mod.rs` 的 `pub use super::unsupported::*`),并在非三大桌面平台上作为
+// 默认 platform。因此除 linux/windows 外均需声明此模块。
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) mod unsupported;
 
 mod interface;
