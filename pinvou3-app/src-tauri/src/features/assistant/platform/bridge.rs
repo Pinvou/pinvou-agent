@@ -30,11 +30,12 @@ use deepseek_tui::core::ops::Op;
 use deepseek_tui::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
-use deepseek_tui::tui::approval::ApprovalMode;
 
 use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::core::session_mode::SessionMode;
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
+use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
 // Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）;`_256k` 后缀语义与
@@ -324,7 +325,7 @@ impl Pinvou3Bridge {
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
         // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
-        let base = if self.is_code_session(session_id) {
+        let base = if self.session_policy(session_id).mode().is_code() {
             let workspace_hint = self
                 .execution_root_resolver
                 .as_ref()
@@ -412,39 +413,46 @@ impl Pinvou3Bridge {
             .is_some_and(|predicate| predicate(session_id))
     }
 
-    /// 会话级工具整形:原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),
-    /// 隐藏 present_artifact;其他会话原样返回。spawn 初值与全局热刷都经此整形。
-    ///
-    /// 代码会话同时禁用 load_skill(skill 触达模型的唯一工具通道):skill 开关是
-    /// 进程级全局状态,无法按会话生效,代码页开关只落盘不生效即成"假开关";
-    /// 在底座支持按会话禁用单个 skill 之前,代码会话整体禁用 load_skill 作为
-    /// 过渡方案(catalogue 路径泄露的残留口径见
-    /// docs/code-native-agent-会话能力档案设计.md)。
+    /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
+    /// instructions）按它取数，不再散 `is_code_session` if（D-2/D-3 统一入口）。
+    /// predicate 未注入时默认 Plain——与 `is_code_session` 缺省 false 等价。
+    pub fn session_policy(&self, session_id: &str) -> SessionPolicy {
+        let mode = if self.is_code_session(session_id) {
+            SessionMode::Code
+        } else {
+            SessionMode::Plain
+        };
+        SessionPolicy::for_mode(mode)
+    }
+
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）取数。plain 会话原样返回
+    /// （不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并追加策略
+    /// 隐藏工具。spawn 初值与全局热刷都经此整形。
     ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
-    /// 不再沿用 plain scope 的禁用集,而是改用 code scope 的禁用集 —— 两个 scope
-    /// 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非连接器禁用
-    /// (kb_search 等)仍保留。
+    /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
+    /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
+    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具(产物卡/load_skill
+    /// 过渡禁用)由 [`SessionPolicy::extra_hidden_tools`] 产出,原因见该模块注释。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
-        const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
-        const LOAD_SKILL: &str = "load_skill";
-        if self.is_code_session(session_id) {
-            // 用 code scope 的连接器禁用集替换 plain scope 的连接器禁用集。
-            let plain_connector = crate::features::marketplace::disabled_tool_names();
-            let code_connector = crate::features::marketplace::disabled_tool_names_for(
-                crate::features::marketplace::ConnectorScope::Code,
-            );
-            tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
-            for blocked in code_connector {
-                if !tools.iter().any(|tool| tool == &blocked) {
-                    tools.push(blocked);
-                }
+        let policy = self.session_policy(session_id);
+        // plain：不移除、不追加,原样返回。
+        if !policy.mode().is_code() {
+            return tools;
+        }
+        // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
+        let plain_connector = crate::features::marketplace::disabled_tool_names();
+        let code_connector =
+            crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
+        tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+        for blocked in code_connector {
+            if !tools.iter().any(|tool| tool == &blocked) {
+                tools.push(blocked);
             }
-            if !tools.iter().any(|tool| tool == PRESENT_ARTIFACT) {
-                tools.push(PRESENT_ARTIFACT.to_string());
-            }
-            if !tools.iter().any(|tool| tool == LOAD_SKILL) {
-                tools.push(LOAD_SKILL.to_string());
+        }
+        for hidden in policy.extra_hidden_tools() {
+            if !tools.iter().any(|tool| tool == hidden) {
+                tools.push((*hidden).to_string());
             }
         }
         tools
@@ -532,7 +540,7 @@ impl Pinvou3Bridge {
         else {
             return Vec::new();
         };
-        if !self.is_code_session(session_id) {
+        if !self.session_policy(session_id).mode().is_code() {
             return Vec::new();
         }
         // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
@@ -1502,6 +1510,7 @@ impl Pinvou3Bridge {
 
     pub fn build_send_message_op(
         &self,
+        session_id: &str,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
@@ -1524,12 +1533,21 @@ impl Pinvou3Bridge {
         // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
         // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
         let sudo = crate::platform::super_permission::turn_reminder();
-        let mut reminder_body = match reminder_for(mode) {
+        // mode 维度的 per-turn reminder(砍 PlanPhase 后只剩 mode 维度):Plan 经会话
+        // 策略产出(D-2,本期两模式同文);其余 mode 无 reminder——Yolo 大产物分块实测
+        // 不再 load-bearing 已砍(只剩 sudo 动态状态),Agent pinvou3 不暴露。
+        // 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
+        let policy = self.session_policy(session_id);
+        let mode_reminder = match mode {
+            AppMode::Plan => policy.plan_reminder(),
+            AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => None,
+        };
+        let mut reminder_body = match mode_reminder {
             // Plan: 无 exec,不带 sudo。
             Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
-            // Yolo: reminder + sudo(能 exec,sudo 状态 load-bearing)。
+            // reminder + sudo(能 exec,sudo 状态 load-bearing)。
             Some(r) => format!("{r}\n\n{sudo}"),
-            // Agent(pinvou3 不暴露,reminder_for=None): 能 exec,带 sudo。
+            // 无 mode reminder: 能 exec,带 sudo。
             None => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
@@ -1539,6 +1557,8 @@ impl Pinvou3Bridge {
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
         let model = self.model();
+        // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
+        let (auto_approve, approval_mode) = policy.approval_params();
         Ok(Op::SendMessage {
             content: full_content,
             mode,
@@ -1555,8 +1575,10 @@ impl Pinvou3Bridge {
             auto_model: false,
             allow_shell,
             trust_mode,
-            auto_approve: true,
-            approval_mode: ApprovalMode::Auto,
+            // 审批参数按会话策略取数(R-2):本期两模式同为全自动+Auto,与此前写死
+            // 值一致;S-1 安全分化落地时改 SessionPolicy::approval_params 即可。
+            auto_approve,
+            approval_mode,
             translation_enabled: false,
             // v0.8.47 上游新增;pinvou3 reasoning_effort=off 故无实际影响,取默认。
             show_thinking: true,
@@ -1636,25 +1658,8 @@ fn is_plain_file(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
-/// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。
-const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
-     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
-     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
-
-/// M1: per-turn `<system-reminder>` 文案,按当前 mode 选段(砍 PlanPhase 后只剩 mode 维度)。
-/// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
-fn reminder_for(mode: AppMode) -> Option<&'static str> {
-    match mode {
-        AppMode::Plan => Some(PLAN_REMINDER),
-        // Yolo: 大产物分块实测不再 load-bearing(landing.html 397 行一次 write_file、73.8s 不撞
-        // timeout——idle timeout 早从 90s 提到 240-280s;且 legacy-ppt-workflow 等大-deck workflow 已下线,
-        // 无依赖)→ 砍光 YOLO_REMINDER。Yolo per-turn 只剩 sudo(动态状态)。Agent pinvou3 不暴露。
-        AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => None,
-    }
-}
+// Plan reminder 文案与按 mode 的选择已收进 `session_policy`(D-2 策略化);
+// 本模块只经 `SessionPolicy::plan_reminder` 取数。
 
 #[cfg(test)]
 // 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
@@ -2576,7 +2581,7 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("用户消息".to_string(), mode, None, false)
+            .build_send_message_op("sess-plain", "用户消息".to_string(), mode, None, false)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -2602,6 +2607,7 @@ mod tests {
         let persona = "你现在戴着【数据库架构师】专家面具。".to_string();
         let op = bridge
             .build_send_message_op(
+                "sess-plain",
                 "用户消息".to_string(),
                 AppMode::Yolo,
                 Some(persona.clone()),
@@ -2618,7 +2624,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -2632,7 +2638,13 @@ mod tests {
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
         let allowed = |restrict| match bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Yolo,
+                None,
+                restrict,
+            )
             .expect("resolve test route")
         {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
@@ -2647,6 +2659,40 @@ mod tests {
             allowed(false),
             None,
             "普通卡 / 未加持不限制工具,沿用 engine 全量工具表"
+        );
+    }
+
+    /// R-2:逐轮工具白名单对 code 会话同样生效——op 链路不感知会话类型,
+    /// `restrict_tools=true` 时空白名单把工具挡在模型视野外;false 时行为与现状一致。
+    /// 前端入口见 CodexAcpView.jsx `restrictTools` 注释(S-1 分化时按策略驱动)。
+    #[test]
+    fn build_send_message_op_restrict_tools_also_applies_to_code_sessions() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+        let allowed = |restrict| match bridge
+            .build_send_message_op(
+                "sess-code-project",
+                "hi".to_string(),
+                AppMode::Yolo,
+                None,
+                restrict,
+            )
+            .expect("resolve test route")
+        {
+            Op::SendMessage { allowed_tools, .. } => allowed_tools,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        assert_eq!(
+            allowed(true),
+            Some(Vec::new()),
+            "code 会话逐轮白名单入口必须生效(R-2)"
+        );
+        assert_eq!(
+            allowed(false),
+            None,
+            "code 会话未限制时沿用 engine 全量工具表(行为不变)"
         );
     }
 
@@ -3067,7 +3113,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("test".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "test".into(), AppMode::Yolo, None, false)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -3177,7 +3223,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -3189,7 +3235,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("list dir".into(), AppMode::Plan, None, false)
+            .build_send_message_op("sess-plain", "list dir".into(), AppMode::Plan, None, false)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -3210,7 +3256,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false)
+            .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false)
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
@@ -3243,17 +3289,96 @@ mod tests {
     #[test]
     fn yolo_has_no_mode_reminder_plan_reminder_has_no_write_content() {
         // 大产物分块实测不再 load-bearing(397 行一次写 73.8s 不撞 timeout)→ YOLO_REMINDER 砍光,
-        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo)。
+        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo,由 build_send_message_op 的
+        // mode 匹配产出 None)。
+        let bridge = fixture_bridge();
+        let yolo = match bridge
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
+            .expect("resolve test route")
+        {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
         assert!(
-            reminder_for(AppMode::Yolo).is_none(),
+            !yolo.contains("Plan 模式(只读调研)"),
             "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
-        // Plan 仍有 reminder,但只读不写,不含任何写文件/分块内容。
-        let plan = reminder_for(AppMode::Plan).expect("plan reminder exists");
+        // Plan 仍有 reminder(经会话策略产出,D-2),但只读不写,不含任何写文件/分块内容。
+        let plan = SessionPolicy::for_mode(SessionMode::Plain)
+            .plan_reminder()
+            .expect("plan reminder exists");
         assert!(
             !plan.contains("append_file") && !plan.contains("write_file"),
             "Plan reminder 不该含写文件/分块内容: {plan}"
         );
+    }
+
+    /// D-2 行为不变断言:Plan reminder 经会话策略产出,本期 plain/code 两模式同文——
+    /// code 会话 op 注入的 reminder 与 plain 逐字节相等(R-1 才按模式分化)。
+    #[test]
+    fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
+        let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
+            .build_send_message_op(
+                session_id,
+                "方案调研".to_string(),
+                AppMode::Plan,
+                None,
+                false,
+            )
+            .expect("resolve test route")
+        {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate:按 plain 缺省(与历史 reminder_for 不感知会话等价)。
+        let plain = content_of(&bridge, "sess-plain");
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        let code = content_of(&bridge, "sess-code");
+        assert!(
+            plain.contains("Plan 模式(只读调研)"),
+            "Plan 模式必须注入 per-turn reminder,得到:\n{plain}"
+        );
+        assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
+    }
+
+    /// D-2 行为不变断言:整形按策略数据驱动。plain 会话逐字节原样返回(不移除、
+    /// 不追加);code 会话按策略追加两个隐藏工具且幂等不重复(连接器 scope 切换
+    /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
+    #[test]
+    fn shape_disallowed_tools_follows_session_policy() {
+        let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate → plain:原样返回。
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", tools.clone()),
+            tools
+        );
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        // code:按策略追加隐藏工具,保留非连接器禁用项,且不重复。
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        for kept in &tools {
+            assert!(shaped.contains(kept), "非连接器禁用项应保留: {shaped:?}");
+        }
+        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+            assert_eq!(
+                shaped.iter().filter(|tool| tool == hidden).count(),
+                1,
+                "策略隐藏工具应恰好出现一次: {hidden}"
+            );
+        }
+        let twice = bridge.shape_disallowed_tools("sess-code", shaped);
+        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+            assert_eq!(
+                twice.iter().filter(|tool| tool == hidden).count(),
+                1,
+                "整形应幂等(不重复追加): {hidden}"
+            );
+        }
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
