@@ -2,6 +2,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    // APFS may be configured case-sensitive; preserve the stored path exactly.
+    path.to_string()
+}
+
 pub fn user_home_dir() -> PathBuf {
     // 与 unsupported.rs 对齐:HOME 缺失时用 std::env::temp_dir()(而非硬编码 "/tmp")。
     std::env::var("HOME")

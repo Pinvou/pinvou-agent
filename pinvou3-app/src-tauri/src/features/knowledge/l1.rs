@@ -77,6 +77,13 @@ pub struct ChunkHit {
     pub ord: i64,
 }
 
+/// 跨知识集检索命中。相同来源同时存在于多个知识集时合并 collection_ids，正文只返回一份。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedChunkHit {
+    pub collection_ids: Vec<i64>,
+    pub hit: ChunkHit,
+}
+
 pub(super) enum ImportIngestOutcome {
     Completed,
     Skipped,
@@ -806,7 +813,7 @@ impl L1Store {
                  FROM chunks_fts JOIN chunks k ON k.id=chunks_fts.rowid \
                  JOIN documents d ON d.id=k.document_id \
                  WHERE k.collection_id=?1 AND chunks_fts MATCH ?2 \
-                 ORDER BY score LIMIT ?3",
+                 ORDER BY score, d.path, k.ord, d.id LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![collection_id, m, lim as i64], map)?;
             rows.collect()
@@ -815,7 +822,8 @@ impl L1Store {
             let mut stmt = c.prepare(
                 "SELECT d.id,k.text,0.0 AS score,d.name,d.path,k.ord \
                  FROM chunks k JOIN documents d ON d.id=k.document_id \
-                 WHERE k.collection_id=?1 AND k.text LIKE ?2 LIMIT ?3",
+                 WHERE k.collection_id=?1 AND k.text LIKE ?2 \
+                 ORDER BY d.path, k.ord, d.id LIMIT ?3",
             )?;
             let rows = stmt.query_map(params![collection_id, like, lim as i64], map)?;
             rows.collect()
@@ -861,7 +869,13 @@ impl L1Store {
                 },
             ));
         }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.doc_path.cmp(&b.1.doc_path))
+                .then_with(|| a.1.ord.cmp(&b.1.ord))
+                .then_with(|| a.1.document_id.cmp(&b.1.document_id))
+        });
         Ok(scored.into_iter().take(lim).map(|(_, h)| h).collect())
     }
 
@@ -884,21 +898,113 @@ impl L1Store {
         if q.is_empty() {
             return Ok(vec![]);
         }
+        let query_vector = self
+            .embedder()
+            .and_then(|embedder| embedder.embed_one(q).ok());
+        self.retrieve_for_chat_with_vector(
+            collection_id,
+            q,
+            k,
+            neighbor_radius,
+            query_vector.as_deref(),
+        )
+    }
+
+    /// 跨多个知识集检索。查询向量只计算一次；每个知识集独立召回后按库内混合检索分稳定归并，
+    /// 同一路径、同一 chunk 且正文相同的结果只保留一份，并记录其全部知识集来源；
+    /// 同路径的冲突正文分别保留，避免去重掩盖版本差异。
+    pub fn retrieve_for_chat_multi(
+        &self,
+        collection_ids: &[i64],
+        query: &str,
+        k: usize,
+        neighbor_radius: usize,
+    ) -> rusqlite::Result<Vec<ScopedChunkHit>> {
+        let q = query.trim();
+        if q.is_empty() || collection_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let lim = if k == 0 { 5 } else { k };
+        let query_vector = self
+            .embedder()
+            .and_then(|embedder| embedder.embed_one(q).ok());
+        let mut unique_ids = Vec::new();
+        for collection_id in collection_ids.iter().copied().filter(|id| *id > 0) {
+            if !unique_ids.contains(&collection_id) {
+                unique_ids.push(collection_id);
+            }
+        }
+
+        let mut candidates = Vec::new();
+        for (collection_order, collection_id) in unique_ids.into_iter().enumerate() {
+            let hits = self.retrieve_for_chat_with_vector(
+                collection_id,
+                q,
+                lim,
+                neighbor_radius,
+                query_vector.as_deref(),
+            )?;
+            for (rank, hit) in hits.into_iter().enumerate() {
+                let score = if query_vector.is_some() {
+                    hit.score
+                } else {
+                    1.0 / (60.0 + rank as f64 + 1.0)
+                };
+                candidates.push((score, collection_order, rank, collection_id, hit));
+            }
+        }
+        candidates.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.4.doc_path.cmp(&b.4.doc_path))
+                .then_with(|| a.4.ord.cmp(&b.4.ord))
+        });
+
+        let mut merged: Vec<ScopedChunkHit> = Vec::new();
+        let mut positions: HashMap<(String, i64, String), usize> = HashMap::new();
+        for (_, _, _, collection_id, hit) in candidates {
+            let source_key = (
+                dedupe_path_key(&hit.doc_path),
+                hit.ord,
+                hit.text.replace("\r\n", "\n").trim().to_string(),
+            );
+            if let Some(index) = positions.get(&source_key).copied() {
+                let collection_ids = &mut merged[index].collection_ids;
+                if !collection_ids.contains(&collection_id) {
+                    collection_ids.push(collection_id);
+                }
+                continue;
+            }
+            positions.insert(source_key, merged.len());
+            merged.push(ScopedChunkHit {
+                collection_ids: vec![collection_id],
+                hit,
+            });
+        }
+        merged.truncate(lim);
+        Ok(merged)
+    }
+
+    fn retrieve_for_chat_with_vector(
+        &self,
+        collection_id: i64,
+        q: &str,
+        k: usize,
+        neighbor_radius: usize,
+        query_vector: Option<&[f32]>,
+    ) -> rusqlite::Result<Vec<ChunkHit>> {
         let lim = if k == 0 { 5 } else { k };
         let fts = self.search_fts(collection_id, q, lim * 2)?;
-        let ranked = if let Some(emb) = self.embedder() {
-            match emb.embed_one(q) {
-                Ok(qv) => {
-                    let vec = self.search_vec(collection_id, &qv, lim * 2)?;
-                    // search_vec 的 score 此刻是余弦（rrf_merge 之后才被改写成 RRF 分）。
-                    let top_cos = vec.first().map(|h| h.score).unwrap_or(f64::NEG_INFINITY);
-                    if top_cos < RELEVANCE_MIN_COSINE && fts.is_empty() {
-                        return Ok(vec![]); // 门控：既无语义相关也无关键词命中
-                    }
-                    rrf_merge(fts, vec, lim)
-                }
-                Err(_) => fts.into_iter().take(lim).collect(),
+        let ranked = if let Some(query_vector) = query_vector {
+            let vec = self.search_vec(collection_id, query_vector, lim * 2)?;
+            // search_vec 的 score 此刻是余弦（rrf_merge 之后才被改写成 RRF 分）。
+            let top_cos = vec.first().map(|h| h.score).unwrap_or(f64::NEG_INFINITY);
+            if top_cos < RELEVANCE_MIN_COSINE && fts.is_empty() {
+                return Ok(vec![]); // 门控：既无语义相关也无关键词命中
             }
+            rrf_merge(fts, vec, lim)
         } else {
             fts.into_iter().take(lim).collect()
         };
@@ -987,6 +1093,9 @@ impl L1Store {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.doc_path.cmp(&b.doc_path))
+                .then_with(|| a.ord.cmp(&b.ord))
+                .then_with(|| a.document_id.cmp(&b.document_id))
         });
         Ok(out)
     }
@@ -1041,18 +1150,22 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+fn dedupe_path_key(path: &str) -> String {
+    crate::platform::os::filesystem_path_identity_key(path)
+}
+
 /// 倒数排名融合(RRF)：两路结果按排名给分，按 (docPath#ord) 去重合并，取前 k。
 fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> {
     const RRF_K: f64 = 60.0;
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut keep: HashMap<String, ChunkHit> = HashMap::new();
     for (rank, h) in fts.iter().enumerate() {
-        let key = format!("{}#{}", h.doc_path, h.ord);
+        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
         *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         keep.entry(key).or_insert_with(|| h.clone());
     }
     for (rank, h) in vec.iter().enumerate() {
-        let key = format!("{}#{}", h.doc_path, h.ord);
+        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
         *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         keep.entry(key).or_insert_with(|| h.clone());
     }
@@ -1067,6 +1180,9 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_path.cmp(&b.doc_path))
+            .then_with(|| a.ord.cmp(&b.ord))
+            .then_with(|| a.document_id.cmp(&b.document_id))
     });
     merged.into_iter().take(k).collect()
 }
@@ -1209,6 +1325,135 @@ mod tests {
             .document_chunk_window(other, doc, 0, 8)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn multi_collection_retrieval_deduplicates_same_source_and_keeps_mount_order() {
+        let l1 = mem();
+        let first = l1.create_collection("项目资料", None, None).unwrap();
+        let second = l1.create_collection("团队规范", None, None).unwrap();
+        let conflicting = l1.create_collection("历史版本", None, None).unwrap();
+        for collection_id in [first, second] {
+            let document_id = l1
+                .upsert_document(
+                    collection_id,
+                    "/tmp/shared.md",
+                    "shared.md",
+                    Some("md"),
+                    10,
+                    0,
+                )
+                .unwrap();
+            l1.replace_doc_chunks(
+                document_id,
+                collection_id,
+                &["shared knowledge answer".to_string()],
+                None,
+            )
+            .unwrap();
+        }
+        let conflicting_document_id = l1
+            .upsert_document(
+                conflicting,
+                "/tmp/shared.md",
+                "shared.md",
+                Some("md"),
+                10,
+                0,
+            )
+            .unwrap();
+        l1.replace_doc_chunks(
+            conflicting_document_id,
+            conflicting,
+            &["shared knowledge conflicting answer".to_string()],
+            None,
+        )
+        .unwrap();
+
+        let hits = l1
+            .retrieve_for_chat_multi(&[second, first, conflicting, second], "shared", 5, 0)
+            .unwrap();
+        assert_eq!(hits.len(), 2, "相同正文去重，但同路径冲突正文必须保留");
+        assert_eq!(hits[0].collection_ids, vec![second, first]);
+        assert_eq!(hits[0].hit.doc_path, "/tmp/shared.md");
+        assert_eq!(hits[1].collection_ids, vec![conflicting]);
+        assert!(hits[1].hit.text.contains("conflicting"));
+    }
+
+    #[test]
+    fn rrf_equal_scores_use_stable_source_order() {
+        let hit = |document_id: i64, path: &str| ChunkHit {
+            document_id,
+            text: path.to_string(),
+            score: 0.0,
+            doc_name: path.to_string(),
+            doc_path: path.to_string(),
+            ord: 0,
+        };
+        // 两条分别只在一路排第一，RRF 分数完全相同；结果不能依赖 HashMap 随机种子。
+        let merged = rrf_merge(vec![hit(2, "/tmp/b.md")], vec![hit(1, "/tmp/a.md")], 2);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|item| item.doc_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/tmp/a.md", "/tmp/b.md"]
+        );
+    }
+
+    #[test]
+    fn rrf_deduplicates_using_platform_path_identity() {
+        let hit = |document_id: i64, path: &str| ChunkHit {
+            document_id,
+            text: path.to_string(),
+            score: 0.0,
+            doc_name: path.to_string(),
+            doc_path: path.to_string(),
+            ord: 0,
+        };
+        let candidates = [
+            (r"C:\Docs\Guide.md", "c:/docs/guide.md"),
+            ("/tmp/docs/guide.md", "/tmp/docs/guide.md"),
+        ];
+        let (first_path, second_path) = candidates
+            .into_iter()
+            .find(|(first, second)| dedupe_path_key(first) == dedupe_path_key(second))
+            .expect("at least the identical-path fallback must share an identity");
+        let merged = rrf_merge(vec![hit(1, first_path)], vec![hit(1, second_path)], 10);
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].score > 1.0 / 61.0);
+    }
+
+    #[test]
+    fn equal_rank_inputs_use_stable_source_order() {
+        let l1 = mem();
+        let collection_id = l1.create_collection("stable", None, None).unwrap();
+        for path in ["/tmp/b.md", "/tmp/a.md"] {
+            let document_id = l1
+                .upsert_document(collection_id, path, path, Some("md"), 10, 0)
+                .unwrap();
+            l1.replace_doc_chunks(
+                document_id,
+                collection_id,
+                &["stable ranking term".to_string()],
+                Some(&[vec![1.0, 0.0]]),
+            )
+            .unwrap();
+        }
+
+        for hits in [
+            l1.search_fts(collection_id, "stable", 10).unwrap(),
+            l1.search_fts(collection_id, "st", 10).unwrap(),
+            l1.search_vec(collection_id, &[1.0, 0.0], 10).unwrap(),
+        ] {
+            assert_eq!(
+                hits.iter()
+                    .map(|hit| hit.doc_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["/tmp/a.md", "/tmp/b.md"]
+            );
+        }
     }
 
     /// 热加载槽:set_embedder 换值,L1Store clone 共享同一槽(下载完成后所有在跑线程见新);

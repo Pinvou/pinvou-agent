@@ -65,6 +65,8 @@
       tokens: { input: 0, max: state.tokens.max },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
+      mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
+      mountedCollectionsRevision: 0,
       scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
@@ -277,6 +279,8 @@
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
     buf.mountedCollection = state.mountedCollection;
+    buf.mountedCollections = state.mountedCollections;
+    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
     buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: context.currentStreamText, currentStreamId: context.currentStreamId,
@@ -301,6 +305,10 @@
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
     state.mountedCollection = buf.mountedCollection || null;
+    state.mountedCollections = Array.isArray(buf.mountedCollections)
+      ? buf.mountedCollections
+      : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
+    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     var s = buf.stream || {};
     context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;

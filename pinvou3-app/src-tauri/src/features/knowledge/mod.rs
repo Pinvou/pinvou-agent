@@ -28,7 +28,7 @@ mod watcher;
 pub use exclude::Excluder;
 pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
-pub use l1::{ChunkHit, Collection, Document};
+pub use l1::{Collection, Document};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -64,6 +64,10 @@ pub struct ScanState {
 pub struct KnowledgeService {
     store: Store,
     l1: l1::L1Store,
+    /// Serializes collection deletion with session mount mutations at the Tauri boundary.
+    /// The database and SessionStore use separate locks, so this coordinator closes the
+    /// validate-then-mount race without coupling either domain to the other.
+    mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
     cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
@@ -89,6 +93,7 @@ impl KnowledgeService {
         Ok(Self {
             store,
             l1,
+            mount_mutation: Arc::new(tokio::sync::Mutex::new(())),
             scan_state: Arc::new(Mutex::new(ScanState {
                 phase: if last_scan_finished_at > 0 {
                     "done".into()
@@ -110,6 +115,10 @@ impl KnowledgeService {
         &self.l1
     }
 
+    pub(crate) fn mount_mutation_coordinator(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.mount_mutation.clone()
+    }
+
     /// 语义检索是否就绪（embedding 模型已加载）。完全门控用：模型没装 → 知识库不可用。
     pub fn semantic_ready(&self) -> bool {
         self.l1.has_embedder()
@@ -117,29 +126,38 @@ impl KnowledgeService {
 
     /// 构建 embedding 模型。调用方必须把它放进 `spawn_blocking`，该过程会同步读取约
     /// 558 MiB 的 ONNX/Tokenizer 文件并创建推理会话。
-    fn load_embedder(model_dir: Option<&Path>) -> Option<Arc<embed::Embedder>> {
+    fn load_embedder(model_dir: Option<&Path>) -> Result<Arc<embed::Embedder>, String> {
         embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
     }
 
+    /// 严格从调用方指定目录构建 embedding，不读取开发环境的模型目录覆盖。
+    /// 下载修复必须使用该入口验证候选目录，避免验证了外部目录却替换托管目录。
+    fn load_embedder_from_dir(model_dir: &Path) -> Result<Arc<embed::Embedder>, String> {
+        let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| model_download::MODEL_VERSION.to_string());
+        embed::Embedder::from_dir(model_dir, &name)
+            .map(Arc::new)
+            .map_err(|error| format!("embedding 模型加载失败({}): {error}", model_dir.display()))
+    }
+
     /// 将后台构建完成的模型原子换入共享槽；所有 L1Store clone 立即可见。
-    fn install_embedder(&self, embedder: Option<Arc<embed::Embedder>>) -> bool {
-        let ready = embedder.is_some();
-        if let Some(e) = &embedder {
-            eprintln!(
-                "[knowledge] L1 embedding 已启用: {} ({})",
-                e.model(),
-                e.source()
-            );
-        }
-        self.l1.set_embedder(embedder);
-        ready
+    fn install_embedder(&self, embedder: Arc<embed::Embedder>) -> bool {
+        eprintln!(
+            "[knowledge] L1 embedding 已启用: {} ({})",
+            embedder.model(),
+            embedder.source()
+        );
+        self.l1.set_embedder(Some(embedder));
+        true
     }
 
     /// 热加载 embedding 模型（按需下载完成后调）：按 dev-env 优先 / 下载落点兜底重新定位并加载，
     /// 换进所有在跑会话/后台线程共享的 embedder 槽，**免重启**。返回是否就绪。
-    pub fn reload_embedder(&self) -> bool {
-        let embedder = Self::load_embedder(Some(&model_dir()));
-        self.install_embedder(embedder)
+    pub fn reload_embedder(&self) -> Result<bool, String> {
+        let embedder = Self::load_embedder(Some(&model_dir()))?;
+        Ok(self.install_embedder(embedder))
     }
 
     /// 知识库是否有任何已入库内容（任一知识集存在文档）。门控 kb_search/kb_open_source

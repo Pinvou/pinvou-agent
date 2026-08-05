@@ -188,19 +188,28 @@ pub(crate) async fn chat_with_reservation(
     // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;
     // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
     // 状态当普通文本复述给用户。
-    if let Some(cid) = store.mounted_collection(&sid) {
+    let mounted_collection_ids = store.mounted_collection_ids(&sid);
+    if !mounted_collection_ids.is_empty() {
         let disallowed = pool.compute_disallowed_tools();
         let kb_search_hidden = disallowed
             .iter()
             .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
-            let coll_name = app
+            let collection_names = app
                 .try_state::<KnowledgeService>()
-                .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
+                .map(|kb| {
+                    mounted_collection_ids
+                        .iter()
+                        .filter_map(|collection_id| {
+                            kb.l1().collection_name(*collection_id).ok().flatten()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             full = format!(
                 "{}\n\n---\n\n{full}",
-                build_kb_agentic_guide(coll_name.as_deref())
+                build_kb_agentic_guide(&collection_names)
             );
         }
     }

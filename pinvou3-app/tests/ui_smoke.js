@@ -47,6 +47,8 @@ function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
+    window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
+    window.__KB_MODEL_DOWNLOAD_ARGS__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
@@ -57,6 +59,8 @@ function injectSource() {
     ];
     let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
+    let MOUNTED_COLLECTIONS=[];
+    let MOUNTED_COLLECTIONS_REVISION=0;
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -135,6 +139,34 @@ function injectSource() {
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
+        case 'session_mounted_collections_snapshot': return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'session_mounted_collections': return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_mounted_collection': return Promise.resolve(MOUNTED_COLLECTIONS.find(function(entry){ return entry.enabled; })?.collectionId || null);
+        case 'session_set_mounted_collections': MOUNTED_COLLECTIONS=(args.collections||[]).map(function(entry){ return {collectionId:entry.collectionId,enabled:entry.enabled!==false}; }); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_add_mounted_collection': {
+          const entry=MOUNTED_COLLECTIONS.find(function(item){return item.collectionId===args.collectionId;});
+          if(entry) entry.enabled=true; else MOUNTED_COLLECTIONS.push({collectionId:args.collectionId,enabled:true});
+          MOUNTED_COLLECTIONS_REVISION+=1;
+          return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        }
+        case 'session_set_mounted_collection_enabled': {
+          const entry=MOUNTED_COLLECTIONS.find(function(item){return item.collectionId===args.collectionId;});
+          if(entry) entry.enabled=args.enabled!==false;
+          MOUNTED_COLLECTIONS_REVISION+=1;
+          return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        }
+        case 'session_remove_mounted_collection': MOUNTED_COLLECTIONS=MOUNTED_COLLECTIONS.filter(function(item){return item.collectionId!==args.collectionId;}); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'session_unmount_collection': MOUNTED_COLLECTIONS=[]; MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'kb_model_status': return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_model_download':
+          window.__KB_MODEL_DOWNLOAD_ARGS__.push(args||{});
+          if(!(args&&args.repair)) return Promise.reject(new Error('mock embedding load failed'));
+          window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false,failed:false,error:null};
+          return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_collection_list': return Promise.resolve([
+          {id:7,name:'项目资料',docCount:3},
+          {id:8,name:'团队规范',docCount:5},
+        ]);
         case 'list_workflows': return Promise.resolve([WF_TEMPLATE]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
@@ -743,6 +775,97 @@ async function expand(page) {
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
 
+  const multiKb = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    document.querySelector('[data-testid="kb-mount-trigger"]')?.click();
+    await wait(100);
+    const row = name => [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes(name));
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-remove"]')?.click();
+    await wait(100);
+    const knowledge = window.TauriBridge.state.get('knowledge');
+    return {
+      mountedCollections: knowledge.mountedCollections,
+      mountedCollection: knowledge.mountedCollection,
+      menuText: document.body.innerText,
+      commands: window.__TAURI_INVOKES__
+        .filter(call => /^session_(?:add|set|remove)_mounted_collection/.test(call.cmd))
+        .map(call => ({ cmd: call.cmd, args: call.args })),
+    };
+  });
+  rec('③a-1 多知识库可追加、单独停用和移除且不覆盖其他挂载项',
+    multiKb.commands.length === 4 &&
+    multiKb.commands[0].cmd === 'session_add_mounted_collection' &&
+    multiKb.commands[1].cmd === 'session_add_mounted_collection' &&
+    multiKb.commands[2].cmd === 'session_set_mounted_collection_enabled' &&
+    multiKb.commands[3].cmd === 'session_remove_mounted_collection' &&
+    multiKb.mountedCollections.length === 1 &&
+    multiKb.mountedCollections[0].collectionId === 7 &&
+    multiKb.mountedCollections[0].enabled === false &&
+    multiKb.mountedCollection === null &&
+    multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
+    JSON.stringify(multiKb));
+  const kbRuntimeGate = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = { installed: true, ready: false, loading: true };
+    const trigger = document.querySelector('[data-testid="kb-mount-trigger"]');
+    // 上一个场景结束时菜单仍展开：先关闭，再打开以刷新运行时状态。
+    trigger?.click();
+    await wait(50);
+    trigger?.click();
+    await wait(100);
+    const row = [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes('团队规范'));
+    const toggle = row?.querySelector('[data-testid="kb-mount-toggle"]');
+    const before = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    toggle?.click();
+    await wait(50);
+    const after = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    return {
+      disabled: Boolean(toggle && toggle.disabled),
+      blockedCopy: document.body.innerText.includes('Embedding 模型正在加载或加载失败'),
+      mountCallsUnchanged: before === after,
+    };
+  });
+  rec('③a-2 模型文件已安装但运行时未就绪时不允许挂载',
+    kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
+    JSON.stringify(kbRuntimeGate));
+  const kbRepairFlow = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = {
+      installed: true,
+      ready: false,
+      loading: false,
+      failed: true,
+      error: 'mock embedding load failed',
+    };
+    await window.TauriBridge.knowledge.downloadKbModel(false).catch(() => {});
+    document.querySelector('[data-nav="knowledge"]')?.click();
+    await wait(300);
+    const failedVisible = document.body.innerText.includes('Embedding 模型加载失败');
+    const repairButton = [...document.querySelectorAll('button')]
+      .find(button => (button.textContent || '').includes('重新下载并修复'));
+    repairButton?.click();
+    await wait(250);
+    const calls = window.__KB_MODEL_DOWNLOAD_ARGS__.slice();
+    return {
+      failedVisible,
+      repairFound: Boolean(repairButton),
+      repairRequested: calls.some(args => args && args.repair === true),
+      recovered: document.body.innerText.includes('AI 知识库'),
+    };
+  });
+  rec('③a-3 模型加载失败时可重新下载、验证并恢复知识库',
+    kbRepairFlow.failedVisible && kbRepairFlow.repairFound && kbRepairFlow.repairRequested && kbRepairFlow.recovered,
+    JSON.stringify(kbRepairFlow));
+  await clickText(page, '第三季度财报分析');
+  await sleep(300);
   const assistantCopy = await page.evaluate(async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

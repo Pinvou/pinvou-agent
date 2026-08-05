@@ -79,14 +79,33 @@
 
   async function loadKnowledgeEmbedderAfterFirstFrame() {
     startupMark("bridge:knowledge_embedder_async:start");
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: true,
+      startupReady: null,
+      error: null,
+    });
+    notify();
     try {
       var ready = await invoke("kb_model_load_after_first_frame");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { startupReady: !!ready });
+      var modelStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: !!ready,
+        status: modelStatus,
+      });
       notify();
       startupMark("bridge:knowledge_embedder_async:done", "ready=" + !!ready);
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       return !!ready;
     } catch (error) {
+      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: false,
+        status: failedStatus,
+        error: String(error),
+      });
+      notify();
       startupMark("bridge:knowledge_embedder_async:error", String(error));
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       console.warn("[knowledge] embedding 后台加载失败", error);
@@ -266,6 +285,8 @@
     // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
+    mountedCollections: [],
+    mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -324,7 +345,9 @@
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
-      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      startupLoading: false, // 已安装模型在首帧后的后台加载状态
+      startupReady: null, // null=未知；true=当前进程可用；false=未安装或加载失败
+      status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },
@@ -1163,7 +1186,7 @@
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection"],
+    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedCollectionsRevision"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -1915,6 +1938,8 @@
   var unequipPersona = personasFeature.unequipPersona;
   var syncActivePersona = personasFeature.syncActivePersona;
   var mountCollection = personasFeature.mountCollection;
+  var setCollectionEnabled = personasFeature.setCollectionEnabled;
+  var removeCollection = personasFeature.removeCollection;
   var unmountCollection = personasFeature.unmountCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
   var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
@@ -2061,6 +2086,8 @@
       downloadKbModel: downloadKbModel,
       cancelKbModel: cancelKbModel,
       mountCollection: mountCollection,
+      setCollectionEnabled: setCollectionEnabled,
+      removeCollection: removeCollection,
       unmountCollection: unmountCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },

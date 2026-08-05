@@ -32,7 +32,10 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::core::mode_state::{ActiveSkillBinding, SerializableMode, SessionModeState};
+use crate::core::mode_state::{
+    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
+    SessionModeState,
+};
 use crate::platform::paths;
 
 const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
@@ -1508,14 +1511,206 @@ impl SessionStore {
 
     // ── 知识库挂载(会话级粘连,仿 persona,仅驻内存) ──
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
-        self.mode_states
-            .write()
-            .entry(id.to_string())
-            .or_default()
-            .mounted_collection = collection_id;
+        let mounted = collection_id
+            .filter(|collection_id| *collection_id > 0)
+            .map(|collection_id| MountedCollection {
+                collection_id,
+                enabled: true,
+            })
+            .into_iter()
+            .collect();
+        self.set_mounted_collections(id, mounted);
     }
+
+    pub fn set_mounted_collections(
+        &self,
+        id: &str,
+        collections: Vec<MountedCollection>,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |_| collections)
+    }
+
+    pub fn add_mounted_collection(
+        &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = true;
+            } else {
+                collections.push(MountedCollection {
+                    collection_id,
+                    enabled: true,
+                });
+            }
+            collections
+        })
+    }
+
+    pub fn set_mounted_collection_enabled(
+        &self,
+        id: &str,
+        collection_id: i64,
+        enabled: bool,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = enabled;
+            }
+            collections
+        })
+    }
+
+    pub fn remove_mounted_collection(
+        &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            collections.retain(|collection| collection.collection_id != collection_id);
+            collections
+        })
+    }
+
+    /// Remove a deleted knowledge collection from every in-memory session in one write lock.
+    ///
+    /// Knowledge mounts are session-ephemeral, so `mode_states` is the complete fact source that
+    /// needs cascading. Returning only changed snapshots lets the Tauri boundary publish one
+    /// revisioned event per affected session without coupling the sessions domain to `AppHandle`.
+    pub fn remove_mounted_collection_from_all(
+        &self,
+        collection_id: i64,
+    ) -> Vec<(String, MountedCollectionsSnapshot)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let mut collections = if state.mounted_collections.is_empty() {
+                state
+                    .mounted_collection
+                    .map(|mounted_id| MountedCollection {
+                        collection_id: mounted_id,
+                        enabled: true,
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                state.mounted_collections.clone()
+            };
+            let previous_len = collections.len();
+            collections.retain(|collection| collection.collection_id != collection_id);
+            if collections.len() == previous_len {
+                continue;
+            }
+
+            state.mounted_collection = collections
+                .iter()
+                .find(|collection| collection.enabled)
+                .map(|collection| collection.collection_id);
+            state.mounted_collections = collections.clone();
+            state.mounted_collections_revision =
+                state.mounted_collections_revision.wrapping_add(1).max(1);
+            changed.push((
+                session_id.clone(),
+                MountedCollectionsSnapshot {
+                    revision: state.mounted_collections_revision,
+                    collections,
+                },
+            ));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    fn update_mounted_collections<F>(&self, id: &str, update: F) -> MountedCollectionsSnapshot
+    where
+        F: FnOnce(Vec<MountedCollection>) -> Vec<MountedCollection>,
+    {
+        let mut states = self.mode_states.write();
+        let state = states.entry(id.to_string()).or_default();
+        let current = if state.mounted_collections.is_empty() {
+            state
+                .mounted_collection
+                .map(|collection_id| MountedCollection {
+                    collection_id,
+                    enabled: true,
+                })
+                .into_iter()
+                .collect()
+        } else {
+            state.mounted_collections.clone()
+        };
+        let mut normalized = Vec::new();
+        for collection in update(current) {
+            if collection.collection_id <= 0
+                || normalized.iter().any(|mounted: &MountedCollection| {
+                    mounted.collection_id == collection.collection_id
+                })
+            {
+                continue;
+            }
+            normalized.push(collection);
+        }
+        let legacy = normalized
+            .iter()
+            .find(|collection| collection.enabled)
+            .map(|collection| collection.collection_id);
+        state.mounted_collection = legacy;
+        state.mounted_collections = normalized.clone();
+        state.mounted_collections_revision =
+            state.mounted_collections_revision.wrapping_add(1).max(1);
+        MountedCollectionsSnapshot {
+            revision: state.mounted_collections_revision,
+            collections: normalized,
+        }
+    }
+
+    pub fn mounted_collections(&self, id: &str) -> Vec<MountedCollection> {
+        self.mounted_collections_snapshot(id).collections
+    }
+
+    pub fn mounted_collections_snapshot(&self, id: &str) -> MountedCollectionsSnapshot {
+        let states = self.mode_states.read();
+        let Some(state) = states.get(id) else {
+            return MountedCollectionsSnapshot {
+                revision: 0,
+                collections: Vec::new(),
+            };
+        };
+        let collections = if !state.mounted_collections.is_empty() {
+            state.mounted_collections.clone()
+        } else {
+            state
+                .mounted_collection
+                .map(|collection_id| MountedCollection {
+                    collection_id,
+                    enabled: true,
+                })
+                .into_iter()
+                .collect()
+        };
+        MountedCollectionsSnapshot {
+            revision: state.mounted_collections_revision,
+            collections,
+        }
+    }
+
+    pub fn mounted_collection_ids(&self, id: &str) -> Vec<i64> {
+        self.mounted_collections(id)
+            .into_iter()
+            .filter(|collection| collection.enabled)
+            .map(|collection| collection.collection_id)
+            .collect()
+    }
+
     pub fn mounted_collection(&self, id: &str) -> Option<i64> {
-        self.mode_states.read().get(id)?.mounted_collection
+        self.mounted_collection_ids(id).into_iter().next()
     }
 
     pub fn unbind_skill(&self, id: &str) {
@@ -3597,6 +3792,164 @@ mod tests {
             st.active_skill.map(|s| s.name),
             Some("legacy-ppt-workflow".to_string()),
             "切 mode 解绑了 skill"
+        );
+    }
+
+    #[test]
+    fn mounted_collections_are_ordered_deduplicated_and_legacy_compatible() {
+        let (store, _g) = isolated_store();
+        let sid = "s-multi-kb";
+        store.set_mounted_collections(
+            sid,
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: -1,
+                    enabled: true,
+                },
+            ],
+        );
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+            ]
+        );
+        assert_eq!(store.mounted_collection_ids(sid), vec![7]);
+        assert_eq!(store.mounted_collection(sid), Some(7));
+
+        store.set_mounted_collection(sid, Some(42));
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![MountedCollection {
+                collection_id: 42,
+                enabled: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn mounted_collection_item_updates_merge_across_concurrent_clients() {
+        let (store, _g) = isolated_store();
+        let sid = "s-concurrent-multi-kb";
+        store.set_mounted_collection(sid, Some(7));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let add_store = store.clone();
+        let add_barrier = barrier.clone();
+        let add = std::thread::spawn(move || {
+            add_barrier.wait();
+            add_store.add_mounted_collection(sid, 8);
+        });
+        let disable_store = store.clone();
+        let disable_barrier = barrier.clone();
+        let disable = std::thread::spawn(move || {
+            disable_barrier.wait();
+            disable_store.set_mounted_collection_enabled(sid, 7, false);
+        });
+        barrier.wait();
+        add.join().unwrap();
+        disable.join().unwrap();
+
+        assert_eq!(
+            store.mounted_collections(sid),
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: true,
+                },
+            ],
+        );
+        assert_eq!(store.mounted_collection(sid), Some(8));
+    }
+
+    #[test]
+    fn deleting_collection_removes_mount_from_every_affected_session() {
+        let (store, _g) = isolated_store();
+        store.set_mounted_collections(
+            "session-a",
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+            ],
+        );
+        store.set_mounted_collections(
+            "session-b",
+            vec![
+                MountedCollection {
+                    collection_id: 9,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+            ],
+        );
+        store.set_mounted_collection("session-legacy", Some(7));
+        store.set_mounted_collection("session-unaffected", Some(9));
+        let unaffected_revision = store
+            .mounted_collections_snapshot("session-unaffected")
+            .revision;
+
+        let changed = store.remove_mounted_collection_from_all(7);
+
+        assert_eq!(
+            changed
+                .iter()
+                .map(|(session_id, _)| session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-a", "session-b", "session-legacy"]
+        );
+        assert_eq!(
+            store.mounted_collections("session-a"),
+            vec![MountedCollection {
+                collection_id: 8,
+                enabled: false,
+            }]
+        );
+        assert_eq!(
+            store.mounted_collections("session-b"),
+            vec![MountedCollection {
+                collection_id: 9,
+                enabled: true,
+            }]
+        );
+        assert!(store.mounted_collections("session-legacy").is_empty());
+        assert_eq!(
+            store
+                .mounted_collections_snapshot("session-unaffected")
+                .revision,
+            unaffected_revision,
+            "unaffected sessions must not receive a spurious revision"
         );
     }
 

@@ -619,9 +619,16 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
       }, [outputsOnly, sub, loadColls]);
 
-      // ── embedding 模型 gate(未装则知识库页显下载引导,装好热加载免重启)──
-      const modelInstalled = kbModel == null ? true : !!kbModel.installed; // 未知时不闪 gate(mock/旧后端)
       const kbm = (bs && bs.kbModelSetup) || {};
+      // ── embedding 模型 gate：区分磁盘文件与当前进程真实可用状态。旧后端未返回
+      // ready 时保持兼容；新后端加载失败则给出重试加载和原子修复入口。
+      const effectiveKbModel = kbm.status || kbModel;
+      const modelInstalled = effectiveKbModel == null ? true : !!effectiveKbModel.installed;
+      const modelReadyKnown = effectiveKbModel && typeof effectiveKbModel.ready === 'boolean';
+      const modelLoading = !!(kbm.startupLoading || (effectiveKbModel && effectiveKbModel.loading));
+      const modelReady = !modelReadyKnown || effectiveKbModel.ready === true || kbm.startupReady === true;
+      const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading;
+      const modelUsable = modelInstalled && modelReady;
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
       const mb = (n) => Math.round((n || 0) / 1048576);
@@ -639,10 +646,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         : dlProg.stage === 'extract' ? t.kbModelStageExtract
         : dlProg.stage === 'done' ? t.kbModelStageDone
         : t.kbModelStageDownload;
-      const startModelDownload = async () => {
+      const startModelDownload = async (repair = false) => {
         if (!canInstallKbModel) return;
         try {
-          const st = await bridge.knowledge.downloadKbModel();
+          const st = await bridge.knowledge.downloadKbModel(repair);
           if (st) { setKbModel(st); kbCache.model = st; }
           loadColls(); // 模型就绪后刷新语义徽标/列表
         } catch (e) {}
@@ -1173,8 +1180,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
 
-            {/* ============ 知识库 · 未装 embedding 模型 → gate ============ */}
-            {sub === 'kb' && !modelInstalled && (
+            {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
+            {sub === 'kb' && !modelUsable && (
               <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
                 <div className="w-[84px] h-[84px] mx-auto rounded-[24px] grid place-items-center relative"
                   style={{ background: isDark ? 'linear-gradient(135deg,#2A2440,#1E2438)' : 'linear-gradient(135deg,#efeafe,#e3ecfb)' }}>
@@ -1184,8 +1191,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     <Download size={14} className="text-white" />
                   </span>
                 </div>
-                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{t.kbModelTitle}</h2>
-                <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{t.kbModelDesc}</p>
+                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingTitle : t.kbModelFailedTitle) : t.kbModelTitle}</h2>
+                <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingDesc : t.kbModelFailedDesc) : t.kbModelDesc}</p>
 
                 <div className={`mt-5 mx-auto max-w-[480px] text-left rounded-2xl p-[18px] ${panel}`} style={panelShadow}>
                   <div className="flex items-center gap-3">
@@ -1216,15 +1223,23 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 </div>
 
-                {!downloading ? (
+                {!downloading && !modelLoading ? (
                   <div className="mt-5">
-                    <button onClick={startModelDownload}
-                      className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
-                      style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>
-                      {t.kbModelDownloadBtn} →
-                    </button>
+                    {modelFailed ? (
+                      <div className="flex items-center justify-center gap-3">
+                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold ${isDark ? 'bg-white/10 text-white' : 'bg-[#eceef7] text-[#3f4250]'}`}>{t.kbModelRetryBtn}</button>
+                        <button onClick={() => startModelDownload(true)} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
+                          style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>{t.kbModelRepairBtn} →</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => startModelDownload(false)}
+                        className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
+                        style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>
+                        {t.kbModelDownloadBtn} →
+                      </button>
+                    )}
                     <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
-                    {kbm.error && <div className="mt-2 text-[12px] text-[#d63a3a]">{kbm.error}</div>}
+                    {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a]">{kbm.error || effectiveKbModel.error}</div>}
                   </div>
                 ) : (
                   <div className="mt-5 max-w-[480px] mx-auto">
@@ -1232,8 +1247,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       <div className="h-full rounded-full transition-all" style={{ width: dlPct + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
                     </div>
                     <div className="flex justify-between mt-2.5 text-[12.5px]">
-                      <span className={`font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#2f6beb]'}`}>{dlStageLabel}</span>
-                      <span className="font-bold text-[#2f6beb]">{dlPct}%</span>
+                      <span className={`font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#2f6beb]'}`}>{modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}</span>
+                      {downloading && <span className="font-bold text-[#2f6beb]">{dlPct}%</span>}
                     </div>
                   </div>
                 )}
@@ -1241,7 +1256,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             )}
 
             {/* ============ 知识库 列表（模型已就绪）============ */}
-            {sub === 'kb' && modelInstalled && (
+            {sub === 'kb' && modelUsable && (
               <div className="max-w-[1400px] mx-auto">
                 <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 ${isDark ? 'bg-gradient-to-br from-[#2A2440] to-[#1E2438]' : 'bg-gradient-to-br from-[#ece8fc] to-[#dcebfb]'}`}>
                   <div className="flex-1 min-w-0">

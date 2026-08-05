@@ -800,13 +800,14 @@ fn accept_plan_instruction_embeds_full_plan() {
 /// read_file + 无依据说不知道;空名兜底。
 #[test]
 fn agentic_guide_mentions_collection_and_kb_search() {
-    let g = build_kb_agentic_guide(Some("硬件资料"));
+    let g = build_kb_agentic_guide(&["硬件资料".to_string(), "团队规范".to_string()]);
     assert!(g.contains("《硬件资料》"));
     assert!(g.contains("kb_search"));
     assert!(g.contains("kb_open_source"));
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
-    assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
+    assert!(g.contains("《团队规范》"));
+    assert!(build_kb_agentic_guide(&[]).contains("《本地知识集》"));
 }
 
 #[test]

@@ -1122,8 +1122,8 @@ export function CodexAcpView({
       .then(list => { if (alive) setNativeKbCollections(Array.isArray(list) ? list : []); })
       .catch(() => { if (alive) setNativeKbCollections([]); });
     invoke('kb_model_status')
-      .then(status => { if (alive) setNativeKbInstalled(status ? Boolean(status.installed) : true); })
-      .catch(() => { if (alive) setNativeKbInstalled(true); });
+      .then(status => { if (alive) setNativeKbStatus(status || { installed: true }); })
+      .catch(() => { if (alive) setNativeKbStatus({ installed: true }); });
     return () => { alive = false; };
   }, [isNativeAgent]);
   function getNativeLane(sessionId) {
@@ -1146,7 +1146,15 @@ export function CodexAcpView({
   const nativeControlsSessionRef = useRef(null);
   // 知识库选择器的集合列表与 embedding 安装态（全局只读查询，不带会话）。
   const [nativeKbCollections, setNativeKbCollections] = useState([]);
-  const [nativeKbInstalled, setNativeKbInstalled] = useState(null); // null=未知(不门控)
+  const [nativeKbStatus, setNativeKbStatus] = useState(null); // null=未知；新后端区分已安装与运行时已就绪
+  const nativeKbSetup = (bs && bs.kbModelSetup) || {};
+  const nativeKbMissing = nativeKbStatus && nativeKbStatus.installed === false;
+  const nativeKbReadyKnown = nativeKbStatus && typeof nativeKbStatus.ready === 'boolean';
+  const nativeKbNotReady = !nativeKbMissing && (
+    nativeKbSetup.startupLoading === true
+    || (nativeKbReadyKnown && nativeKbStatus.ready === false && nativeKbSetup.startupReady !== true)
+  );
+  const nativeKbBlocked = nativeKbMissing || nativeKbNotReady;
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
@@ -2582,8 +2590,8 @@ export function CodexAcpView({
                         onChange={value => (
                           String(value) === '' ? unmountNativeKb() : mountNativeKb(Number(value))
                         )}
-                        disabled={nativeKbInstalled === false}
-                        title={nativeKbInstalled === false ? t.kbMountNoModel : t.kbMountTitle}
+                        disabled={nativeKbBlocked}
+                        title={nativeKbBlocked ? (nativeKbMissing ? t.kbMountNoModel : t.kbMountNotReady) : t.kbMountTitle}
                       />
                     </div>
                   )}

@@ -626,6 +626,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         cmd === "list_scheduled_runs") return [];
     if (cmd === "get_mode_state") return { mode: "yolo" };
     if (cmd === "get_memory_overview") return {};
+    if (cmd === "session_mounted_collections_snapshot") return { revision: 0, collections: [] };
+    if (cmd === "session_mounted_collections") return [];
     if (cmd === "session_mounted_collection" || cmd === "get_active_persona" ||
         cmd === "find_resumable_run" || cmd === "check_for_update") return null;
     if (cmd === "get_settings") return { theme: "genesis", language: "zh-Hans" };
@@ -3408,7 +3410,237 @@ async function remoteSessionDeletionConvergesPresentationState() {
   assert.strictEqual(state.archivedSessions.some(function (session) { return session.id === deletedId; }), false);
 }
 
+async function multipleKnowledgeMountBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
+  var serverMounted = [];
+  var revision = 0;
+  function snapshot() {
+    revision += 1;
+    return { revision: revision, collections: serverMounted };
+  }
+  harness.handlers.session_add_mounted_collection = function (args) {
+    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    if (existing) existing.enabled = true;
+    else serverMounted.push({ collectionId: args.collectionId, enabled: true });
+    return snapshot();
+  };
+  harness.handlers.session_set_mounted_collection_enabled = function (args) {
+    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    if (existing) existing.enabled = !!args.enabled;
+    return snapshot();
+  };
+  harness.handlers.session_remove_mounted_collection = function (args) {
+    serverMounted = serverMounted.filter(function (entry) { return entry.collectionId !== args.collectionId; });
+    return snapshot();
+  };
+  harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
+
+  await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountCollection(8);
+  var mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: true },
+      { collectionId: 8, enabled: true },
+    ],
+    "adding a knowledge base must preserve existing mounts"
+  );
+  assert.strictEqual(mounted.mountedCollection, 7, "legacy field keeps the first enabled mount");
+
+  await bridge.knowledge.setCollectionEnabled(7, false);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, false);
+  assert.strictEqual(mounted.mountedCollection, 8, "disabled mounts must not remain active for retrieval");
+
+  await bridge.knowledge.removeCollection(8);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections.length, 1);
+  assert.strictEqual(mounted.mountedCollections[0].collectionId, 7);
+  assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
+
+  await bridge.knowledge.mountCollection(7);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
+  assert.strictEqual(mounted.mountedCollection, 7);
+
+  await bridge.knowledge.unmountCollection();
+  mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
+}
+
+async function queuedKnowledgeMountKeepsOriginalSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-origin"), true);
+  var pending = deferred();
+  harness.handlers.session_add_mounted_collection = function () { return pending.promise; };
+
+  var mount = bridge.knowledge.mountCollection(7);
+  await tick();
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-other"), true);
+  pending.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
+  await mount;
+
+  var addCall = harness.calls.find(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCall.args.sessionId, "chat-kb-origin",
+    "a queued mutation must stay bound to the session active when the user clicked");
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), [],
+    "a late response for another session must not overwrite the active session view");
+}
+
+async function staleKnowledgeSnapshotDoesNotCrossSessions() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var staleSnapshot = deferred();
+  var staleReadStarted = deferred();
+  harness.handlers.session_mounted_collections_snapshot = function (args) {
+    if (args.sessionId === "chat-kb-stale") {
+      staleReadStarted.resolve();
+      return staleSnapshot.promise;
+    }
+    return { revision: 1, collections: [{ collectionId: 8, enabled: true }] };
+  };
+
+  var staleSwitch = bridge.sessions.switchToSession("chat-kb-stale");
+  await staleReadStarted.promise;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-current"), true);
+  staleSnapshot.resolve({ revision: 9, collections: [{ collectionId: 7, enabled: true }] });
+  assert.strictEqual(await staleSwitch, false);
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [{ collectionId: 8, enabled: true }],
+    "a late snapshot from the previous session must not overwrite the current session"
+  );
+  assert.strictEqual(mounted.mountedCollectionsRevision, 1);
+}
+
+async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote"), true);
+  harness.handlers.session_mounted_collections_snapshot = function () {
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: false },
+        { collection_id: 7, enabled: true },
+        { collection_id: 8, enabled: true },
+      ],
+    };
+  };
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote",
+    revision: 2,
+    collections: [
+      { collection_id: 7, enabled: false },
+      { collection_id: 7, enabled: true },
+      { collection_id: 8, enabled: true },
+    ],
+  });
+  await tick();
+  await tick();
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: false },
+      { collectionId: 8, enabled: true },
+    ],
+    "remote mount snapshots must use the same first-entry-wins normalization as local mutations"
+  );
+  assert.strictEqual(mounted.mountedCollection, 8);
+  assert.strictEqual(mounted.mountedCollectionsRevision, 2);
+}
+
+async function draftKnowledgeMountsCreateOneSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var create = deferred();
+  var serverMounted = [];
+  var revision = 0;
+  harness.handlers.create_session = function () { return create.promise; };
+  harness.handlers.session_add_mounted_collection = function (args) {
+    serverMounted.push({ collectionId: args.collectionId, enabled: true });
+    revision += 1;
+    return { revision: revision, collections: serverMounted };
+  };
+
+  var first = bridge.knowledge.mountCollection(7);
+  var second = bridge.knowledge.mountCollection(8);
+  await tick();
+  assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "create_session"; }).length, 1,
+    "rapid draft mounts must share one serialized session creation");
+  create.resolve({ id: "chat-kb-created" });
+  await Promise.all([first, second]);
+
+  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCalls.length, 2);
+  assert.ok(addCalls.every(function (call) { return call.args.sessionId === "chat-kb-created"; }),
+    "all draft mounts must target the one materialized session");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("knowledge").mountedCollections)),
+    [{ collectionId: 7, enabled: true }, { collectionId: 8, enabled: true }]
+  );
+}
+
+async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstMutation = deferred();
+  var firstMutationStarted = deferred();
+  var mutationCount = 0;
+  harness.handlers.session_add_mounted_collection = function (args) {
+    mutationCount += 1;
+    if (mutationCount === 1) {
+      firstMutationStarted.resolve();
+      return firstMutation.promise;
+    }
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: true },
+        { collectionId: args.collectionId, enabled: true },
+      ],
+    };
+  };
+
+  var first = bridge.knowledge.mountCollection(7);
+  var second = bridge.knowledge.mountCollection(8);
+  await firstMutationStarted.promise;
+  var materializedSessionId = harness.calls.find(function (call) {
+    return call.cmd === "session_add_mounted_collection";
+  }).args.sessionId;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-navigated"), true);
+  firstMutation.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
+  await Promise.all([first, second]);
+
+  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCalls.length, 2);
+  assert.ok(addCalls.every(function (call) { return call.args.sessionId === materializedSessionId; }),
+    "queued draft mounts must remain on their shared materialized session after navigation");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("knowledge").mountedCollections)),
+    [],
+    "background draft mutations must not leak into the newly active session"
+  );
+}
+
 Promise.resolve()
+  .then(multipleKnowledgeMountBehavior)
+  .then(queuedKnowledgeMountKeepsOriginalSession)
+  .then(staleKnowledgeSnapshotDoesNotCrossSessions)
+  .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
+  .then(draftKnowledgeMountsCreateOneSession)
+  .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)

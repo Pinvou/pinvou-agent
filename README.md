@@ -57,7 +57,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 ### 🧠 Knowledge and memory
 
-- **Local knowledge base** with file management, full-text search, and vector retrieval
+- **Local knowledge base** with file management, full-text and vector retrieval; attach multiple collections to one chat, enable or disable each independently, and retain collection and file provenance in answers
 - **Memory center** captures long-term preferences and context, with explicit candidate review and confirmation
 - **Persona card pool** — create, save, and apply specialist roles for different domains
 - **Skills, Commands, and workflows** turn proven methods into stable, reusable capabilities

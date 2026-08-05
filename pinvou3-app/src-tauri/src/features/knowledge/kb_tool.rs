@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use deepseek_tui::tools::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
-use super::{ChunkHit, Document};
+use super::{l1::ScopedChunkHit, Document};
 use crate::features::{knowledge::KnowledgeService, sessions::SessionStore};
 
 /// 工具单次检索 top-K(精排;太多稀释小模型注意力)。
@@ -47,16 +47,28 @@ fn parse_source_ref(value: &str) -> Option<(i64, i64)> {
 }
 
 /// 把检索命中拼成给模型的文本(带出处)。命中为空时调用方不应调用本函数。
-pub(crate) fn build_kb_context_block(collection_name: Option<&str>, hits: &[ChunkHit]) -> String {
-    let title = collection_name.unwrap_or("知识库");
+pub(crate) fn build_kb_context_block(
+    collections: &[(i64, String)],
+    hits: &[ScopedChunkHit],
+) -> String {
+    let title = if collections.is_empty() {
+        "《知识库》".to_string()
+    } else {
+        collections
+            .iter()
+            .map(|(_, name)| format!("《{name}》"))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
     let mut out = format!(
-        "在知识集《{title}》中检索到以下相关片段(按相关度排序)。请**严格基于这些片段**作答\
+        "在已启用知识集{title}中检索到以下相关片段(按相关度稳定排序)。请**严格基于这些片段**作答\
          并注明来源文件;若片段足够就直接回答,不要继续打开源文件。若上下文不足,可再次\
          `kb_search`,或用结果中的 `source_ref` 调用 `kb_open_source` 查看相邻片段。对于\
          XLSX/DOCX/PPTX 等二进制来源,禁止调用 `read_file` 或用 `exec_shell` 全量展开。\n\n"
     );
     let mut spent = 0usize;
-    for (i, h) in hits.iter().enumerate() {
+    for (i, scoped) in hits.iter().enumerate() {
+        let h = &scoped.hit;
         let text = h.text.trim();
         // 整体超限即停(但保证第一条一定注入),余下条数提示给模型。
         if spent > 0 && spent + text.len() > KB_INJECT_MAX_CHARS {
@@ -66,10 +78,26 @@ pub(crate) fn build_kb_context_block(collection_name: Option<&str>, hits: &[Chun
             ));
             break;
         }
+        let collection_names = scoped
+            .collection_ids
+            .iter()
+            .filter_map(|collection_id| {
+                collections
+                    .iter()
+                    .find(|(id, _)| id == collection_id)
+                    .map(|(_, name)| format!("《{name}》"))
+            })
+            .collect::<Vec<_>>()
+            .join("、");
         out.push_str(&format!(
-            "### [{}] {}\nsource_ref: `{}`\n来源: `{}`\n{}\n\n",
+            "### [{}] {}\n知识库: {}\nsource_ref: `{}`\n来源: `{}`\n{}\n\n",
             i + 1,
             h.doc_name,
+            if collection_names.is_empty() {
+                "《知识库》"
+            } else {
+                &collection_names
+            },
             source_ref(h.document_id, h.ord),
             h.doc_path,
             text
@@ -100,6 +128,8 @@ fn render_source_window(
         "source_ref": source_ref_value,
         "name": document.name,
         "path": document.path,
+        "collectionId": document.collection_id,
+        "collectionName": document.coll_name,
         "extension": document.ext,
         "start_chunk": chunks.first().map(|(ord, _)| *ord),
         "shown_chunks": chunks.len(),
@@ -184,39 +214,54 @@ impl ToolSpec for KbSearchTool {
             return Err(ToolError::missing_field("query"));
         }
         // 挂载集 + 知识库服务都软依赖(会话可能未挂集;KnowledgeService 条件 manage)。
-        let cid = self
+        let collection_ids = self
             .app
             .try_state::<SessionStore>()
-            .and_then(|s| s.mounted_collection(&self.session_id));
-        let Some(cid) = cid else {
+            .map(|store| store.mounted_collection_ids(&self.session_id))
+            .unwrap_or_default();
+        if collection_ids.is_empty() {
             return Ok(ToolResult::success(
-                "本会话未挂载任何本地知识集,无法检索。请提示用户在输入框上方挂载一个知识集后再试。",
+                "本会话未启用任何本地知识集,无法检索。请提示用户在输入框上方挂载并启用知识集后再试。",
             ));
-        };
+        }
         let Some(kb) = self.app.try_state::<KnowledgeService>() else {
             return Ok(ToolResult::success("本地知识库服务不可用。"));
         };
         let l1 = kb.l1().clone();
         let q = query.clone();
         // retrieve_for_chat 含 blocking embedding,挪出 async executor。
-        let (hits, name) = tauri::async_runtime::spawn_blocking(move || {
+        let (hits, collections) = tauri::async_runtime::spawn_blocking(move || {
             let hits = l1
-                .retrieve_for_chat(cid, &q, KB_INJECT_TOP_K, KB_NEIGHBOR_RADIUS)
+                .retrieve_for_chat_multi(&collection_ids, &q, KB_INJECT_TOP_K, KB_NEIGHBOR_RADIUS)
                 .unwrap_or_default();
-            let name = l1.collection_name(cid).ok().flatten();
-            (hits, name)
+            let collections: Vec<(i64, String)> = collection_ids
+                .into_iter()
+                .map(|collection_id| {
+                    let name = l1
+                        .collection_name(collection_id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| format!("#{collection_id}"));
+                    (collection_id, name)
+                })
+                .collect();
+            (hits, collections)
         })
         .await
         .unwrap_or_default();
         if hits.is_empty() {
             return Ok(ToolResult::success(format!(
-                "在知识集《{}》中未找到与「{}」相关的内容。如无其他依据,请如实告知用户未检索到,不要编造。",
-                name.as_deref().unwrap_or("知识库"),
+                "在已启用知识集{}中未找到与「{}」相关的内容。如无其他依据,请如实告知用户未检索到,不要编造。",
+                collections
+                    .iter()
+                    .map(|(_, name)| format!("《{name}》"))
+                    .collect::<Vec<_>>()
+                    .join("、"),
                 query
             )));
         }
         Ok(ToolResult::success(build_kb_context_block(
-            name.as_deref(),
+            &collections,
             &hits,
         )))
     }
@@ -310,37 +355,46 @@ impl ToolSpec for KbOpenSourceTool {
         }
         .min(KB_OPEN_MAX_CHUNKS);
 
-        let collection_id = self
+        let collection_ids = self
             .app
             .try_state::<SessionStore>()
-            .and_then(|store| store.mounted_collection(&self.session_id));
-        let Some(collection_id) = collection_id else {
+            .map(|store| store.mounted_collection_ids(&self.session_id))
+            .unwrap_or_default();
+        if collection_ids.is_empty() {
             return Ok(ToolResult::success(
-                "本会话未挂载任何本地知识集,无法打开来源。请先挂载知识集。",
+                "本会话未启用任何本地知识集,无法打开来源。请先挂载并启用知识集。",
             ));
-        };
+        }
         let Some(kb) = self.app.try_state::<KnowledgeService>() else {
             return Ok(ToolResult::success("本地知识库服务不可用。"));
         };
         let l1 = kb.l1().clone();
         let source_ref_for_query = source_ref_value.clone();
-        let loaded = tauri::async_runtime::spawn_blocking(move || {
-            load_source_window(
-                &l1,
-                collection_id,
-                document_id,
-                start_ord,
-                max_chunks,
-                &source_ref_for_query,
-            )
-        })
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("kb_open_source join failed: {e}")))?
-        .map_err(|e| ToolError::execution_failed(format!("kb_open_source query failed: {e}")))?;
+        let loaded =
+            tauri::async_runtime::spawn_blocking(move || -> rusqlite::Result<Option<Value>> {
+                for collection_id in collection_ids {
+                    if let Some(rendered) = load_source_window(
+                        &l1,
+                        collection_id,
+                        document_id,
+                        start_ord,
+                        max_chunks,
+                        &source_ref_for_query,
+                    )? {
+                        return Ok(Some(rendered));
+                    }
+                }
+                Ok(None)
+            })
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("kb_open_source join failed: {e}")))?
+            .map_err(|e| {
+                ToolError::execution_failed(format!("kb_open_source query failed: {e}"))
+            })?;
 
         let Some(rendered) = loaded else {
             return Ok(ToolResult::success(
-                "该 source_ref 不属于本会话当前挂载的知识集,或文档尚未解析完成。请重新调用 kb_search。",
+                "该 source_ref 不属于本会话当前启用的知识集,或文档尚未解析完成。请重新调用 kb_search。",
             ));
         };
         ToolResult::json(&rendered).map_err(|e| {
@@ -355,26 +409,34 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn hit(name: &str, ord: i64, text: &str) -> ChunkHit {
-        ChunkHit {
-            document_id: 42,
-            text: text.to_string(),
-            score: 1.0,
-            doc_name: name.to_string(),
-            doc_path: format!("/docs/{name}"),
-            ord,
+    fn hit(name: &str, ord: i64, text: &str) -> ScopedChunkHit {
+        ScopedChunkHit {
+            collection_ids: vec![7],
+            hit: super::super::l1::ChunkHit {
+                document_id: 42,
+                text: text.to_string(),
+                score: 1.0,
+                doc_name: name.to_string(),
+                doc_path: format!("/docs/{name}"),
+                ord,
+            },
         }
     }
 
     /// 片段块:带知识集名、逐条出处、命中文本;空名兜底「知识库」。
     #[test]
     fn kb_context_block_renders_hits_with_sources() {
-        let hits = vec![
+        let mut hits = vec![
             hit("散热报告.xlsx", 3, "CPU 峰值温度 78℃"),
             hit("规格.pdf", 0, "TDP 28W"),
         ];
-        let block = build_kb_context_block(Some("硬件资料"), &hits);
+        hits[0].collection_ids.push(8);
+        let block = build_kb_context_block(
+            &[(7, "硬件资料".to_string()), (8, "团队规范".to_string())],
+            &hits,
+        );
         assert!(block.contains("《硬件资料》"));
+        assert!(block.contains("《团队规范》"));
         assert!(block.contains("散热报告.xlsx"));
         assert!(block.contains("source_ref: `kbdoc:42:chunk:3`"));
         assert!(block.contains("`/docs/散热报告.xlsx`"));
@@ -383,7 +445,7 @@ mod tests {
         assert!(block.contains("kb_open_source"));
         assert!(block.contains("禁止调用 `read_file`"));
 
-        let none = build_kb_context_block(None, &hits);
+        let none = build_kb_context_block(&[], &hits);
         assert!(none.contains("《知识库》"));
     }
 
@@ -396,7 +458,7 @@ mod tests {
             hit("b.txt", 1, &big),
             hit("c.txt", 2, &big),
         ];
-        let block = build_kb_context_block(Some("X"), &hits);
+        let block = build_kb_context_block(&[(7, "X".to_string())], &hits);
         assert!(block.contains("a.txt")); // 第一条必注入
         assert!(!block.contains("b.txt")); // 超预算被截断
         assert!(block.contains("还有 2 条"));
@@ -440,6 +502,8 @@ mod tests {
         ];
         let rendered = render_source_window("kbdoc:128:chunk:3", &document, &chunks);
         assert_eq!(rendered["type"], "kb_source");
+        assert_eq!(rendered["collectionId"], 7);
+        assert_eq!(rendered["collectionName"], "散热");
         assert_eq!(rendered["shown_chunks"], 3);
         assert_eq!(rendered["next_start_chunk"], 5);
         assert_eq!(rendered["truncated"], true);
