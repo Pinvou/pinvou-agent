@@ -717,7 +717,6 @@ impl From<crate::core::reasoning_dialect::ReasoningDialect> for MemoryReviewReas
             D::None => MemoryReviewReasoningDialect::None,
             D::ThinkingDisabled => MemoryReviewReasoningDialect::ThinkingDisabled,
             D::QwenEnableThinking => MemoryReviewReasoningDialect::QwenEnableThinking,
-            D::VllmChatTemplate => MemoryReviewReasoningDialect::VllmChatTemplate,
             D::Minimax => MemoryReviewReasoningDialect::Minimax,
         }
     }
