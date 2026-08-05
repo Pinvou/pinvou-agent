@@ -286,10 +286,10 @@ pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 
 pub struct MarketplaceManager<S: CredentialStore = SystemCredentialStore> {
     /// bundle 解包后的 MCP servers 目录 (~/.pinvou3/bundle/mcp-servers/)
-    pub(crate) servers_dir: PathBuf,
+    pub(super) servers_dir: PathBuf,
     /// 已安装工具列表文件 (~/.pinvou3/marketplace/installed.json)
-    pub(crate) installed_file: PathBuf,
-    pub(crate) credential_store: S,
+    pub(super) installed_file: PathBuf,
+    pub(super) credential_store: S,
 }
 
 impl Default for MarketplaceManager<SystemCredentialStore> {
