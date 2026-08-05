@@ -785,7 +785,21 @@ fn memory_review_reasoning_dialect(
         | ModelPreset::Openai
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
-        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model).into(),
+        | ModelPreset::Xai => {
+            // 先取共享的 URL sniff 结果;若 URL 无法识别厂商,回退到 model 名匹配
+            // (保留原 memory 的 model.contains 回退,覆盖自定义 OpenAI 兼容端点)。
+            let d = reasoning_dialect_from_base_url(base_url, model);
+            if matches!(d, crate::core::reasoning_dialect::ReasoningDialect::None) {
+                let lower = model.to_ascii_lowercase();
+                if lower.contains("qwen") {
+                    return MemoryReviewReasoningDialect::QwenEnableThinking;
+                }
+                if lower.contains("deepseek") {
+                    return MemoryReviewReasoningDialect::ThinkingDisabled;
+                }
+            }
+            d.into()
+        }
     }
 }
 
