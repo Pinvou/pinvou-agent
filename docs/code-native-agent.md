@@ -2,7 +2,7 @@
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
 > 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
-> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
+> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-plain-decoupling-改动说明.md`（2026-08-05 模式解耦与能力回补）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
 
 ## 1. 背景与目标
 
@@ -25,7 +25,7 @@
 | 事件流 | `acp:event` | `chat:*`（13+2 个事件） |
 | 前端投影 | `projectAcpTimeline` | `code-native-lane.js` → `projectDeepSeekConversation` |
 | 展示层 | `ConversationTimeline`（共用） | 同左 |
-| 会话存储 | `SessionStore` + `SessionAgentStore` | 同左（`code_session` 标记） |
+| 会话存储 | `SessionStore` + `SessionAgentStore` | 同左（`SessionMode` 模式标记，见 §3.1） |
 
 关键共用：`SessionStore`（`~/.pinvou3/sessions/`）、`SessionAgentStore`（`~/.pinvou3/session-agents.json`）、统一会话列表、工作区面板、附件体系、i18n。
 
@@ -34,7 +34,7 @@
 ### 3.1 会话标记而非新链路
 
 - `AgentBackend` 枚举复用既有原生变体 `Deepseek`（display_name "品悟"），`parse` 增加 `"pinvou"` 别名，kebab-case 序列化契约不变。
-- `SessionAgentRecord` 增加 `code_session: bool`（serde default + skip_serializing_if，旧记录兼容），普通聊天会话无记录默认 false。
+- 会话类型按**两条正交轴**类型化（2026-08-05 解耦，D-1）：产品模式轴 `SessionAgentRecord.mode: SessionMode::{Plain, Code}`（`core/session_mode.rs`），运行时轴即 `AgentBackend`（Deepseek=原生、其余=ACP）——替代原 `code_session: bool` 布尔约定（互斥曾靠调用顺序维持）。磁盘 `session-agents.json` 保持原 `code_session` 键与布尔格式（自研 serde 适配层），新旧版本互读兼容、零迁移；普通会话无记录默认 `Plain`。
 - 原生代码会话对 `AcpPool::is_acp` 保持 false：`chat` 命令天然放行，ACP 命令经 `acp_record` 检查自然拒绝，两链路互不串台。
 - "会话创建时绑定 Agent/目录，开始后不可切换"对原生与 ACP 同样生效。
 
@@ -57,11 +57,17 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 代码会话 = 骨架 + `instructions-code.md`（代码身份头、工作区段含项目路径占位符、代码场景纪律：就地修改/不建 tmp//git 纪律/范围纪律/验证纪律/交付汇报）+ **底座 `CORE_EXECUTION_PROFILE_PROMPT` 原样引用**（Rust 渲染层拼接 `deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT`，零文本复制，上游更新自动跟随）。
 - 未引入底座 `BASE_PROMPT`（含 "You are Codewhale" 身份；其权威顺序/防编造干货在共享层 §底线已有等价物）。
 - 工作会话渲染结果与拆分前**逐字节相等**（golden 测试内嵌 33 行原文快照断言）。
-- 工具整形：代码会话 `disallowed_tools` 追加 `mcp_pinvou3_present_artifact`（spawn 初值与 `set_disallowed_all` 热刷统一经 `bridge.shape_disallowed_tools`）。
+- 工具整形：代码会话 `disallowed_tools` 追加 `mcp_pinvou3_present_artifact` 与 `load_skill`（spawn 初值与 `set_disallowed_all` 热刷统一经 `bridge.shape_disallowed_tools`，取值现由 `SessionPolicy::extra_hidden_tools` 给出，见 §3.6）。
 
 ### 3.5 配置控件复用策略
 
 聊天页输入框底栏四控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode），失败显式报错。
+
+### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
+
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 追加 `present_artifact`/`load_skill`）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
+- 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
+- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
 
 ## 4. 开发节点记录（19 个提交）
 
@@ -154,6 +160,8 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 列表：原生会话 `agent_id="pinvou"`、`agent_name="品悟"`；标题创建时为"新对话"，首条消息后自动命名（前 28 字符）。
 - 发送：`chat { sessionId, message, attachments, restrictTools: false }`；取消 `cancel_generation { sessionId }`；确认卡 `submit_user_input`/`cancel_user_input`（显式 sessionId）。
 - 恢复：`get_pending_user_inputs { sessionId }` → `{busy, pending}`。
+- Plan 闭环（R-1）：事件 `chat:plan_snapshot` / `chat:plan_ready`；批准 `accept_plan { sessionId, planId, planMarkdown, displayMessage? }`，放弃 `discard_plan { sessionId, planId }`。
+- 压缩与记忆（R-3）：手动压缩 `compact_now { sessionId }`（兼入口=用量 chip）；事件 `chat:usage`（已用 token）、`chat:memory`（记忆快照）。
 - 配置：`set_session_model`/`get_session_model_id`、`session_mount_collection`/`session_unmount_collection`/`session_mounted_collection`、`set_plan_mode_next`/`exit_plan_to_yolo`/`get_mode_state`，全部显式 sessionId。
 
 ## 7. 验证记录
@@ -168,11 +176,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.1 持久化真相源（sidecar）
 
-- 原生代码会话的类型（`code_session`）与项目目录绑定以 per-session 权威 sidecar
+- 原生代码会话的模式（`SessionMode::Code`）与项目目录绑定以 per-session 权威 sidecar
   `~/.pinvou3/sessions/<sid>/code-session.json` 持久化（`CodeSessionSidecar`：
   `workspace_kind` / `workspace_path` / `bound_at` / `version`）。
 - 写入时机：`bind_code_native_session` 成功时原子写入；`set_acp_workspace` 绑定
-  ACP 时清除 `code_session` 标志并删除 sidecar（防止 ACP 会话被误判/误恢复）；
+  ACP 时重置为 `Plain` 并删除 sidecar（防止 ACP 会话被误判/误恢复）；
   `remove` 删除会话时同步清理。
 - 恢复时机：`AcpPool::new` 启动时 `restore_code_native_sessions_from_sidecars` 扫描
   各 session 私有目录，辅助索引缺失但 sidecar 存在时恢复 `SessionAgentRecord`
@@ -200,9 +208,10 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载连接器时从
   plain/code 两个禁用集移除残留 id（含运行时清理路径）。
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
-  scope；`shape_disallowed_tools` 对代码会话用 code scope 的连接器禁用集替换
-  plain scope 的（非连接器禁用如 `kb_search` 保留），并继续隐藏
-  `present_artifact`。
+  scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
+  按 `policy.connector_scope()` 取 code scope 禁用集替换 plain scope 的（非连接器
+  禁用如 `kb_search` 保留），并按 `policy.extra_hidden_tools()` 继续隐藏
+  `present_artifact` 与 `load_skill`。
 
 ### 8.4 远程端过滤原生代码会话事件
 
@@ -241,8 +250,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ## 9. 已知限制与遗留风险
 
-- Plan 模式降级：方案以文本/普通工具卡呈现，无 `accept_plan` 审批卡，需手动切回 Yolo（后续专项）。
-- `chat:usage` 无 context 上限字段，用量 chip 不显示（`tokens.max` 恒 0）。
+- Plan 模式审批闭环已落地（R-1）：code 页消费 `chat:plan_snapshot`/`chat:plan_ready`，
+  渲染方案审批卡（【✅ 就这么干】调 `accept_plan`/【🚪 算了】调 `discard_plan`）；
+  remount 后历史方案降级为只读卡（与 work 冷启动语义一致）。
+- `chat:usage` 无 context 上限字段（`tokens.max` 恒 0）：code 页用量 chip 按降级处理，
+  只显示已用 token、不显示上限与百分比；chip 兼手动压缩入口（点击调 `compact_now`）。
 - 项目规则注入（审阅建议③a）仅覆盖绑项目代码会话的 root→cwd 各层 `AGENTS.md`，
   不注入用户家目录/全局上下文；规则文件内容计入 token 成本（100KB 截断由底座
   处理）；symlink 拒读、家目录边界归一化比较与 fail-closed 语义见 §8.5。
@@ -252,9 +264,10 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 代码会话 skill 侧路残留（过渡方案 D）：代码会话已整体禁用 `load_skill` 工具
   + 代码页 skill 分组只读诚实化，但 `## Skills` catalogue 仍印在提示词中（含
   skill 磁盘路径），被注入引导的模型可经 `read_file` 读取 SKILL.md。根治方案
-  见 `docs/code-native-agent-会话能力档案设计.md`（按会话能力档案过滤
-  catalogue，落地后方案 D 两组件退役）。
-- 确认卡/busy 恢复依赖进程内登记表，进程重启后挂起 input 随旧 engine 消亡（与 ACP orphaned turn 语义一致）。
+  见 `.luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md`（按会话能力档案过滤
+  catalogue，需底座支持会话级技能开关，已标记待评估 X-1；启用挂载点已就位
+  ——落地时改为 `SessionPolicy` 取值，方案 D 两组件退役）。
+- 确认卡/busy 恢复依赖进程内登记表，进程重启后挂起 input 随旧 engine 消亡（与 ACP orphaned turn 语义一致）。恢复方案已定为「挂起输入写入 sidecar + 重启后 UI 标记中断，可继续/丢弃」，**不恢复在途回合**（VS Code 同款取舍，避免半执行状态）；待实施（T-3）。
 - 原生会话无模型 API key 前置 gate，未配置凭据时错误在对话流内联展示。
 - 回声去重为启发式（文本一致或 30 秒窗口），极端时序理论可能双气泡。
 - 工作区基线对大型非 git 项目为全量指纹（与 ACP 项目会话同语义）。
@@ -266,12 +279,14 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
    `ci:full-rust` 让完整测试成为该 head 的正式 check。
 3. 代码会话工具/技能 profile（审阅建议②，恢复登记）：代码会话当前继承全集
-   工具，已落地的隔离仅有——连接器工具按 scope 整形（§8.3）、隐藏
-   `present_artifact`、过渡方案 D 禁用 `load_skill`（§9 残留说明）。完整的
-   「代码专用工具 profile」未兑现：skill 维度由
-   `docs/code-native-agent-会话能力档案设计.md` 承接（按会话能力档案过滤
-   catalogue + `load_skill` 按档案判定），其余工具维度的 profile 化待该设计
-   评审后一并实施。
+   工具，已落地的隔离有——连接器工具按 scope 整形（§8.3）、隐藏
+   `present_artifact`、过渡方案 D 禁用 `load_skill`（§9 残留说明），且上述
+   差异已收编进 `SessionPolicy` 策略对象（§3.6，profile 的载体与挂载点）。
+   完整的「代码专用工具 profile」未兑现：skill 维度由
+   `.luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md` 承接（按会话能力档案过滤
+   catalogue + `load_skill` 按档案判定，需底座支持会话级技能开关，已标记
+   待评估 X-1），落地时经 `SessionPolicy` 取值启用；其余工具维度的 profile
+   化待该设计评审后一并实施。
 
 ## 11. 过程产物
 

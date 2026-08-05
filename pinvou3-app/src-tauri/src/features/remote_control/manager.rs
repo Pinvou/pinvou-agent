@@ -3126,7 +3126,7 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
 // （如 web_access_chat 写入、web_access_load_session_chunk /
 // web_access_save_session_messages_chunk 读/写）。暂不封堵的原因：该组命令与普通
 // 会话共用同一条会话读写通道，封堵策略（显式拒绝还是远程端正式支持代码会话）待审阅
-// 者确认；正式登记文字见 docs/code-native-agent-安全审查问题清单.md。
+// 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
 fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
     let Some(scope) = web_session_scope(command) else {
         return Ok(());

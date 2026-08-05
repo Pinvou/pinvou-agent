@@ -1,5 +1,5 @@
 //! 会话模式策略：把 plain/code 的行为差异收敛为数据，共享链路不再 if 分流。
-//! 方向对齐 docs/code-native-agent-会话能力档案设计.md。
+//! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
 
 use crate::core::session_mode::SessionMode;
 use crate::features::marketplace::ConnectorScope;
@@ -23,7 +23,7 @@ const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
 /// 进程级全局状态,无法按会话生效,代码页开关只落盘不生效即成"假开关";
 /// 在底座支持按会话禁用单个 skill 之前,代码会话整体禁用 load_skill 作为
 /// 过渡方案(catalogue 路径泄露的残留口径见
-/// docs/code-native-agent-会话能力档案设计.md)。
+/// .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md，已归档)。
 const LOAD_SKILL: &str = "load_skill";
 
 /// 单一会话模式的策略对象：共享链路（发送 op 构造、工具整形）按它取数，

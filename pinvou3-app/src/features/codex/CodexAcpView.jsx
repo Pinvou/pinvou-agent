@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
@@ -25,6 +25,7 @@ import {
 import {
   applyNativeChatEvent,
   appendLocalUserMessage,
+  appendNativeSystemItem,
   createNativeLane,
   hydrateNativeLane,
   projectNativeLane,
@@ -43,6 +44,7 @@ import {
 import { visibleUserModels } from '../../shared/model-options.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
+import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
@@ -69,6 +71,11 @@ function workspaceName(path, unknownDirectory) {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
   if (!normalized) return unknownDirectory;
   return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+}
+
+// token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
+function fmtNativeCtxTok(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 }
 
 function loadRecentWorkspaces() {
@@ -580,7 +587,10 @@ const NATIVE_CHAT_EVENTS = [
   'chat:shell_task_status',
   'chat:compaction',
   'chat:usage',
+  'chat:memory',
   'chat:user_input_required',
+  'chat:plan_snapshot',
+  'chat:plan_ready',
   'chat:transient_error',
   'chat:done',
 ];
@@ -636,6 +646,54 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       onSubmit={submit}
       onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
     />
+  );
+}
+
+// 原生车道的 Plan 方案审批卡：结构镜像主聊天 PlanCard（tool-renderers.jsx），
+// 批准/放弃走显式 sessionId 的 accept_plan / discard_plan，不经 bridge 全局 activeSession。
+// lane 是纯数据不持文案：终态存 statusKey，这里映射三语（copy = uiCodex）。
+const NATIVE_PLAN_STATUS_COPY = {
+  approved: 'nativePlanApproved',
+  discarded: 'nativePlanDiscarded',
+  superseded: 'nativePlanSuperseded',
+  historical: 'nativePlanHistorical',
+};
+
+function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDiscard }) {
+  const isDark = theme === 'dark';
+  const active = item.cardState === 'active' && !item.resolved && !!item.planId;
+  const statusText = copy[NATIVE_PLAN_STATUS_COPY[item.statusKey]] || '';
+  return (
+    <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
+      <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
+      {(!item.plan && !item.todos)
+        ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planEmpty}</div>
+        : <>
+            <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" isDark={isDark} />
+            <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" isDark={isDark} />
+          </>}
+      <div className={`h-px my-3 ${isDark ? 'bg-white/10' : 'bg-black/10'}`}></div>
+      {active ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
+          <button
+            type="button"
+            data-testid="native-plan-accept"
+            className={cardBtnCls(isDark, 'primary')}
+            disabled={busy || !modePlan}
+            onClick={() => onAccept(item)}
+          >{t.planGo}</button>
+          <button
+            type="button"
+            data-testid="native-plan-discard"
+            className={cardBtnCls(isDark)}
+            onClick={() => onDiscard(item)}
+          >{t.planDrop}</button>
+        </div>
+      ) : (
+        <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{statusText}</div>
+      )}
+    </div>
   );
 }
 
@@ -1037,6 +1095,7 @@ export function CodexAcpView({
   const [commandOpen, setCommandOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
@@ -1138,6 +1197,14 @@ export function CodexAcpView({
   const activeNativeLane = isNativeAgent && activeId
     ? nativeLanesRef.current.get(activeId) || null
     : null;
+  // 原生车道的用量/压缩/记忆展示数据：直接读 lane（可变对象，靠 nativeLaneTick 重渲染）。
+  // chat:usage 不带 context 上限（tokens.max 恒 0，docs/code-native-agent.md §9 登记的
+  // 已知限制），用量 chip 按降级处理：只显示已用 token，不显示上限与百分比。
+  const nativeTokensInput = isNativeAgent && activeNativeLane ? Number(activeNativeLane.tokens.input || 0) : 0;
+  const nativeCompacting = Boolean(isNativeAgent && activeNativeLane && activeNativeLane.compacting);
+  const nativeMemoryItems = isNativeAgent && activeNativeLane && activeNativeLane.memory
+    ? activeNativeLane.memory.items
+    : [];
   // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
@@ -1781,6 +1848,11 @@ export function CodexAcpView({
     return () => window.clearInterval(timer);
   }, [busy]);
 
+  // 切会话/回草稿时关掉记忆弹层（徽标内容按新会话 lane 自动切换）。
+  useEffect(() => {
+    setMemoryOpen(false);
+  }, [activeId]);
+
   useEffect(() => {
     const element = scroller.current;
     if (!element) return undefined;
@@ -2027,6 +2099,9 @@ export function CodexAcpView({
           message: referencePrefix + message,
           attachments: readyAttachments.map(attachment => attachment.result),
           sessionId: targetId,
+          // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
+          // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
+          // 按 SessionPolicy 逐轮驱动（docs/code-plain-decoupling-改动说明.md）。
           restrictTools: false,
         });
       } catch (sendError) {
@@ -2089,15 +2164,131 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
+  // 原生车道手动压缩：语义镜像 bridge interaction.compactNow——调 compact_now 后，
+  // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
+  // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
+  async function compactNativeSession() {
+    const sid = activeId;
+    if (!sid || !isNativeAgent) return;
+    const lane = getNativeLane(sid);
+    if (lane.busy || lane.compacting) return;
+    setError('');
+    try {
+      await invoke('compact_now', { sessionId: sid });
+    } catch (err) {
+      appendNativeSystemItem(lane, `${codexCopy.compactFail}: ${String(err && err.message ? err.message : err || '')}`);
+      setNativeLaneTick(tick => tick + 1);
+    }
+  }
+
+  // 记忆条目的类型标签：复用设置页 memoryTypes 三语；profile 类对应设置页"个人资料"。
+  function nativeMemoryKindLabel(kind) {
+    const detail = t.uiSettingsDetail || {};
+    if (kind === 'profile') return detail.profile || kind;
+    return (detail.memoryTypes && detail.memoryTypes[kind]) || kind || codexCopy.nativeMemory;
+  }
+
+  // 原生车道方案卡【批准】：语义镜像 bridge interaction.acceptPlan——乐观置卡 +
+  // 用户回声（display_message 与按钮同文），accept_plan 失败按 plan_not_active 分流回滚。
+  async function acceptNativePlan(card) {
+    const sid = activeId;
+    if (!sid || !isNativeAgent || busy) return;
+    const lane = getNativeLane(sid);
+    const planId = String(card.planId || '').trim();
+    const stillActionable = Boolean(planId) && lane.items.some(item => (
+      item === card && item.cardState === 'active' && !item.resolved
+    ));
+    if (!stillActionable) return;
+    setError('');
+    card.cardState = 'approved';
+    card.resolved = true;
+    card.statusKey = 'approved';
+    const echoText = t.planGo;
+    const echoId = appendLocalUserMessage(lane, echoText);
+    setNativeLaneTick(tick => tick + 1);
+    try {
+      await invoke('accept_plan', {
+        sessionId: sid,
+        planId,
+        planMarkdown: card.planMarkdown || '',
+        displayMessage: echoText,
+      });
+    } catch (err) {
+      const errorText = String(err && err.message ? err.message : err || '');
+      const planNotActive = errorText.indexOf('plan_not_active') >= 0;
+      if (planNotActive) {
+        card.cardState = 'frozen';
+        card.resolved = true;
+        card.statusKey = 'historical';
+      } else {
+        card.cardState = 'active';
+        card.resolved = false;
+        card.statusKey = '';
+      }
+      removeLocalUserMessage(lane, echoId);
+      appendNativeSystemItem(lane, `${codexCopy.nativePlanAcceptFailed}${errorText}`);
+      setNativeLaneTick(tick => tick + 1);
+      refreshNativeControls(sid).catch(() => {});
+      return;
+    }
+    // accept_plan 已把会话切到 Yolo：同步底栏 mode chip。
+    refreshNativeControls(sid).catch(() => {});
+  }
+
+  // 原生车道方案卡【放弃】：语义镜像 bridge interaction.discardPlan——只关卡片不动
+  // mode（放弃方案 ≠ 退出 Plan）；失败按 plan_not_active 分流恢复/冻结。
+  async function discardNativePlan(card) {
+    const sid = activeId;
+    if (!sid || !isNativeAgent) return;
+    const lane = getNativeLane(sid);
+    const planId = String(card.planId || '').trim();
+    if (!planId || card.resolved || card.cardState !== 'active') return;
+    setError('');
+    card.cardState = 'frozen';
+    card.resolved = true;
+    card.statusKey = 'discarded';
+    setNativeLaneTick(tick => tick + 1);
+    try {
+      await invoke('discard_plan', { sessionId: sid, planId });
+    } catch (err) {
+      const errorText = String(err && err.message ? err.message : err || '');
+      const planNotActive = errorText.indexOf('plan_not_active') >= 0;
+      if (planNotActive) {
+        card.statusKey = 'historical';
+        refreshNativeControls(sid).catch(() => {});
+      } else {
+        card.cardState = 'active';
+        card.resolved = false;
+        card.statusKey = '';
+      }
+      appendNativeSystemItem(lane, `${codexCopy.nativePlanDiscardFailed}${errorText}`);
+      setNativeLaneTick(tick => tick + 1);
+    }
+  }
+
   // 原生（品悟）车道 deepseek 投影项渲染：agent_message 用 lane 保存的原始 markdown；
-  // user_input 走选择确认卡；careful_blocked 是拦截提示（无需交互）；system 是引擎
-  // 透传提示。reasoning / tool_group 由 ConversationTimeline 默认渲染。
+  // user_input 走选择确认卡；plan_card 走方案审批卡；careful_blocked 是拦截提示
+  // （无需交互）；system 是引擎透传提示。reasoning / tool_group 由 ConversationTimeline 默认渲染。
   function renderNativeItem(item) {
     if (item.type === 'agent_message' && item.legacyItem) {
       return (
         <ConversationMarkdown
           text={item.legacyItem.text}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+        />
+      );
+    }
+    if (item.type === 'plan' && item.extensionType === 'plan_card' && item.legacyItem) {
+      return (
+        <NativePlanCard
+          item={item.legacyItem}
+          theme={theme}
+          t={t}
+          copy={codexCopy}
+          modePlan={nativeModeValue === 'plan'}
+          busy={busy}
+          onAccept={card => acceptNativePlan(card).catch(showError)}
+          onDiscard={card => discardNativePlan(card).catch(showError)}
         />
       );
     }
@@ -2545,8 +2736,8 @@ export function CodexAcpView({
                   {isNativeAgent && (
                     // 原生（品悟）车道的底栏控件：与 ACP 配置组同一套
                     // CodexComposerConfigSelect 视觉语言；行为（直调 per-session 命令、
-                    // 草稿暂存、busy 禁用、归属保护）不变。Plan 降级说明：本期不接
-                    // plan_snapshot/accept_plan，切 Plan 后方案以文本/普通工具卡呈现。
+                    // 草稿暂存、busy 禁用、归属保护）不变。Plan 说明：原生车道已接
+                    // plan_snapshot/plan_ready，切 Plan 后方案以审批卡呈现（批准调 accept_plan）。
                     <div data-testid="native-composer-controls" className="flex min-w-0 flex-wrap items-center gap-2">
                       <CodexComposerConfigSelect
                         id="native-mode"
@@ -2596,6 +2787,53 @@ export function CodexAcpView({
                         disabled={nativeKbBlocked}
                         title={nativeKbBlocked ? (nativeKbMissing ? t.kbMountNoModel : t.kbMountNotReady) : t.kbMountTitle}
                       />
+                      {activeId && nativeTokensInput > 0 && (
+                        // 用量 chip 兼手动压缩入口（compact_now 的后端注释语义即"用户点 token
+                        // 进度条 → 立即压缩"）；tokens.max 恒 0 的已知限制下只显示已用 token。
+                        <button
+                          type="button"
+                          data-testid="native-usage-chip"
+                          onClick={() => compactNativeSession().catch(showError)}
+                          disabled={busy || working || nativeCompacting}
+                          title={codexCopy.nativeCompactTitle}
+                          aria-label={codexCopy.nativeCompactTitle}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+                        >
+                          {nativeCompacting ? codexCopy.compactStart : `${t.ctxUsage} ${fmtNativeCtxTok(nativeTokensInput)}`}
+                        </button>
+                      )}
+                      {nativeMemoryItems.length > 0 && (
+                        // 记忆轻量展示：条数徽标 + 点击弹层列出本会话注入的记忆条目
+                        // （不照搬 work 的完整记忆面板；无条目时不占位）。
+                        <div className="relative min-w-0">
+                          <button
+                            type="button"
+                            data-testid="native-memory-badge"
+                            onClick={() => setMemoryOpen(value => !value)}
+                            title={codexCopy.nativeMemoryTitle}
+                            aria-label={codexCopy.nativeMemoryTitle}
+                            aria-expanded={memoryOpen}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+                          >
+                            <Brain size={13} className="shrink-0 text-gray-400" />
+                            {`${codexCopy.nativeMemory} ${nativeMemoryItems.length}`}
+                          </button>
+                          {memoryOpen && (
+                            <>
+                              <button type="button" aria-label={codexCopy.nativeMemoryClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setMemoryOpen(false)} />
+                              <div data-testid="native-memory-panel" className="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-[320px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95">
+                                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.nativeMemoryTitle}</div>
+                                {nativeMemoryItems.map((item, index) => (
+                                  <div key={item.id || `memory-${index}`} className="rounded-xl px-3 py-2">
+                                    <span className="block text-[10px] font-medium text-gray-400">{nativeMemoryKindLabel(item.kind)}</span>
+                                    <span className="mt-0.5 block text-[12px] text-gray-700 dark:text-gray-200">{item.text}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                   {!isNativeAgent && (

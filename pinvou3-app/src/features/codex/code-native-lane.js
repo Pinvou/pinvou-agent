@@ -2,13 +2,15 @@
 //
 // ACP 会话由后端维护 timeline（get_codex_acp_timeline）；原生会话复用主聊天的
 // engine 链路：chat 命令发消息、`chat:*` 事件推进、SavedSession messages 落盘。
-// 本模块把一个会话的展示状态（chatItems/busy/thinking/tokens/turn timeline）
+// 本模块把一个会话的展示状态（chatItems/busy/thinking/tokens/memory/turn timeline）
 // 收敛成纯数据 lane，便于 React 侧按 session 缓存与单测；渲染统一走
 // projectDeepSeekConversation → ConversationTimeline。
 //
 // lane.items 是 bridge chatItems 的兼容子集：user / assistant(text) / reasoning /
-// tool / user_input / careful_blocked / system。与 bridge 的差异：assistant 保留
-// 原始 markdown 文本（bridge 存预渲染 html），渲染层用 ConversationMarkdown。
+// tool / user_input / careful_blocked / system / plan_card。与 bridge 的差异：assistant 保留
+// 原始 markdown 文本（bridge 存预渲染 html），渲染层用 ConversationMarkdown；
+// plan_card 的终态文案存 statusKey（approved/discarded/superseded/historical），
+// 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
 
@@ -23,6 +25,12 @@ export function createNativeLane() {
     streamId: 0,
     streamText: '',
     toolMeta: {},
+    planSnapshot: { plan: null, todos: null },
+    // chat:memory 推送的本回合注入记忆快照（{ items, runtimePath, updatedAt }），
+    // 未收到过事件时为 null；会话级状态，不随 hydration 落盘/清空。
+    memory: null,
+    // chat:compaction phase=start → true，done/fail → false；用于禁用手动压缩入口。
+    compacting: false,
     seq: 0,
   };
 }
@@ -34,6 +42,54 @@ function nextId(lane) {
 
 function timeStr() {
   return new Date().toTimeString().slice(0, 5);
+}
+
+// ── Plan 审批（语义镜像 bridge chat-events.js 的 plan_snapshot/plan_ready）─────
+// plan 类工具：hydrate 时不还原工具卡，改在本条 assistant 消息末尾还原只读方案卡
+// （对齐 bridge rerenderFromMessages 的 PLAN_TOOLS 处理）。
+const PLAN_TOOLS = ['update_plan', 'checklist_write', 'todo_write'];
+
+/// plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（对齐 bridge
+/// parsePlanSnapshot / engine.rs）。content 可能是 string 或 Anthropic blocks 数组。
+export function parseNativePlanSnapshot(content) {
+  const text = typeof content === 'string'
+    ? content
+    : (Array.isArray(content) ? content.map(block => (block && typeof block.text === 'string' ? block.text : '')).join('') : '');
+  const newline = text.indexOf('\n');
+  if (newline < 0) return null;
+  try { return JSON.parse(text.slice(newline + 1)); } catch { return null; }
+}
+
+/// accept_plan 的 plan_markdown 拼法（对齐 bridge composePlanMarkdown）：这段文本会进
+/// 后端执行指令（LLM 面向），标签保持中文，不随界面语言。
+export function composeNativePlanMarkdown(snapshots) {
+  const lines = [];
+  const plan = snapshots && snapshots.plan;
+  const todos = snapshots && snapshots.todos;
+  const sym = status => (status === 'completed' ? '●' : status === 'in_progress' ? '◎' : '○');
+  if (plan && Array.isArray(plan.items)) {
+    if (plan.explanation) lines.push('**方案：**', plan.explanation, '');
+    lines.push('**步骤：**');
+    plan.items.forEach((item, index) => lines.push(`${index + 1}. ${sym(item.status)} ${item.step}`));
+    lines.push('');
+  }
+  if (todos && Array.isArray(todos.items)) {
+    lines.push('**细分待办：**');
+    todos.items.forEach((item, index) => lines.push(`${index + 1}. ${sym(item.status)} ${item.content}`));
+  }
+  return lines.length > 0 ? lines.join('\n') : '（plan 为空）';
+}
+
+/// 渲染层往 lane 追加系统提示项（accept/discard 失败等），对齐 bridge addSystemItem。
+export function appendNativeSystemItem(lane, text) {
+  lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
+}
+
+/// plan_card 状态迁移（批准/放弃/新方案覆盖），供事件与视图动作共用。
+function resolvePlanCard(card, cardState, statusKey) {
+  card.cardState = cardState;
+  card.resolved = true;
+  card.statusKey = statusKey;
 }
 
 function visibleUserTurnIndex(lane) {
@@ -119,6 +175,20 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:user_message': {
       const content = String(p.content || '');
       if (!content) return false;
+      // accept_plan 的用户回声（本地/远端批准都会广播）：先把命中的 active 方案卡
+      // 置为已批准（对齐 bridge chat-events.js 的 action === "accept_plan" 处理），
+      // 再走普通用户消息去重/插入。
+      let changed = false;
+      if (String(p.action || '') === 'accept_plan') {
+        const actionPlanId = String(p.plan_id || p.planId || '').trim();
+        lane.items.forEach(item => {
+          if (item && item.type === 'plan_card' && item.cardState === 'active' && !item.resolved
+              && (!actionPlanId || String(item.planId || '') === actionPlanId)) {
+            resolvePlanCard(item, 'approved', 'approved');
+            changed = true;
+          }
+        });
+      }
       const lastUser = [...lane.items].reverse().find(item => item && item.type === 'user');
       if (lastUser) {
         // 本地乐观插入已覆盖：文本一致，或刚发送（本地气泡带 📎 附件名等展示
@@ -126,7 +196,7 @@ export function applyNativeChatEvent(lane, name, payload) {
         if (lastUser.text === content
           || (lastUser.localEchoTs && Date.now() - lastUser.localEchoTs < 30000)) {
           delete lastUser.localEchoTs;
-          return false;
+          return changed;
         }
       }
       lane.items.push({ id: nextId(lane), type: 'user', text: content, time: timeStr() });
@@ -307,11 +377,60 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:compaction': {
       // 压缩事件渲染为系统提示项；三语文案在渲染层按 compactPhase 组装。
       const phase = String(p.phase || 'done');
+      lane.compacting = phase === 'start';
       lane.items.push({
         id: nextId(lane),
         type: 'system',
         compactPhase: phase,
         text: String(p.message || ''),
+        time: timeStr(),
+      });
+      return true;
+    }
+    case 'chat:memory': {
+      // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
+      // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。
+      const items = (Array.isArray(p.items) ? p.items : [])
+        .map(item => ({
+          id: String(item && item.id || ''),
+          kind: String(item && item.kind || ''),
+          text: String(item && item.text || ''),
+        }))
+        .filter(item => item.text);
+      lane.memory = { items, runtimePath: String(p.runtime_path || ''), updatedAt: Date.now() };
+      return true;
+    }
+    case 'chat:plan_snapshot': {
+      // update_plan/checklist_write 后实时更新快照（只带本次改的那份，另一份为 null）。
+      let changed = false;
+      if (p.plan_snapshot) { lane.planSnapshot.plan = p.plan_snapshot; changed = true; }
+      if (p.todos_snapshot) { lane.planSnapshot.todos = p.todos_snapshot; changed = true; }
+      return changed;
+    }
+    case 'chat:plan_ready': {
+      // Plan 模式调过 update_plan → 弹方案审批卡（对齐 bridge：快照可空、无 plan_id
+      // 时按只读历史卡处理）。
+      const planId = String(p.plan_id || p.planId || '').trim();
+      if (planId && lane.items.some(item => (
+        item && item.type === 'plan_card' && String(item.planId || '') === planId
+      ))) return false;
+      // 新方案出现 → 旧的 active 方案卡冻结（已被新方案覆盖）。
+      lane.items.forEach(item => {
+        if (item && item.type === 'plan_card' && item.cardState === 'active') {
+          resolvePlanCard(item, 'frozen', 'superseded');
+        }
+      });
+      const snaps = { plan: p.plan_snapshot || null, todos: p.todos_snapshot || null };
+      lane.items.push({
+        id: nextId(lane),
+        type: 'plan_card',
+        plan: snaps.plan,
+        todos: snaps.todos,
+        planMarkdown: composeNativePlanMarkdown(snaps),
+        planId: planId || null,
+        cardState: planId ? 'active' : 'frozen',
+        resolved: !planId,
+        statusKey: planId ? '' : 'historical',
         time: timeStr(),
       });
       return true;
@@ -341,8 +460,11 @@ function messageText(blocks) {
 }
 
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
-/// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input；
-/// persona、成品卡、plan 卡等主聊天专属形态不在代码会话出现，不做还原）。
+/// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /
+/// plan 工具的历史方案卡；persona、成品卡等主聊天专属形态不在代码会话出现，不做还原）。
+/// 方案卡降级语义与 work 冷启动对齐：只还原**只读历史卡**（planId 为空、不可批准）——
+/// 后端没有按会话查询待批方案快照的接口（mode_state 只有 pending_plan_id，work 侧也不读），
+/// 待批方案跨 remount 不再可点批准，用户让 AI 重出方案即可。
 export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   // 同窗口切回正在跑的会话时，lane 已被 chat:* 事件推进过：磁盘快照（只落已提交
   // 内容）会滞后于实时状态，hydration 后保留 busy，由后续事件继续推进；冷启动
@@ -367,6 +489,8 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   lane.streamId = 0;
   lane.streamText = '';
   lane.toolMeta = {};
+  // planSnapshot 是 live 进度（磁盘无对应物），随全量重载清空；历史方案由下方卡片还原。
+  lane.planSnapshot = { plan: null, todos: null };
   for (const message of messages) {
     const role = message && message.role;
     const raw = message && message.content;
@@ -391,6 +515,9 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     }
     if (role !== 'assistant') continue;
     let textBuf = '';
+    let planSnap = null;
+    let todosSnap = null;
+    let sawPlanTool = false;
     const flushText = () => {
       if (!textBuf) return;
       lane.items.push({ id: nextId(lane), type: 'assistant', text: textBuf, time: '', streaming: false });
@@ -424,6 +551,17 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
           }
           continue;
         }
+        // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原
+        // 只读方案卡（对齐 work hydration：plan 工具不还原工具卡）。
+        if (PLAN_TOOLS.includes(block.name)) {
+          const snap = parseNativePlanSnapshot(resultById[block.id] && resultById[block.id].content);
+          if (snap) {
+            if (block.name === 'update_plan') planSnap = snap;
+            else todosSnap = snap;
+          }
+          sawPlanTool = true;
+          continue;
+        }
         lane.items.push({
           id: nextId(lane),
           type: 'tool',
@@ -437,6 +575,22 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       }
     }
     flushText();
+    // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡。
+    if (sawPlanTool && (planSnap || todosSnap)) {
+      const snaps = { plan: planSnap, todos: todosSnap };
+      lane.items.push({
+        id: nextId(lane),
+        type: 'plan_card',
+        plan: planSnap,
+        todos: todosSnap,
+        planMarkdown: composeNativePlanMarkdown(snaps),
+        planId: null,
+        cardState: 'frozen',
+        resolved: true,
+        statusKey: 'historical',
+        time: '',
+      });
+    }
   }
   // 未被 tool_result 回填的工具卡按失败收尾，避免历史里残留"执行中"。
   for (const item of lane.items) {
