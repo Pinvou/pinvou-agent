@@ -191,18 +191,24 @@ impl ImportJobStore {
         let mut c = self.conn.lock();
         let tx = c.transaction()?;
         let now = now();
-        let changed = tx.execute(
+        // 只允许从中断或部分失败的任务重试单个失败文件；已取消或已完成的任务不能被单文件
+        // 重试悄悄复活。job 与 item 的状态迁移在同一事务内，任一不满足条件整体回滚。
+        let job_changed = tx.execute(
+            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2,finished_at=NULL \
+             WHERE id=?1 AND state IN ('interrupted','done_with_errors')",
+            params![job_id, now],
+        )?;
+        if job_changed == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        let item_changed = tx.execute(
             "UPDATE knowledge_import_items SET state='pending',error=NULL,updated_at=?3 \
              WHERE id=?2 AND job_id=?1 AND state='failed'",
             params![job_id, item_id, now],
         )?;
-        if changed == 0 {
+        if item_changed == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        tx.execute(
-            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2,finished_at=NULL WHERE id=?1",
-            params![job_id, now],
-        )?;
         tx.commit()
     }
 
@@ -665,5 +671,38 @@ mod tests {
         assert!(jobs.cancel(&job_id).is_err());
         let state = jobs.state(&job_id).unwrap();
         assert!(state.running, "取消事务失败时不得伪装为已取消");
+    }
+
+    #[test]
+    fn retry_file_cannot_revive_cancelled_job() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(
+            &job_id,
+            &[PathBuf::from("/tmp/a.md"), PathBuf::from("/tmp/b.md")],
+        )
+        .unwrap();
+        let first = jobs.claim_next(&job_id).unwrap().unwrap();
+        jobs.mark_failed(&job_id, first.id, "失败 A");
+        // 取消后 failed 项保持 failed；重试它绝不能把 cancelled 任务悄悄翻回 running，
+        // 否则其余被取消的文件会被永久遗弃。
+        jobs.cancel(&job_id).unwrap();
+
+        assert!(jobs.retry_item(&job_id, first.id).is_err());
+        let job_state = jobs.state(&job_id).unwrap();
+        assert_eq!(
+            job_state.phase, "cancelled",
+            "已取消任务不得被单文件重试复活"
+        );
+        let item_state: String = jobs
+            .conn
+            .lock()
+            .query_row(
+                "SELECT state FROM knowledge_import_items WHERE id=?1",
+                params![first.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(item_state, "failed", "重试被拒时失败项状态不得变动");
     }
 }

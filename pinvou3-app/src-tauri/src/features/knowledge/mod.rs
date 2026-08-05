@@ -30,6 +30,7 @@ pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
 pub use kb_tool::{KbOpenSourceTool, KbSearchTool};
 pub use l1::{ChunkHit, Collection, Document};
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -251,74 +252,92 @@ impl KnowledgeService {
         let l1 = self.l1.clone();
         let cancel = self.index_cancel.clone();
         let active = self.active_import.clone();
+        // panic 兜底需要一份不被闭包 move 走的句柄，否则 panic 后无法清理。
+        let panic_imports = imports.clone();
+        let panic_active = active.clone();
+        let panic_job_id = job_id.clone();
         thread::spawn(move || {
-            let state = match imports.state(&job_id) {
-                Ok(v) => v,
-                Err(_) => {
-                    imports.interrupt(&job_id);
-                    *active.lock() = None;
-                    return;
-                }
-            };
-            l1.set_collection_status(state.collection_id, "indexing");
-            let mut infrastructure_error = false;
-            let prepare_result = imports.item_count(&job_id).and_then(|count| {
-                if count > 0 {
-                    return Ok(());
-                }
-                let roots = imports.roots(&job_id)?;
-                let files = expand_import_roots(&roots, &cancel);
-                imports.prepare_items(&job_id, &files)
-            });
-            if prepare_result.is_err() {
-                imports.interrupt(&job_id);
-                infrastructure_error = true;
-            }
-            loop {
-                if infrastructure_error
-                    || cancel.load(Ordering::Relaxed)
-                    || imports.is_cancelled(&job_id)
-                {
-                    break;
-                }
-                let item = match imports.claim_next(&job_id) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => break,
+            // 导入线程处理任意用户文件（PDF/Office/图片 OCR 等），底层解析可能 panic。
+            // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
+            // 触发它：若不在此兜住，active_import 会永久卡在已死的任务上，直到完全重启。
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let state = match imports.state(&job_id) {
+                    Ok(v) => v,
                     Err(_) => {
                         imports.interrupt(&job_id);
-                        infrastructure_error = true;
-                        break;
+                        *active.lock() = None;
+                        return;
                     }
                 };
-                match l1.ingest_import_item(
-                    &job_id,
-                    item.id,
-                    state.collection_id,
-                    &item.path,
-                    &cancel,
-                ) {
-                    l1::ImportIngestOutcome::Completed | l1::ImportIngestOutcome::Skipped => {}
-                    l1::ImportIngestOutcome::Cancelled => break,
-                    l1::ImportIngestOutcome::Failed(error) => {
-                        imports.mark_failed(&job_id, item.id, &error);
+                l1.set_collection_status(state.collection_id, "indexing");
+                let mut infrastructure_error = false;
+                let prepare_result = imports.item_count(&job_id).and_then(|count| {
+                    if count > 0 {
+                        return Ok(());
                     }
+                    let roots = imports.roots(&job_id)?;
+                    let files = expand_import_roots(&roots, &cancel);
+                    imports.prepare_items(&job_id, &files)
+                });
+                if prepare_result.is_err() {
+                    imports.interrupt(&job_id);
+                    infrastructure_error = true;
                 }
-                std::thread::sleep(Duration::from_millis(3));
-            }
-            if !infrastructure_error {
-                let _ = imports.finish(&job_id);
-            }
-            let pending = imports
-                .state(&job_id)
-                .map(|s| s.resumable)
-                .unwrap_or(infrastructure_error);
-            l1.set_collection_status(
-                state.collection_id,
-                if pending { "pending" } else { "ready" },
-            );
-            let mut current = active.lock();
-            if current.as_deref() == Some(job_id.as_str()) {
-                *current = None;
+                loop {
+                    if infrastructure_error
+                        || cancel.load(Ordering::Relaxed)
+                        || imports.is_cancelled(&job_id)
+                    {
+                        break;
+                    }
+                    let item = match imports.claim_next(&job_id) {
+                        Ok(Some(v)) => v,
+                        Ok(None) => break,
+                        Err(_) => {
+                            imports.interrupt(&job_id);
+                            infrastructure_error = true;
+                            break;
+                        }
+                    };
+                    match l1.ingest_import_item(
+                        &job_id,
+                        item.id,
+                        state.collection_id,
+                        &item.path,
+                        &cancel,
+                    ) {
+                        l1::ImportIngestOutcome::Completed | l1::ImportIngestOutcome::Skipped => {}
+                        l1::ImportIngestOutcome::Cancelled => break,
+                        l1::ImportIngestOutcome::Failed(error) => {
+                            imports.mark_failed(&job_id, item.id, &error);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(3));
+                }
+                if !infrastructure_error {
+                    let _ = imports.finish(&job_id);
+                }
+                let pending = imports
+                    .state(&job_id)
+                    .map(|s| s.resumable)
+                    .unwrap_or(infrastructure_error);
+                l1.set_collection_status(
+                    state.collection_id,
+                    if pending { "pending" } else { "ready" },
+                );
+                let mut current = active.lock();
+                if current.as_deref() == Some(job_id.as_str()) {
+                    *current = None;
+                }
+            }));
+            if outcome.is_err() {
+                // panic 与正常退出走同样的中断+清理：把任务退回 interrupted，清空 active_import，
+                // 下次启动（或用户续作）仍可恢复，导入子系统不会卡死。
+                panic_imports.interrupt(&panic_job_id);
+                let mut current = panic_active.lock();
+                if current.as_deref() == Some(panic_job_id.as_str()) {
+                    *current = None;
+                }
             }
         });
     }
