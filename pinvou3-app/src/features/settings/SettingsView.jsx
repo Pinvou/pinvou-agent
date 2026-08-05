@@ -2281,13 +2281,13 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     {!any && renderModelRows([], userModels.length)}
                     {preset.length > 0 && (
                       <>
-                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupPreset}</div>
+                        <div className="px-4 pt-2 pb-1 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]">{t.modelGroupPreset}</div>
                         {renderModelRows(preset, userModels.length)}
                       </>
                     )}
                     {custom.length > 0 && (
                       <>
-                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${preset.length > 0 ? `border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'} ` : ''}${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupCustom}</div>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]${preset.length > 0 ? ' border-t border-black/[0.12] dark:border-white/[0.10]' : ''}`}>{t.modelGroupCustom}</div>
                         {renderModelRows(custom, userModels.length)}
                       </>
                     )}
