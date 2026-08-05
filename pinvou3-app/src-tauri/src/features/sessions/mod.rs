@@ -1579,6 +1579,55 @@ impl SessionStore {
         })
     }
 
+    /// Remove a deleted knowledge collection from every in-memory session in one write lock.
+    ///
+    /// Knowledge mounts are session-ephemeral, so `mode_states` is the complete fact source that
+    /// needs cascading. Returning only changed snapshots lets the Tauri boundary publish one
+    /// revisioned event per affected session without coupling the sessions domain to `AppHandle`.
+    pub fn remove_mounted_collection_from_all(
+        &self,
+        collection_id: i64,
+    ) -> Vec<(String, MountedCollectionsSnapshot)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let mut collections = if state.mounted_collections.is_empty() {
+                state
+                    .mounted_collection
+                    .map(|mounted_id| MountedCollection {
+                        collection_id: mounted_id,
+                        enabled: true,
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                state.mounted_collections.clone()
+            };
+            let previous_len = collections.len();
+            collections.retain(|collection| collection.collection_id != collection_id);
+            if collections.len() == previous_len {
+                continue;
+            }
+
+            state.mounted_collection = collections
+                .iter()
+                .find(|collection| collection.enabled)
+                .map(|collection| collection.collection_id);
+            state.mounted_collections = collections.clone();
+            state.mounted_collections_revision =
+                state.mounted_collections_revision.wrapping_add(1).max(1);
+            changed.push((
+                session_id.clone(),
+                MountedCollectionsSnapshot {
+                    revision: state.mounted_collections_revision,
+                    collections,
+                },
+            ));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
     fn update_mounted_collections<F>(&self, id: &str, update: F) -> MountedCollectionsSnapshot
     where
         F: FnOnce(Vec<MountedCollection>) -> Vec<MountedCollection>,
@@ -3834,6 +3883,74 @@ mod tests {
             ],
         );
         assert_eq!(store.mounted_collection(sid), Some(8));
+    }
+
+    #[test]
+    fn deleting_collection_removes_mount_from_every_affected_session() {
+        let (store, _g) = isolated_store();
+        store.set_mounted_collections(
+            "session-a",
+            vec![
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 8,
+                    enabled: false,
+                },
+            ],
+        );
+        store.set_mounted_collections(
+            "session-b",
+            vec![
+                MountedCollection {
+                    collection_id: 9,
+                    enabled: true,
+                },
+                MountedCollection {
+                    collection_id: 7,
+                    enabled: false,
+                },
+            ],
+        );
+        store.set_mounted_collection("session-legacy", Some(7));
+        store.set_mounted_collection("session-unaffected", Some(9));
+        let unaffected_revision = store
+            .mounted_collections_snapshot("session-unaffected")
+            .revision;
+
+        let changed = store.remove_mounted_collection_from_all(7);
+
+        assert_eq!(
+            changed
+                .iter()
+                .map(|(session_id, _)| session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-a", "session-b", "session-legacy"]
+        );
+        assert_eq!(
+            store.mounted_collections("session-a"),
+            vec![MountedCollection {
+                collection_id: 8,
+                enabled: false,
+            }]
+        );
+        assert_eq!(
+            store.mounted_collections("session-b"),
+            vec![MountedCollection {
+                collection_id: 9,
+                enabled: true,
+            }]
+        );
+        assert!(store.mounted_collections("session-legacy").is_empty());
+        assert_eq!(
+            store
+                .mounted_collections_snapshot("session-unaffected")
+                .revision,
+            unaffected_revision,
+            "unaffected sessions must not receive a spurious revision"
+        );
     }
 
     #[test]

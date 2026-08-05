@@ -1160,12 +1160,12 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut keep: HashMap<String, ChunkHit> = HashMap::new();
     for (rank, h) in fts.iter().enumerate() {
-        let key = format!("{}#{}", h.doc_path, h.ord);
+        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
         *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         keep.entry(key).or_insert_with(|| h.clone());
     }
     for (rank, h) in vec.iter().enumerate() {
-        let key = format!("{}#{}", h.doc_path, h.ord);
+        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
         *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         keep.entry(key).or_insert_with(|| h.clone());
     }
@@ -1399,6 +1399,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/tmp/a.md", "/tmp/b.md"]
         );
+    }
+
+    #[test]
+    fn rrf_deduplicates_using_platform_path_identity() {
+        let hit = |document_id: i64, path: &str| ChunkHit {
+            document_id,
+            text: path.to_string(),
+            score: 0.0,
+            doc_name: path.to_string(),
+            doc_path: path.to_string(),
+            ord: 0,
+        };
+        let candidates = [
+            (r"C:\Docs\Guide.md", "c:/docs/guide.md"),
+            ("/tmp/docs/guide.md", "/tmp/docs/guide.md"),
+        ];
+        let (first_path, second_path) = candidates
+            .into_iter()
+            .find(|(first, second)| dedupe_path_key(first) == dedupe_path_key(second))
+            .expect("at least the identical-path fallback must share an identity");
+        let merged = rrf_merge(vec![hit(1, first_path)], vec![hit(1, second_path)], 10);
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].score > 1.0 / 61.0);
     }
 
     #[test]

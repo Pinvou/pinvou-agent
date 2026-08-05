@@ -21,6 +21,9 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
 }
 
 /// 给会话挂载一个知识集(会话级粘连)。后续每条消息发送前自动检索注入。
+///
+/// 这是旧客户端的单知识库兼容命令，必须保持“整体替换”为一个知识集的历史语义；多知识库
+/// 客户端使用下方 add/remove/enable 原子命令，不能把这里改成追加，否则旧客户端无法切换单库。
 #[tauri::command]
 pub fn session_mount_collection(
     session_id: String,
@@ -52,33 +55,52 @@ pub fn session_set_mounted_collections(
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
 ) -> Result<Vec<crate::core::mode_state::MountedCollection>, String> {
-    if collections.iter().any(|collection| collection.enabled) && !knowledge.semantic_ready() {
-        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
-    }
-    let mut normalized = Vec::new();
-    for collection in collections {
-        if collection.collection_id <= 0
-            || normalized
-                .iter()
-                .any(|mounted: &crate::core::mode_state::MountedCollection| {
-                    mounted.collection_id == collection.collection_id
-                })
-        {
-            continue;
-        }
-        if knowledge
-            .l1()
-            .collection_name(collection.collection_id)
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            continue;
-        }
-        normalized.push(collection);
-    }
+    let normalized =
+        validate_mount_replacement(collections, knowledge.semantic_ready(), |collection_id| {
+            knowledge
+                .l1()
+                .collection_name(collection_id)
+                .map(|name| name.is_some())
+                .map_err(|error| error.to_string())
+        })?;
     let snapshot = store.set_mounted_collections(&session_id, normalized);
     publish_kb_mount_change(&app, &session_id, &snapshot);
     Ok(snapshot.collections)
+}
+
+fn validate_mount_replacement<F>(
+    collections: Vec<crate::core::mode_state::MountedCollection>,
+    semantic_ready: bool,
+    mut collection_exists: F,
+) -> Result<Vec<crate::core::mode_state::MountedCollection>, String>
+where
+    F: FnMut(i64) -> Result<bool, String>,
+{
+    let mut normalized = Vec::new();
+    for collection in collections {
+        if collection.collection_id <= 0 {
+            return Err("知识集 id 无效".to_string());
+        }
+        if normalized
+            .iter()
+            .any(|mounted: &crate::core::mode_state::MountedCollection| {
+                mounted.collection_id == collection.collection_id
+            })
+        {
+            continue;
+        }
+        if !collection_exists(collection.collection_id)? {
+            return Err(format!(
+                "知识集 {} 不存在或已删除",
+                collection.collection_id
+            ));
+        }
+        normalized.push(collection);
+    }
+    if normalized.iter().any(|collection| collection.enabled) && !semantic_ready {
+        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
+    }
+    Ok(normalized)
 }
 
 fn ensure_collection_mountable(
@@ -176,7 +198,15 @@ fn publish_kb_mount_change(
         "collections": &snapshot.collections,
         "revision": snapshot.revision,
     });
-    let _ = app.emit("remote_control:kb_mount_changed", payload.clone());
+    if let Err(error) = app.emit("remote_control:kb_mount_changed", payload.clone()) {
+        // The invoking client still receives the authoritative snapshot (including revision), and
+        // later events carry a full snapshot rather than a delta. Keep the mutation successful but
+        // retain diagnostics for the rare case where another local window misses this notification.
+        log::warn!(
+            "[knowledge] failed to emit mount revision {} for session {session_id}: {error}",
+            snapshot.revision
+        );
+    }
     crate::features::remote_control::forward_app_event(
         app,
         "remote_control:kb_mount_changed",
@@ -223,7 +253,21 @@ async_command_passthrough!(knowledge_domain, kb_type_counts(state: State<'_, Kno
 async_command_passthrough!(knowledge_domain, kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String>);
 async_command_passthrough!(knowledge_domain, kb_collection_create(state: State<'_, KnowledgeService>, name: String, category: Option<String>, description: Option<String>) -> Result<i64, String>);
 async_command_passthrough!(knowledge_domain, kb_collection_update(state: State<'_, KnowledgeService>, id: i64, name: String, category: Option<String>, description: Option<String>) -> Result<(), String>);
-async_command_passthrough!(knowledge_domain, kb_collection_delete(state: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, id: i64) -> Result<(), String>);
+
+#[tauri::command]
+pub async fn kb_collection_delete(
+    state: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
+    sessions: State<'_, SessionStore>,
+    app: AppHandle,
+    id: i64,
+) -> Result<(), String> {
+    knowledge_domain::kb_collection_delete(state, pool, id).await?;
+    for (session_id, snapshot) in sessions.remove_mounted_collection_from_all(id) {
+        publish_kb_mount_change(&app, &session_id, &snapshot);
+    }
+    Ok(())
+}
 sync_command_passthrough!(knowledge_domain, kb_collection_add_sources(state: State<'_, KnowledgeService>, collection_id: i64, paths: Vec<String>) -> IndexState);
 sync_command_passthrough!(knowledge_domain, kb_index_status(state: State<'_, KnowledgeService>) -> IndexState);
 sync_command_passthrough!(knowledge_domain, kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String>);
@@ -241,3 +285,52 @@ sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
 async_command_passthrough!(model_domain, kb_model_download(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, repair: Option<bool>) -> Result<KbModelStatus, String>);
 use super::prelude::*;
+
+#[cfg(test)]
+mod tests {
+    use super::validate_mount_replacement;
+    use crate::core::mode_state::MountedCollection;
+
+    #[test]
+    fn replacement_rejects_deleted_collection_instead_of_silently_dropping_it() {
+        let requested = vec![
+            MountedCollection {
+                collection_id: 7,
+                enabled: true,
+            },
+            MountedCollection {
+                collection_id: 9,
+                enabled: false,
+            },
+        ];
+        let error =
+            validate_mount_replacement(requested, true, |collection_id| Ok(collection_id == 7))
+                .unwrap_err();
+
+        assert!(error.contains('9'));
+    }
+
+    #[test]
+    fn replacement_deduplicates_but_keeps_the_first_requested_state() {
+        let requested = vec![
+            MountedCollection {
+                collection_id: 7,
+                enabled: false,
+            },
+            MountedCollection {
+                collection_id: 7,
+                enabled: true,
+            },
+        ];
+        let normalized =
+            validate_mount_replacement(requested, false, |_| Ok(true)).expect("disabled mount");
+
+        assert_eq!(
+            normalized,
+            vec![MountedCollection {
+                collection_id: 7,
+                enabled: false,
+            }]
+        );
+    }
+}
