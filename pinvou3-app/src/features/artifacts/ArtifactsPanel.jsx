@@ -61,7 +61,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + 'img{max-width:100%;height:auto;}'
       + '</style>';
 
-    const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
+    const ArtifactsPanel = ({ bs, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
@@ -589,7 +589,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 artifact={sel}
                 initialText={pv.text || ''}
                 initialInfo={pv.info}
-                isDark={theme === 'dark'}
                 t={t}
                 onSaved={updateMarkdownPreview}
                 onReloaded={updateMarkdownPreview}
@@ -866,7 +865,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         className={`w-[300px] shrink-0 overflow-hidden border-l border-black/10 bg-white dark:border-white/10 dark:bg-[#1E1F20]`}
                         data-testid="artifact-design-inspector-host">
                         <DesignInspectorPanel
-                          isDark={theme === 'dark'}
                           t={t}
                           selectedElement={selectedDesignElement}
                           changes={designChanges}
