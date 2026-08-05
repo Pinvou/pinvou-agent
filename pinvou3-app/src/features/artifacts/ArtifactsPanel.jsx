@@ -62,7 +62,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       + '</style>';
 
     const ArtifactsPanel = ({ bs, theme, t, onClose, isWide, onGotoSettings, isFullscreen = false, onToggleFullscreen, preferredArtifactPath, onPreviewArtifact, designMode = false, designCommand, selectedDesignElement, designChanges = [], onDesignRuntimeStatus, onDesignElementSelected, onDesignChangeApplied, onDesignMutation, onDesignApplyChange, onDesignClearChanges, onDesignAiSubmit, designAiState, onDesignAiStateChange }) => {
-      const isDark = theme === 'dark';
       const uiA = t.uiArtifacts;
       const showDesignWorkbench = isFullscreen && designMode;
       const canOpenContainingFolder = can('externalSystemOpen');
@@ -590,7 +589,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 artifact={sel}
                 initialText={pv.text || ''}
                 initialInfo={pv.info}
-                isDark={isDark}
+                isDark={theme === 'dark'}
                 t={t}
                 onSaved={updateMarkdownPreview}
                 onReloaded={updateMarkdownPreview}
@@ -649,7 +648,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
             {vis && dependencyCheckButton(vis.warning)}
             {(!isWeb || canDownloadArtifacts) && (
-              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls(isDark, 'primary')}>
+              <button onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path)} className={cardBtnCls('primary')}>
                 {t.apBtnOpen}
               </button>
             )}
@@ -867,7 +866,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         className={`w-[300px] shrink-0 overflow-hidden border-l border-black/10 bg-white dark:border-white/10 dark:bg-[#1E1F20]`}
                         data-testid="artifact-design-inspector-host">
                         <DesignInspectorPanel
-                          isDark={isDark}
+                          isDark={theme === 'dark'}
                           t={t}
                           selectedElement={selectedDesignElement}
                           changes={designChanges}
@@ -898,13 +897,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     <div className="mt-3 flex items-center gap-2">
                       {(!isWeb || canDownloadArtifacts) && (
                         <button onClick={() => bridge.artifacts.openArtifactExternal(sel.path)}
-                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark, 'primary')}`}>
+                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls('primary')}`}>
                           <ExternalLink size={15} /> {t.apBtnOpen}
                         </button>
                       )}
                       {canOpenContainingFolder && (
                         <button onClick={() => bridge.artifacts.openContainingFolder(sel.path)}
-                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls(isDark)}`}>
+                          className={`flex-1 flex items-center justify-center gap-1.5 ${cardBtnCls()}`}>
                           <FolderOpen size={15} /> {t.apBtnLocate}
                         </button>
                       )}

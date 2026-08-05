@@ -10,7 +10,7 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
-import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
+import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
@@ -2247,8 +2247,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button className={CARD_BTN} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
-                <button className={CARD_BTN_PRIMARY} onClick={commit}>{t.resend}</button>
+                <button className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
           </div>

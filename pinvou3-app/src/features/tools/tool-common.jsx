@@ -168,7 +168,7 @@ const AcFmtIcon = FileTypeIcon;
       });
       return fields;
     };
-    const ReceiptBlock = ({ text, isDark, t }) => {
+    const ReceiptBlock = ({ text, t }) => {
       const f = parseReceipt(text);
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const body = 'text-[#444746] dark:text-[#C4C7C5]';
@@ -177,10 +177,10 @@ const AcFmtIcon = FileTypeIcon;
       const pv = (f.preview && f.preview !== '(none)') ? f.preview.replace(/\\n/g, '\n') : '';
       const pvIsDiff = pv && (/(^|\n)@@/.test(pv) || (pv.indexOf('@@') >= 0 && /(^|\n)[+-]/.test(pv)));
       const note = <div className={`mt-0.5 text-[11px] ${muted}`}>{t.receiptNote}</div>;
-      if (pvIsDiff) return (<div><DiffView text={pv} isDark={isDark} t={t} />{note}</div>);
+      if (pvIsDiff) return (<div><DiffView text={pv} t={t} />{note}</div>);
       return (
         <div>
-          <div className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap' }}>{pv || t.receiptEmpty}</div>
+          <div className={outBox()} style={{ whiteSpace: 'pre-wrap' }}>{pv || t.receiptEmpty}</div>
           {pv ? note : null}
         </div>
       );
@@ -197,36 +197,35 @@ const AcFmtIcon = FileTypeIcon;
     };
     const looksDiff = (text) => typeof text === 'string'
       && /(^|\n)--- /.test(text) && /(^|\n)\+\+\+ /.test(text);
-    // P3: isDark 参数现已 vestigial(内部三元式已迁 dark:);保留函数签名以免改 tool-renderers 调用点 outBox(isDark)。
-    const outBox = (isDark) => 'tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] bg-white text-[#444746] dark:bg-[#131314] dark:text-[#C4C7C5]';
+    const outBox = () => 'tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] bg-white text-[#444746] dark:bg-[#131314] dark:text-[#C4C7C5]';
     const TODO_SYM = { completed: '☑', in_progress: '◐', pending: '☐' };
     const TODO_TOOLS = ['checklist_write', 'checklist_update', 'checklist_add', 'checklist_list', 'todo_write', 'todo_update', 'todo_add', 'todo_list', 'update_plan'];
 
-    const OutputPre = ({ text, isDark }) => (
-      <pre className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap' }}>
+    const OutputPre = ({ text }) => (
+      <pre className={outBox()} style={{ whiteSpace: 'pre-wrap' }}>
         {typeof text === 'string' ? text : JSON.stringify(text, null, 2)}
       </pre>
     );
-    const OutputError = ({ text, isDark }) => (
+    const OutputError = ({ text }) => (
       <pre className={`tool-card-output custom-scrollbar rounded-lg p-2 text-[12px] bg-white text-[#C5221F] dark:bg-[#131314] dark:text-[#F28B82]`} style={{ whiteSpace: 'pre-wrap' }}>
         {typeof text === 'string' ? text : JSON.stringify(text, null, 2)}
       </pre>
     );
-    const ListDirView = ({ items, isDark, t }) => {
+    const ListDirView = ({ items, t }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const sorted = items.slice().sort((a, b) => ((b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
       return (
-        <div className={outBox(isDark)} style={{ fontFamily: 'monospace' }}>
+        <div className={outBox()} style={{ fontFamily: 'monospace' }}>
           <div className={`mb-1 ${muted}`} style={{ fontFamily: 'inherit' }}>{t.listDirCount(items.length)}</div>
           {sorted.map((it, i) => <div key={i}>{it.is_dir ? '📁' : '📄'} {it.name}{it.is_dir ? '/' : ''}</div>)}
         </div>
       );
     };
-    const GrepView = ({ data, isDark, t }) => {
+    const GrepView = ({ data, t }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const matches = Array.isArray(data.matches) ? data.matches : [];
       return (
-        <div className={outBox(isDark)}>
+        <div className={outBox()}>
           <div className={`mb-1 ${muted}`}>
             {t.grepHits(data.total_matches != null ? data.total_matches : matches.length)}
             {data.files_searched != null ? t.grepFiles(data.files_searched) : ''}
@@ -244,7 +243,7 @@ const AcFmtIcon = FileTypeIcon;
     // IDE 风格 diff viewer:解析 unified diff → 行号 + 着色背景 + 文件头 + 摘要脚注。
     // 替换原纯文本按行着色版本(2026-07 升级,对齐 Cursor/Claude Code/Cline 行业标准)。
     // 解析失败或 receipt preview 截断时降级为单列文本,绝不崩。
-    const DiffView = ({ text, isDark, t }) => {
+    const DiffView = ({ text, t }) => {
       const parsed = useMemo(() => parseUnifiedDiff(text), [text]);
       // M4:diffStats 在 parsed 不变时不必重算,用 useMemo 避免每次渲染 O(n) 扫描。
       // 多文件场景每个 file 段各自算 stats;顶层 stats(向后兼容/全局胶囊)只走聚合。
@@ -266,7 +265,7 @@ const AcFmtIcon = FileTypeIcon;
           // "[diff omitted] ..." 原因(summary 在前)。summary 走正常字色,
           // omitReason 整段保持灰字提示。
           return (
-            <div className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+            <div className={outBox()} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
               {parsed.summary ? <div className={body + ' mb-1'}>{parsed.summary}</div> : null}
               <div className={muted}>{parsed.omitReason}</div>
             </div>
@@ -279,7 +278,7 @@ const AcFmtIcon = FileTypeIcon;
         const muted = 'text-[#757575] dark:text-[#8E8E8E]';
         const color = (l) => /^(\+\+\+|---)/.test(l) ? muted : l.startsWith('+') ? add : l.startsWith('-') ? del : l.startsWith('@@') ? hunk : '';
         return (
-          <pre className={outBox(isDark)} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+          <pre className={outBox()} style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
             {lines.map((l, i) => <div key={i} className={color(l)}>{l || ' '}</div>)}
           </pre>
         );
@@ -309,7 +308,7 @@ const AcFmtIcon = FileTypeIcon;
         // 内联样式优先级最高:显式 y 滚动 + x 裁剪(保圆角),expanded 时放开 max-height。
         <div
           data-testid="diff-view"
-          className={`${outBox(isDark)} p-0`}
+          className={`${outBox()} p-0`}
           style={{ overflowY: 'auto', overflowX: 'hidden', ...(expanded ? { maxHeight: 'none' } : {}) }}
         >
           {files.map((file, fi) => {
@@ -389,11 +388,11 @@ const AcFmtIcon = FileTypeIcon;
         </div>
       );
     };
-    const ShellView = ({ data, isDark, t }) => {
+    const ShellView = ({ data, t }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const del = 'text-[#C5221F] dark:text-[#F28B82]';
       return (
-        <div className={outBox(isDark)}>
+        <div className={outBox()}>
           <div className={`mb-1 ${muted}`}>
             {data.status || ''}{data.exit_code != null ? ` · exit ${data.exit_code}` : ''}
             {data.duration_ms != null ? ` · ${data.duration_ms}ms` : ''}
@@ -405,20 +404,20 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
     // exec_shell 的 content 其实是纯 stdout 文本（结构化字段在 metadata，前端没拿）→ 给终端样式
-    const ShellTextView = ({ cmd, text, isDark }) => {
+    const ShellTextView = ({ cmd, text }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       return (
-        <div className={outBox(isDark)} style={{ fontFamily: 'monospace' }}>
+        <div className={outBox()} style={{ fontFamily: 'monospace' }}>
           {cmd && <div className={muted} style={{ whiteSpace: 'pre-wrap' }}>$ {cmd}</div>}
           <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'inherit' }}>{typeof text === 'string' ? text : JSON.stringify(text)}</pre>
         </div>
       );
     };
-    const TodoView = ({ snap, isDark, t }) => {
+    const TodoView = ({ snap, t }) => {
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
       const items = Array.isArray(snap.items) ? snap.items : [];
       return (
-        <div className={outBox(isDark)}>
+        <div className={outBox()}>
           {snap.completion_pct != null && <div className={`mb-1 ${muted}`}>{t.todoProgress(snap.completion_pct)}</div>}
           {snap.explanation && <div className="mb-1">{snap.explanation}</div>}
           {items.map((it, i) => (
@@ -543,7 +542,7 @@ const AcFmtIcon = FileTypeIcon;
     };
     const isWeatherTool = (name) => name === 'mcp_weather_get_weather';
     const isStockQuoteTool = (name) => name === 'mcp_iwencai_hithink_market_query';
-    const StockQuoteCard = ({ data, isDark, t }) => {
+    const StockQuoteCard = ({ data, t }) => {
       const T = tc(t);
       const price = typeof data.price === 'string' ? parseFloat(data.price) : data.price;
       const changePercent = typeof data.changePercent === 'string' ? parseFloat(data.changePercent) : data.changePercent;

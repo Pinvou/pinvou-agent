@@ -8,14 +8,7 @@ import { can, isWeb } from '../../shared/platform.js';
 import { dict } from '../../shared/i18n.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
-// Inlined equivalents of cardBtnCls(theme-derived) / cardBtnCls(theme-derived,'primary')
-// from tool-renderers.jsx, expanded to static dark: variant strings. tool-renderers.jsx is
-// migrated in its own P1-7 PR; this file inlines the two variants here (instead of calling
-// the helper) so it has zero theme-derived references. P1-7/P3 may later restore the helper
-// call as cardBtnCls(variant). Base matches tool-renderers.jsx cardBtnCls base; non-primary
-// dark originally had no border so dark:border-transparent suppresses the light-side border.
-const WF_BTN = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]';
-const WF_BTN_PRIMARY = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]';
+import { cardBtnCls } from '../tools/tool-renderers.jsx';
 
 const WidgetCard = ({ title, children, theme }) => {
       return (
@@ -954,7 +947,7 @@ const WidgetCard = ({ title, children, theme }) => {
             ))}
           </div>
           <div className="flex justify-end mt-3">
-            <button disabled={!canSubmit} onClick={submit} className={`${WF_BTN_PRIMARY} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.uiWorkflow.submit}</button>
+            <button disabled={!canSubmit} onClick={submit} className={`${cardBtnCls('primary')} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.uiWorkflow.submit}</button>
           </div>
         </div>
       );
@@ -997,16 +990,16 @@ const WidgetCard = ({ title, children, theme }) => {
               className="w-full rounded-[10px] p-2 text-[13px] outline-none border mb-2 bg-white dark:bg-[#131314] border-black/10 dark:border-white/10 text-[#1F1F1F] dark:text-[#E3E3E3]" />
           )}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button className={WF_BTN} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>{t.uiWorkflow.viewOutputs}</button>
+            <button className={cardBtnCls()} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>{t.uiWorkflow.viewOutputs}</button>
             {rejecting ? (
               <React.Fragment>
-                <button className={WF_BTN} onClick={() => { setRejecting(false); setReason(''); }}>{t.uiWorkflow.cancel}</button>
-                <button className={WF_BTN_PRIMARY} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>{t.uiWorkflow.confirmReject}</button>
+                <button className={cardBtnCls()} onClick={() => { setRejecting(false); setReason(''); }}>{t.uiWorkflow.cancel}</button>
+                <button className={cardBtnCls('primary')} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>{t.uiWorkflow.confirmReject}</button>
               </React.Fragment>
             ) : (
               <React.Fragment>
-                <button className={WF_BTN} onClick={() => setRejecting(true)}>{t.uiWorkflow.reject}</button>
-                <button className={WF_BTN_PRIMARY} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>{t.uiWorkflow.gateApprove}</button>
+                <button className={cardBtnCls()} onClick={() => setRejecting(true)}>{t.uiWorkflow.reject}</button>
+                <button className={cardBtnCls('primary')} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>{t.uiWorkflow.gateApprove}</button>
               </React.Fragment>
             )}
           </div>
@@ -1034,8 +1027,8 @@ const WidgetCard = ({ title, children, theme }) => {
                     <div className="text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]">{card.text || t.uiWorkflow.completed}</div>
                     <div className="text-[12px] mb-3 break-all text-[#757575] dark:text-[#8E8E8E]">{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button className={WF_BTN} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>{t.uiWorkflow.openFolder}</button>
-                      <button className={WF_BTN_PRIMARY} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>{t.uiWorkflow.openProduct}</button>
+                      <button className={cardBtnCls()} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>{t.uiWorkflow.openFolder}</button>
+                      <button className={cardBtnCls('primary')} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>{t.uiWorkflow.openProduct}</button>
                     </div>
                   </div>
                 ) : null}
@@ -1122,7 +1115,7 @@ const WidgetCard = ({ title, children, theme }) => {
               {wfUi.attachments && (!isWeb || can('hostFilePicker')) && (
                 <div>
                   <label className="block text-[12px] font-semibold mb-1.5 text-[#0B57D0] dark:text-[#A8C7FA]">{t.uiWorkflow.attachments}</label>
-                  <button onClick={pickAttachments} disabled={picking || starting} className={`${WF_BTN} disabled:opacity-40`}>
+                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls()} disabled:opacity-40`}>
                     {picking ? t.uiWorkflow.picking : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{isWeb ? t.uiWorkflow.pickDesktopFiles : t.uiWorkflow.uploadAttachments}</span>}
                   </button>
                   {files.length > 0 && (
@@ -1144,8 +1137,8 @@ const WidgetCard = ({ title, children, theme }) => {
               {error && <div className="text-[13px] text-[#C5221F] dark:text-[#F28B82]">⚠️ {error}</div>}
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-black/10 dark:border-white/10">
-              <button onClick={onClose} disabled={starting} className={`${WF_BTN} disabled:opacity-40 disabled:cursor-not-allowed`}>{t.uiWorkflow.cancel}</button>
-              <button onClick={start} disabled={starting} className={`${WF_BTN_PRIMARY} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? t.uiWorkflow.starting : t.uiWorkflow.start}</button>
+              <button onClick={onClose} disabled={starting} className={`${cardBtnCls()} disabled:opacity-40 disabled:cursor-not-allowed`}>{t.uiWorkflow.cancel}</button>
+              <button onClick={start} disabled={starting} className={`${cardBtnCls('primary')} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? t.uiWorkflow.starting : t.uiWorkflow.start}</button>
             </div>
           </div>
         </div>
@@ -1333,18 +1326,18 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className="flex items-center gap-2">
               {/* 回奏已完成的 run 常驻奏折入口(自动弹窗只在完成瞬间触发一次,事后/刷新后从这里看) */}
               {memorialRoleId && memorialDone && (
-                <button onClick={() => setMemorialOpen(true)} className={WF_BTN}>{t.uiWorkflow.memorialBtn}</button>
+                <button onClick={() => setMemorialOpen(true)} className={cardBtnCls()}>{t.uiWorkflow.memorialBtn}</button>
               )}
               {run.status === 'stopped' ? (
-                <button onClick={() => openRestart(restartBrief)} className={WF_BTN_PRIMARY}>{t.uiWorkflow.editAndRestart}</button>
+                <button onClick={() => openRestart(restartBrief)} className={cardBtnCls('primary')}>{t.uiWorkflow.editAndRestart}</button>
               ) : run.status !== 'complete' ? (
                 <button data-testid="workflow-stop-restart" onClick={stopAndRestart} disabled={stopping}
-                  className={`${WF_BTN} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? t.uiWorkflow.stopping : t.uiWorkflow.stopAndEdit}</button>
+                  className={`${cardBtnCls()} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? t.uiWorkflow.stopping : t.uiWorkflow.stopAndEdit}</button>
               ) : null}
-              <button onClick={() => { setOpened(false); setExited(true); }} className={WF_BTN}>{t.uiWorkflow.backToTemplates}</button>
+              <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls()}>{t.uiWorkflow.backToTemplates}</button>
               {/* 看板内新建 = 跟当前看板同工作流(开机自动恢复直接进看板时没经过模板卡,
                   必须在这里按 run 反查工作流对象,否则表单回落错) */}
-              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={WF_BTN_PRIMARY}>{t.uiWorkflow.newTask}</button>
+              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls('primary')}>{t.uiWorkflow.newTask}</button>
             </div>
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">

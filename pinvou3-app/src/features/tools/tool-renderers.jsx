@@ -473,9 +473,9 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
   );
 };
 
-const ToolOutput = ({ item, isDark, t }) => {
+const ToolOutput = ({ item, t }) => {
       const out = item.output;
-      if (item.success === false) return <OutputError text={out} isDark={isDark} />;
+      if (item.success === false) return <OutputError text={out} />;
       if (isWeatherTool(item.name)) {
         let raw = out;
         const envelope = tryParseJson(out);
@@ -512,36 +512,36 @@ const ToolOutput = ({ item, isDark, t }) => {
             high: findVal(d, '最高价'),
             low: findVal(d, '最低价'),
           };
-          return <StockQuoteCard data={mapped} isDark={isDark} t={t} />;
+          return <StockQuoteCard data={mapped} t={t} />;
         }
-        if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} isDark={isDark} t={t} />;
+        if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} t={t} />;
       }
-      if (isReceipt(out)) return <ReceiptBlock text={out} isDark={isDark} t={t} />;
-      if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
-      else if (item.name === 'grep_files') { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} isDark={isDark} t={t} />; }
+      if (isReceipt(out)) return <ReceiptBlock text={out} t={t} />;
+      if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} t={t} />; }
+      else if (item.name === 'grep_files') { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} t={t} />; }
       else if (isShellExecutionTool(item.name)) {
         const v = tryParseJson(out);
-        if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} isDark={isDark} t={t} />;
-        return <ShellTextView cmd={item.args && item.args.command} text={out} isDark={isDark} />;
+        if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} t={t} />;
+        return <ShellTextView cmd={item.args && item.args.command} text={out} />;
       }
       // edit_file / write_file 走 Rust similar crate 输出 unified diff,走 DiffView。
       // 注意:apply_patch 后端返回 JSON(apply_patch.rs::execute 返回 ToolResult::json),
       // looksDiff 永远 false,所以这里不把 apply_patch 加进路由 —— 加了也只是 dead code
       // (PR #195 M2)。若未来后端给 apply_patch 输出 unified diff,再把它加回来。
-      else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} isDark={isDark} t={t} />; }
+      else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
       else if (item.name === 'append_file') {
         // append_file 与 write_file 一样由后端输出 unified diff,走 DiffView;
         // 旧 session 落盘的是 "appended N bytes" 纯文本,保留字节摘要兜底。
-        if (looksDiff(out)) return <DiffView text={out} isDark={isDark} />;
+        if (looksDiff(out)) return <DiffView text={out} />;
         // 旧文件超大时后端输出 "summary\n[diff omitted] ...":不能只显示字节摘要,
         // 否则 omit 说明被吞掉 —— 与 write_file 一样落到 OutputPre 展示完整原文。
         if (!/\[diff omitted\]/i.test(out)) {
           const m = String(out).match(/appended (\d+) bytes[\s\S]*?\((\d+) -> (\d+) bytes\)/i);
-          if (m) return <div className={outBox(isDark)}>{t.appendBytes(/^Created/i.test(out), m[1], m[2], m[3])}</div>;
+          if (m) return <div className={outBox()}>{t.appendBytes(/^Created/i.test(out), m[1], m[2], m[3])}</div>;
         }
       }
-      else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} isDark={isDark} t={t} />; }
-      return <OutputPre text={out} isDark={isDark} />;
+      else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
+      return <OutputPre text={out} />;
     };
 
     const ToolCard = ({ item, theme, t, variant = 'legacy', sessionId }) => {
@@ -571,9 +571,6 @@ const ToolOutput = ({ item, isDark, t }) => {
       const isFailed = item.state === 'failed';
       const quiet = QUIET_TOOLS.has(item.name);
       const summary = toolSummary(item.name, item.args, t);
-
-      // P3: isDark 仍为 ToolOutput 子组件 prop 透传保留(detail 行 <ToolOutput isDark={isDark} />)。
-      const isDark = theme === 'dark';
 
       // 状态色:按 isRunning/isDone/isFailed 三态,各自给出 light base + dark: token。
       const statusColor = isRunning
@@ -622,7 +619,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       const detail = displayExpanded ? (
         <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t border-black/5 dark:border-white/5`}>
           {item.output != null
-            ? <div className="mt-2"><ToolOutput item={item} isDark={isDark} t={t} /></div>
+            ? <div className="mt-2"><ToolOutput item={item} t={t} /></div>
             : null}
         </div>
       ) : null;
@@ -748,21 +745,21 @@ const ToolOutput = ({ item, isDark, t }) => {
       );
     };
 
-    const cardBoxCls = (isDark, accent) =>
-      `rounded-[16px] border p-4 my-1 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-[#F0F4F9] border-black/5'} ${accent || ''}`;
-    const cardBtnCls = (isDark, variant) => {
+    const cardBoxCls = (accent) =>
+      `rounded-[16px] border p-4 my-1 bg-[#F0F4F9] border-black/5 dark:bg-[#1E1F20] dark:border-white/10 ${accent || ''}`;
+    const cardBtnCls = (variant) => {
       const base = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
-      if (variant === 'primary') return `${base} ${isDark ? 'bg-[#A8C7FA] text-[#062E6F] hover:bg-[#C2DBFF]' : 'bg-[#0B57D0] text-white hover:bg-[#0A4BB8]'}`;
-      return `${base} ${isDark ? 'bg-[#333537] text-[#E3E3E3] hover:bg-[#444746]' : 'bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10'}`;
+      if (variant === 'primary') return `${base} bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]`;
+      return `${base} bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]`;
     };
 
     // 品悟角色配色（与产物卡一致）：品=盾·橙 #FF9500/#FF9F0A，悟=闪光·紫 #5E5CE6。
-    // 返回 { name, accentHex, text(类), softBg(类), Icon }。
+    // 返回 { name, accentHex(inline-style 原色,品需 isDark), text(类), softBg(类), Icon }。
     const pvRole = (isWu, isDark) => isWu
       ? { name: '悟', accentHex: '#5E5CE6', text: 'text-[#5E5CE6]',
-          softBg: isDark ? 'bg-[#5E5CE6]/15' : 'bg-[#5E5CE6]/[0.10]', Icon: AcSparkles }
-      : { name: '品', accentHex: isDark ? '#FF9F0A' : '#FF9500', text: isDark ? 'text-[#FF9F0A]' : 'text-[#FF9500]',
-          softBg: isDark ? 'bg-[#FF9F0A]/15' : 'bg-[#FF9500]/[0.10]', Icon: AcShieldCheck };
+          softBg: 'bg-[#5E5CE6]/[0.10] dark:bg-[#5E5CE6]/15', Icon: AcSparkles }
+      : { name: '品', accentHex: isDark ? '#FF9F0A' : '#FF9500', text: 'text-[#FF9500] dark:text-[#FF9F0A]',
+          softBg: 'bg-[#FF9500]/[0.10] dark:bg-[#FF9F0A]/15', Icon: AcShieldCheck };
 
     // ==========================================
     // PinvouSummonCard — 🧭 召唤式检阅（Boss 主动呼叫 Pinvou）
@@ -891,7 +888,7 @@ const ToolOutput = ({ item, isDark, t }) => {
         return () => clearInterval(b);
       }, []);
       const role = pvRole(isWu, isDark);
-      // P3: isDark 保留——stroke 行内 style 与 pvRole(protected) 仍需它。
+      // isDark 保留——SVG circle stroke 与 pvRole 品·accentHex(inline-style 原色)仍需它。
       const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       return (
         <div className="py-8 flex flex-col items-center text-center">
@@ -920,7 +917,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       const role = pvRole(isWu, isDark);
       const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       const body = 'text-[#000] dark:text-[#fff]';
-      // P3: isDark 保留——pvRole(protected) 与 PinvouLoading isDark prop 仍需它。
+      // isDark 保留——pvRole 品·accentHex 与 PinvouLoading SVG stroke 仍需它。
       if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
       if (item.error) return (
         <div className="py-2">
@@ -963,13 +960,11 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     // PlanCard — ✨ 方案准备好
     // ==========================================
-    const PlanCard = ({ item, theme, t, onPrefill }) => {
-      const isDark = theme === 'dark';
+    const PlanCard = ({ item, t, onPrefill }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const active = item.cardState === 'active' && !item.resolved && !!item.planId;
-      // P3: isDark 保留——cardBoxCls/cardBtnCls(protected) 仍需它。
       return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
+        <div className={cardBoxCls('border-[#0B57D0]/20 dark:border-[#A8C7FA]/30')}>
           <div className={`text-[14px] font-semibold mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>{t.planReady}</div>
           {(!item.plan && !item.todos)
             ? <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{t.planEmpty}</div>
@@ -981,9 +976,9 @@ const ToolOutput = ({ item, isDark, t }) => {
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`text-[13px] mr-1 text-[#444746] dark:text-[#C4C7C5]`}>{t.planNext}</span>
-              <button className={cardBtnCls(isDark, 'primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
-              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
-              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
+              <button className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
+              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
+              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
             <div className={`text-[13px] font-medium text-[#137333] dark:text-[#93D5A6]`}>{item.statusLabel}</div>
@@ -995,13 +990,11 @@ const ToolOutput = ({ item, isDark, t }) => {
     // ==========================================
     // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
-    const PlanStuckCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
+    const PlanStuckCard = ({ item, t }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
-      // P3: isDark 保留——cardBoxCls/cardBtnCls(protected) 仍需它。
       return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
+        <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
           <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
             {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || t.uiToolRender.toolUnknown}</code> {t.stuckPlanPost}
           </div>
@@ -1009,8 +1002,8 @@ const ToolOutput = ({ item, isDark, t }) => {
             <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button className={cardBtnCls(isDark) + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button className={cardBtnCls(isDark, 'primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
+              <button className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>
@@ -1034,8 +1027,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       for (let i = 0; i < REASON_MAP.length; i++) if (REASON_MAP[i][0].test(s)) return t[REASON_MAP[i][1]];
       return t.rsDefault;
     };
-    const CarefulBlockedCard = ({ item, theme, t }) => {
-      const isDark = theme === 'dark';
+    const CarefulBlockedCard = ({ item, t }) => {
       const [showTech, setShowTech] = useState(false);
       const md = item.metadata || {};
       const cmd = (item.args && (item.args.command || item.args.cmd)) || t.cbCmdUnknown;
@@ -1044,9 +1036,8 @@ const ToolOutput = ({ item, isDark, t }) => {
       const humanReasons = [...new Set(rawReasons.map(r => humanizeReason(r, t)))];
       if (humanReasons.length === 0) humanReasons.push(t.rsDefault);
       const hasTech = rawReasons.length > 0 || rawSuggestions.length > 0;
-      // P3: isDark 保留——cardBoxCls(protected) 仍需它。
       return (
-        <div className={cardBoxCls(isDark, isDark ? 'border-[#F28B82]/40' : 'border-[#C5221F]/30')}>
+        <div className={cardBoxCls('border-[#C5221F]/30 dark:border-[#F28B82]/40')}>
           <div className={`text-[14px] font-semibold mb-2 text-[#C5221F] dark:text-[#F28B82]`}>{t.cbTitle}</div>
           <div className={`text-[12px] mb-1 text-[#757575] dark:text-[#8E8E8E]`}>{t.cbWant}</div>
           <pre className={`text-[12px] font-mono rounded-lg p-2 mb-2 overflow-x-auto bg-white text-[#C5221F] dark:bg-[#131314] dark:text-[#F28B82]`}>{cmd}</pre>
