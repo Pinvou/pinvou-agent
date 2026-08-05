@@ -1256,7 +1256,11 @@ mod tests {
         // reclaim race against the inline cleanup, so the report can record
         // the kill in either path. Only the terminal job status is
         // authoritative here.
-        if !report.killed.iter().any(|entry| entry.task_id.as_deref() == Some(current.as_str())) {
+        if !report
+            .killed
+            .iter()
+            .any(|entry| entry.task_id.as_deref() == Some(current.as_str()))
+        {
             tokio::time::timeout(Duration::from_secs(2), async {
                 while status(&manager, &current) == ShellStatus::Running {
                     tokio::time::sleep(Duration::from_millis(25)).await;
