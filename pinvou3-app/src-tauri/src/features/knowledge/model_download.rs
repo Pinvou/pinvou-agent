@@ -278,8 +278,8 @@ pub async fn kb_model_download(
             );
         }
     });
-    let is_cancelled: Box<dyn Fn() -> bool + Send + Sync> =
-        Box::new(|| CANCEL.load(Ordering::Relaxed));
+    let is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> =
+        std::sync::Arc::new(|| CANCEL.load(Ordering::Relaxed));
     // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
     // sync_all 后、sha256_file 前调用此闭包)。原实现仅在 sha256 存在时 emit
     // (空串跳过校验的 dev 兜底不发 verify),这里保持一致。frontend 据此从下载进度

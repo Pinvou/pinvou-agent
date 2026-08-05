@@ -212,7 +212,7 @@ pub async fn download_asr_model(
                 );
             }
         });
-        let is_cancelled = Box::new(|| ASR_CANCEL.load(Ordering::Acquire));
+        let is_cancelled = std::sync::Arc::new(|| ASR_CANCEL.load(Ordering::Acquire));
         // 进度 total 的回退估算:与重构前一致用 `expected_size`(缺 Content-Length 时
         // 进度按它算 100%)。max_bytes 只做离谱大文件挡板,刻意与 total 分开——此前
         // 复用单字段会让进度停在约 50%(2*expected_size 当 total)。

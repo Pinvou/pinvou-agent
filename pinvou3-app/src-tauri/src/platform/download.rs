@@ -43,7 +43,14 @@ pub struct DownloadRequest<'a> {
     /// 取消谓词:返回 `true` 时中止下载并清理 `.part`。
     /// 需 `Sync` 以便在 `tokio::select!` 中与网络 future 并发轮询(恢复重构前
     /// voice 的 `tokio::select!{ send(), wait_for_cancel() }` 响应性)。
-    pub is_cancelled: Box<dyn Fn() -> bool + Send + Sync + 'a>,
+    ///
+    /// 刻意用 `Arc<dyn Fn() -> bool + Send + Sync + 'static>`(而非 `Box<... + 'a>`):
+    /// 刷盘/sha256/原子 rename 整体挪进 `spawn_blocking`,该闭包必须可被克隆进
+    /// 阻塞任务,在 sha256 完成后、触碰旧 `dest`/rename **之前**再次检查取消
+    /// (大型模型包 sha256 耗时较长,若此时用户取消,必须在提升文件前中止,否则
+    /// 会「报告取消却留下已安装文件」)。`'static` 不借用 `req` 的生命周期参数;
+    /// voice/knowledge 两调用方的取消源分别是 `static AtomicBool`,天然 `'static`。
+    pub is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static>,
     /// 可选 `User-Agent`。重构前 voice/knowledge 各自设置 `pinvou3-asr/1.0`、
     /// `pinvou3-kb/1.0`;helper 通过该字段透传,`None` 时不设置。
     pub user_agent: Option<&'a str>,
@@ -219,6 +226,9 @@ pub(crate) async fn download_to_part_with_verify(
     let dest = req.dest.to_path_buf();
     let expected_sha256 = req.expected_sha256.to_string();
     let on_pre_verify = req.on_pre_verify.take();
+    // 取消谓词克隆进阻塞任务:sha256 完成后、rename 前再查一次。`is_cancelled` 是
+    // `Arc<dyn Fn() -> bool + Send + Sync + 'static>`,可安全 move 进 `spawn_blocking`。
+    let is_cancelled = std::sync::Arc::clone(&req.is_cancelled);
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         // 重新打开句柄做 sync_all(create 后未 sync 的句柄已 Drop)。
         let file = std::fs::OpenOptions::new()
@@ -245,6 +255,18 @@ pub(crate) async fn download_to_part_with_verify(
                     expected_sha256, got
                 ));
             }
+        }
+
+        // 校验完成后、触碰旧 `dest`/rename 之前再查一次取消。大型模型包的 sha256
+        // 可能扫描数十秒,若期间用户取消,必须在提升文件前中止——否则 rename 已经
+        // 把 `.part` 提升为正式 `dest`,调用方却按「已取消」路径结束(voice 不登记
+        // 校验缓存、knowledge 跳过部署),形成「报告取消却留下已安装文件」的回归。
+        // 此时 `.part` 仍存在,由调用方(或 helper 的 PartGuard)按取消路径清理。
+        // 重构前 voice 的 `verify_and_promote_model` 在 SHA 后、删除旧目标/rename 前
+        // 也会再查一次 `ASR_CANCEL`,这里恢复该语义。注意不要删除此检查:仅靠闭包
+        // 返回后的检查会把「校验阶段取消」静默变成「下载成功」。
+        if is_cancelled() {
+            return Err("已取消".to_string());
         }
 
         if let Some(parent) = dest.parent() {
@@ -364,8 +386,8 @@ mod tests {
         (url, handle)
     }
 
-    fn never_cancel<'a>() -> Box<dyn Fn() -> bool + Send + Sync + 'a> {
-        Box::new(|| false)
+    fn never_cancel() -> std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> {
+        std::sync::Arc::new(|| false)
     }
     fn noop_progress<'a>() -> Box<dyn Fn(u64, u64) + Send + 'a> {
         Box::new(|_, _| {})
@@ -480,9 +502,9 @@ mod tests {
         let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |_d, _t| {
             cancel.store(true, Ordering::SeqCst);
         });
-        let is_cancelled: Box<dyn Fn() -> bool + Send + Sync> = {
+        let is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> = {
             let f = Arc::clone(&flag);
-            Box::new(move || f.load(Ordering::SeqCst))
+            Arc::new(move || f.load(Ordering::SeqCst))
         };
 
         let req = DownloadRequest {
@@ -503,6 +525,61 @@ mod tests {
         assert_eq!(result.unwrap_err(), "已取消");
         assert!(!part.exists(), "part should be cleaned on cancel");
         assert!(!dest.exists(), "dest should not exist on cancel");
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_verify_keeps_part_and_returns_cancelled() {
+        // 复审发现:大型模型 sha256 扫描期间取消,必须在「提升文件(rename)」之前
+        // 中止,不能报告取消却留下已安装 `dest`。这里用一个 `on_pre_verify` 钩子在
+        // 「下载完成、sha256 开始前」的瞬间翻转取消标志(等价于 sha256 期间取消),
+        // 断言:helper 返回「已取消」,且 `dest` 不存在、`.part` 保留(由调用方/守卫清理)。
+        let dir = scratch_dir("cancelverify");
+        let body = b"hello world".to_vec();
+        let (url, handle) = serve_once(body.clone());
+        let part = dir.join("payload.part");
+        let dest = dir.join("payload");
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&flag);
+        // 下载完成、sha256 开始前触发:等价于「verify 阶段取消」。
+        let on_pre_verify: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            cancel_flag.store(true, Ordering::SeqCst);
+        }));
+        let is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> = {
+            let f = Arc::clone(&flag);
+            Arc::new(move || f.load(Ordering::SeqCst))
+        };
+
+        let req = DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &part,
+            expected_sha256: HELLO_SHA,
+            max_bytes: 1024,
+            total_hint: 1024,
+            is_cancelled,
+            user_agent: None,
+            on_progress: noop_progress(),
+            on_pre_verify,
+        };
+        let result = download_to_part_with_verify(req).await;
+
+        // 必须是「已取消」,而不是 Ok(sha256 校验通过后继续 rename)。
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "已取消",
+            "cancel during verify must abort before promoting the file"
+        );
+        // 关键契约:取消发生在 rename 之前,`dest` 绝不能存在。
+        assert!(
+            !dest.exists(),
+            "dest must NOT be promoted after verify-stage cancel"
+        );
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
