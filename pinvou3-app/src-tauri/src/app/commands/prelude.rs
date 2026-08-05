@@ -65,6 +65,39 @@ pub(super) fn require_active_sid(
 mod tests {
     use super::*;
 
+    /// `PINVOU3_HOME` 的进程级测试隔离守卫:保存旧值 → 切到 `temp_dir()` 下唯一目录 →
+    /// Drop 时恢复旧值并删除目录。覆盖成功 / 失败 / panic 路径,避免硬编码 `/tmp`
+    /// (Windows 不可用) 与测试间环境泄漏。
+    struct PinvouHomeGuard {
+        prev: Option<String>,
+        dir: std::path::PathBuf,
+    }
+
+    impl PinvouHomeGuard {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "pinvou3-{}-test-{}-{}",
+                label,
+                std::process::id(),
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            let prev = std::env::var("PINVOU3_HOME").ok();
+            std::env::set_var("PINVOU3_HOME", &dir);
+            Self { prev, dir }
+        }
+    }
+
+    impl Drop for PinvouHomeGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("PINVOU3_HOME", v),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     /// 无入参且 store 无活跃会话 → Err("no active session")。
     /// 有入参 → Ok(入参)，忽略 store 活跃态。
     #[test]
@@ -72,7 +105,7 @@ mod tests {
         let _g = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-require-active-sid-test");
+        let _home = PinvouHomeGuard::new("require-active-sid");
         let store = SessionStore::boot().expect("boot SessionStore");
 
         // 1) 入参为 Some：直接返回，不看 store。
