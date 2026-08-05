@@ -14,11 +14,6 @@ npm run runtime:windows:validate
 npm run runtime:windows:stage
 ```
 
-Windows 桌面开发先执行一次 `npm run runtime:windows:init:onnx`。该命令初始化固定版本的 runtime checkout，
-但只拉取 ONNX Runtime 的 Git LFS 对象。此后 `npm run dev` 只校验并展开
-ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/`，不会为开发启动
-展开 Node、Python、ASR、OCR、Pandoc 等完整安装包资源；结果带指纹缓存，后续启动直接复用。
-
 `runtime:windows:init` 只在当前 checkout 与主仓库 gitlink 不一致时更新 runtime submodule；gitlink 未变化时直接复用。
 脚本会检查受 LFS 管理的实际文件，只有仍存在 pointer 时才按路径执行 `git lfs pull`，并输出
 `pinvou3-windows-runtime-<commit>` 形式的 Jenkins 缓存键。

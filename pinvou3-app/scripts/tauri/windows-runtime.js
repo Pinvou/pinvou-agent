@@ -15,10 +15,6 @@ const WINDOWS_RUNTIME_DESCRIPTOR_PATH = path.join(
   WINDOWS_RUNTIME_ROOT,
   "runtime-descriptor.json",
 );
-const WINDOWS_ONNX_DEV_DESCRIPTOR_PATH = path.join(
-  WINDOWS_RUNTIME_ROOT,
-  "onnx-dev-descriptor.json",
-);
 const LEGACY_WINDOWS_NODE_ROOTS = [
   path.join(WINDOWS_RUNTIME_ROOT, "node"),
   path.join(WINDOWS_RUNTIME_ROOT, "codex-node"),
@@ -60,10 +56,6 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     "nodeExecutable",
   );
   const npmExecPath = resolveDescriptorPath(descriptor.npmExecPath, "npmExecPath");
-  const onnxRuntimeDylib = resolveDescriptorPath(
-    descriptor.onnxRuntimeDylib,
-    "onnxRuntimeDylib",
-  );
   const vcRedistSource = resolveDescriptorPath(
     descriptor.vcRedist?.source,
     "vcRedist.source",
@@ -72,7 +64,6 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     [configPath, " Tauri overlay"],
     [nodeExecutable, " Codex Bridge Node"],
     [npmExecPath, " Codex Bridge npm CLI"],
-    [onnxRuntimeDylib, " ONNX Runtime"],
     [vcRedistSource, " VC++ Runtime"],
   ]) {
     requireFile(filePath, label);
@@ -101,7 +92,6 @@ function describeWindowsRuntime(descriptorPath = WINDOWS_RUNTIME_DESCRIPTOR_PATH
     descriptorPath,
     nodeExecutable,
     npmExecPath,
-    onnxRuntimeDylib,
     vcRedist: {
       sourcePath: vcRedistSource,
       bytes: descriptor.vcRedist.bytes,
@@ -149,57 +139,11 @@ function stageWindowsRuntime({
   return runtime;
 }
 
-function stageWindowsOnnxRuntime({
-  platform = process.platform,
-  environment = process.env,
-  spawn = spawnSync,
-} = {}) {
-  if (platform !== "win32") return null;
-  const scriptPath = path.resolve(
-    TAURI_ROOT,
-    "packaging",
-    "windows",
-    "runtime",
-    "scripts",
-    "stage-onnx-runtime.ps1",
-  );
-  const child = spawn(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
-    { cwd: APP_ROOT, env: environment, stdio: "inherit" },
-  );
-  if (child.error) throw child.error;
-  if (child.status !== 0) {
-    throw new Error(
-      `Windows ONNX Runtime staging 失败（退出码 ${child.status ?? "unknown"}）；请先在 pinvou3-app 运行 npm run runtime:windows:init:onnx`,
-    );
-  }
-  const descriptor = JSON.parse(
-    fs.readFileSync(WINDOWS_ONNX_DEV_DESCRIPTOR_PATH, "utf8"),
-  );
-  if (descriptor.schemaVersion !== 1 || descriptor.target !== "windows-x86_64") {
-    throw new Error("Windows ONNX development descriptor 版本或目标平台不受支持");
-  }
-  const onnxRuntimeDylib = resolveDescriptorPath(
-    descriptor.onnxRuntimeDylib,
-    "onnxRuntimeDylib",
-  );
-  requireFile(onnxRuntimeDylib, " ONNX Runtime");
-  const item = fs.statSync(onnxRuntimeDylib);
-  const sha256 = crypto.createHash("sha256").update(fs.readFileSync(onnxRuntimeDylib)).digest("hex");
-  if (item.size !== descriptor.bytes || sha256 !== descriptor.sha256) {
-    throw new Error("Windows ONNX development descriptor 指纹不匹配");
-  }
-  return { descriptorPath: WINDOWS_ONNX_DEV_DESCRIPTOR_PATH, onnxRuntimeDylib };
-}
-
 module.exports = {
   LEGACY_WINDOWS_NODE_ROOTS,
   WINDOWS_RUNTIME_CONFIG_PATH,
   WINDOWS_RUNTIME_DESCRIPTOR_PATH,
-  WINDOWS_ONNX_DEV_DESCRIPTOR_PATH,
   cleanupLegacyWindowsNodeStaging,
   describeWindowsRuntime,
-  stageWindowsOnnxRuntime,
   stageWindowsRuntime,
 };
