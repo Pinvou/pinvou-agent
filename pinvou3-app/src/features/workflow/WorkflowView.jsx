@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { Paperclip } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -1087,8 +1088,8 @@ const WidgetCard = ({ title, children, theme }) => {
       }
       const briefEmpty = briefText.trim().length === 0;
       const titleText = wfUi.newTaskTitle || t.uiWorkflow.newTaskTitle((workflow && workflow.name) || t.uiWorkflow.workflow);
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      const modal = (
+        <div data-testid="workflow-new-task-modal" className="fixed inset-0 z-50 flex items-center justify-center p-6">
           <div className="absolute inset-0 bg-black/60" onClick={() => { if (!starting) onClose(); }}></div>
           <div className={`relative w-[560px] max-w-[92vw] flex flex-col rounded-[16px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
@@ -1148,6 +1149,7 @@ const WidgetCard = ({ title, children, theme }) => {
           </div>
         </div>
       );
+      return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
     };
 
     // —— 工作流模板卡（未启动时显示）——

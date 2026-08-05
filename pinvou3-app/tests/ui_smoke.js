@@ -592,6 +592,35 @@ async function expand(page) {
   }));
   rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
 
+  const workflowModalCoverage = await page.evaluate(() => {
+    const modal = document.querySelector('[data-testid="workflow-new-task-modal"]');
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    if (!modal || !sidebar) return { found: !!modal, sidebarFound: !!sidebar };
+    const modalRect = modal.getBoundingClientRect();
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const coveredElement = document.elementFromPoint(
+      sidebarRect.left + sidebarRect.width / 2,
+      sidebarRect.top + sidebarRect.height / 2,
+    );
+    return {
+      found: true,
+      sidebarFound: true,
+      mountedAtBody: modal.parentElement === document.body,
+      position: getComputedStyle(modal).position,
+      coversViewport: Math.abs(modalRect.left) < 1 && Math.abs(modalRect.top) < 1
+        && Math.abs(modalRect.width - window.innerWidth) < 1
+        && Math.abs(modalRect.height - window.innerHeight) < 1,
+      coversSidebar: !!coveredElement?.closest('[data-testid="workflow-new-task-modal"]'),
+    };
+  });
+  rec(
+    '①b-2 工作流新建任务弹窗遮罩覆盖包括左侧导航在内的整个窗口',
+    workflowModalCoverage.found && workflowModalCoverage.sidebarFound
+      && workflowModalCoverage.mountedAtBody && workflowModalCoverage.position === 'fixed'
+      && workflowModalCoverage.coversViewport && workflowModalCoverage.coversSidebar,
+    JSON.stringify(workflowModalCoverage),
+  );
+
   // ①c stop marker 是最终状态：迟到快照即使仍带 running/reviewing，也不能让角色卡回跳。
   const stoppedAfterLateSnapshot = await page.evaluate(async () => {
     const handlers = window.__TAURI_EVENT_HANDLERS__['workflow:full_state'] || [];
