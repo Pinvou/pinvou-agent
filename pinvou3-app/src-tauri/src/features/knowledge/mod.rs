@@ -64,6 +64,10 @@ pub struct ScanState {
 pub struct KnowledgeService {
     store: Store,
     l1: l1::L1Store,
+    /// Serializes collection deletion with session mount mutations at the Tauri boundary.
+    /// The database and SessionStore use separate locks, so this coordinator closes the
+    /// validate-then-mount race without coupling either domain to the other.
+    mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
     cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
@@ -89,6 +93,7 @@ impl KnowledgeService {
         Ok(Self {
             store,
             l1,
+            mount_mutation: Arc::new(tokio::sync::Mutex::new(())),
             scan_state: Arc::new(Mutex::new(ScanState {
                 phase: if last_scan_finished_at > 0 {
                     "done".into()
@@ -108,6 +113,10 @@ impl KnowledgeService {
     /// L1 知识集句柄（命令层直接用）。
     pub fn l1(&self) -> &l1::L1Store {
         &self.l1
+    }
+
+    pub(crate) fn mount_mutation_coordinator(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.mount_mutation.clone()
     }
 
     /// 语义检索是否就绪（embedding 模型已加载）。完全门控用：模型没装 → 知识库不可用。

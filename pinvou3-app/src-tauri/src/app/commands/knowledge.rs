@@ -25,18 +25,16 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
 /// 这是旧客户端的单知识库兼容命令，必须保持“整体替换”为一个知识集的历史语义；多知识库
 /// 客户端使用下方 add/remove/enable 原子命令，不能把这里改成追加，否则旧客户端无法切换单库。
 #[tauri::command]
-pub fn session_mount_collection(
+pub async fn session_mount_collection(
     session_id: String,
     collection_id: i64,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
 ) -> Result<(), String> {
-    // 完全门控:embedding 模型没就绪 → 知识库整体不可用,拒绝挂载。前端会置灰入口,
-    // 这里是防绕过兜底(草稿态直调 / 旧前端 / 命令注入)。
-    if !knowledge.semantic_ready() {
-        return Err("embedding 模型未就绪,知识库暂不可用".to_string());
-    }
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
+    ensure_collection_mountable(&knowledge, collection_id)?;
     store.set_mounted_collection(&session_id, Some(collection_id));
     publish_kb_mount_change(
         &app,
@@ -48,13 +46,15 @@ pub fn session_mount_collection(
 
 /// 兼容整列表替换接口。新客户端的单项操作使用下方原子命令，避免多端并发覆盖。
 #[tauri::command]
-pub fn session_set_mounted_collections(
+pub async fn session_set_mounted_collections(
     session_id: String,
     collections: Vec<crate::core::mode_state::MountedCollection>,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
 ) -> Result<Vec<crate::core::mode_state::MountedCollection>, String> {
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     let normalized =
         validate_mount_replacement(collections, knowledge.semantic_ready(), |collection_id| {
             knowledge
@@ -107,18 +107,30 @@ fn ensure_collection_mountable(
     knowledge: &KnowledgeService,
     collection_id: i64,
 ) -> Result<(), String> {
+    validate_collection_mountable(collection_id, knowledge.semantic_ready(), || {
+        knowledge
+            .l1()
+            .collection_name(collection_id)
+            .map(|name| name.is_some())
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn validate_collection_mountable<F>(
+    collection_id: i64,
+    semantic_ready: bool,
+    collection_exists: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<bool, String>,
+{
     if collection_id <= 0 {
         return Err("知识集 id 无效".to_string());
     }
-    if !knowledge.semantic_ready() {
+    if !semantic_ready {
         return Err("embedding 模型未就绪,知识库暂不可用".to_string());
     }
-    if knowledge
-        .l1()
-        .collection_name(collection_id)
-        .map_err(|error| error.to_string())?
-        .is_none()
-    {
+    if !collection_exists()? {
         return Err("知识集不存在或已删除".to_string());
     }
     Ok(())
@@ -126,13 +138,15 @@ fn ensure_collection_mountable(
 
 /// 在 SessionStore 的同一写锁内追加或重新启用一个知识集，避免跨端 read-modify-write 丢更新。
 #[tauri::command]
-pub fn session_add_mounted_collection(
+pub async fn session_add_mounted_collection(
     session_id: String,
     collection_id: i64,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
 ) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     ensure_collection_mountable(&knowledge, collection_id)?;
     let snapshot = store.add_mounted_collection(&session_id, collection_id);
     publish_kb_mount_change(&app, &session_id, &snapshot);
@@ -141,7 +155,7 @@ pub fn session_add_mounted_collection(
 
 /// 原子切换单个知识集的启用状态。停用不依赖模型或知识集仍然存在，以便清理陈旧状态。
 #[tauri::command]
-pub fn session_set_mounted_collection_enabled(
+pub async fn session_set_mounted_collection_enabled(
     session_id: String,
     collection_id: i64,
     enabled: bool,
@@ -149,6 +163,8 @@ pub fn session_set_mounted_collection_enabled(
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
 ) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     if enabled {
         ensure_collection_mountable(&knowledge, collection_id)?;
     }
@@ -159,27 +175,33 @@ pub fn session_set_mounted_collection_enabled(
 
 /// 原子移除单个知识集；与其他端对不同知识集的并发操作可以安全合并。
 #[tauri::command]
-pub fn session_remove_mounted_collection(
+pub async fn session_remove_mounted_collection(
     session_id: String,
     collection_id: i64,
     store: State<'_, SessionStore>,
+    knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> crate::core::mode_state::MountedCollectionsSnapshot {
+) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     let snapshot = store.remove_mounted_collection(&session_id, collection_id);
     publish_kb_mount_change(&app, &session_id, &snapshot);
-    snapshot
+    Ok(snapshot)
 }
 
 /// 摘下会话的知识集挂载。
 #[tauri::command]
-pub fn session_unmount_collection(
+pub async fn session_unmount_collection(
     session_id: String,
     store: State<'_, SessionStore>,
+    knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> crate::core::mode_state::MountedCollectionsSnapshot {
+) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+    let coordinator = knowledge.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     let snapshot = store.set_mounted_collections(&session_id, Vec::new());
     publish_kb_mount_change(&app, &session_id, &snapshot);
-    snapshot
+    Ok(snapshot)
 }
 
 fn publish_kb_mount_change(
@@ -262,6 +284,8 @@ pub async fn kb_collection_delete(
     app: AppHandle,
     id: i64,
 ) -> Result<(), String> {
+    let coordinator = state.mount_mutation_coordinator();
+    let _mutation = coordinator.lock().await;
     knowledge_domain::kb_collection_delete(state, pool, id).await?;
     for (session_id, snapshot) in sessions.remove_mounted_collection_from_all(id) {
         publish_kb_mount_change(&app, &session_id, &snapshot);
@@ -288,8 +312,11 @@ use super::prelude::*;
 
 #[cfg(test)]
 mod tests {
-    use super::validate_mount_replacement;
+    use super::{validate_collection_mountable, validate_mount_replacement};
     use crate::core::mode_state::MountedCollection;
+    use crate::features::knowledge::KnowledgeService;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn replacement_rejects_deleted_collection_instead_of_silently_dropping_it() {
@@ -332,5 +359,59 @@ mod tests {
                 enabled: false,
             }]
         );
+    }
+
+    #[test]
+    fn legacy_mount_validation_rejects_a_deleted_collection() {
+        let error = validate_collection_mountable(7, true, || Ok(false)).unwrap_err();
+
+        assert!(error.contains("不存在或已删除"));
+    }
+
+    #[tokio::test]
+    async fn deletion_waits_for_validated_mount_then_removes_it() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-kb-mount-coordinator-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+        let service = KnowledgeService::new(&root.join("index.db")).expect("knowledge service");
+        let exists = Arc::new(AtomicBool::new(true));
+        let mounted = Arc::new(Mutex::new(Vec::new()));
+        let validated = Arc::new(tokio::sync::Notify::new());
+
+        let mount_coordinator = service.mount_mutation_coordinator();
+        let delete_coordinator = service.mount_mutation_coordinator();
+        let mount = {
+            let exists = exists.clone();
+            let mounted = mounted.clone();
+            let validated = validated.clone();
+            async move {
+                let _mutation = mount_coordinator.lock().await;
+                assert!(exists.load(Ordering::Acquire));
+                validated.notify_one();
+                // Give deletion a chance to contend for the same coordinator after validation.
+                tokio::task::yield_now().await;
+                mounted.lock().unwrap().push(7);
+            }
+        };
+        let delete = {
+            let exists = exists.clone();
+            let mounted = mounted.clone();
+            async move {
+                validated.notified().await;
+                let _mutation = delete_coordinator.lock().await;
+                exists.store(false, Ordering::Release);
+                mounted.lock().unwrap().retain(|id| *id != 7);
+            }
+        };
+
+        tokio::join!(mount, delete);
+
+        assert!(!exists.load(Ordering::Acquire));
+        assert!(mounted.lock().unwrap().is_empty());
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
