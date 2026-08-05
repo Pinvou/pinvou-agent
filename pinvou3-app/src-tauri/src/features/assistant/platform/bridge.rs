@@ -1915,8 +1915,10 @@ mod tests {
         }
         #[cfg(any(unix, windows))]
         {
-            let base = std::env::temp_dir()
-                .join(format!("pinvou3-agents-symlink-test-{}", std::process::id()));
+            let base = std::env::temp_dir().join(format!(
+                "pinvou3-agents-symlink-test-{}",
+                std::process::id()
+            ));
             let _ = std::fs::remove_dir_all(&base);
             let project = base.join("project");
             std::fs::create_dir_all(&project).unwrap();
@@ -1975,7 +1977,9 @@ mod tests {
         bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
 
         assert!(
-            bridge.code_session_project_rules("sess-degraded").is_empty(),
+            bridge
+                .code_session_project_rules("sess-degraded")
+                .is_empty(),
             "resolver 命中但非代码会话时不应注入项目规则"
         );
 
@@ -2054,9 +2058,10 @@ mod tests {
             })
             .collect();
         assert!(
-            files.iter().any(|p| p == &normalize_rule_boundary_path(&project)
-                .unwrap()
-                .join("AGENTS.md")),
+            files.iter().any(|p| p
+                == &normalize_rule_boundary_path(&project)
+                    .unwrap()
+                    .join("AGENTS.md")),
             "session instructions 应含项目 AGENTS.md: {files:?}"
         );
 
@@ -2109,10 +2114,7 @@ mod tests {
                     .count(),
                 1
             );
-            assert_eq!(
-                twice.iter().filter(|tool| *tool == "load_skill").count(),
-                1
-            );
+            assert_eq!(twice.iter().filter(|tool| *tool == "load_skill").count(), 1);
         }
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
