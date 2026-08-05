@@ -307,8 +307,9 @@ pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
 /// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
-/// 普通对话不使用。会话上限允许一级代理再派生一层，同时拦截模型显式传入
-/// 正数深度覆盖字段，避免逐层抬高上限；Workflow 的
+/// 普通对话不使用。会话上限允许一级代理再派生一层；hook 拦截主会话显式
+/// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
+/// 继承上限与准入/并发额度兜底）；Workflow 的
 /// `source_path` 要求改用 inline script/plan，避免 hook 无法检查文件内参数。
 pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
     include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");

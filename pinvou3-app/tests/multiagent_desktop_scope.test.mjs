@@ -59,3 +59,19 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
   );
   assert.equal((i18n.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
 });
+
+test('原生 Code 复用会话级开关、专家卡和只读记录面板', () => {
+  const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+  const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
+  const tools = read('src', 'features', 'tools', 'tool-renderers.jsx');
+
+  assert.match(codex, /<ComposerModelSelector[\s\S]*?multiAgentEnabled=\{nativeMultiAgentEnabled\}/);
+  assert.match(codex, /invoke\('set_multi_agent_mode',\s*\{\s*sessionId/);
+  assert.match(codex, /<ToolCard[\s\S]*?sessionId=\{activeId\}/);
+  assert.match(codex, /<SubagentTranscriptPanel[\s\S]*?sessionId=\{activeSession\.id\}/);
+  assert.match(codex, /!subagentPanel && \(activeSession \|\| draftWorkspacePath\)/);
+  assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
+  assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
+  assert.match(tools, /detail: \{ agentId: agentId \|\| null, sessionId: sessionId \|\| null \}/);
+  assert.match(tools, /listSubagentTranscripts\(sid\)/);
+});

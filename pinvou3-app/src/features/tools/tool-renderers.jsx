@@ -53,7 +53,11 @@ const multiAgentWebReadOnly = () => {
 // 被展示的直属树终态即停表，新卡再启；无论卡片多少，每轮仍只做一次 IPC。
 const expertCardWatch = new Map();
 let expertPollTimer = null;
-let expertLedgerSnapshot = { sessionId: null, agents: [] };
+const expertLedgerSnapshots = new Map();
+
+function expertWatchKey(sessionId, agentId) {
+  return `${sessionId || ''}\u0000${agentId || ''}`;
+}
 
 function activeExpertSessionId() {
   if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return null;
@@ -71,61 +75,86 @@ function kickExpertPoll(delay = 2000) {
   if (expertPollTimer != null || typeof window === 'undefined') return;
   expertPollTimer = setTimeout(async () => {
     expertPollTimer = null;
-    try {
-      if (!bridge.available || !bridge.state || !bridge.multiAgent) return;
-      const sid = activeExpertSessionId();
-      if (!sid) return;
-      const response = await bridge.multiAgent.listSubagentTranscripts(sid);
-      if (!Array.isArray(response)) return;
-      const list = response;
-      expertLedgerSnapshot = { sessionId: sid, agents: list };
-      window.dispatchEvent(new CustomEvent('pinvou:subagent-ledger-update', {
-        detail: expertLedgerSnapshot,
-      }));
-      const ordinals = subagentRoleOrdinals(list);
-      for (const summary of list) {
-        if (!summary || !summary.agent_id || !expertCardWatch.has(summary.agent_id)) continue;
-        const ordinal = ordinals.get(summary.agent_id) || null;
-        window.dispatchEvent(new CustomEvent('pinvou:subagent-update', {
-          detail: {
-            sessionId: sid,
-            agentId: summary.agent_id,
-            role: summary.role || null,
-            status: summary.status || null,
-            done: !!summary.done,
-            failed: !!summary.failed,
-            blocked: !!summary.blocked,
-            has_transcript: !!summary.has_transcript,
-            seq: ordinal ? ordinal.seq : null,
-            roleCount: ordinal ? ordinal.count : null,
-            source: 'ledger',
-          },
+    if (!bridge.available || !bridge.multiAgent) return;
+    const sessionIds = [...new Set(
+      [...expertCardWatch.values()]
+        .filter(entry => entry && !entry.done && entry.sessionId)
+        .map(entry => entry.sessionId),
+    )];
+    for (const sid of sessionIds) {
+      try {
+        const response = await bridge.multiAgent.listSubagentTranscripts(sid);
+        if (!Array.isArray(response)) continue;
+        const list = response;
+        const snapshot = { sessionId: sid, agents: list };
+        expertLedgerSnapshots.set(sid, snapshot);
+        window.dispatchEvent(new CustomEvent('pinvou:subagent-ledger-update', {
+          detail: snapshot,
         }));
+        const ordinals = subagentRoleOrdinals(list);
+        for (const summary of list) {
+          const key = expertWatchKey(sid, summary && summary.agent_id);
+          if (!summary || !summary.agent_id || !expertCardWatch.has(key)) continue;
+          const ordinal = ordinals.get(summary.agent_id) || null;
+          window.dispatchEvent(new CustomEvent('pinvou:subagent-update', {
+            detail: {
+              sessionId: sid,
+              agentId: summary.agent_id,
+              role: summary.role || null,
+              status: summary.status || null,
+              done: !!summary.done,
+              failed: !!summary.failed,
+              blocked: !!summary.blocked,
+              has_transcript: !!summary.has_transcript,
+              seq: ordinal ? ordinal.seq : null,
+              roleCount: ordinal ? ordinal.count : null,
+              source: 'ledger',
+            },
+          }));
+        }
+        for (const [key, entry] of expertCardWatch.entries()) {
+          if (entry.sessionId !== sid) continue;
+          expertCardWatch.set(key, {
+            ...entry,
+            done: subagentTreeIsDone(list, entry.agentId),
+          });
+        }
+      } catch (_) {
+        // 单次轮询失败不致命，下一轮重试。
       }
-      for (const agentId of expertCardWatch.keys()) {
-        expertCardWatch.set(agentId, subagentTreeIsDone(list, agentId));
-      }
-    } catch (_) {
-      // 单次轮询失败不致命，下一轮重试。
-    } finally {
-      if ([...expertCardWatch.values()].some(done => !done)) kickExpertPoll(2000);
     }
+    if ([...expertCardWatch.values()].some(entry => entry && !entry.done)) kickExpertPoll(2000);
   }, delay);
 }
 
-function watchExpertCard(agentId) {
-  expertCardWatch.set(agentId, expertCardWatch.get(agentId) === true);
+function watchExpertCard(sessionId, agentId) {
+  const key = expertWatchKey(sessionId, agentId);
+  const previous = expertCardWatch.get(key);
+  expertCardWatch.set(key, {
+    sessionId,
+    agentId,
+    done: Boolean(previous && previous.done),
+    count: (previous?.count || 0) + 1,
+  });
   kickExpertPoll(0);
   return () => {
-    expertCardWatch.delete(agentId);
+    const current = expertCardWatch.get(key);
+    if (current && current.count > 1) {
+      expertCardWatch.set(key, { ...current, count: current.count - 1 });
+    } else {
+      expertCardWatch.delete(key);
+      if (![...expertCardWatch.values()].some(entry => entry.sessionId === sessionId)) {
+        expertLedgerSnapshots.delete(sessionId);
+      }
+    }
     if (!expertCardWatch.size) stopExpertPoll();
   };
 }
 
-function openSubagentTranscript(agentId) {
+function openSubagentTranscript(agentId, sessionId) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
-    detail: { agentId: agentId || null },
+    detail: { agentId: agentId || null, sessionId: sessionId || null },
   }));
 }
 
@@ -179,7 +208,7 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
  * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
  * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
  */
-const ExpertAgentCard = ({ item, theme, t }) => {
+const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
   const isDark = theme === 'dark';
   const copy = t.uiMultiAgent;
   const args = item.args || {};
@@ -187,12 +216,13 @@ const ExpertAgentCard = ({ item, theme, t }) => {
   const spawnText = expertDelegationText(args);
   const isDelegation = isExpertDelegationCall(item.name, args);
   const failedSpawn = item.state === 'failed';
-  const sessionId = activeExpertSessionId();
+  const sessionId = sessionIdProp || activeExpertSessionId();
+  const sessionSnapshot = expertLedgerSnapshots.get(sessionId);
 
   // Hook 全部无条件运行（协调行分支在 Hook 之后），实例 Hook 数量恒定。
   const [live, setLive] = useState(null);
   const [ledger, setLedger] = useState(() => (
-    expertLedgerSnapshot.sessionId === sessionId ? expertLedgerSnapshot.agents : []
+    sessionSnapshot ? sessionSnapshot.agents : []
   ));
   const [childrenExpanded, setChildrenExpanded] = useState(false);
   const [expandedChildIds, setExpandedChildIds] = useState(() => new Set());
@@ -209,7 +239,9 @@ const ExpertAgentCard = ({ item, theme, t }) => {
       // 已停表后若父模型 followup 唤醒旧代理，或运行中代理新派后代，任一
       // 非终态事件都要唤醒共享 ledger 轮询，重新取得完整父链和权威终态。
       if (!detail.done && detail.source !== 'ledger') {
-        expertCardWatch.set(agentId, false);
+        const key = expertWatchKey(sessionId, agentId);
+        const watched = expertCardWatch.get(key);
+        if (watched) expertCardWatch.set(key, { ...watched, done: false });
         kickExpertPoll(0);
       }
       if (detail.agentId !== agentId) return;
@@ -225,12 +257,10 @@ const ExpertAgentCard = ({ item, theme, t }) => {
       if (!detail || detail.sessionId !== sessionId || !Array.isArray(detail.agents)) return;
       setLedger(detail.agents);
     };
-    setLedger(
-      expertLedgerSnapshot.sessionId === sessionId ? expertLedgerSnapshot.agents : [],
-    );
+    setLedger(expertLedgerSnapshots.get(sessionId)?.agents || []);
     window.addEventListener('pinvou:subagent-update', onUpdate);
     window.addEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
-    const unwatch = watchExpertCard(agentId);
+    const unwatch = watchExpertCard(sessionId, agentId);
     return () => {
       window.removeEventListener('pinvou:subagent-update', onUpdate);
       window.removeEventListener('pinvou:subagent-ledger-update', onLedgerUpdate);
@@ -305,7 +335,7 @@ const ExpertAgentCard = ({ item, theme, t }) => {
       >
         <button
           type="button"
-          onClick={() => openSubagentTranscript(agentId)}
+          onClick={() => openSubagentTranscript(agentId, sessionId)}
           className="flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left"
         >
           <AppIcon
@@ -383,7 +413,7 @@ const ExpertAgentCard = ({ item, theme, t }) => {
                 <button
                   type="button"
                   data-testid="expert-agent-child-card"
-                  onClick={() => openSubagentTranscript(entry.agent_id)}
+                  onClick={() => openSubagentTranscript(entry.agent_id, sessionId)}
                   className={`flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left ${
                     isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'
                   }`}
@@ -494,12 +524,12 @@ const ToolOutput = ({ item, isDark, t }) => {
       return <OutputPre text={out} isDark={isDark} />;
     };
 
-    const ToolCard = ({ item, theme, t, variant = 'legacy' }) => {
+    const ToolCard = ({ item, theme, t, variant = 'legacy', sessionId }) => {
       // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
       // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
       // 因此每个实例的 Hook 数量恒定，不触犯 Hook 规则。
       if (EXPERT_CARD_ENABLED && item.name === 'agent') {
-        return <ExpertAgentCard item={item} theme={theme} t={t} />;
+        return <ExpertAgentCard item={item} theme={theme} t={t} sessionId={sessionId} />;
       }
       const isDark = theme === 'dark';
       const isTimeline = variant === 'timeline';

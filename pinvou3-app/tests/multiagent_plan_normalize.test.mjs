@@ -154,7 +154,7 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
   assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
-  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(\)/, '委派提醒抽成函数供发送链注入');
+  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(context: DelegationContext\)/, '委派提醒按工作与 Code 上下文生成');
   assert.match(commandSource, /roster::available_role_lines\(\)/, '名册必须随提醒带上');
   assert.match(
     commandSource,
@@ -163,7 +163,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     chatCommandSource,
-    /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(\)/,
+    /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(delegation_context\)/,
     '开关开启时 chat 发送链每轮拼提醒',
   );
   assert.match(
@@ -215,8 +215,10 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   const assistantBridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_CONCURRENT:\s*usize\s*=\s*4/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_ADMITTED:\s*usize\s*=\s*8/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_CONCURRENT:\s*usize\s*=\s*4/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -258,6 +260,16 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     poolSource,
     /enroll_expert_roles\(&workspace\)[\s\S]{0,80}\.map_err/,
     '专家名册写盘失败必须让开启失败，不得静默成功',
+  );
+  assert.match(
+    poolSource,
+    /reconfigure_multi_agent_mode[\s\S]{0,500}self\.bridge\.session_workspace\(session_id\)/,
+    '开启时必须按实际 CodeWhale 工作区装配名册，绑定项目的 Code 会话不得写回私有会话目录',
+  );
+  assert.match(
+    assistantBridgeSource,
+    /enroll_expert_roles\(&cfg\.workspace\)[\s\S]{0,1800}FleetRoster::load\([\s\S]{0,160}&cfg\.workspace/,
+    '引擎启动时名册写入与读取必须共同遵循基座 workspace',
   );
   const sessionsSource = read('src-tauri', 'src', 'features', 'sessions', 'mod.rs');
   assert.match(
@@ -556,9 +568,9 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
 });
 
-test('transcripts 命令面向普通会话：读取自身工作区', () => {
-  assert.match(commandSource, /fn subagent_workspace\(session_id: &str\)/);
-  assert.match(commandSource, /session_workspace_dir\(session_id\)/, '普通会话读自己的工作区');
+test('transcripts 命令读取实际 CodeWhale 工作区', () => {
+  assert.match(commandSource, /fn subagent_workspace\([\s\S]{0,100}pool: &EnginePool/);
+  assert.match(commandSource, /pool\.session_workspace\(session_id\)/, '绑定项目的 Code 会话必须读取项目 .codewhale');
   assert.doesNotMatch(commandSource, /resolve_workflow_approval/, '审批命令已退役');
 });
 
@@ -749,7 +761,7 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   );
   assert.match(
     toolRenderersSource,
-    /watchExpertCard\(agentId\)/,
+    /watchExpertCard\(sessionId, agentId\)/,
     '卡片必须接权威落盘轮询（实时事件会丢：拥塞/重启/停止级联）',
   );
   assert.match(
