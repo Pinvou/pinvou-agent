@@ -255,6 +255,189 @@ async function clickExactButton(page, text) {
     JSON.stringify(workGeneralPayload));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(250);
+  const personalWorkbenchState = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      textareaValue: textarea && textarea.value,
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      templatePicker: !!document.querySelector('[data-testid="personal-workbench-template-picker"]'),
+      templateLabels: [...document.querySelectorAll('button[data-testid^="personal-workbench-template-"]')]
+        .map(node => (node.textContent || '').trim()),
+    };
+  });
+  await page.focus('textarea');
+  await page.keyboard.type('运动');
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalSceneOnlyPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+      userBubbleText: [...document.querySelectorAll('[data-testid="chat-message-user"], .chat-message-user')]
+        .map(node => node.textContent || '')
+        .join('\n'),
+    };
+  });
+  rec('个人工作台自由输入走默认专家隐藏 prompt 且界面只显示用户文本',
+    personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
+      personalWorkbenchState.templatePicker &&
+      personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
+      personalWorkbenchState.sceneTag.includes('个人工作台') &&
+      personalWorkbenchState.textareaValue === '' &&
+      personalSceneOnlyPayload &&
+      personalSceneOnlyPayload.text === '运动' &&
+      personalSceneOnlyPayload.scene === 'work:personal-workbench' &&
+      !personalSceneOnlyPayload.templateId &&
+      !personalSceneOnlyPayload.templateTitle &&
+      /个人数字工作台/.test(personalSceneOnlyPayload.payload || '') &&
+      /用户需求：\n运动/.test(personalSceneOnlyPayload.payload || '') &&
+      !/个人数字工作台/.test(personalSceneOnlyPayload.userBubbleText || '') &&
+      personalSceneOnlyPayload.textareaAfterSend === '',
+    JSON.stringify({ personalWorkbenchState, personalSceneOnlyPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  const longCustomWorkbenchPrompt = '我要做一个适合自由职业者使用的客户项目管理工作台，需要能管理客户、合同、收款节点、待办事项、沟通记录、项目风险、交付物清单和月度复盘，还要支持移动端查看，数据全部存在本地，并且界面需要像现代 iOS 工具应用一样清爽。';
+  await page.evaluate((prompt) => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, prompt);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }, longCustomWorkbenchPrompt);
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalTemplateReplacedPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+    };
+  });
+  rec('个人工作台模板被整段替换后按自由输入处理',
+    personalTemplateReplacedPayload &&
+      personalTemplateReplacedPayload.text === longCustomWorkbenchPrompt &&
+      personalTemplateReplacedPayload.scene === 'work:personal-workbench' &&
+      !personalTemplateReplacedPayload.templateId &&
+      !personalTemplateReplacedPayload.templateTitle &&
+      /个人数字工作台/.test(personalTemplateReplacedPayload.payload || '') &&
+      personalTemplateReplacedPayload.payload.includes(`用户需求：\n${longCustomWorkbenchPrompt}`) &&
+      personalTemplateReplacedPayload.textareaAfterSend === '',
+    JSON.stringify(personalTemplateReplacedPayload));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  const personalTemplateSelected = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      templateTag: document.querySelector('[data-testid="pinvou-scene-template-tag"]')?.textContent || '',
+      hasPromptInTextarea: /真实时薪计算器|localStorage/.test(textarea && textarea.value || ''),
+    };
+  });
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const templateDraftClearedOnSceneSwitch = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
+    };
+  });
+  rec('从个人工作台模板切到其他工作场景会清理模板草稿',
+    templateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
+      templateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      templateDraftClearedOnSceneSwitch.textareaValue === '' &&
+      !templateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
+    JSON.stringify(templateDraftClearedOnSceneSwitch));
+
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(200);
+  await page.evaluate((prompt) => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, prompt);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }, personalTemplateSelected.textareaValue);
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const restoredTemplateDraftClearedOnSceneSwitch = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
+    };
+  });
+  rec('恢复的个人工作台模板草稿即使没有选中 ref 也会在切换场景时清理',
+    restoredTemplateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
+      restoredTemplateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      restoredTemplateDraftClearedOnSceneSwitch.textareaValue === '' &&
+      !restoredTemplateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
+    JSON.stringify(restoredTemplateDraftClearedOnSceneSwitch));
+
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(200);
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, `${textarea.value}\n\n用户补充需求：暗色模式`);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+      templateTagAfterSend: !!document.querySelector('[data-testid="pinvou-scene-template-tag"]'),
+    };
+  });
+  rec('个人工作台模板把完整 prompt 写入输入框并直接发送当前文本',
+    personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
+      personalWorkbenchState.templatePicker &&
+      personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
+      personalWorkbenchState.sceneTag.includes('个人工作台') &&
+      personalWorkbenchState.textareaValue === '' &&
+      personalTemplateSelected.sceneTag.includes('个人工作台') &&
+      personalTemplateSelected.templateTag === '' &&
+      personalTemplateSelected.hasPromptInTextarea &&
+      personalPayload &&
+      /请制作一个名为「个人账本」/.test(personalPayload.text || '') &&
+      /用户补充需求：暗色模式/.test(personalPayload.text || '') &&
+      personalPayload.scene === 'work:personal-workbench' &&
+      personalPayload.templateId === 'personal-ledger' &&
+      personalPayload.templateTitle === '个人账本' &&
+      !personalPayload.payload &&
+      personalPayload.textareaAfterSend === '' &&
+      !personalPayload.templateTagAfterSend,
+    JSON.stringify({ personalWorkbenchState, personalTemplateSelected, personalPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
   await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
   await sleep(250);
   const selectedWorkScene = await page.evaluate(() => {

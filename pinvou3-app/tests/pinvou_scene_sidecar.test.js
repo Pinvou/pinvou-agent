@@ -10,6 +10,18 @@ const tauriBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'pla
 const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8');
 const sessionsRustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'app', 'commands', 'sessions.rs'), 'utf8');
 
+// 提取两个 bridge 里真实的 normalizePinvouScene 白名单正则源码，供测试复用，
+// 保证 sidecar 记录路径走的是源码里的白名单，而不是各自 mock 的宽松实现。
+function extractNormalizeSceneRegex(source) {
+  const match = source.match(/return\s*(\/\^.*?\/)\.test\(scene\)/);
+  if (!match) throw new Error('normalizePinvouScene 正则未找到');
+  return match[1];
+}
+const tauriNormalizeSceneRegexSource = extractNormalizeSceneRegex(tauriBridgeSource);
+const webNormalizeSceneRegexSource = extractNormalizeSceneRegex(webBridgeSource);
+// eval 出真正的 RegExp 对象（源码里就是字面量正则）
+const tauriNormalizeSceneRegex = eval(tauriNormalizeSceneRegexSource);
+
 function createFeature(options = {}) {
   const sandbox = {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
@@ -56,9 +68,13 @@ function createFeature(options = {}) {
     ensureSession() { state.activeSessionId = 's1'; return Promise.resolve('s1'); },
     getBuffer(sid) { return sessionStates[sid]; },
     recordPinvouSceneForMessage(sid, pos, scene) {
+      // 走 bridge.js 里真实的白名单门禁：未登记的 scene 会被丢弃为空字符串且不记录，
+      // 与 bridge.js:recordPinvouSceneForMessage 的行为保持一致。
+      const normalized = tauriNormalizeSceneRegex.test(String(scene || '').trim()) ? scene : '';
+      if (!normalized) return;
       const existing = sceneEvents.findIndex(event => event.sid === sid && event.pos === pos);
       if (existing >= 0) sceneEvents.splice(existing, 1);
-      sceneEvents.push({ sid, scene, pos });
+      sceneEvents.push({ sid, scene: normalized, pos });
     },
     reconcileRemoteTurn() { return Promise.resolve(true); },
     markRemoteTurn() {},
@@ -100,6 +116,30 @@ function rec(name, pass, detail = '') {
         chatInvoke &&
         chatInvoke.args.message === '模型 payload',
       JSON.stringify({ user, message: state.messages[0], sceneEvents, invokes }));
+  }
+
+  {
+    const { feature, state, invokes, sceneEvents } = createFeature();
+    await feature.sendMessage('运动', {
+      pinvouScene: 'work:personal-workbench',
+      pinvouPayloadText: '隐藏默认专家 prompt\n\n用户需求：\n运动',
+    });
+    const user = state.chatItems.find(item => item.type === 'user');
+    const chatInvoke = invokes.find(item => item.command === 'chat');
+    const messageText = state.messages[0] &&
+      state.messages[0].content &&
+      state.messages[0].content[0] &&
+      state.messages[0].content[0].text;
+    rec('个人工作台隐藏 payload 只进模型请求，不进入用户气泡和 messages',
+      user &&
+        user.text === '运动' &&
+        user.pinvouScene === 'work:personal-workbench' &&
+        messageText === '运动' &&
+        chatInvoke &&
+        chatInvoke.args.message === '隐藏默认专家 prompt\n\n用户需求：\n运动' &&
+        sceneEvents.length === 1 &&
+        sceneEvents[0].scene === 'work:personal-workbench',
+      JSON.stringify({ user, message: state.messages[0], chatInvoke, sceneEvents }));
   }
 
   {
@@ -205,9 +245,9 @@ function rec(name, pass, detail = '') {
   }
 
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
-    /if \(outgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
+    /if \(visibleOutgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
       /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
-      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, t, visualPosterSceneActive\]\);/.test(chatViewSource),
+      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
@@ -220,6 +260,12 @@ function rec(name, pass, detail = '') {
       /pub async fn save_session_pinvou_scene_events/.test(sessionsRustSource) &&
       /pub async fn get_session_pinvou_scene_events/.test(sessionsRustSource),
     'shared session scene sidecar contract');
+
+  rec('三个场景白名单(Tauri/Web/Rust)必须同时登记 work:personal-workbench，否则 sidecar 重载后会丢标签',
+    tauriNormalizeSceneRegexSource.includes('work:personal-workbench') &&
+      webNormalizeSceneRegexSource.includes('work:personal-workbench') &&
+      /Some\("work:personal-workbench"\) => "work:personal-workbench"/.test(sessionsRustSource),
+    'normalize allowlist must register work:personal-workbench across tauri bridge, web bridge and Rust backend');
 
   rec('远程消息不会越过已有 FIFO 队列',
     /var remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&
