@@ -1106,7 +1106,7 @@ function hasPendingCollaborationTasks(bs) {
         }
       }
 
-      async function handleCreateCollaborationTaskGuide() {
+      async function handleCreateCollaborationTaskGuide(memberName) {
         const navigated = await navigateFromScheduledRun('chat');
         if (!navigated) return;
         if (bridge.available && bridge.sessions && bridge.sessions.createNewSession) {
@@ -1117,7 +1117,8 @@ function hasPendingCollaborationTasks(bs) {
           }
         }
         setCurrentView('chat');
-        setChatPrefill('@');
+        const target = String(memberName || '').trim();
+        setChatPrefill(target ? `@${target} ` : '@');
         setPetFocusComposerTick(value => value + 1);
         closeMobileSidebar();
       }

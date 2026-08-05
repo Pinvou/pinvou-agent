@@ -5,7 +5,10 @@ import {
   Award,
   ChevronRight,
   Clock,
+  Copy,
+  Link,
   LineChart,
+  Plus,
   Send,
   User,
   X,
@@ -202,6 +205,76 @@ const getUserAvatarUrl = bs => {
     localAvatarOnly(profile.avatarUrl) ||
     fallbackUserAvatarUrl
   );
+};
+
+const roleLabel = role => {
+  const normalized = String(role || '').toLowerCase();
+  if (normalized === 'owner' || normalized === 'admin') return 'owner';
+  return 'member';
+};
+
+const statusLabel = status => {
+  if (status === 'online') return '在线';
+  if (status === 'pending') return '待加入';
+  return '离线';
+};
+
+const buildCollaborationMembers = (configState, peers) => {
+  const identity = configState?.identity || {};
+  const projectMembers = Array.isArray(configState?.project?.members) ? configState.project.members : [];
+  const selfPeerId = identity.peerId || identity.peer_id || '';
+  const items = [];
+  const seen = new Set();
+  const pushMember = member => {
+    if (!member) return;
+    const key = member.peerId || member.memberId || member.name;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    items.push(member);
+  };
+
+  const selfProjectMember = projectMembers.find(member => member && member.memberId === 'me');
+  if (identity.name || selfProjectMember) {
+    pushMember({
+      memberId: (selfProjectMember && selfProjectMember.memberId) || 'me',
+      peerId: selfPeerId,
+      name: identity.name || selfProjectMember?.name || '我',
+      displayName: identity.name || selfProjectMember?.name || '我',
+      role: roleLabel(selfProjectMember?.role || 'owner'),
+      status: 'online',
+      isSelf: true,
+      source: 'self',
+    });
+  }
+
+  projectMembers.forEach(member => {
+    if (!member || member.memberId === 'me') return;
+    pushMember({
+      memberId: member.memberId,
+      peerId: member.peerId || '',
+      name: member.name || '协作成员',
+      displayName: member.name || '协作成员',
+      role: roleLabel(member.role),
+      status: member.status || 'offline',
+      source: 'invite',
+    });
+  });
+
+  (Array.isArray(peers) ? peers : []).forEach(peer => {
+    if (!peer || !peer.peerId || peer.peerId === selfPeerId) return;
+    pushMember({
+      memberId: peer.peerId,
+      peerId: peer.peerId,
+      name: peer.displayName || peer.peerId,
+      displayName: peer.displayName || peer.peerId,
+      role: 'member',
+      status: peer.status || 'offline',
+      lastSeenAt: peer.lastSeenAt || peer.last_seen_at || '',
+      source: 'relay',
+    });
+  });
+
+  return items;
 };
 
 const appleCardClass = 'relative overflow-hidden rounded-[32px] border border-slate-200/70 bg-[#FCFCFD] shadow-[0_24px_60px_-24px_rgba(15,23,42,0.32),0_10px_28px_-18px_rgba(15,23,42,0.22),inset_0_1px_1px_0_rgba(255,255,255,0.95)] backdrop-blur-2xl transition-all duration-500 ease-out hover:-translate-y-1 hover:scale-[1.01] hover:shadow-[0_30px_72px_-24px_rgba(15,23,42,0.38),0_14px_34px_-20px_rgba(15,23,42,0.26),inset_0_1px_1px_0_rgba(255,255,255,0.95)] active:scale-[0.97] dark:border-white/10 dark:bg-[#1C1C1E]/60 dark:shadow-[0_10px_40px_-10px_rgba(0,0,0,0.5),inset_0_1px_1px_0_rgba(255,255,255,0.15),inset_0_0_0_1px_rgba(255,255,255,0.05)]';
@@ -674,6 +747,175 @@ const StartCollaborationModal = ({ initialName, loading, onClose, onSubmit }) =>
   return createPortal(modal, document.body);
 };
 
+const InviteMembersModal = ({ members, loading, invite, error, copied, onClose, onCopy, onCreateInvite }) => {
+  const modal = (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/25 px-4 backdrop-blur-[10px]" onClick={onClose}>
+      <div
+        className="w-full max-w-[520px] overflow-hidden rounded-[28px] border border-black/[0.06] bg-[#F2F2F7]/95 shadow-[0_28px_80px_rgba(15,23,42,0.30)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#101012]/95"
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 pt-5">
+          <div>
+            <div className="grid h-12 w-12 place-items-center rounded-[18px] bg-[#007AFF] text-white shadow-[0_14px_30px_-12px_rgba(0,122,255,0.8)]">
+              <Link size={22} />
+            </div>
+            <h2 className="mt-4 text-[22px] font-black tracking-normal text-gray-950 dark:text-white">邀请成员</h2>
+            <p className="mt-1 max-w-[360px] text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
+              对方打开链接并填写昵称后，会加入你的 Pinvou 协作空间。
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-black/[0.05] text-gray-500 transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-5">
+          <div className="rounded-[20px] border border-black/[0.06] bg-white p-3 dark:border-white/10 dark:bg-[#1C1C1E]">
+            <div className="mb-2 px-1 text-[12px] font-semibold text-gray-500 dark:text-gray-400">邀请链接</div>
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1 truncate rounded-[14px] bg-gray-100 px-3 py-2 text-[13px] font-medium text-gray-700 dark:bg-black/25 dark:text-gray-200">
+                {loading ? '生成中...' : (invite?.url || '暂未生成')}
+              </div>
+              <button
+                type="button"
+                onClick={invite?.url ? onCopy : onCreateInvite}
+                disabled={loading}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#007AFF] text-white transition-colors hover:bg-[#006FE6] disabled:cursor-not-allowed disabled:opacity-50"
+                title={invite?.url ? '复制邀请链接' : '生成邀请链接'}
+              >
+                {invite?.url ? <Copy size={18} /> : <Plus size={18} />}
+              </button>
+            </div>
+            {copied && <div className="mt-2 px-1 text-[12px] font-semibold text-green-600 dark:text-green-400">已复制</div>}
+            {error && <div className="mt-2 px-1 text-[12px] font-semibold text-red-500">{error}</div>}
+          </div>
+
+          <div className="mt-4 rounded-[20px] border border-black/[0.06] bg-white p-3 dark:border-white/10 dark:bg-[#1C1C1E]">
+            <div className="mb-2 px-1 text-[12px] font-semibold text-gray-500 dark:text-gray-400">当前成员</div>
+            <div className="max-h-52 overflow-y-auto">
+              {members.map(member => (
+                <div key={member.memberId || member.peerId || member.name} className="flex items-center justify-between gap-3 rounded-[14px] px-2 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-200">
+                      <User size={16} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-bold text-gray-950 dark:text-white">{member.isSelf ? `${member.displayName}（我）` : member.displayName}</div>
+                      <div className="text-[11px] font-medium text-gray-500 dark:text-gray-400">{member.role}</div>
+                    </div>
+                  </div>
+                  <span className={cx('shrink-0 rounded-full px-2 py-1 text-[11px] font-bold', member.status === 'online' ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-gray-500/10 text-gray-500 dark:text-gray-400')}>
+                    {statusLabel(member.status)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+  return createPortal(modal, document.body);
+};
+
+const JoinInviteModal = ({ loading, error, onClose, onSubmit }) => {
+  const [token, setToken] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const canSubmit = token.trim().length > 0 && displayName.trim().length > 0 && !loading;
+  const modal = (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/25 px-4 backdrop-blur-[10px]" onClick={onClose}>
+      <form
+        className="w-full max-w-[440px] overflow-hidden rounded-[28px] border border-black/[0.06] bg-[#F2F2F7]/95 shadow-[0_28px_80px_rgba(15,23,42,0.30)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#101012]/95"
+        onClick={event => event.stopPropagation()}
+        onSubmit={event => {
+          event.preventDefault();
+          if (canSubmit) onSubmit({ token: token.trim(), displayName: displayName.trim() });
+        }}
+      >
+        <div className="px-5 pt-5 pb-4">
+          <div className="mx-auto grid h-14 w-14 place-items-center rounded-[20px] bg-[#007AFF] text-white shadow-[0_14px_30px_-12px_rgba(0,122,255,0.8)]">
+            <Link size={25} />
+          </div>
+          <h2 className="mt-4 text-center text-[22px] font-black tracking-normal text-gray-950 dark:text-white">加入协作</h2>
+          <label className="mt-5 block">
+            <span className="mb-2 block px-1 text-[12px] font-semibold text-gray-500 dark:text-gray-400">邀请链接或 token</span>
+            <input
+              autoFocus
+              value={token}
+              onChange={event => setToken(event.target.value)}
+              placeholder="粘贴对方发来的邀请链接"
+              className="h-12 w-full rounded-[16px] border border-black/[0.06] bg-white px-4 text-[14px] font-semibold text-gray-950 outline-none transition-shadow placeholder:text-gray-400 focus:shadow-[0_0_0_4px_rgba(0,122,255,0.16)] dark:border-white/10 dark:bg-[#1C1C1E] dark:text-white"
+            />
+          </label>
+          <label className="mt-4 block">
+            <span className="mb-2 block px-1 text-[12px] font-semibold text-gray-500 dark:text-gray-400">昵称</span>
+            <input
+              value={displayName}
+              onChange={event => setDisplayName(event.target.value)}
+              maxLength={40}
+              placeholder="例如：张三"
+              className="h-12 w-full rounded-[16px] border border-black/[0.06] bg-white px-4 text-[16px] font-semibold text-gray-950 outline-none transition-shadow placeholder:text-gray-400 focus:shadow-[0_0_0_4px_rgba(0,122,255,0.16)] dark:border-white/10 dark:bg-[#1C1C1E] dark:text-white"
+            />
+          </label>
+          {error && <div className="mt-3 rounded-[14px] bg-red-500/10 px-3 py-2 text-[12px] font-semibold text-red-500">{error}</div>}
+        </div>
+        <div className="grid grid-cols-2 border-t border-black/[0.06] dark:border-white/10">
+          <button type="button" onClick={onClose} disabled={loading} className="h-12 text-[16px] font-semibold text-gray-500 transition-colors hover:bg-black/[0.03] active:bg-black/[0.06] dark:text-gray-400 dark:hover:bg-white/[0.06]">取消</button>
+          <button type="submit" disabled={!canSubmit} className="h-12 border-l border-black/[0.06] text-[16px] font-bold text-[#007AFF] transition-colors hover:bg-black/[0.03] active:bg-black/[0.06] disabled:text-gray-400 dark:border-white/10 dark:text-[#0A84FF] dark:hover:bg-white/[0.06]">
+            {loading ? '加入中...' : '加入协作'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+  return createPortal(modal, document.body);
+};
+
+const TaskRecipientModal = ({ members, onClose, onSelect }) => {
+  const modal = (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/25 px-4 backdrop-blur-[10px]" onClick={onClose}>
+      <div className="w-full max-w-[420px] overflow-hidden rounded-[28px] border border-black/[0.06] bg-[#F2F2F7]/95 shadow-[0_28px_80px_rgba(15,23,42,0.30)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#101012]/95" onClick={event => event.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4">
+          <div>
+            <h2 className="text-[20px] font-black tracking-normal text-gray-950 dark:text-white">新建任务</h2>
+            <p className="mt-0.5 text-[12px] font-medium text-gray-500 dark:text-gray-400">选择接收人后进入聊天补充任务内容。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full bg-black/[0.05] text-gray-500 dark:bg-white/10 dark:text-gray-300">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="max-h-[360px] overflow-y-auto px-3 pb-4">
+          {members.map(member => (
+            <button
+              key={member.peerId || member.memberId || member.displayName}
+              type="button"
+              onClick={() => onSelect(member)}
+              className="flex w-full items-center justify-between gap-3 rounded-[18px] px-3 py-3 text-left transition-colors hover:bg-white active:bg-gray-100 dark:hover:bg-white/10 dark:active:bg-white/15"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-gray-600 shadow-sm dark:bg-white/10 dark:text-gray-200">
+                  <User size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-[15px] font-bold text-gray-950 dark:text-white">{member.displayName}</div>
+                  <div className="text-[12px] font-medium text-gray-500 dark:text-gray-400">{statusLabel(member.status)}</div>
+                </div>
+              </div>
+              <ChevronRight size={18} className="text-gray-300 dark:text-gray-500" />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+  return createPortal(modal, document.body);
+};
+
 export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateTaskGuide, onStartCollaboration, onOpenAbilityPool }) => {
   const userAvatarUrl = getUserAvatarUrl(bs);
   const collaborationBridge = bridge.collaboration || {};
@@ -681,8 +923,21 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
   const [actionFeedback, setActionFeedback] = useState({});
   const [startingCollaboration, setStartingCollaboration] = useState(false);
   const [startModalOpen, setStartModalOpen] = useState(false);
+  const [inviteModalOpen, setInviteModalOpen] = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [inviteLink, setInviteLink] = useState(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [joinLoading, setJoinLoading] = useState(false);
+  const [joinError, setJoinError] = useState('');
+  const [taskRecipientOpen, setTaskRecipientOpen] = useState(false);
+  const [taskHint, setTaskHint] = useState('');
   const collaboration = bs?.collaboration || {};
   const configState = collaboration.configState || {};
+  const members = buildCollaborationMembers(configState, collaboration.peers);
+  const taskReceivers = members.filter(member => !member.isSelf && member.peerId && member.status !== 'pending');
+  const hasCollaborators = taskReceivers.length > 0;
   const incomingTasks = Array.isArray(collaboration.incomingTasks) ? collaboration.incomingTasks : [];
   const outgoingTasks = Array.isArray(collaboration.outgoingTasks) ? collaboration.outgoingTasks : [];
   const localTasks = Array.isArray(collaboration.localTasks) ? collaboration.localTasks : [];
@@ -770,6 +1025,54 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
       })
       .finally(() => setStartingCollaboration(false));
   };
+  const handleOpenInvite = () => {
+    setInviteModalOpen(true);
+    setInviteCopied(false);
+    setInviteError('');
+    if (inviteLink) return;
+    handleCreateInvite();
+  };
+  const handleCreateInvite = () => {
+    if (!bridge.available || !collaborationBridge.collaborationCreateInvite || inviteLoading) return;
+    setInviteLoading(true);
+    setInviteError('');
+    collaborationBridge.collaborationCreateInvite()
+      .then(invite => setInviteLink(invite))
+      .catch(error => setInviteError(String(error && error.message ? error.message : error).slice(0, 220)))
+      .finally(() => setInviteLoading(false));
+  };
+  const handleCopyInvite = async () => {
+    const url = inviteLink?.url || '';
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setInviteCopied(true);
+      window.setTimeout(() => setInviteCopied(false), 1600);
+    } catch (error) {
+      setInviteError('复制失败，请手动选择链接复制');
+    }
+  };
+  const handleJoinInvite = request => {
+    if (!bridge.available || !collaborationBridge.collaborationJoinInvite || joinLoading) return;
+    setJoinLoading(true);
+    setJoinError('');
+    collaborationBridge.collaborationJoinInvite(request)
+      .then(() => setJoinModalOpen(false))
+      .catch(error => setJoinError(String(error && error.message ? error.message : error).slice(0, 220)))
+      .finally(() => setJoinLoading(false));
+  };
+  const handleNewTask = () => {
+    setTaskHint('');
+    if (!hasCollaborators) {
+      setTaskHint('请先邀请协作成员');
+      return;
+    }
+    setTaskRecipientOpen(true);
+  };
+  const handleSelectTaskRecipient = member => {
+    setTaskRecipientOpen(false);
+    if (onCreateTaskGuide) onCreateTaskGuide(member.displayName || member.name || '');
+  };
 
   if (!collaborationReady && visibleLocalTasks.length === 0) {
     return (
@@ -791,6 +1094,16 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
             >
               {startingCollaboration ? '连接中...' : '开始协作'}
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setJoinError('');
+                setJoinModalOpen(true);
+              }}
+              className="ml-3 mt-6 rounded-full bg-gray-100 px-5 py-2.5 text-[14px] font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-white/10 dark:text-gray-200 dark:hover:bg-white/15"
+            >
+              加入邀请
+            </button>
           </div>
         </main>
         {startModalOpen && (
@@ -803,6 +1116,16 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
             onSubmit={submitStartCollaboration}
           />
         )}
+        {joinModalOpen && (
+          <JoinInviteModal
+            loading={joinLoading}
+            error={joinError}
+            onClose={() => {
+              if (!joinLoading) setJoinModalOpen(false);
+            }}
+            onSubmit={handleJoinInvite}
+          />
+        )}
       </div>
     );
   }
@@ -813,16 +1136,87 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
         <header className="mb-12 flex items-end justify-between gap-4 px-2">
           <div className="min-w-0">
             <h1 className="truncate text-4xl font-black tracking-normal text-gray-900 dark:text-white md:text-5xl">工作台</h1>
+            {taskHint && <p className="mt-2 text-[13px] font-semibold text-[#007AFF] dark:text-[#0A84FF]">{taskHint}</p>}
           </div>
 
-          <button
-            type="button"
-            aria-label="当前用户头像"
-            className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-gray-100 to-gray-200 shadow-md ring-2 ring-white transition-all hover:scale-110 active:scale-95 dark:from-gray-800 dark:to-gray-900 dark:ring-gray-800"
-          >
-            <img src={userAvatarUrl} alt="当前用户头像" className="h-full w-full object-cover" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={handleOpenInvite}
+              className={cx(
+                'inline-flex h-10 items-center gap-2 rounded-full px-4 text-[13px] font-bold transition-colors',
+                hasCollaborators
+                  ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-200 dark:hover:bg-white/15'
+                  : 'bg-[#007AFF] text-white hover:bg-[#006FE6]'
+              )}
+            >
+              <Link size={16} />
+              邀请成员
+            </button>
+            <button
+              type="button"
+              onClick={handleNewTask}
+              className={cx(
+                'inline-flex h-10 items-center gap-2 rounded-full px-4 text-[13px] font-bold transition-colors',
+                hasCollaborators
+                  ? 'bg-[#007AFF] text-white hover:bg-[#006FE6]'
+                  : 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-white/10 dark:text-gray-500'
+              )}
+            >
+              <Plus size={16} />
+              新建任务
+            </button>
+            <button
+              type="button"
+              aria-label="当前用户头像"
+              className="grid h-12 w-12 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-gray-100 to-gray-200 shadow-md ring-2 ring-white transition-all hover:scale-110 active:scale-95 dark:from-gray-800 dark:to-gray-900 dark:ring-gray-800"
+            >
+              <img src={userAvatarUrl} alt="当前用户头像" className="h-full w-full object-cover" />
+            </button>
+          </div>
         </header>
+
+        <section className="mb-12">
+          <SectionHeader title="协作成员" icon={User} color={IOS_BLUE} />
+          {!hasCollaborators ? (
+            <div className="rounded-[28px] border border-black/[0.06] bg-[#F2F2F7]/70 p-6 shadow-sm dark:border-white/10 dark:bg-white/[0.06]">
+              <div className="grid h-12 w-12 place-items-center rounded-[18px] bg-white text-[#007AFF] shadow-sm dark:bg-white/10 dark:text-[#0A84FF]">
+                <User size={22} />
+              </div>
+              <h3 className="mt-4 text-[20px] font-black tracking-normal text-gray-950 dark:text-white">还没有协作成员</h3>
+              <p className="mt-1 max-w-[520px] text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
+                邀请成员加入你的 Pinvou 协作空间后，可以在聊天中 @TA 分派任务。
+              </p>
+              <button
+                type="button"
+                onClick={handleOpenInvite}
+                className="mt-5 inline-flex h-10 items-center gap-2 rounded-full bg-[#007AFF] px-4 text-[13px] font-bold text-white transition-colors hover:bg-[#006FE6]"
+              >
+                <Link size={16} />
+                邀请成员
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-[24px] border border-black/[0.06] bg-white shadow-sm dark:border-white/10 dark:bg-[#1C1C1E]">
+              {members.map(member => (
+                <div key={member.memberId || member.peerId || member.displayName} className="flex min-h-[68px] items-center justify-between gap-3 border-b border-black/[0.05] px-4 py-3 last:border-b-0 dark:border-white/10">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-200">
+                      <User size={18} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[15px] font-bold text-gray-950 dark:text-white">{member.isSelf ? `${member.displayName}（我）` : member.displayName}</div>
+                      <div className="mt-0.5 text-[12px] font-medium text-gray-500 dark:text-gray-400">{member.role}</div>
+                    </div>
+                  </div>
+                  <span className={cx('shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold', member.status === 'online' ? 'bg-green-500/10 text-green-600 dark:text-green-400' : 'bg-gray-500/10 text-gray-500 dark:text-gray-400')}>
+                    {statusLabel(member.status)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="mb-12">
           <SectionHeader title="今日待办" icon={Clock} color={IOS_BLUE} />
@@ -861,6 +1255,35 @@ export const CollaborationView = ({ theme, bs, onOpenChat, onOpenTask, onCreateT
         onRejectTask={handleRejectTask}
         onCompleteTask={handleCompleteTask}
       />
+      {inviteModalOpen && (
+        <InviteMembersModal
+          members={members}
+          loading={inviteLoading}
+          invite={inviteLink}
+          error={inviteError}
+          copied={inviteCopied}
+          onClose={() => setInviteModalOpen(false)}
+          onCopy={handleCopyInvite}
+          onCreateInvite={handleCreateInvite}
+        />
+      )}
+      {joinModalOpen && (
+        <JoinInviteModal
+          loading={joinLoading}
+          error={joinError}
+          onClose={() => {
+            if (!joinLoading) setJoinModalOpen(false);
+          }}
+          onSubmit={handleJoinInvite}
+        />
+      )}
+      {taskRecipientOpen && (
+        <TaskRecipientModal
+          members={taskReceivers}
+          onClose={() => setTaskRecipientOpen(false)}
+          onSelect={handleSelectTaskRecipient}
+        />
+      )}
     </div>
   );
 };

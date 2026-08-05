@@ -2102,7 +2102,7 @@
             name: member.name || "",
             capabilities: Array.isArray(member.capabilities) ? member.capabilities : [],
             description: member.description || "",
-            role: member.role || "member",
+            role: String(member.role || "member").toLowerCase() === "admin" ? "owner" : (member.role || "member"),
             status: member.status || "pending",
           };
         }) : [],
@@ -2249,6 +2249,41 @@
   async function collaborationExportMemberInvite(memberId) {
     if (!memberId) throw new Error("缺少成员 ID");
     return invoke("collaboration_export_member_invite", { memberId: String(memberId) });
+  }
+
+  async function collaborationCreateInvite() {
+    var invite = await invoke("collaboration_create_invite");
+    return {
+      token: invite && invite.token ? String(invite.token) : "",
+      url: invite && invite.url ? String(invite.url) : "",
+      deepLink: invite && (invite.deepLink || invite.deep_link) ? String(invite.deepLink || invite.deep_link) : "",
+      collaborationSpaceId: invite && (invite.collaborationSpaceId || invite.collaboration_space_id) ? String(invite.collaborationSpaceId || invite.collaboration_space_id) : "",
+      collaborationSpaceName: invite && (invite.collaborationSpaceName || invite.collaboration_space_name) ? String(invite.collaborationSpaceName || invite.collaboration_space_name) : "",
+      createdByPeerId: invite && (invite.createdByPeerId || invite.created_by_peer_id) ? String(invite.createdByPeerId || invite.created_by_peer_id) : "",
+      createdAt: invite && (invite.createdAt || invite.created_at) ? String(invite.createdAt || invite.created_at) : "",
+    };
+  }
+
+  async function collaborationInspectInvite(tokenOrUrl) {
+    var token = String(tokenOrUrl || "").trim();
+    if (!token) throw new Error("请粘贴邀请链接或 token");
+    return invoke("collaboration_inspect_invite", { token: token });
+  }
+
+  async function collaborationJoinInvite(request) {
+    var token = String((request && (request.token || request.url)) || "").trim();
+    var displayName = String((request && request.displayName) || "").trim();
+    if (!token) throw new Error("请粘贴邀请链接或 token");
+    if (!displayName) throw new Error("昵称不能为空");
+    var configState = await invoke("collaboration_join_invite", {
+      request: {
+        token: token,
+        displayName: displayName,
+      },
+    });
+    mergeCollaborationConfigState(configState);
+    await refreshCollaborationStatus();
+    return state.collaboration.configState;
   }
 
   async function collaborationCreateTask(request) {
@@ -2829,6 +2864,9 @@
       collaborationCreateProject: collaborationCreateProject,
       collaborationJoinProject: collaborationJoinProject,
       collaborationExportMemberInvite: collaborationExportMemberInvite,
+      collaborationCreateInvite: collaborationCreateInvite,
+      collaborationInspectInvite: collaborationInspectInvite,
+      collaborationJoinInvite: collaborationJoinInvite,
       collaborationCreateTask: collaborationCreateTask,
       collaborationGetTaskContext: collaborationGetTaskContext,
       collaborationCreateLocalTask: collaborationCreateLocalTask,

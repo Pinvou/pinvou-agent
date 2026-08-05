@@ -16,7 +16,7 @@ export const desktopBridgeApi = {
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  collaboration: ['collaborationAcceptTask', 'collaborationCompleteLocalTask', 'collaborationCreateLocalTask', 'collaborationCreateProject', 'collaborationCreateTask', 'collaborationExportMemberInvite', 'collaborationGetTaskContext', 'collaborationJoinProject', 'collaborationListLocalTasks', 'collaborationRegisterIdentity', 'collaborationRejectTask', 'collaborationStart', 'collaborationUpdateLocalTask', 'openCollaborationMockSession', 'openCollaborationTaskSession', 'refreshCollaborationConfig', 'refreshCollaborationStatus'],
+  collaboration: ['collaborationAcceptTask', 'collaborationCompleteLocalTask', 'collaborationCreateInvite', 'collaborationCreateLocalTask', 'collaborationCreateProject', 'collaborationCreateTask', 'collaborationExportMemberInvite', 'collaborationGetTaskContext', 'collaborationInspectInvite', 'collaborationJoinInvite', 'collaborationJoinProject', 'collaborationListLocalTasks', 'collaborationRegisterIdentity', 'collaborationRejectTask', 'collaborationStart', 'collaborationUpdateLocalTask', 'openCollaborationMockSession', 'openCollaborationTaskSession', 'refreshCollaborationConfig', 'refreshCollaborationStatus'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
   resolutions: ['markResolved'],
@@ -36,6 +36,7 @@ export const desktopOnlyBridgeApi = {
   knowledge: ['loadKnowledgeEmbedderAfterFirstFrame'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
   interaction: ['setMultiAgentMode'],
+  collaboration: ['collaborationCreateInvite', 'collaborationInspectInvite', 'collaborationJoinInvite'],
 };
 
 // 整域桌面专属：Web 端连域都不存在（区别于 platform 这类"空域仍在"）。
