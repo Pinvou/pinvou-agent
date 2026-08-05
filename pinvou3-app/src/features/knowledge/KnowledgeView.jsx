@@ -7,6 +7,7 @@ import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
@@ -839,7 +840,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                       value={loaded ? query : ''}
                       placeholder={t.kbSearchPlaceholder}
                       onChange={loaded ? (e) => setQuery(e.target.value) : () => {}}
-                      onKeyDown={(e) => { if (loaded && e.key === 'Enter' && !e.nativeEvent.isComposing) runSearch(cat, query); }}
+                      onKeyDown={(e) => { if (loaded && e.key === 'Enter' && !isImeComposing(e)) runSearch(cat, query); }}
                       isDark={isDark}
                       compact
                       disabled={!loaded}
@@ -1485,7 +1486,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setNewColl(null)}>
               <div onClick={(e) => e.stopPropagation()} className={`w-[400px] rounded-2xl p-6 ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
                 <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
-                <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) createColl(); }}
+                <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
                   className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />
                 <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
                   className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`} />

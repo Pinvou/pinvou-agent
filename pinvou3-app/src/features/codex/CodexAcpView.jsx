@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   AlertTriangle, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
@@ -2462,7 +2463,7 @@ export function CodexAcpView({
                 onKeyDown={event => {
                   // 输入法合成期间(例如中文输入法敲回车确认候选词)不要触发发送,
                   // 否则一次回车会既上屏又发送。与 ChatView / PetWindow 保持一致。
-                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  if (event.key === 'Enter' && !event.shiftKey && !isImeComposing(event)) {
                     event.preventDefault();
                     if (!sessionSyncing) send();
                   }

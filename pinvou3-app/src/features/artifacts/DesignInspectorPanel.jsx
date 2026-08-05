@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const rgbToHex = (value, fallback = '#000000') => {
   const raw = String(value || '').trim();
@@ -323,7 +324,7 @@ const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onAppl
                 onChange={(e) => setColorDraft(e.target.value)}
                 onBlur={submitColorDraft}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  if (e.key === 'Enter' && !isImeComposing(e)) {
                     e.preventDefault();
                     submitColorDraft();
                     setColorMenu(null);
@@ -456,7 +457,7 @@ const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onAppl
                   value={textDraft}
                   onChange={(e) => setTextDraft(e.target.value)}
                   onBlur={commitText}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.blur(); } }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) { e.preventDefault(); e.currentTarget.blur(); } }}
                 />
               </label>
             )}
