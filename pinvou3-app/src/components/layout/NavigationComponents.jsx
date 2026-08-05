@@ -5,6 +5,7 @@ import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
+      const unreadAria = t?.uiScheduled?.navUnreadAria || label || 'Unread';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -26,7 +27,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? 'text-[#0B57D0] dark:text-[#041E49]' : ''}`}>
             {icon}
             {unread && (
-              <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.navUnreadAria}
+              <span data-testid="scheduled-nav-unread" aria-label={unreadAria}
                 className={"absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2 bg-[#0B57D0] " + (active ? 'border-[#D3E3FD] dark:border-[#A8C7FA]' : 'border-[#F0F4F9] dark:border-[#1E1F20]')} />
             )}
           </div>
