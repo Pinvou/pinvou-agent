@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) fn configure_private_open_options(_options: &mut OpenOptions) {}
 
@@ -17,6 +17,10 @@ pub(super) fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
 
 pub(super) fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
+    Vec::new()
 }
 
 #[cfg(test)]

@@ -97,10 +97,21 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
 
 fn host_roots() -> Vec<HostFileRoot> {
     let home = paths::user_home_dir();
-    vec![HostFileRoot {
+    let mut roots = vec![HostFileRoot {
         name: "Home".to_string(),
         path: platform::display_path(&home),
-    }]
+    }];
+    for (name, path) in platform::host_file_roots() {
+        let display_path = platform::display_path(&path);
+        if roots.iter().any(|root| root.path == display_path) {
+            continue;
+        }
+        roots.push(HostFileRoot {
+            name,
+            path: display_path,
+        });
+    }
+    roots
 }
 
 #[derive(Debug, Clone, Serialize)]

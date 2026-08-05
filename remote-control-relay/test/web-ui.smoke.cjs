@@ -143,6 +143,20 @@ function minimalRpcResult(command, args = {}) {
       return { ready: false, missing: ['desktop_component'] };
     case 'kb_model_status':
       return { installed: false, downloading: false };
+    case 'web_access_list_host_files': {
+      const roots = [
+        { name: 'Home', path: 'C:\\Users\\smoke' },
+        { name: 'C:', path: 'C:\\' },
+        { name: 'D:', path: 'D:\\' },
+      ];
+      if (args.path === 'D:\\') {
+        return {
+          path: 'D:\\', parent: null, roots,
+          entries: [{ name: 'report.txt', path: 'D:\\report.txt', is_dir: false, size: 12 }],
+        };
+      }
+      return { path: 'C:\\Users\\smoke', parent: 'C:\\Users', roots, entries: [] };
+    }
     case 'get_effective_model_config':
     case 'find_resumable_run':
     case 'get_active_persona':
@@ -490,6 +504,40 @@ async function main() {
 
   const desktopLayout = await waitForSharedUi(desktopPage, 1440, 900);
   record('共享 WebUI 在 1440x900 电脑浏览器完整渲染', desktopLayout.textLength > 10);
+
+  const hostPickerNavigation = await desktopPage.evaluate(async () => {
+    const waitFor = async predicate => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (predicate()) return;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      throw new Error('host picker state timeout');
+    };
+    const rowNames = () => Array.from(document.querySelectorAll('.pinvou-host-picker-name'))
+      .map(node => node.textContent);
+    const pickerPromise = window.PinvouHostFilePicker.open({ multiple: true });
+    await waitFor(() => document.querySelector('.pinvou-host-picker-root-button:not(:disabled)'));
+    document.querySelector('.pinvou-host-picker-root-button').click();
+    await waitFor(() => rowNames().includes('D:'));
+    const rootNames = rowNames();
+    const dDrive = Array.from(document.querySelectorAll('.pinvou-host-picker-row'))
+      .find(row => row.querySelector('.pinvou-host-picker-name')?.textContent === 'D:');
+    dDrive.click();
+    await waitFor(() => document.querySelector('.pinvou-host-picker-path')?.textContent === 'D:\\');
+    const driveNames = rowNames();
+    document.querySelector('.pinvou-host-picker-toolbar .pinvou-host-picker-icon').click();
+    await waitFor(() => rowNames().includes('D:'));
+    const rootsAfterUp = rowNames();
+    document.querySelector('.pinvou-host-picker-actions .pinvou-host-picker-button').click();
+    await pickerPromise;
+    return { rootNames, driveNames, rootsAfterUp };
+  });
+  record('远程文件选择器动态列出盘符，盘根目录上一级返回此电脑',
+    ['用户目录', 'C:', 'D:'].every(name => hostPickerNavigation.rootNames.includes(name))
+      && hostPickerNavigation.driveNames.includes('report.txt')
+      && !hostPickerNavigation.driveNames.includes('C:')
+      && ['用户目录', 'C:', 'D:'].every(name => hostPickerNavigation.rootsAfterUp.includes(name)),
+    JSON.stringify(hostPickerNavigation));
 
   const joinFrames = browserWebSocketFrames.filter(message => message.type === 'web_client_join');
   const v2ClientFrames = browserWebSocketFrames.filter(message => (

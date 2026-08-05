@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 mod unix;
@@ -34,6 +34,10 @@ pub(super) fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
 
 pub(super) fn display_path(path: &Path) -> String {
     imp::display_path(path)
+}
+
+pub(super) fn host_file_roots() -> Vec<(String, PathBuf)> {
+    imp::host_file_roots()
 }
 
 #[cfg(test)]
