@@ -76,7 +76,10 @@ function injectSource() {
         case 'kb_find_duplicates': return Promise.resolve([]);
         case 'kb_collection_list': return Promise.resolve(COLLS);
         case 'kb_documents': return Promise.resolve((args&&args.collectionId>0)?DOCS:DOCS);
-        case 'kb_index_status': return Promise.resolve({running:false,phase:'idle',done:0,total:0});
+        case 'kb_index_status': return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,phase:'idle',done:0,total:0,failed:0});
+        case 'kb_index_resume': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,resumable:false,phase:'parsing'}; return Promise.resolve(window.__KB_INDEX_STATE__);
+        case 'kb_index_cancel': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:false,resumable:false,phase:'cancelled'}; return Promise.resolve(null);
+        case 'kb_index_retry_file': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,phase:'parsing',failed:0,failedFiles:[]}; return Promise.resolve(window.__KB_INDEX_STATE__);
         case 'kb_collection_create': return Promise.resolve(3);
         case 'kb_collection_add_sources': return Promise.resolve({running:true,phase:'parsing',done:0,total:2});
         case 'kb_retrieve': return Promise.resolve([{text:'受访者认为保险报价流程过于繁琐，希望一键比价。竞品在交强险环节体验更顺畅。',score:-1.5,docName:'访谈纪要.md',docPath:'/home/x/访谈纪要.md',ord:0}]);
@@ -162,7 +165,7 @@ async function clickContains(page, sel, text) {
   }, callsBeforeKnowledge);
   const initialCommands = [
     'kb_scan_status', 'kb_stats', 'kb_type_counts',
-    'kb_collection_list', 'kb_documents', 'kb_embed_info', 'kb_model_status',
+    'kb_collection_list', 'kb_documents', 'kb_embed_info', 'kb_model_status', 'kb_index_status',
   ];
   rec('⓪b 本地知识首次加载不重复请求', initialCommands.every(cmd => initialKnowledgeCalls[cmd] === 1), JSON.stringify(initialKnowledgeCalls));
   await clickContains(page, 'button', '本地文件管理');
@@ -225,7 +228,22 @@ async function clickContains(page, sel, text) {
       && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件')));
   rec('⑥ 返回全部知识集后恢复跨库文件表', unscoped);
 
-  rec('⑦ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
+  // 模拟应用重启后发现中断任务：应展示保存进度并提供继续/取消，不要求重新选择整批文件。
+  await page.evaluate(() => { window.__KB_INDEX_STATE__ = {
+    jobId:'kb-import-test',running:false,resumable:true,collectionId:1,phase:'interrupted',
+    done:3,total:8,completed:3,skipped:0,failed:0,currentPath:null,
+    currentChunksDone:0,currentChunksTotal:0,failedFiles:[]
+  }; });
+  await clickContains(page, 'button', '本地文件管理'); await sleep(300);
+  await clickContains(page, 'button', '知识库'); await sleep(700);
+  const resumeUi = await page.evaluate(() => document.body.innerText.includes('发现未完成的导入任务')
+    && document.body.innerText.includes('文件进度 3/8') && document.body.innerText.includes('继续导入'));
+  await clickContains(page, 'button', '继续导入'); await sleep(300);
+  const resumed = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_index_resume'
+    && c.args && c.args.jobId === 'kb-import-test'));
+  rec('⑦ 中断任务显示持久化进度并可继续', resumeUi && resumed);
+
+  rec('⑧ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 
   await browser.close();
   const failed = results.filter(r => !r.pass).length;

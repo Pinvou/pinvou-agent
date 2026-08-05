@@ -6,12 +6,14 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::embed::{self, Embedder};
 
@@ -71,6 +73,13 @@ pub struct ChunkHit {
     pub doc_name: String,
     pub doc_path: String,
     pub ord: i64,
+}
+
+pub(super) enum ImportIngestOutcome {
+    Completed,
+    Skipped,
+    Cancelled,
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -183,11 +192,26 @@ impl L1Store {
 
     /// 删知识集 + 其全部文档/块（chunks_fts 由触发器同步）。
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
-        let c = self.conn.lock();
-        c.execute("DELETE FROM chunks WHERE collection_id=?1", params![id])?;
-        c.execute("DELETE FROM documents WHERE collection_id=?1", params![id])?;
-        c.execute("DELETE FROM collections WHERE id=?1", params![id])?;
-        Ok(())
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM knowledge_import_staged_chunks WHERE job_id IN \
+             (SELECT id FROM knowledge_import_jobs WHERE collection_id=?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM knowledge_import_items WHERE job_id IN \
+             (SELECT id FROM knowledge_import_jobs WHERE collection_id=?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM knowledge_import_jobs WHERE collection_id=?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM chunks WHERE collection_id=?1", params![id])?;
+        tx.execute("DELETE FROM documents WHERE collection_id=?1", params![id])?;
+        tx.execute("DELETE FROM collections WHERE id=?1", params![id])?;
+        tx.commit()
     }
 
     pub fn set_collection_status(&self, id: i64, status: &str) {
@@ -310,7 +334,8 @@ impl L1Store {
         let c = self.conn.lock();
         c.execute(
             "INSERT INTO documents(collection_id,path,name,ext,size,mtime,parse_status,parsed_at) \
-             VALUES(?1,?2,?3,?4,?5,?6,'pending',0) \
+             SELECT ?1,?2,?3,?4,?5,?6,'pending',0 \
+             WHERE EXISTS(SELECT 1 FROM collections WHERE id=?1) \
              ON CONFLICT(collection_id,path) DO UPDATE SET \
                name=excluded.name,ext=excluded.ext,size=excluded.size,mtime=excluded.mtime",
             params![collection_id, path, name, ext, size, mtime],
@@ -435,6 +460,261 @@ impl L1Store {
                 self.set_doc_status(doc_id, "skipped", 0);
                 "skipped".into()
             }
+        }
+    }
+
+    /// 可恢复任务使用的单文件入库：每个 embedding 批次先写暂存表；全部完成后，在同一
+    /// 事务中替换正式 chunks 并把任务文件标记为 completed。崩溃只会留下不可检索的暂存
+    /// 块，续跑会跳过它们，绝不会暴露半份文档或重复正式块。
+    pub(super) fn ingest_import_item(
+        &self,
+        job_id: &str,
+        item_id: i64,
+        collection_id: i64,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> ImportIngestOutcome {
+        let path_str = path.to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(unnamed)")
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let (size, mtime) = match std::fs::metadata(path) {
+            Ok(m) => (
+                m.len() as i64,
+                m.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+            ),
+            Err(e) => return ImportIngestOutcome::Failed(format!("读取文件信息失败: {e}")),
+        };
+        let doc_id = match self.upsert_document(
+            collection_id,
+            &path_str,
+            &name,
+            ext.as_deref(),
+            size,
+            mtime,
+        ) {
+            Ok(id) => id,
+            Err(e) => return ImportIngestOutcome::Failed(format!("创建文档记录失败: {e}")),
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return ImportIngestOutcome::Cancelled;
+        }
+
+        let res = crate::features::files::file_ingest::ingest(path);
+        let warning = res.warning.clone();
+        let body = match res.markdown {
+            Some(md) if !md.trim().is_empty() => Some(md),
+            _ if res.kind == "image" => crate::features::files::file_ingest::ocr_image_for_kb(path),
+            _ => None,
+        };
+        let Some(markdown) = body.filter(|v| !v.trim().is_empty()) else {
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                tx.execute("DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2", params![job_id, item_id])?;
+                tx.execute("UPDATE documents SET parse_status='skipped',n_chunks=0,parsed_at=?2 WHERE id=?1", params![doc_id, now()])?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET state='skipped',error=?2,total_chunks=0,completed_chunks=0,updated_at=?3 WHERE id=?1",
+                    params![item_id, warning, now()],
+                )?;
+                tx.commit()
+            });
+            return if result.is_ok() {
+                ImportIngestOutcome::Skipped
+            } else {
+                ImportIngestOutcome::Failed("保存跳过状态失败".into())
+            };
+        };
+        let chunks = chunk_text(&markdown, CHUNK_CHARS, CHUNK_OVERLAP);
+        let content_hash = {
+            let mut hasher = Sha256::new();
+            for chunk in &chunks {
+                hasher.update((chunk.len() as u64).to_le_bytes());
+                hasher.update(chunk.as_bytes());
+            }
+            crate::platform::encoding::hex_lower(&hasher.finalize())
+        };
+
+        // 源内容变化时丢弃旧检查点；内容相同则保留已经完成的分块。
+        {
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                let previous: Option<String> = tx.query_row(
+                    "SELECT content_hash FROM knowledge_import_items WHERE id=?1 AND job_id=?2",
+                    params![item_id, job_id],
+                    |r| r.get(0),
+                )?;
+                if previous.as_deref() != Some(content_hash.as_str()) {
+                    tx.execute("DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2", params![job_id, item_id])?;
+                }
+                let staged: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET content_hash=?3,total_chunks=?4,completed_chunks=?5,updated_at=?6 WHERE id=?1 AND job_id=?2",
+                    params![item_id, job_id, content_hash, chunks.len() as i64, staged, now()],
+                )?;
+                tx.commit()
+            });
+            if let Err(e) = result {
+                return ImportIngestOutcome::Failed(format!("初始化分块检查点失败: {e}"));
+            }
+        }
+
+        let (staged_ords, staged_has_null): (std::collections::HashSet<usize>, bool) = {
+            let c = self.conn.lock();
+            let mut stmt = match c.prepare(
+                "SELECT ord FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+            ) {
+                Ok(v) => v,
+                Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+            };
+            let ords = match stmt.query_map(params![job_id, item_id], |r| r.get::<_, i64>(0)) {
+                Ok(rows) => match rows.collect::<rusqlite::Result<Vec<_>>>() {
+                    Ok(v) => v.into_iter().map(|n| n as usize).collect(),
+                    Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+                },
+                Err(e) => return ImportIngestOutcome::Failed(e.to_string()),
+            };
+            let has_null: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM knowledge_import_staged_chunks \
+                     WHERE job_id=?1 AND item_id=?2 AND vec IS NULL)",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            (ords, has_null)
+        };
+        let missing: Vec<usize> = (0..chunks.len())
+            .filter(|ord| !staged_ords.contains(ord))
+            .collect();
+        // 同一文档保持“全向量或全全文”语义。若上次某批已降级为 NULL，续跑不能再形成
+        // 一半有向量、一半无向量的文档；模型未就绪或超限时也清除既有暂存向量。
+        let mut use_vectors = if staged_has_null {
+            None
+        } else {
+            self.embedder().filter(|_| chunks.len() <= MAX_EMBED_CHUNKS)
+        };
+        if use_vectors.is_none() && !staged_ords.is_empty() {
+            let _ = self.conn.lock().execute(
+                "UPDATE knowledge_import_staged_chunks SET vec=NULL WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+            );
+        }
+
+        for ord_batch in missing.chunks(EMBED_BATCH) {
+            if cancel.load(Ordering::Relaxed) {
+                return ImportIngestOutcome::Cancelled;
+            }
+            let texts: Vec<String> = ord_batch.iter().map(|ord| chunks[*ord].clone()).collect();
+            let vectors = if let Some(emb) = &use_vectors {
+                match emb.embed(&texts) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("[knowledge] embedding 批失败，该文档降级仅全文: {e}");
+                        use_vectors = None;
+                        let _ = self.conn.lock().execute(
+                            "UPDATE knowledge_import_staged_chunks SET vec=NULL WHERE job_id=?1 AND item_id=?2",
+                            params![job_id, item_id],
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let mut c = self.conn.lock();
+            let result = c.transaction().and_then(|tx| {
+                {
+                    let mut stmt = tx.prepare_cached(
+                        "INSERT OR REPLACE INTO knowledge_import_staged_chunks(job_id,item_id,ord,text,n_tokens,vec) VALUES(?1,?2,?3,?4,?5,?6)",
+                    )?;
+                    for (batch_pos, ord) in ord_batch.iter().enumerate() {
+                        let text = &chunks[*ord];
+                        let vec = vectors
+                            .as_ref()
+                            .and_then(|all| all.get(batch_pos))
+                            .map(|v| embed::vec_to_blob(v));
+                        stmt.execute(params![job_id, item_id, *ord as i64, text, text.chars().count() as i64, vec])?;
+                    }
+                }
+                let completed: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                    params![job_id, item_id],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE knowledge_import_items SET completed_chunks=?2,updated_at=?3 WHERE id=?1",
+                    params![item_id, completed, now()],
+                )?;
+                tx.commit()
+            });
+            if let Err(e) = result {
+                return ImportIngestOutcome::Failed(format!("保存分块检查点失败: {e}"));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            return ImportIngestOutcome::Cancelled;
+        }
+        let mut c = self.conn.lock();
+        let result = c.transaction().and_then(|tx| {
+            let valid: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents d \
+                 JOIN knowledge_import_items i ON i.id=?2 AND i.job_id=?1 AND i.state='running' \
+                 JOIN knowledge_import_jobs j ON j.id=i.job_id AND j.state='running' \
+                 WHERE d.id=?3 AND d.collection_id=?4)",
+                params![job_id, item_id, doc_id, collection_id],
+                |r| r.get(0),
+            )?;
+            if !valid {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            let staged: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+                |r| r.get(0),
+            )?;
+            if staged != chunks.len() as i64 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            tx.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
+            tx.execute(
+                "INSERT INTO chunks(document_id,collection_id,ord,text,n_tokens,vec) \
+                 SELECT ?3,?4,ord,text,n_tokens,vec FROM knowledge_import_staged_chunks \
+                 WHERE job_id=?1 AND item_id=?2 ORDER BY ord",
+                params![job_id, item_id, doc_id, collection_id],
+            )?;
+            tx.execute(
+                "UPDATE documents SET parse_status='parsed',n_chunks=?2,parsed_at=?3 WHERE id=?1",
+                params![doc_id, chunks.len() as i64, now()],
+            )?;
+            tx.execute(
+                "UPDATE knowledge_import_items SET state='completed',completed_chunks=total_chunks,error=NULL,updated_at=?2 WHERE id=?1",
+                params![item_id, now()],
+            )?;
+            tx.execute(
+                "DELETE FROM knowledge_import_staged_chunks WHERE job_id=?1 AND item_id=?2",
+                params![job_id, item_id],
+            )?;
+            tx.commit()
+        });
+        match result {
+            Ok(()) => ImportIngestOutcome::Completed,
+            Err(e) => ImportIngestOutcome::Failed(format!("提交文档失败: {e}")),
         }
     }
 

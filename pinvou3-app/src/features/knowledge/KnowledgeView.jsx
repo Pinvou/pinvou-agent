@@ -587,6 +587,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch (e) {}
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
+        try { setIdx(await inv('kb_index_status')); } catch (e) {}
       }, []);
       // 本地知识的两个 subtab 都依赖知识集数据；随 sub 切换刷新一次。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
@@ -638,6 +639,22 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         }, 1000);
         return () => clearInterval(id);
       }, [indexing]);
+
+      const resumeImport = async () => {
+        if (!idx || !idx.jobId) return;
+        try { setIdx(await inv('kb_index_resume', { jobId: idx.jobId })); } catch (e) {}
+      };
+      const cancelImport = async () => {
+        try {
+          await inv('kb_index_cancel');
+          setIdx(await inv('kb_index_status'));
+          loadColls();
+        } catch (e) {}
+      };
+      const retryImportFile = async (itemId) => {
+        if (!idx || !idx.jobId) return;
+        try { setIdx(await inv('kb_index_retry_file', { jobId: idx.jobId, itemId })); } catch (e) {}
+      };
 
       // newColl 带 id=编辑(改名/改分类),否则新建。编辑时透传原 description(后端 UPDATE 会覆盖该列)。
       const createColl = async () => {
@@ -1164,6 +1181,56 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     {embedInfo && embedInfo.enabled ? `${t.kbEmbedOn}（${embedInfo.model}）` : t.kbEmbedOff}
                   </span>
                 </div>
+
+                {idx && (idx.running || idx.resumable || idx.failed > 0) && (
+                  <div className={`mb-5 rounded-2xl border p-4 ${isDark ? 'border-white/10 bg-white/[0.04]' : 'border-[#dfe3ee] bg-[#f8f9fd]'}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className={`text-[14px] font-bold ${ink}`}>
+                          {idx.resumable ? t.kbImportInterrupted : (idx.running ? t.kbIndexing : t.kbImportDoneWithErrors)}
+                        </div>
+                        {idx.resumable && <div className={`mt-1 text-[12px] ${muted}`}>{t.kbImportInterruptedHint}</div>}
+                        <div className={`mt-2 text-[12px] ${muted}`}>
+                          {t.kbImportProgress} {idx.done || 0}/{idx.total || 0}
+                          {idx.failed > 0 ? ` · ${t.kbImportErrors} ${idx.failed}` : ''}
+                        </div>
+                        {idx.currentPath && (
+                          <div className={`mt-1 max-w-[760px] truncate text-[12px] ${muted}`} title={idx.currentPath}>
+                            {t.kbCurrentFile} {idx.currentPath}
+                            {idx.currentChunksTotal > 0 ? ` · ${t.kbChunkProgress} ${idx.currentChunksDone}/${idx.currentChunksTotal}` : ''}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {idx.resumable && (
+                          <button onClick={resumeImport} className={`rounded-full px-4 py-2 text-[13px] font-semibold ${accent}`}>{t.kbResumeImport}</button>
+                        )}
+                        {(idx.running || idx.resumable) && (
+                          <button onClick={cancelImport} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancelImport}</button>
+                        )}
+                      </div>
+                    </div>
+                    {idx.failedFiles && idx.failedFiles.length > 0 && (
+                      <div className="mt-4 border-t border-gray-400/15 pt-3">
+                        <div className={`mb-2 text-[12px] font-semibold ${ink}`}>{t.kbFailedFiles}</div>
+                        <div className="flex flex-col gap-2">
+                          {idx.failedFiles.map((file) => (
+                            <div key={file.itemId} className="flex items-center gap-3 text-[12px]">
+                              <div className="min-w-0 flex-1">
+                                <div className={`truncate font-medium ${ink}`} title={file.path}>{file.name}</div>
+                                <div className="truncate text-[#d63a3a]" title={file.error}>{file.error}</div>
+                              </div>
+                              <button onClick={() => retryImportFile(file.itemId)} disabled={indexing}
+                                className={`shrink-0 rounded-full px-3 py-1.5 font-medium ${soft} ${indexing ? 'cursor-default opacity-50' : ''}`}>
+                                {t.kbRetryFile}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {colls.length === 0 ? (
                   <div className={`text-center py-16 ${muted} text-[14px]`}>{t.kbNoColls}</div>
