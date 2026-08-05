@@ -81,7 +81,11 @@ codewhale-config = { path = "../../CodeWhale/crates/config" }
 # 注意:oauth2(经 reqwest 0.12 传递)会把 rustls 0.23 的 `ring` feature 也拉进图,
 # 使 rustls 同时启用 aws-lc-rs + ring。tokio-tungstenite 的无参 ClientConfig::builder()
 # 在两 provider 共存时会 panic,故需在启动时显式 install_default(见 lib.rs)。
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream", "query"] }
+# system-proxy: reqwest 0.13 的 default feature,读 macOS SystemConfiguration /
+# Windows 系统代理设置(非环境变量)。此前 default-features=false 把它关掉,
+# 导致用「系统代理」模式(非 TUN)的用户模型请求直连而被代理工具的路由规则
+# 绕过。显式启用后,reqwest 在 Client::build() 时自动注入系统代理 matcher。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream", "query", "system-proxy"] }
 wait-timeout = "0.2"
 
 # rustls 直依赖:仅为在启动时调 aws_lc_rs::default_provider().install_default()
