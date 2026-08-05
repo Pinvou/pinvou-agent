@@ -14,7 +14,10 @@ const {
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { prepareWebTemplate } = require("./web-template.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
-const { stageWindowsRuntime } = require("./windows-runtime.js");
+const {
+  stageWindowsOnnxRuntime,
+  stageWindowsRuntime,
+} = require("./windows-runtime.js");
 
 function tauriCommandIndex(args) {
   return args.findIndex((argument) => argument === "build" || argument === "bundle");
@@ -89,15 +92,21 @@ function prepareTauriArgs(
   return prepared;
 }
 
-function runTauri(preparedArgs, spawn = spawnSync) {
+function runTauri(preparedArgs, spawn = spawnSync, environment = process.env) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
     cwd: APP_ROOT,
-    env: { ...process.env, [WRAPPER_ENV]: "1" },
+    env: { ...environment, [WRAPPER_ENV]: "1" },
     stdio: "inherit",
   });
   if (child.error) throw child.error;
   return child.status === null ? 1 : child.status;
+}
+
+function tauriRuntimeEnvironment(runtime, environment = process.env) {
+  return runtime
+    ? { ...environment, ORT_DYLIB_PATH: runtime.onnxRuntimeDylib }
+    : environment;
 }
 
 function main() {
@@ -110,9 +119,15 @@ function main() {
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
   const additionalConfigs = [];
+  // Windows 的 fastembed 使用动态 ONNX Runtime。正式包 staging 完整运行时并通过
+  // resource overlay 携带 DLL；dev 只校验并展开 ONNX 组件，避免为 UI 开发准备无关工具。
   const windowsRuntime =
-    hasTauriBuildCommand && process.platform === "win32" ? stageWindowsRuntime() : null;
-  if (windowsRuntime) {
+    hasTauriBuildCommand && process.platform === "win32"
+      ? stageWindowsRuntime()
+      : null;
+  const windowsDevRuntime =
+    isDev && process.platform === "win32" ? stageWindowsOnnxRuntime() : null;
+  if (windowsRuntime && hasTauriBuildCommand) {
     stageWindowsInstaller({
       bundleTargets: windowsBundleTargets(args),
       runtime: windowsRuntime,
@@ -149,7 +164,8 @@ function main() {
     );
   }
 
-  process.exitCode = runTauri(preparedArgs);
+  const tauriEnvironment = tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime);
+  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
 }
 
 if (require.main === module) {
@@ -167,9 +183,11 @@ module.exports = {
   prepareCodexBridge,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
+  stageWindowsOnnxRuntime,
   stageWindowsRuntime,
   prepareTauriArgs,
   runTauri,
+  tauriRuntimeEnvironment,
   tauriCommandIndex,
   windowsBundleTargets,
 };

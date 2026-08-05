@@ -1,6 +1,7 @@
 param(
   [switch]$ForceLfsPull,
-  [switch]$CacheKeyOnly
+  [switch]$CacheKeyOnly,
+  [switch]$OnnxOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,12 +70,18 @@ function Test-LfsPointer {
   return [string]$firstLine -eq "version https://git-lfs.github.com/spec/v1"
 }
 
-function Get-LfsPointerPaths {
+function Get-LfsTrackedPaths {
   $trackedPaths = Invoke-Git -WorkingDirectory $runtimeRoot -Arguments @("lfs", "ls-files", "-n") -FailureMessage "Unable to list Windows runtime Git LFS files."
   return @(
     $trackedPaths |
       ForEach-Object { [string]$_ } |
-      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  )
+}
+
+function Get-LfsPointerPaths {
+  return @(
+    Get-LfsTrackedPaths |
       Where-Object {
         $fullPath = Join-Path $runtimeRoot $_.Replace('/', '\')
         Test-LfsPointer -Path $fullPath
@@ -91,10 +98,16 @@ if ($CacheKeyOnly) {
 
 $currentCommit = Get-CurrentRuntimeCommit
 if ($currentCommit -ne $expectedCommit) {
-  Invoke-Git -WorkingDirectory $repoRoot -Arguments @(
-    "-c", "submodule.$runtimePath.update=checkout",
-    "submodule", "update", "--init", "--checkout", "--", $runtimePath
-  ) -FailureMessage "Unable to initialize the private Windows runtime submodule. Confirm repository access and retry." | Out-Null
+  $previousSkipSmudge = [Environment]::GetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE")
+  try {
+    if ($OnnxOnly) { [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", "1") }
+    Invoke-Git -WorkingDirectory $repoRoot -Arguments @(
+      "-c", "submodule.$runtimePath.update=checkout",
+      "submodule", "update", "--init", "--checkout", "--", $runtimePath
+    ) -FailureMessage "Unable to initialize the private Windows runtime submodule. Confirm repository access and retry." | Out-Null
+  } finally {
+    [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", $previousSkipSmudge)
+  }
 
   $currentCommit = Get-CurrentRuntimeCommit
   if ($currentCommit -ne $expectedCommit) {
@@ -105,16 +118,24 @@ if ($currentCommit -ne $expectedCommit) {
   Write-Host "Reused private Windows runtime submodule checkout: $expectedCommit"
 }
 
-$pointerPaths = @(Get-LfsPointerPaths)
+$trackedPaths = @(Get-LfsTrackedPaths)
+$pointerPaths = if ($ForceLfsPull) { $trackedPaths } else { @(Get-LfsPointerPaths) }
+if ($OnnxOnly) {
+  $pointerPaths = @($pointerPaths | Where-Object { $_ -like "*/onnxruntime-win-x64-*-runtime.zip" })
+}
 if ($ForceLfsPull -or $pointerPaths.Count -gt 0) {
   $lfsArguments = @("lfs", "pull")
-  if (-not $ForceLfsPull -and $pointerPaths.Count -gt 0) {
+  if ($OnnxOnly -or (-not $ForceLfsPull -and $pointerPaths.Count -gt 0)) {
     $lfsArguments += "--include=$($pointerPaths -join ',')"
     $lfsArguments += "--exclude="
   }
   Invoke-Git -WorkingDirectory $runtimeRoot -Arguments $lfsArguments -FailureMessage "Unable to materialize Git LFS objects for the private Windows runtime submodule." | Out-Null
 
-  $remainingPointers = @(Get-LfsPointerPaths)
+  $remainingPointers = if ($OnnxOnly) {
+    @($pointerPaths | Where-Object { Test-LfsPointer -Path (Join-Path $runtimeRoot $_.Replace('/', '\')) })
+  } else {
+    @(Get-LfsPointerPaths)
+  }
   if ($remainingPointers.Count -gt 0) {
     throw "Git LFS objects remain unmaterialized: $($remainingPointers -join ', ')"
   }

@@ -14,6 +14,7 @@ const {
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,
+  tauriRuntimeEnvironment,
   tauriCommandIndex,
 } = require("../scripts/tauri/build.js");
 const {
@@ -123,17 +124,25 @@ assert.match(
   "Windows dev must prepare the ACP Bridge without packaging overlays",
 );
 let tauriInvocation = null;
+const tauriEnvironment = { PINVOU_TEST_ENV: "kept" };
 assert.equal(
   runTauri(["--version"], (command, args, options) => {
     tauriInvocation = { command, args, options };
     return { status: 0 };
-  }),
+  }, tauriEnvironment),
   0,
 );
 assert.equal(tauriInvocation.command, process.execPath);
 assert.match(tauriInvocation.args[0], /@tauri-apps[\\/]cli[\\/]tauri\.js$/);
 assert.equal(tauriInvocation.args[1], "--version");
 assert.equal(tauriInvocation.options.env[WRAPPER_ENV], "1");
+assert.equal(tauriInvocation.options.env.PINVOU_TEST_ENV, "kept");
+const ortEnvironment = tauriRuntimeEnvironment(
+  { onnxRuntimeDylib: "C:\\runtime\\onnxruntime.dll" },
+  tauriEnvironment,
+);
+assert.equal(ortEnvironment.PINVOU_TEST_ENV, "kept");
+assert.equal(ortEnvironment.ORT_DYLIB_PATH, "C:\\runtime\\onnxruntime.dll");
 
 const linux = composeEffectiveConfig([platformConfigPath("linux")]).effectiveConfig;
 assert.deepEqual(linux.bundle.targets, ["deb"]);
