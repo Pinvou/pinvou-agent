@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// 单引号 / 双引号 / 反引号包裹、含 CJK、且属于「界面文案」的活跃字符串字面量。
+// 仅扫描本 PR 清理过的两个文件中「引号内含 CJK 的活跃字面量」。
+// 注意：这是针对性回归守卫，不是全仓 i18n 完整审计——它只看引号包裹的串，
+// 不覆盖 JSX 文本节点（<div>中文</div>）、正则字面量（/中文/）或多行模板串。
 // 整行注释（以 // 或 * 开头，去前导空白后）直接跳过。
 const files = [
   'src/features/tools/ToolStoreView.jsx',
   'src/features/workflow/WorkflowView.jsx',
 ];
-const root = path.resolve(new URL('../', import.meta.url).pathname);
+// 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
+// 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。
+const root = fileURLToPath(new URL('../', import.meta.url));
 
 // 去掉行内尾随 `// ...` 注释，但保留引号字符串内的 `//`（例如 URL 'https://...'）。
 // 实现：逐字符扫描，跟踪当前是否身处引号（' " `）内；仅在「不在引号内」时遇到
