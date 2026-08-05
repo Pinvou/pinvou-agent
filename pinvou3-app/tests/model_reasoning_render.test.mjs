@@ -118,17 +118,18 @@ assert.deepEqual(JSON.parse(JSON.stringify(context.pendingAssistantBlocks)), [
 ]);
 assert.equal(context.pendingAssistantText, '最终结论');
 
-const engineSource = readFileSync(
-  path.join(root, 'src-tauri', 'src', 'features', 'assistant', 'engine.rs'),
+// Wave 2 把推理事件转发拆到 forwarder.rs；Event::Thinking* 与对应 emit 落在该子模块。
+const forwarderSource = readFileSync(
+  path.join(root, 'src-tauri', 'src', 'features', 'assistant', 'forwarder.rs'),
   'utf8',
 );
-assert.match(engineSource, /Event::ThinkingStarted\s*\{\s*index\s*\}/);
-assert.match(engineSource, /app\.emit\("chat:reasoning_start"/);
-assert.match(engineSource, /Event::ThinkingDelta\s*\{\s*index,\s*content\s*\}/);
-assert.match(engineSource, /app\.emit\("chat:reasoning_delta"/);
-assert.match(engineSource, /Event::ThinkingComplete\s*\{\s*index\s*\}/);
-assert.match(engineSource, /app\.emit\("chat:reasoning_done"/);
-assert.match(engineSource, /forward_app_event\([^;]*"chat:reasoning_delta"/s);
+assert.match(forwarderSource, /Event::ThinkingStarted\s*\{\s*index\s*\}/);
+assert.match(forwarderSource, /app\.emit\("chat:reasoning_start"/);
+assert.match(forwarderSource, /Event::ThinkingDelta\s*\{\s*index,\s*content\s*\}/);
+assert.match(forwarderSource, /app\.emit\("chat:reasoning_delta"/);
+assert.match(forwarderSource, /Event::ThinkingComplete\s*\{\s*index\s*\}/);
+assert.match(forwarderSource, /app\.emit\("chat:reasoning_done"/);
+assert.match(forwarderSource, /forward_app_event\([^;]*"chat:reasoning_delta"/s);
 
 const webBridgeSource = readFileSync(
   path.join(root, 'src', 'platform', 'web', 'bridge.js'),
