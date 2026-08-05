@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { createPetActivationState, loadActivePet } from './pet-active.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { loadImage } from './load-image.js';
 import {
   buildAnimationSequence,
@@ -1357,7 +1358,7 @@ export default function PetWindow({
                           event.preventDefault();
                           dispatchCardUi({ type: 'close-reply' });
                         } else if (event.key === 'Enter' && !event.shiftKey
-                          && !event.nativeEvent.isComposing) {
+                          && !isImeComposing(event)) {
                           event.preventDefault();
                           void submitPetReply(activity);
                         }

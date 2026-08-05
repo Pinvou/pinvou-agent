@@ -3,6 +3,7 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const createTurndown = () => {
   const turndown = new TurndownService({
@@ -360,7 +361,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                 value={aiInstruction}
                 onChange={(e) => setAiInstruction(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitAiEdit();
+                  if (e.key === 'Enter' && !isImeComposing(e)) submitAiEdit();
                   if (e.key === 'Escape') clearAiUi();
                 }}
                 placeholder={t.apMdAiInstructionPlaceholder}
