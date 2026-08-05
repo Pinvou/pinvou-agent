@@ -287,6 +287,10 @@ pub(crate) fn spawn_event_forwarder(
                         "success": success,
                         "metadata": metadata,
                     });
+                    // request_user_input 收口：submit/cancel 已由底座转为工具结果。
+                    if name == "request_user_input" {
+                        crate::features::assistant::pending_user_input::clear(&session_id, &id);
+                    }
                     let _ = app.emit("chat:tool_end", payload.clone());
                     crate::features::remote_control::forward_app_event(
                         &app,
