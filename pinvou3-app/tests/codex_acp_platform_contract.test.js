@@ -6,6 +6,10 @@ const appRoot = path.resolve(__dirname, "..");
 const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), "utf8");
 const featureRoot = ["src-tauri", "src", "features", "codex_acp"];
 const feature = read(...featureRoot, "mod.rs");
+// Wave 2 把 codex_acp/mod.rs 按职责拆为 install/login/introspect 子模块：安装与
+// 版本探测落 install.rs，登录态探测落 login.rs。下方相关断言改为读对应子模块。
+const install = read(...featureRoot, "install.rs");
+const login = read(...featureRoot, "login.rs");
 const runtime = read(...featureRoot, "runtime.rs");
 const latest = read(...featureRoot, "latest.rs");
 const platform = read(...featureRoot, "platform", "mod.rs");
@@ -54,12 +58,12 @@ assert.match(
 assert.match(windows, /SYSTEM_CODEX_NAME: &str = "codex\.cmd"/);
 assert.match(windows, /external_application_path\(adapter\)/);
 assert.match(windows, /HiddenTokioCommand::new\("cmd"\)/);
-assert.match(feature, /fn command_version[\s\S]*?external_command/);
-assert.match(feature, /fn cli_status_success[\s\S]*?external_command/);
+assert.match(install, /fn command_version[\s\S]*?external_command/);
+assert.match(login, /fn cli_status_success[\s\S]*?external_command/);
 assert.match(processRuntime, /fn external_command_for[\s\S]*?HiddenCommand::new\("cmd"\)/);
-assert.match(feature, /"windows" => "win32"/);
-assert.match(feature, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
-assert.match(feature, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
+assert.match(install, /"windows" => "win32"/);
+assert.match(install, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
+assert.match(install, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
 
 assert.match(linux, /SYSTEM_CODEX_NAME: &str = "codex"/);
 assert.ok(!linux.includes('Command::new("cmd")'));
@@ -88,31 +92,33 @@ assert.doesNotMatch(
   /BRIDGE_(?:NODE|ENTRY)=/,
   "dev startup must not duplicate a partial Bridge readiness check",
 );
-assert.match(feature, /vec!\["install", "--cask", "codex"\]/);
-assert.match(feature, /vec!\["upgrade", "--cask", "codex"\]/);
+assert.match(install, /vec!\["install", "--cask", "codex"\]/);
+assert.match(install, /vec!\["upgrade", "--cask", "codex"\]/);
 // brew 升级已泛化到三个 Agent：claude-code 是 cask，kimi-code 是 formula（无 --cask）。
-assert.match(feature, /vec!\["upgrade", "--cask", "claude-code"\]/);
-assert.match(feature, /vec!\["upgrade", "kimi-code"\]/);
-assert.match(feature, /&\["list", "--cask", "codex"\]/);
-assert.match(feature, /&\["list", "--cask", "claude-code"\]/);
-assert.match(feature, /&\["list", "kimi-code"\]/);
-assert.doesNotMatch(feature, /brew (?:install|upgrade) codex/);
+assert.match(install, /vec!\["upgrade", "--cask", "claude-code"\]/);
+assert.match(install, /vec!\["upgrade", "kimi-code"\]/);
+assert.match(install, /&\["list", "--cask", "codex"\]/);
+assert.match(install, /&\["list", "--cask", "claude-code"\]/);
+assert.match(install, /&\["list", "kimi-code"\]/);
+assert.doesNotMatch(install, /brew (?:install|upgrade) codex/);
 // npm 全局来源探测与升级：Windows 用 npm.cmd，包名固定，升级参数 install -g <pkg>@latest。
-assert.match(feature, /find_in_path\("npm\.cmd"\)/);
-assert.match(feature, /@openai\/codex/);
-assert.match(feature, /@anthropic-ai\/claude-code/);
-assert.match(feature, /@moonshot-ai\/kimi-code/);
-assert.match(feature, /"ls", "-g", package, "--depth=0"/);
-assert.match(feature, /format!\("\{\}@latest", npm_package\(backend\)\?\)/);
+assert.match(install, /find_in_path\("npm\.cmd"\)/);
+assert.match(install, /@openai\/codex/);
+assert.match(install, /@anthropic-ai\/claude-code/);
+assert.match(install, /@moonshot-ai\/kimi-code/);
+assert.match(install, /"ls", "-g", package, "--depth=0"/);
+assert.match(install, /format!\("\{\}@latest", npm_package\(backend\)\?\)/);
+// npm 升级分发入口（install_action → upgrade_via_npm）留在 mod.rs 的统一调度处。
 assert.match(feature, /"npm_upgrade" => self\.upgrade_via_npm\(backend\)/);
 // 三 Agent 未安装均走官方脚本；Codex 官方脚本默认 latest，且安装后从 ~/.local/bin
 // 直接解析绝对路径，不依赖桌面进程启动时继承的 PATH。
+// 脚本 URL 常量定义留在 mod.rs；install.rs 只引用并按 backend 选择。
 assert.match(feature, /CODEX_INSTALL_SCRIPT_UNIX: &str = "https:\/\/chatgpt\.com\/codex\/install\.sh"/);
 assert.match(feature, /CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https:\/\/chatgpt\.com\/codex\/install\.ps1"/);
-assert.match(feature, /AgentBackend::CodexAcp => \(CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS\)/);
-assert.match(feature, /command\.env\("CODEX_NON_INTERACTIVE", "1"\)/);
-assert.match(feature, /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/);
-assert.doesNotMatch(feature, /managed_download|MANAGED_CODEX_VERSION|install_managed_codex/);
+assert.match(install, /AgentBackend::CodexAcp => \(CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS\)/);
+assert.match(install, /command\.env\("CODEX_NON_INTERACTIVE", "1"\)/);
+assert.match(install, /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/);
+assert.doesNotMatch(install, /managed_download|MANAGED_CODEX_VERSION|install_managed_codex/);
 assert.doesNotMatch(
   `${windows}\n${linux}\n${macos}`,
   /managed_artifact|should_retry_file_lock|registry\.npmjs|registry\.npmmirror/,

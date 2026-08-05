@@ -291,6 +291,10 @@ try {
   assert.ok(codexCommands.includes('validate_codex_project_workspace'), 'project workspace must be validated before session creation');
 
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
+  // Wave 2 把登录态探测拆到 login.rs、Kimi 内省拆到 introspect.rs；auth/login 相关
+  // 断言需读对应子模块。
+  const loginMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'login.rs'), 'utf8');
+  const introspectMod = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'introspect.rs'), 'utf8');
   assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
   assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
@@ -311,10 +315,10 @@ try {
     && runtime.includes('command.arg("acp")')
     && runtime.includes('CLAUDE_ACP_PACKAGE'),
   'the shared ACP runtime must launch Claude through its adapter and Kimi through kimi acp');
-  assert.ok(runtime.includes('cli_status_success(claude, &["auth", "status"])')
-    && runtime.includes('kimi_authenticated')
+  assert.ok(loginMod.includes('cli_status_success(claude, &["auth", "status"])')
+    && introspectMod.includes('kimi_authenticated')
     && runtime.includes('run_agent_login')
-    && runtime.includes('capture_agent_login_output')
+    && loginMod.includes('capture_agent_login_output')
     && runtime.includes('submit_agent_login_code'),
   'ACP auth status and hosted login must be driven by the real Agent CLIs instead of credential-file existence alone');
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
