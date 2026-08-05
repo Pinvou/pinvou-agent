@@ -15,7 +15,7 @@ export const desktopBridgeApi = {
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  collaboration: ['collaborationAcceptTask', 'collaborationCompleteLocalTask', 'collaborationCreateLocalTask', 'collaborationCreateProject', 'collaborationCreateTask', 'collaborationExportMemberInvite', 'collaborationGetTaskContext', 'collaborationJoinProject', 'collaborationListLocalTasks', 'collaborationRegisterIdentity', 'collaborationRejectTask', 'collaborationStart', 'collaborationUpdateLocalTask', 'openCollaborationMockSession', 'openCollaborationTaskSession', 'refreshCollaborationConfig', 'refreshCollaborationStatus'],
+  collaboration: ['collaborationAcceptTask', 'collaborationCompleteLocalTask', 'collaborationCreateInvite', 'collaborationCreateLocalTask', 'collaborationCreateProject', 'collaborationCreateTask', 'collaborationExportMemberInvite', 'collaborationGetTaskContext', 'collaborationInspectInvite', 'collaborationJoinInvite', 'collaborationJoinProject', 'collaborationListLocalTasks', 'collaborationRegisterIdentity', 'collaborationRejectTask', 'collaborationStart', 'collaborationUpdateLocalTask', 'openCollaborationMockSession', 'openCollaborationTaskSession', 'refreshCollaborationConfig', 'refreshCollaborationStatus'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
   resolutions: ['markResolved'],
@@ -33,6 +33,7 @@ export const desktopOnlyBridgeApi = {
   platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
   voice: ['cancelVoiceAsrSetup'],
   knowledge: ['loadKnowledgeEmbedderAfterFirstFrame'],
+  collaboration: ['collaborationCreateInvite', 'collaborationInspectInvite', 'collaborationJoinInvite'],
 };
 
 export function expectedWebBridgeApi() {

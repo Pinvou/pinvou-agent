@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use rand::distr::Alphanumeric;
@@ -14,6 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_TASK_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_INLINE_ARTIFACT_BYTES: u64 = 256 * 1024;
+const INVITE_TOKEN_PREFIX: &str = "pinv1_";
 
 #[derive(Clone)]
 pub struct CollaborationManager {
@@ -296,6 +299,48 @@ pub struct CollaborationInvitePayload {
     pub description: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollaborationInviteTokenPayload {
+    pub version: u8,
+    pub relay_ws_url: String,
+    pub public_url: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub project_token: String,
+    pub created_by_peer_id: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollaborationInviteLink {
+    pub token: String,
+    pub url: String,
+    pub deep_link: String,
+    pub collaboration_space_id: String,
+    pub collaboration_space_name: String,
+    pub created_by_peer_id: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollaborationInvitePreview {
+    pub valid: bool,
+    pub collaboration_space_id: String,
+    pub collaboration_space_name: String,
+    pub created_by_peer_id: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinInviteTokenRequest {
+    pub token: String,
+    pub display_name: String,
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -306,6 +351,60 @@ fn short_token(len: usize) -> String {
         .take(len)
         .map(char::from)
         .collect()
+}
+
+fn build_join_url(public_url: &str, token: &str) -> String {
+    let base = public_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        format!("https://pinvou.com/join?token={token}")
+    } else {
+        format!("{base}/join?token={token}")
+    }
+}
+
+fn build_invite_token(payload: &CollaborationInviteTokenPayload) -> Result<String, String> {
+    let json = serde_json::to_vec(payload).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "{}{}",
+        INVITE_TOKEN_PREFIX,
+        URL_SAFE_NO_PAD.encode(json)
+    ))
+}
+
+fn extract_invite_token(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(index) = trimmed.find("token=") {
+        let token = &trimmed[index + 6..];
+        return token
+            .split(['&', '#', ' ', '\n', '\r', '\t'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+    }
+    trimmed.to_string()
+}
+
+fn parse_invite_token(value: &str) -> Result<CollaborationInviteTokenPayload, String> {
+    let token = extract_invite_token(value);
+    let encoded = token
+        .strip_prefix(INVITE_TOKEN_PREFIX)
+        .ok_or_else(|| "邀请链接无效".to_string())?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded.as_bytes())
+        .map_err(|_| "邀请链接无效".to_string())?;
+    let payload: CollaborationInviteTokenPayload =
+        serde_json::from_slice(&bytes).map_err(|_| "邀请链接无效".to_string())?;
+    if payload.version != 1 {
+        return Err("邀请版本不兼容，请升级 Pinvou".into());
+    }
+    if payload.project_id.trim().is_empty()
+        || payload.project_token.trim().is_empty()
+        || payload.relay_ws_url.trim().is_empty()
+    {
+        return Err("邀请内容不完整".into());
+    }
+    Ok(payload)
 }
 
 fn env_or_default(name: &str, default: &str) -> String {
@@ -805,7 +904,8 @@ impl CollaborationManager {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("pinvou-task-mvp");
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("space_{}", short_token(18)));
         let relay_ws_url = request
             .relay_ws_url
             .as_deref()
@@ -888,7 +988,7 @@ impl CollaborationManager {
                 name: identity.name.clone(),
                 capabilities: identity.capabilities.clone(),
                 description: identity.description.clone(),
-                role: "member".into(),
+                role: "owner".into(),
                 member_token: format!("memtok_{}", short_token(32)),
                 status: "online".into(),
             }],
@@ -1110,6 +1210,97 @@ impl CollaborationManager {
             member_token: member.member_token.clone(),
             capabilities: member.capabilities.clone(),
             description: Some(member.description.clone()).filter(|value| !value.trim().is_empty()),
+        })
+    }
+
+    pub fn create_invite_link(&self) -> Result<CollaborationInviteLink, String> {
+        let inner = self.inner.lock();
+        let identity = inner
+            .persisted
+            .identity
+            .as_ref()
+            .ok_or_else(|| "请先创建你的 Pinvou 身份".to_string())?;
+        let project = inner
+            .persisted
+            .project
+            .as_ref()
+            .ok_or_else(|| "协作空间未配置".to_string())?;
+        let current_member = project
+            .members
+            .iter()
+            .find(|member| member.member_id == "me")
+            .or_else(|| project.members.first())
+            .ok_or_else(|| "协作空间成员不存在".to_string())?;
+        let role = current_member.role.trim().to_ascii_lowercase();
+        let has_explicit_owner = project.members.iter().any(|member| {
+            matches!(
+                member.role.trim().to_ascii_lowercase().as_str(),
+                "owner" | "admin"
+            )
+        });
+        if !matches!(role.as_str(), "owner" | "admin") && has_explicit_owner {
+            return Err("只有协作空间 owner 可以邀请成员".into());
+        }
+        let created_at = now();
+        let payload = CollaborationInviteTokenPayload {
+            version: 1,
+            relay_ws_url: project.relay_ws_url.clone(),
+            public_url: project.public_url.clone(),
+            project_id: project.project_id.clone(),
+            project_name: project.project_name.clone(),
+            project_token: project.project_token.clone(),
+            created_by_peer_id: identity.peer_id.clone(),
+            created_at,
+        };
+        let token = build_invite_token(&payload)?;
+        Ok(CollaborationInviteLink {
+            url: build_join_url(&payload.public_url, &token),
+            deep_link: format!("pinvou://join?token={token}"),
+            collaboration_space_id: payload.project_id,
+            collaboration_space_name: payload.project_name,
+            created_by_peer_id: payload.created_by_peer_id,
+            created_at: payload.created_at,
+            token,
+        })
+    }
+
+    pub fn inspect_invite_token(
+        &self,
+        token: String,
+    ) -> Result<CollaborationInvitePreview, String> {
+        let payload = parse_invite_token(&token)?;
+        Ok(CollaborationInvitePreview {
+            valid: true,
+            collaboration_space_id: payload.project_id,
+            collaboration_space_name: payload.project_name,
+            created_by_peer_id: payload.created_by_peer_id,
+            created_at: payload.created_at,
+        })
+    }
+
+    pub fn join_invite_token(
+        &self,
+        request: JoinInviteTokenRequest,
+    ) -> Result<CollaborationConfigState, String> {
+        let display_name = request.display_name.trim();
+        if display_name.is_empty() {
+            return Err("昵称不能为空".into());
+        }
+        let payload = parse_invite_token(&request.token)?;
+        let invite = CollaborationInvitePayload {
+            relay_ws_url: payload.relay_ws_url,
+            public_url: payload.public_url,
+            project_id: payload.project_id,
+            project_name: payload.project_name,
+            project_token: payload.project_token,
+            member_id: format!("mem_{}", short_token(12)),
+            member_name: display_name.chars().take(40).collect(),
+            member_token: format!("memtok_{}", short_token(32)),
+            capabilities: Vec::new(),
+            description: None,
+        };
+        self.join_project(JoinProjectRequest {
+            invite_json: serde_json::to_string(&invite).map_err(|error| error.to_string())?,
         })
     }
 
@@ -1755,6 +1946,29 @@ pub fn collaboration_export_member_invite(
     manager: State<'_, CollaborationManager>,
 ) -> Result<CollaborationInvitePayload, String> {
     manager.export_member_invite(member_id)
+}
+
+#[tauri::command]
+pub fn collaboration_create_invite(
+    manager: State<'_, CollaborationManager>,
+) -> Result<CollaborationInviteLink, String> {
+    manager.create_invite_link()
+}
+
+#[tauri::command]
+pub fn collaboration_inspect_invite(
+    token: String,
+    manager: State<'_, CollaborationManager>,
+) -> Result<CollaborationInvitePreview, String> {
+    manager.inspect_invite_token(token)
+}
+
+#[tauri::command]
+pub fn collaboration_join_invite(
+    request: JoinInviteTokenRequest,
+    manager: State<'_, CollaborationManager>,
+) -> Result<CollaborationConfigState, String> {
+    manager.join_invite_token(request)
 }
 
 #[tauri::command]
