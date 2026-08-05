@@ -18,6 +18,7 @@ pub mod platform;
 pub use app::commands::attachments::build_message_with_attachments;
 
 use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::app::commands;
 use crate::collaboration::CollaborationManager;
@@ -191,6 +192,13 @@ pub fn run() {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let main_navigation_origin = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         // These no-op probe plugins bracket Tauri's own plugin initialization.
         // The main window is created by Tauri before the application setup hook,
         // so their lifecycle hooks expose time that was previously one opaque gap.
@@ -272,6 +280,7 @@ pub fn run() {
                 crate::platform::window_startup::activate_main_window(window);
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri::plugin::Builder::<_, ()>::new("startup-probe-single-instance")
                 .setup(|_app, _api| {
@@ -321,6 +330,14 @@ pub fn run() {
             }
             startup::mark("setup:plugins_ready");
             crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                // Static registration happens in installed builds. Runtime registration
+                // makes deep-link testing work in dev builds and repairs stale handlers.
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("[pinvou3-app] deep-link register_all failed: {error}");
+                }
+            }
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
