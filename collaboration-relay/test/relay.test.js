@@ -1,5 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import { WebSocket } from "ws";
 
 process.env.PORT = "0";
@@ -47,6 +48,17 @@ function waitClose(ws) {
   });
 }
 
+function request(pathname) {
+  return new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${serverPort()}${pathname}`, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => resolve({ statusCode: res.statusCode, headers: res.headers, body }));
+    }).on("error", reject);
+  });
+}
+
 async function registerPeer(peerId, displayName) {
   const ws = new WebSocket(`ws://127.0.0.1:${serverPort()}/pinvou3/collaboration-test/ws`);
   await waitOpen(ws);
@@ -65,6 +77,15 @@ async function registerPeer(peerId, displayName) {
 
 after(() => {
   server.close();
+});
+
+test("serves the HTTPS invite landing page under the public base path", async () => {
+  const res = await request("/pinvou3/collaboration-test/join?token=pinv1_demo");
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"], /text\/html/);
+  assert.match(res.body, /加入 Pinvou 协作/);
+  assert.match(res.body, /pinvou:\/\/join\?token=pinv1_demo/);
+  assert.match(res.body, /复制邀请口令/);
 });
 
 test("forwards task_create to an online peer and relays accept status", async () => {

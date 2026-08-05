@@ -761,7 +761,7 @@ const InviteMembersModal = ({ members, loading, invite, error, copied, onClose, 
             </div>
             <h2 className="mt-4 text-[22px] font-black tracking-normal text-gray-950 dark:text-white">邀请成员</h2>
             <p className="mt-1 max-w-[360px] text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
-              对方打开链接并填写昵称后，会加入你的 Pinvou 协作空间。
+              对方打开链接后可唤起 Pinvou；如果浏览器没有反应，也可以复制页面上的邀请口令，在 Pinvou 工作台的“加入邀请”里粘贴。
             </p>
           </div>
           <button

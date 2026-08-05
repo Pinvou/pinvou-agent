@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8790);
 const HOST = String(process.env.PINVOU_COLLAB_HOST || process.env.HOST || "0.0.0.0").trim() || "0.0.0.0";
-const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_COLLAB_PUBLIC_BASE_PATH || "/pinvou3/collaboration-test");
+const PUBLIC_BASE_PATH = normalizeBasePath(process.env.PINVOU_COLLAB_PUBLIC_BASE_PATH || "/pinvou3/collaboration");
 // Local MVP demo default. Production deployments should always override this
 // through PINVOU_COLLAB_PROJECT_TOKEN.
 const PROJECT_TOKEN = String(process.env.PINVOU_COLLAB_PROJECT_TOKEN || "pinvou-task-mvp-token").trim();
@@ -14,6 +14,7 @@ const HEARTBEAT_INTERVAL_MS = boundedInteger(process.env.HEARTBEAT_INTERVAL_MS, 
 const WS_AUTH_TIMEOUT_MS = boundedInteger(process.env.WS_AUTH_TIMEOUT_MS, 10_000, 1000, 60_000);
 const MAX_PAYLOAD_BYTES = boundedInteger(process.env.MAX_PAYLOAD_BYTES, 2 * 1024 * 1024, 64 * 1024, 2 * 1024 * 1024);
 const STATE_FILE = String(process.env.PINVOU_COLLAB_STATE_FILE || "").trim();
+const DOWNLOAD_URL = String(process.env.PINVOU_COLLAB_DOWNLOAD_URL || "https://pinvou.com").trim();
 
 const peers = new Map();
 const registry = new Map();
@@ -47,6 +48,171 @@ function stripPublicBasePath(pathname) {
     return pathname.slice(PUBLIC_BASE_PATH.length) || "/";
   }
   return pathname;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function inviteJoinPage(token) {
+  const safeToken = escapeHtml(token);
+  const deepLink = `pinvou://join?token=${encodeURIComponent(token)}`;
+  const safeDeepLink = escapeHtml(deepLink);
+  const safeDownloadUrl = escapeHtml(DOWNLOAD_URL || "https://pinvou.com");
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>加入 Pinvou 协作</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f5f7;
+      --panel: rgba(255,255,255,.78);
+      --text: #1d1d1f;
+      --muted: #6e6e73;
+      --line: rgba(0,0,0,.08);
+      --blue: #007aff;
+      --blue-hover: #006fe6;
+      --shadow: 0 24px 70px rgba(15,23,42,.16);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #000;
+        --panel: rgba(28,28,30,.82);
+        --text: #f5f5f7;
+        --muted: #a1a1a6;
+        --line: rgba(255,255,255,.12);
+        --shadow: 0 24px 70px rgba(0,0,0,.42);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    main {
+      width: min(520px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(24px);
+      overflow: hidden;
+    }
+    .content { padding: 28px; }
+    .icon {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      border-radius: 19px;
+      background: var(--blue);
+      color: #fff;
+      font-size: 28px;
+      font-weight: 700;
+      box-shadow: 0 14px 32px rgba(0,122,255,.32);
+    }
+    h1 {
+      margin: 22px 0 8px;
+      font-size: 28px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+    .token {
+      margin-top: 18px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(118,118,128,.10);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .actions {
+      display: grid;
+      gap: 10px;
+      padding: 16px;
+      border-top: 1px solid var(--line);
+      background: rgba(118,118,128,.06);
+    }
+    a, button {
+      width: 100%;
+      height: 46px;
+      border: 0;
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary { background: var(--blue); color: #fff; }
+    .primary:hover { background: var(--blue-hover); }
+    .secondary {
+      background: rgba(118,118,128,.14);
+      color: var(--text);
+    }
+    .hint {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="content">
+      <div class="icon">P</div>
+      <h1>加入 Pinvou 协作</h1>
+      <p>如果本机已安装支持协作功能的新版 Pinvou，可以直接打开客户端加入。未安装或无法唤起时，请复制邀请口令，在 Pinvou 工作台的“加入邀请”里粘贴。</p>
+      <div class="token" id="token">${safeToken || "缺少邀请 token"}</div>
+      <div class="hint" id="copy-hint"></div>
+    </div>
+    <div class="actions">
+      <a class="primary" href="${safeDeepLink}" id="open-pinvou">打开 Pinvou 加入协作</a>
+      <button class="secondary" type="button" id="copy-token">复制邀请口令</button>
+      <a class="secondary" href="${safeDownloadUrl}">下载或升级 Pinvou</a>
+    </div>
+  </main>
+  <script>
+    const token = ${JSON.stringify(token)};
+    const hint = document.getElementById('copy-hint');
+    document.getElementById('copy-token').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(token);
+        hint.textContent = '已复制，请到 Pinvou 工作台的“加入邀请”中粘贴。';
+      } catch {
+        hint.textContent = '复制失败，请手动选择上方口令复制。';
+      }
+    });
+  </script>
+</body>
+</html>`;
 }
 
 function peerKey(projectId, peerId) {
@@ -353,6 +519,20 @@ loadState();
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const routePath = stripPublicBasePath(url.pathname);
+  if (routePath === "/" || routePath === "/join") {
+    const token = safeString(url.searchParams.get("token") || "", 4096);
+    if (routePath === "/" && !token) {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("pinvou collaboration relay");
+      return;
+    }
+    res.writeHead(token ? 200 : 400, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(inviteJoinPage(token));
+    return;
+  }
   if (routePath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(healthSummary()));
