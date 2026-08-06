@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::core::mode_state::SerializableMode;
 use crate::platform::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
     CredentialStore, SystemCredentialStore,
@@ -484,6 +485,22 @@ impl Default for SidebarPrefs {
     }
 }
 
+/// 品悟原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
+/// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
+/// - 新建 code 会话的默认 mode = 上次在 code 会话显式使用的 mode；
+/// - 首次切 yolo 弹一次性确认卡，确认后全局记住、之后切换不再弹。
+///
+/// 不进设置 UI；写入走字段级事务（同 PetPrefs），per-session mode 另存
+/// `sessions/_code_mode_states.json`（见 `features::sessions`）。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodePermissionPrefs {
+    /// 上次在任意 code 会话显式使用的 mode。None = 从未使用过 code 模式。
+    pub last_mode: Option<SerializableMode>,
+    /// yolo 一次性确认（"全自动读写项目目录、可执行 shell、无逐步审批"）标志。
+    pub yolo_confirmed: bool,
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -496,6 +513,7 @@ pub struct UserPrefs {
     pub notifications: NotificationPrefs,
     pub pet: PetPrefs,
     pub sidebar: SidebarPrefs,
+    pub code_permission: CodePermissionPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -1219,6 +1237,7 @@ mod tests {
             notifications: NotificationPrefs::default(),
             pet: PetPrefs::default(),
             sidebar: SidebarPrefs::default(),
+            code_permission: CodePermissionPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
@@ -1268,6 +1287,31 @@ mod tests {
         let parsed: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.notifications.enabled, !cfg!(target_os = "linux"));
         assert!(!parsed.notifications.task_completed);
+    }
+
+    #[test]
+    fn code_permission_defaults_and_legacy_json_compat() {
+        // 默认：从未用过 code 模式（last_mode=None → 新建 code 会话默认 Plan）、未确认 yolo。
+        let prefs = UserPrefs::default();
+        assert!(prefs.code_permission.last_mode.is_none());
+        assert!(!prefs.code_permission.yolo_confirmed);
+
+        // 旧 settings.json 没有 code_permission 字段 → serde default 兼容读出。
+        let legacy: UserPrefs = serde_json::from_str(r#"{"theme":"genesis"}"#).unwrap();
+        assert!(legacy.code_permission.last_mode.is_none());
+        assert!(!legacy.code_permission.yolo_confirmed);
+
+        // 写过的值能回读（mode 与 get_mode_state 协议同用 snake_case）。
+        let json = r#"{"code_permission":{"last_mode":"yolo","yolo_confirmed":true}}"#;
+        let parsed: UserPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.code_permission.last_mode,
+            Some(SerializableMode::Yolo)
+        );
+        assert!(parsed.code_permission.yolo_confirmed);
+        let serialized = serde_json::to_string(&parsed.code_permission).unwrap();
+        assert!(serialized.contains("\"last_mode\":\"yolo\""));
+        assert!(serialized.contains("\"yolo_confirmed\":true"));
     }
 
     #[test]
