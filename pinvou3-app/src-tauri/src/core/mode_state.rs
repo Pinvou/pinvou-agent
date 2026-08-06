@@ -100,8 +100,8 @@ pub struct SessionModeState {
     #[serde(skip)]
     pub mounted_collections_revision: u64,
     /// 多智能体模式开关（ADR-0006）：模型列表下方的会话级开关。开启后本会话
-    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入，在跑的子智能体
-    /// 不打断（工具面不随开关变化，与主线一致）。会话级记忆，经
+    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入并回收引擎，取消
+    /// 仍在后台运行的子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
     /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
     #[serde(default)]
     pub multi_agent: bool,
