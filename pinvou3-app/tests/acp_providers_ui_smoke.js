@@ -378,7 +378,7 @@ async function clickSettingsSection(page, label) {
     const el = document.querySelector('[data-testid="acp-providers-effective"]');
     if (!el) return false;
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.includes('gpt-5.2') && values.includes('https://api.example.com/v1');
+    return values.some(value => value === 'gpt-5.2') && values.some(value => value === 'https://api.example.com/v1');
   }));
   rec('⑨.2 env 覆盖时徽标降格', await page.evaluate(() => {
     const section = document.querySelector('[data-testid="acp-providers-section"]');
@@ -389,7 +389,7 @@ async function clickSettingsSection(page, label) {
     if (!el) return false;
     // URL 明文可见；凭据只显示「已设置」掩码，值不得出现
     const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
-    return values.includes('https://env-override.example.com')
+    return values.some(value => value === 'https://env-override.example.com')
       && (el.textContent || '').includes('已设置（值已隐藏）');
   }));
 
