@@ -881,6 +881,9 @@ def _scan_groups():
          "risk": "red", "note": "已安装程序本体（64 位），请通过系统设置卸载"},
         {"key": "program_files_x86", "name": "Program Files (x86)", "paths": [pfx],
          "risk": "red", "note": "已安装程序本体（32 位），请通过系统设置卸载"},
+        {"key": "windows", "name": "Windows 系统目录",
+         "paths": [os.environ.get("SystemRoot") or r"C:\Windows"],
+         "risk": "red", "note": "系统核心目录（🔴 不提供删除），占用大时请用系统自带磁盘清理/存储感知，勿手动删"},
     ]
 
 

@@ -495,6 +495,10 @@ class DiskScanTest(unittest.TestCase):
         keys = {g["key"] for g in out["groups"]}
         if IS_WIN:
             self.assertIn("temp", keys)
+            self.assertIn("windows", keys,
+                          "Windows 系统目录应在概览中可见（否则模型会退化为 exec_shell 兜底）")
+            win = next(g for g in out["groups"] if g["key"] == "windows")
+            self.assertEqual(win["risk"], "red")
         for g in out["groups"]:
             self.assertIn(g["risk"], ("green", "yellow", "red"))
             self.assertIn(g["status"], ("ok", "estimated", "denied", "skipped"))
