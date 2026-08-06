@@ -1067,7 +1067,7 @@ pub(super) fn resolve_artifact_path(
         Some(sid) => store
             .ledger_root(&sid)
             .map(|workspace| resolve_artifact_path_in_workspace(raw, &workspace))
-            .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}")),
+            .map_err(|error| format!("resolve ledger root for {sid}: {error:#}")),
         None => Ok(raw.to_string()),
     }
 }
