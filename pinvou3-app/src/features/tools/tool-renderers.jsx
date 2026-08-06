@@ -201,7 +201,7 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
 
 /**
  * 行内专家卡（ADR-0006）：spawn 型 `agent` 工具调用在消息流里渲染成
- * 「头像 · 专家名 · 任务摘要 · 状态」，不展示工具 JSON；若它继续派生了
+ * 「头像 · 任务名/专家身份 · 任务摘要 · 状态」，不展示工具 JSON；若它继续派生了
  * 子代，则在本卡下按 ledger 父链折叠展示，主对话也能看清委派层级。
  * 状态自订阅 `pinvou:subagent-update`（bridge 转发的实时事件 + 模块级
  * 轮询广播的落盘权威快照，终态 ratchet 保证落盘赢），点击整卡派发
@@ -314,7 +314,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
     roleCards: copy.roleCards,
     ordinal: parentOrdinal,
   });
-  const { identity, name } = presentation;
+  const { identity, name, subtitle } = presentation;
   const task = presentation.task.split(/\r?\n/)[0];
   const status = expertStatusPresentation({
     summary: live,
@@ -339,16 +339,21 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
           className="flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left"
         >
           <AppIcon
-            card={{ id: identity.avatarKey, name, dept: identity.personaDept }}
+            card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
             isDark={isDark}
             cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
             fb={14}
           />
           <span
-            className={`max-w-[132px] shrink-0 truncate text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}
-            title={name}
+            className="min-w-0 max-w-[148px] shrink-0"
+            title={subtitle ? `${name} · ${subtitle}` : name}
           >
-            {name}
+            <span className={`block truncate text-[12.5px] font-semibold leading-[15px] ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+              {name}
+            </span>
+            {subtitle && (
+              <span className="block truncate text-[10px] leading-[13px] text-[#8E8E93]">{subtitle}</span>
+            )}
           </span>
           <span className="min-w-0 flex-1 truncate text-[12px] text-[#8E8E93]">{task}</span>
           <span className="flex max-w-[112px] shrink-0 items-center gap-1.5 truncate text-[11px] text-[#8E8E93]">
@@ -424,15 +429,27 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
                   <AppIcon
                     card={{
                       id: childPresentation.identity.avatarKey,
-                      name: childPresentation.name,
+                      name: childPresentation.subtitle || childPresentation.name,
                       dept: childPresentation.identity.personaDept,
                     }}
                     isDark={isDark}
                     cls="h-7 w-7 shrink-0 overflow-hidden rounded-[9px]"
                     fb={13}
                   />
-                  <span className={`shrink-0 text-[11.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
-                    {childPresentation.name}
+                  <span
+                    className="min-w-0 max-w-[132px] shrink-0"
+                    title={childPresentation.subtitle
+                      ? `${childPresentation.name} · ${childPresentation.subtitle}`
+                      : childPresentation.name}
+                  >
+                    <span className={`block truncate text-[11.5px] font-semibold leading-[14px] ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+                      {childPresentation.name}
+                    </span>
+                    {childPresentation.subtitle && (
+                      <span className="block truncate text-[9.5px] leading-[12px] text-[#8E8E93]">
+                        {childPresentation.subtitle}
+                      </span>
+                    )}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[11px] text-[#8E8E93]">
                     {childPresentation.task || entry.agent_id}
