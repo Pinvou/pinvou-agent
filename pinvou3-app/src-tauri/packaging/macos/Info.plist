@@ -12,6 +12,15 @@
     <string>pinvou3 需要访问麦克风以提供语音输入功能。</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>pinvou3 需要语音识别权限以将您的语音转换为文字；系统支持时在本机处理，否则音频可能发送至 Apple Speech 服务。</string>
+    <!--
+      macOS Sonoma(14)起的 Local Network Privacy：
+      访问局域网 IP（10.x / 192.168.x / 172.16-31.x / 链路本地 / 组播广播）必须在
+      Info.plist 声明此项，并由用户在 TCC 弹窗授权。缺省时 connect() 会被内核静默
+      丢弃并返回 EHOSTUNREACH（No route to host），表现为「连接本地模型服务始终失败」。
+      此声明对沙盒 / 公证 / ad-hoc 签名一律强制生效，品悟连接局域网 vLLM/Ollama 必需。
+    -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>pinvou3 需要访问本地网络，以连接局域网内的模型服务（如 vLLM、Ollama 等）。</string>
     <!-- 不设 LSUIElement：主窗口要进 Dock（与 Linux/Windows 一致） -->
 </dict>
 </plist>
