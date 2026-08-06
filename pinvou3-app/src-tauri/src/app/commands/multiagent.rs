@@ -31,16 +31,10 @@ use crate::features::multiagent;
 /// - 资源护栏：主会话是总协调者，普通委派使用 `max_depth=0` 成为叶子；只有
 ///   任务本身足够复杂时，第一层调用省略深度参数以继承会话上限并允许再拆
 ///   一层。第二层不得继续派生；每个子智能体显式使用底座允许的最高执行预算，
-///   避免角色默认步数截断有效工作；工作与 Code 使用各自的直属并行/全树准入额度。
+///   避免角色默认步数截断有效工作；工作模式使用直属并行 4 / 全树准入 8。
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
 ///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DelegationContext {
-    Work,
-    Code,
-}
-
-pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> String {
+pub(crate) fn delegation_reminder(task: &str) -> String {
     // 底座预载可执行专家的完整 profile；父模型每轮只收到与当前任务相关的短候选。
     let roles = multiagent::roster::available_role_lines(task);
     let roster_block = if roles.is_empty() {
@@ -50,10 +44,6 @@ pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> Str
             "；本轮候选 profile（自定义专家优先，最多 20 位；完整人设仅在被派中后加载）：\n{}",
             roles.join("\n")
         )
-    };
-    let (max_concurrent, max_admitted) = match context {
-        DelegationContext::Work => (4, 8),
-        DelegationContext::Code => (6, 12),
     };
     format!(
         "本会话已开启多智能体模式：请按任务形态**主动委派**，工具面与普通\
@@ -79,8 +69,8 @@ pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> Str
          `agent` 必须显式传 `max_steps=2000` 与 `wall_time_secs=86400`，不得回落到\
          角色默认的 60/120 步；若允许直属子智能体继续拆分，任务说明中也必须\
          把同一预算规则传给它。预算只是避免提前截断的上限，任务完成后立即\
-         收束，不得为耗尽预算而空转。直属子智能体同时执行最多 {max_concurrent} 个，\
-         整棵树排队与执行合计最多 {max_admitted} 个；不要递归裂变；\n\
+         收束，不得为耗尽预算而空转。直属子智能体同时执行最多 4 个，\
+         整棵树排队与执行合计最多 8 个；不要递归裂变；\n\
          4. Git 与工作区策略由你按任务自主完成：只读任务、没有写入的并行\
          任务，以及串行的“修改→测试→审查”接力可使用默认共享工作区；共享\
          工作区不得安排两个及以上并行写入者。同一 Git 仓库确需并行写入时\
@@ -111,16 +101,11 @@ pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> Str
     )
 }
 
-fn prepend_delegation_reminder_with_context(
-    enabled: bool,
-    context: DelegationContext,
-    task: &str,
-    content: String,
-) -> String {
+fn prepend_delegation_reminder_when_enabled(enabled: bool, task: &str, content: String) -> String {
     if !enabled {
         return content;
     }
-    format!("{}\n\n---\n\n{content}", delegation_reminder(context, task))
+    format!("{}\n\n---\n\n{content}", delegation_reminder(task))
 }
 
 /// 给一次会话交互的用户 turn 统一追加多智能体提醒。普通发送、编辑重发
@@ -133,20 +118,13 @@ pub(crate) fn prepend_delegation_reminder(
     task: &str,
     content: String,
 ) -> String {
-    if !pool.multi_agent_available(session_id) {
+    if !pool.multi_agent_mode_available(session_id) {
         return content;
     }
-    let context = if pool.is_code_session(session_id) {
-        DelegationContext::Code
-    } else {
-        DelegationContext::Work
-    };
-    prepend_delegation_reminder_with_context(enabled, context, task, content)
+    prepend_delegation_reminder_when_enabled(enabled, task, content)
 }
 
-/// 会话实际使用的 CodeWhale 工作区。绑定项目的原生 Code 会话返回项目目录，
-/// 因而名册、transcripts 与 worker ledger 都遵循基座落在项目 `.codewhale/`；
-/// 其他会话仍返回各自的会话工作区。
+/// 工作模式多智能体会话实际使用的 CodeWhale 工作区。
 fn subagent_workspace(session_id: &str, pool: &EnginePool) -> Result<std::path::PathBuf, String> {
     if session_id.is_empty()
         || !session_id
@@ -154,6 +132,9 @@ fn subagent_workspace(session_id: &str, pool: &EnginePool) -> Result<std::path::
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(format!("非法会话 id: {session_id}"));
+    }
+    if !pool.multi_agent_mode_available(session_id) {
+        return Err("子智能体执行记录仅对工作模式多智能体会话开放".to_string());
     }
     Ok(pool.session_workspace(session_id))
 }
@@ -178,43 +159,38 @@ pub async fn list_subagent_transcripts(
         .map_err(|join| format!("读取子智能体清单失败: {join}"))?
 }
 
-/// 读某个子智能体的完整对话记录（只读面板点开时调用）。
+/// 增量读取某个子智能体的对话记录（只读面板点开时调用）。客户端把上次
+/// 返回的 offset/revision 原样带回；游标失效时后端返回 reset chunk。
 #[tauri::command]
 pub async fn read_subagent_transcript(
     run_id: String,
     agent_id: String,
+    offset: Option<u64>,
+    revision: Option<String>,
     pool: State<'_, EnginePool>,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<multiagent::transcripts::SubagentTranscriptChunk, String> {
     let workspace = subagent_workspace(&run_id, &pool)?;
-    tokio::task::spawn_blocking(move || multiagent::transcripts::read(&workspace, &agent_id))
-        .await
-        .map_err(|join| format!("读取子智能体记录失败: {join}"))?
+    tokio::task::spawn_blocking(move || {
+        multiagent::transcripts::read_chunk(&workspace, &agent_id, offset, revision.as_deref())
+    })
+    .await
+    .map_err(|join| format!("读取子智能体记录失败: {join}"))?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{delegation_reminder, prepend_delegation_reminder_with_context, DelegationContext};
+    use super::{delegation_reminder, prepend_delegation_reminder_when_enabled};
 
     #[test]
     fn turn_content_prepends_delegation_only_when_enabled() {
         let content = "请审查当前实现".to_string();
         assert_eq!(
-            prepend_delegation_reminder_with_context(
-                false,
-                DelegationContext::Work,
-                &content,
-                content.clone(),
-            ),
+            prepend_delegation_reminder_when_enabled(false, &content, content.clone()),
             content,
             "关闭多智能体时必须保持原消息逐字不变"
         );
 
-        let wrapped = prepend_delegation_reminder_with_context(
-            true,
-            DelegationContext::Work,
-            &content,
-            content.clone(),
-        );
+        let wrapped = prepend_delegation_reminder_when_enabled(true, &content, content.clone());
         assert!(wrapped.starts_with("本会话已开启多智能体模式"));
         assert!(wrapped.ends_with(&format!("---\n\n{content}")));
     }
@@ -223,7 +199,7 @@ mod tests {
     /// `agent` 集群，单任务至少一个、可拆任务尽量拆、父模型亲自协调汇总。
     #[test]
     fn delegation_reminder_teaches_delegation() {
-        let msg = delegation_reminder(DelegationContext::Work, "审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码");
         assert!(msg.contains("主动委派"), "必须点名主动委派的行事方式");
         assert!(
             msg.contains("`agent` 工具"),
@@ -306,7 +282,7 @@ mod tests {
     /// name 字段只收 ASCII token，中文名只能走文本约定，界面据此显示身份。
     #[test]
     fn delegation_reminder_relies_on_expert_pool_only() {
-        let msg = delegation_reminder(DelegationContext::Work, "审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码");
         assert!(
             msg.contains("写好提示词"),
             "必须教模型自拟任务说明（无合适专家时裸派）"
@@ -338,7 +314,7 @@ mod tests {
     /// 也不得再教手写 script / plan 协议的任何碎片（真机事故的根因）。
     #[test]
     fn delegation_reminder_never_mentions_the_workflow_path() {
-        let msg = delegation_reminder(DelegationContext::Work, "审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码");
         assert!(
             !msg.contains("workflow"),
             "底座 read_only 工具钳制与阶段结果不传递未修，不得推荐 workflow：{msg}"
@@ -370,37 +346,31 @@ mod tests {
     /// （回归：此前正是因为字符串断行丢了 `\`，提示语里混进大段缩进。）
     #[test]
     fn delegation_reminder_contains_no_stray_indentation() {
-        let msg = delegation_reminder(DelegationContext::Work, "审查 React 前端代码");
+        let msg = delegation_reminder("审查 React 前端代码");
         assert!(!msg.contains("  "), "提示语混入了源码缩进空格:\n{msg}");
     }
 
     #[test]
-    fn delegation_reminder_varies_strategy_and_budget_by_session_kind() {
-        let work = delegation_reminder(DelegationContext::Work, "审查 React 前端代码");
-        let code = delegation_reminder(DelegationContext::Code, "审查 React 前端代码");
+    fn delegation_reminder_uses_work_resource_limits() {
+        let msg = delegation_reminder("审查 React 前端代码");
 
-        assert!(!work.contains("工作会话"));
-        assert!(!work.contains("保持克制"));
-        assert!(work.contains("读取网页等照常）：\n1."));
-        assert!(work.contains("同时执行最多 4 个"));
-        assert!(work.contains("合计最多 8 个"));
-        for msg in [&work, &code] {
-            assert!(msg.contains("当前用户消息只要包含需要完成的任务"));
-            assert!(msg.contains("单一任务至少派一个"));
-            assert!(msg.contains("你只负责拆解、派发"));
-            assert!(msg.contains("不得亲自承担任务主体"));
-            assert!(!msg.contains("收益足以抵消协调成本"));
-            assert!(!msg.contains("是否委派及数量由你结合实际收益判断"));
-        }
-        assert!(code.contains("同时执行最多 6 个"));
-        assert!(code.contains("合计最多 12 个"));
-        assert!(work.contains("第二层子智能体不得继续派生"));
-        assert!(code.contains("第二层子智能体不得继续派生"));
+        assert!(!msg.contains("工作会话"));
+        assert!(!msg.contains("保持克制"));
+        assert!(msg.contains("读取网页等照常）：\n1."));
+        assert!(msg.contains("同时执行最多 4 个"));
+        assert!(msg.contains("合计最多 8 个"));
+        assert!(msg.contains("当前用户消息只要包含需要完成的任务"));
+        assert!(msg.contains("单一任务至少派一个"));
+        assert!(msg.contains("你只负责拆解、派发"));
+        assert!(msg.contains("不得亲自承担任务主体"));
+        assert!(!msg.contains("收益足以抵消协调成本"));
+        assert!(!msg.contains("是否委派及数量由你结合实际收益判断"));
+        assert!(msg.contains("第二层子智能体不得继续派生"));
     }
 
     #[test]
     fn delegation_reminder_uses_maximum_child_execution_budget() {
-        let msg = delegation_reminder(DelegationContext::Work, "审查大型代码变更");
+        let msg = delegation_reminder("审查大型代码变更");
 
         assert!(
             msg.contains("`max_steps=2000`")

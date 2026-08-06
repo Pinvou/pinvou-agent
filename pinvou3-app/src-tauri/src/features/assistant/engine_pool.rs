@@ -782,10 +782,8 @@ impl EnginePool {
         session_id: &str,
         enabled: bool,
     ) -> Result<()> {
-        if enabled && !self.multi_agent_available(session_id) {
-            anyhow::bail!(
-                "原生 Code 会话的多智能体功能暂不可用：等待 CodeWhale 支持会话级运行时状态隔离"
-            );
+        if enabled && !self.multi_agent_mode_available(session_id) {
+            anyhow::bail!("Pinvou 多智能体模式本期仅支持工作会话");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
         if enabled {
@@ -834,10 +832,10 @@ impl EnginePool {
     /// Product capability gate for Pinvou's multi-agent mode. This is shared
     /// by command, prompt, engine and roster paths so a hidden control cannot
     /// be bypassed by stale state or a direct IPC call.
-    pub(crate) fn multi_agent_available(&self, session_id: &str) -> bool {
+    pub(crate) fn multi_agent_mode_available(&self, session_id: &str) -> bool {
         self.bridge
             .session_policy(session_id)
-            .multi_agent_available()
+            .multi_agent_mode_available()
     }
 
     /// Resolve the Engine workspace, including a project-bound native Code
@@ -1118,7 +1116,7 @@ impl EnginePool {
             .store
             .multi_agent_session_ids()
             .into_iter()
-            .filter(|session_id| self.multi_agent_available(session_id))
+            .filter(|session_id| self.multi_agent_mode_available(session_id))
             .collect::<std::collections::BTreeSet<_>>();
         let live_session_ids = self
             .entries
@@ -1128,7 +1126,7 @@ impl EnginePool {
             .cloned()
             .collect::<Vec<_>>();
         for session_id in live_session_ids {
-            if !self.multi_agent_available(&session_id) {
+            if !self.multi_agent_mode_available(&session_id) {
                 continue;
             }
             let workspace = self.bridge.session_workspace(&session_id);
@@ -1159,7 +1157,7 @@ impl EnginePool {
     /// 工具面不随开关变化（与主线持平，不按会话改写禁用列表），引擎没起则 no-op——
     /// 下次 spawn 由 `build_engine_config_for_multi_agent` 从工作区装配。
     pub async fn refresh_multi_agent_roster(&self, session_id: &str) -> Result<(), String> {
-        if !self.multi_agent_available(session_id) {
+        if !self.multi_agent_mode_available(session_id) {
             return Ok(());
         }
         let Some(engine) = self.handle_for(session_id).await else {

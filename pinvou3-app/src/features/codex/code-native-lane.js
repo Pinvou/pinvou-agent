@@ -14,46 +14,6 @@
 
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
 
-function userMessageInputProvenance(blocks) {
-  for (const block of Array.isArray(blocks) ? blocks : []) {
-    if (!block || block.type !== 'text') continue;
-    const text = String(block.text || '').trim();
-    if (!text.startsWith('<turn_meta>')) continue;
-    const match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-    if (match && match[1]) return match[1].trim();
-  }
-  return '';
-}
-
-function isInternalUserMessageProvenance(provenance) {
-  return provenance === 'runtime' || provenance === 'subagent_handoff';
-}
-
-function isInternalRuntimeEventText(value) {
-  const text = String(value || '').trim();
-  return /^<codewhale:runtime_event\b[^>]*\bvisibility=(['"])internal\1[^>]*>/i.test(text)
-    && /<\/codewhale:runtime_event>\s*$/i.test(text);
-}
-
-// Code 原生车道与普通聊天共享同一条展示边界：运行时恢复和子智能体交接
-// 作为 role=user 留在 SavedSession 供父模型继续推理，但绝不能冒充用户气泡。
-function userMessageDisplayText(blocks) {
-  const textBlocks = (Array.isArray(blocks) ? blocks : [])
-    .filter(block => block && block.type === 'text' && block.text);
-  if (isInternalUserMessageProvenance(userMessageInputProvenance(textBlocks))) return '';
-  return textBlocks
-    .map(block => String(block.text))
-    .filter(text => {
-      const trimmed = text.trim();
-      return !(
-        (trimmed.startsWith('<turn_meta>') && trimmed.endsWith('</turn_meta>'))
-        || trimmed === '<turn_meta_unchanged />'
-      );
-    })
-    .join('\n')
-    .trim();
-}
-
 export function createNativeLane() {
   return {
     hydrated: false,
@@ -214,9 +174,7 @@ export function applyNativeChatEvent(lane, name, payload) {
   switch (name) {
     case 'chat:user_message': {
       const content = String(p.content || '');
-      // 当前底座的内部续跑通常只发 turn_started；这里仍做协议级兜底，避免
-      // 未来或远端桥把 internal runtime envelope 当普通回声推到界面。
-      if (!content || isInternalRuntimeEventText(content)) return false;
+      if (!content) return false;
       // accept_plan 的用户回声（本地/远端批准都会广播）：先把命中的 active 方案卡
       // 置为已批准（对齐 bridge chat-events.js 的 action === "accept_plan" 处理），
       // 再走普通用户消息去重/插入。
@@ -508,6 +466,14 @@ export function applyNativeChatEvent(lane, name, payload) {
   }
 }
 
+function messageText(blocks) {
+  return blocks
+    .filter(block => block && block.type === 'text' && block.text)
+    .map(block => String(block.text))
+    .join('\n')
+    .trim();
+}
+
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
 /// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /
 /// plan 工具的历史方案卡；persona、成品卡等主聊天专属形态不在代码会话出现，不做还原）。
@@ -547,7 +513,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       ? raw
       : (typeof raw === 'string' && raw ? [{ type: 'text', text: raw }] : []);
     if (role === 'user') {
-      const text = userMessageDisplayText(blocks);
+      const text = messageText(blocks);
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text, time: '' });
       for (const block of blocks) {
         if (!block || block.type !== 'tool_result') continue;

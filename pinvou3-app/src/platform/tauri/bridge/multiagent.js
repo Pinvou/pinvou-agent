@@ -17,7 +17,7 @@
 
     /**
      * 子智能体列表（底座 worker ledger 为主表、transcripts 为附表的只读投影）。
-     * 任意会话可用；重启后依然可查。读取失败返回 null 而不是 []：权限错误/
+     * 仅工作模式多智能体会话可用；重启后依然可查。读取失败返回 null 而不是 []：权限错误/
      * 文件损坏/命令失败若降级成空表，界面会把故障伪装成"没有子智能体"
      * （复核 P2）。调用方保留上次有效数据并显示重试提示，轮询自动重试。
      */
@@ -30,9 +30,14 @@
       }
     }
 
-    async function readSubagentTranscript(runId, agentId) {
+    async function readSubagentTranscript(runId, agentId, cursor) {
       try {
-        return (await invoke("read_subagent_transcript", { runId: runId, agentId: agentId })) || [];
+        var args = { runId: runId, agentId: agentId };
+        if (cursor && Number.isSafeInteger(cursor.offset) && cursor.offset >= 0 && typeof cursor.revision === "string") {
+          args.offset = cursor.offset;
+          args.revision = cursor.revision;
+        }
+        return (await invoke("read_subagent_transcript", args)) || null;
       } catch (err) {
         console.warn("read_subagent_transcript failed", err);
         return null;

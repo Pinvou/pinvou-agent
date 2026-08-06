@@ -43,15 +43,12 @@ impl SessionPolicy {
         self.mode
     }
 
-    /// Whether Pinvou may expose CodeWhale's delegated-agent surface for this
-    /// session mode.
+    /// Whether Pinvou may expose its opt-in multi-agent mode for this session.
     ///
-    /// Native Code sessions temporarily keep this disabled because current
-    /// CodeWhale releases scope the worker ledger, transcript artifacts and
-    /// workspace agent projections to the project directory rather than to an
-    /// embedding session. Re-enable this together with the Code composer entry
-    /// once the base runtime accepts an isolated, session-owned state root.
-    pub fn multi_agent_available(&self) -> bool {
+    /// This product capability is Work-only for now. It must never be used to
+    /// disable CodeWhale's ordinary `agent` or `workflow` tools in Code mode;
+    /// those remain part of the base Code session behavior.
+    pub fn multi_agent_mode_available(&self) -> bool {
         matches!(self.mode, SessionMode::Plain)
     }
 
@@ -95,8 +92,8 @@ mod tests {
         let policy = SessionPolicy::for_mode(SessionMode::Code);
         assert_eq!(policy.mode(), SessionMode::Code);
         assert!(
-            !policy.multi_agent_available(),
-            "Code 多智能体必须等待底座支持会话级状态根"
+            !policy.multi_agent_mode_available(),
+            "Pinvou 多智能体模式本期仅对 Work 开放"
         );
         assert_eq!(policy.connector_scope(), ConnectorScope::Code);
         assert_eq!(
@@ -109,7 +106,7 @@ mod tests {
     fn plain_policy_uses_plain_scope_and_hides_nothing() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
-        assert!(policy.multi_agent_available());
+        assert!(policy.multi_agent_mode_available());
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
     }
