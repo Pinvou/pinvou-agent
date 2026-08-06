@@ -4,6 +4,8 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(test)]
+use std::thread;
 use std::time::Instant;
 
 const MODEL_API_KEY_SERVICE: &str = "pinvou3-model-api-key";
@@ -326,6 +328,12 @@ impl CredentialStore for SystemCredentialStore {
             reference.service,
             reference.account
         );
+        // 持 per-key 锁覆盖"访问 Keychain + 回写值缓存"整段,与 get/delete 采用同一锁范围,
+        // 串行化同一凭据的所有并发写。若仅在缓存回写时加锁而后端写入在锁外,并发 set 的
+        // 后端完成顺序与缓存回写顺序可能错位,导致缓存值与 Keychain 不一致(lost-update)。
+        // 失败时不更新缓存,保留既有自愈语义(见 VALUE_CACHE 并发正确性小节)。
+        let lock = key_lock_for(&reference.service, &reference.account);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let secrets = self.secrets_for(&reference.service);
         log::info!(
             "[credential_store] set backend ready service={} account={} elapsed_ms={}",
@@ -343,11 +351,8 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
-        // 写入成功后同步更新缓存:后续 get 命中即不再访问 Keychain。
-        // 持 per-key 锁串行化,避免与正在进行的 get 竞争回写陈旧值(见 VALUE_CACHE 并发小节)。
+        // 写入成功后同步更新缓存(仍在同一 per-key 临界区内),后续 get 命中即不再访问 Keychain。
         if result.is_ok() {
-            let lock = key_lock_for(&reference.service, &reference.account);
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Ok(mut cache) = value_cache().lock() {
                 cache.insert(
                     (reference.service.clone(), reference.account.clone()),
@@ -365,6 +370,10 @@ impl CredentialStore for SystemCredentialStore {
             reference.service,
             reference.account
         );
+        // 持 per-key 锁覆盖"访问 Keychain + 回写值缓存"整段,锁范围与 get/set 一致
+        // (见 VALUE_CACHE 并发正确性小节)。失败时不更新缓存。
+        let lock = key_lock_for(&reference.service, &reference.account);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let secrets = self.secrets_for(&reference.service);
         let result = secrets.delete(&reference.account).map_err(secrets_error);
         log::info!(
@@ -374,11 +383,8 @@ impl CredentialStore for SystemCredentialStore {
             result.is_ok(),
             started_at.elapsed().as_millis()
         );
-        // 删除成功后缓存为 None,避免下次 get 再次访问 Keychain(命中"已知不存在")。
-        // 持 per-key 锁串行化,语义与 set 一致。
+        // 删除成功后缓存为 None(仍在同一临界区内),避免下次 get 再次访问 Keychain(命中"已知不存在")。
         if result.is_ok() {
-            let lock = key_lock_for(&reference.service, &reference.account);
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Ok(mut cache) = value_cache().lock() {
                 cache.insert((reference.service.clone(), reference.account.clone()), None);
             }
@@ -693,6 +699,136 @@ mod tests {
         store.get(&search_ref).unwrap();
         assert_eq!(model_backend.get_count(), 1, "model 后端不应被重复访问");
         assert_eq!(search_backend.get_count(), 1, "search 后端不应被重复访问");
+    }
+
+    /// 并发契约:多个线程同时对同一凭据 `get`(缓存未命中),只应访问后端**一次**。
+    /// per-key 锁串行化 + 持锁后 double-check 保证后续线程命中缓存,不再触碰后端(不再弹窗)。
+    /// 此为缓解反复弹窗的核心契约;移除 per-key 锁或 double-check 均会使 `get_count` > 1。
+    #[test]
+    fn system_store_concurrent_gets_access_backend_once() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        backend.seed("model:concurrent-get-probe", "sk-concurrent-1234567890");
+        let store = Arc::new(SystemCredentialStore::new());
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
+        );
+
+        let reference = Arc::new(CredentialReference::for_model("concurrent-get-probe"));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let store = store.clone();
+                let reference = reference.clone();
+                thread::spawn(move || {
+                    store
+                        .get(&reference)
+                        .unwrap()
+                        .as_deref()
+                        .map(str::to_string)
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(
+                handle.join().unwrap().as_deref(),
+                Some("sk-concurrent-1234567890"),
+                "所有并发 get 应返回同一正确值"
+            );
+        }
+        assert_eq!(
+            backend.get_count(),
+            1,
+            "16 个并发 get 应只访问后端一次(per-key 锁 + double-check)"
+        );
+    }
+
+    /// 并发契约:多个线程并发 `set` 同一凭据后,缓存值须与后端最终值一致。
+    /// per-key 锁串行化"后端写入 + 缓存回写",消除 lost-update 导致的缓存陈旧。
+    #[test]
+    fn system_store_concurrent_sets_keep_cache_consistent_with_backend() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        let store = Arc::new(SystemCredentialStore::new());
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
+        );
+
+        let reference = Arc::new(CredentialReference::for_model("concurrent-set-probe"));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                let reference = reference.clone();
+                thread::spawn(move || {
+                    store
+                        .set(&reference, &format!("sk-value-{i}-1234567890"))
+                        .unwrap()
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // 并发写结束后,缓存值(get 命中缓存)须与后端最终值一致。
+        let backend_value = backend
+            .values
+            .lock()
+            .expect("fake store values lock")
+            .get("model:concurrent-set-probe")
+            .cloned();
+        let cache_value = store.get(&reference).unwrap();
+        assert_eq!(
+            cache_value, backend_value,
+            "并发 set 后缓存值须与后端最终值一致"
+        );
+    }
+
+    /// 并发契约:`set` 与 `delete` 并发后,缓存的存在性须与后端一致。
+    /// per-key 锁串行化两种操作,避免"后端已删除但缓存仍有旧值"的不一致。
+    #[test]
+    fn system_store_concurrent_set_and_delete_keep_cache_consistent() {
+        let backend = Arc::new(FakeKeyringStore::new());
+        backend.seed("model:concurrent-sd-probe", "sk-initial-1234567890");
+        let store = Arc::new(SystemCredentialStore::new());
+        inject_fake_secrets(
+            &store,
+            MODEL_API_KEY_SERVICE,
+            Arc::new(Secrets::new(backend.clone())),
+        );
+
+        let reference = Arc::new(CredentialReference::for_model("concurrent-sd-probe"));
+        // 预热缓存,使后续 set/delete 走"缓存已存在"路径。
+        store.get(&reference).unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let store = store.clone();
+            let reference = reference.clone();
+            handles.push(thread::spawn(move || {
+                store.set(&reference, "sk-set-1234567890").unwrap()
+            }));
+        }
+        for _ in 0..4 {
+            let store = store.clone();
+            let reference = reference.clone();
+            handles.push(thread::spawn(move || store.delete(&reference).unwrap()));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let backend_has = backend
+            .values
+            .lock()
+            .expect("fake store values lock")
+            .contains_key("model:concurrent-sd-probe");
+        let cache_has = store.get(&reference).unwrap().is_some();
+        assert_eq!(
+            cache_has, backend_has,
+            "并发 set/delete 后缓存存在性须与后端一致"
+        );
     }
 
     #[test]
