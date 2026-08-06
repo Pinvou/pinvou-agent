@@ -17,6 +17,7 @@ LLM 可见工具名：
   mcp_file_master_file_restore       按删除日志还原误删文件
 """
 import datetime
+import heapq
 import io
 import json
 import math
@@ -677,14 +678,17 @@ def _dir_stats(root, deadline, max_depth=SCAN_MAX_DEPTH, visited=None):
     return total, count, estimated, False
 
 
-def _scan_group(group, deadline):
-    """扫描一组路径：总量 = 各根的直接子项求和（顺带产出 Top 子项）。"""
+def _scan_group(group, deadline, executor=None):
+    """扫描一组路径：总量 = 各根的直接子项求和（顺带产出 Top 子项）。
+    executor 非空时，组根的目录子项求和提交给该池并行执行（组内 DFS 并行，
+    共享组预算；预算耗尽未完成的子目录计入 estimated）。"""
     total, count = 0, 0
     estimated, denied = False, False
     existing = [p for p in group["paths"] if p and os.path.isdir(p)]
     if not existing:
         return None  # 组路径全部不存在（未安装该应用）→ 省略该组
     children = []
+    dir_tasks = []   # (DirEntry, Future)：并行求和的目录子项
     for root in existing:
         entries = []
         try:
@@ -715,6 +719,10 @@ def _scan_group(group, deadline):
                 if e.is_symlink():
                     continue
                 if e.is_dir(follow_symlinks=False):
+                    if executor is not None:
+                        # 组内并行：子目录求和提交给内层池，统一在下方收集
+                        dir_tasks.append((e, executor.submit(_dir_stats, e.path, deadline)))
+                        continue
                     size, cnt, est, den = _dir_stats(e.path, deadline)
                     estimated = estimated or est
                     denied = denied or den
@@ -734,7 +742,30 @@ def _scan_group(group, deadline):
                 "size_human": human_size(size),
                 "is_dir": is_dir,
             })
-    children.sort(key=lambda c: c["size_bytes"], reverse=True)
+    # 并行收集目录子项求和结果（组内 DFS 并行；预算耗尽未完成项计入 estimated）
+    if dir_tasks:
+        futs = [f for _, f in dir_tasks]
+        fut_entry = {f: e for e, f in dir_tasks}
+        try:
+            for fut in as_completed(futs, timeout=max(0.0, deadline - time.monotonic())):
+                e = fut_entry[fut]
+                try:
+                    size, cnt, est, den = fut.result()
+                except Exception:  # noqa: BLE001 单子目录异常不拖垮整组
+                    continue
+                estimated = estimated or est
+                denied = denied or den
+                total += size
+                count += cnt
+                children.append({
+                    "name": e.name,
+                    "path": e.path,
+                    "size_bytes": size,
+                    "size_human": human_size(size),
+                    "is_dir": True,
+                })
+        except TimeoutError:
+            estimated = True
     if denied and total == 0 and not children:
         status = "denied"
     elif estimated:
@@ -743,6 +774,7 @@ def _scan_group(group, deadline):
         status = "ok"
     # 输出瘦身（底座工具结果 12,000 字符硬上限，超出会被压缩丢尾部）：
     # 不带 paths/size_bytes，top_children 只留前 3（删除目标从这里取全路径）。
+    top = heapq.nlargest(3, children, key=lambda c: c["size_bytes"]) if children else []
     return {
         "key": group["key"],
         "name": group["name"],
@@ -753,7 +785,7 @@ def _scan_group(group, deadline):
         "top_children": [
             {"name": c["name"], "path": c["path"], "size_human": c["size_human"],
              "is_dir": c["is_dir"]}
-            for c in children[:3]
+            for c in top
         ],
         "risk": group["risk"],
         "note": group["note"],
@@ -865,11 +897,11 @@ def _list_drives():
     return drives
 
 
-def _scan_other_drives():
+def _scan_other_drives(executor=None):
     """概览附带的非系统盘信息：每盘容量/剩余 + 根目录直接子项 Top3。
     各盘独立并行（每盘 8s 预算），互不挤占——多盘机器不再"第一盘吃满、其余跳过"。
-    复用 _scan_group 拿 size/top_children/status 四件套。其他盘一律归 🟡
-    （含用户数据，只给画像不主动删）。"""
+    复用 _scan_group 拿 size/top_children/status 四件套（executor 透传组内并行）。
+    其他盘一律归 🟡（含用户数据，只给画像不主动删）。"""
     system = (os.environ.get("SystemDrive", "C:") + "\\") if PLATFORM == "win32" else None
     drives = [d for d in _list_drives()
               if not (system and os.path.normcase(d) == os.path.normcase(system))]
@@ -894,7 +926,7 @@ def _scan_other_drives():
             "paths": [drive],
             "risk": "yellow",
             "note": "非系统盘根目录直接子项（只读），大目录可在对话里对 path 下钻",
-        }, time.monotonic() + SCAN_GROUP_BUDGET_SEC)
+        }, time.monotonic() + SCAN_GROUP_BUDGET_SEC, executor)
         if scanned:
             info["status"] = scanned["status"]
             info["size_human"] = scanned["size_human"]
@@ -946,8 +978,8 @@ def _large_files(home, deadline):
                     "size_human": human_size(size),
                     "modified": _fmt_mtime(mtime),
                 })
-    found.sort(key=lambda f: f["size_bytes"], reverse=True)
-    return found[:LARGE_FILE_LIMIT], truncated
+    return heapq.nlargest(LARGE_FILE_LIMIT, found,
+                          key=lambda f: f["size_bytes"]), truncated
 
 
 def disk_scan(path=None, refresh=False):
@@ -965,17 +997,20 @@ def disk_scan(path=None, refresh=False):
     home = os.path.expanduser("~")
     tasks = []
     for group in _scan_groups():
-        # 每组独立 8s 预算（在 worker 内取起始时刻，互不挤占）
+        # 每组独立 8s 预算（在 worker 内取起始时刻，互不挤占）；组内子目录走内层池并行
         tasks.append(("group", group["key"],
                       lambda g=group: _scan_group(
-                          g, time.monotonic() + SCAN_GROUP_BUDGET_SEC)))
+                          g, time.monotonic() + SCAN_GROUP_BUDGET_SEC, inner_executor)))
     tasks.append(("large", None,
                   lambda: _large_files(home,
                                        time.monotonic() + LARGE_FILES_BUDGET_SEC)))
-    tasks.append(("drives", None, _scan_other_drives))
+    tasks.append(("drives", None, lambda: _scan_other_drives(inner_executor)))
 
     results = {}   # (kind, id) → ("ok", value) | ("error", None) | ("timeout", None)
     executor = ThreadPoolExecutor(max_workers=min(len(tasks), _SCAN_MAX_WORKERS))
+    # 内层池：组内/盘内子目录求和专用。与外层分离避免嵌套提交死锁——
+    # 外层 worker 等在 as_completed 上时，内层始终有独立 worker 消费子任务。
+    inner_executor = ThreadPoolExecutor(max_workers=_SCAN_MAX_WORKERS)
     futures = {executor.submit(fn): (kind, key) for kind, key, fn in tasks}
     wall_remaining = max(1.0, SCAN_TOTAL_BUDGET_SEC - (time.monotonic() - started_mono))
     try:
@@ -993,6 +1028,7 @@ def disk_scan(path=None, refresh=False):
             results.setdefault(task_key, ("timeout", None))
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+        inner_executor.shutdown(wait=False, cancel_futures=True)
 
     groups_out = []
     for group in _scan_groups():
@@ -1132,8 +1168,7 @@ def _drill_down(path):
                          "size_human": human_size(size), "is_dir": is_dir,
                          "size_estimated": est_flag})
 
-    children.sort(key=lambda c: c["size_bytes"], reverse=True)
-    shown = children[:20]
+    shown = heapq.nlargest(20, children, key=lambda c: c["size_bytes"])
     hidden += len(children) - len(shown)
     for c in shown:
         c.pop("size_bytes", None)

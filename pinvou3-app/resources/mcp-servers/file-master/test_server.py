@@ -509,6 +509,27 @@ class DiskScanTest(unittest.TestCase):
                 self.assertIn("drive", d)
                 self.assertIn("total", d)
 
+    def test_scan_group_parallel_matches_serial(self):
+        """组内并行求和不改变结果：串行与并行（内层池）的总量/文件数/Top 一致。"""
+        tmp = tempfile.mkdtemp(prefix="fm_pg_")
+        try:
+            for d in ("a", "b", "c"):
+                os.makedirs(os.path.join(tmp, d))
+                with open(os.path.join(tmp, d, "f.bin"), "wb") as f:
+                    f.write(b"x" * 2048)
+            group = {"key": "t", "name": "t", "paths": [tmp], "risk": "green", "note": ""}
+            serial = server._scan_group(group, time.monotonic() + 10.0)
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=4) as ex:
+                parallel = server._scan_group(group, time.monotonic() + 10.0, ex)
+            self.assertEqual(serial["size_bytes"], parallel["size_bytes"])
+            self.assertEqual(serial["file_count"], parallel["file_count"])
+            self.assertEqual({c["name"] for c in serial["top_children"]},
+                             {c["name"] for c in parallel["top_children"]})
+            self.assertEqual(serial["status"], parallel["status"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_overview_groups_keep_definition_order(self):
         """并行概览：分组输出必须保持定义顺序（线程池收集后按定义序合并）。"""
         out = server.disk_scan()
