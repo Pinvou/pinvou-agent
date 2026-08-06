@@ -19,12 +19,11 @@ const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\
 /// 原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),隐藏 present_artifact。
 const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
 
-/// 代码会话同时禁用 load_skill(skill 触达模型的唯一工具通道):skill 开关是
-/// 进程级全局状态,无法按会话生效,代码页开关只落盘不生效即成"假开关";
-/// 在底座支持按会话禁用单个 skill 之前,代码会话整体禁用 load_skill 作为
-/// 过渡方案(catalogue 路径泄露的残留口径见
-/// .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md，已归档)。
-const LOAD_SKILL: &str = "load_skill";
+/// `load_skill` 工具名。不再由本策略恒返回：skill 双 scope 治理（组合目录）落地后，
+/// code 会话按「组合目录是否为空」动态决定隐藏（见 bridge::shape_disallowed_tools）——
+/// 空 → 隐藏（避免"开关开着但没技能"的假状态），非空 → 放行。方向对齐
+/// .luzeyang/code-plain-decoupling/skill-scope-governance-实施方案.md（已归档）。
+pub(crate) const LOAD_SKILL: &str = "load_skill";
 
 /// 单一会话模式的策略对象：共享链路（发送 op 构造、工具整形）按它取数，
 /// 不再散 `is_code_session` 裸判断。reminder 同文（R-1 审批卡已落地）与审批
@@ -51,11 +50,12 @@ impl SessionPolicy {
         }
     }
 
-    /// 该模式额外隐藏的工具（code：产物卡与 load_skill 过渡禁用，原因见常量注释）。
+    /// 该模式恒额外隐藏的工具（code：产物卡；load_skill 不在此列——其隐藏与否
+    /// 由该会话组合目录是否为空动态决定，见 bridge::shape_disallowed_tools）。
     pub fn extra_hidden_tools(&self) -> &'static [&'static str] {
         match self.mode {
             SessionMode::Plain => &[],
-            SessionMode::Code => &[PRESENT_ARTIFACT, LOAD_SKILL],
+            SessionMode::Code => &[PRESENT_ARTIFACT],
         }
     }
 
@@ -79,13 +79,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn code_policy_uses_code_scope_and_hides_artifact_and_load_skill() {
+    fn code_policy_uses_code_scope_and_hides_artifact() {
         let policy = SessionPolicy::for_mode(SessionMode::Code);
         assert_eq!(policy.mode(), SessionMode::Code);
         assert_eq!(policy.connector_scope(), ConnectorScope::Code);
+        // load_skill 不在恒隐藏列表：其隐藏与否由组合目录空否动态决定
+        // （bridge::shape_disallowed_tools，V-5 联动）。
         assert_eq!(
             policy.extra_hidden_tools(),
-            &["mcp_pinvou3_present_artifact", "load_skill"]
+            &["mcp_pinvou3_present_artifact"]
         );
     }
 

@@ -107,50 +107,16 @@ pub struct MarketplaceSkillInfo {
     pub user_uploaded: bool,
 }
 
-// 停用开关(全局持久)----------------------------------------------------------
+// 停用开关(双 scope 持久化)-----------------------------------------------------
 //
-// 技能停用**没有独立开关**:改由连接器禁用联动驱动——被禁用连接器
-// ([`marketplace::load_disabled_connectors`])声明的 `companion_skills` 即视为停用。
-// 语义 = "公文 MCP 关掉 → government-writing 一并从 `## Skills` catalogue 隐藏;开回来
-// 即恢复"(装/卸走 companion install/uninstall,禁用/启用走这里,三态一致)。
-// skill 没有 per-session catalog,底座侧是 render 收口的进程级过滤器(见
-// deepseek_tui::skills::set_disabled_skills),故无需 Op / engine_pool 广播——一次 set
-// 全 session 下轮生效。
-
-/// 把当前停用集(被禁用连接器的 companion_skills → 落盘 skill 名)推给底座进程级过滤器。
-/// 启动时 + 每次 `set_disabled_connectors` 调用;空集 = 全开。下一轮 prompt 构建即生效
-/// (一次 prefix-cache miss 后稳定)。
-pub fn refresh_disabled_skills() {
-    let market = crate::features::marketplace::MarketplaceManager::new();
-    let disabled_ids = crate::features::marketplace::load_disabled_connectors();
-    let mut skill_ids: Vec<String> = disabled_ids
-        .iter()
-        .flat_map(|cid| market.companion_skills(cid))
-        .collect();
-    let skill_market = SkillMarketplaceManager::new();
-    let installed_skill_ids: std::collections::HashSet<String> = skill_market
-        .list_skills()
-        .into_iter()
-        .filter(|s| s.installed)
-        .map(|s| s.id)
-        .collect();
-    let marketplace_tool_ids: std::collections::HashSet<String> =
-        market.list_tools().into_iter().map(|t| t.id).collect();
-    skill_ids.extend(disabled_ids.iter().filter_map(|id| {
-        if let Some(skill_id) = id.strip_prefix("skill:") {
-            installed_skill_ids
-                .contains(skill_id)
-                .then(|| skill_id.to_string())
-        } else {
-            // Backward compatibility for earlier builds that stored direct skill ids
-            // without a namespace. Do not treat known connector ids as skills.
-            (installed_skill_ids.contains(id) && !marketplace_tool_ids.contains(id))
-                .then(|| id.clone())
-        }
-    }));
-    let names = skill_market.model_skill_names(&skill_ids);
-    deepseek_tui::skills::set_disabled_skills(names);
-}
+// 技能停用按会话类型 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
+// (`{plain, code, code_initialized}`,与连接器双 scope 同构),过滤职责移交
+// **按会话拼的组合 skills_dir**(`features/assistant/skill_materialization.rs`):
+// 组合目录内容 = 该会话 scope 的启用技能集,底座每轮重扫组合目录渲染
+// `## Skills`。全局进程级 `DISABLED_SKILLS` 已退役(`set_disabled_skills(vec![])`,
+// 见 lib.rs 启动段)——组合目录为空时整个块不渲染,路径泄露面随之封闭。
+// companion 联动(禁用连接器 → 其配套技能一并隐藏)保留,改在组合目录计算时
+// 按 scope 排除(见 `skill_materialization::disabled_skill_names_for`)。
 
 // Manager ---------------------------------------------------------------------
 
@@ -230,6 +196,16 @@ impl SkillMarketplaceManager {
 
     fn is_installed(&self, skill_name: &str) -> bool {
         self.skills_dir.join(skill_name).join("SKILL.md").is_file()
+    }
+
+    /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
+    /// 已装技能」的兜底集合来源（见 `skill_materialization::load_disabled_skills_for`）。
+    pub fn installed_skill_ids(&self) -> Vec<String> {
+        self.list_skills()
+            .into_iter()
+            .filter(|s| s.installed)
+            .map(|s| s.id)
+            .collect()
     }
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {

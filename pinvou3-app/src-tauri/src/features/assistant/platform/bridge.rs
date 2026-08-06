@@ -432,8 +432,11 @@ impl Pinvou3Bridge {
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
     /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
     /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
-    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具(产物卡/load_skill
-    /// 过渡禁用)由 [`SessionPolicy::extra_hidden_tools`] 产出,原因见该模块注释。
+    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具:产物卡恒隐藏
+    /// （[`SessionPolicy::extra_hidden_tools`]）;`load_skill` 按**该会话组合目录
+    /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
+    /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
+    /// 检查是磁盘 I/O,策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         let policy = self.session_policy(session_id);
         // plain：不移除、不追加,原样返回。
@@ -453,6 +456,13 @@ impl Pinvou3Bridge {
         for hidden in policy.extra_hidden_tools() {
             if !tools.iter().any(|tool| tool == hidden) {
                 tools.push((*hidden).to_string());
+            }
+        }
+        // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+        if crate::features::assistant::skill_materialization::session_skills_is_empty(session_id) {
+            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+            if !tools.iter().any(|tool| tool == load_skill) {
+                tools.push(load_skill.to_string());
             }
         }
         tools
@@ -1289,6 +1299,12 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&workspace);
         cfg.workspace = workspace;
         cfg.instructions = self.session_instructions(session_id);
+        // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
+        // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
+        // 目录不存在时底座 `insert_configured_skills_dir` 会跳过（发现集为空 →
+        // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
+        // 目录在下次物化时机前被重建。
+        cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
         cfg
     }
 
@@ -1516,6 +1532,15 @@ impl Pinvou3Bridge {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<Op> {
+        // 发送路径自愈（skill 双 scope 治理 §2.3.3）：组合目录缺失时按当前 scope
+        // 重建（微秒级 stat），防手动删除后静默丢失；不做每轮全量比对（V-7/V-10）。
+        let policy = self.session_policy(session_id);
+        let project_workspace = self.session_roots(session_id).execution;
+        crate::features::assistant::skill_materialization::ensure_session_skills(
+            session_id,
+            policy.connector_scope(),
+            Some(&project_workspace),
+        );
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，

@@ -391,7 +391,7 @@ fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
     let key = set_test_oauth_token(server_name, url, "not-json");
     assert!(test_oauth_token_exists(&key));
 
-    uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap();
+    uninstall_marketplace_tool_sync("yuandian-mcp").unwrap();
 
     assert!(!test_oauth_token_exists(&key));
     assert!(!crate::features::marketplace::MarketplaceManager::new()
@@ -417,7 +417,7 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
         }),
     );
 
-    let err = uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap_err();
+    let err = uninstall_marketplace_tool_sync("yuandian-mcp").unwrap_err();
     assert!(err.contains("删除 MCP OAuth token 失败"));
     assert!(crate::features::marketplace::MarketplaceManager::new()
         .installed_ids()
@@ -547,7 +547,10 @@ fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn direct_skill_reinstall_reapplies_persisted_disable() {
+fn direct_skill_install_uninstall_scope_state_roundtrip() {
+    use crate::features::assistant::skill_materialization as sm;
+    use crate::features::marketplace::ConnectorScope;
+
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -560,26 +563,37 @@ fn direct_skill_reinstall_reapplies_persisted_disable() {
     std::fs::create_dir_all(&root).unwrap();
     std::env::set_var("PINVOU3_HOME", &root);
 
-    crate::features::marketplace::save_disabled_connectors(&["skill:visualizer".to_string()]);
+    // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
+    // 组合目录计算排除该技能。
+    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
     install_marketplace_skill_sync("visualizer").unwrap();
-    assert!(deepseek_tui::skills::is_skill_disabled("visualizer"));
+    assert!(
+        !sm::enabled_skills_for(ConnectorScope::Plain, None)
+            .iter()
+            .any(|(n, _)| n == "visualizer"),
+        "安装后仍受用户关闭状态约束（plain scope 禁用集）"
+    );
+    // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
+    assert!(sm::load_disabled_skills_for(ConnectorScope::Code)
+        .iter()
+        .any(|id| id == "visualizer"));
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
+    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
     assert!(
-        !deepseek_tui::skills::is_skill_disabled("visualizer"),
-        "卸载后底座运行态不应保留不存在的 skill"
+        !sm::load_disabled_skills_for(ConnectorScope::Plain)
+            .iter()
+            .any(|id| id == "visualizer"),
+        "卸载应从禁用集清除残留 id"
     );
-
-    // disabled_connectors.json 仍保留用户的关闭选择。重装命令必须主动刷新，
-    // 不能等用户再切一次 composer 开关。
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
-        deepseek_tui::skills::is_skill_disabled("visualizer"),
-        "重装后 UI 的关闭状态必须与底座运行态一致"
+        sm::enabled_skills_for(ConnectorScope::Plain, None)
+            .iter()
+            .any(|(n, _)| n == "visualizer"),
+        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
     );
 
-    crate::features::marketplace::save_disabled_connectors(&[]);
-    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     match previous {
         Some(value) => std::env::set_var("PINVOU3_HOME", value),
         None => std::env::remove_var("PINVOU3_HOME"),

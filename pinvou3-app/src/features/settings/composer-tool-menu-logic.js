@@ -16,14 +16,18 @@ function buildComposerToolMenuState({
   marketplaceTools = [],
   marketplaceSkills = [],
   disabledIds = [],
+  disabledSkillIds = [],
   serviceStates = [],
   activeSkill = null,
   builtinSkills = DEFAULT_BUILTIN_SKILLS,
   scope = 'plain',
 } = {}) {
   const disabled = new Set(disabledIds || []);
-  // code scope: 代码会话已整体禁用技能加载,技能行只读展示且不计入启用数。
-  const skillsUnavailable = scope === 'code';
+  const disabledSkills = new Set(disabledSkillIds || []);
+  // skill 双 scope 治理后,技能行在两个 scope 都可写（各自 scope 独立持久化,
+  // code scope 未初始化时后端默认全禁已装技能）。`scope` 参数由调用方用于
+  // 区分读写目标（get/set_disabled_skills、get/set_disabled_connectors）。
+  void scope;
   const installedTools = (marketplaceTools || []).filter(tool => tool && tool.installed);
   const companionSkillIds = new Set(installedTools.flatMap(tool => tool.companion_skills || []));
 
@@ -58,10 +62,10 @@ function buildComposerToolMenuState({
         kind: 'skill',
         title: skill.title || skill.name || skill.id,
         description: skill.description || skill.subtitle || '',
-        enabled: !disabled.has(rowId),
+        enabled: !disabledSkills.has(skill.id),
         active: activeSkill === skill.id || activeSkill === rowId,
-        switchable: !skillsUnavailable,
-        unavailable: skillsUnavailable,
+        switchable: true,
+        unavailable: false,
       };
     });
 
@@ -74,14 +78,14 @@ function buildComposerToolMenuState({
     enabled: true,
     active: activeSkill === skill.id,
     switchable: false,
-    unavailable: skillsUnavailable,
+    unavailable: false,
   }));
 
   const allSkillRows = [...skillRows, ...builtinRows];
   const enabledCount =
     connectedServices.filter(row => row.enabled).length +
     toolRows.filter(row => row.enabled).length +
-    (skillsUnavailable ? 0 : allSkillRows.filter(row => row.enabled).length);
+    allSkillRows.filter(row => row.enabled).length;
 
   return {
     connectedServices,

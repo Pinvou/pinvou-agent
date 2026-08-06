@@ -57,7 +57,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 代码会话 = 骨架 + `instructions-code.md`（代码身份头、工作区段含项目路径占位符、代码场景纪律：就地修改/不建 tmp//git 纪律/范围纪律/验证纪律/交付汇报）+ **底座 `CORE_EXECUTION_PROFILE_PROMPT` 原样引用**（Rust 渲染层拼接 `deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT`，零文本复制，上游更新自动跟随）。
 - 未引入底座 `BASE_PROMPT`（含 "You are Codewhale" 身份；其权威顺序/防编造干货在共享层 §底线已有等价物）。
 - 工作会话渲染结果与拆分前**逐字节相等**（golden 测试内嵌 33 行原文快照断言）。
-- 工具整形：代码会话 `disallowed_tools` 追加 `mcp_pinvou3_present_artifact` 与 `load_skill`（spawn 初值与 `set_disallowed_all` 热刷统一经 `bridge.shape_disallowed_tools`，取值现由 `SessionPolicy::extra_hidden_tools` 给出，见 §3.6）。
+- 工具整形：代码会话 `disallowed_tools` 追加 `mcp_pinvou3_present_artifact`（恒隐藏，code 无产物卡语义）；`load_skill` 按**该会话组合目录是否为空**动态决定（skill 双 scope 治理后，非空 → 放行；空 → 隐藏，避免"开关开着但没技能"的假状态）。spawn 初值与 `set_disallowed_all` 热刷统一经 `bridge.shape_disallowed_tools`（策略取值见 §3.6，目录判定见 §8.6）。
 
 ### 3.5 配置控件复用策略
 
@@ -65,7 +65,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 
-- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 追加 `present_artifact`/`load_skill`）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
 - 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
 
@@ -248,6 +248,39 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   边界 + symlink 拒读，是「不引入全局上下文风险」与「项目规则可用」之间的
   折中。
 
+### 8.6 skill 按 scope 治理（双 scope 持久化 + 组合目录）
+
+- **开关双 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
+  `{ plain, code, code_initialized, project_skills_enabled }`（与
+  `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
+  旧版借道 `disabled_connectors.json` 的 `skill:<id>` 条目 → 提取进 plain 并
+  清除连接器文件残留。**安全默认**：code scope 未初始化时默认禁用所有已安装
+  技能（外部能力显式开启）——这一步同时封闭 P1 泄露面（code 默认 catalogue
+  为空）。
+- **组合目录物化**：`EngineConfig.skills_dir` 按会话指向
+  `~/.pinvou3/sessions/<sid>/skills/`（`features/assistant/skill_materialization.rs`），
+  内容 = 该会话 scope 的启用技能集（来源：用户 skills 目录 + bundle/skills，
+  first-wins 同名去重；另排除该 scope 被禁用连接器的 companion skills）。
+  底座对 `skills_dir` 每轮重新发现渲染——空目录 → 整个 `## Skills` 块不渲染，
+  catalogue 不再印任何技能名与磁盘路径（V-1 封口机制）；`load_skill` 走同一
+  单根发现，按会话过滤（P4 双 scope 独立）。
+- **底座配合（fork 最小改动）**：`skills_directories_with_home_and_mode` 不再
+  硬编码 bundle/skills，技能发现完全由 `EngineConfig.skills_dir` 单一配置根
+  注入（fork-guard T3 指纹与行为测试已更新，见 `docs/fork-modifications.md`）。
+- **物化时机三段式**（不做每轮 diff）：① 引擎 spawn 前全量拼（staged +
+  rename 原子替换）；② toggle/安装/卸载命令落盘后增量重写在线会话组合目录
+  （diff 增删，幂等，下一轮 prompt 即生效）；③ 发送路径 `exists()` 自愈
+  （缺失即重建，微秒级 stat）。
+- **load_skill 放行联动**：code 会话组合目录非空 → `load_skill` 可用；空 →
+  隐藏（spawn 初值与 `set_disallowed_all` 热刷两路都经
+  `bridge.shape_disallowed_tools`）。
+- **项目级 skills**（P3 兜底）：fork #41 已砍断 workspace 并集扫描，项目技能
+  （`.agents/skills`、`skills`、`.opencode/skills`、`.claude/skills`、
+  `.cursor/skills`、`.codewhale/skills`，按上游优先级）在**策略开关默认关**
+  下经同一物化通道拷入组合目录；开启路径有注入风险警告（项目内文本是
+  prompt-injection 面）。catalogue 显示组合目录路径而非 bundle 内部结构。
+- 详细设计、验收矩阵与遗留见 `docs/skill-scope-governance-改动说明.md`。
+
 ## 9. 已知限制与遗留风险
 
 - Plan 模式审批闭环已落地（R-1）：code 页消费 `chat:plan_snapshot`/`chat:plan_ready`，
@@ -261,12 +294,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 远程端 `web_access_*` RPC 面未封：事件流已按 §8.4 对原生代码会话不转发，但
   远程端凭 session id 仍可读/写代码会话消息。远程正式支持代码会话前暂保留该
   通道（事件面先封是主要泄露面），是否同步封 RPC 面需审阅者确认。
-- 代码会话 skill 侧路残留（过渡方案 D）：代码会话已整体禁用 `load_skill` 工具
-  + 代码页 skill 分组只读诚实化，但 `## Skills` catalogue 仍印在提示词中（含
-  skill 磁盘路径），被注入引导的模型可经 `read_file` 读取 SKILL.md。根治方案
-  见 `.luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md`（按会话能力档案过滤
-  catalogue，需底座支持会话级技能开关，已标记待评估 X-1；启用挂载点已就位
-  ——落地时改为 `SessionPolicy` 取值，方案 D 两组件退役）。
+- ~~代码会话 skill 侧路残留（过渡方案 D）~~ 已根治（skill-scope-governance，
+  2026-08-06）：组合目录空时 `## Skills` 块不渲染（catalogue 不再印技能名与
+  磁盘路径，read_file 侧读无从得知路径）；代码页 skill 开关恢复可写并按 code
+  scope 持久。原 X-1 标记项由 §8.6 方案落地，过渡方案 D 两组件（整体禁用
+  load_skill + 只读灰显）退役。
 - 确认卡/busy 恢复依赖进程内登记表，进程重启后挂起 input 随旧 engine 消亡（与 ACP orphaned turn 语义一致）。恢复方案已定为「挂起输入写入 sidecar + 重启后 UI 标记中断，可继续/丢弃」，**不恢复在途回合**（VS Code 同款取舍，避免半执行状态）；待实施（T-3）。
 - 原生会话无模型 API key 前置 gate，未配置凭据时错误在对话流内联展示。
 - 回声去重为启发式（文本一致或 30 秒窗口），极端时序理论可能双气泡。
@@ -280,13 +312,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
    `ci:full-rust` 让完整测试成为该 head 的正式 check。
 3. 代码会话工具/技能 profile（审阅建议②，恢复登记）：代码会话当前继承全集
    工具，已落地的隔离有——连接器工具按 scope 整形（§8.3）、隐藏
-   `present_artifact`、过渡方案 D 禁用 `load_skill`（§9 残留说明），且上述
-   差异已收编进 `SessionPolicy` 策略对象（§3.6，profile 的载体与挂载点）。
-   完整的「代码专用工具 profile」未兑现：skill 维度由
-   `.luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md` 承接（按会话能力档案过滤
-   catalogue + `load_skill` 按档案判定，需底座支持会话级技能开关，已标记
-   待评估 X-1），落地时经 `SessionPolicy` 取值启用；其余工具维度的 profile
-   化待该设计评审后一并实施。
+   `present_artifact`、skill 双 scope 治理（§8.6：组合目录过滤 catalogue +
+   `load_skill` 按目录空否放行），且上述差异已收编进 `SessionPolicy` 策略对象
+   （§3.6，profile 的载体与挂载点）。skill 维度已由
+   `docs/skill-scope-governance-改动说明.md` 落地（原 X-1 标记项关闭）；其余
+   工具维度的 profile 化（如代码会话专用工具面）待后续评审一并实施。
 
 ## 11. 过程产物
 
