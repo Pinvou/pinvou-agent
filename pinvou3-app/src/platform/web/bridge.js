@@ -383,6 +383,7 @@
       materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
       folderPickerUnavailable: "The folder picker cannot be opened in this environment",
       pickFolderTitle: "Choose a working directory",
+      kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       gateApproveFailed: "⚠️ Approval failed: ",
       gateRejectFailed: "⚠️ Rejection failed: ",
       roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
@@ -494,6 +495,7 @@
       materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
       folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
       pickFolderTitle: "作業ディレクトリを選択",
+      kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       gateApproveFailed: "⚠️ 承認に失敗: ",
       gateRejectFailed: "⚠️ 差し戻しに失敗: ",
       roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
@@ -605,6 +607,7 @@
       materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
       folderPickerUnavailable: "当前环境无法打开文件夹选择器",
       pickFolderTitle: "选择工作目录",
+      kbPickFolderTitle: "选择要导入知识库的文件夹",
       gateApproveFailed: "⚠️ 通过失败: ",
       gateRejectFailed: "⚠️ 打回失败: ",
       roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
@@ -8205,6 +8208,15 @@
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
+  // 知识库「添加文件夹」：host-file-picker 目录模式返回单个目录路径，
+  // 包成数组交给后端 kb_collection_add_sources（在桌面进程用 WalkDir 递归展开）。
+  async function pickFolders() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ directory: true, multiple: false, title: bt("kbPickFolderTitle") });
+    if (!selected) return [];
+    var p = Array.isArray(selected) ? selected[0] : selected;
+    return p ? [p] : [];
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     var selected = await dialogOpen({
@@ -8477,6 +8489,7 @@
     submitWorkflowUserInput: submitWorkflowUserInput,
     pickAndAddMaterials: pickAndAddMaterials,
     pickFiles: pickFiles,
+    pickFolders: pickFolders,
     pickFeedbackFiles: pickFeedbackFiles,
     addMaterialsToSession: addMaterialsToSession,
     attachRun: attachRun,

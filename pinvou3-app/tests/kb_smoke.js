@@ -211,16 +211,37 @@ async function clickContains(page, sel, text) {
     const x = document.body.innerText;
     const reset = [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '全部'
       && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件'));
-    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
+    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加') };
   });
   rec('④ 聚焦知识集后显示范围/文档列表/添加文件', focused.scoped && focused.docList && focused.addBtn, JSON.stringify(focused));
 
-  // 聚焦后添加文件：dialog mock 返回路径，必须透传到当前知识集。
-  await clickContains(page, 'button', '添加文件');
+  // 聚焦后添加文件：先点「添加」触发按钮打开下拉菜单，再点「文件」菜单项；dialog mock 返回路径，必须透传到当前知识集。
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled); if (b) b.click(); });
+  await sleep(300);
+  await page.evaluate(() => { const item = document.querySelector('[data-testid="kb-add-files"]'); if (item) item.click(); });
   await sleep(500);
   const added = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_collection_add_sources'
     && c.args && c.args.collectionId === 1 && Array.isArray(c.args.paths) && c.args.paths.includes('/home/x/新文档.pdf')));
   rec('⑤ 添加文件透传当前知识集和所选路径', added);
+
+  // ⑤b 添加文件夹：步骤⑤触发索引后「添加」按钮被禁用，先等轮询将索引复位（mock 返回 idle），
+  // 再点「添加」→「文件夹」菜单项；dialog mock 仍返回路径，断言同样透传到当前知识集。
+  await page.waitForFunction(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled);
+    return !!b;
+  }, { timeout: 5000 });
+  const addSourcesBefore = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_collection_add_sources').length);
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled); if (b) b.click(); });
+  await sleep(300);
+  await page.evaluate(() => { const item = document.querySelector('[data-testid="kb-add-folder"]'); if (item) item.click(); });
+  await sleep(500);
+  const addedFolder = await page.evaluate((before) => {
+    const calls = window.__KB_CALLS__.filter(c => c.cmd === 'kb_collection_add_sources');
+    if (calls.length <= before) return false;
+    const last = calls[calls.length - 1];
+    return last.args && last.args.collectionId === 1 && Array.isArray(last.args.paths) && last.args.paths.length > 0;
+  }, addSourcesBefore);
+  rec('⑤b 添加文件夹同样透传当前知识集与所选路径', addedFolder);
 
   await page.evaluate(() => {
     const reset = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '全部'
