@@ -9,6 +9,7 @@
     var state = context.state;
     var notify = context.notify;
     var invoke = context.invoke;
+    var listen = context.listen;
     var bt = context.bt;
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
@@ -46,7 +47,13 @@
       notify();
       return;
     }
-    state.depsInstalling = true; state.depsInstallError = null; notify();
+    state.depsInstalling = true; state.depsInstallError = null; state.depsInstallProgress = null; notify();
+    // 订阅后端进度事件,实时刷新「正在安装 X (n/总数)…」,避免长尾包(libreoffice)
+    // 全程只有静态「安装中…」像卡死。安装结束/出错均取消订阅并清空进度。
+    var unlisten = listen("deps:install_progress", function (event) {
+      state.depsInstallProgress = event.payload;
+      notify();
+    });
     try {
       await invoke("install_dependencies", { packages: pkgs, actions: actions });
     } catch (e) {
@@ -55,7 +62,9 @@
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
     } catch (_) { /* keep the last successful dependency snapshot */ }
-    state.depsInstalling = false; notify();
+    // listen 返回 Promise<UnlistenFn>;无论成功失败都取消订阅并清空进度。
+    Promise.resolve(unlisten).then(function (fn) { if (typeof fn === "function") fn(); });
+    state.depsInstalling = false; state.depsInstallProgress = null; notify();
   }
 
     return {

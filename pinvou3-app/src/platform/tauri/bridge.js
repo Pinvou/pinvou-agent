@@ -329,8 +329,9 @@
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
     depsChecking: false,
-    depsInstalling: false,    // 一键安装进行中(pkexec apt)
-    depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    depsInstalling: false,    // 一键安装进行中(brew/apt/winget)
+    depsInstallError: null,   // 安装失败原因(stderr 透传/取消/包管理器不可用)
+    depsInstallProgress: null, // 安装进度 {package,current,total,detail}(后端 deps:install_progress 事件)
     // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
@@ -489,7 +490,7 @@
       metricNotApplicable: "N/A", metricUnavailable: "Not provided",
       targetKindRemote: "Remote model", targetKindLocal: "Local model", targetKindInvalid: "Config error",
       betaVersionSuffix: " (Beta)",
-      depsInstallManual: "The missing items cannot be installed in one click. Install the offline components as described in the dependency notes, then re-check.",
+      depsInstallManual: "The missing items cannot be installed in one click. Install them as described in the notes above each missing item, then re-check.",
       remoteCmdNotAllowed: cmd => "Remote control does not allow this command: " + cmd,
       remoteDialogDesktop: "Remote control uses the desktop file picker",
       echoOtherPrefix: "(Other) ",
@@ -576,7 +577,7 @@
       metricNotApplicable: "対象外", metricUnavailable: "未提供",
       targetKindRemote: "リモートモデル", targetKindLocal: "ローカルモデル", targetKindInvalid: "設定エラー",
       betaVersionSuffix: " (ベータ版)",
-      depsInstallManual: "不足している項目はワンクリックでインストールできません。依存関係の説明に従ってオフラインコンポーネントをインストールしてから、再検出してください。",
+      depsInstallManual: "不足している項目はワンクリックでインストールできません。各不足項目の上にある説明に従ってインストールしてから、再検出してください。",
       remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
       remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
       echoOtherPrefix: "(その他) ",
@@ -663,7 +664,7 @@
       metricNotApplicable: "不适用", metricUnavailable: "未提供",
       targetKindRemote: "远端模型", targetKindLocal: "本地模型", targetKindInvalid: "配置异常",
       betaVersionSuffix: " (内测版)",
-      depsInstallManual: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
+      depsInstallManual: "当前缺失项无法一键安装，请按上方各缺失项的说明手动安装后重新检测。",
       remoteCmdNotAllowed: cmd => "远程控制不允许调用该命令：" + cmd,
       remoteDialogDesktop: "远程控制使用桌面端文件选择器",
       echoOtherPrefix: "(其他) ",
@@ -1216,7 +1217,7 @@
     memory: ["memory"],
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
-    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"],
+    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
   };
   function snapshotStateSlice(domain) {
     var fields = STATE_SLICE_FIELDS[domain];
@@ -1991,7 +1992,7 @@
   var startRemoteControl = remoteControlFeature.startRemoteControl;
   var stopRemoteControl = remoteControlFeature.stopRemoteControl;
   var refreshRemoteControlQr = remoteControlFeature.refreshRemoteControlQr;
-  var dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke, bt: bt });
+  var dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt });
   var checkDependencies = dependenciesFeature.checkDependencies;
   var installDependencies = dependenciesFeature.installDependencies;
   var voiceFeature = installBridgeFeature("voice", { state: state, notify: notify, invoke: invoke, bt: bt });

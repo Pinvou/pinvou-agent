@@ -30,6 +30,7 @@ pub struct PlatformCapabilities {
     pub show_megacube_site: bool,
     pub show_super_permission_settings: bool,
     pub uses_bundled_dependency_installer: bool,
+    pub uses_homebrew_dependency_installer: bool,
     pub task_completion_notifications_default: bool,
     pub local_vllm_supported: bool,
     pub codex_acp_supported: bool,
@@ -43,6 +44,7 @@ impl PlatformCapabilities {
             show_megacube_site: capabilities.show_megacube_site,
             show_super_permission_settings: capabilities.show_super_permission_settings,
             uses_bundled_dependency_installer: capabilities.uses_bundled_dependency_installer,
+            uses_homebrew_dependency_installer: capabilities.uses_homebrew_dependency_installer,
             task_completion_notifications_default: capabilities
                 .task_completion_notifications_default,
             local_vllm_supported: capabilities.local_vllm_supported,
@@ -96,6 +98,10 @@ mod platform_capability_tests {
         assert_eq!(
             capabilities.uses_bundled_dependency_installer,
             expected.uses_bundled_dependency_installer
+        );
+        assert_eq!(
+            capabilities.uses_homebrew_dependency_installer,
+            expected.uses_homebrew_dependency_installer
         );
         assert_eq!(
             capabilities.show_super_permission_settings,

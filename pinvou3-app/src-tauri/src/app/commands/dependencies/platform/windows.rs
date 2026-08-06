@@ -75,7 +75,7 @@ pub async fn install_dependencies(
     if !packages.is_empty() {
         tasks.push(InstallTask {
             failure_name: "系统依赖",
-            future: Box::pin(dependency_checks::install_dependencies(packages)),
+            future: Box::pin(dependency_checks::install_dependencies(app.clone(), packages)),
         });
     }
     if install_voice_model {

@@ -91,6 +91,10 @@ pub fn email_dependency_packages() -> &'static str {
     super::super::platform::email_dependency_packages()
 }
 
+pub fn email_manual_hint() -> Option<&'static str> {
+    super::super::platform::email_manual_hint()
+}
+
 pub fn pandoc_missing_message() -> &'static str {
     super::super::platform::pandoc_missing_message()
 }

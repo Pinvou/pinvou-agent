@@ -1,3 +1,5 @@
+use std::io::BufRead;
+use std::io::BufReader;
 use std::process::Command;
 
 const KNOWN_DEP_PACKAGES: &[&str] = &[
@@ -66,7 +68,92 @@ fn brew_not_found_error(packages: &[String]) -> String {
     )
 }
 
-pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+/// 运行一次 brew 调用,逐行流式上报 stdout/stderr 给进度回调,
+/// 并在失败时汇总最后几行 stderr。`args` 以 `["install"[, "--cask"], name]` 形式传入。
+///
+/// 返回 `Ok(())` 表示该包安装成功(exit 0),`Err(message)` 表示失败。
+fn run_brew(
+    args: &[&str],
+    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    package: &str,
+    current: usize,
+    total: usize,
+) -> Result<(), String> {
+    let mut child = Command::new(brew_bin())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "brew 启动失败(请确认已装 Homebrew: https://brew.sh): {e}\n  探测路径: /opt/homebrew/bin/brew, /usr/local/bin/brew"
+            )
+        })?;
+    // 逐行排空两个管道。stderr 收集最后几行用于失败汇总;stdout/stderr 每读到非空
+    // 行就回调一次,让前端看到 brew 实时输出(libreoffice 下载进度等)。
+    let stderr = child
+        .stderr
+        .take()
+        .map(|s| drain_lines(s, progress, package, current, total))
+        .unwrap_or_default();
+    if let Some(out) = child.stdout.take() {
+        drain_lines(out, progress, package, current, total);
+    }
+    let output = child
+        .wait()
+        .map_err(|e| format!("brew 等待失败: {e}"))?;
+    if output.success() {
+        return Ok(());
+    }
+    let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+    Err(format!(
+        "{} 安装失败 (exit {}): {}",
+        package,
+        output.code().unwrap_or(-1),
+        tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
+    ))
+}
+
+/// 逐行读取一个管道,对每条非空行触发进度回调;返回累积的全部文本。
+/// 对 stdout 与 stderr 各调一次。与 connectors 的 `drain_for_url` 同模式
+/// (BufReader::new(..).lines()),但这里在阻塞线程内联读,无需另起线程。
+fn drain_lines<R: std::io::Read>(
+    stream: R,
+    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    package: &str,
+    current: usize,
+    total: usize,
+) -> String {
+    let mut buf = String::new();
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => break, // 管道读取错误不可恢复,停止排空。
+        };
+        if let Some(report) = progress {
+            if !line.trim().is_empty() {
+                report(package, current, total, Some(line.as_str()));
+            }
+        }
+        buf.push_str(&line);
+        buf.push('\n');
+    }
+    buf
+}
+
+
+/// - `package`: 当前正在安装的包名
+/// - `current` / `total`: 1-based 序号 / 本批待装总数(含 formula 与 cask)
+/// - `detail`: brew 输出的最新一行(如 `Downloading libreoffice … 45%`),
+///   安装开始前为 `None`
+///
+/// 平台适配器只持有这个纯 Rust 回调,不依赖 Tauri;由 features 域层
+/// (file_ingest.rs)把它转成 `app.emit("deps:install_progress", …)`。
+pub fn install_dependencies(
+    packages: Vec<String>,
+    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+) -> Result<(), String> {
     if packages.is_empty() {
         return Err("没有需要安装的依赖".into());
     }
@@ -103,45 +190,38 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
 
     let mut errors: Vec<String> = Vec::new();
 
-    // formula 安装(brew install)。
-    if !formulas.is_empty() {
-        let formula_names: Vec<&str> = formulas.iter().map(|s| s.as_str()).collect();
-        let output = Command::new(brew_bin())
-            .arg("install")
-            .args(&formula_names)
-            .output()
-            .map_err(|e| {
-                format!(
-                    "brew 启动失败(请确认已装 Homebrew: https://brew.sh): {e}\n  探测路径: /opt/homebrew/bin/brew, /usr/local/bin/brew"
-                )
-            })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-            errors.push(format!(
-                "formula 安装失败 (exit {}): {}",
-                output.status.code().unwrap_or(-1),
-                tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
-            ));
+    // 逐包安装并流式上报进度,而非一次性 `brew install a b c` 阻塞到整批结束。
+    // 1) 逐包:每装完一个包就推进 `current`,给出「正在安装 X (n/总数)」的真实进度;
+    //    对 ~6 个小批次,逐包调用的额外开销可忽略。
+    // 2) 流式:逐行读 brew stdout/stderr 并回调,让长尾包(libreoffice cask 数十分钟)
+    //    的「Downloading … 45%」实时可见,不再像卡死。BufReader.lines() 是阻塞读,
+    //    本函数已运行在 spawn_blocking 线程,内联读即可,无需另起线程。
+    //
+    // current 是全局 1-based 序号(跨 formula 与 cask 连续),total 是本批待装总数。
+    let total = formulas.len() + casks.len();
+    let mut current = 0usize;
+
+    // formula 安装(brew install),逐包。
+    for name in &formulas {
+        current += 1;
+        if let Some(report) = progress {
+            report(name, current, total, None);
+        }
+        match run_brew(&["install", name], progress, name, current, total) {
+            Ok(()) => {}
+            Err(err) => errors.push(err),
         }
     }
 
-    // cask 安装(brew install --cask)。
-    if !casks.is_empty() {
-        let cask_names: Vec<&str> = casks.iter().map(|s| s.as_str()).collect();
-        let output = Command::new(brew_bin())
-            .args(["install", "--cask"])
-            .args(&cask_names)
-            .output()
-            .map_err(|e| format!("brew --cask 启动失败: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-            errors.push(format!(
-                "cask 安装失败 (exit {}): {}",
-                output.status.code().unwrap_or(-1),
-                tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
-            ));
+    // cask 安装(brew install --cask),逐包。
+    for name in &casks {
+        current += 1;
+        if let Some(report) = progress {
+            report(name, current, total, None);
+        }
+        match run_brew(&["install", "--cask", name], progress, name, current, total) {
+            Ok(()) => {}
+            Err(err) => errors.push(err),
         }
     }
 
@@ -149,5 +229,55 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         Ok(())
     } else {
         Err(errors.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    // drain_lines 应对每条非空行触发一次进度回调,并把全部文本累积返回。
+    // 这覆盖流式进度的核心机制——让前端看到 brew 实时输出(libreoffice 下载进度等)。
+    #[test]
+    fn drain_lines_reports_each_non_empty_line() {
+        let calls: Arc<Mutex<Vec<(String, usize, usize, Option<String>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let report = move |pkg: &str, cur: usize, total: usize, detail: Option<&str>| {
+            calls_clone.lock().unwrap().push((
+                pkg.to_string(),
+                cur,
+                total,
+                detail.map(str::to_string),
+            ));
+        };
+        let input = "Downloading foo\n\nInstalling foo\n";
+        let buf = drain_lines(input.as_bytes(), Some(&report), "foo", 1, 2);
+        // 空行被跳过,两行非空各回调一次。
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].0, "foo");
+        assert_eq!(recorded[0].1, 1);
+        assert_eq!(recorded[0].2, 2);
+        assert_eq!(recorded[0].3.as_deref(), Some("Downloading foo"));
+        assert_eq!(recorded[1].3.as_deref(), Some("Installing foo"));
+        // 累积文本含两行(各带换行)。
+        assert!(buf.contains("Downloading foo"));
+        assert!(buf.contains("Installing foo"));
+    }
+
+    // 白名单应拒绝未知包名(安全护栏,防注入任意 brew 包)。
+    #[test]
+    fn rejects_unknown_package() {
+        let err = install_dependencies(vec!["not-a-real-package".into()], None).unwrap_err();
+        assert!(err.contains("非法包名"));
+    }
+
+    // 空包名(如 email_dependency_packages 返回 "")应被过滤,而非误传 brew。
+    #[test]
+    fn filters_empty_package_names() {
+        let err = install_dependencies(vec!["".into()], None).unwrap_err();
+        assert_eq!(err, "没有需要安装的依赖");
     }
 }

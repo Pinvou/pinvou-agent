@@ -182,6 +182,11 @@ pub fn email_dependency_packages() -> &'static str {
     ""
 }
 
+/// Windows 社区版当前不展示邮件依赖检测(show 标志为 false),无需手动指引。
+pub fn email_manual_hint() -> Option<&'static str> {
+    None
+}
+
 pub fn ocr_dependency_packages() -> &'static str {
     ""
 }

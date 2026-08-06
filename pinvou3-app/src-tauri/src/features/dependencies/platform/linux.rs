@@ -2,8 +2,19 @@ use std::process::Command;
 
 use super::linux_packages::validate_packages;
 
-pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+/// `progress` 回调签名见 macOS 侧文档 `(package, current, total, detail)`。
+/// Linux 用 pkexec apt 一次性安装整批,只在执行前发一次粗粒度进度(无逐行 brew
+/// 输出可流式),保持既有行为不变。
+pub fn install_dependencies(
+    packages: Vec<String>,
+    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+) -> Result<(), String> {
     validate_packages(&packages)?;
+    if let Some(report) = progress {
+        if let Some(first) = packages.first() {
+            report(first, 1, 1, None);
+        }
+    }
     let script = format!(
         "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
         packages.join(" ")
