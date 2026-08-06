@@ -148,6 +148,20 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
         command
             .args(["-NoProfile", "-NonInteractive", "-Command"])
             .arg(format!("irm {windows_url} | iex"));
+        // Windows 开发机常见 PATH 顺序：Git for Windows 的 usr/bin 排在 System32
+        // 前面，官方安装脚本调 tar 会命中 MSYS tar——盘符路径（C:\...）被当成
+        // 「远程主机:路径」语法而失败（实测报错 Cannot execute remote shell）。
+        // 把 System32 提到 PATH 最前，保证脚本拿到 Windows 原生工具。
+        let system32 = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+            .join("System32");
+        let mut sanitized_path = system32.into_os_string();
+        if let Some(existing) = std::env::var_os("PATH") {
+            sanitized_path.push(";");
+            sanitized_path.push(existing);
+        }
+        command.env("PATH", sanitized_path);
         command
     } else {
         let mut command = HiddenTokioCommand::new("sh");
@@ -155,6 +169,21 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
             .arg("-c")
             .arg(format!("curl -fsSL {unix_url} | bash"));
         command
+    }
+}
+
+/// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
+/// 父进程会留下继续运行的子进程）；其他平台 kill -9（尽力而为）。
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
+    let pid_arg = pid.to_string();
+    if crate::platform::capabilities::is_windows() {
+        external_command(Path::new("taskkill"))
+            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+            .output()
+    } else {
+        external_command(Path::new("kill"))
+            .args(["-9", pid_arg.as_str()])
+            .output()
     }
 }
 
