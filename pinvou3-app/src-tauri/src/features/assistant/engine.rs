@@ -819,9 +819,15 @@ impl TurnLifecycle {
 
     /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
     ///
-    /// 仅当 turn 处于 active 且 `turn_id` 仍为 None（TurnStarted 未抵达）时设置
-    /// `pending_cancel`；若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，
-    /// `cancel_current()` 直接命中当前活跃 token，无需补打。
+    /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
+    /// 未抵达）时设置 `pending_cancel`：
+    /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
+    ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal`）立即发
+    ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
+    ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
+    ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
+    /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，`cancel_current()`
+    ///   直接命中当前活跃 token，无需补打。
     ///
     /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
     /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
@@ -829,7 +835,7 @@ impl TurnLifecycle {
     /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
     pub(crate) fn arm_pending_cancel(&self) {
         let mut state = self.state.lock();
-        if state.turn_id.is_none() && state.active {
+        if state.submitted && state.turn_id.is_none() && state.active {
             state.pending_cancel = true;
         }
     }
@@ -3094,9 +3100,69 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
+    fn arm_pending_cancel_requires_submitted_reservation() {
+        // 空闲 engine + 未提交 reservation 窗口的回归：会话保留上一轮的空闲
+        // engine 时，cancel 第二阶段若按「engine 是否存在」分流会错误走 pending
+        // 分支。arm_pending_cancel 必须显式要求 submitted——只有消息确实已入队
+        // engine、需要防 reset_cancel_token 覆盖时才 arm；未提交 reservation 应由
+        // cancel 走未提交认领终态路径（emit_unsubmitted_interrupted_terminal）立即
+        // 发 chat:done 使其失效，而不是挂成 pending。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve 后 active=true 但 submitted=false → arm 不得置位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        lifecycle.arm_pending_cancel();
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "must not arm pending_cancel for an unsubmitted reservation"
+        );
+
+        // 走真实 send 路径：handle.send 成功后 mark_submitted → submitted=true。
+        lifecycle.mark_reservation_submitted(reservation.reservation_id);
+        // 已 submitted + active + turn_id=None（TurnStarted 未抵达）→ arm 置位。
+        lifecycle.arm_pending_cancel();
+        assert!(
+            lifecycle.take_pending_cancel(),
+            "pending_cancel must be armed after submission, before TurnStarted"
+        );
+        // 消费 reservation 避免 Drop 副作用。
+        reservation.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_invalidates_reservation() {
+        // 修复的核心闭环：空闲 engine 存在时，cancel 对未提交 reservation 走认领
+        // 终态路径，认领后该 reservation 必须失效——后续 send 的 ensure_active
+        // 失败、消息不再提交给 engine，前端 busy 因补发的 chat:done 复位。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let reservation = lifecycle.reserve().expect("reserve");
+
+        // 认领前 reservation 有效。
+        assert!(reservation.ensure_active().is_ok());
+
+        // 认领未提交终态（cancel 第二阶段会走这里）。
+        assert!(
+            lifecycle.claim_unsubmitted_terminal(),
+            "unsubmitted reservation must be claimable"
+        );
+        // claim 已把 active=false，reservation 不再有效——消息不会迟到提交。
+        assert!(
+            reservation.ensure_active().is_err(),
+            "claimed reservation must be invalidated so the pending send fails"
+        );
+        // 防 Drop 二次清理：claim 已收尾，标记 submitted 阻止 on_reservation_failed。
+        reservation.mark_submitted();
+
+        // 终态发完后重开闸门，下一轮可正常 reserve（与权威终态路径一致）。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+    }
+
+    #[test]
     fn pending_cancel_is_armed_only_before_turn_started_and_consumed_once() {
         // reset_cancel_token 竞态修复的核心不变量：
-        // 1. arm 仅在「active 且 turn_id=None（TurnStarted 未抵达）」时置标记；
+        // 1. arm 仅在「active、已 submitted、且 turn_id=None（TurnStarted 未抵达）」
+        //    时置标记（submitted 前置见 arm_pending_cancel_requires_submitted_reservation）；
         // 2. take 原子取出并清除（防跨轮泄漏）；
         // 3. 已 started 的 turn 不 arm（cancel_current 直接命中活跃 token）。
         let lifecycle = Arc::new(TurnLifecycle::default());

@@ -896,8 +896,12 @@ impl EnginePool {
     /// 「停止按钮无响应」：cancel_token 是独立原子，置位不需要 turn_lock 保护，
     /// 因此第一步无锁先触发，turn_loop 的 biased select 会立即跳出并正常发
     /// `TurnComplete`(→ chat:done)；第二步再持锁清理 shell/lifecycle 状态。
-    /// 若 engine 尚未 spawn(send 仍持锁中)，第二步持锁后走 invalidate 并补发
-    /// Interrupted 终态，保证前端 busy 一定能复位。
+    ///
+    /// 第二步以 lifecycle 的提交状态（而非 Engine 是否存在）为权威依据：reservation
+    /// 处于「reserved 未 submitted」阶段（消息尚未入队 engine）时，无论该会话是否
+    /// 保留着上一轮的空闲 Engine，都立即认领未提交 Interrupted 终态并补发
+    /// `chat:done`，使 reservation 失效（后续 `ensure_active` 失败、消息不再提交），
+    /// 保证前端 busy 一定能复位。
     pub async fn cancel(&self, session_id: &str) {
         // 阶段一：无锁先触发 cancel_token。
         // handle_for 只瞬时取 entries 锁(与 send 内部瞬时取 entries 锁不冲突)，
@@ -909,32 +913,41 @@ impl EnginePool {
         let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
-        // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
-        // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
-        // 这里拿到刚注册的 engine 补 cancel。
-        if let Some(engine) = self.handle_for(session_id).await {
-            // 若 turn 已 submit 但 TurnStarted 尚未抵达（op 还在 Engine mpsc
-            // 队列里），CodeWhale 会在新轮次入口无条件 reset_cancel_token()，
-            // 覆盖这里 cancel_current() 置位的 token。先 arm pending_cancel：
-            // 转发器收到 TurnStarted 后（reset 已完成）重新 cancel 命中活跃 token。
-            // 必须在 cancel_current() 之前 arm——见 arm_pending_cancel 文档。
-            if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-                lifecycle.arm_pending_cancel();
+        // 持锁后以 lifecycle 的提交状态（而非 Engine 是否存在）为权威依据。
+        // reserve_turn 不取 turn_lock，chat 在 reserve 与 send 之间有
+        // set_disallowed_all 等异步让出点（chat.rs）；若该会话保留着上一轮的空闲
+        // Engine，旧实现按「Engine 是否存在」分流会错误走 pending 分支：只 arm
+        // pending、不认领终态、不发 chat:done，reservation 仍有效，原 chat future
+        // 后续照常提交消息，前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
+        //
+        // emit_unsubmitted_interrupted_terminal 内部 claim 检查「active && !submitted」：
+        // 命中（含 engine 未 spawn 的 probe 窗口与空闲 engine 存在的未提交窗口）=
+        // 认领 Interrupted 终态 + 发 chat:done + 重置闸门，reservation 随之失效
+        // （后续 send 的 ensure_active 失败，消息不再提交）；未命中（已 submitted
+        // 或无活动 turn）返回 false 且无副作用，fallthrough 到 engine 分支。
+        // 必须用 claim（而非裸 invalidate）：reserve_turn 不取 turn_lock，若仅在
+        // invalidate 后、chat:done 发出前释放闸门，新一轮 reserve 可抢先成功，迟到
+        // 的 chat:done 会清掉新一轮 busy——claim 在发终态期间置 terminal_closing
+        // 关闸，与权威终态路径一致的防重入语义。
+        let lifecycle = self.turn_lifecycles.get(session_id);
+        let claimed_unsubmitted = lifecycle
+            .as_ref()
+            .is_some_and(|lc| lc.emit_unsubmitted_interrupted_terminal(&self.app, session_id));
+        if !claimed_unsubmitted {
+            // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
+            // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
+            // 这里拿到刚注册的 engine 补 cancel。
+            if let Some(engine) = self.handle_for(session_id).await {
+                // 已提交（op 已入队或 TurnStarted 已抵达）：
+                //  - TurnStarted 未抵达：arm pending，转发器收到 TurnStarted 后
+                //    （reset_cancel_token 已完成）补 cancel 命中活跃 token；
+                //  - TurnStarted 已抵达：cancel_current 直接命中当前活跃 token。
+                // 必须在 cancel_current() 之前 arm——见 arm_pending_cancel 文档。
+                if let Some(lifecycle) = lifecycle {
+                    lifecycle.arm_pending_cancel();
+                }
+                engine.cancel_current();
             }
-            engine.cancel_current();
-        } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-            // engine 不存在 = 该 session 的 turn 还在「reserved 未 submitted」阶段
-            // (send 仍在 get_or_spawn/probe 中)。invalidate 清理 reservation 但不
-            // emit chat:done(原设计)，导致前端 busy 永不复位。这里补发 Interrupted
-            // 终态，让前端立即解锁——cancel_generation 命令的文档注释本就承诺
-            // 「会补发 Interrupted 终态」，之前实现与注释不符，此处修正。
-            //
-            // 必须用 claim_unsubmitted_terminal（而非裸 invalidate）：reserve_turn 不
-            // 取 turn_lock，若仅在 invalidate 后、chat:done 发出前释放闸门，新一轮
-            // reserve 可抢先成功，迟到的 chat:done 会清掉新一轮 busy。claim 路径在
-            // 发终态期间置 terminal_closing 关闸，与权威终态路径（claim_terminal /
-            // claim_reclaimed）一致的防重入语义。
-            lifecycle.emit_unsubmitted_interrupted_terminal(&self.app, session_id);
         }
         if let Some(cancellation) = shell_cancellation {
             cancellation.cleanup().await;
