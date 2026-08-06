@@ -41,7 +41,8 @@ import { assistantResponseAvailable, assistantResponseText } from '../conversati
 import {
   ComposerToolMenu,
 } from '../settings/SettingsView.jsx';
-import { modelDisplayName, visibleUserModels } from '../../shared/model-options.js';
+import { visibleUserModels } from '../../shared/model-options.js';
+import { selectorMainLabel } from '../settings/model-catalog.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
@@ -1242,7 +1243,7 @@ export function CodexAcpView({
     ? nativeControls.mode
     : (activeId ? 'yolo' : (nativeDraftControls.mode || 'yolo'));
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
-    .map(model => ({ value: model.id, name: modelDisplayName(model) || model.id }));
+    .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
   const nativeSessionModelId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.modelId : null)
     : (nativeDraftControls.modelId || null);

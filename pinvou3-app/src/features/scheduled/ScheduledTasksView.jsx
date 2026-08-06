@@ -2,7 +2,8 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileChartLine, MessageCircle, Newspaper, Play, Plus, Trash2, X } from '../../components/icons.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
-import { modelDisplayName, visibleUserModels } from '../../shared/model-options.js';
+import { visibleUserModels } from '../../shared/model-options.js';
+import { selectorMainLabel } from '../settings/model-catalog.js';
 import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';
@@ -955,7 +956,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
       const modelOptions = savedModels.map(model => ({
         value: model.id,
-        label: modelDisplayName(model),
+        label: selectorMainLabel(model, t),
         model: model.model,
       }));
       if (detailForm && detailForm.modelId && !modelOptions.some(option => option.value === detailForm.modelId)) {
