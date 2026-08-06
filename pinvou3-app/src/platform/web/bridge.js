@@ -4522,6 +4522,12 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function isInternalRuntimeUserMessage(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
+  }
+
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
@@ -4536,6 +4542,7 @@
       return false;
     }
     var content = String(payload.content || "");
+    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
     var operation = String(payload.operation || "append");
     var action = String(payload.action || "");
     var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -4578,7 +4585,7 @@
         };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      if (!snapshotAlreadyCoversTurn) {
+      if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {

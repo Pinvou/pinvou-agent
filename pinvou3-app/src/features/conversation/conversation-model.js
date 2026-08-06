@@ -22,6 +22,18 @@ export function isExpertDelegationCall(name, args) {
 }
 
 /**
+ * `agent(action=wait)` is the persisted compatibility form; `agents/wait` is
+ * the canonical coordination tool. They have identical presentation semantics.
+ */
+export function isAgentWaitCall(name, args) {
+  const toolName = String(name || '').trim().toLowerCase();
+  if (toolName === 'agents/wait') return true;
+  if (toolName !== 'agent') return false;
+  const input = args && typeof args === 'object' ? args : {};
+  return String(input.action || '').trim().toLowerCase() === 'wait';
+}
+
+/**
  * 把底座 `parse_text_or_items` 接受的任务正文归一成专家卡可展示的文本。
  * 保持在 conversation 层，与 spawn 判定共用同一契约，避免出现“能派出、
  * 卡片却没有任务摘要”的两套解析规则。
@@ -329,4 +341,18 @@ export function terminalStatus(status, exitCode = null) {
   if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
   if (['completed', 'done', 'cancelled', 'canceled'].includes(normalized)) return 'completed';
   return 'running';
+}
+
+/**
+ * A wait call reports control-plane health, not the child task outcome. Keep
+ * its raw status for diagnostics, but never roll it into the task failure badge.
+ */
+export function countsAsFailedOperation(item) {
+  const tool = item && item.tool || {};
+  const input = tool.rawInput ?? (item && item.legacyItem && item.legacyItem.args);
+  if (isAgentWaitCall(tool.name, input)) return false;
+  const exitCode = item && item.type === 'command_execution'
+    ? commandExecutionDetails(tool).exitCode
+    : null;
+  return terminalStatus(item && item.status, exitCode) === 'failed';
 }

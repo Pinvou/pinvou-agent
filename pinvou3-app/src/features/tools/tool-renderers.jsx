@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Wrench } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
-import { expertDelegationText, isExpertDelegationCall } from '../conversation/conversation-model.js';
+import { expertDelegationText, isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import {
   extractSubagentId,
   resolveSubagentPresentation,
@@ -287,7 +287,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
   };
 
   if (!isDelegation) {
-    const action = String(args.action || 'start');
+    const action = isAgentWaitCall(item.name, args) ? 'wait' : String(args.action || 'start');
     return (
       <div
         data-testid="agent-coordination-row"
@@ -344,7 +344,10 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
             cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
             fb={14}
           />
-          <span className={`shrink-0 text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+          <span
+            className={`max-w-[132px] shrink-0 truncate text-[12.5px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}
+            title={name}
+          >
             {name}
           </span>
           <span className="min-w-0 flex-1 truncate text-[12px] text-[#8E8E93]">{task}</span>
@@ -528,7 +531,7 @@ const ToolOutput = ({ item, isDark, t }) => {
       // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
       // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
       // 因此每个实例的 Hook 数量恒定，不触犯 Hook 规则。
-      if (EXPERT_CARD_ENABLED && item.name === 'agent') {
+      if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
         return <ExpertAgentCard item={item} theme={theme} t={t} sessionId={sessionId} />;
       }
       const isDark = theme === 'dark';
