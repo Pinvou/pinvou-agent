@@ -35,7 +35,12 @@ name: PR Check
 
 on:
   pull_request:
-    branches: [main]
+    # 不限制 base 分支:堆叠 PR(base 为功能分支而非 main)同样必须跑完整
+    # lint + test gate。此前 `branches: [main]` 使栈中段 PR(base=功能分支)
+    # 只触发无 base 过滤的 DCO/Gitleaks/dependency-review,整条 pr-check
+    # (含 lint:ui / npm test / 浏览器 smoke / required-gate)被静默跳过,
+    # 导致 no-undef 与签名回归在栈中段漏检(见 #166/#168 评审)。changes
+    # job 已按路径短路无关 job(rust-test 默认跳过等),不会无差别烧 CI 分钟。
     # 标签事件用于按需开启/关闭 ci:full-rust。
     # closed 事件会进入同一个 concurrency group，及时取消已合并/关闭 PR 的旧任务。
     types: [opened, synchronize, reopened, labeled, unlabeled, closed]
