@@ -77,6 +77,37 @@ pub enum CodexWorkspaceKind {
     Project,
 }
 
+/// 产品模式类型已上移到 core（store/bridge 策略等多 feature 共用）；
+/// 这里 re-export 保持既有 `store::SessionMode` 路径可用。持久化关注点
+/// （`code_session` 键的布尔兼容 serde）留在本模块（见 `session_mode_serde`）。
+pub use crate::core::session_mode::SessionMode;
+
+/// `code_session` 键的兼容 serde：写布尔（旧格式），读布尔或字符串。
+mod session_mode_serde {
+    use super::SessionMode;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(mode: &SessionMode, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(mode.is_code())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SessionMode, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Compat {
+            Bool(bool),
+            Mode(SessionMode),
+        }
+        Ok(match Compat::deserialize(deserializer)? {
+            Compat::Bool(true) => SessionMode::Code,
+            Compat::Bool(false) => SessionMode::Plain,
+            Compat::Mode(mode) => mode,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionAgentRecord {
     #[serde(default)]
@@ -101,13 +132,15 @@ pub struct SessionAgentRecord {
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
-    /// “代码”模块原生（品悟 Engine）会话标记。旧记录没有该字段时按普通会话兼容。
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub code_session: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
+    /// 产品模式（plain/code）。旧记录没有该字段时按 plain 兼容；
+    /// 序列化保持原布尔格式（true=code），旧版本应用读新文件不误判。
+    #[serde(
+        default,
+        rename = "code_session",
+        with = "session_mode_serde",
+        skip_serializing_if = "SessionMode::is_plain"
+    )]
+    pub mode: SessionMode,
 }
 
 /// 原生代码会话的权威 sidecar（per-session 持久化真相源）。
@@ -137,7 +170,8 @@ fn code_session_sidecar_version() -> u32 {
 
 /// 原生代码会话 sidecar 的根目录：`<session-agents.json 父目录>/sessions`。
 /// 生产为 `~/.pinvou3/sessions`，测试随 store.path 一并隔离。
-fn code_session_sidecar_root(store_path: &Path) -> PathBuf {
+/// 启动扫描（mod.rs）与 sidecar 读写共用本函数，保证「扫描根 == 读取根」单一来源。
+pub(super) fn code_session_sidecar_root(store_path: &Path) -> PathBuf {
     store_path
         .parent()
         .map(|parent| parent.join("sessions"))
@@ -151,14 +185,15 @@ fn code_session_sidecar_path(store_path: &Path, session_id: &str) -> PathBuf {
         .join("code-session.json")
 }
 
-/// 原子写入原生代码会话 sidecar；写入失败仅告警，不阻断会话绑定主流程
-/// （辅助索引仍然可用，丢失恢复兜底时才依赖 sidecar）。
+/// 原子写入原生代码会话 sidecar；写入失败逐条记日志并返回 false，不阻断会话
+/// 绑定主流程（辅助索引仍然可用，丢失恢复兜底时才依赖 sidecar；缺失的 sidecar
+/// 由启动时的 `backfill_missing_code_session_sidecars` 自愈补写）。
 fn write_code_session_sidecar(
     store_path: &Path,
     session_id: &str,
     kind: CodexWorkspaceKind,
     workspace_path: Option<PathBuf>,
-) {
+) -> bool {
     let path = code_session_sidecar_path(store_path, session_id);
     let sidecar = CodeSessionSidecar {
         version: CODE_SESSION_SIDECAR_VERSION,
@@ -171,15 +206,20 @@ fn write_code_session_sidecar(
                 .unwrap_or_default(),
         ),
     };
-    if let Err(error) = persist_code_session_sidecar(&path, &sidecar) {
-        eprintln!(
-            "[pinvou3-app] 写入原生代码会话 sidecar 失败（{}）: {error:#}",
-            path.display()
-        );
+    match persist_code_session_sidecar(&path, &sidecar) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] 写入原生代码会话 sidecar 失败（{}）: {error:#}",
+                path.display()
+            );
+            false
+        }
     }
 }
 
-/// 读取原生代码会话 sidecar；不存在或解析失败时返回 None。
+/// 读取原生代码会话 sidecar；不存在、解析失败或 schema 版本高于当前支持版本时
+/// 返回 None（按缺失处理，走恢复/回填路径），异常均记日志。
 pub(super) fn read_code_session_sidecar(
     store_path: &Path,
     session_id: &str,
@@ -187,7 +227,20 @@ pub(super) fn read_code_session_sidecar(
     let path = code_session_sidecar_path(store_path, session_id);
     let payload = fs::read(&path).ok()?;
     match serde_json::from_slice::<CodeSessionSidecar>(&payload) {
-        Ok(sidecar) => Some(sidecar),
+        Ok(sidecar) => {
+            // 未来高版本格式不能静默按 v1 解析：拒读并按缺失处理，交由恢复/回填
+            // 路径用当前版本重写。
+            if sidecar.version > CODE_SESSION_SIDECAR_VERSION {
+                eprintln!(
+                    "[pinvou3-app] 原生代码会话 sidecar 版本 {} 高于当前支持的 {}，按缺失处理（{}）",
+                    sidecar.version,
+                    CODE_SESSION_SIDECAR_VERSION,
+                    path.display()
+                );
+                return None;
+            }
+            Some(sidecar)
+        }
         Err(error) => {
             eprintln!(
                 "[pinvou3-app] 解析原生代码会话 sidecar 失败（{}）: {error:#}",
@@ -199,7 +252,7 @@ pub(super) fn read_code_session_sidecar(
 }
 
 /// 删除原生代码会话 sidecar（会话删除时调用）。
-fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
+pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
         Ok(()) => {}
@@ -290,6 +343,15 @@ impl SessionAgentStore {
         &self.path
     }
 
+    /// 测试专用：以指定索引路径构造空 store（sidecar 根随之派生，与生产同源）。
+    #[cfg(test)]
+    pub(crate) fn for_test(path: PathBuf) -> Self {
+        Self {
+            path,
+            records: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     pub fn get(&self, session_id: &str) -> SessionAgentRecord {
         self.records
             .read()
@@ -351,13 +413,18 @@ impl SessionAgentStore {
             record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
-            // ACP 会话不是原生代码会话：绑定 ACP 时清除 code_session 标志，
+            // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
-            record.code_session = false;
+            record.mode = SessionMode::Plain;
         }
+        // 先持久化辅助索引，再清理权威 sidecar：persist 失败时 sidecar 仍在，与
+        // 磁盘索引保持一致，不会出现「sidecar 已删、索引未更新」的中间态；若 sidecar
+        // 清理失败，残留 sidecar 会在下次启动扫描时被识别为 ACP 会话残留并清理
+        // （见 mod.rs `restore_code_native_sessions_from_sidecars`）。
+        self.persist()?;
         // 该会话不再是原生代码会话：清理权威 sidecar，防止辅助索引重建时误恢复。
         remove_code_session_sidecar(&self.path, session_id);
-        self.persist()
+        Ok(())
     }
 
     /// 绑定“代码”模块的原生（品悟 Engine）会话。临时会话目录由 session id 推导；
@@ -382,7 +449,7 @@ impl SessionAgentStore {
                 anyhow::bail!("ACP 会话已开始，不能更换 Agent；请新建会话");
             }
             // 已绑定的原生代码会话不允许改绑到其他工作区（同值重复绑定幂等放行）。
-            if record.code_session
+            if record.mode.is_code()
                 && (record.workspace_kind != kind || record.workspace_path != workspace_path)
             {
                 anyhow::bail!("代码会话已开始，不能更换工作目录；请新建会话");
@@ -390,20 +457,28 @@ impl SessionAgentStore {
             record.backend = AgentBackend::Deepseek;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path.clone();
-            record.code_session = true;
+            record.mode = SessionMode::Code;
         }
         self.persist()?;
         // 权威 sidecar：辅助索引损坏/丢失后据此恢复原生代码会话类型与项目绑定。
+        // 写失败已逐条记日志；缺失的 sidecar 由启动时回填自愈补写。
         write_code_session_sidecar(&self.path, session_id, kind, workspace_path);
         Ok(())
     }
 
-    /// 是否为“代码”模块的原生（品悟 Engine）会话。
-    pub fn is_code_session(&self, session_id: &str) -> bool {
+    /// 该会话的产品模式（plain/code）；无记录时按 plain 缺省
+    /// （与历史 `is_code_session` 缺省 false 等价）。
+    pub fn session_mode(&self, session_id: &str) -> SessionMode {
         self.records
             .read()
             .get(session_id)
-            .is_some_and(|record| record.code_session)
+            .map(|record| record.mode)
+            .unwrap_or_default()
+    }
+
+    /// 是否为“代码”模块的原生（品悟 Engine）会话。
+    pub fn is_code_session(&self, session_id: &str) -> bool {
+        self.session_mode(session_id).is_code()
     }
 
     /// 原生代码会话绑定的项目目录；非代码会话或临时会话返回 None。
@@ -411,7 +486,7 @@ impl SessionAgentStore {
     /// 账本根（附件/审计/产物）命中它时必须改用会话私有目录。
     pub fn code_project_workspace(&self, session_id: &str) -> Option<PathBuf> {
         let record = self.get(session_id);
-        if record.code_session && record.workspace_kind == CodexWorkspaceKind::Project {
+        if record.mode.is_code() && record.workspace_kind == CodexWorkspaceKind::Project {
             record.workspace_path
         } else {
             None
@@ -535,21 +610,50 @@ impl SessionAgentStore {
         Ok(())
     }
 
+    /// 回填缺失的原生代码会话 sidecar（启动自愈）。
+    ///
+    /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
+    /// sidecar 写失败只记日志未补写。索引记录 `code_session=true` 而 sidecar 缺失
+    /// 时按索引补写；返回成功补写的数量（写失败已逐条记日志，不计入）。
+    pub fn backfill_missing_code_session_sidecars(&self) -> usize {
+        let records = self.records.read().clone();
+        let mut backfilled = 0usize;
+        for (session_id, record) in records {
+            if !record.mode.is_code() {
+                continue;
+            }
+            if read_code_session_sidecar(&self.path, &session_id).is_some() {
+                continue;
+            }
+            if write_code_session_sidecar(
+                &self.path,
+                &session_id,
+                record.workspace_kind,
+                record.workspace_path,
+            ) {
+                backfilled += 1;
+                eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
+            }
+        }
+        backfilled
+    }
+
     /// 从权威 sidecar 恢复原生代码会话记录（辅助索引缺失/损坏时的兜底）。
     ///
     /// 与 ACP 的 [`Self::restore_missing_acp_record`] 对称：sidecar 是长期权威
     /// 依据，辅助索引只负责加速。恢复成功即持久化回 `session-agents.json`，
-    /// 使后续读取不再依赖 sidecar。
+    /// 使后续读取不再依赖 sidecar。返回是否真实发生了恢复：索引已持有
+    /// code 模式记录时返回 `Ok(false)`，调用方不得把它计入恢复信号。
     pub fn restore_missing_code_session_record(
         &self,
         session_id: &str,
         recovered: CodeSessionSidecar,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let record = SessionAgentRecord {
             backend: AgentBackend::Deepseek,
             workspace_kind: recovered.workspace_kind,
             workspace_path: recovered.workspace_path,
-            code_session: true,
+            mode: SessionMode::Code,
             ..Default::default()
         };
         if record.workspace_kind == CodexWorkspaceKind::Project && record.workspace_path.is_none() {
@@ -563,9 +667,9 @@ impl SessionAgentStore {
             let mut records = self.records.write();
             if records
                 .get(session_id)
-                .is_some_and(|record| record.code_session)
+                .is_some_and(|record| record.mode.is_code())
             {
-                return Ok(());
+                return Ok(false);
             }
             if records
                 .get(session_id)
@@ -575,7 +679,8 @@ impl SessionAgentStore {
             }
             records.insert(session_id.to_string(), record);
         }
-        self.persist()
+        self.persist()?;
+        Ok(true)
     }
 
     fn persist(&self) -> Result<()> {
@@ -774,7 +879,38 @@ mod tests {
         assert_eq!(record.workspace_path, None);
         assert_eq!(record.acp_mode_id, None);
         assert!(record.acp_config_values.is_empty());
-        assert!(!record.code_session);
+        assert!(!record.mode.is_code());
+    }
+
+    #[test]
+    fn session_mode_deserializes_legacy_bool_and_serializes_as_bool() {
+        // 旧格式布尔键：true=code、false=plain，缺字段按 plain 兼容（缺字段
+        // 已由 legacy_record_defaults_to_temporary_workspace 覆盖）。
+        let code: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": true
+        }))
+        .unwrap();
+        assert_eq!(code.mode, SessionMode::Code);
+        let plain: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": false
+        }))
+        .unwrap();
+        assert_eq!(plain.mode, SessionMode::Plain);
+        // 序列化保持原布尔键与省略语义：code 写 true，plain 不写该键，
+        // 旧版本应用读新文件不误判。
+        let code_json = serde_json::to_value(&code).unwrap();
+        assert_eq!(code_json["code_session"], serde_json::json!(true));
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json.get("code_session").is_none());
+        // 前向兼容：未来 kebab-case 字符串格式也能读出。
+        let future: SessionAgentRecord = serde_json::from_value(serde_json::json!({
+            "backend": "deepseek",
+            "code_session": "code"
+        }))
+        .unwrap();
+        assert_eq!(future.mode, SessionMode::Code);
     }
 
     #[test]
@@ -870,7 +1006,7 @@ mod tests {
         assert_eq!(record.backend, AgentBackend::Deepseek);
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Temporary);
         assert_eq!(record.workspace_path, None);
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert!(store.is_code_session("session-1"));
         // 原生绑定不需要 Agent 上下文，同值重复绑定保持幂等。
         store
@@ -880,7 +1016,7 @@ mod tests {
 
         let persisted: AgentStoreFile = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let record = persisted.sessions.get("session-1").unwrap();
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert_eq!(record.backend, AgentBackend::Deepseek);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -913,7 +1049,7 @@ mod tests {
             .is_err());
         let record = store.get("session-1");
         assert_eq!(record.backend, AgentBackend::CodexAcp);
-        assert!(!record.code_session);
+        assert!(!record.mode.is_code());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -948,7 +1084,7 @@ mod tests {
         let record = store.get("session-1");
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
 
         // 已绑定的代码会话不可改绑工作区；同值重复绑定幂等。
         assert!(store
@@ -997,7 +1133,7 @@ mod tests {
                     )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
-                    code_session: false,
+                    mode: SessionMode::Plain,
                 },
             )
             .unwrap();
@@ -1151,13 +1287,13 @@ mod tests {
             .restore_missing_code_session_record("session-1", sidecar)
             .unwrap();
         let record = recovered_store.get("session-1");
-        assert!(record.code_session);
+        assert!(record.mode.is_code());
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
         // 恢复持久化回索引文件，后续读取不再依赖 sidecar。
         let persisted: AgentStoreFile =
             serde_json::from_slice(&fs::read(recovered_store.path()).unwrap()).unwrap();
-        assert!(persisted.sessions["session-1"].code_session);
+        assert!(persisted.sessions["session-1"].mode.is_code());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1249,6 +1385,146 @@ mod tests {
             .is_err());
         assert!(!store.is_code_session("session-1"));
         assert!(!store.is_code_session("session-2"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn code_native_restore_reports_real_recovery_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-restore-count-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
+        // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。
+        let recovered_store = SessionAgentStore {
+            path: store.path().to_path_buf(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        assert!(recovered_store
+            .restore_missing_code_session_record("session-1", sidecar.clone())
+            .unwrap());
+        // 索引已完好：再次调用是早退，不得被误计为恢复信号。
+        assert!(!recovered_store
+            .restore_missing_code_session_record("session-1", sidecar)
+            .unwrap());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn missing_code_native_sidecar_is_backfilled_from_index() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-sidecar-backfill-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        // 非代码会话不参与回填。
+        store
+            .set_acp_workspace(
+                "session-2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .unwrap();
+        // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
+        fs::remove_file(code_session_sidecar_path(store.path(), "session-1")).unwrap();
+        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        let sidecar = read_code_session_sidecar(store.path(), "session-1")
+            .expect("sidecar should be backfilled");
+        assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
+        assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
+        // 幂等：sidecar 完好、非代码会话都不补写。
+        assert_eq!(store.backfill_missing_code_session_sidecars(), 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn code_native_sidecar_rejects_newer_schema_version() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-sidecar-version-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        // 写入高于当前支持版本的 sidecar：拒读并按缺失处理，不能静默按 v1 解析。
+        let future = CodeSessionSidecar {
+            version: CODE_SESSION_SIDECAR_VERSION + 1,
+            workspace_kind: CodexWorkspaceKind::Project,
+            workspace_path: Some(root.join("future-workspace")),
+            bound_at: None,
+        };
+        fs::write(
+            code_session_sidecar_path(store.path(), "session-1"),
+            serde_json::to_vec(&future).unwrap(),
+        )
+        .unwrap();
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
+        // 按缺失处理 → 回填自愈按索引重写为当前版本。
+        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
+        assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn failed_index_persist_keeps_code_native_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-persist-order-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let store = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        assert!(read_code_session_sidecar(&path, "session-1").is_some());
+        // 让索引 persist 必失败：索引路径被同名目录占用，rename 无法覆盖。
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(store
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .is_err());
+        // persist 先失败则 sidecar 不得先删，与磁盘索引（仍是绑定时的内容）保持一致。
+        let sidecar = read_code_session_sidecar(&path, "session-1")
+            .expect("sidecar must survive failed index persist");
+        assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
         fs::remove_dir_all(&root).unwrap();
     }
 }

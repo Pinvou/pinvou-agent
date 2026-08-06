@@ -83,7 +83,7 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
         Ok(crate::features::sessions::SessionKind::Chat)
     );
     let indexed_names = store
-        .execution_workspace(&metadata.id)
+        .ledger_root(&metadata.id)
         .ok()
         .and_then(|workspace| {
             crate::features::files::attachment_upload::conversation_attachment_names_for_display_prefix(
@@ -656,12 +656,12 @@ pub(super) fn list_workspace_files_for_session(
     session_id: &str,
     store: &SessionStore,
 ) -> Result<Vec<String>, String> {
-    let execution_workspace = store
-        .execution_workspace(session_id)
-        .map_err(|error| format!("resolve execution workspace for {session_id}: {error:#}"))?;
+    let ledger_root = store
+        .ledger_root(session_id)
+        .map_err(|error| format!("resolve ledger root for {session_id}: {error:#}"))?;
     let mut out = Vec::new();
     for dir in [
-        execution_workspace,
+        ledger_root,
         crate::platform::paths::session_artifacts_dir(session_id),
     ] {
         if let Ok(entries) = std::fs::read_dir(&dir) {

@@ -16,16 +16,11 @@ use crate::platform::credential_store::{
 };
 use crate::platform::paths;
 
-/// Persist connector visibility and refresh the skill catalogue.
+/// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
 ///
 /// Refreshing live engines is an application orchestration concern and is
 /// deliberately left to the caller, keeping marketplace independent from the
 /// assistant runtime.
-pub async fn apply_disabled_connectors(connector_ids: Vec<String>) -> Result<(), String> {
-    apply_disabled_connectors_for(ConnectorScope::Plain, connector_ids).await
-}
-
-/// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
 pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
@@ -414,18 +409,14 @@ pub enum ConnectorScope {
     Code,
 }
 
-impl ConnectorScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Plain => "plain",
-            Self::Code => "code",
-        }
-    }
-}
-
 fn disabled_connectors_path() -> std::path::PathBuf {
     paths::pinvou3_home().join("disabled_connectors.json")
 }
+
+/// `disabled_connectors.json` 读-改-写的进程内串行化:开关命令、安装/卸载同步、
+/// bundle 同步都可能并发触发同一份文件的读-改-写,串行化避免交错丢更新
+/// (单写者内的落盘本身由原子写保证不撕裂,见 `save_disabled_connectors_file`)。
+static DISABLED_CONNECTORS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 读完整文件(兼容旧版裸数组格式 → plain)。
 fn load_disabled_connectors_file() -> DisabledConnectorsFile {
@@ -444,10 +435,16 @@ fn load_disabled_connectors_file() -> DisabledConnectorsFile {
     serde_json::from_str(&content).unwrap_or_default()
 }
 
-/// 写完整文件(总是对象格式)。
+/// 写完整文件(总是对象格式)。临时文件 + rename 原子替换,并发读者不会看到
+/// 半写文件;与 sessions/scheduled 等模块一致走底座 `write_atomic`(含 Windows
+/// 替换重试)。
 fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
     if let Ok(json) = serde_json::to_string(file) {
-        let _ = std::fs::write(disabled_connectors_path(), json);
+        if let Err(error) =
+            deepseek_tui::utils::write_atomic(&disabled_connectors_path(), json.as_bytes())
+        {
+            eprintln!("[marketplace] write disabled_connectors.json failed: {error}");
+        }
     }
 }
 
@@ -471,6 +468,9 @@ pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
 
 /// 写某 scope 被禁用的连接器 id 列表。
 pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
     match scope {
         ConnectorScope::Plain => file.plain = ids.to_vec(),
@@ -496,6 +496,9 @@ pub fn save_disabled_connectors(ids: &[String]) {
 /// 连接器默认仍保持关闭(加入 code 禁用集);未初始化时无需处理(load 会按
 /// 「默认全禁已装连接器」兜底)。
 pub fn sync_code_scope_after_install(tool_id: &str) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
     if !file.code_initialized {
         return;
@@ -509,6 +512,9 @@ pub fn sync_code_scope_after_install(tool_id: &str) {
 /// 连接器卸载后同步两个 scope:已卸载的连接器从 plain/code 禁用集移除,避免
 /// 残留 id 指向不存在的工具。
 pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
     let before = (file.plain.len(), file.code.len());
     file.plain.retain(|id| id != tool_id);
@@ -2231,6 +2237,31 @@ mod tests {
                 vec!["pptx".to_string()]
             );
             assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+        });
+    }
+
+    /// 两个 scope 并发写同一文件:进程内串行化 + 原子写保证不丢更新、不撕裂——
+    /// 结束后两边最后一次写入都必须还在,且文件始终是合法 JSON。
+    #[test]
+    fn concurrent_scope_writes_do_not_lose_updates() {
+        with_temp_home(|| {
+            let plain_writer = std::thread::spawn(|| {
+                for _ in 0..50 {
+                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+                }
+            });
+            let code_writer = std::thread::spawn(|| {
+                for _ in 0..50 {
+                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+                }
+            });
+            plain_writer.join().unwrap();
+            code_writer.join().unwrap();
+
+            let file = load_disabled_connectors_file();
+            assert_eq!(file.plain, vec!["weather".to_string()]);
+            assert!(file.code_initialized);
+            assert_eq!(file.code, vec!["pptx".to_string()]);
         });
     }
 

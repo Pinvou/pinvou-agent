@@ -58,6 +58,9 @@ const SCHEDULED_TURN_REMINDER: &str =
 pub struct AppEngine {
     pub handle: EngineHandle,
     pub bridge: Pinvou3Bridge,
+    /// 本 engine 绑定的 session id（多引擎并发下 per-session 一个 AppEngine）；
+    /// 发送 op 构造按它取会话策略。headless harness 无 session 概念,置空。
+    pub(crate) session_id: String,
     pub(crate) workspace: PathBuf,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
@@ -847,10 +850,13 @@ impl AppEngine {
         } else {
             None
         };
-        let workspace = scheduled_profile
-            .as_ref()
-            .map(|profile| profile.workspace.clone())
-            .unwrap_or_else(|| bridge.session_workspace(session_id));
+        // 执行根统一由 SessionStore::session_roots 解析（scheduled = automation
+        // workspace，原生代码绑项目会话 = 项目目录，其余 = 会话私有目录）。
+        // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
+        let workspace = store
+            .session_roots(session_id)
+            .map(|roots| roots.execution)
+            .unwrap_or_else(|_| bridge.session_workspace(session_id));
         let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
@@ -912,6 +918,7 @@ impl AppEngine {
             Self {
                 handle,
                 bridge,
+                session_id: session_id.to_string(),
                 workspace,
                 turn_events,
                 scheduled_unattended,
@@ -943,6 +950,7 @@ impl AppEngine {
         Ok(Self {
             handle,
             bridge,
+            session_id: String::new(),
             workspace,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
@@ -964,9 +972,13 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op =
-            self.bridge
-                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+        let op = self.bridge.build_send_message_op(
+            &self.session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+        )?;
         self.send_turn_op(op).await
     }
 
@@ -978,9 +990,13 @@ impl AppEngine {
         restrict_tools: bool,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let op =
-            self.bridge
-                .build_send_message_op(content, mode, persona_reminder, restrict_tools)?;
+        let op = self.bridge.build_send_message_op(
+            &self.session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+        )?;
         self.send_reserved_turn_op(op, reservation).await
     }
 
@@ -1002,6 +1018,7 @@ impl AppEngine {
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
         let mut op = self.bridge.build_send_message_op(
+            &self.session_id,
             content,
             profile.execution_mode().to_app_mode(),
             Some(SCHEDULED_TURN_REMINDER.to_string()),

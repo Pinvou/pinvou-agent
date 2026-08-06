@@ -197,9 +197,9 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 判断できない場合は日本語。";
 
 /// pinvou3 版静态层 mode 块——Yolo（生产主路径,approval=Auto）。瘦身依据:
-/// 行为引导大头已由 `bridge::reminder_for` 每 turn `<system-reminder>` 注入,
-/// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
-/// Efficient Approvals 的逐条教学全不保留。
+/// 行为引导大头已由 `build_send_message_op`(Plan 段经 `SessionPolicy::plan_reminder`)
+/// 每 turn `<system-reminder>` 注入,静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/
+/// Session Longevity/Efficient Approvals 的逐条教学全不保留。
 ///
 /// (史料,防重蹈:句尾曾有「phase rules」尾巴,是 phase 时代残留;b891b2f 删它属正确清理。
 /// 我一度误以为删它致 GUI 首请求采歪、还恢复过(8e20f16)——实为 **gongwen MCP 工具才是

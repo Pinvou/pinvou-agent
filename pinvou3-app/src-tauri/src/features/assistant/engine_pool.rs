@@ -476,11 +476,14 @@ impl EnginePool {
         let bridge = self
             .finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model)
             .await;
+        // shell 执行目录与 engine cwd 同源：统一走 SessionStore::session_roots
+        // （scheduled = automation workspace，原生代码绑项目会话 = 项目目录）。
+        // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
         let shell_workspace = self
             .store
-            .scheduled_profile(session_id)
-            .map(|profile| profile.workspace)
-            .unwrap_or_else(|| bridge.session_workspace(session_id));
+            .session_roots(session_id)
+            .map(|roots| roots.execution)
+            .unwrap_or_else(|_| bridge.session_workspace(session_id));
         let shell_manager = self.shell_managers.for_session(session_id, shell_workspace);
         let turn_shell_tasks = self
             .turn_shell_tasks

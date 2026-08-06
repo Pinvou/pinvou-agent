@@ -292,7 +292,7 @@ pub async fn start_workflow(
     // 2. 在 engine 的实际执行工作区下初始化项目目录。普通聊天使用 session 私有目录，
     //    定时任务使用 automation 私有目录；harness forwarder 必须读取同一路径。
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let project_dir = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
@@ -370,7 +370,7 @@ pub async fn kick_workflow(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let ws = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let harness_workspace = ws.clone();
     let action = tokio::task::spawn_blocking(move || {
@@ -505,7 +505,7 @@ pub async fn retry_workflow_role(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let ws = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let action = tokio::task::spawn_blocking(move || {
@@ -1094,7 +1094,7 @@ pub async fn cancel_workflow_role(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1157,7 +1157,7 @@ pub async fn stop_workflow(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let stop_reason = reason
         .filter(|value| !value.trim().is_empty())
@@ -1209,7 +1209,7 @@ pub async fn approve_workflow_gate(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
@@ -1255,7 +1255,7 @@ pub async fn reject_workflow_gate(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
@@ -1297,7 +1297,7 @@ pub async fn get_workflow_state(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
+        .ledger_root(&sid)
         .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
     tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::read_full_agent_state(&workspace)

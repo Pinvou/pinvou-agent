@@ -22,8 +22,11 @@ try {
   const {
     applyNativeChatEvent,
     appendLocalUserMessage,
+    appendNativeSystemItem,
+    composeNativePlanMarkdown,
     createNativeLane,
     hydrateNativeLane,
+    parseNativePlanSnapshot,
     projectNativeLane,
     removeLocalUserMessage,
   } = await import(`${pathToFileURL(path.join(temp, 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
@@ -194,6 +197,194 @@ try {
   assert.equal(notices[0].compactPhase, 'start');
   assert.equal(notices[1].compactPhase, 'done');
   assert.equal(notices[1].text, '12 → 8');
+
+  // ── Plan 审批：snapshot → ready → 覆盖/批准 ─────────────────────
+  const planSnap = {
+    explanation: '先改配置再跑测试',
+    items: [{ step: '改配置', status: 'pending' }, { step: '跑测试', status: 'pending' }],
+  };
+  const todosSnap = { items: [{ content: '子任务 A', status: 'in_progress' }] };
+
+  const lane8 = createNativeLane();
+  appendLocalUserMessage(lane8, '帮我重构登录模块');
+  applyNativeChatEvent(lane8, 'chat:user_message', { session_id: 's8', content: '帮我重构登录模块' });
+  // plan_snapshot：只带本次改的那份，另一份保留。
+  assert.equal(applyNativeChatEvent(lane8, 'chat:plan_snapshot', { session_id: 's8', plan_snapshot: planSnap, todos_snapshot: null }), true);
+  assert.equal(lane8.planSnapshot.plan, planSnap);
+  assert.equal(lane8.planSnapshot.todos, null);
+  applyNativeChatEvent(lane8, 'chat:plan_snapshot', { session_id: 's8', plan_snapshot: null, todos_snapshot: todosSnap });
+  assert.equal(lane8.planSnapshot.todos, todosSnap);
+  assert.equal(lane8.planSnapshot.plan, planSnap);
+  // plan_ready：弹 active 审批卡，planMarkdown 对齐 bridge composePlanMarkdown。
+  assert.equal(applyNativeChatEvent(lane8, 'chat:plan_ready', {
+    session_id: 's8', plan_id: 'plan-1', plan_snapshot: planSnap, todos_snapshot: todosSnap,
+  }), true);
+  const card1 = lane8.items.find(item => item.type === 'plan_card');
+  assert.equal(card1.cardState, 'active');
+  assert.equal(card1.resolved, false);
+  assert.equal(card1.planId, 'plan-1');
+  assert.equal(card1.plan.explanation, '先改配置再跑测试');
+  assert.match(card1.planMarkdown, /\*\*方案：\*\*/);
+  assert.match(card1.planMarkdown, /1\. ○ 改配置/);
+  assert.match(card1.planMarkdown, /\*\*细分待办：\*\*/);
+  assert.match(card1.planMarkdown, /1\. ◎ 子任务 A/);
+  // 同 plan_id 重复 ready 不再出卡。
+  assert.equal(applyNativeChatEvent(lane8, 'chat:plan_ready', {
+    session_id: 's8', plan_id: 'plan-1', plan_snapshot: planSnap, todos_snapshot: null,
+  }), false);
+  assert.equal(lane8.items.filter(item => item.type === 'plan_card').length, 1);
+  // 新方案 → 旧卡冻结为 superseded，新卡 active。
+  applyNativeChatEvent(lane8, 'chat:plan_ready', {
+    session_id: 's8', plan_id: 'plan-2', plan_snapshot: planSnap, todos_snapshot: null,
+  });
+  assert.equal(card1.cardState, 'frozen');
+  assert.equal(card1.resolved, true);
+  assert.equal(card1.statusKey, 'superseded');
+  const card2 = lane8.items.find(item => item.type === 'plan_card' && item.planId === 'plan-2');
+  assert.equal(card2.cardState, 'active');
+  // turn 终态不清理方案卡（work 语义：审批与回合生命周期解耦）。
+  applyNativeChatEvent(lane8, 'chat:done', { session_id: 's8', status: 'Completed' });
+  assert.equal(lane8.busy, false);
+  assert.equal(card2.cardState, 'active');
+  // 投影：plan_card → type 'plan' + extensionType 区分（渲染层据此出审批卡）。
+  const planTurn = projectNativeLane(lane8, 's8').turns[0];
+  const projectedPlans = planTurn.items.filter(item => item.type === 'plan');
+  assert.equal(projectedPlans.length, 2);
+  assert.equal(projectedPlans[0].extensionType, 'plan_card');
+  // 远端批准回声（action=accept_plan）：命中卡片置 approved，消息照常入列。
+  assert.equal(applyNativeChatEvent(lane8, 'chat:user_message', {
+    session_id: 's8', content: '✅ 就这么干', action: 'accept_plan', plan_id: 'plan-2',
+  }), true);
+  assert.equal(card2.cardState, 'approved');
+  assert.equal(card2.resolved, true);
+  assert.equal(card2.statusKey, 'approved');
+  assert.equal(lane8.items.filter(item => item.type === 'user').length, 2);
+  assert.equal(lane8.busy, true, '批准后进入执行回合');
+  // plan_id 不命中不批卡。
+  const lane8b = createNativeLane();
+  applyNativeChatEvent(lane8b, 'chat:plan_ready', { session_id: 's8b', plan_id: 'plan-9', plan_snapshot: planSnap, todos_snapshot: null });
+  applyNativeChatEvent(lane8b, 'chat:user_message', { session_id: 's8b', content: '✅ 就这么干', action: 'accept_plan', plan_id: 'plan-other' });
+  const orphanCard = lane8b.items.find(item => item.type === 'plan_card');
+  assert.equal(orphanCard.cardState, 'active', 'plan_id 不匹配不误批');
+  // 无 plan_id 的 ready（历史快照重放）→ 只读历史卡。
+  const lane10 = createNativeLane();
+  applyNativeChatEvent(lane10, 'chat:plan_ready', { session_id: 's10', plan_snapshot: planSnap, todos_snapshot: null });
+  const legacyCard = lane10.items.find(item => item.type === 'plan_card');
+  assert.equal(legacyCard.cardState, 'frozen');
+  assert.equal(legacyCard.resolved, true);
+  assert.equal(legacyCard.statusKey, 'historical');
+  // composeNativePlanMarkdown 空快照兜底。
+  assert.equal(composeNativePlanMarkdown({ plan: null, todos: null }), '（plan 为空）');
+  // 系统提示项（accept/discard 失败路径）。
+  appendNativeSystemItem(lane10, '⚠️ accept_plan 失败: boom');
+  assert.equal(lane10.items[lane10.items.length - 1].type, 'system');
+
+  // ── hydration：plan 工具还原只读历史方案卡，不还原工具卡 ──────────
+  const lane9 = createNativeLane();
+  hydrateNativeLane(lane9, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '出个方案' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '好的，方案如下' },
+          { type: 'tool_use', id: 'p1', name: 'update_plan', input: planSnap },
+          { type: 'tool_use', id: 'p2', name: 'checklist_write', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'p1', content: `Plan updated:\n${JSON.stringify(planSnap)}` },
+          { type: 'tool_result', tool_use_id: 'p2', content: `Checklist updated:\n${JSON.stringify(todosSnap)}` },
+        ],
+      },
+    ],
+  }, []);
+  const historical = lane9.items.find(item => item.type === 'plan_card');
+  assert.equal(historical.cardState, 'frozen');
+  assert.equal(historical.resolved, true);
+  assert.equal(historical.statusKey, 'historical');
+  assert.equal(historical.planId, null, 'hydrate 降级为只读历史卡（与 work 冷启动对齐）');
+  assert.equal(historical.plan.explanation, '先改配置再跑测试');
+  assert.equal(historical.todos.items.length, 1);
+  assert.equal(
+    lane9.items.some(item => item.type === 'tool' && (item.toolId === 'p1' || item.toolId === 'p2')),
+    false,
+    'plan 工具不还原工具卡',
+  );
+  assert.match(historical.planMarkdown, /\*\*方案：\*\*/);
+  assert.deepEqual(lane9.planSnapshot, { plan: null, todos: null }, 'hydration 清空 live 快照');
+  // parseNativePlanSnapshot 边界：无换行 / 坏 JSON / blocks 数组。
+  assert.equal(parseNativePlanSnapshot('no-newline'), null);
+  assert.equal(parseNativePlanSnapshot('bad\n{json'), null);
+  assert.equal(
+    parseNativePlanSnapshot([{ type: 'text', text: `Plan updated:\n${JSON.stringify(planSnap)}` }]).explanation,
+    '先改配置再跑测试',
+  );
+
+  // ── chat:memory：注入记忆快照存入 lane（不归一化字段被丢弃、空文本过滤）──
+  const lane11 = createNativeLane();
+  assert.equal(lane11.memory, null, '未收到事件前无记忆快照');
+  assert.equal(applyNativeChatEvent(lane11, 'chat:memory', {
+    session_id: 's11',
+    runtime_path: '/tmp/mem.md',
+    items: [
+      { id: 'profile.call_name', kind: 'profile', text: '称呼：欣哥' },
+      { id: 'preference.1', kind: 'preference', text: '先给结论' },
+      { id: 'preference.2', kind: 'preference', text: '' },
+      'garbage',
+    ],
+  }), true);
+  assert.equal(lane11.memory.runtimePath, '/tmp/mem.md');
+  assert.equal(lane11.memory.items.length, 2, '空文本与非对象条目被过滤');
+  assert.deepEqual(lane11.memory.items[0], { id: 'profile.call_name', kind: 'profile', text: '称呼：欣哥' });
+  assert.equal(typeof lane11.memory.updatedAt, 'number');
+  // 空快照（记忆全局关闭时后端也发射）同样落 lane，渲染层据此不显示徽标。
+  applyNativeChatEvent(lane11, 'chat:memory', { session_id: 's11', runtime_path: '', items: [] });
+  assert.equal(lane11.memory.items.length, 0);
+  // 记忆快照是会话级 live 状态：hydration 重载消息不清空（磁盘无对应物）。
+  applyNativeChatEvent(lane11, 'chat:memory', {
+    session_id: 's11', runtime_path: '/tmp/mem.md', items: [{ id: 'p', kind: 'profile', text: '称呼：欣哥' }],
+  });
+  hydrateNativeLane(lane11, { messages: [] }, []);
+  assert.equal(lane11.memory.items.length, 1, 'hydration 保留记忆快照');
+
+  // ── compaction 进行中标记：start 置位、done/fail 复位（用于禁用压缩入口）──
+  const lane12 = createNativeLane();
+  assert.equal(lane12.compacting, false);
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'start' });
+  assert.equal(lane12.compacting, true);
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'done', message: '12 → 8' });
+  assert.equal(lane12.compacting, false);
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'start' });
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'fail', message: 'boom' });
+  assert.equal(lane12.compacting, false, 'fail 同样复位');
+
+  // ── lane13: chat:plan_resolved 远端回声（多端/远端 discard 同步）─────────
+  // 本地 discardNativePlan 已乐观冻结;plan_resolved 是后端广播,保证另一端 active 卡
+  // 同步冻结。对齐 bridge chat-events.js plan_resolved。
+  const lane13 = createNativeLane();
+  appendLocalUserMessage(lane13, '审视下方案');
+  applyNativeChatEvent(lane13, 'chat:plan_ready', {
+    session_id: 's13', plan_id: 'plan-r', plan_snapshot: planSnap, todos_snapshot: null,
+  });
+  const resCard = lane13.items.find(item => item.type === 'plan_card');
+  assert.equal(resCard.cardState, 'active');
+  assert.equal(resCard.resolved, false);
+  // plan_resolved 命中 active 卡 → 幂等冻结为 discarded。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
+    session_id: 's13', plan_id: 'plan-r', action: 'discard_plan',
+  }), true);
+  assert.equal(resCard.cardState, 'frozen');
+  assert.equal(resCard.resolved, true);
+  assert.equal(resCard.statusKey, 'discarded');
+  // 缺 plan_id 直接跳过。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', { session_id: 's13' }), false);
+  // 已 resolved 的卡再次收到同 plan_id 不再变化（幂等）。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
+    session_id: 's13', plan_id: 'plan-r',
+  }), false);
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

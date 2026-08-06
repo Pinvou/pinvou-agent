@@ -542,7 +542,7 @@ fn stage_uploaded_attachments(
         return Ok(attachments);
     }
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("resolve attachment workspace: {error:#}"))?;
     for attachment in &mut attachments {
         if !std::path::Path::new(&attachment.path).starts_with(&uploads_base) {
@@ -707,7 +707,7 @@ fn scoped_workflow_project(store: &SessionStore, session_id: &str) -> Result<Str
         .canonicalize()
         .map_err(|error| format!("resolve workflow project: {error}"))?;
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("resolve workflow workspace: {error:#}"))?
         .canonicalize()
         .map_err(|error| format!("resolve workflow workspace root: {error}"))?;

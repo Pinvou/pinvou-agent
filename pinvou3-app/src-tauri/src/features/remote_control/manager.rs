@@ -2305,9 +2305,9 @@ impl RemoteControlManager {
         // 远程端正式支持代码会话列表/授权/UI 之前，先过滤原生代码会话事件：事件
         // payload 携带的会话 id（`session_id` 用于 chat:* / artifact:disk，
         // `id` 用于 session:*，`sessionId` 用于 scheduled_task:run_updated）指向
-        // 原生代码会话（ACP/品悟）时不转发。远程 WebUI 不会收到它无法展示/授权
-        // 的代码会话消息流；predicate 只对真实代码会话 id 返回 true，普通会话
-        // 不受影响。
+        // 品悟原生代码会话（仅原生，不含 ACP 会话）时不转发。远程 WebUI 不会收到
+        // 它无法展示/授权的代码会话消息流；predicate 只对真实代码会话 id 返回
+        // true，普通会话不受影响。
         if should_filter_code_session_event(
             self.inner.lock().code_session_predicate.as_ref(),
             &payload,
@@ -3120,6 +3120,13 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
     Some(scope)
 }
 
+// 已知残留面（安全审查清单 #11）：事件面已按 code_session_predicate 过滤品悟原生
+// 代码会话事件（见 publish_event_inner），但 web_access_* 这组 RPC 在此只校验会话
+// id 存在，不查 code_session_predicate——远程端凭代码会话 id 仍可读/写代码会话消息
+// （如 web_access_chat 写入、web_access_load_session_chunk /
+// web_access_save_session_messages_chunk 读/写）。暂不封堵的原因：该组命令与普通
+// 会话共用同一条会话读写通道，封堵策略（显式拒绝还是远程端正式支持代码会话）待审阅
+// 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
 fn validate_web_rpc_scope(app: &AppHandle, command: &str, args: &Value) -> Result<(), String> {
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
@@ -4744,5 +4751,87 @@ mod tests {
             .extend([download("large", MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES - 1)]);
         assert!(ensure_web_session_download_capacity(&by_bytes, 2).is_err());
         assert!(by_bytes.web_session_downloads.contains_key("large"));
+    }
+
+    #[test]
+    fn event_session_id_reads_each_event_family_field_name() {
+        // chat:* / artifact:disk 用 session_id，session:* 用 id，
+        // scheduled_task:run_updated 用 sessionId。
+        assert_eq!(
+            event_session_id(&json!({ "session_id": "s-chat" })),
+            Some("s-chat")
+        );
+        assert_eq!(
+            event_session_id(&json!({ "id": "s-session" })),
+            Some("s-session")
+        );
+        assert_eq!(
+            event_session_id(&json!({ "sessionId": "s-task" })),
+            Some("s-task")
+        );
+    }
+
+    #[test]
+    fn event_session_id_ignores_missing_or_non_string_fields() {
+        assert_eq!(
+            event_session_id(&json!({ "kind": "session:list_changed" })),
+            None
+        );
+        assert_eq!(event_session_id(&json!({ "session_id": 42 })), None);
+    }
+
+    #[test]
+    fn code_session_event_filter_is_inert_without_predicate() {
+        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
+        let payload = json!({ "session_id": "code-sess-1" });
+        assert!(!should_filter_code_session_event(None, &payload));
+    }
+
+    #[test]
+    fn code_session_events_are_filtered_for_each_field_name_variant() {
+        let predicate: CodeSessionPredicate =
+            Arc::new(|session_id: &str| session_id.starts_with("code-"));
+        for payload in [
+            json!({ "session_id": "code-sess-1" }),
+            json!({ "id": "code-sess-1" }),
+            json!({ "sessionId": "code-sess-1" }),
+        ] {
+            assert!(
+                should_filter_code_session_event(Some(&predicate), &payload),
+                "code session event must be filtered: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_session_events_survive_the_code_session_filter() {
+        // 普通会话事件必须不受影响：predicate 只对真实代码会话 id 返回 true。
+        let predicate: CodeSessionPredicate =
+            Arc::new(|session_id: &str| session_id.starts_with("code-"));
+        for payload in [
+            json!({ "session_id": "plain-sess-1" }),
+            json!({ "id": "plain-sess-1" }),
+            json!({ "sessionId": "plain-sess-1" }),
+        ] {
+            assert!(
+                !should_filter_code_session_event(Some(&predicate), &payload),
+                "plain session event must not be filtered: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_session_filter_only_fires_on_a_session_id_field() {
+        // 过滤器按 payload 中的会话 id 触发；即使 predicate 恒真，不带会话 id
+        // （或 id 非字符串）的事件也不过滤，避免误伤无会话维度的全局事件。
+        let predicate: CodeSessionPredicate = Arc::new(|_: &str| true);
+        assert!(!should_filter_code_session_event(
+            Some(&predicate),
+            &json!({ "kind": "session:list_changed" })
+        ));
+        assert!(!should_filter_code_session_event(
+            Some(&predicate),
+            &json!({ "id": 42 })
+        ));
     }
 }
