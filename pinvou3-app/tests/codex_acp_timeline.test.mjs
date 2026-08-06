@@ -282,6 +282,8 @@ try {
   assert.ok(codexCommands.includes('agent_id: Option<String>')
     && codexCommands.includes('set_acp_workspace(&session.metadata.id, backend'),
   'code-session creation must bind the selected ACP Agent for the lifetime of the session');
+  assert.ok(codexCommands.includes('or(Some("pinvou"))'),
+    'code-session creation without an explicit agent must default to the built-in Pinwu backend');
   assert.ok(codexCommands.includes('pub async fn login_acp_agent')
     && codexCommands.includes('pub fn open_acp_agent_login_url')
     && codexCommands.includes('pub async fn submit_acp_agent_login_code'),
@@ -350,6 +352,10 @@ try {
     && codexView.includes('agentId: draftAgentId')
     && codexView.includes("invoke('list_acp_agents')"),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
+  assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
+    && codexView.includes("useState(loadAgentSelection() || 'pinvou')")
+    && codexView.includes('saveAgentSelection(agentId)'),
+  'code draft agent must default to Pinwu and persist the user-selected agent across reopens');
   assert.ok(codexView.includes("invoke('login_acp_agent'")
     && codexView.includes("invoke('open_acp_agent_login_url'")
     && codexView.includes("invoke('submit_acp_agent_login_code'")

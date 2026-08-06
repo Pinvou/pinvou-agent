@@ -59,6 +59,8 @@ const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
+const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
+const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
 
 function unifiedConversationUiEnabled() {
   try {
@@ -102,6 +104,25 @@ function forgetWorkspace(path) {
     // localStorage 不可用时仍允许当前窗口继续创建新会话。
   }
   return next;
+}
+
+// 记住用户上次在 code 界面选择的 agent：重开界面/重启应用后沿用，直到用户再次切换。
+function loadAgentSelection() {
+  try {
+    const value = localStorage.getItem(AGENT_SELECTION_KEY);
+    return value && CODE_AGENT_IDS.includes(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveAgentSelection(agentId) {
+  if (!agentId) return;
+  try {
+    localStorage.setItem(AGENT_SELECTION_KEY, agentId);
+  } catch {
+    // 写不进去仅影响下次打开界面的默认值，本次会话不受影响。
+  }
 }
 
 // 草稿态（尚未创建会话）也需要展示模型/权限模式/推理强度等选项：ACP 的配置项是会话级的，
@@ -1068,7 +1089,7 @@ export function CodexAcpView({
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState([]);
-  const [draftAgentId, setDraftAgentId] = useState('codex');
+  const [draftAgentId, setDraftAgentId] = useState(loadAgentSelection() || 'pinvou');
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState([]);
   const [pending, setPending] = useState([]);
@@ -1475,6 +1496,7 @@ export function CodexAcpView({
   function selectDraftAgent(agentId) {
     if (activeId || !agentId) return;
     setDraftAgentId(agentId);
+    saveAgentSelection(agentId);
     setStatus(null);
     setError('');
   }
