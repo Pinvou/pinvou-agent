@@ -25,7 +25,7 @@
     "resources": {
       "resources/platforms/macos/PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy",
       "resources/platforms/macos/codex-bridge/": "runtime/codex-bridge",
-      "packaging/macos/infoplist/": "./"
+      "resources/platforms/macos/infoplist/": "./"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",

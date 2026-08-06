@@ -109,7 +109,7 @@ const requiredPrivacyKeys = [
 ];
 for (const locale of ["en", "zh-Hans", "ja"]) {
   const strings = read(
-    `pinvou3-app/src-tauri/packaging/macos/infoplist/${locale}.lproj/InfoPlist.strings`,
+    `pinvou3-app/src-tauri/resources/platforms/macos/infoplist/${locale}.lproj/InfoPlist.strings`,
   );
   for (const key of requiredPrivacyKeys) {
     assert.match(

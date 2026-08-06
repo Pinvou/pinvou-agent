@@ -128,7 +128,7 @@ for usage_key in NSSpeechRecognitionUsageDescription NSMicrophoneUsageDescriptio
 done
 
 for locale in en zh-Hans ja; do
-    strings_file="$APP_SRC_TAURI/packaging/macos/infoplist/$locale.lproj/InfoPlist.strings"
+    strings_file="$APP_SRC_TAURI/resources/platforms/macos/infoplist/$locale.lproj/InfoPlist.strings"
     if [ -f "$strings_file" ] && plutil -lint "$strings_file" >/dev/null 2>&1; then
         echo "  ✓ $locale InfoPlist.strings"
     else

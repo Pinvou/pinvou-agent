@@ -182,7 +182,7 @@ assert.equal(
   "runtime/codex-bridge",
 );
 assert.equal(
-  macos.bundle.resources["packaging/macos/infoplist/"],
+  macos.bundle.resources["resources/platforms/macos/infoplist/"],
   "./",
   "macOS must bundle localized privacy purpose strings",
 );
