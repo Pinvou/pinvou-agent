@@ -575,6 +575,22 @@ impl SessionAgentStore {
         self.persist()
     }
 
+    pub fn clear_acp_config_value(&self, session_id: &str, config_id: &str) -> Result<()> {
+        {
+            let mut records = self.records.write();
+            let Some(record) = records.get_mut(session_id) else {
+                return Ok(());
+            };
+            record.acp_config_values.remove(config_id);
+            if config_id == "model" {
+                record.acp_model_id = None;
+            } else if config_id == "mode" {
+                record.acp_mode_id = None;
+            }
+        }
+        self.persist()
+    }
+
     pub(super) fn restore_missing_acp_record(
         &self,
         session_id: &str,
