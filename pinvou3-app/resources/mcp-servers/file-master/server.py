@@ -1007,6 +1007,32 @@ def _large_files(home, deadline):
                           key=lambda f: f["size_bytes"]), truncated
 
 
+def disk_layout():
+    """本机盘符组成（纯元数据，毫秒级，不扫描任何目录）：
+    全部盘符 + system 系统盘标识 + 容量/剩余。模型找文件/扫描开工前先调它确认
+    机器盘符组成，目标可能在资料盘/项目盘时据此对盘根 dir 定向搜。
+    非 Windows 无盘符概念 → drives 为空。"""
+    system = (os.environ.get("SystemDrive", "C:") + "\\") if PLATFORM == "win32" else "/"
+    out = []
+    for drive in _list_drives():
+        info = {"drive": drive,
+                "system": os.path.normcase(drive) == os.path.normcase(system)}
+        try:
+            usage = shutil.disk_usage(drive)
+            info["total"] = human_size(usage.total)
+            info["free"] = human_size(usage.free)
+            info["free_percent"] = round(usage.free * 100.0 / usage.total, 1) if usage.total else None
+        except OSError:
+            info["error"] = "无法读取（光驱无盘/网络盘离线等）"
+        out.append(info)
+    return {
+        "type": "disk_layout",
+        "drives": out,
+        "note": ("盘符组成仅为元数据（不扫描目录）；需要按盘定位文件时，"
+                 "用 file_find 的 dir 参数对目标盘根/目录定向搜。"),
+    }
+
+
 def disk_scan(path=None, refresh=False):
     """双模式：无 path = 概览（分组总量）；有 path = 下钻（该目录直接子项按大小排序）。
     全部只读。分层调用使单次输出始终远小于工具结果压缩上限（12,000 字符）。
@@ -2505,6 +2531,15 @@ TOOL_DEFS = [
             "required": [],
         },
     },
+    {
+        "name": "disk_layout",
+        "description": (
+            "本机盘符组成（毫秒级，不扫描目录）：全部盘符 + system 系统盘标识 + 容量/剩余。"
+            "找文件/扫描开工前先调它确认机器盘符组成，目标可能在资料盘/项目盘时据此对盘根 "
+            "dir 定向搜（file_find 的 dir 参数），不要默认只搜主目录、不假设 C: 是系统盘。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 # ── JSON-RPC 2.0 协议处理 ────────────────────────────────────────────────
@@ -2535,6 +2570,8 @@ def _call_tool(name, args):
                          sort_by=args.get("sort_by", "relevance"),
                          order=args.get("order", "desc"),
                          exclude_dirs=args.get("exclude_dirs"))
+    if name == "disk_layout":
+        return disk_layout()
     if name == "disk_scan":
         return disk_scan(path=args.get("path"),
                          refresh=args.get("refresh", False))
@@ -2567,7 +2604,7 @@ def _handle(msg):
         _result(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-file-master", "version": "1.7.0"},
+            "serverInfo": {"name": "pinvou3-file-master", "version": "1.7.2"},
         })
     elif method == "ping":
         # MCP 标准保活；部分 SDK 客户端连上即发，不支持会被判协议错误

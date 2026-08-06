@@ -1,11 +1,12 @@
 {
   "id": "file-master",
   "name": "文件管理大师",
-  "description": "本机文件六件套（纯本地、零依赖、数据不出机）：file_find 按文件名/目录名秒搜常用目录与主目录（含 AppData 应用目录；支持多词 AND、扩展名/修改时间/大小过滤与相关度排序）；disk_scan 只读扫描各平台常见积聚地（Windows 系统盘分组/非系统盘、macOS Library/Caches 与 Xcode 构建、Linux ~/.cache，含废纸篓占用），按 🟢🟡🔴 三级风险呈现，支持 path 逐层下钻定位大文件夹；file_trash 把用户点名确认的文件移入系统回收站/废纸篓/XDG Trash（白名单硬拒绝系统目录，绝不物理删除）——大目录删除在后台执行不阻塞，用 file_trash_status 轮询进度与结果，并自动写本机删除日志；file_empty_recycle 清空回收站/废纸篓释放空间（须用户明确确认，三端均支持）；file_erase 物理删除 _pinvou_filemaster_trash 兜底内容真正释放空间（仅限该区域，不可恢复）；file_restore 按日志一键恢复误删文件（列表/还原到原位置）。安装后同名「文件管理大师」技能卡一并生效，提供查找与清理双流程指引。⚠️ 危险操作提示：清空回收站与 file_erase 为物理删除不可恢复；磁盘清理可能影响应用数据与设置；删除前请逐项核对清单并自行确认。本工具通过白名单、删除日志与双重确认降低误删风险，但不对误删或清理造成的损失承担责任，重要数据请先备份。",
-  "version": "1.7.1",
+  "description": "本机文件七件套（纯本地、零依赖、数据不出机）：disk_layout 毫秒级返回本机盘符组成（全部盘符+系统盘标识+容量，不扫描目录，开工先确认）；file_find 按文件名/目录名秒搜常用目录与主目录（含 AppData 应用目录；支持多词 AND、扩展名/修改时间/大小过滤与相关度排序）；disk_scan 只读扫描各平台常见积聚地（Windows 系统盘分组/非系统盘、macOS Library/Caches 与 Xcode 构建、Linux ~/.cache，含废纸篓占用），按 🟢🟡🔴 三级风险呈现，支持 path 逐层下钻定位大文件夹；file_trash 把用户点名确认的文件移入系统回收站/废纸篓/XDG Trash（白名单硬拒绝系统目录，绝不物理删除）——大目录删除在后台执行不阻塞，用 file_trash_status 轮询进度与结果，并自动写本机删除日志；file_empty_recycle 清空回收站/废纸篓释放空间（须用户明确确认，三端均支持）；file_erase 物理删除 _pinvou_filemaster_trash 兜底内容真正释放空间（仅限该区域，不可恢复）；file_restore 按日志一键恢复误删文件（列表/还原到原位置）。安装后同名「文件管理大师」技能卡一并生效，提供查找与清理双流程指引。⚠️ 危险操作提示：清空回收站与 file_erase 为物理删除不可恢复；磁盘清理可能影响应用数据与设置；删除前请逐项核对清单并自行确认。本工具通过白名单、删除日志与双重确认降低误删风险，但不对误删或清理造成的损失承担责任，重要数据请先备份。",
+  "version": "1.7.2",
   "icon": "folder-open",
   "category": "系统工具",
   "mcp_tools": [
+    "mcp_file_master_disk_layout",
     "mcp_file_master_file_find",
     "mcp_file_master_disk_scan",
     "mcp_file_master_file_trash",
@@ -22,12 +23,13 @@
   "env": {},
   "config_fields": [],
   "routing_rules": [
-    "找文件/文件在哪/搜索文件/那个文件放哪了 → `mcp_file_master_file_find`（query 必填；支持空格分词多词 AND，如 \"report final\"——**多词是 AND，别把候选词堆一起**；**找某一类文件（所有安装包/图片）→ query 留空 + extensions 过滤（留空时必须有过滤条件）**；用户给了大致位置加 dir 定向搜；**用户提到时间（上周/最近/昨天）→ 用 modified_after/modified_before 过滤**；想按类型/大小收窄加 extensions / min_size_mb / max_size_mb；默认按相关度排序（全词>前缀>子串），可用 sort_by/order 改（modified=mtime 别名）；total_hits>count 说明截断，找全用 limit=50，exclude_dirs 排除同名目录）。多结果按排序列出让用户点名，不擅挑；未命中先换关键词变体（拆词/中英文/同义词）重试，再如实说明并追问位置线索。",
+    "找文件/文件在哪/搜索文件/那个文件放哪了 → 开工先调 `mcp_file_master_disk_layout` 确认本机盘符组成（不假设 C: 是系统盘），再走 `mcp_file_master_file_find`（query 必填；支持空格分词多词 AND，如 \"report final\"——**多词是 AND，别把候选词堆一起**；**找某一类文件（所有安装包/图片）→ query 留空 + extensions 过滤（留空时必须有过滤条件）**；用户给了大致位置加 dir 定向搜；**用户提到时间（上周/最近/昨天）→ 用 modified_after/modified_before 过滤**；想按类型/大小收窄加 extensions / min_size_mb / max_size_mb；默认按相关度排序（全词>前缀>子串），可用 sort_by/order 改（modified=mtime 别名）；total_hits>count 说明截断，找全用 limit=50，exclude_dirs 排除同名目录）。多结果按排序列出让用户点名，不擅挑；未命中先换关键词变体（拆词/中英文/同义词）重试，再如实说明并追问位置线索。",
     "C盘满了/磁盘满了/空间不够/清理电脑/什么东西占空间 → 走 `mcp_file_master_disk_scan` 下钻式流程（只读概览 → 对最大组带 path 逐层下钻 → 按 🟢🟡🔴 三级呈现「这是什么数据、删掉有什么影响」→ 用户点名后 file_trash 预览(confirm=false)→用户确认→confirm=true 提交→**file_trash_status 轮询到 done 再汇报**）。drives 段含非系统盘容量与根目录大子项（一律 🟡 让用户判断，可对 path 下钻）。清理收尾可选：用户明确要求释放更多 → `mcp_file_master_file_empty_recycle`(confirm=false) 查回收站占用 → 确认后 confirm=true 清空（物理删除，不可恢复）。磁盘统计首选本工具，exec_shell 仅兜底且必须过滤限量。",
     "删除用户文件**只能走** `mcp_file_master_file_trash`（移入回收站可恢复，白名单硬拒绝系统区域，绝不用 exec_shell/apply_patch 物理删除）；**超过回收站配额的目标（约盘容量 5%，Windows）工具自动改用同级 _pinvou_filemaster_trash 兜底（macOS/Linux 优先移入系统废纸篓/XDG Trash，via=system-trash）**——此时 detail 会注明，汇报时告知可恢复但未释放空间，别报\"已释放\"。🟡 需用户逐项点名，🔴 只给卸载/系统工具指引。删错了 → `mcp_file_master_file_restore`：action='list' 列待恢复项 → action='restore' + path=<original_path> 还原到原位置。用户确认要真正释放空间时 → `mcp_file_master_file_erase`（仅限 _pinvou_filemaster_trash 内路径，confirm 两步：先预览清单 → 用户确认 → confirm=true 物理删除，不可恢复）；已删对象对应日志记录标记 erased，restore 不再列出。",
     "本工具为纯本地 stdio server，不联网、零依赖；AppData 下应用目录也在 file_find 覆盖范围内。完整双流程与路径先验见同名技能卡 SKILL.md。"
   ],
   "tool_table_entries": [
+    "| 盘符组成 | `mcp_file_master_disk_layout` 毫秒级返回全部盘符+系统盘标识+容量（不扫描目录），开工先确认 |",
     "| 找文件 | `mcp_file_master_file_find` 多词 AND + 相关度排序搜索常用目录+主目录兜底（query 必填，dir 可定向，extensions/modified_*/min_size_mb/max_size_mb 可过滤，sort_by/order 可改排序）|",
     "| 磁盘扫描 | `mcp_file_master_disk_scan` 概览（分组三级风险+非系统盘 drives）+ path 逐层下钻定位大文件夹 |",
     "| 回收站删除 | `mcp_file_master_file_trash` 预览(confirm=false)→用户确认→confirm=true 后台提交，白名单硬拒绝系统区域 |",

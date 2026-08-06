@@ -9,7 +9,7 @@ metadata:
 
 # 文件管理（file-master）
 
-帮用户管理本机文件：**找到文件在哪**，并安全回答"**C 盘空间被什么吃了**"。核心工具全部由「文件管理大师」MCP 提供：`mcp_file_master_file_find`（搜索，可过滤）、`mcp_file_master_disk_scan`（只读扫描，含非系统盘）、`mcp_file_master_file_trash`（后台异步删除）、`mcp_file_master_file_trash_status`（删除/清除进度轮询）、`mcp_file_master_file_empty_recycle`（清空回收站）、`mcp_file_master_file_erase`（物理删除 _pinvou_filemaster_trash 兜底内容）、`mcp_file_master_file_restore`（误删还原）。
+帮用户管理本机文件：**找到文件在哪**，并安全回答"**C 盘空间被什么吃了**"。核心工具全部由「文件管理大师」MCP 提供：`mcp_file_master_disk_layout`（毫秒级盘符组成，开工先确认）、`mcp_file_master_file_find`（搜索，可过滤）、`mcp_file_master_disk_scan`（只读扫描，含非系统盘）、`mcp_file_master_file_trash`（后台异步删除）、`mcp_file_master_file_trash_status`（删除/清除进度轮询）、`mcp_file_master_file_empty_recycle`（清空回收站）、`mcp_file_master_file_erase`（物理删除 _pinvou_filemaster_trash 兜底内容）、`mcp_file_master_file_restore`（误删还原）。
 
 ## 通用铁律
 
@@ -17,7 +17,7 @@ metadata:
 2. **删除只能走 `mcp_file_master_file_trash`**（Windows 移入系统回收站；macOS 移入废纸篓 `~/.Trash`；Linux 移入 XDG Trash——均可恢复，via 在结果里注明）。绝不用 `exec_shell`、`apply_patch` 或任何方式直接物理删除用户文件。**Windows 上超过回收站配额的目标（默认约为盘容量 5%）工具会自动改用同级 `_pinvou_filemaster_trash` 目录兜底**（Shell 对超配额对象会静默物理删除且误报成功，不可恢复）；macOS/Linux 上跨卷或失败时同样落 `_pinvou_filemaster_trash` 兜底——此时 `detail` 会明确说明。**物理删除只能走 `mcp_file_master_file_erase`，且仅限 file_trash 移入的备份**（_pinvou_filemaster_trash 兜底 / 系统废纸篓 / XDG Trash 内容，白名单 + 日志准入 + confirm 两步，不可恢复）。
 3. **动文件必须用户点名。** 找到文件后只做"告知位置 / 经同意后打开所在目录"；移动、改名、删除必须用户明确要求并确认后另行处理。
 4. **系统区域是禁区。** `C:\Windows`、`Program Files`、`pagefile.sys`、`hiberfil.sys`、注册表——不碰，只向用户解释。`mcp_file_master_file_trash` 内置白名单也会硬拒绝这些区域。
-5. **开工前先确认盘符组成**：找文件/扫描开始前，先确认本机有哪些盘、系统盘是哪个（以 disk_scan 概览的 `disk.drive`/`drives` 段或 file_find 的 `searched_dirs` 为准，不假设是 C:）；用户没给位置时，若目标可能在资料盘/项目盘，直接对盘根 `dir` 定向搜。
+5. **开工前先确认盘符组成**：找文件/扫描开始前，先调 `mcp_file_master_disk_layout`（毫秒级）确认本机有哪些盘、系统盘是哪个（不假设是 C:）；用户没给位置时，若目标可能在资料盘/项目盘，直接对盘根 `dir` 定向搜。
 
 ## 危险操作警示与免责声明
 

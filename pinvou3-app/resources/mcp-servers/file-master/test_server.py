@@ -565,6 +565,22 @@ class DiskScanTest(unittest.TestCase):
             server.SHOWN_MIN_BYTES = old
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_disk_layout_reports_drive_composition(self):
+        """盘符组成工具：返回全部盘符 + 系统盘标识 + 容量，毫秒级不扫目录。"""
+        t0 = time.monotonic()
+        out = server.disk_layout()
+        dt = time.monotonic() - t0
+        self.assertEqual(out["type"], "disk_layout")
+        self.assertIn("drives", out)
+        if IS_WIN:
+            self.assertTrue(out["drives"], "Windows 上应有盘符组成")
+            self.assertEqual(sum(1 for d in out["drives"] if d["system"]), 1,
+                             "系统盘标识应唯一")
+            for d in out["drives"]:
+                self.assertIn("drive", d)
+                self.assertIn("total", d)
+        self.assertLess(dt, 2.0, "盘符组成应毫秒级返回，实际 %.1fs" % dt)
+
     def test_overview_groups_keep_definition_order(self):
         """并行概览：分组输出必须保持定义顺序（线程池收集后按定义序合并）。"""
         out = server.disk_scan()
@@ -1376,13 +1392,14 @@ class ProtocolTest(unittest.TestCase):
                                     "params": {"protocolVersion": "2024-11-05",
                                                "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})
             self.assertEqual(init["result"]["serverInfo"]["name"], "pinvou3-file-master")
-            self.assertEqual(init["result"]["serverInfo"]["version"], "1.7.0")
+            self.assertEqual(init["result"]["serverInfo"]["version"], "1.7.2")
 
             listed = self._rpc(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             tools = {t["name"]: t for t in listed["result"]["tools"]}
-            self.assertEqual(set(tools), {"file_find", "disk_scan", "file_trash",
-                                          "file_trash_status", "file_empty_recycle",
-                                          "file_erase", "file_restore"})
+            self.assertEqual(set(tools), {"disk_layout", "file_find", "disk_scan",
+                                          "file_trash", "file_trash_status",
+                                          "file_empty_recycle", "file_erase",
+                                          "file_restore"})
             self.assertEqual(tools["file_find"]["inputSchema"]["required"], [],
                              "query 可选（空 query + 过滤 = 纯类型搜索）")
             self.assertEqual(tools["file_trash"]["inputSchema"]["required"], ["paths"])
@@ -1498,7 +1515,8 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(m["command"], "python")
         self.assertEqual(m["args"], ["server.py"])
         self.assertEqual(m["pip_dependencies"], [])
-        self.assertEqual(m["mcp_tools"], ["mcp_file_master_file_find",
+        self.assertEqual(m["mcp_tools"], ["mcp_file_master_disk_layout",
+                                          "mcp_file_master_file_find",
                                           "mcp_file_master_disk_scan",
                                           "mcp_file_master_file_trash",
                                           "mcp_file_master_file_trash_status",
@@ -1506,9 +1524,9 @@ class ManifestTest(unittest.TestCase):
                                           "mcp_file_master_file_erase",
                                           "mcp_file_master_file_restore"])
         self.assertEqual(m["companion_skills"], ["file-master"])
-        self.assertEqual(len(m["tool_table_entries"]), 7)
+        self.assertEqual(len(m["tool_table_entries"]), 8)
         self.assertTrue(m["routing_rules"])
-        self.assertEqual(m["version"], "1.7.1")
+        self.assertEqual(m["version"], "1.7.2")
         # 磁盘扫描总预算 60s + 分组超调余量，须显著大于引擎默认 execute_timeout
         self.assertGreaterEqual(m["execute_timeout"], 90,
                                 "扫描类工具应声明更长执行超时（引擎默认 60s 余量不足）")
