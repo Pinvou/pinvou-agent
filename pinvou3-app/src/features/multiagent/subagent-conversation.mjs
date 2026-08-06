@@ -476,9 +476,10 @@ function compactSubagentDisplayName(value, maxLength = 12) {
 /**
  * 行内专家卡与右侧面板共用的名称决策。
  *
- * 优先级：专家池真名 > 任务首行「名称」 > 模型显式 name/session_name >
- * 任务短摘要 > agent type 对应的本地化角色 > 通用角色。任务首行是给用户看的
- * 身份，name/session_name 只是机器标识；底座用 agent_id 回填的占位值也不能暴露。
+ * 主标题优先级：任务首行「名称」 > 专家池真名 > 模型显式 name/session_name >
+ * 任务短摘要 > agent type 对应的本地化角色 > 通用角色。识别到专家且任务已经起名时，
+ * 专家池真名降为身份副标题；name/session_name 只是机器标识，底座用 agent_id
+ * 回填的占位值也不能暴露。没有任务名的旧专家记录继续用真名和同角色序号兜底。
  */
 export function resolveSubagentPresentation({
   role,
@@ -496,14 +497,13 @@ export function resolveSubagentPresentation({
   const modelName = rawSessionName && rawSessionName !== String(agentId || '')
     ? compactSubagentDisplayName(rawSessionName)
     : null;
-  const explicitName = identity.kind === 'expert'
-    ? null
-    : (compactSubagentDisplayName(title.name) || modelName);
+  const taskName = compactSubagentDisplayName(title.name);
+  const explicitName = taskName || (identity.kind === 'expert' ? null : modelName);
   const objectiveName = identity.kind === 'expert' || explicitName
     ? null
     : subagentObjectiveName(objective);
   const baseName = identity.kind === 'expert'
-    ? identity.personaName
+    ? (taskName || identity.personaName)
     : explicitName
       || objectiveName
       || (identity.kind === 'custom'
@@ -511,9 +511,15 @@ export function resolveSubagentPresentation({
         : ((roleCards && roleCards[identity.roleKey])
           || (roleCards && roleCards.general)
           || identity.roleKey));
+  const subtitle = identity.kind === 'expert'
+    && taskName
+    && taskName !== identity.personaName
+    ? identity.personaName
+    : null;
   return {
     identity,
     name: baseName + (explicitName ? '' : subagentOrdinalLabel(ordinal)),
+    subtitle,
     task: (title.name ? title.rest : String(objective || '')).trim(),
     explicitName,
     objectiveName,
