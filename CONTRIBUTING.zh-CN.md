@@ -22,7 +22,9 @@ git switch -c feat/short-description upstream/main
 git submodule update --init --recursive
 ```
 
-创建 PR 前和准备合并前同步官方最新 `main`；评审期间不要仅因 `main` 日常更新而反复 rebase。
+创建 PR 前同步官方最新 `main`；评审期间不要仅因 `main`
+日常更新而反复 rebase。PR Ready 后由 Merge Queue 在最新 `main` 组合
+提交上验证；仅真实冲突，或队列集成失败需要修改分支时手工 rebase。
 
 ## DCO
 
@@ -81,15 +83,24 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-thre
 
 ## CI 与合并队列
 
-PR 使用按路径选择的快速门禁。发布链路改动只跑轻量契约测试；完整 deb、dmg、nsis 安装包仅在 `VERSION` 改动进入 `main` 后，或人工明确触发 `workflow_dispatch` 时构建。
+PR 使用分层、按路径选择的门禁。Draft 跑 lint、build、确定性逻辑测试和
+适用的 Rust fmt 快检；Ready PR 追加由实际 diff 选定的浏览器 smoke、平台
+Runtime 契约和其他受影响检查。发布链路改动只跑轻量契约测试；完整
+deb、dmg、nsis 安装包仅在 `VERSION` 改动进入 `main` 后，或人工明确触发
+`workflow_dispatch` 时构建。
 
-完整 Rust 测试在 Merge Queue 中基于最新 `main` 执行。高风险 Rust PR 如需提前验证，可添加 `ci:full-rust` 标签。评审阶段只查看 required checks：
+Merge Queue 在入队 PR 与最新 `main` 的实际组合树上运行适用门禁：Rust 改动
+执行完整 Rust 测试，前端改动执行完整浏览器 smoke。仅 Ready 且高风险的
+Rust PR 需要提前完整反馈时添加 `ci:full-rust`；该标签不会在 Draft 上启动
+完整 Rust 测试。评审阶段只查看 required checks：
 
 ```bash
 gh pr checks <编号> --required
 ```
 
-不要等待非 required 的合入后平台构建或发布构建；评审期间也不要因 `main` 更新反复 rebase，只在准备进入 Merge Queue 时同步一次最新主线。
+不要等待非 required 的合入后平台构建或发布构建。无真实冲突的独立 Ready PR
+可直接入队，由队列验证新鲜度。每个 merge group 最多放两个低风险、相互独立的
+PR；依赖锁、CI、发布、权限、Session、CodeWhale gitlink 及其他高风险改动单独入队。
 
 ## Pull Request
 
