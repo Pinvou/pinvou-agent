@@ -2027,13 +2027,17 @@ impl SessionStore {
 
     /// yolo 一次性确认：置 `code_permission.yolo_confirmed = true` 并落盘。
     /// 确认是 UI 层语义（与 VS Code 同款），后端不在 exit_plan_to_yolo 强制门控。
+    ///
+    /// 仅同步本命令负责的 `yolo_confirmed` 字段，不整体覆盖镜像：`update_transaction`
+    /// 返回的快照可能已过期（并发 `record_code_last_mode` 在事务提交后、本行执行前
+    /// 写入了内存镜像的 `last_mode`），整体赋值会丢弃它导致内存/磁盘漂移。
     pub fn confirm_code_yolo(&self) -> Result<CodePermissionPrefs, String> {
-        let prefs = UserPrefs::update_transaction(|prefs| {
+        UserPrefs::update_transaction(|prefs| {
             prefs.code_permission.yolo_confirmed = true;
             Ok(())
         })?;
-        *self.code_permission.write() = prefs.code_permission;
-        Ok(prefs.code_permission)
+        self.code_permission.write().yolo_confirmed = true;
+        Ok(self.code_permission_prefs())
     }
 
     // ===================== per-session 模型绑定 =====================
@@ -4135,8 +4139,14 @@ mod tests {
         assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
         // plain 会话维持 Yolo 现状。
         assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
-        // 谓词未注入时（启动早期/测试）全部按 plain 语义，不误判。
-        let (no_predicate, _g2) = isolated_store();
+    }
+
+    /// 谓词未注入时（启动早期/测试）全部按 plain 语义，不误判。拆成独立测试：
+    /// `isolated_store` 持有进程级 `ENV_LOCK` 直到 guard drop，同一线程内二次调用
+    /// 会自死锁（`std::sync::Mutex` 不可重入）。每测试只调一次 `isolated_store`。
+    #[test]
+    fn code_session_without_predicate_defaults_to_yolo() {
+        let (no_predicate, _g) = isolated_store();
         assert_eq!(
             no_predicate.mode_state("code-1").mode,
             SerializableMode::Yolo
