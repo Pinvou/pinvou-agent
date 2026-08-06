@@ -68,10 +68,6 @@ const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
-// The current CodeWhale base stores delegated-agent state in the execution
-// workspace. Keep native Code delegation unavailable until the base exposes a
-// session-owned state root; the Rust policy independently enforces this gate.
-const NATIVE_CODE_MULTI_AGENT_AVAILABLE = false;
 
 function unifiedConversationUiEnabled() {
   try {
@@ -2956,7 +2952,8 @@ export function CodexAcpView({
                           title={busy || working ? t.modelSwitchBusy : undefined}
                           footerAction={nativeManageModelsAction}
                         />
-                      )}                      <ComposerToolMenu
+                      )}
+                      <ComposerToolMenu
                         t={t}
                         onGotoTools={onGotoTools}
                         compact={false}

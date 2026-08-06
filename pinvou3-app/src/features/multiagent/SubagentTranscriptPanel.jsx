@@ -11,8 +11,13 @@ import {
   subagentAncestorIds,
   subagentRoleOrdinals,
   visibleSubagentTreeRows,
+  windowSubagentTranscript,
 } from './subagent-conversation.mjs';
-import { startTranscriptPolling } from './runState.mjs';
+import {
+  isTranscriptChunk,
+  mergeTranscriptMessages,
+  startTranscriptPolling,
+} from './runState.mjs';
 
 /**
  * 子智能体面板（Codex 式右侧列，ADR-0006）：**只读执行记录**，不是第二个
@@ -20,7 +25,7 @@ import { startTranscriptPolling } from './runState.mjs';
  *
  * 两级结构（CodexWorkspacePanel 同款）：列表（直属代理为根，历史后代折叠成树，
  * 含状态点/受阻标注）→ 详情（该实例的完整思考、工具与结果，共享对话时间线渲染）。
- * 数据全部来自底座落盘投影（transcripts::list / read），面板打开期间串行
+ * 数据全部来自底座落盘投影（transcripts::list / read_chunk），面板打开期间串行
  * 轮询刷新；App 不维护任何运行状态机。
  */
 
@@ -29,6 +34,7 @@ const PANEL_MIN_WIDTH = 360;
 const CHAT_MIN_WIDTH = 360;
 const PANEL_MAX_RATIO = 0.65;
 const PANEL_DEFAULT_WIDTH = 420;
+const TRANSCRIPT_WINDOW_STEP = 120;
 
 function clampPanelWidth(width, rootWidth) {
   const maximum = Math.max(
@@ -210,18 +216,37 @@ export function SubagentTranscriptPanel({
 
   const [messages, setMessages] = useState(null);
   const [transcriptReadFailed, setTranscriptReadFailed] = useState(false);
+  const [visibleTranscriptItems, setVisibleTranscriptItems] = useState(TRANSCRIPT_WINDOW_STEP);
+  const transcriptCursorRef = useRef(null);
+  const terminalWithoutTranscript = !!(
+    agent && agent.done && agent.has_transcript === false
+  );
+  useEffect(() => {
+    setVisibleTranscriptItems(TRANSCRIPT_WINDOW_STEP);
+  }, [sessionId, selectedAgentId]);
   useEffect(() => {
     setMessages(null);
     setTranscriptReadFailed(false);
+    transcriptCursorRef.current = null;
     // 排队/刚启动（ledger 有、transcript 未落盘）不轮询详情：读必失败，
-    // 徒增无效 IPC 与告警日志；清单轮询发现 transcript 出现后自然重启。
-    const transcriptPending = !!(agent && agent.has_transcript === false && !agent.done);
-    if (!bridge.available || !selectedAgentId || transcriptPending) return undefined;
+    // 徒增无效 IPC 与告警日志；若它在建文件前已经失败，直接展示 ledger
+    // 错误，不再把明确的启动失败伪装成“记录读取失败”。
+    const transcriptUnavailable = !!(agent && agent.has_transcript === false);
+    if (!bridge.available || !selectedAgentId || transcriptUnavailable) return undefined;
     return startTranscriptPolling({
-      read: () => bridge.multiAgent.readSubagentTranscript(sessionId, selectedAgentId),
-      onMessages: (list) => {
-        if (Array.isArray(list)) {
-          setMessages(list);
+      read: () => bridge.multiAgent.readSubagentTranscript(
+        sessionId,
+        selectedAgentId,
+        transcriptCursorRef.current,
+      ),
+      accept: isTranscriptChunk,
+      onMessages: (chunk) => {
+        if (chunk) {
+          transcriptCursorRef.current = {
+            offset: chunk.next_offset,
+            revision: chunk.revision,
+          };
+          setMessages((current) => mergeTranscriptMessages(current, chunk));
           setTranscriptReadFailed(false);
         } else {
           setTranscriptReadFailed(true);
@@ -231,22 +256,42 @@ export function SubagentTranscriptPanel({
     });
   }, [sessionId, selectedAgentId, !!(agent && agent.done), !!(agent && agent.has_transcript === false)]);
 
+  const projectedAgentId = agent ? agent.agent_id : null;
+  const projectedAgentRole = agent ? agent.role : null;
+  const projectedAgentStatus = agent ? agent.status : null;
+  const projectedAgentDone = !!(agent && agent.done);
+  const projectedAgentFailed = !!(agent && agent.failed);
+  const projectedAgentBlocked = !!(agent && agent.blocked);
+  const projectedAgentError = agent ? agent.error : null;
+  const projectedAgent = useMemo(
+    () => (projectedAgentId
+      ? {
+          agentId: projectedAgentId,
+          role: projectedAgentRole,
+          status: projectedAgentStatus,
+          done: projectedAgentDone,
+          failed: projectedAgentFailed,
+          blocked: projectedAgentBlocked,
+          error: projectedAgentError,
+        }
+      : null),
+    [
+      projectedAgentId,
+      projectedAgentRole,
+      projectedAgentStatus,
+      projectedAgentDone,
+      projectedAgentFailed,
+      projectedAgentBlocked,
+      projectedAgentError,
+    ],
+  );
   const projected = useMemo(
-    () => projectSubagentTranscript({
-      messages: messages || [],
-      agent: agent
-        ? {
-            agentId: agent.agent_id,
-            role: agent.role,
-            status: agent.status,
-            done: !!agent.done,
-            failed: !!agent.failed,
-            blocked: !!agent.blocked,
-            error: agent.error,
-          }
-        : null,
-    }),
-    [messages, agent],
+    () => projectSubagentTranscript({ messages: messages || [], agent: projectedAgent }),
+    [messages, projectedAgent],
+  );
+  const transcriptWindow = useMemo(
+    () => windowSubagentTranscript(projected, visibleTranscriptItems),
+    [projected, visibleTranscriptItems],
   );
 
   const [panelWidth, setPanelWidth] = useState(savedPanelWidth);
@@ -411,34 +456,57 @@ export function SubagentTranscriptPanel({
 
       {selectedAgentId ? (
         <div className="custom-scrollbar flex-1 min-h-0 overflow-y-auto px-4 py-4">
-          {messages === null && agent && agent.has_transcript === false && !agent.done ? (
+          {terminalWithoutTranscript ? (
+            <div className={`whitespace-pre-wrap break-words text-[12px] ${
+              agent && agent.failed
+                ? 'text-red-600 dark:text-red-400'
+                : 'text-amber-600 dark:text-amber-400'
+            }`}>
+              {copy.agentNoTranscript(agent && agent.error)}
+            </div>
+          ) : messages === null && agent && agent.has_transcript === false && !agent.done ? (
             <div className="text-[12px] text-gray-400">{copy.agentPending}</div>
-          ) : messages === null && transcriptReadFailed ? (
-            <div className="text-[12px] text-amber-600 dark:text-amber-400">{copy.transcriptReadFailed}</div>
-          ) : messages === null ? (
+          ) : messages === null && !transcriptReadFailed ? (
             <div className="text-[12px] text-gray-400">{copy.loadingTranscript}</div>
           ) : null}
-          {Array.isArray(messages) && messages.length === 0 && (
+          {!terminalWithoutTranscript && transcriptReadFailed && (
+            <div className="mb-2 text-[12px] text-amber-600 dark:text-amber-400">{copy.transcriptReadFailed}</div>
+          )}
+          {!terminalWithoutTranscript && Array.isArray(messages) && messages.length === 0 && (
             <div className="text-[12px] text-gray-400">{copy.emptyTranscript}</div>
           )}
-          {Array.isArray(messages) && messages.length > 0 && (
-            <ConversationTimeline
-              turns={projected.turns}
-              now={0}
-              copy={conversationCopy}
-              agentLabel={detailSubtitle || detailName}
-              assistantAvatar={detailIdentity ? (
-                <AppIcon
-                  card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
-                  isDark={isDark}
-                  cls="mt-1 h-7 w-7 shrink-0 overflow-hidden rounded-xl"
-                  fb={13}
-                />
-              ) : undefined}
-              renderToolItem={(item) => (
-                <CompactToolRow item={item} conversationCopy={conversationCopy} />
+          {!terminalWithoutTranscript && Array.isArray(messages) && messages.length > 0 && (
+            <>
+              {transcriptWindow.hiddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleTranscriptItems((count) => count + TRANSCRIPT_WINDOW_STEP)}
+                  className="mb-3 w-full rounded-lg border border-black/[0.06] px-3 py-2 text-[11px] text-gray-500 hover:bg-black/[0.03] dark:border-white/[0.08] dark:text-gray-400 dark:hover:bg-white/[0.04]"
+                >
+                  {copy.showEarlierTranscript(Math.min(
+                    TRANSCRIPT_WINDOW_STEP,
+                    transcriptWindow.hiddenCount,
+                  ))}
+                </button>
               )}
-            />
+              <ConversationTimeline
+                turns={transcriptWindow.view.turns}
+                now={0}
+                copy={conversationCopy}
+                agentLabel={detailSubtitle || detailName}
+                assistantAvatar={detailIdentity ? (
+                  <AppIcon
+                    card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
+                    isDark={isDark}
+                    cls="mt-1 h-7 w-7 shrink-0 overflow-hidden rounded-xl"
+                    fb={13}
+                  />
+                ) : undefined}
+                renderToolItem={(item) => (
+                  <CompactToolRow item={item} conversationCopy={conversationCopy} />
+                )}
+              />
+            </>
           )}
         </div>
       ) : (

@@ -185,6 +185,35 @@ export function projectSubagentTranscript({ messages, agent }) {
 }
 
 /**
+ * 长任务只渲染末尾一窗事实条目；完整 messages 仍留在内存，用户可逐窗向前
+ * 展开。窗口切在已完成 tool_result 回填之后，再重建 presentation，因此不会
+ * 把工具结果与状态算错，也不会让一个巨型 tool_group 绕过 DOM 上限。
+ */
+export function windowSubagentTranscript(projection, visibleItemCount) {
+  const turns = Array.isArray(projection && projection.turns) ? projection.turns : [];
+  const limit = Math.max(1, Math.floor(Number(visibleItemCount) || 1));
+  let hiddenCount = 0;
+  let changed = false;
+  const visibleTurns = turns.map((turn) => {
+    const items = Array.isArray(turn && turn.items) ? turn.items : [];
+    const hidden = Math.max(0, items.length - limit);
+    if (hidden === 0) return turn;
+    hiddenCount += hidden;
+    changed = true;
+    const visibleItems = items.slice(-limit);
+    return {
+      ...turn,
+      items: visibleItems,
+      presentation: presentConversationItems(visibleItems),
+    };
+  });
+  return {
+    view: changed ? { ...projection, turns: visibleTurns } : projection,
+    hiddenCount,
+  };
+}
+
+/**
  * 子智能体的展示身份：内置四角色用稳定名片（i18n roleCards），`exp-*` 角色
  * 匹配回专家池真卡（名字/部门/头像），无匹配按原样 id 展示、用合成头像。
  *

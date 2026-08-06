@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SubagentTranscriptSummary {
@@ -47,6 +47,18 @@ pub struct SubagentTranscriptSummary {
     /// transcript 是否已落盘。false = 排队/刚启动：面板要显示"排队中"，
     /// 点开详情要解释"还没有记录"，不能装作空任务。
     pub has_transcript: bool,
+}
+
+/// transcript 的增量读取结果。`next_offset` 与 `revision` 必须成对回传；
+/// 文件被截断、替换或游标附近内容变化时，后端从头重读并标记 `reset`，前端
+/// 据此替换旧消息。正常追加只返回新行，避免面板每 1.5 秒整文件读取、解析和
+/// 跨 IPC 传输。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SubagentTranscriptChunk {
+    pub messages: Vec<serde_json::Value>,
+    pub next_offset: u64,
+    pub revision: String,
+    pub reset: bool,
 }
 
 fn transcripts_dir(workspace: &Path) -> PathBuf {
@@ -302,36 +314,16 @@ pub fn list(
     Ok(out)
 }
 
-fn read_transcript_file(
-    path: &Path,
-    agent_id: &str,
-) -> Result<Option<Vec<serde_json::Value>>, String> {
-    let body = std::fs::read_to_string(path)
-        .map_err(|err| format!("读取子智能体记录 {} 失败: {err}", path.display()))?;
-    let mut lines = body.lines();
-    let Some(header) = lines.next() else {
-        return Ok(None);
-    };
-    if header_agent_id(header).as_deref() != Some(agent_id) {
-        return Ok(None);
-    }
-    // 逐行独立解析：坏一行跳一行，别让一条损坏记录毁掉整个面板。
-    Ok(Some(
-        lines
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("message"))
-            .filter_map(|mut value| value.get_mut("message").map(serde_json::Value::take))
-            .collect(),
-    ))
-}
-
-/// 读某个子智能体的完整消息列表（按记录顺序）。正常记录按 agent_id 摘要直接
-/// 定位；旧版非标准文件名才枚举表头。找不到该 agent 时返回 Err。
-pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, String> {
+fn locate_transcript_path(workspace: &Path, agent_id: &str) -> Result<PathBuf, String> {
     let direct = transcript_path(workspace, agent_id);
     if direct.is_file() {
-        return read_transcript_file(&direct, agent_id)?
-            .ok_or_else(|| format!("子智能体记录表头与文件名不一致: {}", direct.display()));
+        if read_header_agent_id(&direct).as_deref() == Some(agent_id) {
+            return Ok(direct);
+        }
+        return Err(format!(
+            "子智能体记录表头与文件名不一致: {}",
+            direct.display()
+        ));
     }
 
     let entries = match std::fs::read_dir(transcripts_dir(workspace)) {
@@ -348,11 +340,145 @@ pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, 
         }
         // 兼容旧记录：非标准文件名仍按表头定位。单个损坏文件不妨碍寻找
         // 其它 agent；标准摘要路径的读取错误已在上面明确上报。
-        if let Ok(Some(messages)) = read_transcript_file(&path, agent_id) {
-            return Ok(messages);
+        if read_header_agent_id(&path).as_deref() == Some(agent_id) {
+            return Ok(path);
         }
     }
     Err(format!("找不到子智能体的对话记录: {agent_id}"))
+}
+
+const CURSOR_REVISION_WINDOW: u64 = 128;
+
+/// 游标校验只读游标前固定窗口，而不是重新哈希全部历史。创建时间用于识别
+/// 原子替换，尾窗用于识别原地截断/改写；追加时二者都稳定。
+fn cursor_revision(
+    file: &mut std::fs::File,
+    offset: u64,
+    created: Option<SystemTime>,
+) -> Result<String, String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let start = offset.saturating_sub(CURSOR_REVISION_WINDOW);
+    let mut tail = vec![0_u8; (offset - start) as usize];
+    file.seek(SeekFrom::Start(start))
+        .map_err(|err| format!("定位子智能体记录游标失败: {err}"))?;
+    file.read_exact(&mut tail)
+        .map_err(|err| format!("校验子智能体记录游标失败: {err}"))?;
+
+    let mut digest = Sha256::new();
+    digest.update(b"pinvou3-subagent-transcript-cursor-v1");
+    digest.update(offset.to_le_bytes());
+    match created.and_then(|time| time.duration_since(UNIX_EPOCH).ok()) {
+        Some(duration) => {
+            digest.update([1]);
+            digest.update(duration.as_nanos().to_le_bytes());
+        }
+        None => digest.update([0]),
+    }
+    digest.update(&tail);
+    Ok(crate::platform::encoding::hex_lower(&digest.finalize()))
+}
+
+fn validated_header_end(file: &mut std::fs::File, agent_id: &str) -> Result<u64, String> {
+    use std::io::{BufRead as _, Seek as _, SeekFrom};
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| format!("定位子智能体记录表头失败: {err}"))?;
+    let mut first = String::new();
+    let read = std::io::BufReader::new(&mut *file)
+        .read_line(&mut first)
+        .map_err(|err| format!("读取子智能体记录表头失败: {err}"))?;
+    if read == 0 {
+        return Err("子智能体记录为空".to_string());
+    }
+    if header_agent_id(&first).as_deref() != Some(agent_id) {
+        return Err("子智能体记录表头身份不匹配".to_string());
+    }
+    Ok(read as u64)
+}
+
+fn read_messages_from(
+    file: &mut std::fs::File,
+    offset: u64,
+) -> Result<(Vec<serde_json::Value>, u64), String> {
+    use std::io::{BufRead as _, Seek as _, SeekFrom};
+
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|err| format!("定位子智能体记录正文失败: {err}"))?;
+    let mut reader = std::io::BufReader::new(&mut *file);
+    let mut messages = Vec::new();
+    let mut next_offset = offset;
+    loop {
+        let mut line = Vec::new();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|err| format!("读取子智能体记录正文失败: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        let terminated = line.last() == Some(&b'\n');
+        let parsed = serde_json::from_slice::<serde_json::Value>(&line);
+        // 写入中的半行留到下一轮；带换行的坏行则跳过，不能卡死游标。
+        if !terminated && parsed.is_err() {
+            break;
+        }
+        next_offset = next_offset.saturating_add(read as u64);
+        let Ok(mut value) = parsed else {
+            continue;
+        };
+        if value.get("kind").and_then(|kind| kind.as_str()) != Some("message") {
+            continue;
+        }
+        if let Some(message) = value.get_mut("message") {
+            messages.push(serde_json::Value::take(message));
+        }
+    }
+    Ok((messages, next_offset))
+}
+
+/// 按字节游标增量读取某个子智能体的消息。正常记录按 agent_id 摘要直接
+/// 定位；旧版非标准文件名才枚举表头。游标无效时返回从头恢复的 `reset`
+/// chunk，找不到该 agent 时返回 Err。
+pub fn read_chunk(
+    workspace: &Path,
+    agent_id: &str,
+    offset: Option<u64>,
+    revision: Option<&str>,
+) -> Result<SubagentTranscriptChunk, String> {
+    let path = locate_transcript_path(workspace, agent_id)?;
+    let mut file = std::fs::File::open(&path)
+        .map_err(|err| format!("读取子智能体记录 {} 失败: {err}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|err| format!("读取子智能体记录元数据失败: {err}"))?;
+    let created = metadata.created().ok();
+    let header_end = validated_header_end(&mut file, agent_id)?;
+    let requested = offset.unwrap_or(0);
+
+    let cursor_valid = if requested == 0 {
+        false
+    } else if requested < header_end || requested > metadata.len() {
+        false
+    } else if let Some(expected) = revision {
+        cursor_revision(&mut file, requested, created).is_ok_and(|actual| actual == expected)
+    } else {
+        false
+    };
+    let reset = requested != 0 && !cursor_valid;
+    let start = if cursor_valid { requested } else { header_end };
+    let (messages, next_offset) = read_messages_from(&mut file, start)?;
+    let revision = cursor_revision(&mut file, next_offset, created)?;
+    Ok(SubagentTranscriptChunk {
+        messages,
+        next_offset,
+        revision,
+        reset,
+    })
+}
+
+/// 测试与内部兼容入口：从头读取完整消息列表。产品轮询走 [`read_chunk`]。
+pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    Ok(read_chunk(workspace, agent_id, None, None)?.messages)
 }
 
 #[cfg(test)]
@@ -576,6 +702,114 @@ mod tests {
     }
 
     #[test]
+    fn incremental_read_returns_only_appended_messages() {
+        use std::io::Write as _;
+
+        let ws = fixture_workspace(&[]);
+        let path = transcript_path(&ws, "agent_a");
+        std::fs::write(&path, GOOD).unwrap();
+
+        let first = read_chunk(&ws, "agent_a", None, None).expect("initial chunk");
+        assert_eq!(first.messages.len(), 2);
+        assert!(!first.reset);
+
+        let unchanged = read_chunk(
+            &ws,
+            "agent_a",
+            Some(first.next_offset),
+            Some(&first.revision),
+        )
+        .expect("unchanged chunk");
+        assert!(unchanged.messages.is_empty(), "未追加时不得重复传历史消息");
+        assert_eq!(unchanged.next_offset, first.next_offset);
+        assert_eq!(unchanged.revision, first.revision);
+
+        writeln!(
+            std::fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            r#"{{"kind":"message","index":2,"message":{{"role":"assistant","content":[{{"type":"text","text":"新增"}}]}}}}"#
+        )
+        .unwrap();
+        let appended = read_chunk(
+            &ws,
+            "agent_a",
+            Some(first.next_offset),
+            Some(&first.revision),
+        )
+        .expect("appended chunk");
+        assert!(!appended.reset);
+        assert_eq!(appended.messages.len(), 1);
+        assert_eq!(appended.messages[0]["content"][0]["text"], "新增");
+        assert!(appended.next_offset > first.next_offset);
+    }
+
+    #[test]
+    fn incremental_read_resets_after_truncate_or_rewrite() {
+        let ws = fixture_workspace(&[]);
+        let path = transcript_path(&ws, "agent_a");
+        std::fs::write(&path, GOOD).unwrap();
+        let first = read_chunk(&ws, "agent_a", None, None).expect("initial chunk");
+
+        let replacement = concat!(
+            r#"{"kind":"subagent_transcript_header","agent_id":"agent_a"}"#,
+            "\n",
+            r#"{"kind":"message","index":0,"message":{"role":"assistant","content":[{"type":"text","text":"替换"}]}}"#,
+            "\n",
+        );
+        std::fs::write(&path, replacement).unwrap();
+        let reset = read_chunk(
+            &ws,
+            "agent_a",
+            Some(first.next_offset),
+            Some(&first.revision),
+        )
+        .expect("reset chunk");
+        assert!(reset.reset, "旧游标不得用于被截断/改写后的文件");
+        assert_eq!(reset.messages.len(), 1);
+        assert_eq!(reset.messages[0]["content"][0]["text"], "替换");
+    }
+
+    #[test]
+    fn incremental_read_waits_for_a_complete_json_line() {
+        use std::io::Write as _;
+
+        let ws = fixture_workspace(&[]);
+        let path = transcript_path(&ws, "agent_a");
+        std::fs::write(&path, GOOD).unwrap();
+        let first = read_chunk(&ws, "agent_a", None, None).expect("initial chunk");
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(
+            br#"{"kind":"message","index":2,"message":{"role":"assistant","content":[{"type":"text","text":"pending"#,
+        )
+        .unwrap();
+        file.flush().unwrap();
+        let partial = read_chunk(
+            &ws,
+            "agent_a",
+            Some(first.next_offset),
+            Some(&first.revision),
+        )
+        .expect("partial chunk");
+        assert!(partial.messages.is_empty());
+        assert_eq!(partial.next_offset, first.next_offset, "半行不能推进游标");
+
+        file.write_all(b"\"}]}}\n").unwrap();
+        file.flush().unwrap();
+        let completed = read_chunk(
+            &ws,
+            "agent_a",
+            Some(first.next_offset),
+            Some(&first.revision),
+        )
+        .expect("completed chunk");
+        assert_eq!(completed.messages.len(), 1);
+        assert_eq!(completed.messages[0]["content"][0]["text"], "pending");
+    }
+
+    #[test]
     fn blocked_cache_invalidates_when_terminal_transcript_changes() {
         let ws = fixture_workspace(&[("aaaa.jsonl", GOOD)]);
         write_worker_state(&ws, "completed", None);
@@ -633,6 +867,22 @@ mod tests {
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
         assert!(!listed[0].done);
         assert!(!listed[0].blocked);
+    }
+
+    #[test]
+    fn failed_worker_without_transcript_keeps_ledger_error() {
+        let ws = fixture_workspace(&[]);
+        write_worker_state(&ws, "failed", Some("model route unavailable"));
+
+        let listed = list(&ws, None).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].done && listed[0].failed);
+        assert!(!listed[0].has_transcript);
+        assert_eq!(
+            listed[0].error.as_deref(),
+            Some("model route unavailable"),
+            "详情必须能直接展示 ledger 错误，不依赖不存在的 transcript"
+        );
     }
 
     fn write_two_worker_state(workspace: &Path) {

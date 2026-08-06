@@ -1,3 +1,18 @@
+export function isTranscriptChunk(value) {
+  return !!value
+    && Array.isArray(value.messages)
+    && Number.isSafeInteger(value.next_offset)
+    && value.next_offset >= 0
+    && typeof value.revision === 'string'
+    && typeof value.reset === 'boolean';
+}
+
+export function mergeTranscriptMessages(current, chunk) {
+  if (chunk.reset || !Array.isArray(current)) return chunk.messages;
+  if (chunk.messages.length === 0) return current;
+  return [...current, ...chunk.messages];
+}
+
 /**
  * 串行刷新一份运行中的 transcript：任一时刻最多一个读取请求；agent 结束后
  * `active` 可为布尔值或按本次结果判断的函数；终态只做最后一次读取，不再
@@ -10,6 +25,7 @@ export function startTranscriptPolling({
   read,
   onMessages,
   active,
+  accept = Array.isArray,
   intervalMs = 1500,
   schedule = (callback, delay) => globalThis.setTimeout(callback, delay),
   cancel = (timer) => globalThis.clearTimeout(timer),
@@ -23,7 +39,7 @@ export function startTranscriptPolling({
     let result = null;
     try {
       const next = await read();
-      result = Array.isArray(next) ? next : null;
+      result = accept(next) ? next : null;
     } catch {
       result = null;
     }

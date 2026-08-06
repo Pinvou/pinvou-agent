@@ -5,7 +5,11 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { startTranscriptPolling } from '../src/features/multiagent/runState.mjs';
+import {
+  isTranscriptChunk,
+  mergeTranscriptMessages,
+  startTranscriptPolling,
+} from '../src/features/multiagent/runState.mjs';
 import {
   extractSubagentId,
   fileChangeStat,
@@ -20,6 +24,7 @@ import {
   subagentTreeIsDone,
   visibleSubagentDescendantRows,
   visibleSubagentTreeRows,
+  windowSubagentTranscript,
 } from '../src/features/multiagent/subagent-conversation.mjs';
 import {
   captureConversationScrollPosition,
@@ -121,7 +126,25 @@ test('桥不再维护运行状态机，只暴露发起与只读投影', () => {
   assert.doesNotMatch(source, /awaiting_approval/, '运行状态机已退役');
 });
 
-test('子智能体事件转成 DOM 事件供专家卡自订阅，任意会话都转发', () => {
+test('详情读取把 offset/revision 游标原样交给后端', async () => {
+  const calls = [];
+  const chunk = { messages: [], next_offset: 42, revision: 'rev-1', reset: false };
+  const { api } = loadFeature(async (name, args) => {
+    calls.push({ name, args });
+    return chunk;
+  });
+
+  const initial = await api.readSubagentTranscript('run-1', 'agent_a');
+  assert.equal(initial.next_offset, 42);
+  assert.equal(calls[0].name, 'read_subagent_transcript');
+  assert.equal(Object.hasOwn(calls[0].args, 'offset'), false, '首次读取不伪造游标');
+
+  await api.readSubagentTranscript('run-1', 'agent_a', { offset: 42, revision: 'rev-1' });
+  assert.equal(calls[1].args.offset, 42);
+  assert.equal(calls[1].args.revision, 'rev-1');
+});
+
+test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视图决定', () => {
   const { listeners, dispatched } = loadFeature();
   listeners['workflow:agent_progress']({
     payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中' },
@@ -159,7 +182,7 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
   assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
-  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(context: DelegationContext, task: &str\)/, '委派提醒按会话类型与本轮任务生成');
+  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(task: &str\)/, 'Work 多智能体按本轮任务生成委派提醒');
   assert.match(commandSource, /pub\(crate\) fn prepend_delegation_reminder\(/, '普通发送、编辑重发与方案接受必须复用统一提醒组装');
   assert.match(commandSource, /roster::available_role_lines\(task\)/, '名册必须按本轮任务筛选并随提醒带上');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
@@ -257,8 +280,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_CONCURRENT:\s*usize\s*=\s*4/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
-  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
+  assert.doesNotMatch(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_/);
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -303,7 +325,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_available\(session_id\)[\s\S]{0,900}self\.bridge\.session_workspace\(session_id\)/,
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.bridge\.session_workspace\(session_id\)/,
     '开启前必须先执行能力门禁；允许开启的 Work 会话仍按实际 CodeWhale 工作区装配名册',
   );
   assert.match(
@@ -516,6 +538,11 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /pub spawn_depth: Option<u32>/,
     '清单必须保留底座派生深度，遗留记录允许未知',
   );
+  assert.match(
+    transcriptsSource,
+    /pub struct SubagentTranscriptChunk[\s\S]{0,260}pub next_offset: u64[\s\S]{0,160}pub revision: String[\s\S]{0,120}pub reset: bool/,
+    '详情轮询必须使用可复位的字节游标，不能每 1.5 秒整读完整 transcript',
+  );
   const multiagentBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
   assert.match(
     multiagentBridgeSource,
@@ -528,6 +555,13 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /listReadFailed/,
     '面板必须展示读取失败态并保留上次有效清单，不能清空',
   );
+  assert.match(
+    panelSource,
+    /const terminalWithoutTranscript =/,
+    '子智能体在建 transcript 前失败时必须直接显示 ledger 错误，不能再发必败读取',
+  );
+  assert.match(panelSource, /copy\.agentNoTranscript\(agent && agent\.error\)/);
+  assert.match(panelSource, /const transcriptUnavailable = !!\(agent && agent\.has_transcript === false\)/);
   assert.match(
     panelSource,
     /subtitle \|\| presentation\.task \|\| entry\.agent_id/,
@@ -626,9 +660,13 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
 });
 
-test('transcripts 命令读取实际 CodeWhale 工作区', () => {
+test('transcripts 命令仅读取 Work 会话自己的 CodeWhale 工作区', () => {
   assert.match(commandSource, /fn subagent_workspace\([\s\S]{0,100}pool: &EnginePool/);
-  assert.match(commandSource, /pool\.session_workspace\(session_id\)/, '绑定项目的 Code 会话必须读取项目 .codewhale');
+  assert.match(
+    commandSource,
+    /fn subagent_workspace\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_workspace\(session_id\)/,
+    '读取工作区前必须拒绝 Code 会话，避免把项目共享 .codewhale 当成会话记录',
+  );
   assert.doesNotMatch(commandSource, /resolve_workflow_approval/, '审批命令已退役');
 });
 
@@ -899,7 +937,7 @@ test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段�
   assert.equal(extractSubagentId('agent_1234'), null, '非正式短 id 不得误绑卡片');
 });
 
-test('ChatView 监听打开事件并挂载只读面板（任意会话可用），旧运行条带已退役', () => {
+test('ChatView 监听打开事件并为工作会话挂载只读面板，旧运行条带已退役', () => {
   assert.match(chatViewSource, /pinvou:open-subagent/);
   assert.match(chatViewSource, /<SubagentTranscriptPanel/);
   assert.match(chatViewSource, /captureConversationScrollPosition\(/);
@@ -936,6 +974,11 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /<ConversationTimeline/, '必须复用共享对话时间线组件');
   assert.match(panelSource, /projectSubagentTranscript\(\{/);
   assert.match(panelSource, /startTranscriptPolling\(\{[\s\S]*active: !\(agent && agent\.done\)/);
+  assert.match(panelSource, /accept: isTranscriptChunk/);
+  assert.match(panelSource, /transcriptCursorRef\.current/);
+  assert.match(panelSource, /mergeTranscriptMessages\(current, chunk\)/);
+  assert.match(panelSource, /windowSubagentTranscript\(projected, visibleTranscriptItems\)/);
+  assert.match(panelSource, /copy\.showEarlierTranscript/);
   assert.match(
     panelSource,
     /active: \(list\) => !Array\.isArray\(list\) \|\| list\.some\(\(entry\) => !entry\.done\)/,
@@ -1035,6 +1078,29 @@ test('transcript 适配：坏消息跳过不炸，+N -M 从 unified diff 数出'
   assert.equal(fileChangeStat(null), null);
 });
 
+test('长 transcript 只渲染末尾窗口，向前展开不丢完整统计', () => {
+  const items = [
+    { id: 'm1', type: 'agent_message', text: 'one' },
+    { id: 'm2', type: 'agent_message', text: 'two' },
+    { id: 't1', type: 'tool', status: 'completed', tool: { name: 'a' } },
+    { id: 't2', type: 'tool', status: 'completed', tool: { name: 'b' } },
+    { id: 'm3', type: 'agent_message', text: 'three' },
+  ];
+  const projection = {
+    turns: [{ id: 'agent_a', items, presentation: items, operationCount: 2 }],
+  };
+  const windowed = windowSubagentTranscript(projection, 3);
+  assert.equal(windowed.hiddenCount, 2);
+  assert.deepEqual(windowed.view.turns[0].items.map(item => item.id), ['t1', 't2', 'm3']);
+  assert.equal(windowed.view.turns[0].presentation[0].type, 'tool_group');
+  assert.equal(windowed.view.turns[0].presentation[0].items.length, 2);
+  assert.equal(windowed.view.turns[0].operationCount, 2, '页脚统计仍基于完整记录');
+
+  const complete = windowSubagentTranscript(projection, 10);
+  assert.equal(complete.hiddenCount, 0);
+  assert.equal(complete.view, projection, '无需窗口时复用原投影');
+});
+
 test('身份解析：内置角色稳定名片，exp-* 映射真卡，无匹配原样展示', () => {
   assert.deepEqual(resolveSubagentIdentity(null, []), {
     kind: 'builtin', roleKey: 'general', avatarKey: 'wf-role-general',
@@ -1056,6 +1122,30 @@ test('身份解析：内置角色稳定名片，exp-* 映射真卡，无匹配�
 });
 
 // ── 轮询（沿用既有回归；落盘/实时合并已收敛到 Rust transcripts::list） ─────────
+
+test('增量 transcript chunk 追加新消息，reset 时替换旧消息', () => {
+  const first = { messages: [{ id: 1 }], next_offset: 10, revision: 'r1', reset: false };
+  assert.equal(isTranscriptChunk(first), true);
+  assert.equal(isTranscriptChunk([{ id: 1 }]), false, '旧的整表数组不再是详情协议');
+  assert.equal(isTranscriptChunk({ ...first, next_offset: -1 }), false);
+
+  assert.deepEqual(mergeTranscriptMessages(null, first), [{ id: 1 }]);
+  const current = [{ id: 1 }];
+  const unchanged = mergeTranscriptMessages(
+    current,
+    { messages: [], next_offset: 10, revision: 'r1', reset: false },
+  );
+  assert.equal(unchanged, current, '没有新增消息时复用引用，避免无意义重渲染');
+  assert.deepEqual(
+    mergeTranscriptMessages(current, { messages: [{ id: 2 }], next_offset: 20, revision: 'r2', reset: false }),
+    [{ id: 1 }, { id: 2 }],
+  );
+  assert.deepEqual(
+    mergeTranscriptMessages(current, { messages: [{ id: 9 }], next_offset: 8, revision: 'r9', reset: true }),
+    [{ id: 9 }],
+    '文件被截断/替换后必须清掉旧投影',
+  );
+});
 
 test('transcript 运行中串行轮询，停止后取消 timer；终态只做最后一次读取', async () => {
   const reads = [];
