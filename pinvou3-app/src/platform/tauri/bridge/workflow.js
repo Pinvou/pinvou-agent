@@ -171,7 +171,7 @@
   // 后端 kb_collection_add_sources → expand_import_roots 会用 WalkDir 递归展开目录。
   async function pickFolders() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
-    var selected = await dialogOpen({ directory: true, multiple: true, title: bt("workflowPickWorkDirTitle") });
+    var selected = await dialogOpen({ directory: true, multiple: true, title: bt("kbPickFolderTitle") });
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   }
