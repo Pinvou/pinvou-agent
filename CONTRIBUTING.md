@@ -22,7 +22,11 @@ git switch -c feat/short-description upstream/main
 git submodule update --init --recursive
 ```
 
-Sync the latest official `main` before opening a pull request and before merge. Do not repeatedly rebase only because `main` advances during review.
+Sync the latest official `main` before opening a pull request. During review, do not
+repeatedly rebase only because `main` advances. When a pull request is ready, the
+merge queue validates its combined tree against the latest `main`; manually rebase
+again only to resolve a real conflict or when the queue reports an integration
+failure that requires a branch change.
 
 ## DCO
 
@@ -81,15 +85,29 @@ Tests requiring a live model, network service, credential, or large model asset 
 
 ## CI and merge queue
 
-Pull requests use a fast, path-aware gate. Release-chain changes run lightweight contract tests only; full deb, dmg, and nsis packages are built only after a `VERSION` change reaches `main`, or through an explicit `workflow_dispatch`.
+Pull requests use a staged, path-aware gate. Draft pull requests run fast feedback
+(lint, build, deterministic logic tests, and Rust formatting where applicable).
+Ready pull requests add browser smokes selected from the actual diff, platform
+runtime contracts, and other affected checks. Release-chain changes run lightweight
+contract tests only; full deb, dmg, and nsis packages are built only after a
+`VERSION` change reaches `main`, or through an explicit `workflow_dispatch`.
 
-Full Rust tests run against the latest `main` in the merge queue. Add the `ci:full-rust` label when a high-risk Rust pull request should run them before queueing. During review, maintainers should inspect only required checks:
+The merge queue runs the applicable product gates against the actual combined tree
+of the queued pull request and the latest `main`. Rust changes run full Rust tests
+there; frontend changes run the complete browser-smoke set there. Add the
+`ci:full-rust` label to a **ready**, high-risk Rust pull request only when early full
+feedback is worth the extra run; the label does not start full Rust tests on a
+draft. During review, maintainers should inspect only required checks:
 
 ```bash
 gh pr checks <number> --required
 ```
 
-Do not wait for non-required post-merge platform or release builds. Do not repeatedly rebase during review; sync with the latest `main` once when the pull request is ready to enter the merge queue.
+Do not wait for non-required post-merge platform or release builds. Queue independent
+ready pull requests without routine rebases; resolve actual conflicts, and let the
+queue validate freshness. Maintainers may queue at most two low-risk, independent
+pull requests in one merge group. Dependency-lock, CI, release, permission, session,
+CodeWhale gitlink, and other high-risk changes enter alone.
 
 ## Pull requests
 
