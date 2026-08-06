@@ -3,8 +3,9 @@
 //! 与 `workflows.rs`（MVP1 skill 工作流 + 既有 Python 调度器）**无数据交集**，
 //! 见 `docs/adr/0004-多智能体编排建在底座而非既有调度器.md`。这里只剩两类东西：
 //! 子智能体执行记录的只读投影命令（行内专家卡 + 只读面板的数据源），以及
-//! 开关开启时每轮拼进用户消息前的委派提醒（`delegation_reminder`，chat 发送
-//! 链注入）。旧的独立发起命令与 wf- 会话形态已整体退役（开关在 interaction.rs）。
+//! 开关开启时每轮拼进用户消息前的委派提醒（`delegation_reminder`，会话交互
+//! 中产生用户 turn 的发送链统一注入）。旧的独立发起命令与 wf- 会话形态已
+//! 整体退役（开关在 interaction.rs）。
 
 use super::prelude::*;
 
@@ -110,6 +111,36 @@ pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> Str
     )
 }
 
+fn prepend_delegation_reminder_with_context(
+    enabled: bool,
+    context: DelegationContext,
+    task: &str,
+    content: String,
+) -> String {
+    if !enabled {
+        return content;
+    }
+    format!("{}\n\n---\n\n{content}", delegation_reminder(context, task))
+}
+
+/// 给一次会话交互的用户 turn 统一追加多智能体提醒。普通发送、编辑重发
+/// 与方案接受都必须走这里，避免某条旁路退回主代理亲自执行。`task` 只用于筛选
+/// 本轮专家，`content` 是实际发给模型的完整内容；展示/落盘消息由调用方另传。
+pub(crate) fn prepend_delegation_reminder(
+    pool: &EnginePool,
+    session_id: &str,
+    enabled: bool,
+    task: &str,
+    content: String,
+) -> String {
+    let context = if pool.is_code_session(session_id) {
+        DelegationContext::Code
+    } else {
+        DelegationContext::Work
+    };
+    prepend_delegation_reminder_with_context(enabled, context, task, content)
+}
+
 /// 会话实际使用的 CodeWhale 工作区。绑定项目的原生 Code 会话返回项目目录，
 /// 因而名册、transcripts 与 worker ledger 都遵循基座落在项目 `.codewhale/`；
 /// 其他会话仍返回各自的会话工作区。
@@ -159,7 +190,31 @@ pub async fn read_subagent_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::{delegation_reminder, DelegationContext};
+    use super::{delegation_reminder, prepend_delegation_reminder_with_context, DelegationContext};
+
+    #[test]
+    fn turn_content_prepends_delegation_only_when_enabled() {
+        let content = "请审查当前实现".to_string();
+        assert_eq!(
+            prepend_delegation_reminder_with_context(
+                false,
+                DelegationContext::Work,
+                &content,
+                content.clone(),
+            ),
+            content,
+            "关闭多智能体时必须保持原消息逐字不变"
+        );
+
+        let wrapped = prepend_delegation_reminder_with_context(
+            true,
+            DelegationContext::Work,
+            &content,
+            content.clone(),
+        );
+        assert!(wrapped.starts_with("本会话已开启多智能体模式"));
+        assert!(wrapped.ends_with(&format!("---\n\n{content}")));
+    }
 
     /// 每轮提醒教的是**强制委派任务、父模型只统筹**（ADR-0006）：只教裸
     /// `agent` 集群，单任务至少一个、可拆任务尽量拆、父模型亲自协调汇总。

@@ -38,10 +38,13 @@ const timelineSource = read('src', 'features', 'conversation', 'ConversationTime
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 const commandSource = read('src-tauri', 'src', 'app', 'commands', 'multiagent.rs');
 const chatCommandSource = read('src-tauri', 'src', 'app', 'commands', 'chat.rs');
+const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.rs');
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
+const i18nSource = read('src', 'shared', 'i18n.js');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
+const modeStateSource = read('src-tauri', 'src', 'core', 'mode_state.rs');
 const rosterSource = read('src-tauri', 'src', 'features', 'multiagent', 'roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
 
@@ -157,6 +160,7 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
   assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
   assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(context: DelegationContext, task: &str\)/, '委派提醒按会话类型与本轮任务生成');
+  assert.match(commandSource, /pub\(crate\) fn prepend_delegation_reminder\(/, '普通发送、编辑重发与方案接受必须复用统一提醒组装');
   assert.match(commandSource, /roster::available_role_lines\(task\)/, '名册必须按本轮任务筛选并随提醒带上');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
   assert.match(rosterSource, /personas::executable_summaries\(\)/, '每轮匹配必须只读取轻量摘要，不克隆全部专家正文');
@@ -179,8 +183,28 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     chatCommandSource,
-    /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(delegation_context, &raw_message\)/,
+    /prepend_delegation_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&raw_message,[\s\S]{0,40}full/,
     '开关开启时 chat 发送链按原始用户消息筛专家并拼提醒',
+  );
+  assert.match(
+    memoryCommandSource,
+    /prepend_delegation_reminder\([\s\S]{0,180}mode_state\.multi_agent,[\s\S]{0,80}&new_message,[\s\S]{0,80}new_message\.clone\(\)/,
+    '编辑重发必须重新注入本轮委派提醒',
+  );
+  assert.match(
+    memoryCommandSource,
+    /reserve_turn\(&sid\)[\s\S]{0,220}mode_state\(&sid\)/,
+    '编辑重发必须先占 turn 槽再读取开关，不能与模式切换交错',
+  );
+  assert.match(
+    memoryCommandSource,
+    /user_display_message\(new_message\)[\s\S]{0,250}edit_last_turn_reserved\(&sid, full, display_message, reservation\)/,
+    '编辑重发的模型提醒不得污染界面与落盘历史',
+  );
+  assert.match(
+    interactionCommandSource,
+    /prepend_delegation_reminder\([\s\S]{0,180}accepted_mode_state\.multi_agent,[\s\S]{0,80}&plan_markdown,[\s\S]{0,80}accept_plan_instruction\(&plan_markdown\)/,
+    '接受方案触发执行时必须按批准后的开关状态注入委派提醒',
   );
   assert.match(
     interactionCommandSource,
@@ -447,6 +471,19 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     settingsSource,
     /disabled=\{multiAgentBusy \|\| busy\}/,
     '切换期间或当前回复生成中必须禁用开关按钮',
+  );
+  assert.match(i18nSource, /关闭会回收引擎，并取消仍在运行的子智能体/, '中文开关文案必须如实说明关闭会取消');
+  assert.match(i18nSource, /turning it off recycles the engine and cancels any subagents still running/, '英文开关文案必须如实说明关闭会取消');
+  assert.match(i18nSource, /オフにするとエンジンを回収し、実行中のサブエージェントをキャンセルする/, '日文开关文案必须如实说明关闭会取消');
+  assert.doesNotMatch(
+    i18nSource,
+    /关闭不影响在跑的子智能体|turning it off never interrupts running subagents|オフにしても実行中のサブエージェントは中断されない/,
+    '不得再保留与 ADR-0006 和实际回收行为相反的旧文案',
+  );
+  assert.match(
+    modeStateSource,
+    /关闭停止注入并回收引擎，取消\s*\/\/\/ 仍在后台运行的子智能体/,
+    'Rust 状态注释必须与关闭时的取消级联一致',
   );
   assert.match(
     interactionBridgeSource,

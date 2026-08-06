@@ -1166,14 +1166,8 @@ impl EnginePool {
             .unwrap_or(0)
     }
 
-    /// 编辑/重发指定 session 最后一轮 user 消息。
-    pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
-        let reservation = self.reserve_turn(session_id)?;
-        let display_message = user_display_message(new_message.clone());
-        self.edit_last_turn_reserved(session_id, new_message, display_message, reservation)
-            .await
-    }
-
+    /// 编辑/重发指定 session 最后一轮 user 消息。调用方在预留 turn 后分别传入
+    /// 模型内容与干净展示消息，避免运行时提醒进入可见历史。
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         session_id: &str,
