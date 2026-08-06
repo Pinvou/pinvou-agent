@@ -4,6 +4,12 @@
     .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* 隐藏 WebView2/Chromium 给 type=password 输入框自带的「显示密码」眼睛：
+       应用内各表单均提供自己的显隐按钮，原生眼睛与之重复。 */
+    input[type="password"]::-ms-reveal,
+    input[type="password"]::-ms-clear {
+      display: none;
+    }
     /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
     html.compact-web-viewport,
     html.compact-web-viewport body,

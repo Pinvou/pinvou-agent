@@ -151,6 +151,8 @@ function workspaceDisplayName(path) {
       const [codexBusyBySession, setCodexBusyBySession] = useState({});
       // 全局事件监听器按 id 判断是否为代码会话（监听器注册一次，不能闭包旧列表）。
       const codexSessionIdsRef = useRef(new Set());
+      // 进入设置前的页面（openSettingsSection 记录），关闭设置时原路返回。
+      const settingsReturnViewRef = useRef(null);
       useEffect(() => {
         codexSessionIdsRef.current = new Set(codexSessions.map(session => session && session.id));
       }, [codexSessions]);
@@ -894,6 +896,9 @@ function workspaceDisplayName(path) {
       }
 
       function openSettingsSection(section = 'general') {
+        // 记录进入设置前的页面（代码页齿轮等深链入口），关闭设置时原路返回，
+        // 而不是一律回工作页。
+        if (currentView !== 'settings') settingsReturnViewRef.current = currentView;
         setSettingsInitialSection(section);
         return navigateFromScheduledRun('settings');
       }
@@ -2031,7 +2036,7 @@ function workspaceDisplayName(path) {
                   onSidebarDateGroupingChange={handleSetSidebarDateGrouping}
                   updateFocusTick={settingsUpdateFocusTick}
                   initialSection={settingsInitialSection}
-                  onCloseSettings={() => navigateFromScheduledRun('chat')}
+                  onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
               </SettingsErrorBoundary>
             )}
@@ -2049,6 +2054,7 @@ function workspaceDisplayName(path) {
                 onActiveSessionChange={updateActiveCodexSession}
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
+                onOpenSettingsSection={openSettingsSection}
                 bs={bs}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
