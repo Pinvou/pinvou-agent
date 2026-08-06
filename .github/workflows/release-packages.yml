@@ -149,13 +149,14 @@ jobs:
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
-      # tauri deb 产物默认名 pinvou3_<version>_amd64.deb,重命名为 x64 后缀统一全平台命名。
+      # tauri deb 产物默认名 pinvou3_<version>_amd64.deb,重命名为统一全平台命名
+      # pinvou-agent_<version>-linux-x64.deb(与制品 zip 名对齐)。
       - name: 校验产物 + 统一命名 + sha256
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: |
           set -euo pipefail
           SRC=$(ls pinvou3_*_amd64.deb)
-          DST="pinvou3_${VERSION}_x64.deb"
+          DST="pinvou-agent_${VERSION}-linux-x64.deb"
           mv "$SRC" "$DST"
           SHA=$(sha256sum "$DST" | awk '{print $1}')
           echo "deb sha256: $SHA"
@@ -165,10 +166,10 @@ jobs:
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
         with:
-          name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-x64
+          name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-linux-x64
           path: |
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64.deb
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64.deb.sha256
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-x64.deb
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-x64.deb.sha256
           retention-days: 90
           if-no-files-found: error
 
@@ -237,13 +238,16 @@ jobs:
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
-      # tauri deb 产物默认名 pinvou3_<version>_arm64.deb,与目标命名一致,无需重命名。
-      - name: 校验产物 + sha256
+      # tauri deb 产物默认名 pinvou3_<version>_arm64.deb,重命名为统一全平台命名
+      # pinvou-agent_<version>-linux-arm64.deb(与制品 zip 名对齐)。
+      - name: 校验产物 + 统一命名 + sha256
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: |
           set -euo pipefail
-          DEB="pinvou3_${VERSION}_arm64.deb"
-          test -f "$DEB" || { echo "❌ deb 产物不存在: $DEB"; ls -la; exit 1; }
+          SRC="pinvou3_${VERSION}_arm64.deb"
+          DEB="pinvou-agent_${VERSION}-linux-arm64.deb"
+          test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }
+          mv "$SRC" "$DEB"
           SHA=$(sha256sum "$DEB" | awk '{print $1}')
           echo "deb sha256: $SHA"
           echo "$SHA  $DEB" > "$DEB.sha256"
@@ -252,10 +256,10 @@ jobs:
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
         with:
-          name: pinvou3-linux-${{ needs.check-version-bump.outputs.version }}-arm64
+          name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-linux-arm64
           path: |
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64.deb
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou3_${{ needs.check-version-bump.outputs.version }}_arm64.deb.sha256
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb.sha256
           retention-days: 90
           if-no-files-found: error
 
@@ -334,13 +338,16 @@ jobs:
         working-directory: pinvou3-app
         run: npm run build:nsis
 
-      # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,与目标命名一致。
-      - name: 校验产物 + sha256
+      # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,重命名为统一全平台命名
+      # pinvou-agent_<version>-windows-x64-setup.exe(与制品 zip 名对齐)。
+      - name: 校验产物 + 统一命名 + sha256
         working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
         run: |
           set -euo pipefail
-          EXE="pinvou3_${VERSION}_x64-setup.exe"
-          test -f "$EXE" || { echo "❌ nsis 产物不存在: $EXE"; ls -la; exit 1; }
+          SRC="pinvou3_${VERSION}_x64-setup.exe"
+          EXE="pinvou-agent_${VERSION}-windows-x64-setup.exe"
+          test -f "$SRC" || { echo "❌ nsis 产物不存在: $SRC"; ls -la; exit 1; }
+          mv "$SRC" "$EXE"
           SHA=$(sha256sum "$EXE" | awk '{print $1}')
           echo "nsis sha256: $SHA"
           echo "$SHA  $EXE" > "$EXE.sha256"
@@ -349,10 +356,10 @@ jobs:
       - name: 上传 nsis artifact
         uses: actions/upload-artifact@v7
         with:
-          name: pinvou3-windows-${{ needs.check-version-bump.outputs.version }}-x64
+          name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-windows-x64
           path: |
-            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64-setup.exe
-            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou3_${{ needs.check-version-bump.outputs.version }}_x64-setup.exe.sha256
+            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-windows-x64-setup.exe
+            pinvou3-app/src-tauri/target/release/bundle/nsis/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-windows-x64-setup.exe.sha256
           retention-days: 90
           if-no-files-found: error
 
@@ -477,18 +484,23 @@ jobs:
           lipo "$BIN" -verify_arch x86_64 arm64 || { echo "❌ universal 缺 x86_64 或 arm64 切片"; exit 1; }
           echo "✓ universal 双切片齐全 (arm64 + x86_64)"
 
-          cd src-tauri/target/universal-apple-darwin/release/bundle/dmg
-          SHA=$(shasum -a 256 "pinvou3_${VERSION}_universal.dmg" | awk '{print $1}')
+          # 统一全平台命名:tauri 默认名 pinvou3_<version>_universal.dmg →
+          # pinvou-agent_<version>-macos-universal.dmg(与制品 zip 名对齐)。
+          DMG_DIR="$(dirname "$DMG")"
+          UNIFIED="pinvou-agent_${VERSION}-macos-universal.dmg"
+          mv "$DMG" "$DMG_DIR/$UNIFIED"
+          cd "$DMG_DIR"
+          SHA=$(shasum -a 256 "$UNIFIED" | awk '{print $1}')
           echo "dmg sha256: $SHA"
-          echo "$SHA  pinvou3_${VERSION}_universal.dmg" > "pinvou3_${VERSION}_universal.dmg.sha256"
-          ls -lh "pinvou3_${VERSION}_universal.dmg"
+          echo "$SHA  $UNIFIED" > "$UNIFIED.sha256"
+          ls -lh "$UNIFIED"
 
       - name: 上传 dmg artifact
         uses: actions/upload-artifact@v7
         with:
-          name: pinvou3-macos-${{ needs.check-version-bump.outputs.version }}-universal
+          name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-macos-universal
           path: |
-            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg
-            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${{ needs.check-version-bump.outputs.version }}_universal.dmg.sha256
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-macos-universal.dmg
+            pinvou3-app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-macos-universal.dmg.sha256
           retention-days: 90
           if-no-files-found: error
