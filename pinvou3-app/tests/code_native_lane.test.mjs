@@ -361,6 +361,31 @@ try {
   applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'fail', message: 'boom' });
   assert.equal(lane12.compacting, false, 'fail 同样复位');
 
+  // ── lane13: chat:plan_resolved 远端回声（多端/远端 discard 同步）─────────
+  // 本地 discardNativePlan 已乐观冻结;plan_resolved 是后端广播,保证另一端 active 卡
+  // 同步冻结。对齐 bridge chat-events.js plan_resolved。
+  const lane13 = createNativeLane();
+  appendLocalUserMessage(lane13, '审视下方案');
+  applyNativeChatEvent(lane13, 'chat:plan_ready', {
+    session_id: 's13', plan_id: 'plan-r', plan_snapshot: planSnap, todos_snapshot: null,
+  });
+  const resCard = lane13.items.find(item => item.type === 'plan_card');
+  assert.equal(resCard.cardState, 'active');
+  assert.equal(resCard.resolved, false);
+  // plan_resolved 命中 active 卡 → 幂等冻结为 discarded。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
+    session_id: 's13', plan_id: 'plan-r', action: 'discard_plan',
+  }), true);
+  assert.equal(resCard.cardState, 'frozen');
+  assert.equal(resCard.resolved, true);
+  assert.equal(resCard.statusKey, 'discarded');
+  // 缺 plan_id 直接跳过。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', { session_id: 's13' }), false);
+  // 已 resolved 的卡再次收到同 plan_id 不再变化（幂等）。
+  assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
+    session_id: 's13', plan_id: 'plan-r',
+  }), false);
+
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {
   rmSync(temp, { recursive: true, force: true });

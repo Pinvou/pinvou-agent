@@ -1538,17 +1538,16 @@ impl Pinvou3Bridge {
         // 不再 load-bearing 已砍(只剩 sudo 动态状态),Agent pinvou3 不暴露。
         // 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
         let policy = self.session_policy(session_id);
-        let mode_reminder = match mode {
-            AppMode::Plan => policy.plan_reminder(),
-            AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => None,
-        };
-        let mut reminder_body = match mode_reminder {
-            // Plan: 无 exec,不带 sudo。
-            Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
-            // reminder + sudo(能 exec,sudo 状态 load-bearing)。
-            Some(r) => format!("{r}\n\n{sudo}"),
-            // 无 mode reminder: 能 exec,带 sudo。
-            None => sudo.to_string(),
+        // plan_reminder() 仅 Plan 产出 Some;原两步 match 的 `Some(r) => format!(…sudo)`
+        // 分支要求 Some 且 mode≠Plan,永不命中,故合并为单 match 消除死分支。
+        let mut reminder_body = match mode {
+            // Plan: 只读无 exec,只注入 mode reminder(不混 sudo)。
+            AppMode::Plan => policy
+                .plan_reminder()
+                .map(str::to_string)
+                .unwrap_or_else(|| sudo.to_string()),
+            // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
+            AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {

@@ -446,6 +446,21 @@ export function applyNativeChatEvent(lane, name, payload) {
       }
       return true;
     }
+    case 'chat:plan_resolved': {
+      // discard_plan 后端广播（本地已乐观冻结，此为多端/远端回声同步）：把匹配的
+      // active 方案卡幂等冻结为 discarded（对齐 bridge chat-events.js plan_resolved）。
+      const planId = String(p.plan_id || p.planId || '').trim();
+      if (!planId) return false;
+      let changed = false;
+      lane.items.forEach(item => {
+        if (item && item.type === 'plan_card' && String(item.planId || '') === planId
+            && item.cardState === 'active' && !item.resolved) {
+          resolvePlanCard(item, 'frozen', 'discarded');
+          changed = true;
+        }
+      });
+      return changed;
+    }
     default:
       return false;
   }
