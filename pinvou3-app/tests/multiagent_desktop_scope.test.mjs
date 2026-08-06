@@ -60,23 +60,39 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
   assert.equal((i18n.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
 });
 
-test('原生 Code 复用会话级开关、专家卡和只读记录面板', () => {
+test('原生 Code 暂时隐藏多智能体入口并由后端能力策略封死', () => {
   const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
   const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
   const tools = read('src', 'features', 'tools', 'tool-renderers.jsx');
+  const policy = read('src-tauri', 'src', 'features', 'assistant', 'session_policy.rs');
+  const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
+  const engine = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
+  const pool = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
+  const builderStart = bridge.indexOf('pub fn build_engine_config_for_multi_agent');
+  const builderEnd = bridge.indexOf('pub fn ', builderStart + 10);
+  const multiAgentBuilder = bridge.slice(builderStart, builderEnd);
 
-  assert.match(codex, /<ComposerModelSelector[\s\S]*?multiAgentEnabled=\{nativeMultiAgentEnabled\}/);
-  assert.match(codex, /invoke\('set_multi_agent_mode',\s*\{\s*sessionId/);
+  assert.match(codex, /const NATIVE_CODE_MULTI_AGENT_AVAILABLE = false/);
   assert.match(
     codex,
-    /multiAgent:\s*Boolean\(modeState && modeState\.multi_agent\)/,
-    '原生 Code 必须读取 Tauri SessionModeState 的 snake_case 开关字段',
+    /<ComposerModelSelector[\s\S]*?multiAgentAvailable=\{NATIVE_CODE_MULTI_AGENT_AVAILABLE\}/,
   );
+  assert.doesNotMatch(codex, /invoke\('set_multi_agent_mode'/);
+  assert.doesNotMatch(codex, /onToggleMultiAgent=\{switchNativeMultiAgent\}/);
   assert.match(
-    codex,
-    /await applyNativeDraftControls\(targetId\);\s*[\s\S]{0,300}await refreshNativeControls\(targetId\);/,
-    '新建原生 Code 会话应用草稿开关后必须刷新权威状态',
+    policy,
+    /pub fn multi_agent_available\(&self\)[\s\S]{0,120}matches!\(self\.mode, SessionMode::Plain\)/,
+    '仅 Work/Plain 模式开放多智能体',
   );
+  assert.match(bridge, /cfg\.subagents_enabled\s*&=\s*self\.session_policy\(session_id\)\.multi_agent_available\(\)/);
+  assert.ok(builderStart >= 0 && builderEnd > builderStart, '必须保留多智能体专用配置入口');
+  assert.match(
+    multiAgentBuilder,
+    /if !self\.session_policy\(session_id\)\.multi_agent_available\(\)/,
+    '多智能体专用配置入口也必须先判能力，禁止向 Code 项目投影专家文件',
+  );
+  assert.match(engine, /session_policy\(session_id\)[\s\S]{0,100}\.multi_agent_available\(\)/);
+  assert.match(pool, /if enabled && !self\.multi_agent_available\(session_id\)/);
   assert.match(codex, /<ToolCard[\s\S]*?sessionId=\{activeId\}/);
   assert.match(codex, /<SubagentTranscriptPanel[\s\S]*?sessionId=\{activeSession\.id\}/);
   assert.match(codex, /!subagentPanel && \(activeSession \|\| draftWorkspacePath\)/);

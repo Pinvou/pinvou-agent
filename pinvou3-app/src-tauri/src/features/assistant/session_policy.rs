@@ -43,6 +43,18 @@ impl SessionPolicy {
         self.mode
     }
 
+    /// Whether Pinvou may expose CodeWhale's delegated-agent surface for this
+    /// session mode.
+    ///
+    /// Native Code sessions temporarily keep this disabled because current
+    /// CodeWhale releases scope the worker ledger, transcript artifacts and
+    /// workspace agent projections to the project directory rather than to an
+    /// embedding session. Re-enable this together with the Code composer entry
+    /// once the base runtime accepts an isolated, session-owned state root.
+    pub fn multi_agent_available(&self) -> bool {
+        matches!(self.mode, SessionMode::Plain)
+    }
+
     /// 连接器禁用集 scope：plain 用全局 scope，code 用 Code scope。
     pub fn connector_scope(&self) -> ConnectorScope {
         match self.mode {
@@ -82,6 +94,10 @@ mod tests {
     fn code_policy_uses_code_scope_and_hides_artifact_and_load_skill() {
         let policy = SessionPolicy::for_mode(SessionMode::Code);
         assert_eq!(policy.mode(), SessionMode::Code);
+        assert!(
+            !policy.multi_agent_available(),
+            "Code 多智能体必须等待底座支持会话级状态根"
+        );
         assert_eq!(policy.connector_scope(), ConnectorScope::Code);
         assert_eq!(
             policy.extra_hidden_tools(),
@@ -93,6 +109,7 @@ mod tests {
     fn plain_policy_uses_plain_scope_and_hides_nothing() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
+        assert!(policy.multi_agent_available());
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
     }

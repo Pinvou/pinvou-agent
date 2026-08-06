@@ -303,8 +303,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,500}self\.bridge\.session_workspace\(session_id\)/,
-    '开启时必须按实际 CodeWhale 工作区装配名册，绑定项目的 Code 会话不得写回私有会话目录',
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_available\(session_id\)[\s\S]{0,900}self\.bridge\.session_workspace\(session_id\)/,
+    '开启前必须先执行能力门禁；允许开启的 Work 会话仍按实际 CodeWhale 工作区装配名册',
   );
   assert.match(
     assistantBridgeSource,

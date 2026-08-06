@@ -70,6 +70,10 @@ const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
+// The current CodeWhale base stores delegated-agent state in the execution
+// workspace. Keep native Code delegation unavailable until the base exposes a
+// session-owned state root; the Rust policy independently enforces this gate.
+const NATIVE_CODE_MULTI_AGENT_AVAILABLE = false;
 
 function unifiedConversationUiEnabled() {
   try {
@@ -1246,7 +1250,6 @@ export function CodexAcpView({
     modelId: null,
     mountedId: null,
     mode: 'yolo',
-    multiAgent: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
@@ -1289,9 +1292,6 @@ export function CodexAcpView({
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
-  const nativeMultiAgentEnabled = activeId
-    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgent))
-    : Boolean(nativeDraftControls.multiAgent);
   const nativeKbChoices = [
     { value: '', name: t.kbMountRemove },
     ...nativeKbCollections.map(collection => ({
@@ -1463,7 +1463,6 @@ export function CodexAcpView({
       modelId: modelId || null,
       mountedId: mountedId ?? null,
       mode: (modeState && modeState.mode) || 'yolo',
-      multiAgent: Boolean(modeState && modeState.multi_agent),
     });
     nativeControlsSessionRef.current = sessionId;
   }
@@ -1471,8 +1470,7 @@ export function CodexAcpView({
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
   async function applyNativeDraftControls(sessionId) {
     const staged = nativeDraftControls;
-    const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
-    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
+    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode;
     if (!hasStaged) return;
     try {
       if (staged.modelId) {
@@ -1483,12 +1481,6 @@ export function CodexAcpView({
       }
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
-      }
-      if (hasMultiAgentSelection) {
-        await invoke('set_multi_agent_mode', {
-          sessionId,
-          enabled: Boolean(staged.multiAgent),
-        });
       }
       setNativeDraftControls({});
     } catch (err) {
@@ -1507,29 +1499,6 @@ export function CodexAcpView({
       await invoke('set_session_model', { sessionId, modelId });
       await refreshNativeControls(sessionId);
     } catch (err) { showError(err); }
-  }
-
-  async function switchNativeMultiAgent(enabled) {
-    if (!activeId) {
-      setNativeDraftControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
-      return;
-    }
-    if (busy || working) return;
-    const previous = nativeMultiAgentEnabled;
-    setError('');
-    setWorking(true);
-    setConfigApplying('multiagent');
-    setNativeControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
-    try {
-      await invoke('set_multi_agent_mode', { sessionId: activeId, enabled: Boolean(enabled) });
-      await refreshNativeControls(activeId);
-    } catch (err) {
-      setNativeControls(current => ({ ...current, multiAgent: previous }));
-      showError(err);
-    } finally {
-      setWorking(false);
-      setConfigApplying('');
-    }
   }
 
   async function mountNativeKb(collectionId) {
@@ -2909,9 +2878,7 @@ export function CodexAcpView({
                         onSwitchModel={(sessionId, modelId) => (
                           switchNativeModel(sessionId, String(modelId))
                         )}
-                        multiAgentEnabled={nativeMultiAgentEnabled}
-                        multiAgentAvailable
-                        onToggleMultiAgent={switchNativeMultiAgent}
+                        multiAgentAvailable={NATIVE_CODE_MULTI_AGENT_AVAILABLE}
                       />
                       <ComposerToolMenu
                         t={t}

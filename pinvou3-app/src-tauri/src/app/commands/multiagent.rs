@@ -133,6 +133,9 @@ pub(crate) fn prepend_delegation_reminder(
     task: &str,
     content: String,
 ) -> String {
+    if !pool.multi_agent_available(session_id) {
+        return content;
+    }
     let context = if pool.is_code_session(session_id) {
         DelegationContext::Code
     } else {
