@@ -70,6 +70,11 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
+    /// 单次工具调用执行超时(秒)。默认跟随引擎全局(execute_timeout)，仅在本字段
+    /// 声明时覆盖——用于扫描类工具（如 file-master 磁盘扫描，总预算 60s 但引擎
+    /// 默认 execute_timeout 只有 60s，余量不足）。
+    #[serde(default)]
+    pub execute_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -814,7 +819,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 .map_err(|e| format!("解析 MCP server '{}' 失败: {e}", server.name))?;
             server_config.required = true;
             server_config.connect_timeout = Some(20);
-            server_config.execute_timeout = Some(30);
+            // manifest 显式声明 execute_timeout（如 file-master 磁盘扫描）时尊重之，
+            // 否则沿用 30s 默认。
+            server_config.execute_timeout = Some(manifest.execute_timeout.unwrap_or(30));
             server_config.read_timeout = Some(30);
             config.servers.insert(server.name.clone(), server_config);
         }
@@ -1448,6 +1455,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             if !env.is_empty() {
                 entry["env"] = serde_json::to_value(&env).unwrap_or_default();
             }
+            if let Some(timeout) = manifest.execute_timeout {
+                entry["execute_timeout"] = serde_json::Value::from(timeout);
+            }
 
             servers.insert(manifest.id.clone(), entry);
         }
@@ -1898,6 +1908,44 @@ mod tests {
                 })
                 .collect();
             assert_eq!(backups.len(), 1);
+        });
+    }
+
+    #[test]
+    fn manifest_execute_timeout_is_written_to_mcp_json() {
+        with_temp_home(|| {
+            // manifest 声明 execute_timeout → 本地工具安装后 mcp.json 应写入该值
+            write_tool_manifest(
+                "file-master",
+                r#"{
+                    "id":"file-master","name":"FileMaster","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["disk_scan"],"command":"python","args":["server.py"],
+                    "execute_timeout":120
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install("file-master", &std::collections::HashMap::new())
+                .expect("install 应成功");
+            let entry = &read_mcp_json()["servers"]["file-master"];
+            assert_eq!(
+                entry["execute_timeout"], 120,
+                "mcp.json 应写入 manifest 声明的 execute_timeout"
+            );
+            // 未声明 execute_timeout 的工具不写该字段（跟随引擎全局默认）
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+                }"#,
+            );
+            mgr.install("weather", &std::collections::HashMap::new())
+                .expect("install 应成功");
+            assert_eq!(
+                read_mcp_json()["servers"]["weather"].get("execute_timeout"),
+                None,
+                "未声明的工具不应写 execute_timeout"
+            );
         });
     }
 

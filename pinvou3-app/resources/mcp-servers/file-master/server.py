@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PLATFORM = __import__("sys").platform
 
@@ -117,6 +118,56 @@ def _cached_scandir(path):
     return entries
 
 
+def _cached_scandir_checked(path, deadline):
+    """_cached_scandir 的预算感知变体：条目按 _SCANDIR_CHUNK 分块物化，块间检查
+    deadline，超时立即返回部分条目并置 truncated=True；部分结果不写缓存（避免
+    缓存污染后续调用）。返回 (entries, truncated)；目录不可读返回 (None, False)。"""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None, False
+    key = _norm(path)
+    with _dir_cache_lock:
+        cached = _dir_cache.get(key)
+        if cached is not None and cached["mtime"] == st.st_mtime:
+            return cached["entries"], False
+    entries = []
+    truncated = False
+    try:
+        it = os.scandir(path)
+    except OSError:
+        return None, False
+    try:
+        with it:
+            while True:
+                if time.monotonic() > deadline:
+                    truncated = True
+                    break
+                done = False
+                for _ in range(_SCANDIR_CHUNK):
+                    try:
+                        e = next(it)
+                    except StopIteration:
+                        done = True
+                        break
+                    try:
+                        es = e.stat(follow_symlinks=False)
+                    except (PermissionError, OSError):
+                        continue
+                    entries.append((e.name, es.st_mode, es.st_size, es.st_mtime,
+                                    getattr(es, "st_reparse_tag", None)))
+                if done:
+                    break
+    except OSError:
+        return None, False
+    if not truncated:
+        with _dir_cache_lock:
+            if len(_dir_cache) >= _DIR_CACHE_MAX:
+                _dir_cache.clear()
+            _dir_cache[key] = {"mtime": st.st_mtime, "entries": entries}
+    return entries, truncated
+
+
 def _seed_visited(roots):
     """把遍历根的真实路径种入 visited：root 自身是 junction 时，防止第一轮
     完整重复枚举一遍子树（同一目录经两条路径访问，matches/统计会重复）。"""
@@ -138,8 +189,13 @@ RISK_LEGEND = {
 }
 
 SCAN_GROUP_BUDGET_SEC = 8.0     # 单组扫描时间预算，超出则标记 estimated
-SCAN_TOTAL_BUDGET_SEC = 60.0    # 全部组 + 大文件扫描的总预算
+SCAN_TOTAL_BUDGET_SEC = 60.0    # 并行概览的整体墙钟保险：任一任务异常挂起（如离线
+                                # 网络盘 disk_usage 卡死）时兜底，不无限等待
+LARGE_FILES_BUDGET_SEC = 20.0   # 大文件段独立预算（主目录全量遍历比单组更重；并行
+                                # 争抢磁盘 IO 时串行 9.2s 的遍历可能翻倍，需留余量）
+_SCAN_MAX_WORKERS = 8           # 概览并行线程上限（扫描为 I/O 密集，syscall 释放 GIL）
 SCAN_MAX_DEPTH = 8              # 单组递归限深，超过标记 estimated
+_SCANDIR_CHUNK = 256            # 目录条目物化分块：块间检查 deadline，避免巨型目录不可中断
 LARGE_FILE_MIN_BYTES = 500 * 1024 * 1024
 LARGE_FILE_LIMIT = 10
 
@@ -264,7 +320,11 @@ def _iter_search(words, roots, skip_roots, deadline, matches, match_cap, state,
             state["timed_out"] = True
             return
         current = stack.pop()
-        entries = _cached_scandir(current)  # mtime 快照缓存：未变目录跳过 scandir+stat
+        # 预算感知物化：巨型目录也按块检查 deadline，避免单目录不可中断
+        entries, trunc = _cached_scandir_checked(current, deadline)
+        if trunc:
+            state["timed_out"] = True
+            return
         if entries is None:
             continue
         for name, mode, size, mtime, rtag in entries:
@@ -595,7 +655,10 @@ def _dir_stats(root, deadline, max_depth=SCAN_MAX_DEPTH, visited=None):
         if depth > max_depth:
             estimated = True
             continue
-        entries = _cached_scandir(path)
+        entries, trunc = _cached_scandir_checked(path, deadline)
+        if trunc:
+            estimated = True
+            break
         if entries is None:
             if path == root:
                 return 0, 0, estimated, True
@@ -623,9 +686,22 @@ def _scan_group(group, deadline):
         return None  # 组路径全部不存在（未安装该应用）→ 省略该组
     children = []
     for root in existing:
+        entries = []
         try:
             with os.scandir(root) as it:
-                entries = list(it)
+                while True:
+                    if time.monotonic() > deadline:
+                        estimated = True
+                        break
+                    done = False
+                    for _ in range(_SCANDIR_CHUNK):
+                        try:
+                            entries.append(next(it))
+                        except StopIteration:
+                            done = True
+                            break
+                    if done:
+                        break
         except PermissionError:
             denied = True
             continue
@@ -789,20 +865,22 @@ def _list_drives():
     return drives
 
 
-def _scan_other_drives(overall_deadline):
+def _scan_other_drives():
     """概览附带的非系统盘信息：每盘容量/剩余 + 根目录直接子项 Top3。
-    复用 _scan_group 拿 size/top_children/status 四件套；与主分组共享总预算，
-    预算耗尽标 skipped。其他盘一律归 🟡（含用户数据，只给画像不主动删）。"""
+    各盘独立并行（每盘 8s 预算），互不挤占——多盘机器不再"第一盘吃满、其余跳过"。
+    复用 _scan_group 拿 size/top_children/status 四件套。其他盘一律归 🟡
+    （含用户数据，只给画像不主动删）。"""
     system = (os.environ.get("SystemDrive", "C:") + "\\") if PLATFORM == "win32" else None
-    out = []
-    for drive in _list_drives():
-        if system and os.path.normcase(drive) == os.path.normcase(system):
-            continue
+    drives = [d for d in _list_drives()
+              if not (system and os.path.normcase(d) == os.path.normcase(system))]
+    if not drives:
+        return []
+
+    def scan_one(drive):
         try:
             usage = shutil.disk_usage(drive)
         except OSError:
-            out.append({"drive": drive, "error": "无法读取（光驱无盘/网络盘离线等）"})
-            continue
+            return {"drive": drive, "error": "无法读取（光驱无盘/网络盘离线等）"}
         info = {
             "drive": drive,
             "total": human_size(usage.total),
@@ -810,27 +888,23 @@ def _scan_other_drives(overall_deadline):
             "free": human_size(usage.free),
             "free_percent": round(usage.free * 100.0 / usage.total, 1) if usage.total else None,
         }
-        if time.monotonic() > overall_deadline:
-            info["status"] = "skipped"
-            info["note"] = "总时间预算耗尽，未扫描根目录"
-            out.append(info)
-            continue
-        deadline = min(time.monotonic() + SCAN_GROUP_BUDGET_SEC, overall_deadline)
         scanned = _scan_group({
             "key": "drive_" + drive[0].lower(),
             "name": "%s 盘根目录" % drive[0],
             "paths": [drive],
             "risk": "yellow",
             "note": "非系统盘根目录直接子项（只读），大目录可在对话里对 path 下钻",
-        }, deadline)
+        }, time.monotonic() + SCAN_GROUP_BUDGET_SEC)
         if scanned:
             info["status"] = scanned["status"]
             info["size_human"] = scanned["size_human"]
             info["top_children"] = scanned["top_children"]
         else:
             info["status"] = "empty"
-        out.append(info)
-    return out
+        return info
+
+    with ThreadPoolExecutor(max_workers=min(len(drives), _SCAN_MAX_WORKERS)) as ex:
+        return list(ex.map(scan_one, drives))
 
 
 def _large_files(home, deadline):
@@ -844,10 +918,13 @@ def _large_files(home, deadline):
             truncated = True
             break
         path, depth = stack.pop()
-        if depth > 8:
-            truncated = True
+        if depth > SCAN_MAX_DEPTH:
+            # 深度边界是设计行为（覆盖深度 ≤ SCAN_MAX_DEPTH 层），不算超时截断
             continue
-        entries = _cached_scandir(path)
+        entries, trunc = _cached_scandir_checked(path, deadline)
+        if trunc:
+            truncated = True
+            break
         if entries is None:
             continue
         for name, mode, size, mtime, rtag in entries:
@@ -875,30 +952,72 @@ def _large_files(home, deadline):
 
 def disk_scan(path=None, refresh=False):
     """双模式：无 path = 概览（分组总量）；有 path = 下钻（该目录直接子项按大小排序）。
-    全部只读。分层调用使单次输出始终远小于工具结果压缩上限（12,000 字符）。"""
+    全部只读。分层调用使单次输出始终远小于工具结果压缩上限（12,000 字符）。
+
+    概览并行化：14 组 + 大文件段 + 非系统盘段放入线程池同时扫（扫描为 I/O 密集，
+    scandir/stat 系统调用期间释放 GIL，线程并行实际提速；每组独立 8s 预算，结果按
+    定义顺序合并输出）。SCAN_TOTAL_BUDGET_SEC 退化为整体墙钟保险。"""
     if path:
         return _drill_down(path)
 
-    started = time.time()
-    overall_deadline = started + SCAN_TOTAL_BUDGET_SEC
+    started_wall = time.time()   # 仅用于报告字段（scan_seconds / generated_at）
+    started_mono = time.monotonic()   # 预算计算统一 monotonic 基
+    home = os.path.expanduser("~")
+    tasks = []
+    for group in _scan_groups():
+        # 每组独立 8s 预算（在 worker 内取起始时刻，互不挤占）
+        tasks.append(("group", group["key"],
+                      lambda g=group: _scan_group(
+                          g, time.monotonic() + SCAN_GROUP_BUDGET_SEC)))
+    tasks.append(("large", None,
+                  lambda: _large_files(home,
+                                       time.monotonic() + LARGE_FILES_BUDGET_SEC)))
+    tasks.append(("drives", None, _scan_other_drives))
+
+    results = {}   # (kind, id) → ("ok", value) | ("error", None) | ("timeout", None)
+    executor = ThreadPoolExecutor(max_workers=min(len(tasks), _SCAN_MAX_WORKERS))
+    futures = {executor.submit(fn): (kind, key) for kind, key, fn in tasks}
+    wall_remaining = max(1.0, SCAN_TOTAL_BUDGET_SEC - (time.monotonic() - started_mono))
+    try:
+        for fut in as_completed(futures, timeout=wall_remaining):
+            task_key = futures[fut]
+            try:
+                results[task_key] = ("ok", fut.result())
+            except Exception as e:  # noqa: BLE001 组级异常不拖垮整体
+                results[task_key] = ("error", None)
+                print("[file-master] disk_scan 并行任务异常: %s" % e, file=sys.stderr)
+    except TimeoutError:
+        # 墙钟保险：异常挂起（如离线网络盘 disk_usage 卡死）时不无限等待；
+        # 未完成项按 skipped/truncated 处理，挂起线程随进程回收（shutdown 不等待）。
+        for task_key in futures.values():
+            results.setdefault(task_key, ("timeout", None))
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
     groups_out = []
     for group in _scan_groups():
-        if time.monotonic() > overall_deadline:
+        kind, scanned = results.get(("group", group["key"]), ("timeout", None))
+        if kind == "ok" and scanned is not None:
+            groups_out.append(scanned)
+        elif kind == "ok":
+            continue  # 组路径全部不存在 → 省略该组
+        else:
             groups_out.append({
                 "key": group["key"], "name": group["name"],
                 "status": "skipped", "size_bytes": 0, "size_human": "0 B",
                 "file_count": 0, "top_children": [], "risk": group["risk"],
-                "note": group["note"] + "（总时间预算耗尽，未扫描）",
+                "note": group["note"] + "（并行扫描异常/未完成，已跳过）",
             })
-            continue
-        deadline = min(time.monotonic() + SCAN_GROUP_BUDGET_SEC, overall_deadline)
-        scanned = _scan_group(group, deadline)
-        if scanned is not None:
-            groups_out.append(scanned)
 
-    home = os.path.expanduser("~")
-    large, large_truncated = _large_files(home, overall_deadline)
-    other_drives = _scan_other_drives(overall_deadline)
+    large_kind, large_res = results.get(("large", None), ("timeout", (None, False)))
+    if large_kind == "ok":
+        large, large_truncated = large_res
+    else:
+        large, large_truncated = [], True
+
+    drives_kind, other_drives = results.get(("drives", None), ("timeout", []))
+    if drives_kind != "ok":
+        other_drives = []
 
     drive = (os.environ.get("SystemDrive", "C:") + "\\") if PLATFORM == "win32" else "/"
     disk = {}
@@ -916,13 +1035,14 @@ def disk_scan(path=None, refresh=False):
 
     overview = {
         "type": "disk_scan_overview",
-        "generated_at": _fmt_mtime(started),
-        "scan_seconds": round(time.time() - started, 1),
+        "generated_at": _fmt_mtime(started_wall),
+        "scan_seconds": round(time.time() - started_wall, 1),
         "disk": disk,
         "groups": groups_out,
         "drives": other_drives,
         "large_files": large,
-        "large_files_note": ("用户主目录下 >500MB 的大文件（最多 %d 条）" % LARGE_FILE_LIMIT) +
+        "large_files_note": ("用户主目录下 >500MB 的大文件（最多 %d 条，覆盖深度 ≤%d 层）" %
+                             (LARGE_FILE_LIMIT, SCAN_MAX_DEPTH)) +
                             ("；扫描超时已截断，结果可能不全" if large_truncated else ""),
         "risk_legend": RISK_LEGEND,
         "note": ("只读扫描，未修改任何文件。要查看某组/某个大文件夹里具体是什么，"
@@ -955,8 +1075,8 @@ def disk_scan(path=None, refresh=False):
 def _drill_down(path):
     """下钻：列出 path 的直接子项（目录递归求和、文件取大小），按大小降序 Top 20。
     每层一次调用，输出有界；预算耗尽标 estimated，剩余项标剩余个数。"""
-    started = time.time()
-    deadline = started + SCAN_GROUP_BUDGET_SEC
+    started_wall = time.time()   # 仅用于 scan_seconds 报告
+    deadline = time.monotonic() + SCAN_GROUP_BUDGET_SEC  # 预算统一 monotonic 基
     if not isinstance(path, str) or not path.strip():
         return {"type": "error", "error": "path 不能为空"}
     p = path.strip()
@@ -966,13 +1086,31 @@ def _drill_down(path):
         return {"type": "error", "error": "目录不存在或不是目录: %s" % p}
 
     children, estimated, hidden = [], False, 0
+    list_truncated = False
+    entries = []
     try:
-        entries = list(os.scandir(p))
+        # 分块物化：巨型目录（几十万条目）也按块检查 deadline，块间可中断
+        with os.scandir(p) as it:
+            while True:
+                if time.monotonic() > deadline:
+                    estimated = True
+                    list_truncated = True
+                    break
+                done = False
+                for _ in range(_SCANDIR_CHUNK):
+                    try:
+                        entries.append(next(it))
+                    except StopIteration:
+                        done = True
+                        break
+                if done:
+                    break
     except (PermissionError, OSError) as e:
         return {"type": "error", "error": "无法读取目录: %s" % e}
 
     for e in entries:
-        if time.monotonic() > deadline:
+        # 物化阶段已截断时清单本身不全，剩余条目无需再判预算（也判不了）
+        if not list_truncated and time.monotonic() > deadline:
             estimated = True
             hidden += 1
             continue
@@ -1007,9 +1145,14 @@ def _drill_down(path):
         trimmed += 1
     hidden += trimmed
     if estimated:
-        # 关键语义：estimated 只影响"子目录大小数值"（递归求和超时），
-        # 直接子项清单本身完整无遗漏——避免模型误以为"清单可能不全"
-        note = "子项清单完整；部分目录的大小为估算值（size_estimated=true 的项，递归求和超时）；" + note
+        if list_truncated:
+            # 物化阶段截断：清单本身不全（条目过多的巨型目录，预算内列不完）
+            note = ("该目录条目过多，预算内未能完整列出（仅显示已扫描到的子项，清单可能不全）；" +
+                    "可对已列出的子目录继续下钻。" + note)
+        else:
+            # 关键语义：estimated 只影响"子目录大小数值"（递归求和超时），
+            # 直接子项清单本身完整无遗漏——避免模型误以为"清单可能不全"
+            note = "子项清单完整；部分目录的大小为估算值（size_estimated=true 的项，递归求和超时）；" + note
     if hidden:
         note += " 另有 %d 个小项未显示。" % hidden
     if trimmed:
@@ -1017,7 +1160,7 @@ def _drill_down(path):
     return {
         "type": "disk_scan_drill",
         "path": p,
-        "scan_seconds": round(time.time() - started, 1),
+        "scan_seconds": round(time.time() - started_wall, 1),
         "children": shown,
         "estimated": estimated,
         "note": note,

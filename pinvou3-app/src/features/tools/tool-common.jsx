@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { BookOpen, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
+import { BookOpen, Building2, ChevronDown, ChevronLeft, ChevronRight, CloudSun, Code, Cpu, FileText, FolderOpen, Globe, Hexagon, IconGrid, IconList, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, Server, TrendingDown, TrendingUp, User, Video, Wrench, XIcon, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -450,6 +450,7 @@ const AcFmtIcon = FileTypeIcon;
       { id: 19, backendId: 'yuandian-mcp', oauthMcp: true, oauthServerName: 'yuandian_mcp', title: '华宇元典法律数据', subtitle: '法律法规、案例文书与企业司法风险查询', category: 'kb', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-500 to-cyan-700', installed: false, authRequired: true, configFields: [], welcomeQueries: ['检索一下劳动合同解除相关案例', '查一下公司股权责任相关法规', '帮我分析企业司法风险', '找一下最近的裁判观点'] },
       { id: 15, backendId: 'pptx', title: 'PPT 生成', subtitle: '本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: false, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
       { id: 16, backendId: 'gongwen', title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'office', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
+      { id: 23, backendId: 'file-master', title: '文件管理大师', subtitle: '本机文件查找、磁盘扫描与回收站安全清理', category: 'life', type: 'MCP Server', version: 'v1.7.0', latency: '本地', desc: '说“帮我找一下文件 / C 盘怎么满了”，AI 秒搜常用目录定位文件（支持扩展名、时间、大小过滤），只读扫描磁盘给出分组风险画像（🟢🟡🔴），按你的点名把文件移入系统回收站（可恢复），支持后台进度轮询、清空回收站与一键误删还原；全程本地、零依赖、数据不出机。', icon: FolderOpen, color: 'bg-gradient-to-b from-amber-400 to-orange-600', installed: false, authRequired: false, welcomeQueries: ['帮我找一下那个报表文件在哪', 'C 盘空间被什么占了', '把下载文件夹里旧的安装包移入回收站'] },
     ];
 
     // overlay 命中规则：有 backendId 按 backendId 查，占位卡(backendId=null)按 'card'+id 查。

@@ -509,6 +509,14 @@ class DiskScanTest(unittest.TestCase):
                 self.assertIn("drive", d)
                 self.assertIn("total", d)
 
+    def test_overview_groups_keep_definition_order(self):
+        """并行概览：分组输出必须保持定义顺序（线程池收集后按定义序合并）。"""
+        out = server.disk_scan()
+        defined = [g["key"] for g in server._scan_groups()]
+        actual = [g["key"] for g in out["groups"]]
+        self.assertEqual(actual, [k for k in defined if k in set(actual)],
+                         "并行结果应按定义顺序合并输出: %s" % actual)
+
     def test_overview_output_fits_context_limit(self):
         """概览输出必须远低于底座工具结果 12,000 字符硬上限（超出会被压缩丢尾部）。"""
         out = server.disk_scan()
@@ -591,6 +599,60 @@ class DiskScanTest(unittest.TestCase):
             for t in threads:
                 t.join()
             self.assertEqual(errors, [], "并发访问缓存不应抛异常: %s" % errors)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_cached_scandir_checked_budget_and_cache(self):
+        """预算感知物化：超时返回 (部分条目, True) 且不写缓存；正常则写缓存。"""
+        tmp = tempfile.mkdtemp(prefix="fm_ck_")
+        try:
+            for i in range(30):
+                with open(os.path.join(tmp, "f_%02d.txt" % i), "w") as f:
+                    f.write("x")
+            # 已过期的 deadline → 立即截断，部分结果不写缓存
+            entries, trunc = server._cached_scandir_checked(tmp, time.monotonic() - 1.0)
+            self.assertTrue(trunc)
+            self.assertIsInstance(entries, list)
+            self.assertNotIn(server._norm(tmp), server._dir_cache, "部分结果不应写缓存")
+            # 远未来的 deadline → 全量物化 + 写缓存
+            entries, trunc = server._cached_scandir_checked(tmp, time.monotonic() + 30.0)
+            self.assertFalse(trunc)
+            self.assertEqual(len(entries), 30)
+            self.assertIn(server._norm(tmp), server._dir_cache, "完整结果应写缓存")
+            # 目录不存在 → (None, False)
+            self.assertEqual(
+                server._cached_scandir_checked(os.path.join(tmp, "nope"), time.monotonic() + 30.0),
+                (None, False),
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_dir_stats_deadline_passed_marks_estimated(self):
+        """预算已过期时 _dir_stats 立即停止并标 estimated（回归：时间基座混用曾让预算失效）。"""
+        tmp = tempfile.mkdtemp(prefix="fm_ds_")
+        try:
+            with open(os.path.join(tmp, "a.bin"), "wb") as f:
+                f.write(b"x" * 1024)
+            total, count, est, denied = server._dir_stats(tmp, time.monotonic() - 1.0)
+            self.assertTrue(est, "预算过期应标 estimated")
+            self.assertEqual(total, 0, "预算过期应立即停止，不应统计到文件")
+            self.assertFalse(denied)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_large_files_depth_boundary_not_timeout(self):
+        """深度边界（>SCAN_MAX_DEPTH）不应误报超时截断（回归：曾与超时共用 truncated 标记）。"""
+        tmp = tempfile.mkdtemp(prefix="fm_lf_")
+        try:
+            leaf = tmp
+            for i in range(10):  # 深度 10，超过限深 8
+                leaf = os.path.join(leaf, "d%d" % i)
+            os.makedirs(leaf)
+            with open(os.path.join(leaf, "x.txt"), "w") as f:
+                f.write("x")
+            found, truncated = server._large_files(tmp, time.monotonic() + 30.0)
+            self.assertFalse(truncated, "深度边界是设计行为，不应标记超时截断")
+            self.assertEqual(found, [])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1387,7 +1449,10 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(m["companion_skills"], ["file-master"])
         self.assertEqual(len(m["tool_table_entries"]), 7)
         self.assertTrue(m["routing_rules"])
-        self.assertEqual(m["version"], "1.7.0")
+        self.assertEqual(m["version"], "1.7.1")
+        # 磁盘扫描总预算 60s + 分组超调余量，须显著大于引擎默认 execute_timeout
+        self.assertGreaterEqual(m["execute_timeout"], 90,
+                                "扫描类工具应声明更长执行超时（引擎默认 60s 余量不足）")
         for key in ("name", "description", "icon", "category"):
             self.assertTrue(m.get(key), "manifest 缺字段 %s" % key)
 

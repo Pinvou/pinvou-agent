@@ -296,6 +296,10 @@ const GONGWEN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
+const FILE_MASTER_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/file-master/server.py");
+const FILE_MASTER_MANIFEST_JSON: &str =
+    include_str!("../../../../../resources/mcp-servers/file-master/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -839,6 +843,12 @@ impl Pinvou3Bundle {
         std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
         std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
         std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
+        // 工具市场：文件管理大师 MCP server（本地 stdio，纯零依赖：本机文件查找/
+        // 磁盘扫描/回收站安全删除与还原，配套技能卡随安装联动）
+        let file_master_dir = dir.join("file-master");
+        std::fs::create_dir_all(&file_master_dir)?;
+        std::fs::write(file_master_dir.join("server.py"), FILE_MASTER_SERVER_PY)?;
+        std::fs::write(file_master_dir.join("manifest.json"), FILE_MASTER_MANIFEST_JSON)?;
         Ok(())
     }
 }
