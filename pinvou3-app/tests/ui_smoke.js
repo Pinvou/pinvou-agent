@@ -57,7 +57,7 @@ function injectSource() {
       {id:'s-attachment',title:'看看这个\\n\\n📎 PINV',title_attachment_names:['PINVOU-M0-开源决策基线.md'],created_at:Date.now()-2000,updated_at:Date.now()-2000},
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
-    let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
+    let CODEX_SESSIONS=[{id:'codex-1',agent_id:'codex',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
     let MOUNTED_COLLECTIONS=[];
     let MOUNTED_COLLECTIONS_REVISION=0;
@@ -88,6 +88,8 @@ function injectSource() {
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
+        case 'get_acp_agent_status': return Promise.resolve({agent_id:args.agentId||'codex',installed:true,node_supported:true,authenticated:true});
+        case 'get_codex_acp_session_info': return Promise.resolve({session_id:args.sessionId,models:[],current_model_id:'',modes:null,config_options:[]});
         case 'get_codex_acp_timeline': return Promise.resolve([
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:1,timestamp:'2026-08-04T01:00:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test copy layout'}]}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
