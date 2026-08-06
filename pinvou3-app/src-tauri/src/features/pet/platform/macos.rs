@@ -123,9 +123,6 @@ fn resize_pet_window_impl(
         origin_x = origin_x.clamp(min_x, max_x);
         origin_y = origin_y.clamp(min_y, max_y);
     }
-    let frame = NSRect::new(
-        NSPoint::new(origin_x, origin_y),
-        NSSize::new(new_w, new_h),
-    );
+    let frame = NSRect::new(NSPoint::new(origin_x, origin_y), NSSize::new(new_w, new_h));
     ns_window.setFrame_display(frame, true);
 }
