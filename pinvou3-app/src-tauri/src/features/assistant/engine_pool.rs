@@ -913,6 +913,14 @@ impl EnginePool {
         // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
         // 这里拿到刚注册的 engine 补 cancel。
         if let Some(engine) = self.handle_for(session_id).await {
+            // 若 turn 已 submit 但 TurnStarted 尚未抵达（op 还在 Engine mpsc
+            // 队列里），CodeWhale 会在新轮次入口无条件 reset_cancel_token()，
+            // 覆盖这里 cancel_current() 置位的 token。先 arm pending_cancel：
+            // 转发器收到 TurnStarted 后（reset 已完成）重新 cancel 命中活跃 token。
+            // 必须在 cancel_current() 之前 arm——见 arm_pending_cancel 文档。
+            if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+                lifecycle.arm_pending_cancel();
+            }
             engine.cancel_current();
         } else if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
             // engine 不存在 = 该 session 的 turn 还在「reserved 未 submitted」阶段
