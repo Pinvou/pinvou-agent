@@ -486,6 +486,11 @@ assert.ok(
   'desktop and Web bridges must both hide internal runtime and sub-agent handoff messages'
 );
 assert.ok(
+  tauriBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage') &&
+    webBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage'),
+  'desktop and Web live event paths must not render internal runtime messages'
+);
+assert.ok(
   /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
     !/\n3\./.test(scheduledTaskPromptRust) &&
     !scheduledTaskPromptRust.includes('autoApprove') &&
@@ -785,6 +790,15 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   assert.ok(!visible.includes("codewhale:runtime_event"), "internal runtime XML must stay out of the presentation");
   assert.ok(raw.includes("child-only completion summary"), "sub-agent completion must remain in the parent model context");
   assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: completionText,
+    operation: "append",
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
+  assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
 }
 
 async function draftToggleFailureAbortsFirstSend() {

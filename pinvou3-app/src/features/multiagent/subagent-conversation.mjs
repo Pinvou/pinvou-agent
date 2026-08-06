@@ -432,7 +432,7 @@ export function splitSubagentTitle(text) {
  * 不另起一次模型调用；因此普通对话临时派出的裸 agent 也不会退回成三张
  * 一模一样的“通用执行者”卡。
  */
-export function subagentObjectiveName(text, maxLength = 24) {
+export function subagentObjectiveName(text, maxLength = 12) {
   const lines = String(text || '')
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -452,8 +452,20 @@ export function subagentObjectiveName(text, maxLength = 24) {
   candidate = candidate
     .replace(/^(?:[-*#>]\s*)+/, '')
     .replace(/^(?:question|task|objective|goal|assignment|任务|目标|问题)\s*[:：]\s*/i, '')
+    .replace(/^(?:请(?:你|帮我|协助)?|帮我|负责|执行|完成|尝试)\s*/i, '')
+    .split(/[。！？!?；;\n]/, 1)[0]
+    .replace(/[:：]["“'‘].*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
+  if (!candidate) return null;
+  const characters = [...candidate];
+  return characters.length > maxLength
+    ? `${characters.slice(0, maxLength).join('')}…`
+    : candidate;
+}
+
+function compactSubagentDisplayName(value, maxLength = 12) {
+  const candidate = String(value || '').replace(/\s+/g, ' ').trim();
   if (!candidate) return null;
   const characters = [...candidate];
   return characters.length > maxLength
@@ -464,9 +476,9 @@ export function subagentObjectiveName(text, maxLength = 24) {
 /**
  * 行内专家卡与右侧面板共用的名称决策。
  *
- * 优先级：专家池真名 > 模型显式 name/session_name > 任务首行「名称」 >
- * agent type 对应的本地化角色 > 通用角色。底座未显式起名时会把 agent_id
- * 写入 session_name，这种占位值不能暴露给用户。
+ * 优先级：专家池真名 > 任务首行「名称」 > 模型显式 name/session_name >
+ * 任务短摘要 > agent type 对应的本地化角色 > 通用角色。任务首行是给用户看的
+ * 身份，name/session_name 只是机器标识；底座用 agent_id 回填的占位值也不能暴露。
  */
 export function resolveSubagentPresentation({
   role,
@@ -482,9 +494,11 @@ export function resolveSubagentPresentation({
   const title = splitSubagentTitle(objective || '');
   const rawSessionName = String(sessionName || '').trim();
   const modelName = rawSessionName && rawSessionName !== String(agentId || '')
-    ? rawSessionName
+    ? compactSubagentDisplayName(rawSessionName)
     : null;
-  const explicitName = identity.kind === 'expert' ? null : (modelName || title.name);
+  const explicitName = identity.kind === 'expert'
+    ? null
+    : (compactSubagentDisplayName(title.name) || modelName);
   const objectiveName = identity.kind === 'expert' || explicitName
     ? null
     : subagentObjectiveName(objective);

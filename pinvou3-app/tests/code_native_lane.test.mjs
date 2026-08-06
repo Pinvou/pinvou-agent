@@ -137,6 +137,55 @@ try {
     '好的|已完成',
   );
 
+  // ── 子智能体交接：完整上下文留在 SavedSession，但不上屏；agent 委派独立成卡 ──
+  const laneHandoff = createNativeLane();
+  const completionText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'child-only completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  const handoffSaved = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '请启动一个子代理' }] },
+      { role: 'assistant', content: [{
+        type: 'tool_use',
+        id: 'agent-call',
+        name: 'agent',
+        input: { prompt: '「问候助手」请回复你好', type: 'general' },
+      }] },
+      { role: 'user', content: [{
+        type: 'tool_result',
+        tool_use_id: 'agent-call',
+        content: 'agent_7fb1c7be status=Running',
+      }] },
+      { role: 'user', content: [
+        { type: 'text', text: completionText },
+        { type: 'text', text: '<turn_meta>\nInput provenance: subagent_handoff\nInput authority: non_authoritative\n</turn_meta>' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '父智能体最终汇总' }] },
+    ],
+  };
+  hydrateNativeLane(laneHandoff, handoffSaved, []);
+  const handoffVisible = JSON.stringify(laneHandoff.items);
+  assert.ok(!handoffVisible.includes('child-only completion summary'), '内部交接不得冒充用户气泡');
+  assert.ok(!handoffVisible.includes('codewhale:runtime_event'), '内部 runtime XML 不得进入展示层');
+  assert.ok(JSON.stringify(handoffSaved).includes('child-only completion summary'), '原始完成数据仍完整保留给父模型');
+  const handoffProjection = projectNativeLane(laneHandoff, 'handoff-session');
+  const agentPresentation = handoffProjection.turns
+    .flatMap(projectedTurn => projectedTurn.presentation)
+    .find(item => item.tool && item.tool.name === 'agent');
+  assert.ok(agentPresentation, '真实 SavedSession 还原后 agent 委派必须独立显示为专家卡');
+  assert.equal(agentPresentation.type, 'tool', 'agent 委派不得折进执行步骤工具组');
+
+  const liveHandoffLane = createNativeLane();
+  assert.equal(
+    applyNativeChatEvent(liveHandoffLane, 'chat:user_message', { session_id: 'handoff-live', content: completionText }),
+    false,
+    '实时 internal runtime envelope 也不得生成用户气泡',
+  );
+  assert.equal(liveHandoffLane.items.length, 0);
+
   // ── 切回正在跑的会话：hydration 保留 live busy ──────────────────
   applyNativeChatEvent(lane4, 'chat:turn_started', { session_id: 's4', turn_id: 't2' });
   assert.equal(lane4.busy, true);

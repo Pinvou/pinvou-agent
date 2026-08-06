@@ -226,7 +226,7 @@ pub(crate) async fn chat_with_reservation(
         };
         full = format!(
             "{}\n\n---\n\n{full}",
-            super::multiagent::delegation_reminder(delegation_context)
+            super::multiagent::delegation_reminder(delegation_context, &raw_message)
         );
     }
     let mode = mode_state.mode;
