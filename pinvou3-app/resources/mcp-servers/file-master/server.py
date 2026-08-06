@@ -197,6 +197,11 @@ LARGE_FILES_BUDGET_SEC = 20.0   # 大文件段独立预算（主目录全量遍�
 _SCAN_MAX_WORKERS = 8           # 概览并行线程上限（扫描为 I/O 密集，syscall 释放 GIL）
 SCAN_MAX_DEPTH = 8              # 单组递归限深，超过标记 estimated
 _SCANDIR_CHUNK = 256            # 目录条目物化分块：块间检查 deadline，避免巨型目录不可中断
+# 组内子项展示策略：按大小阈值而非固定 Top3——组内若有多个大文件夹（如 5 个 >20GB），
+# 固定 Top3 会漏掉后几个；阈值 + others 汇总保证"大项全可见、小项不丢统计"。
+SHOWN_MIN_RATIO = 0.05          # 阈值 = 组总量 × 5%
+SHOWN_MIN_BYTES = 50 * 1024 * 1024   # 阈值下限（小组的绝对值兜底）
+SHOWN_MAX_ITEMS = 30            # 展示条数上限（阈值已天然收窄，此值仅防极端场景输出爆炸）
 LARGE_FILE_MIN_BYTES = 500 * 1024 * 1024
 LARGE_FILE_LIMIT = 10
 
@@ -215,8 +220,10 @@ TRASH_STATUS_MAX_LIST = 10   # file_trash_status 无 task_id 时的列表上限
 TRASH_MAX_PATHS = 50         # file_trash / file_erase 单次 paths 条数上限（防输出爆炸）
 
 # 输出保险丝：底座工具结果 12,000 字符硬上限（超出压缩丢尾部）。
-# 留 25% 余量；超过即压缩（先去可省字段，再二分缩减条数）。
-OUTPUT_BUDGET_CHARS = 9000
+# 留约 16% 余量（10100）；超过即压缩（先去可省字段，再二分缩减条数）。
+# 2026-08 实测：阈值展示 + others 字段后全量概览（11 组 + 大文件 + 双盘）约 9.5-10.5k，
+# 9000 会触发折叠并砍掉尾部关键组（windows/Program Files 等 red 组）。
+OUTPUT_BUDGET_CHARS = 10100
 
 
 def _json_len(obj):
@@ -772,9 +779,21 @@ def _scan_group(group, deadline, executor=None):
         status = "estimated"
     else:
         status = "ok"
-    # 输出瘦身（底座工具结果 12,000 字符硬上限，超出会被压缩丢尾部）：
-    # 不带 paths/size_bytes，top_children 只留前 3（删除目标从这里取全路径）。
-    top = heapq.nlargest(3, children, key=lambda c: c["size_bytes"]) if children else []
+    # 子项展示策略：按大小阈值选择（≥ max(组总量×5%, 50MB) 的子项全展示，最多 8 条，
+    # 超额按大小取前 8），其余子项归入 others 汇总——大文件夹不会因固定 TopN 被漏掉，
+    # 小项数量与总量也不丢失。带 path 供删除流程取全路径。
+    if children:
+        threshold = max(total * SHOWN_MIN_RATIO, SHOWN_MIN_BYTES)
+        top = [c for c in children if c["size_bytes"] >= threshold]
+        if len(top) > SHOWN_MAX_ITEMS:
+            top = heapq.nlargest(SHOWN_MAX_ITEMS, top, key=lambda c: c["size_bytes"])
+        top_ids = {id(c) for c in top}
+        others = [c for c in children if id(c) not in top_ids]
+        others_size = sum(c["size_bytes"] for c in others)
+        others_count = len(others)
+        shown_threshold = human_size(threshold)
+    else:
+        top, others_size, others_count, shown_threshold = [], 0, 0, "0 B"
     return {
         "key": group["key"],
         "name": group["name"],
@@ -787,6 +806,9 @@ def _scan_group(group, deadline, executor=None):
              "is_dir": c["is_dir"]}
             for c in top
         ],
+        "others_count": others_count,
+        "others_size_human": human_size(others_size) if others_count else "0 B",
+        "shown_threshold": shown_threshold,
         "risk": group["risk"],
         "note": group["note"],
     }

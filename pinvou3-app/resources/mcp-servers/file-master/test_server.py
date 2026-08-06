@@ -504,7 +504,11 @@ class DiskScanTest(unittest.TestCase):
             self.assertIn(g["status"], ("ok", "estimated", "denied", "skipped"))
             self.assertIn("size_human", g)
             self.assertIn("top_children", g)
-            self.assertLessEqual(len(g["top_children"]), 3, "概览每组 top_children ≤3（瘦身）")
+            self.assertLessEqual(len(g["top_children"]), server.SHOWN_MAX_ITEMS,
+                                 "概览每组 top_children ≤%d（瘦身）" % server.SHOWN_MAX_ITEMS)
+            self.assertIn("others_count", g, "未展示子项应归入 others 统计")
+            self.assertIn("others_size_human", g)
+            self.assertIn("shown_threshold", g)
             self.assertNotIn("paths", g, "概览不带 paths 数组（瘦身）")
             self.assertIn("note", g)
         self.assertLessEqual(len(out["large_files"]), 10)
@@ -534,6 +538,33 @@ class DiskScanTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_top_children_by_threshold_includes_all_big_folders(self):
+        """阈值策略：组内多个大文件夹全部展示（回归：固定 Top3 会漏第 4 个+），小项归 others。"""
+        tmp = tempfile.mkdtemp(prefix="fm_thr_")
+        old = server.SHOWN_MIN_BYTES
+        try:
+            server.SHOWN_MIN_BYTES = 1024  # 放宽下限，便于用小块文件构造阈值场景
+            for i in range(5):
+                d = os.path.join(tmp, "big_%d" % i)
+                os.makedirs(d)
+                with open(os.path.join(d, "f.bin"), "wb") as f:
+                    f.write(b"x" * (200 * 1024))  # 每个 200KB
+            for i in range(10):
+                with open(os.path.join(tmp, "small_%d.txt" % i), "w") as f:
+                    f.write("x")  # 1B，远低于阈值
+            group = {"key": "t", "name": "t", "paths": [tmp], "risk": "green", "note": ""}
+            out = server._scan_group(group, time.monotonic() + 10.0)
+            names = [c["name"] for c in out["top_children"]]
+            self.assertEqual(len(names), 5, "5 个 200KB 子目录应全部展示（≥阈值），实际 %s" % names)
+            for i in range(5):
+                self.assertIn("big_%d" % i, names)
+            self.assertEqual(out["others_count"], 10, "10 个小文件应归入 others")
+            self.assertEqual(out["others_size_human"], "10 B")
+            self.assertTrue(out["shown_threshold"])
+        finally:
+            server.SHOWN_MIN_BYTES = old
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_overview_groups_keep_definition_order(self):
         """并行概览：分组输出必须保持定义顺序（线程池收集后按定义序合并）。"""
         out = server.disk_scan()
@@ -543,10 +574,13 @@ class DiskScanTest(unittest.TestCase):
                          "并行结果应按定义顺序合并输出: %s" % actual)
 
     def test_overview_output_fits_context_limit(self):
-        """概览输出必须远低于底座工具结果 12,000 字符硬上限（超出会被压缩丢尾部）。"""
+        """概览输出必须在输出保险丝预算内（不触发折叠丢组），且远低于底座 12,000 硬上限。"""
         out = server.disk_scan()
         n = len(json.dumps(out, ensure_ascii=False))
-        self.assertLess(n, 10_000, "概览 JSON 应 < 10000 字符，实际 %d" % n)
+        self.assertLess(n, server.OUTPUT_BUDGET_CHARS,
+                        "概览 JSON 应 < 保险丝 %d 字符（否则折叠丢关键组），实际 %d"
+                        % (server.OUTPUT_BUDGET_CHARS, n))
+        self.assertLess(n, 10_800, "仍应远低于底座 12,000 字符硬上限，实际 %d" % n)
 
     def test_drill_down_lists_children_sorted(self):
         """下钻模式：直接子项按大小降序、≤20 条、输出同样受限。"""
