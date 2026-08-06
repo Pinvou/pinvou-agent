@@ -43,7 +43,8 @@ if PLATFORM == "win32":
 
 # ── 共享常量 ─────────────────────────────────────────────────────────────
 
-FIND_TIME_BUDGET_SEC = 8.0
+FIND_TIME_BUDGET_SEC = 12.0    # 搜索预算：主目录全量遍历约 9.2s（实测），8s 恒截断；
+                               # 12s 完整覆盖主目录 + 余量；引擎 execute_timeout 120s 有余
 FIND_MAX_LIMIT = 50
 
 # 隐私 / 高 churn 目录剪枝（目录名小写匹配；命中即不向下递归）
@@ -189,7 +190,8 @@ RISK_LEGEND = {
     "red": "程序本体/系统区域：不建议删除，请走系统卸载或 Windows 磁盘清理",
 }
 
-SCAN_GROUP_BUDGET_SEC = 8.0     # 单组扫描时间预算，超出则标记 estimated
+SCAN_GROUP_BUDGET_SEC = 12.0    # 单组扫描时间预算，超出则标记 estimated；概览墙钟由
+                                # 大文件段（20s）决定，组预算放宽到 12s 墙钟不变、覆盖率提升
 SCAN_TOTAL_BUDGET_SEC = 60.0    # 并行概览的整体墙钟保险：任一任务异常挂起（如离线
                                 # 网络盘 disk_usage 卡死）时兜底，不无限等待
 LARGE_FILES_BUDGET_SEC = 20.0   # 大文件段独立预算（主目录全量遍历比单组更重；并行
@@ -220,10 +222,10 @@ TRASH_STATUS_MAX_LIST = 10   # file_trash_status 无 task_id 时的列表上限
 TRASH_MAX_PATHS = 50         # file_trash / file_erase 单次 paths 条数上限（防输出爆炸）
 
 # 输出保险丝：底座工具结果 12,000 字符硬上限（超出压缩丢尾部）。
-# 留约 16% 余量（10100）；超过即压缩（先去可省字段，再二分缩减条数）。
-# 2026-08 实测：阈值展示 + others 字段后全量概览（11 组 + 大文件 + 双盘）约 9.5-10.5k，
-# 9000 会触发折叠并砍掉尾部关键组（windows/Program Files 等 red 组）。
-OUTPUT_BUDGET_CHARS = 10100
+# 留约 8% 余量（11000）；超过即压缩（先去可省字段，再二分缩减条数）。
+# 2026-08 实测：12s 组预算 + 阈值展示 + others 字段后全量概览（10 组 + 大文件 +
+# 双盘）约 10502 字符；过小会触发折叠并砍掉尾部关键组（windows/Program Files 等）。
+OUTPUT_BUDGET_CHARS = 11000
 
 
 def _json_len(obj):
@@ -924,7 +926,7 @@ def _list_drives():
 
 def _scan_other_drives(executor=None):
     """概览附带的非系统盘信息：每盘容量/剩余 + 根目录直接子项 Top3。
-    各盘独立并行（每盘 8s 预算），互不挤占——多盘机器不再"第一盘吃满、其余跳过"。
+    各盘独立并行（每盘 12s 预算），互不挤占——多盘机器不再"第一盘吃满、其余跳过"。
     复用 _scan_group 拿 size/top_children/status 四件套（executor 透传组内并行）。
     其他盘一律归 🟡（含用户数据，只给画像不主动删）。"""
     system = (os.environ.get("SystemDrive", "C:") + "\\") if PLATFORM == "win32" else None
@@ -1038,7 +1040,7 @@ def disk_scan(path=None, refresh=False):
     全部只读。分层调用使单次输出始终远小于工具结果压缩上限（12,000 字符）。
 
     概览并行化：14 组 + 大文件段 + 非系统盘段放入线程池同时扫（扫描为 I/O 密集，
-    scandir/stat 系统调用期间释放 GIL，线程并行实际提速；每组独立 8s 预算，结果按
+    scandir/stat 系统调用期间释放 GIL，线程并行实际提速；每组独立 12s 预算，结果按
     定义顺序合并输出）。SCAN_TOTAL_BUDGET_SEC 退化为整体墙钟保险。"""
     if path:
         return _drill_down(path)
@@ -1048,7 +1050,7 @@ def disk_scan(path=None, refresh=False):
     home = os.path.expanduser("~")
     tasks = []
     for group in _scan_groups():
-        # 每组独立 8s 预算（在 worker 内取起始时刻，互不挤占）；组内子目录走内层池并行
+        # 每组独立 12s 预算（在 worker 内取起始时刻，互不挤占）；组内子目录走内层池并行
         tasks.append(("group", group["key"],
                       lambda g=group: _scan_group(
                           g, time.monotonic() + SCAN_GROUP_BUDGET_SEC, inner_executor)))
@@ -1223,13 +1225,21 @@ def _drill_down(path):
     hidden += len(children) - len(shown)
     for c in shown:
         c.pop("size_bytes", None)
-    note = "只读统计。可对某个大子目录继续用 path 下钻。"
-    # 输出保险丝：深路径多时结果可能超底座上限，二分缩减条数（裁掉的计入 hidden）
+    out = {
+        "type": "disk_scan_drill",
+        "path": p,
+        "scan_seconds": round(time.time() - started_wall, 1),
+        "children": shown,
+        "estimated": estimated,
+        "note": "只读统计。可对某个大子目录继续用 path 下钻。",
+    }
+    # 输出保险丝：按完整 out（含 path/note 等开销）测量，二分缩减条数（裁掉的计入 hidden）
     trimmed = 0
-    while len(shown) > 1 and _json_len({"children": shown}) > OUTPUT_BUDGET_CHARS:
-        shown = shown[:max(1, len(shown) // 2)]
+    while len(out["children"]) > 1 and _json_len(out) > OUTPUT_BUDGET_CHARS:
+        out["children"] = out["children"][:max(1, len(out["children"]) // 2)]
         trimmed += 1
     hidden += trimmed
+    note = out["note"]
     if estimated:
         if list_truncated:
             # 物化阶段截断：清单本身不全（条目过多的巨型目录，预算内列不完）
@@ -1242,15 +1252,9 @@ def _drill_down(path):
     if hidden:
         note += " 另有 %d 个小项未显示。" % hidden
     if trimmed:
-        note += " 输出超限，仅显示前 %d 条（可对子项逐个下钻）。" % len(shown)
-    return {
-        "type": "disk_scan_drill",
-        "path": p,
-        "scan_seconds": round(time.time() - started_wall, 1),
-        "children": shown,
-        "estimated": estimated,
-        "note": note,
-    }
+        note += " 输出超限，仅显示前 %d 条（可对子项逐个下钻）。" % len(out["children"])
+    out["note"] = note
+    return out
 
 
 # ── file_trash ───────────────────────────────────────────────────────────
@@ -2376,7 +2380,7 @@ TOOL_DEFS = [
             "（Windows C:\\Users\\<用户名>），其他盘（D:\\、E:\\ 等）和任意位置一律用 "
             "dir 定向搜**（如 dir=\"D:\\\\\" 搜 D 盘根、dir=\"D:\\\\myWork\" 定向项目目录）；"
             "用户没给位置但目录名像项目/工作目录时，先用 dir=\"<盘符>:\\\\\" 定向常见盘符根重搜。"
-            "最多 8 秒或命中 limit 即停（全盘类型搜索可能不全，可用 dir 定向）。"
+            "最多 12 秒或命中 limit 即停（全盘类型搜索可能不全，可用 dir 定向）。"
             "返回 total_hits=收集到的全部命中数：total_hits 大于 count 说明被 limit 截断，"
             "应加 limit 或 dir 定向重搜，不要分段穷举。"
             "默认按相关度排序（全词>前缀>子串，同分按修改时间），可用 sort_by/order 改排序。"
