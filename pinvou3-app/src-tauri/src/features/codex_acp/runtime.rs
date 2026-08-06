@@ -193,7 +193,8 @@ mod tests {
 
     #[test]
     fn npm_package_version_reads_package_json_and_requires_vendor() {
-        let dir = std::env::temp_dir().join(format!("npm-codex-version-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("npm-codex-version-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let package_dir = dir.join("node_modules").join("@openai").join("codex");
         std::fs::create_dir_all(

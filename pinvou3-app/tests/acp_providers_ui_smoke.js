@@ -376,7 +376,9 @@ async function clickSettingsSection(page, label) {
   rec('⑨ env 冲突警告条', await page.evaluate(() => !!document.querySelector('[data-testid="acp-providers-env-warning"]')));
   rec('⑨.1 生效中配置只读区渲染', await page.evaluate(() => {
     const el = document.querySelector('[data-testid="acp-providers-effective"]');
-    return !!el && (el.textContent || '').includes('gpt-5.2') && (el.textContent || '').includes('api.example.com');
+    if (!el) return false;
+    const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
+    return values.includes('gpt-5.2') && values.includes('https://api.example.com/v1');
   }));
   rec('⑨.2 env 覆盖时徽标降格', await page.evaluate(() => {
     const section = document.querySelector('[data-testid="acp-providers-section"]');
@@ -384,10 +386,11 @@ async function clickSettingsSection(page, label) {
   }));
   rec('⑨.3 env 生效值：非密明文 + 凭据掩码', await page.evaluate(() => {
     const el = document.querySelector('[data-testid="acp-providers-env-warning"]');
-    const text = (el && el.textContent) || '';
+    if (!el) return false;
     // URL 明文可见；凭据只显示「已设置」掩码，值不得出现
-    return text.includes('https://env-override.example.com')
-      && text.includes('已设置（值已隐藏）');
+    const values = [...el.querySelectorAll('.font-mono')].map(span => (span.textContent || '').trim());
+    return values.includes('https://env-override.example.com')
+      && (el.textContent || '').includes('已设置（值已隐藏）');
   }));
 
   // 导出警告

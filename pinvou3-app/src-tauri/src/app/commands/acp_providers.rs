@@ -6,15 +6,17 @@
 use tauri::State;
 
 use crate::features::codex_acp::{
-    AcpPool, AcpProvidersView, CodexAcpSessionInfo, CodexAcpStatus, ImportResult,
-    ProviderRecord, ProviderWireApi,
+    AcpPool, AcpProvidersView, CodexAcpSessionInfo, CodexAcpStatus, ImportResult, ProviderRecord,
+    ProviderWireApi,
 };
 
 fn parse_wire_api(value: &str) -> Result<ProviderWireApi, String> {
     ProviderWireApi::parse(Some(value)).map_err(|error| format!("{error:#}"))
 }
 
-fn parse_key_action(value: &str) -> Result<crate::platform::credential_store::CredentialEditAction, String> {
+fn parse_key_action(
+    value: &str,
+) -> Result<crate::platform::credential_store::CredentialEditAction, String> {
     match value {
         "replace" => Ok(crate::platform::credential_store::CredentialEditAction::Replace),
         "keep" => Ok(crate::platform::credential_store::CredentialEditAction::KeepExisting),
@@ -150,10 +152,7 @@ pub async fn logout_acp_agent(
 }
 
 #[tauri::command]
-pub fn export_acp_providers(
-    agent: String,
-    acp_pool: State<'_, AcpPool>,
-) -> Result<String, String> {
+pub fn export_acp_providers(agent: String, acp_pool: State<'_, AcpPool>) -> Result<String, String> {
     acp_pool
         .export_acp_providers(&agent)
         .map_err(|error| format!("导出 Provider 失败: {error:#}"))
@@ -212,7 +211,10 @@ mod tests {
     #[test]
     fn parse_wire_and_key_action() {
         assert_eq!(parse_wire_api("openai").unwrap(), ProviderWireApi::Openai);
-        assert_eq!(parse_wire_api("anthropic").unwrap(), ProviderWireApi::Anthropic);
+        assert_eq!(
+            parse_wire_api("anthropic").unwrap(),
+            ProviderWireApi::Anthropic
+        );
         assert!(parse_wire_api("bogus").is_err());
         assert!(parse_key_action("replace").is_ok());
         assert!(parse_key_action("keep").is_ok());

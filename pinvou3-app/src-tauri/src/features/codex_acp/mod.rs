@@ -51,15 +51,15 @@ use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use latest::LatestVersionProbe;
+pub use providers::{
+    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
+};
 use runtime::{
     resolve_codex_path, system_codex_incompatible, version_at_least, ResolvedCodex,
     MIN_CODEX_VERSION,
 };
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
-};
-pub use providers::{
-    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 
@@ -1484,19 +1484,23 @@ impl AcpPool {
                 node.as_deref().and_then(installed_node_version)
             });
             let brew_task = tokio::task::spawn_blocking(platform::brew_available);
-            let incompatible_task =
-                tokio::task::spawn_blocking(move || system_codex_incompatible(system_codex_for_incompat));
+            let incompatible_task = tokio::task::spawn_blocking(move || {
+                system_codex_incompatible(system_codex_for_incompat)
+            });
             match tokio::join!(resolve_task, node_task, brew_task, incompatible_task) {
-                (Ok((codex, codex_install_source)), Ok(node_version), Ok(brew_available), Ok(system_incompatible)) => {
-                    Ok(RuntimeProbeCache {
-                        initialized: true,
-                        node_version,
-                        codex,
-                        brew_available,
-                        codex_install_source,
-                        system_codex_incompatible: system_incompatible,
-                    })
-                }
+                (
+                    Ok((codex, codex_install_source)),
+                    Ok(node_version),
+                    Ok(brew_available),
+                    Ok(system_incompatible),
+                ) => Ok(RuntimeProbeCache {
+                    initialized: true,
+                    node_version,
+                    codex,
+                    brew_available,
+                    codex_install_source,
+                    system_codex_incompatible: system_incompatible,
+                }),
                 _ => Err(()),
             }
         };
@@ -2130,11 +2134,7 @@ impl AcpPool {
 
     /// 卸载 ACP Agent CLI。有运行中会话时拒绝；`cleanup=true` 时额外删除该 Agent
     /// 的配置目录、受管 Provider 与对应凭据（前端默认不勾选）。
-    pub async fn uninstall_acp_agent(
-        &self,
-        agent: &str,
-        cleanup: bool,
-    ) -> Result<CodexAcpStatus> {
+    pub async fn uninstall_acp_agent(&self, agent: &str, cleanup: bool) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent}");
@@ -2181,8 +2181,7 @@ impl AcpPool {
                 .map(str::to_string),
             AgentBackend::Deepseek => None,
         };
-        let command =
-            providers::lifecycle::uninstall_command(backend, install_source.as_deref());
+        let command = providers::lifecycle::uninstall_command(backend, install_source.as_deref());
         let operation_id = diagnostics::operation_id("uninstall");
         match command {
             providers::lifecycle::UninstallCommand::Spawn((program, args)) => {
@@ -2264,8 +2263,12 @@ impl AcpPool {
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent}");
         }
-        let args = providers::lifecycle::logout_args(backend)
-            .with_context(|| format!("{} 的 CLI 不支持非交互登出（可在终端内使用其 TUI 的 /logout）", backend.display_name()))?;
+        let args = providers::lifecycle::logout_args(backend).with_context(|| {
+            format!(
+                "{} 的 CLI 不支持非交互登出（可在终端内使用其 TUI 的 /logout）",
+                backend.display_name()
+            )
+        })?;
         let executable = self
             .login_executable(backend)
             .with_context(|| format!("未检测到可用的 {} CLI", backend.display_name()))?;
@@ -3501,9 +3504,7 @@ impl AcpPool {
             return Ok(());
         };
         command.env("OPENAI_API_KEY", key);
-        eprintln!(
-            "[pinvou3-app] injected OPENAI_API_KEY for codex session {pinvou_session_id}"
-        );
+        eprintln!("[pinvou3-app] injected OPENAI_API_KEY for codex session {pinvou_session_id}");
         Ok(())
     }
 
@@ -5692,10 +5693,7 @@ max_context_size = 262144
                 install_action_for(backend, Some("script"), true, true),
                 "npm_upgrade"
             );
-            assert_eq!(
-                install_action_for(backend, None, true, true),
-                "npm_upgrade"
-            );
+            assert_eq!(install_action_for(backend, None, true, true), "npm_upgrade");
             assert_eq!(
                 install_action_for(backend, Some("script"), false, true),
                 "official_script"
