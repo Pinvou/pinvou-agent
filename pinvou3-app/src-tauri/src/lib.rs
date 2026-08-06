@@ -494,10 +494,16 @@ pub fn run() {
             }
             startup::mark("engine_pool:done");
 
-            // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
-            // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
+            // 技能双 scope 治理(skill-scope-governance):启动时
+            //   1. 读一次 disabled_skills.json——触发旧数据迁移(裸数组 / 借道
+            //      disabled_connectors.json 的 `skill:` 条目 → plain scope);
+            //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
+            //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
+            // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
+            // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
+            let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
+            deepseek_tui::skills::set_disabled_skills(Vec::new());
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -766,6 +772,10 @@ pub fn run() {
             commands::remote_control::web_access_get_gate_report,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
+            commands::connectors::set_disabled_skills,
+            commands::connectors::get_disabled_skills,
+            commands::connectors::set_project_skills_enabled,
+            commands::connectors::get_project_skills_enabled,
             commands::memory::get_memory_profile,
             commands::memory::update_memory_profile,
             commands::memory::clear_memory_profile,
