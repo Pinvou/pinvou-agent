@@ -29,7 +29,8 @@ use crate::features::multiagent;
 ///   只认内置别名）；本轮没有相关候选时不带 `profile` 裸派，把角色定位与要求写进任务说明。
 /// - 资源护栏：主会话是总协调者，普通委派使用 `max_depth=0` 成为叶子；只有
 ///   任务本身足够复杂时，第一层调用省略深度参数以继承会话上限并允许再拆
-///   一层。第二层不得继续派生；工作与 Code 使用各自的直属并行/全树准入额度。
+///   一层。第二层不得继续派生；每个子智能体显式使用底座允许的最高执行预算，
+///   避免角色默认步数截断有效工作；工作与 Code 使用各自的直属并行/全树准入额度。
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
 ///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,9 +74,12 @@ pub(crate) fn delegation_reminder(context: DelegationContext, task: &str) -> Str
          3. 资源边界：你是总协调者。普通委派调用 `agent` 时设 `max_depth=0`，\
          让直属子智能体成为叶子；只有任务本身足够复杂、确实需要它再拆分时，\
          第一层调用才省略 `max_depth`，并在任务说明中明确可按需再派一层。\
-         第二层子智能体不得继续派生；不要传任何正数深度覆盖值。直属子智能体\
-         同时执行最多 {max_concurrent} 个，整棵树排队与执行合计最多 {max_admitted} 个；\
-         不要递归裂变；\n\
+         第二层子智能体不得继续派生；不要传任何正数深度覆盖值。每次调用\
+         `agent` 必须显式传 `max_steps=2000` 与 `wall_time_secs=86400`，不得回落到\
+         角色默认的 60/120 步；若允许直属子智能体继续拆分，任务说明中也必须\
+         把同一预算规则传给它。预算只是避免提前截断的上限，任务完成后立即\
+         收束，不得为耗尽预算而空转。直属子智能体同时执行最多 {max_concurrent} 个，\
+         整棵树排队与执行合计最多 {max_admitted} 个；不要递归裂变；\n\
          4. Git 与工作区策略由你按任务自主完成：只读任务、没有写入的并行\
          任务，以及串行的“修改→测试→审查”接力可使用默认共享工作区；共享\
          工作区不得安排两个及以上并行写入者。同一 Git 仓库确需并行写入时\
@@ -334,5 +338,23 @@ mod tests {
         assert!(code.contains("合计最多 12 个"));
         assert!(work.contains("第二层子智能体不得继续派生"));
         assert!(code.contains("第二层子智能体不得继续派生"));
+    }
+
+    #[test]
+    fn delegation_reminder_uses_maximum_child_execution_budget() {
+        let msg = delegation_reminder(DelegationContext::Work, "审查大型代码变更");
+
+        assert!(
+            msg.contains("`max_steps=2000`")
+                && msg.contains("`wall_time_secs=86400`")
+                && msg.contains("不得回落到角色默认的 60/120 步"),
+            "子智能体必须使用底座允许的最高执行预算，不能被角色默认值提前截断"
+        );
+        assert!(
+            msg.contains("若允许直属子智能体继续拆分")
+                && msg.contains("把同一预算规则传给它")
+                && msg.contains("任务完成后立即收束"),
+            "可继续拆分的直属子智能体必须继承预算教学，同时避免无意义空转"
+        );
     }
 }
