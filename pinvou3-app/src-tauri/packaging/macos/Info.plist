@@ -12,6 +12,9 @@
     <string>pinvou3 需要访问麦克风以提供语音输入功能。</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>pinvou3 需要语音识别权限以将您的语音转换为文字；系统支持时在本机处理，否则音频可能发送至 Apple Speech 服务。</string>
+    <!-- macOS Sequoia 15+ 在应用访问局域网服务前请求用户授权。 -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>pinvou3 需要访问本地网络，以连接局域网内的模型服务（如 vLLM、Ollama 等）。</string>
     <!-- 不设 LSUIElement：主窗口要进 Dock（与 Linux/Windows 一致） -->
 </dict>
 </plist>
