@@ -18,6 +18,7 @@ metadata:
 3. **删除只能走 `mcp_file_master_file_trash`**（Windows 移入系统回收站；macOS 移入废纸篓 `~/.Trash`；Linux 移入 XDG Trash——均可恢复，via 在结果里注明）。绝不用 `exec_shell`、`apply_patch` 或任何方式直接物理删除用户文件。**Windows 上超过回收站配额的目标（默认约为盘容量 5%）工具会自动改用同级 `_pinvou_filemaster_trash` 目录兜底**（Shell 对超配额对象会静默物理删除且误报成功，不可恢复）；macOS/Linux 上跨卷或失败时同样落 `_pinvou_filemaster_trash` 兜底——此时 `detail` 会明确说明。**物理删除只能走 `mcp_file_master_file_erase`，且仅限 file_trash 移入的备份**（_pinvou_filemaster_trash 兜底 / 系统废纸篓 / XDG Trash 内容，白名单 + 日志准入 + confirm 两步，不可恢复）。
 4. **动文件必须用户点名。** 找到文件后只做"告知位置 / 经同意后打开所在目录"；移动、改名、删除必须用户明确要求并确认后另行处理。
 5. **系统区域是禁区。** `C:\Windows`、`Program Files`、`pagefile.sys`、`hiberfil.sys`、注册表——不碰，只向用户解释。`mcp_file_master_file_trash` 内置白名单也会硬拒绝这些区域。
+6. **清理建议必须附「不清理」出口。** 每次向用户提供清理清单时，同一条回复里必须给出明确选项：① 按清单清理；② 只清理其中一部分（让用户点名）；③ 这次先不清理。严禁只给"清 A/B/C"的封闭清单、替用户默认勾选或默认"全清"；用户选择不清理后，不得反复推销清理。
 
 ## 危险操作警示与免责声明
 
