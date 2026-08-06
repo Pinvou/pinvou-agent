@@ -34,6 +34,7 @@ const read = (...parts) => fs.readFileSync(path.join(here, '..', ...parts), 'utf
 const source = read('src', 'platform', 'tauri', 'bridge', 'multiagent.js');
 const panelSource = read('src', 'features', 'multiagent', 'SubagentTranscriptPanel.jsx');
 const toolRenderersSource = read('src', 'features', 'tools', 'tool-renderers.jsx');
+const timelineSource = read('src', 'features', 'conversation', 'ConversationTimeline.jsx');
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 const commandSource = read('src-tauri', 'src', 'app', 'commands', 'multiagent.rs');
 const chatCommandSource = read('src-tauri', 'src', 'app', 'commands', 'chat.rs');
@@ -42,6 +43,7 @@ const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'inte
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
 const rosterSource = read('src-tauri', 'src', 'features', 'multiagent', 'roster.rs');
+const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
 
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
@@ -154,17 +156,31 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
   assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
-  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(context: DelegationContext\)/, '委派提醒按工作与 Code 上下文生成');
-  assert.match(commandSource, /roster::available_role_lines\(\)/, '名册必须随提醒带上');
+  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(context: DelegationContext, task: &str\)/, '委派提醒按会话类型与本轮任务生成');
+  assert.match(commandSource, /roster::available_role_lines\(task\)/, '名册必须按本轮任务筛选并随提醒带上');
+  assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
+  assert.match(rosterSource, /personas::executable_summaries\(\)/, '每轮匹配必须只读取轻量摘要，不克隆全部专家正文');
+  assert.match(personasSource, /pub fn executable_summaries\(\)[\s\S]{0,900}filter\(\|card\| !card\.conversational_only\)/, '纯对话专家卡不得注册为执行型子智能体');
+  assert.match(rosterSource, /if card\.source == "user" \|\| score > 0/, '用户自创专家优先保留，内置专家按本轮相关性入选');
   assert.match(
     commandSource,
-    /workspace_policy=worktree/,
-    '提醒必须教一律共享工作区（工作区不做 git 化，worktree 会被底座拒绝）',
+    /串行的“修改→测试→审查”接力[\s\S]{0,120}默认共享工作区/,
+    '串行修改、测试与审查必须复用共享工作区',
+  );
+  assert.match(
+    commandSource,
+    /工作区不得安排两个及以上并行写入者。同一 Git 仓库确需并行写入时\\\r?\n\s*必须使用 `workspace_policy=worktree`/,
+    '同一仓库的并行写入必须使用 worktree',
+  );
+  assert.match(
+    commandSource,
+    /Git、基线或 worktree 准备失败时，说明原因并将并行写入任务改为\\\r?\n\s*串行/,
+    'worktree 无法准备时必须把并行写入改为串行',
   );
   assert.match(
     chatCommandSource,
-    /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(delegation_context\)/,
-    '开关开启时 chat 发送链每轮拼提醒',
+    /if mode_state\.multi_agent \{[\s\S]*?delegation_reminder\(delegation_context, &raw_message\)/,
+    '开关开启时 chat 发送链按原始用户消息筛专家并拼提醒',
   );
   assert.match(
     interactionCommandSource,
@@ -254,7 +270,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.doesNotMatch(
     interactionCommandSource,
     /ensure_default_roles/,
-    '不再播种内置默认角色——名册只来自专家池（用户决策：委派本质是写提示词）',
+    '不再播种旧版默认角色——专家池卡片统一投影为 exp-* profile',
   );
   assert.match(
     poolSource,
@@ -588,7 +604,7 @@ test('模型起名：任务说明第一行「」提取为子智能体显示名',
   );
 });
 
-test('子智能体名称投影：专家池、模型 name、任务标题、agent type 依次兜底', () => {
+test('子智能体名称投影：专家池、任务标题、模型 name、任务摘要与 agent type 依次兜底', () => {
   const roleCards = {
     scout: '调研专家', manager: '规划专家', builder: '执行专家', reviewer: '审查专家', general: '通用执行者',
   };
@@ -604,8 +620,8 @@ test('子智能体名称投影：专家池、模型 name、任务标题、agent 
   );
   assert.equal(
     present({ sessionName: 'research-ai-news', objective: '「提示词名称」任务' }).name,
-    'research-ai-news',
-    '模型显式 name/session_name 优先于任务首行约定',
+    '提示词名称',
+    '任务首行的界面名优先于机器 name/session_name',
   );
   assert.equal(
     present({ sessionName: 'agent_12345678', objective: '「资料核验员」任务' }).name,
@@ -624,12 +640,17 @@ test('子智能体名称投影：专家池、模型 name、任务标题、agent 
 test('子智能体任务名提炼：优先结构化目标、清理标签并按字符安全截断', () => {
   assert.equal(
     subagentObjectiveName('SCOPE: 背景\nQUESTION: 深挖两个 AI 安全事件的完整时间线'),
-    '深挖两个 AI 安全事件的完整时间线',
+    '深挖两个 AI 安全事件…',
   );
   assert.equal(subagentObjectiveName('  - TASK: 核查桥接字段  '), '核查桥接字段');
   assert.equal(
     subagentObjectiveName('请检查这是一个非常非常长而且需要被压缩展示的子智能体任务名称', 12),
-    '请检查这是一个非常非常长…',
+    '检查这是一个非常非常长而…',
+  );
+  assert.equal(
+    subagentObjectiveName('请向用户发送一句问候：“你好”。直接回复即可'),
+    '向用户发送一句问候',
+    '模型漏写界面名时，任务兜底也必须使用短名称',
   );
 });
 
@@ -745,9 +766,19 @@ test('主对话行内卡只投影自己的后代，按子节点逐级展开', ()
 
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
   assert.match(
+    timelineSource,
+    /if \(item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'\)/,
+    '独立 agent 工具项不得被共享时间线丢弃',
+  );
+  assert.match(
+    timelineSource,
+    /function ToolItem[\s\S]*?const custom = renderToolItem && renderToolItem\(item\)/,
+    '独立工具项与工具组必须共用产品级工具渲染器',
+  );
+  assert.match(
     toolRenderersSource,
-    /if \(EXPERT_CARD_ENABLED && item\.name === 'agent'\) \{\s*return <ExpertAgentCard/,
-    'agent 调用不走通用工具卡，但必须按 capability 门禁（Web 无 multiAgent bridge）',
+    /if \(EXPERT_CARD_ENABLED && \(item\.name === 'agent' \|\| isAgentWaitCall\(item\.name, item\.args\)\)\) \{\s*return <ExpertAgentCard/,
+    'agent 委派与新旧 wait 调用共用产品级展示，并按 capability 门禁（Web 无 multiAgent bridge）',
   );
   assert.match(
     toolRenderersSource,

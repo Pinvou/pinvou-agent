@@ -1046,6 +1046,7 @@ impl AppEngine {
     ) -> Result<Op> {
         if self.multi_agent_enabled {
             self.bridge.build_multi_agent_send_message_op(
+                &self.session_id,
                 content,
                 mode,
                 persona_reminder,

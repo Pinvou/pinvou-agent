@@ -67,6 +67,16 @@ test('原生 Code 复用会话级开关、专家卡和只读记录面板', () =>
 
   assert.match(codex, /<ComposerModelSelector[\s\S]*?multiAgentEnabled=\{nativeMultiAgentEnabled\}/);
   assert.match(codex, /invoke\('set_multi_agent_mode',\s*\{\s*sessionId/);
+  assert.match(
+    codex,
+    /multiAgent:\s*Boolean\(modeState && modeState\.multi_agent\)/,
+    '原生 Code 必须读取 Tauri SessionModeState 的 snake_case 开关字段',
+  );
+  assert.match(
+    codex,
+    /await applyNativeDraftControls\(targetId\);\s*[\s\S]{0,300}await refreshNativeControls\(targetId\);/,
+    '新建原生 Code 会话应用草稿开关后必须刷新权威状态',
+  );
   assert.match(codex, /<ToolCard[\s\S]*?sessionId=\{activeId\}/);
   assert.match(codex, /<SubagentTranscriptPanel[\s\S]*?sessionId=\{activeSession\.id\}/);
   assert.match(codex, /!subagentPanel && \(activeSession \|\| draftWorkspacePath\)/);

@@ -1301,10 +1301,10 @@ impl Pinvou3Bridge {
 
     /// 多智能体会话专用配置（ADR-0006）。
     ///
-    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池入册专家写进会话工作区
-    /// （`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
-    /// `agent` 的 `profile` 字段选人；专家池为空时名册即空，模型自拟任务
-    /// 说明裸派（用户决策：不内置兜底角色）。**工具目录与普通会话完全一致**
+    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡写进
+    /// 会话工作区（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
+    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
     /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆
     /// 一层，第二层不得继续派生。工作模式直属并行 4 / 全树准入 8；原生 Code
@@ -1632,6 +1632,7 @@ impl Pinvou3Bridge {
         restrict_tools: bool,
     ) -> Result<Op> {
         self.build_send_message_op_with_hooks(
+            session_id,
             content,
             mode,
             persona_reminder,
@@ -1644,6 +1645,7 @@ impl Pinvou3Bridge {
     /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
     pub(crate) fn build_multi_agent_send_message_op(
         &self,
+        session_id: &str,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
@@ -1651,6 +1653,7 @@ impl Pinvou3Bridge {
         workspace: &std::path::Path,
     ) -> Result<Op> {
         self.build_send_message_op_with_hooks(
+            session_id,
             content,
             mode,
             persona_reminder,
@@ -1661,6 +1664,7 @@ impl Pinvou3Bridge {
 
     fn build_send_message_op_with_hooks(
         &self,
+        session_id: &str,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
@@ -4242,8 +4246,8 @@ mod tests {
         assert!(!ordinary_has_guard, "普通对话不得挂载多智能体深度护栏");
         assert!(multi_agent_has_guard, "多智能体会话必须拦截深度覆盖");
 
-        // 名册只装配专家池（本测试环境为空）：不得再播种内置角色文件；
-        // 底座自带的内置成员（verifier 等）保持可用。
+        // 专家池卡片使用 exp-* profile；不得播种旧版非 exp 默认角色文件。
+        // 底座自带的内置成员（verifier 等）也保持可用。
         let agents_dir = workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
         let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
             .map(|entries| {
@@ -4255,6 +4259,12 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(seeded.is_empty(), "不得再播种内置角色文件: {seeded:?}");
+        assert!(
+            cfg.fleet_roster
+                .get("exp-engineering-frontend-developer")
+                .is_some(),
+            "专家池内置前端专家应注册为可派 profile"
+        );
         assert!(
             cfg.fleet_roster.get("verifier").is_some(),
             "底座内置成员应保持可用"
@@ -4297,11 +4307,18 @@ mod tests {
             "k",
         );
         let ordinary_op = bridge
-            .build_send_message_op("hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("plain-session", "hi".into(), AppMode::Yolo, None, false)
             .expect("build op");
         let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
         let multi_agent_op = bridge
-            .build_multi_agent_send_message_op("hi".into(), AppMode::Yolo, None, false, &workspace)
+            .build_multi_agent_send_message_op(
+                "multi-agent-session",
+                "hi".into(),
+                AppMode::Yolo,
+                None,
+                false,
+                &workspace,
+            )
             .expect("build multi-agent op");
         let deepseek_tui::core::ops::Op::SendMessage {
             mode,

@@ -1463,7 +1463,7 @@ export function CodexAcpView({
       modelId: modelId || null,
       mountedId: mountedId ?? null,
       mode: (modeState && modeState.mode) || 'yolo',
-      multiAgent: Boolean(modeState && modeState.multiAgent),
+      multiAgent: Boolean(modeState && modeState.multi_agent),
     });
     nativeControlsSessionRef.current = sessionId;
   }
@@ -2195,6 +2195,9 @@ export function CodexAcpView({
         targetId = created.id;
         // 草稿态暂存的模型/知识库/模式选择先落到新会话（失败会显式报错）。
         await applyNativeDraftControls(targetId);
+        // createSession 会在草稿配置应用前先加载一次新会话；应用完成后必须
+        // 重读权威状态，否则开关会回显为旧的 false，后续点击也会重复提交 true。
+        await refreshNativeControls(targetId);
         setAttachmentDrafts(current => {
           const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
           const next = { ...current, [targetId]: draftAttachments };
