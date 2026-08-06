@@ -13,6 +13,7 @@
 //! - `list_sessions()` / `create_session()` / `load_session(id)`
 //! - `delete_session(id)` / `rename_session(id, title)` / `get_active_session()`
 
+pub(crate) mod acp_providers;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod chat;
