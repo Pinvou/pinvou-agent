@@ -29,7 +29,7 @@ metadata:
 
 ## 一、文件查找
 
-帮用户在**整台电脑**上找到文件，告诉他/她文件在哪个目录。按概率序搜 Desktop/Documents/Downloads/Pictures/Videos/Music，再对用户主目录整体兜底（含 AppData 下应用目录）。
+帮用户在**整台电脑**上找到文件，告诉他/她文件在哪个目录。按概率序搜 Desktop/Documents/Downloads/Pictures/Videos/Music，再对主目录、根目录以及其他盘符下的目录进行搜索。
 
 ### 何时用 / 何时不用
 
@@ -82,6 +82,8 @@ metadata:
 8. 删完汇报实际释放的空间，并提醒：文件在回收站，误删可恢复（`mcp_file_master_file_restore`）。
 9. **清空回收站/废纸篓（可选收尾）**：用户明确要求"把回收站也清空/彻底释放空间" → `mcp_file_master_file_empty_recycle(confirm=false)` 查占用（Windows 回收站 / macOS 废纸篓 ~/.Trash / Linux XDG Trash，三端均支持）→ 展示给用户 → 用户确认 → `confirm=true` 执行。**注意**：清空是物理删除不可恢复，且经 file_trash 删除的记录清空后无法再还原（_pinvou_filemaster_trash 兜底方式不受影响）——务必让用户知情后再确认。
 10. **误删补救**：用户说"删错了/想找回"→ `mcp_file_master_file_restore(action="list")` 从本机删除日志列出待恢复项（删除时自动记录，不靠对话记忆）→ 用户指定后 `mcp_file_master_file_restore(action="restore", path="<original_path>")` 精确还原到原位置。
+
+- **清理选项必须带退出/自定义出口**：凡向用户提供清理建议（无论 🟢🟡 哪一级），都必须同时给出「这次先不清理 / 都留着」选项，或让用户自定义清理范围、逐项点名；严禁只给"清 A/B/C"的封闭选项、替用户默认勾选或默认"全清"。用户明确表示先不清理后，不得反复推销清理。
 
 ### 呈现要点
 
