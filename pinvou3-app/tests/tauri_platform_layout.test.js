@@ -114,10 +114,26 @@ const architectureGate = workflow.slice(
   workflow.indexOf("- name: 架构边界门禁"),
   workflow.indexOf("- name: 初始化公共底座 submodule"),
 );
-assert.match(architectureGate, /BASE_REF:\s*\$\{\{\s*github\.base_ref\s*\}\}/);
-assert.doesNotMatch(architectureGate, /github\.event\.merge_group/);
-assert.match(architectureGate, /base_ref="\$\{BASE_REF#refs\/heads\/\}"/);
+// merge_group 事件上 github.base_ref 不可靠,必须用 merge_group.base_ref 兜底。
+// 契约锁住"两种事件都解析正确 base + 剥 refs/heads/ 前缀 + 传给守卫",防止改回 PR-only。
+assert.match(
+  architectureGate,
+  /github\.event_name == 'merge_group' && github\.event\.merge_group\.base_ref \|\| github\.base_ref/,
+);
+assert.match(architectureGate, /base_ref="\$\{base_ref#refs\/heads\/\}"/);
 assert.match(architectureGate, /architecture-guard\.py --base-ref "origin\/\$base_ref"/);
+
+// fork 合规联动步骤用同款 base_ref 解析:锁住不被改回 PR-only,避免队列里取错基线。
+const forkLinkGate = workflow.slice(
+  workflow.indexOf("- name: fork 合规联动"),
+  workflow.indexOf("- name: Setup Python"),
+);
+assert.match(
+  forkLinkGate,
+  /github\.event_name == 'merge_group' && github\.event\.merge_group\.base_ref \|\| github\.base_ref/,
+);
+assert.match(forkLinkGate, /base_ref="\$\{base_ref#refs\/heads\/\}"/);
+assert.match(forkLinkGate, /ci-fork-link-check\.sh "origin\/\$base_ref"/);
 const submoduleUpdates = workflow.match(/git submodule update[^\r\n]*/g) || [];
 assert.ok(submoduleUpdates.length > 0, "CI must initialize the public CodeWhale submodule");
 assert.ok(
