@@ -81,6 +81,21 @@ struct TurnLifecycleState {
     next_reservation_id: u64,
     active_reservation_id: Option<u64>,
     transcript_rules: Vec<TranscriptSanitizationRule>,
+    /// 用户在 turn 已 submit 但尚未收到 TurnStarted 时点了停止。
+    ///
+    /// CodeWhale Engine 在每个新轮次入口**无条件**调
+    /// `reset_cancel_token()`（`core/engine.rs:2664`，在 `TurnStarted`
+    /// 之前），用全新 token 覆盖当前共享 token。若 cancel 恰好在这个窗口
+    /// 调了 `cancel_current()`，取消信号会被重置丢弃。
+    ///
+    /// 此标记由 [`arm_pending_cancel`] 在 cancel 路径设置（仅当 turn 尚未
+    /// started），由事件转发器在收到 `TurnStarted` 后通过
+    /// [`take_pending_cancel`] 原子取出并重新 `cancel_current()`——此时
+    /// `reset_cancel_token()` 已经执行过，cancel 命中的是当前轮次的活跃 token。
+    ///
+    /// [`arm_pending_cancel`]: TurnLifecycle::arm_pending_cancel
+    /// [`take_pending_cancel`]: TurnLifecycle::take_pending_cancel
+    pending_cancel: bool,
 }
 
 /// The durable, user-visible meaning of a submitted engine operation.
@@ -376,6 +391,7 @@ impl TurnLifecycle {
             state.reclaimed = false;
             state.admission_emitted = false;
             state.active_reservation_id = Some(reservation_id);
+            state.pending_cancel = false;
             reservation_id
         };
         Ok(TurnReservation::new(self.clone(), reservation_id))
@@ -746,6 +762,95 @@ impl TurnLifecycle {
         state.turn_id = None;
         drop(state);
         true
+    }
+
+    /// 原子认领一个「reserved 未 submitted」turn 的终态并设置 `terminal_closing`
+    /// 闸门，供需要补发 `chat:done` 的路径（cancel 在 engine 未 spawn 时）使用。
+    ///
+    /// 与 [`invalidate_unsubmitted_reservation`] 的关键区别：本方法认领成功后立即
+    /// 置 `terminal_emitted = true` 与 `terminal_closing = true`，使随后抵达的
+    /// [`reserve`](Self::reserve) 被拒（`active || terminal_closing` → 闸门关闭），
+    /// 直至调用方在发完 `chat:done` 后调用 [`finish_terminal_emission`] 重新打开
+    /// 闸门。这样就消除了「invalidate 返回与 chat:done 发出之间，新一轮 reserve
+    /// 成功，迟到的 chat:done 错误清除新一轮 busy 状态」的跨轮竞态——权威终态路径
+    /// （[`claim_terminal_transition`] / [`claim_reclaimed_transition`]）同样靠这一对
+    /// 字段防止重入。
+    ///
+    /// [`invalidate_unsubmitted_reservation`]: Self::invalidate_unsubmitted_reservation
+    /// [`finish_terminal_emission`]: Self::finish_terminal_emission
+    /// [`claim_terminal_transition`]: Self::claim_terminal_transition
+    /// [`claim_reclaimed_transition`]: Self::claim_reclaimed_transition
+    pub(crate) fn claim_unsubmitted_terminal(&self) -> bool {
+        let _emission = self.emission.lock();
+        let mut state = self.state.lock();
+        if !state.active || state.submitted || state.terminal_emitted {
+            return false;
+        }
+        state.reclaimed = true;
+        if let Some(reservation_id) = state.active_reservation_id.take() {
+            Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+        }
+        // 与权威终态路径一致：先发信号期间 `terminal_closing` 关闸，
+        // `terminal_emitted` 保证本轮不会再被任何路径二次认领。
+        state.active = false;
+        state.submitted = false;
+        state.turn_id = None;
+        state.terminal_emitted = true;
+        state.terminal_closing = true;
+        drop(state);
+        true
+    }
+
+    /// 认领一个未提交 turn 的终态并补发 `chat:done`，最后重置闸门。
+    ///
+    /// 给 cancel 在 engine 尚未 spawn（reservation 处于 reserved 未 submitted 阶段）
+    /// 时使用：原子认领（关闸防重入）→ 发 `Interrupted` 终态 → 重开闸门。封装成一
+    /// 个方法是为了让调用方（`EnginePool::cancel`，跨模块）不必直接触碰私有的
+    /// 终态收尾逻辑，与权威终态路径一样自包含「发完即重置」。
+    pub(crate) fn emit_unsubmitted_interrupted_terminal(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> bool {
+        if !self.claim_unsubmitted_terminal() {
+            return false;
+        }
+        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        self.finish_terminal_emission();
+        true
+    }
+
+    /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
+    ///
+    /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
+    /// 未抵达）时设置 `pending_cancel`：
+    /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
+    ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal`）立即发
+    ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
+    ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
+    ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
+    /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，`cancel_current()`
+    ///   直接命中当前活跃 token，无需补打。
+    ///
+    /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
+    /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
+    /// 再 cancel 保证：即使 TurnStarted 在两步之间抵达转发器并消费了标记，
+    /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
+    pub(crate) fn arm_pending_cancel(&self) {
+        let mut state = self.state.lock();
+        if state.submitted && state.turn_id.is_none() && state.active {
+            state.pending_cancel = true;
+        }
+    }
+
+    /// 原子取出并清除 `pending_cancel` 标记。
+    ///
+    /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
+    /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前），
+    /// 重新 `cancel_current()` 命中的正是本轮的活跃 token。
+    pub(crate) fn take_pending_cancel(&self) -> bool {
+        let mut state = self.state.lock();
+        std::mem::take(&mut state.pending_cancel)
     }
 }
 
@@ -1561,8 +1666,17 @@ fn spawn_event_forwarder(
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
                     // emission gate, so it cannot overtake this pair.
-                    if !turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone()) {
+                    let admitted =
+                        turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone());
+                    // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
+                    // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
+                    // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
+                    let pending_cancel = turn_lifecycle.take_pending_cancel();
+                    if !admitted {
                         continue;
+                    }
+                    if pending_cancel {
+                        approve_handle.cancel();
                     }
                     active_transcript_seen = false;
                     chat_persistence_error = None;
@@ -2940,6 +3054,204 @@ mod turn_lifecycle_tests {
         let activated = lifecycle.on_submitted();
         lifecycle.on_submission_failed(activated);
         assert_eq!(lifecycle.finish_once(|| panic!("must remain idle")), None);
+    }
+
+    #[test]
+    fn invalidate_unsubmitted_reservation_returns_true_only_for_reserved_unsubmitted() {
+        // 修复 2 的核心依赖：cancel 在 engine 未 spawn（reservation 仍处于
+        // reserved 未 submitted 阶段）时调用 invalidate，必须返回 true 让调用方
+        // 据此补发 chat:done 终态（否则前端 busy 永不复位）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve → active=true, submitted=false → invalidate 返回 true。
+        // 必须把 reservation 绑定到变量并保持存活到 invalidate 之后，否则 Drop
+        // 会先触发 on_reservation_failed 把 active 复位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle.invalidate_unsubmitted_reservation());
+        // invalidate 已收尾，标记 reservation submitted 以免 Drop 二次清理。
+        reservation.mark_submitted();
+
+        // reserve → on_started_transition（引擎真正接手，设 submitted=true）
+        // → invalidate 必须返回 false：engine 已在跑，cancel 应走 cancel_current
+        // 路径（TurnComplete 终态），不能再由 invalidate 补发，否则会双发 chat:done。
+        let reservation2 = lifecycle.reserve().expect("reserve again");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.invalidate_unsubmitted_reservation());
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_blocks_reserve_until_emission_finishes() {
+        // 跨轮竞态回归（见 claim_unsubmitted_terminal 的文档注释）：cancel 在
+        // engine 未 spawn 时补发 chat:done，必须在「认领 → 发终态」之间关闸，
+        // 否则新一轮 reserve 可抢先成功，迟到的 chat:done 会清掉新一轮 busy。
+        // 这里直接断言闸门语义：claim 成功后、finish 前 reserve 必须被拒；
+        // finish 后（终态已发完）才允许下一轮 reserve。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        let reservation = lifecycle.reserve().expect("reserve");
+        // claim 成功 = 进入「终态发送中」临界区。
+        assert!(lifecycle.claim_unsubmitted_terminal());
+        reservation.mark_submitted();
+
+        // 关键不变量：终态尚未发完（terminal_closing=true）时，下一轮 reserve
+        // 必须失败——否则上一轮迟到的 chat:done 会污染新一轮 busy 状态。
+        assert!(
+            lifecycle.reserve().is_err(),
+            "reserve must be rejected while terminal emission is in flight"
+        );
+
+        // 终态发完，闸门重开，下一轮可正常 reserve。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+
+        // 已 submitted 的 turn 不能再被 claim（engine 已接手，走 cancel_current 路径）。
+        let reservation2 = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.claim_unsubmitted_terminal());
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_requires_submitted_reservation() {
+        // 空闲 engine + 未提交 reservation 窗口的回归：会话保留上一轮的空闲
+        // engine 时，cancel 第二阶段若按「engine 是否存在」分流会错误走 pending
+        // 分支。arm_pending_cancel 必须显式要求 submitted——只有消息确实已入队
+        // engine、需要防 reset_cancel_token 覆盖时才 arm；未提交 reservation 应由
+        // cancel 走未提交认领终态路径（emit_unsubmitted_interrupted_terminal）立即
+        // 发 chat:done 使其失效，而不是挂成 pending。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve 后 active=true 但 submitted=false → arm 不得置位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        lifecycle.arm_pending_cancel();
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "must not arm pending_cancel for an unsubmitted reservation"
+        );
+
+        // 走真实 send 路径：handle.send 成功后 mark_submitted → submitted=true。
+        lifecycle.mark_reservation_submitted(reservation.reservation_id);
+        // 已 submitted + active + turn_id=None（TurnStarted 未抵达）→ arm 置位。
+        lifecycle.arm_pending_cancel();
+        assert!(
+            lifecycle.take_pending_cancel(),
+            "pending_cancel must be armed after submission, before TurnStarted"
+        );
+        // 消费 reservation 避免 Drop 副作用。
+        reservation.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_invalidates_reservation() {
+        // 修复的核心闭环：空闲 engine 存在时，cancel 对未提交 reservation 走认领
+        // 终态路径，认领后该 reservation 必须失效——后续 send 的 ensure_active
+        // 失败、消息不再提交给 engine，前端 busy 因补发的 chat:done 复位。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let reservation = lifecycle.reserve().expect("reserve");
+
+        // 认领前 reservation 有效。
+        assert!(reservation.ensure_active().is_ok());
+
+        // 认领未提交终态（cancel 第二阶段会走这里）。
+        assert!(
+            lifecycle.claim_unsubmitted_terminal(),
+            "unsubmitted reservation must be claimable"
+        );
+        // claim 已把 active=false，reservation 不再有效——消息不会迟到提交。
+        assert!(
+            reservation.ensure_active().is_err(),
+            "claimed reservation must be invalidated so the pending send fails"
+        );
+        // 防 Drop 二次清理：claim 已收尾，标记 submitted 阻止 on_reservation_failed。
+        reservation.mark_submitted();
+
+        // 终态发完后重开闸门，下一轮可正常 reserve（与权威终态路径一致）。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+    }
+
+    #[test]
+    fn pending_cancel_is_armed_only_before_turn_started_and_consumed_once() {
+        // reset_cancel_token 竞态修复的核心不变量：
+        // 1. arm 仅在「active、已 submitted、且 turn_id=None（TurnStarted 未抵达）」
+        //    时置标记（submitted 前置见 arm_pending_cancel_requires_submitted_reservation）；
+        // 2. take 原子取出并清除（防跨轮泄漏）；
+        // 3. 已 started 的 turn 不 arm（cancel_current 直接命中活跃 token）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // --- 场景 A：submit 后、TurnStarted 前 arm → take 返回 true ---
+        lifecycle.on_submitted();
+        lifecycle.arm_pending_cancel();
+        assert!(
+            lifecycle.take_pending_cancel(),
+            "pending_cancel must be armed before TurnStarted"
+        );
+        // take 已消费，再次取返回 false。
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "pending_cancel must be consumed exactly once"
+        );
+
+        // --- 场景 B：TurnStarted 后 arm → 不置标记 ---
+        lifecycle.on_started("turn-1".to_string());
+        lifecycle.arm_pending_cancel();
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "must not arm pending_cancel after TurnStarted"
+        );
+
+        // 清理：结束当前 turn。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn pending_cancel_does_not_leak_across_turns() {
+        // 防跨轮污染：上一轮 arm 但未被消费的标记不能影响下一轮。
+        // reserve() 必须清除 stale pending_cancel。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        lifecycle.on_submitted();
+        lifecycle.arm_pending_cancel();
+        // 模拟 turn 未正常 started 就结束（如 engine spawn 失败）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+
+        // 新一轮 reserve 后，pending_cancel 必须被清除。
+        let _reservation = lifecycle.reserve().expect("reserve");
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "stale pending_cancel from previous turn must be cleared by reserve"
+        );
+    }
+
+    #[test]
+    fn pending_cancel_survives_until_turn_started_consumes_it() {
+        // 端到端时序模拟：cancel 在 submit 后、TurnStarted 前 arm →
+        // TurnStarted 抵达时 take 消费标记并触发重新 cancel。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // submit（op 入队，turn_lock 已释放，但 Engine 尚未 dequeue）。
+        lifecycle.on_submitted();
+
+        // cancel 路径：arm_pending_cancel（turn_id 仍为 None → 置标记）。
+        lifecycle.arm_pending_cancel();
+
+        // Engine 执行 reset_cancel_token + 发 TurnStarted → 转发器先
+        // on_started_transition（设 turn_id），再 take_pending_cancel。
+        lifecycle.on_started("turn-reset".to_string());
+        let pending = lifecycle.take_pending_cancel();
+        assert!(
+            pending,
+            "pending_cancel must survive until TurnStarted consumes it"
+        );
+
+        // 消费后标记清除，下一轮不受影响。
+        assert!(!lifecycle.take_pending_cancel());
+        assert!(lifecycle.finish_once(|| {}).is_some());
     }
 
     #[test]
