@@ -558,7 +558,7 @@ pub async fn create_codex_acp_session(
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<SessionMetadata, String> {
-    let backend = AgentBackend::parse(agent_id.as_deref().or(Some("codex")))
+    let backend = AgentBackend::parse(agent_id.as_deref().or(Some("pinvou")))
         .map_err(|error| format!("{error:#}"))?;
     if !backend.is_acp() {
         return create_code_native_session(workspace_path, &pool, &store, &acp_pool).await;
