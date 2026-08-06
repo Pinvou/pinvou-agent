@@ -920,15 +920,13 @@ impl EnginePool {
             // emit chat:done(原设计)，导致前端 busy 永不复位。这里补发 Interrupted
             // 终态，让前端立即解锁——cancel_generation 命令的文档注释本就承诺
             // 「会补发 Interrupted 终态」，之前实现与注释不符，此处修正。
-            if lifecycle.invalidate_unsubmitted_reservation() {
-                crate::features::assistant::engine::emit_chat_terminal(
-                    &self.app,
-                    session_id,
-                    TurnOutcomeStatus::Interrupted,
-                    None,
-                    false,
-                );
-            }
+            //
+            // 必须用 claim_unsubmitted_terminal（而非裸 invalidate）：reserve_turn 不
+            // 取 turn_lock，若仅在 invalidate 后、chat:done 发出前释放闸门，新一轮
+            // reserve 可抢先成功，迟到的 chat:done 会清掉新一轮 busy。claim 路径在
+            // 发终态期间置 terminal_closing 关闸，与权威终态路径（claim_terminal /
+            // claim_reclaimed）一致的防重入语义。
+            lifecycle.emit_unsubmitted_interrupted_terminal(&self.app, session_id);
         }
         if let Some(cancellation) = shell_cancellation {
             cancellation.cleanup().await;

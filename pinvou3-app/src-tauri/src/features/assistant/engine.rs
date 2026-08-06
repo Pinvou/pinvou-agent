@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
+use deepseek_tui::error_taxonomy::ErrorCategory;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
@@ -742,6 +743,62 @@ impl TurnLifecycle {
         state.active = false;
         state.turn_id = None;
         drop(state);
+        true
+    }
+
+    /// 原子认领一个「reserved 未 submitted」turn 的终态并设置 `terminal_closing`
+    /// 闸门，供需要补发 `chat:done` 的路径（cancel 在 engine 未 spawn 时）使用。
+    ///
+    /// 与 [`invalidate_unsubmitted_reservation`] 的关键区别：本方法认领成功后立即
+    /// 置 `terminal_emitted = true` 与 `terminal_closing = true`，使随后抵达的
+    /// [`reserve`](Self::reserve) 被拒（`active || terminal_closing` → 闸门关闭），
+    /// 直至调用方在发完 `chat:done` 后调用 [`finish_terminal_emission`] 重新打开
+    /// 闸门。这样就消除了「invalidate 返回与 chat:done 发出之间，新一轮 reserve
+    /// 成功，迟到的 chat:done 错误清除新一轮 busy 状态」的跨轮竞态——权威终态路径
+    /// （[`claim_terminal_transition`] / [`claim_reclaimed_transition`]）同样靠这一对
+    /// 字段防止重入。
+    ///
+    /// [`invalidate_unsubmitted_reservation`]: Self::invalidate_unsubmitted_reservation
+    /// [`finish_terminal_emission`]: Self::finish_terminal_emission
+    /// [`claim_terminal_transition`]: Self::claim_terminal_transition
+    /// [`claim_reclaimed_transition`]: Self::claim_reclaimed_transition
+    pub(crate) fn claim_unsubmitted_terminal(&self) -> bool {
+        let _emission = self.emission.lock();
+        let mut state = self.state.lock();
+        if !state.active || state.submitted || state.terminal_emitted {
+            return false;
+        }
+        state.reclaimed = true;
+        if let Some(reservation_id) = state.active_reservation_id.take() {
+            Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+        }
+        // 与权威终态路径一致：先发信号期间 `terminal_closing` 关闸，
+        // `terminal_emitted` 保证本轮不会再被任何路径二次认领。
+        state.active = false;
+        state.submitted = false;
+        state.turn_id = None;
+        state.terminal_emitted = true;
+        state.terminal_closing = true;
+        drop(state);
+        true
+    }
+
+    /// 认领一个未提交 turn 的终态并补发 `chat:done`，最后重置闸门。
+    ///
+    /// 给 cancel 在 engine 尚未 spawn（reservation 处于 reserved 未 submitted 阶段）
+    /// 时使用：原子认领（关闸防重入）→ 发 `Interrupted` 终态 → 重开闸门。封装成一
+    /// 个方法是为了让调用方（`EnginePool::cancel`，跨模块）不必直接触碰私有的
+    /// 终态收尾逻辑，与权威终态路径一样自包含「发完即重置」。
+    pub(crate) fn emit_unsubmitted_interrupted_terminal(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> bool {
+        if !self.claim_unsubmitted_terminal() {
+            return false;
+        }
+        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        self.finish_terminal_emission();
         true
     }
 }
@@ -1536,13 +1593,23 @@ fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
-        // 连续 recoverable 错误兜底计数（修复本地端点 0-token 反复超时导致的
-        // 「永远正在处理」）：recoverable 错误(如 SSE idle timeout)按原设计不发
-        // chat:done(引擎还会 retry)，但若同一 turn 连续 N 次都 recoverable 且
+        // 连续流式 stall 兜底计数（修复本地端点 0-token 反复超时导致的
+        // 「永远正在处理」）：流式 stall（SSE idle timeout）按原设计不发
+        // chat:done(引擎还会 retry)，但若同一 turn 连续 N 次都 stall 且
         // 从未产出任何 token，说明端点根本没在响应——此时应升级为终态，让前端
         // 收到明确错误并复位 busy，而不是让用户干等数十分钟的重试预算耗尽。
-        let mut recoverable_error_streak: u32 = 0;
-        let mut any_delta_this_turn = false;
+        //
+        // 只计 `Timeout` 类的 recoverable 错误（即真正的流 stall），**不**对所有
+        // recoverable 事件计数：底座的 recoverable 集合很宽（rate limit / server
+        // error / network / context_overflow / stream Overflow / DurationLimit
+        // 等），其中很多是正常轮次里的瞬态抖动或致命但被标 recoverable 的边界，
+        // 一律计数会误杀还在思考/执行工具的有效轮次，与底座自身的恢复和工具降级
+        // 语义冲突。真正的本地端点「prefill 卡死」几乎只表现为反复 stream stall。
+        let mut consecutive_stream_stalls: u32 = 0;
+        // 本轮是否出现过任何有效进度信号（答案 delta、思考 delta、工具调用）。
+        // 出现任一即说明端点在响应，清空 stall 计数；不再仅认 MessageDelta，
+        // 避免对「只思考 / 只跑工具还没产出答案 token」的有效轮次误判为卡死。
+        let mut any_progress_this_turn = false;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -1557,8 +1624,8 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
-                    recoverable_error_streak = 0;
-                    any_delta_this_turn = false;
+                    consecutive_stream_stalls = 0;
+                    any_progress_this_turn = false;
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
                         log::error!(
                             "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
@@ -1573,10 +1640,10 @@ fn spawn_event_forwarder(
                     }
                 }
                 Event::MessageDelta { content, .. } => {
-                    // 模型产出了真实 token → 端点在正常工作，清空 recoverable
-                    // 错误连续计数（后续若再次 idle timeout 才重新累计）。
-                    any_delta_this_turn = true;
-                    recoverable_error_streak = 0;
+                    // 模型产出了真实答案 token → 端点在正常工作，清空 stall 计数
+                    //（后续若再次 idle timeout 才重新累计）。
+                    any_progress_this_turn = true;
+                    consecutive_stream_stalls = 0;
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
@@ -1597,6 +1664,13 @@ fn spawn_event_forwarder(
                 Event::ThinkingDelta { index, content } => {
                     // 只转发底座已经识别为 ThinkingDelta 的独立思考内容。普通
                     // MessageDelta 不做启发式猜测，避免把最终回答误折叠成思考。
+                    // 思考流也是「端点在响应」的信号：本地端点 prefill 期间会持续
+                    // 产出 ThinkingDelta，把它视为有效进度可避免对「只思考、还没
+                    // 产出答案 token」的长推理轮次误判为 stall 卡死而强制取消。
+                    if !content.is_empty() {
+                        any_progress_this_turn = true;
+                        consecutive_stream_stalls = 0;
+                    }
                     let payload =
                         json!({ "session_id": session_id, "index": index, "text": content });
                     let _ = app.emit("chat:reasoning_delta", payload.clone());
@@ -1616,6 +1690,11 @@ fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallStarted { id, name, input } => {
+                    // 模型已发起工具调用 = 本轮在推进，端点有在响应；视为有效进度，
+                    // 清空 stall 计数，避免对「边跑工具边偶发抖动」的有效 agentic
+                    // 轮次误判为卡死。
+                    any_progress_this_turn = true;
+                    consecutive_stream_stalls = 0;
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
@@ -2765,26 +2844,34 @@ fn spawn_event_forwarder(
                             "chat:transient_error",
                             payload,
                         );
-                        // 连续 recoverable 错误兜底：若同一 turn 连续 3 次 recoverable
-                        // 错误且从未产出任何 token，说明端点根本没在响应(典型：本地/
-                        // 局域网端点 prefill 卡住或 SSE 格式不兼容，反复 idle timeout)。
-                        // 底座虽然还会按重试预算继续跑(最长数十分钟)，但用户已干等
-                        // 三个超时周期——此时主动 cancel，让 turn_loop 正常跳出并发
-                        // TurnComplete(Interrupted) → chat:done，前端收到明确反馈而非
-                        // 无限「正在处理」。阈值取 3：单次瞬态错误(云端代理抖动)不会
-                        // 误杀，连续 3 次几乎必然是端点问题。
-                        if !any_delta_this_turn {
-                            recoverable_error_streak = recoverable_error_streak.saturating_add(1);
-                            if recoverable_error_streak >= 3 {
+                        // 连续 stream stall 兜底：仅对 `Timeout` 类的 recoverable
+                        // 错误（即真正的 SSE idle timeout / stream stall）计数。
+                        // 底座的 recoverable 集合很宽（rate limit / server error /
+                        // network / context_overflow / stream Overflow / DurationLimit
+                        // 等），其中：① rate limit / network 抖动是正常轮次的瞬态
+                        // 噪声，不应因连续几次就杀掉还在 retry 的健康轮次；②
+                        // stream Overflow / DurationLimit 虽标 recoverable，但底座
+                        // 随后会 break 并发 TurnComplete 终态，此时再 cancel 是与
+                        // 即将到来的权威终态抢跑道。真正的本地端点「prefill 卡死」
+                        // 几乎只表现为反复 stream stall，把这个症状钉死即可。
+                        // 若同一 turn 连续 3 次 stream stall 且从未出现任何有效进度
+                        //（答案/思考 token、工具调用），说明端点根本没在响应；底座
+                        // 虽然还会按重试预算继续跑(最长数十分钟)，但用户已干等三个
+                        // 超时周期——此时主动 cancel，让 turn_loop 正常跳出并发
+                        // TurnComplete(Interrupted) → chat:done。阈值取 3：单次 stall
+                        //（云端代理抖动）不会误杀，连续 3 次几乎必然是端点问题。
+                        if !any_progress_this_turn && envelope.category == ErrorCategory::Timeout {
+                            consecutive_stream_stalls = consecutive_stream_stalls.saturating_add(1);
+                            if consecutive_stream_stalls >= 3 {
                                 log::warn!(
-                                    "[pinvou3][chat] aborting turn after {recoverable_error_streak} \
-                                     consecutive recoverable errors with zero output sid={} — \
+                                    "[pinvou3][chat] aborting turn after {consecutive_stream_stalls} \
+                                     consecutive stream stalls with zero output sid={} — \
                                      endpoint likely unresponsive: {}",
                                     session_id,
                                     envelope.message
                                 );
                                 approve_handle.cancel();
-                                recoverable_error_streak = 0;
+                                consecutive_stream_stalls = 0;
                             }
                         }
                     } else {
@@ -2983,6 +3070,40 @@ mod turn_lifecycle_tests {
             .on_started_transition("turn-submitted".to_string())
             .is_some());
         assert!(!lifecycle.invalidate_unsubmitted_reservation());
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_blocks_reserve_until_emission_finishes() {
+        // 跨轮竞态回归（见 claim_unsubmitted_terminal 的文档注释）：cancel 在
+        // engine 未 spawn 时补发 chat:done，必须在「认领 → 发终态」之间关闸，
+        // 否则新一轮 reserve 可抢先成功，迟到的 chat:done 会清掉新一轮 busy。
+        // 这里直接断言闸门语义：claim 成功后、finish 前 reserve 必须被拒；
+        // finish 后（终态已发完）才允许下一轮 reserve。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        let reservation = lifecycle.reserve().expect("reserve");
+        // claim 成功 = 进入「终态发送中」临界区。
+        assert!(lifecycle.claim_unsubmitted_terminal());
+        reservation.mark_submitted();
+
+        // 关键不变量：终态尚未发完（terminal_closing=true）时，下一轮 reserve
+        // 必须失败——否则上一轮迟到的 chat:done 会污染新一轮 busy 状态。
+        assert!(
+            lifecycle.reserve().is_err(),
+            "reserve must be rejected while terminal emission is in flight"
+        );
+
+        // 终态发完，闸门重开，下一轮可正常 reserve。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+
+        // 已 submitted 的 turn 不能再被 claim（engine 已接手，走 cancel_current 路径）。
+        let reservation2 = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.claim_unsubmitted_terminal());
         reservation2.mark_submitted();
     }
 
