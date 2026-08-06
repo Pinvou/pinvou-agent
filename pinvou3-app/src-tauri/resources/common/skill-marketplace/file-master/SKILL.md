@@ -18,7 +18,7 @@ metadata:
 3. **删除只能走 `mcp_file_master_file_trash`**（Windows 移入系统回收站；macOS 移入废纸篓 `~/.Trash`；Linux 移入 XDG Trash——均可恢复，via 在结果里注明）。绝不用 `exec_shell`、`apply_patch` 或任何方式直接物理删除用户文件。**Windows 上超过回收站配额的目标（默认约为盘容量 5%）工具会自动改用同级 `_pinvou_filemaster_trash` 目录兜底**（Shell 对超配额对象会静默物理删除且误报成功，不可恢复）；macOS/Linux 上跨卷或失败时同样落 `_pinvou_filemaster_trash` 兜底——此时 `detail` 会明确说明。**物理删除只能走 `mcp_file_master_file_erase`，且仅限 file_trash 移入的备份**（_pinvou_filemaster_trash 兜底 / 系统废纸篓 / XDG Trash 内容，白名单 + 日志准入 + confirm 两步，不可恢复）。
 4. **动文件必须用户点名。** 找到文件后只做"告知位置 / 经同意后打开所在目录"；移动、改名、删除必须用户明确要求并确认后另行处理。
 5. **系统区域是禁区。** `C:\Windows`、`Program Files`、`pagefile.sys`、`hiberfil.sys`、注册表——不碰，只向用户解释。`mcp_file_master_file_trash` 内置白名单也会硬拒绝这些区域。
-6. **清理建议必须附「不清理」出口。** 每次向用户提供清理清单时，同一条回复里必须给出明确选项：① 按清单清理；② 只清理其中一部分（让用户点名）；③ 这次先不清理。严禁只给"清 A/B/C"的封闭清单、替用户默认勾选或默认"全清"；用户选择不清理后，不得反复推销清理。
+6. **清理建议必须附「不清理」出口。** **适用时机：向用户呈现清理清单、弹窗确认/征求确认的那一刻。** 每次向用户提供清理建议（无论 🟢🟡 哪一级）时，同一条回复里必须给出明确选项：① 按清单清理；② 只清理其中一部分（让用户点名）；③ 这次先不清理。严禁只给"清 A/B/C"的封闭清单、替用户默认勾选或默认"全清"；用户选择不清理后，不得反复推销清理。
 
 ## 危险操作警示与免责声明
 
@@ -77,7 +77,7 @@ metadata:
    - 🟡 **需人工判断**：含用户数据（Downloads、微信接收的文件、Documents、其他盘大文件）——给 Top 子项画像，让用户自己挑
    - 🔴 **谨慎/不动**：程序本体、系统区域——只建议"去系统设置里卸载"或使用 Windows 自带磁盘清理（cleanmgr）、存储感知
 4. 对话里**结论先行**：总可释放估算 + 最值得先清的 2-3 项 + 占用最大的一项，细节用列表展开。
-5. 用户点名 → `mcp_file_master_file_trash(paths=[...])`（默认 `confirm=false`，只回预览清单不执行）→ 把预览给用户过目 → 用户确认 → 用相同 paths 加 `confirm=true` 重调。**`confirm=true` 后删除在后台执行**：立即返回 `task_id`（`type=file_trash_submitted`），用 `mcp_file_master_file_trash_status(task_id="<task_id>")` 轮询直到 `status=done`，再按 `results` 逐项汇报（moved/error/rejected）。大目录删除不会阻塞对话。"帮我清一清"这类模糊指令必须先给清单确认范围。
+5. 用户点名 → `mcp_file_master_file_trash(paths=[...])`（默认 `confirm=false`，只回预览清单不执行）→ 把预览给用户过目 → 用户确认 → 用相同 paths 加 `confirm=true` 重调。**`confirm=true` 后删除在后台执行**：立即返回 `task_id`（`type=file_trash_submitted`），用 `mcp_file_master_file_trash_status(task_id="<task_id>")` 轮询直到 `status=done`，再按 `results` 逐项汇报（moved/error/rejected）。大目录删除不会阻塞对话。"帮我清一清"这类模糊指令必须先给清单确认范围。**（此处即铁律 6 的适用时机：把预览清单呈给用户征求确认时，必须附「不清理/自定义」选项。）**
 6. **预览里 `warning` 提示"超过回收站配额"的项**（该目标超过回收站配额约 X，移入回收站会被 Shell 静默物理删除）→ **如实告知用户"该项将移入同级 _pinvou_filemaster_trash 兜底（可恢复，但不释放磁盘空间）"**，确认后按正常流程提交。**移入后（`detail` 注明"未释放磁盘空间"的项）**：告知 `_pinvou_filemaster_trash` 目录的实际路径 + "要真正删除可用 `mcp_file_master_file_erase`（仅限 _pinvou_filemaster_trash 内容，confirm 两步，不可恢复）或手动删除该目录"，并**询问是否需要帮助释放空间**——用户需要时按第 7 步走 file_erase。不要报"已释放空间"。注：file_trash 不支持物理删除（安全边界），超配额恒走 _pinvou_filemaster_trash，不存在"直接删除"选项。
 7. **释放 _pinvou_filemaster_trash 空间（用户明确要求后）** → `mcp_file_master_file_erase(paths=[<_pinvou_filemaster_trash 内路径>])`：默认 `confirm=false` 只回预览清单（含大小）→ 展示给用户 → 用户确认 → `confirm=true` **后台异步执行**，返回 `task_id`，用 `mcp_file_master_file_trash_status(task_id="<task_id>")` 轮询到 `status=done` 再汇报逐项结果（erased/error/rejected）。**物理删除不可恢复**，对应删除日志记录标记 erased，`file_restore` 不再列出且 restore 会明确报"已被物理删除"；务必让用户知情后再执行。
 8. 删完汇报实际释放的空间，并提醒：文件在回收站，误删可恢复（`mcp_file_master_file_restore`）。
