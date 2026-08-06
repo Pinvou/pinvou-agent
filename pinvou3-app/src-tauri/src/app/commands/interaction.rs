@@ -123,7 +123,13 @@ pub async fn accept_plan(
             accepted_mode_state.clone(),
         ))
         .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
-    let instruction = accept_plan_instruction(&plan_markdown);
+    let instruction = super::multiagent::prepend_delegation_reminder(
+        pool.inner(),
+        &session_id,
+        accepted_mode_state.multi_agent,
+        &plan_markdown,
+        accept_plan_instruction(&plan_markdown),
+    );
     let display_content = display_message
         .map(|message| message.trim().to_string())
         .filter(|message| !message.is_empty())

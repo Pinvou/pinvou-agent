@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::assistant::engine_pool::user_display_message;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryProfileState {
@@ -545,9 +546,21 @@ pub async fn edit_last_turn(
     let sid = session_id
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
+    let reservation = pool
+        .reserve_turn(&sid)
+        .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
+    let mode_state = store.mode_state(&sid);
+    let full = super::multiagent::prepend_delegation_reminder(
+        pool.inner(),
+        &sid,
+        mode_state.multi_agent,
+        &new_message,
+        new_message.clone(),
+    );
+    let display_message = user_display_message(new_message);
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
-    pool.edit_last_turn(&sid, new_message)
+    pool.edit_last_turn_reserved(&sid, full, display_message, reservation)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
 }

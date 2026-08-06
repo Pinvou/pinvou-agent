@@ -215,20 +215,15 @@ pub(crate) async fn chat_with_reservation(
     }
     // 取该 session 的 mode 状态（mode + 多智能体开关）。
     let mode_state = store.mode_state(&sid);
-    // 多智能体模式（ADR-0006）：开着就每轮把主动委派提醒拼在用户消息前。
-    // 每轮重申而非首轮一次性教学——长上下文里开头信号的遵循率会衰减
-    // （skill phase marker 同款教训），关掉开关即停止注入。
-    if mode_state.multi_agent {
-        let delegation_context = if pool.is_code_session(&sid) {
-            super::multiagent::DelegationContext::Code
-        } else {
-            super::multiagent::DelegationContext::Work
-        };
-        full = format!(
-            "{}\n\n---\n\n{full}",
-            super::multiagent::delegation_reminder(delegation_context, &raw_message)
-        );
-    }
+    // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用提醒组装；每轮
+    // 重申而非首轮一次性教学，关掉开关即保持原消息不变。
+    full = super::multiagent::prepend_delegation_reminder(
+        pool,
+        &sid,
+        mode_state.multi_agent,
+        &raw_message,
+        full,
+    );
     let mode = mode_state.mode;
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);

@@ -401,7 +401,7 @@ const dict = {
         uiConversation: conversationZh,
         uiMultiAgent: {
           toggleLabel:'多智能体模式',
-          toggleHint:'开启后本会话可主动委派子智能体（专家协作），关闭不影响在跑的子智能体',
+          toggleHint:'开启后本会话可主动委派子智能体（专家协作）；关闭会回收引擎，并取消仍在运行的子智能体',
           drawerTitle:role=>`子智能体 · ${role}`, close:'关闭', loadingTranscript:'正在读取对话记录…',
           emptyTranscript:'还没有落盘的对话记录（子智能体可能刚启动）。',
           panelResize:'调整面板宽度', panelResizeHint:'拖拽调整宽度，双击恢复默认',
@@ -741,7 +741,7 @@ const dict = {
         uiConversation: conversationEn,
         uiMultiAgent: {
           toggleLabel:'Multi-agent mode',
-          toggleHint:'Let this conversation delegate to subagents (expert collaboration); turning it off never interrupts running subagents',
+          toggleHint:'Let this conversation delegate to subagents (expert collaboration); turning it off recycles the engine and cancels any subagents still running',
           drawerTitle:role=>`Subagent · ${role}`, close:'Close', loadingTranscript:'Loading conversation…',
           emptyTranscript:'No saved conversation yet. The subagent may have just started.',
           panelResize:'Resize panel', panelResizeHint:'Drag to resize; double-click to reset',
@@ -1080,7 +1080,7 @@ const dict = {
         uiConversation: conversationJa,
         uiMultiAgent: {
           toggleLabel:'マルチエージェントモード',
-          toggleHint:'この会話からサブエージェントへ委任できるようにする（専門家連携）。オフにしても実行中のサブエージェントは中断されない',
+          toggleHint:'この会話からサブエージェントへ委任できるようにする（専門家連携）。オフにするとエンジンを回収し、実行中のサブエージェントをキャンセルする',
           drawerTitle:role=>`サブエージェント · ${role}`, close:'閉じる', loadingTranscript:'会話を読み込み中…',
           emptyTranscript:'保存済みの会話はまだありません。サブエージェントが起動直後の可能性があります。',
           panelResize:'パネル幅を調整', panelResizeHint:'ドラッグで幅を調整、ダブルクリックで既定に戻す',
