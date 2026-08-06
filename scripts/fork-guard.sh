@@ -30,7 +30,7 @@ fingerprints=(
   "T3|项目上下文仅走 inline              |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_pinvou3_uses_only_inline_project_context"
   "T3|密封静态 prompt composer           |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
   "T3|instructions 不受 4KB fragment 截断|CodeWhale/crates/tui/src/prompts.rs|fn forkguard_permissions_fragment_preserves_instructions_beyond_default_fragment_cap"
-  "T3|skill 来源收敛到 bundle            |CodeWhale/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
+  "T3|skill 发现单一配置根注入           |CodeWhale/crates/tui/src/skills/mod.rs|existing_skill_dirs(Vec::new())"
   "T3|停用 skill 不进入目录              |CodeWhale/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
   "T3|内部提醒不污染 Working Set         |CodeWhale/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
 

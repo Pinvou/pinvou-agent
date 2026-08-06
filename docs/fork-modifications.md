@@ -60,6 +60,15 @@
   - 静态 prompt composer 由 app 接管，默认层和运行时策略按 composer gate 密封。
   - 不再扫描仓库 constitution / AGENTS / CLAUDE 等外部 project context；pinvou3 只用 app 注入的 inline instructions，项目规则（`AGENTS.md`）由 app 侧受限注入（仅绑项目代码会话，root→cwd 各层；不越过用户家目录——project_root 与 home 同函数归一化后比较，Windows 上边界真实生效；symlink/非普通文件拒读；归一化失败 fail-closed；见 `docs/code-native-agent.md` §8.5）。
   - skill 来源收敛到 `~/.pinvou3/bundle/skills`，并保留市场停用过滤。
+  - （skill-scope-governance 2026-08-06）`skills_directories_with_home_and_mode` 不再硬编码
+    `~/.pinvou3/bundle/skills`：技能发现**完全由 `EngineConfig.skills_dir` 单一配置根
+    注入**（`_and_dir` 变体的 `insert_configured_skills_dir`；app 全链路恒设该字段）。
+    `discover_in_workspace`（skills_dir=None 分支）返回空集。理由：bundle/skills 同时是
+    `EngineConfig.skills_dir` 的值，双入口使 app 的「按会话组合 skills_dir」（组合目录 =
+    该会话 scope 启用集，含双 scope 禁用过滤）永远无法从发现集排除 bundle/skills 原件，
+    组合目录过滤失效、`## Skills` 仍印出禁用技能与磁盘路径（泄露面）。守护：
+    `forkguard_skill_discovery_is_single_root_engine_config_skills_dir`（无 skills_dir 发现
+    集为空、`_and_dir` 只扫注入目录）。
   - 内部 `<system-reminder>` 不参与 Working Set 路径提取。
   - instructions/用户记忆 fragment 沿用 100KB 指令上限，避免被 v0.9 WorldState 默认 4KB 静默截断。
 - **为什么留 fork**：这是 pinvou3 的单一知识/指令来源和 prefix-cache 稳定性约束，上游通用 CLI 不能默认采用。
