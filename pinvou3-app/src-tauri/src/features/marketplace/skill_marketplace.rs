@@ -89,6 +89,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             icon: "BookOpen",
             color: "bg-gradient-to-b from-sky-500 to-indigo-600",
         },
+        SkillManifest {
+            id: "file-master",
+            skill_name: "file-master",
+            source_dir: "file-master",
+            title: "文件管理大师",
+            subtitle: "本机找文件 / C 盘占用三级风险分析 / 回收站安全删除与还原",
+            description: "一个技能管好本机文件：找文件按文件名/目录名秒搜常用目录并兜底主目录（AppData 下应用目录也能命中，支持扩展名/修改时间过滤），配合搜索阶梯与中文 Windows 路径先验提高一次命中率；磁盘清理只读扫描系统盘与非系统盘并逐层下钻，按 🟢🟡🔴 三级风险说清“这是什么数据”，用户点名的项后台移入系统回收站（可恢复，绝不物理删除），删错了可按日志一键还原，还能一键清空回收站释放空间。随工具商店的「文件管理大师」工具挂载生效。",
+            icon: "FolderOpen",
+            color: "bg-gradient-to-b from-slate-500 to-slate-700",
+        },
     ]
 }
 
@@ -694,6 +704,57 @@ mod tests {
             .any(|s| s.id == "ima-skills" && s.installed));
 
         mgr.uninstall("ima-skills").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// file-master 配套技能随 marketplace 安装/卸载的全链路(manifest `companion_skills`
+    /// 机制);SKILL.md 必须引用 MCP 工具名而非旧 Rust 工具名,且同时覆盖查找与清理双流程。
+    #[test]
+    fn install_file_master_companion_skills_roundtrip() {
+        let tmp = fresh_dir("filemaster");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("file-master").unwrap();
+        let skill_dir = tmp.join("file-master");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("file-master")
+        );
+        assert_eq!(
+            std::fs::read_to_string(skill_dir.join(".installed-from"))
+                .unwrap()
+                .trim(),
+            "pinvou3-marketplace:file-master"
+        );
+        let body = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        for tool in [
+            "mcp_file_master_file_find",
+            "mcp_file_master_disk_scan",
+            "mcp_file_master_file_trash",
+            "mcp_file_master_file_trash_status",
+            "mcp_file_master_file_empty_recycle",
+            "mcp_file_master_file_erase",
+            "mcp_file_master_file_restore",
+        ] {
+            assert!(body.contains(tool), "应引用 MCP 工具名 {tool}");
+        }
+        assert!(
+            body.contains("文件管理大师"),
+            "应说明随工具市场「文件管理大师」挂载生效"
+        );
+        assert!(
+            !body.contains("`file_find`")
+                && !body.contains("`disk_scan`")
+                && !body.contains("`file_trash`"),
+            "不应残留旧 Rust 工具名引用"
+        );
+
+        let listed = mgr.list_skills();
+        assert!(listed.iter().any(|s| s.id == "file-master" && s.installed));
+
+        mgr.uninstall("file-master").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
         let _ = std::fs::remove_dir_all(&tmp);
     }
