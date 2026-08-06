@@ -68,6 +68,10 @@ const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
+// The current CodeWhale base stores delegated-agent state in the execution
+// workspace. Keep native Code delegation unavailable until the base exposes a
+// session-owned state root; the Rust policy independently enforces this gate.
+const NATIVE_CODE_MULTI_AGENT_AVAILABLE = false;
 
 function unifiedConversationUiEnabled() {
   try {
@@ -1318,8 +1322,11 @@ export function CodexAcpView({
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
   // mode 由后端 get_mode_state 驱动（code 会话首次默认 Plan），不写死初值。
-  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: CODE_MODE_FALLBACK });
-  const [nativeDraftControls, setNativeDraftControls] = useState({});
+  const [nativeControls, setNativeControls] = useState({
+    modelId: null,
+    mountedId: null,
+    mode: CODE_MODE_FALLBACK,
+  });  const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
@@ -2949,8 +2956,7 @@ export function CodexAcpView({
                           title={busy || working ? t.modelSwitchBusy : undefined}
                           footerAction={nativeManageModelsAction}
                         />
-                      )}
-                      <ComposerToolMenu
+                      )}                      <ComposerToolMenu
                         t={t}
                         onGotoTools={onGotoTools}
                         compact={false}

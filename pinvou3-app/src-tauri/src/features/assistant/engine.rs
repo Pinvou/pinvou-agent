@@ -981,8 +981,9 @@ impl AppEngine {
             None
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
-        let multi_agent_enabled =
-            scheduled_profile.is_none() && store.mode_state(session_id).multi_agent;
+        let multi_agent_enabled = scheduled_profile.is_none()
+            && bridge.session_policy(session_id).multi_agent_available()
+            && store.mode_state(session_id).multi_agent;
         let workspace = store
             .session_roots(session_id)
             .map(|roots| roots.execution)

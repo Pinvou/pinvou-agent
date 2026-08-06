@@ -1325,6 +1325,12 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // Native Code sessions must not reach the base agent/workflow surface
+        // while CodeWhale persists delegated state in the project workspace.
+        // Keep the ordinary Work behavior (including a user-level opt-out)
+        // unchanged, and make the temporary Code restriction fail closed at
+        // engine construction rather than relying on the hidden UI control.
+        cfg.subagents_enabled &= self.session_policy(session_id).multi_agent_available();
         cfg
     }
 
@@ -1337,14 +1343,21 @@ impl Pinvou3Bridge {
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
     /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆
     /// 一层，第二层不得继续派生。工作模式直属并行 4 / 全树准入 8；原生 Code
-    /// 模式直属并行 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch
-    /// gate，但仍受整棵树的准入上限约束。
+    /// 预留的直属并行 6 / 全树准入 12 当前位于能力门禁之后，不可达。更深后代为
+    /// 避免父子互等死锁不占直属 launch gate，但仍受整棵树的准入上限约束。
     pub fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
         workspace: PathBuf,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
+        // Keep this higher-level builder fail-closed too. AppEngine currently
+        // selects it only for an available session, but a future caller must
+        // not be able to project expert profiles into a native Code project by
+        // calling the builder directly while the product gate is closed.
+        if !self.session_policy(session_id).multi_agent_available() {
+            return cfg;
+        }
         // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
         // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
         // 开启之前，这里只兜底记录。
@@ -4245,6 +4258,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn code_session_disables_delegated_agents_until_state_root_is_isolated() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "code-session"
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-multiagent-gate-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+
+        let plain = bridge.build_engine_config_for_session_at("plain-session", root.join("plain"));
+        let code_workspace = root.join("code");
+        let code =
+            bridge.build_engine_config_for_multi_agent("code-session", code_workspace.clone());
+
+        assert!(plain.subagents_enabled, "Work 会话保持底座委派能力");
+        assert!(
+            !code.subagents_enabled,
+            "Code 会话必须等底座提供会话级状态根后再开放委派"
+        );
+        assert!(
+            code.hook_executor.is_none(),
+            "Code 会话不得装配多智能体专用 hook"
+        );
+        assert!(
+            !code_workspace.join(".codewhale").exists(),
+            "Code 会话不得向用户项目投影专家名册"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
@@ -4326,13 +4372,11 @@ mod tests {
         }));
         let code_cfg =
             code_bridge.build_engine_config_for_multi_agent("ma-code", workspace.clone());
-        assert_eq!(code_cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
-        assert_eq!(code_cfg.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
-        assert_eq!(
-            code_cfg.max_admitted_subagents,
-            MULTI_AGENT_CODE_MAX_ADMITTED
+        assert!(!code_cfg.subagents_enabled);
+        assert!(
+            code_cfg.hook_executor.is_none(),
+            "能力门禁后的 Code 配置不得装配多智能体资源策略"
         );
-        assert_eq!(code_cfg.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

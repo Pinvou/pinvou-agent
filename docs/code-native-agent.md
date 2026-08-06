@@ -63,9 +63,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 聊天页输入框底栏四控件（Plan/Yolo、模型、工具菜单、知识库挂载）搬入代码模块原生车道，视觉对齐 ACP 配置组（`CodexComposerConfigSelect` pill 形态）。关键约束：bridge 的 models/knowledge/interaction 方法绑聊天 active 且草稿态会物化聊天会话，代码车道一律直调 per-session Tauri 命令显式传 sessionId；草稿态选择暂存，建会话后按序应用（model → kb → mode），失败显式报错。
 
+多智能体开关暂不在原生 Code 车道显示。当前 CodeWhale 把 delegated-agent 状态固定在执行工作区，不能与 Pinvou 的私有应用账本根对齐；`SessionPolicy`、引擎配置和 IPC 命令共同 fail-closed。待底座提供可注入的会话级状态根，并把专家名册改为会话私有或内存装配后再恢复入口。本期不会主动删除项目内既有的 `exp-*` 专家文件（无法可靠证明所有权），但不会再为 Code 会话创建、覆盖或刷新这些文件。
+
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 
-- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`multi_agent_available()`（本期仅 plain 开放）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
 - 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
 

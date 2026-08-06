@@ -539,15 +539,15 @@ try {
     'Codex ordered lists must retain numbering after Tailwind preflight');
 
   // 原生（品悟）车道底栏四控件契约：仅 isNativeAgent 渲染；模型控件复用聊天
-  // ComposerModelSelector，以便多智能体开关仍位于模型列表底部。其余配置保持
-  // ACP 胶囊视觉；所有控件直调 per-session 命令，不复用 bridge 聊天 active 绑定。
+  // ComposerModelSelector，但在底座支持会话级状态根前显式隐藏多智能体开关。
+  // 其余配置保持 ACP 胶囊视觉；所有控件直调 per-session 命令，不复用 bridge 聊天 active 绑定。
   const composerControls = readFileSync(path.join(root, 'src', 'features', 'chat', 'composer-controls.jsx'), 'utf8');
   assert.ok(codexView.includes('data-testid="native-composer-controls"')
     && codexView.includes('{isNativeAgent && (')
     && codexView.includes('testId="native-mode"')
     && codexView.includes('<ComposerModelSelector')
-    && codexView.includes('multiAgentEnabled={nativeMultiAgentEnabled}')
-    && codexView.includes('multiAgentAvailable')
+    && codexView.includes('const NATIVE_CODE_MULTI_AGENT_AVAILABLE = false')
+    && codexView.includes('multiAgentAvailable={NATIVE_CODE_MULTI_AGENT_AVAILABLE}')
     && codexView.includes('testId="native-kb"')
     && codexView.includes('triggerVariant="pill"')
     && codexView.includes('triggerTestId="native-tools"')
