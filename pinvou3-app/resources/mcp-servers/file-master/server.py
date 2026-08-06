@@ -46,6 +46,10 @@ if PLATFORM == "win32":
 FIND_TIME_BUDGET_SEC = 12.0    # 搜索预算：主目录全量遍历约 9.2s（实测），8s 恒截断；
                                # 12s 完整覆盖主目录 + 余量；引擎 execute_timeout 120s 有余
 FIND_MAX_LIMIT = 50
+FIND_ASYNC_BUDGET_SEC = 90.0   # 异步全量收集预算（后台线程，不受同步 12s 限制；
+                               # 引擎 execute_timeout 120s 内有余量）
+FIND_ASYNC_MAX_HITS = 5000     # 全量收集硬上限（防内存爆炸，超出如实告知截断）
+FIND_ASYNC_MAX_TASKS = 4       # 并发异步搜索任务上限（超出拒绝，模型可稍后重试）
 
 # 隐私 / 高 churn 目录剪枝（目录名小写匹配；命中即不向下递归）
 PRUNE_DIR_NAMES = {
@@ -438,22 +442,12 @@ def _parse_size_mb(name, value):
     return int(v * 1024 * 1024), None
 
 
-def file_find(query="", limit=20, dir=None, extensions=None,
-              modified_after=None, modified_before=None,
-              min_size_mb=None, max_size_mb=None,
-              sort_by="relevance", order="desc", exclude_dirs=None):
-    """按概率序搜索文件/目录名（多词 AND + 相关度评分），满 limit 或超预算即停。
-    extensions: 扩展名过滤（目录不参与）；modified_after/modified_before: YYYY-MM-DD；
-    min_size_mb/max_size_mb: 大小过滤（MB，只作用于文件）；
-    sort_by: relevance(默认，全词>前缀>子串，同分按修改时间)/mtime/size/name；
-    order: desc(默认)/asc；exclude_dirs: 额外排除的同名目录。"""
+def _prepare_find(query, dir, extensions, modified_after, modified_before,
+                  min_size_mb, max_size_mb, sort_by, order, exclude_dirs):
+    """解析并校验 file_find 类搜索的全部参数（同步/异步共用，保证参数语义一致）。
+    返回 dict（含 words/filters/prune_extra/priority_roots/fallback_root/coverage/
+    sort_by/reverse），参数非法时返回 {"error": ...}。"""
     query = (query or "").strip()
-    try:
-        limit = int(limit)
-    except (TypeError, ValueError):
-        limit = 20
-    limit = max(1, min(limit, FIND_MAX_LIMIT))
-
     sort_by = (sort_by or "relevance").strip().lower()
     if sort_by == "modified":
         sort_by = "mtime"  # 模型直觉别名（"按修改时间"）；评估实测模型首猜 modified
@@ -541,6 +535,65 @@ def file_find(query="", limit=20, dir=None, extensions=None,
         fallback_root = home if os.path.isdir(home) else None
         coverage = ("按概率序搜索 " + "/".join(PRIORITY_DIR_NAMES) +
                     "（存在的），再对用户主目录整体兜底（含 AppData 下应用目录）")
+    return {
+        "words": words, "filters": filters, "prune_extra": prune_extra,
+        "priority_roots": priority_roots, "fallback_root": fallback_root,
+        "coverage": coverage, "sort_by": sort_by, "reverse": reverse,
+    }
+
+
+def _sort_find_results(matches, sort_by, reverse):
+    """按 sort_by/order 排序收集结果（同步/异步搜索共用，保证排序语义一致）。"""
+    results = list(matches.values())
+    # 末级兜底 name（升序）先排：同分同 mtime 时结果确定性（稳定排序保持该序）
+    results.sort(key=lambda r: r["name"].lower())
+    if sort_by == "relevance":
+        # 相关度优先；order=asc 时分数升序，同分仍按修改时间从新到旧
+        if reverse:
+            results.sort(key=lambda r: (-r["score"], -r["mtime"]))
+        else:
+            results.sort(key=lambda r: (r["score"], -r["mtime"]))
+    elif sort_by == "mtime":
+        results.sort(key=lambda r: r["mtime"], reverse=reverse)
+    elif sort_by == "size":
+        # 目录 size=None 恒排最后（不能靠 reverse 翻转，需两分支固定目录末尾）
+        if reverse:
+            results.sort(key=lambda r: (r["size"] is None, -(r["size"] or 0)))
+        else:
+            results.sort(key=lambda r: (r["size"] is None, r["size"] or 0))
+    else:  # name：大小写不敏感
+        results.sort(key=lambda r: r["name"].lower(), reverse=reverse)
+    return results
+
+
+def file_find(query="", limit=20, dir=None, extensions=None,
+              modified_after=None, modified_before=None,
+              min_size_mb=None, max_size_mb=None,
+              sort_by="relevance", order="desc", exclude_dirs=None):
+    """按概率序搜索文件/目录名（多词 AND + 相关度评分），满 limit 或超预算即停。
+    extensions: 扩展名过滤（目录不参与）；modified_after/modified_before: YYYY-MM-DD；
+    min_size_mb/max_size_mb: 大小过滤（MB，只作用于文件）；
+    sort_by: relevance(默认，全词>前缀>子串，同分按修改时间)/mtime/size/name；
+    order: desc(默认)/asc；exclude_dirs: 额外排除的同名目录。"""
+    query = (query or "").strip()
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, FIND_MAX_LIMIT))
+
+    prep = _prepare_find(query, dir, extensions, modified_after, modified_before,
+                         min_size_mb, max_size_mb, sort_by, order, exclude_dirs)
+    if "error" in prep:
+        return prep
+    words = prep["words"]
+    filters = prep["filters"]
+    prune_extra = prep["prune_extra"]
+    priority_roots = prep["priority_roots"]
+    fallback_root = prep["fallback_root"]
+    coverage = prep["coverage"]
+    sort_by = prep["sort_by"]
+    reverse = prep["reverse"]
 
     deadline = time.monotonic() + FIND_TIME_BUDGET_SEC
     matches = {}
@@ -564,25 +617,7 @@ def file_find(query="", limit=20, dir=None, extensions=None,
                      prune_extra=prune_extra)
         searched.append(fallback_root)
 
-    results = list(matches.values())
-    # 末级兜底 name（升序）先排：同分同 mtime 时结果确定性（稳定排序保持该序）
-    results.sort(key=lambda r: r["name"].lower())
-    if sort_by == "relevance":
-        # 相关度优先；order=asc 时分数升序，同分仍按修改时间从新到旧
-        if order == "desc":
-            results.sort(key=lambda r: (-r["score"], -r["mtime"]))
-        else:
-            results.sort(key=lambda r: (r["score"], -r["mtime"]))
-    elif sort_by == "mtime":
-        results.sort(key=lambda r: r["mtime"], reverse=reverse)
-    elif sort_by == "size":
-        # 目录 size=None 恒排最后（不能靠 reverse 翻转，需两分支固定目录末尾）
-        if order == "desc":
-            results.sort(key=lambda r: (r["size"] is None, -(r["size"] or 0)))
-        else:
-            results.sort(key=lambda r: (r["size"] is None, r["size"] or 0))
-    else:  # name：大小写不敏感
-        results.sort(key=lambda r: r["name"].lower(), reverse=reverse)
+    results = _sort_find_results(matches, sort_by, reverse)
     total_hits = len(results)  # 压缩前收集到的全部命中数（截断信号 + 保险丝 note 用）
     results = results[:limit]
     for r in results:  # 剔除内部字段
@@ -598,15 +633,15 @@ def file_find(query="", limit=20, dir=None, extensions=None,
         notes.append("多词 AND（%s）：所有词都需命中" % "/".join(words))
     if filters:
         parts = []
-        if exts:
-            parts.append("扩展名限定 ." + "/.".join(sorted(exts)))
-        if after_ts is not None:
+        if filters.get("exts"):
+            parts.append("扩展名限定 ." + "/.".join(sorted(filters["exts"])))
+        if filters.get("after") is not None:
             parts.append("修改时间不早于 %s" % modified_after)
-        if before_ts is not None:
+        if filters.get("before") is not None:
             parts.append("修改时间早于 %s" % modified_before)
-        if min_size is not None:
+        if filters.get("min_size") is not None:
             parts.append("大小 ≥ %s" % min_size_mb)
-        if max_size is not None:
+        if filters.get("max_size") is not None:
             parts.append("大小 ≤ %s" % max_size_mb)
         notes.append("已按 " + "、".join(parts) + " 过滤")
     notes.append({
@@ -647,6 +682,135 @@ def file_find(query="", limit=20, dir=None, extensions=None,
                                          "（可用 dir/关键词收窄）" % (total_hits, len(results))])
         out["truncated"] = True  # 与超时/限流同语义：结果可能不全
     return out
+
+
+# ── 异步全量搜索（找全场景：后台收集 + 轮询分页）─────────────────────────
+# 同步 file_find 只有 12s 预算 + 3×limit 收集上限，永远近似；"找全/所有副本"
+# 类需求走这里：后台线程全量收集（90s 预算、5000 条硬上限），file_find_status
+# 轮询到 done 后按页取完。任务表复用 file_trash 的 _tasks 基础设施（TTL 惰性清理）。
+
+
+def _submit_find_task(prep):
+    """提交异步搜索任务；并发超限返回 {"error": ...}。"""
+    _prune_tasks()
+    with _tasks_lock:
+        active = sum(1 for t in _tasks.values()
+                     if t.get("kind") == "find" and t["status"] == "running")
+        if active >= FIND_ASYNC_MAX_TASKS:
+            return {"error": "并发搜索任务已达上限（%d），请稍后重试" % FIND_ASYNC_MAX_TASKS}
+    task_id = _next_task_id()
+    with _tasks_lock:
+        _tasks[task_id] = {
+            "id": task_id, "kind": "find", "status": "running",
+            "prep": prep, "collected": 0,
+            "created_at": _fmt_mtime(time.time()),
+        }
+    threading.Thread(target=_find_worker, args=(task_id,), daemon=True).start()
+    return task_id
+
+
+def _find_worker(task_id):
+    """后台线程体：全量收集（预算 FIND_ASYNC_BUDGET_SEC、上限 FIND_ASYNC_MAX_HITS），
+    完成后存排序结果。绝不写 stdout——stdio JSON-RPC 流只能主线程写。"""
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+    if task is None:
+        return
+    prep = task["prep"]
+    deadline = time.monotonic() + FIND_ASYNC_BUDGET_SEC
+    matches = {}
+    state = {"hit_limit": False, "timed_out": False}
+    roots = prep["priority_roots"]
+    if roots:
+        _iter_search(prep["words"], roots, [], deadline, matches, FIND_ASYNC_MAX_HITS,
+                     state, filters=prep["filters"], visited=_seed_visited(roots),
+                     prune_extra=prep["prune_extra"])
+        with _tasks_lock:
+            task["collected"] = len(matches)
+    fb = prep["fallback_root"]
+    if fb and not state["hit_limit"] and not state["timed_out"]:
+        _iter_search(prep["words"], [fb], roots, deadline, matches, FIND_ASYNC_MAX_HITS,
+                     state, filters=prep["filters"],
+                     visited=_seed_visited([fb] + (roots or [])),
+                     prune_extra=prep["prune_extra"])
+        with _tasks_lock:
+            task["collected"] = len(matches)
+    results = _sort_find_results(matches, prep["sort_by"], prep["reverse"])
+    with _tasks_lock:
+        task["results"] = results
+        task["total_hits"] = len(results)
+        task["hit_limit"] = state["hit_limit"]
+        task["timed_out"] = state["timed_out"]
+        task["finished_at"] = _fmt_mtime(time.time())
+        task["finished_ts"] = time.time()
+        task["status"] = "done"
+
+
+def file_find_async(query="", dir=None, extensions=None, modified_after=None,
+                    modified_before=None, min_size_mb=None, max_size_mb=None,
+                    sort_by="relevance", order="desc", exclude_dirs=None):
+    """异步全量搜索：提交后台收集任务，立即返回 task_id；用 file_find_status
+    轮询进度并按页取结果。适合"找全/所有副本"场景——同步 file_find 只有 12s
+    预算 + 3×limit 收集上限，永远近似。参数语义与 file_find 完全一致。"""
+    query = (query or "").strip()
+    prep = _prepare_find(query, dir, extensions, modified_after, modified_before,
+                         min_size_mb, max_size_mb, sort_by, order, exclude_dirs)
+    if "error" in prep:
+        return prep
+    task_id = _submit_find_task(prep)
+    if isinstance(task_id, dict):  # 并发超限等错误
+        return task_id
+    return {
+        "type": "file_find_submitted",
+        "task_id": task_id,
+        "note": ("全量搜索已在后台执行（预算 %d 秒、收集上限 %d 条），"
+                 "用 file_find_status(task_id=..., page=1) 轮询到 done 后按页取完结果。"
+                 % (int(FIND_ASYNC_BUDGET_SEC), FIND_ASYNC_MAX_HITS)),
+    }
+
+
+def file_find_status(task_id=None, page=1, limit=50):
+    """轮询异步搜索任务：status=running/done；done 后按页返回排序结果（每页 ≤50 条）。
+    越界页收敛到最后一页；任务完成保留 TTL 后惰性清理。"""
+    if not task_id:
+        return {"error": "task_id 必填"}
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, FIND_MAX_LIMIT))
+    _prune_tasks()
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+    if task is None or task.get("kind") != "find":
+        return {"error": "任务不存在或已过期（完成保留 %d 秒）" % TRASH_TASK_TTL_SEC}
+    base = {"type": "file_find_status", "task_id": task_id,
+            "status": task["status"], "collected": task.get("collected", 0)}
+    if task["status"] == "running":
+        base["note"] = "搜索进行中，稍后重试（全量收集不受同步 12s 预算限制）"
+        return base
+    total_hits = task.get("total_hits", 0)
+    total_pages = max(1, (total_hits + limit - 1) // limit)
+    page = min(page, total_pages)
+    page_results = [dict(r) for r in task["results"][(page - 1) * limit: page * limit]]
+    for r in page_results:
+        r.pop("mtime", None)
+        r.pop("score", None)
+    notes = ["共 %d 条命中，分 %d 页；用 page 参数逐页取完（每页 ≤%d 条）"
+             % (total_hits, total_pages, limit)]
+    if task.get("hit_limit"):
+        notes.append("命中数达到收集上限 %d，结果已截断（可加 dir 定向缩小范围）"
+                     % FIND_ASYNC_MAX_HITS)
+    if task.get("timed_out"):
+        notes.append("超过 %d 秒全量预算提前停止，结果可能不全" % int(FIND_ASYNC_BUDGET_SEC))
+    base.update({"page": page, "total_pages": total_pages,
+                 "total_hits": total_hits, "count": len(page_results),
+                 "results": page_results, "note": "；".join(notes)})
+    return base
 
 
 # ── disk_scan ────────────────────────────────────────────────────────────
@@ -2536,6 +2700,52 @@ TOOL_DEFS = [
         },
     },
     {
+        "name": "file_find_async",
+        "description": (
+            "异步全量搜索：提交后台收集任务立即返回 task_id，用 file_find_status 轮询并按页取结果。"
+            "**适用场景：用户要求\"找全/所有/全部副本\"时**——同步 file_find 只有 12 秒预算 + "
+            "3×limit 收集上限，永远近似；本工具后台全量收集（90 秒预算、上限 5000 条），"
+            "结果分页取完（total_pages 页）。参数语义与 file_find 完全一致。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "文件名关键词（可选；多词 AND；留空=纯类型搜索需配过滤条件）"},
+                "dir": {"type": "string", "description": "可选绝对路径：定向只搜该目录"},
+                "extensions": {"type": "array", "items": {"type": "string"},
+                               "description": "可选扩展名过滤（如 [\"exe\",\"msi\"]）"},
+                "modified_after": {"type": "string", "description": "修改时间不早于（YYYY-MM-DD 或相对天数 Nd）"},
+                "modified_before": {"type": "string", "description": "修改时间早于（YYYY-MM-DD 或相对天数 Nd）"},
+                "min_size_mb": {"type": "number", "description": "大小下限（MB，只作用于文件）"},
+                "max_size_mb": {"type": "number", "description": "大小上限（MB，只作用于文件）"},
+                "sort_by": {"type": "string", "enum": ["relevance", "mtime", "size", "name"],
+                            "default": "relevance", "description": "排序方式（modified 是 mtime 别名）"},
+                "order": {"type": "string", "enum": ["desc", "asc"], "default": "desc"},
+                "exclude_dirs": {"type": "array", "items": {"type": "string"},
+                                 "description": "可选额外排除的同名目录"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "file_find_status",
+        "description": (
+            "轮询异步搜索任务（file_find_async 提交的）：status=running/done；done 后按页返回"
+            "排序结果。**必须轮询到 done 再按 total_pages 逐页取完（page 1..total_pages），"
+            "每页 ≤50 条**。任务完成保留 1 小时后清理。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "file_find_async 返回的 task_id（必填）"},
+                "page": {"type": "integer", "default": 1, "description": "页码，从 1 开始"},
+                "limit": {"type": "integer", "default": 50,
+                          "description": "每页条数，默认 50，上限 50"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "disk_layout",
         "description": (
             "本机盘符组成（毫秒级，不扫描目录）：全部盘符 + system 系统盘标识 + 容量/剩余。"
@@ -2574,6 +2784,21 @@ def _call_tool(name, args):
                          sort_by=args.get("sort_by", "relevance"),
                          order=args.get("order", "desc"),
                          exclude_dirs=args.get("exclude_dirs"))
+    if name == "file_find_async":
+        return file_find_async(query=args.get("query", ""),
+                               dir=args.get("dir"),
+                               extensions=args.get("extensions"),
+                               modified_after=args.get("modified_after"),
+                               modified_before=args.get("modified_before"),
+                               min_size_mb=args.get("min_size_mb"),
+                               max_size_mb=args.get("max_size_mb"),
+                               sort_by=args.get("sort_by", "relevance"),
+                               order=args.get("order", "desc"),
+                               exclude_dirs=args.get("exclude_dirs"))
+    if name == "file_find_status":
+        return file_find_status(task_id=args.get("task_id"),
+                                page=args.get("page", 1),
+                                limit=args.get("limit", 50))
     if name == "disk_layout":
         return disk_layout()
     if name == "disk_scan":
@@ -2608,7 +2833,7 @@ def _handle(msg):
         _result(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-file-master", "version": "1.7.2"},
+            "serverInfo": {"name": "pinvou3-file-master", "version": "1.7.3"},
         })
     elif method == "ping":
         # MCP 标准保活；部分 SDK 客户端连上即发，不支持会被判协议错误

@@ -4,12 +4,12 @@ description: 本机文件管理——找文件与磁盘清理。用户说"找文
 metadata:
   requires:
     mcp: ["file-master"]
-  note: "本技能随工具市场「文件管理大师」挂载生效——它提供 mcp_file_master_disk_layout / mcp_file_master_file_find / mcp_file_master_disk_scan / mcp_file_master_file_trash / mcp_file_master_file_trash_status / mcp_file_master_file_empty_recycle / mcp_file_master_file_erase / mcp_file_master_file_restore 八个工具；未安装时无法执行本机文件查找、扫描、回收站删除与清空、_pinvou_filemaster_trash 物理清除。"
+  note: "本技能随工具市场「文件管理大师」挂载生效——它提供 mcp_file_master_disk_layout / mcp_file_master_file_find / mcp_file_master_file_find_async / mcp_file_master_file_find_status / mcp_file_master_disk_scan / mcp_file_master_file_trash / mcp_file_master_file_trash_status / mcp_file_master_file_empty_recycle / mcp_file_master_file_erase / mcp_file_master_file_restore 十个工具；未安装时无法执行本机文件查找、扫描、回收站删除与清空、_pinvou_filemaster_trash 物理清除。"
 ---
 
 # 文件管理（file-master）
 
-帮用户管理本机文件：**找到文件在哪**，并安全回答"**C 盘空间被什么吃了**"。核心工具全部由「文件管理大师」MCP 提供：`mcp_file_master_disk_layout`（毫秒级盘符组成，开工先确认）、`mcp_file_master_file_find`（搜索，可过滤）、`mcp_file_master_disk_scan`（只读扫描，含非系统盘）、`mcp_file_master_file_trash`（后台异步删除）、`mcp_file_master_file_trash_status`（删除/清除进度轮询）、`mcp_file_master_file_empty_recycle`（清空回收站）、`mcp_file_master_file_erase`（物理删除 _pinvou_filemaster_trash 兜底内容）、`mcp_file_master_file_restore`（误删还原）。
+帮用户管理本机文件：**找到文件在哪**，并安全回答"**C 盘空间被什么吃了**"。核心工具全部由「文件管理大师」MCP 提供：`mcp_file_master_disk_layout`（毫秒级盘符组成，开工先确认）、`mcp_file_master_file_find`（搜索，可过滤）、`mcp_file_master_file_find_async`（异步全量收集，找全/所有副本用）+ `mcp_file_master_file_find_status`（异步任务轮询分页）、`mcp_file_master_disk_scan`（只读扫描，含非系统盘）、`mcp_file_master_file_trash`（后台异步删除）、`mcp_file_master_file_trash_status`（删除/清除进度轮询）、`mcp_file_master_file_empty_recycle`（清空回收站）、`mcp_file_master_file_erase`（物理删除 _pinvou_filemaster_trash 兜底内容）、`mcp_file_master_file_restore`（误删还原）。
 
 ## 通用铁律
 
@@ -59,7 +59,7 @@ metadata:
 
 ### 结果呈现
 
-- **多结果不擅挑。** 匹配到多个文件时按相关度列出（全词 > 前缀 > 子串，同分按修改时间从新到旧；路径 + 大小 + 修改时间），编号列表最多 10 条，超过 10 条注明总数并建议补充线索，让用户点名；不得自行选定一个继续操作。结果顺序是"已收集命中里的最优"；**`total_hits` 大于 `count` 说明被 limit 截断**——用户要求"找全"时用 limit=50 或 dir 定向重搜；**"找全某类文件"本质是近似搜索**（时间预算 + limit 限制），如实告知找到的数量与可能不全即可，不要用 min/max_size 分段穷举验证（浪费轮次且仍不保证全）。可用 sort_by/order（mtime/size/name）改排序。
+- **多结果不擅挑。** 匹配到多个文件时按相关度列出（全词 > 前缀 > 子串，同分按修改时间从新到旧；路径 + 大小 + 修改时间），编号列表最多 10 条，超过 10 条注明总数并建议补充线索，让用户点名；不得自行选定一个继续操作。结果顺序是"已收集命中里的最优"；**`total_hits` 大于 `count` 说明被 limit 截断**——用户要求"找全/所有/全部副本"时**不要**用 limit=50 或分段穷举硬凑（同步搜索只有 12s 预算，永远近似），直接走 **`mcp_file_master_file_find_async` 提交后台全量收集 → `mcp_file_master_file_find_status` 轮询到 done → 按 total_pages 逐页取完**；命中数达到 5000 上限或超预算时结果会如实告知截断。可用 sort_by/order（mtime/size/name）改排序。
 - **单个结果**：直接告知位置，并询问是否需要打开所在文件夹（Windows：`explorer /select,"<完整路径>"`；macOS：`open -R "<路径>"`；执行前先征得用户同意）。
 
 ---

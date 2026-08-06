@@ -153,6 +153,41 @@ class FileFindTest(unittest.TestCase):
         self.assertLessEqual(len(out["results"]), 50)
         self.assertTrue(out["truncated"])
 
+    def test_find_async_full_collection_and_paging(self):
+        """异步全量：超过同步 limit 的结果全量收集，轮询 done 后分页取完（找全场景）。"""
+        tmp = tempfile.mkdtemp(prefix="fm_async_")
+        try:
+            for i in range(35):
+                with open(os.path.join(tmp, "bulk_%02d.txt" % i), "w") as f:
+                    f.write("x")
+            sub = server.file_find_async(query="bulk", dir=tmp)
+            self.assertEqual(sub["type"], "file_find_submitted")
+            tid = sub["task_id"]
+            deadline = time.monotonic() + 15.0
+            st = None
+            while time.monotonic() < deadline:
+                st = server.file_find_status(task_id=tid, page=1, limit=10)
+                if st["status"] == "done":
+                    break
+                time.sleep(0.05)
+            self.assertEqual(st["status"], "done")
+            self.assertEqual(st["total_hits"], 35, "全量收集应包含全部命中（不受同步 limit 限制）")
+            self.assertEqual(st["total_pages"], 4)  # 35 / 10 → 4 页
+            self.assertEqual(st["count"], 10)
+            seen = set()
+            for p in range(1, st["total_pages"] + 1):
+                pg = server.file_find_status(task_id=tid, page=p, limit=10)
+                seen.update(r["name"] for r in pg["results"])
+            self.assertEqual(len(seen), 35, "分页应取完所有命中")
+            # 未知任务 / 越界页收敛
+            self.assertIn("error", server.file_find_status(task_id="nope"))
+            self.assertEqual(server.file_find_status(task_id=tid, page=99, limit=10)["page"], 4,
+                             "越界页应收敛到最后一页")
+            # 参数非法与同步一致（共用 _prepare_find）
+            self.assertIn("error", server.file_find_async(query="x", dir=os.path.join(tmp, "nope")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_empty_query_and_bad_dir(self):
         # 空 query + 无过滤 → 拒绝（防全盘）；空 query + 过滤 → 纯类型搜索
         self.assertIn("error", server.file_find(query="  ", dir=self.tmp))
@@ -1392,11 +1427,12 @@ class ProtocolTest(unittest.TestCase):
                                     "params": {"protocolVersion": "2024-11-05",
                                                "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})
             self.assertEqual(init["result"]["serverInfo"]["name"], "pinvou3-file-master")
-            self.assertEqual(init["result"]["serverInfo"]["version"], "1.7.2")
+            self.assertEqual(init["result"]["serverInfo"]["version"], "1.7.3")
 
             listed = self._rpc(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             tools = {t["name"]: t for t in listed["result"]["tools"]}
-            self.assertEqual(set(tools), {"disk_layout", "file_find", "disk_scan",
+            self.assertEqual(set(tools), {"disk_layout", "file_find", "file_find_async",
+                                          "file_find_status", "disk_scan",
                                           "file_trash", "file_trash_status",
                                           "file_empty_recycle", "file_erase",
                                           "file_restore"})
@@ -1517,6 +1553,8 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(m["pip_dependencies"], [])
         self.assertEqual(m["mcp_tools"], ["mcp_file_master_disk_layout",
                                           "mcp_file_master_file_find",
+                                          "mcp_file_master_file_find_async",
+                                          "mcp_file_master_file_find_status",
                                           "mcp_file_master_disk_scan",
                                           "mcp_file_master_file_trash",
                                           "mcp_file_master_file_trash_status",
@@ -1524,9 +1562,9 @@ class ManifestTest(unittest.TestCase):
                                           "mcp_file_master_file_erase",
                                           "mcp_file_master_file_restore"])
         self.assertEqual(m["companion_skills"], ["file-master"])
-        self.assertEqual(len(m["tool_table_entries"]), 8)
+        self.assertEqual(len(m["tool_table_entries"]), 9)
         self.assertTrue(m["routing_rules"])
-        self.assertEqual(m["version"], "1.7.2")
+        self.assertEqual(m["version"], "1.7.3")
         # 磁盘扫描总预算 60s + 分组超调余量，须显著大于引擎默认 execute_timeout
         self.assertGreaterEqual(m["execute_timeout"], 90,
                                 "扫描类工具应声明更长执行超时（引擎默认 60s 余量不足）")
