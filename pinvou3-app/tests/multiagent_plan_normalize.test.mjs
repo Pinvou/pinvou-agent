@@ -493,8 +493,13 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     panelSource,
-    /presentation\.task \|\| entry\.agent_id/,
-    '清单行展示任务目标（起了「」名时展示去名后的正文）；无 ledger 的遗留行回退 agent_id',
+    /subtitle \|\| presentation\.task \|\| entry\.agent_id/,
+    '清单行优先展示专家身份副标题；无任务标题时展示任务目标，遗留行回退 agent_id',
+  );
+  assert.match(
+    toolRenderersSource,
+    /const \{ identity, name, subtitle \} = presentation;/,
+    '行内卡与右侧清单共用任务主标题、专家身份副标题的投影结果',
   );
   assert.match(
     transcriptsSource,
@@ -604,7 +609,7 @@ test('模型起名：任务说明第一行「」提取为子智能体显示名',
   );
 });
 
-test('子智能体名称投影：专家池、任务标题、模型 name、任务摘要与 agent type 依次兜底', () => {
+test('子智能体名称投影：任务标题为主、专家身份为副，旧记录及裸派逐级兜底', () => {
   const roleCards = {
     scout: '调研专家', manager: '规划专家', builder: '执行专家', reviewer: '审查专家', general: '通用执行者',
   };
@@ -616,8 +621,27 @@ test('子智能体名称投影：专家池、任务标题、模型 name、任务
   assert.equal(
     present({ role: 'exp-market', sessionName: 'ignored-model-name' }).name,
     '市场分析师',
-    '专家池真名优先于模型 session name',
+    '没有任务标题的专家仍以真名兜底，且忽略机器 session name',
   );
+  const namedExpert = present({
+    role: 'exp-market',
+    sessionName: 'reviewer-behavior',
+    objective: '「评审-行为链路」追查完整调用链',
+    ordinal: { seq: 3, count: 5 },
+  });
+  assert.equal(namedExpert.name, '评审-行为链路', '任务标题是同专家多实例的主标题');
+  assert.equal(namedExpert.subtitle, '市场分析师', '专家池真名作为稳定身份副标题');
+  assert.equal(namedExpert.task, '追查完整调用链');
+  assert.equal(namedExpert.explicitName, '评审-行为链路');
+  assert.doesNotMatch(namedExpert.name, /③/, '有明确任务标题时不再追加同角色序号');
+  const legacyExpert = present({
+    role: 'exp-market',
+    sessionName: 'reviewer-behavior',
+    objective: '追查完整调用链',
+    ordinal: { seq: 3, count: 5 },
+  });
+  assert.equal(legacyExpert.name, '市场分析师 ③', '无任务标题的旧记录保留专家序号回退');
+  assert.equal(legacyExpert.subtitle, null);
   assert.equal(
     present({ sessionName: 'research-ai-news', objective: '「提示词名称」任务' }).name,
     '提示词名称',

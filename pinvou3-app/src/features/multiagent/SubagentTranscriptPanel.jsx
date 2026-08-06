@@ -335,6 +335,7 @@ export function SubagentTranscriptPanel({
     : null;
   const detailIdentity = detailPresentation && detailPresentation.identity;
   const detailName = detailPresentation ? detailPresentation.name : selectedAgentId;
+  const detailSubtitle = detailPresentation ? detailPresentation.subtitle : null;
 
   return (
     <aside
@@ -365,7 +366,7 @@ export function SubagentTranscriptPanel({
             </button>
             {detailIdentity && (
               <AppIcon
-                card={{ id: detailIdentity.avatarKey, name: detailName, dept: detailIdentity.personaDept }}
+                card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
                 isDark={isDark}
                 cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
                 fb={14}
@@ -380,7 +381,12 @@ export function SubagentTranscriptPanel({
                   </span>
                 )}
               </div>
-              <div className="truncate text-[10px] text-gray-400" title={selectedAgentId}>{selectedAgentId}</div>
+              <div
+                className="truncate text-[10px] text-gray-400"
+                title={detailSubtitle ? `${detailSubtitle} · ${selectedAgentId}` : selectedAgentId}
+              >
+                {detailSubtitle || selectedAgentId}
+              </div>
             </div>
           </>
         ) : (
@@ -420,10 +426,10 @@ export function SubagentTranscriptPanel({
               turns={projected.turns}
               now={0}
               copy={conversationCopy}
-              agentLabel={detailName}
+              agentLabel={detailSubtitle || detailName}
               assistantAvatar={detailIdentity ? (
                 <AppIcon
-                  card={{ id: detailIdentity.avatarKey, name: detailName, dept: detailIdentity.personaDept }}
+                  card={{ id: detailIdentity.avatarKey, name: detailSubtitle || detailName, dept: detailIdentity.personaDept }}
                   isDark={isDark}
                   cls="mt-1 h-7 w-7 shrink-0 overflow-hidden rounded-xl"
                   fb={13}
@@ -457,7 +463,7 @@ export function SubagentTranscriptPanel({
               roleCards: copy.roleCards,
               ordinal: roleOrdinals.get(entry.agent_id),
             });
-            const { identity, name } = presentation;
+            const { identity, name, subtitle } = presentation;
             const expanded = expandedAgentIds.has(entry.agent_id);
             return (
               <div
@@ -484,7 +490,7 @@ export function SubagentTranscriptPanel({
                   className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] px-2 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                 >
                   <AppIcon
-                    card={{ id: identity.avatarKey, name, dept: identity.personaDept }}
+                    card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
                     isDark={isDark}
                     cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
                     fb={14}
@@ -498,7 +504,12 @@ export function SubagentTranscriptPanel({
                         </span>
                       )}
                     </span>
-                    <span className="block truncate text-[10px] text-gray-400">{presentation.task || entry.agent_id}</span>
+                    <span
+                      className="block truncate text-[10px] text-gray-400"
+                      title={[subtitle, presentation.task, entry.agent_id].filter(Boolean).join(' · ')}
+                    >
+                      {subtitle || presentation.task || entry.agent_id}
+                    </span>
                   </span>
                   {!entry.done && entry.has_transcript === false && (
                     <span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-px text-[9.5px] text-amber-600 dark:text-amber-300">
