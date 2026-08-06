@@ -83,9 +83,42 @@ const infoPlist = read("pinvou3-app/src-tauri/packaging/macos/Info.plist");
 assert.match(infoPlist, /NSSpeechRecognitionUsageDescription/);
 assert.match(
   infoPlist,
+  /<key>NSLocalNetworkUsageDescription<\/key>\s*<string>[^<\s][^<]*<\/string>/,
+  "local network access must declare a non-empty privacy purpose",
+);
+assert.match(
+  infoPlist,
   /Apple Speech 服务/,
   "privacy prompt must disclose possible Apple Speech service processing",
 );
+assert.match(
+  verifyScript,
+  /for usage_key in[^\n]*NSLocalNetworkUsageDescription/,
+  "macOS verification must require the local network privacy purpose",
+);
+assert.match(
+  verifyScript,
+  /BUNDLED_INFO_PLIST[\s\S]*?NSLocalNetworkUsageDescription/,
+  "macOS verification must inspect the bundled local network privacy purpose",
+);
+
+const requiredPrivacyKeys = [
+  "NSMicrophoneUsageDescription",
+  "NSSpeechRecognitionUsageDescription",
+  "NSLocalNetworkUsageDescription",
+];
+for (const locale of ["en", "zh-Hans", "ja"]) {
+  const strings = read(
+    `pinvou3-app/src-tauri/packaging/macos/infoplist/${locale}.lproj/InfoPlist.strings`,
+  );
+  for (const key of requiredPrivacyKeys) {
+    assert.match(
+      strings,
+      new RegExp(`^${key}\\s*=\\s*"[^"\\r\\n]+";`, "m"),
+      `${locale} InfoPlist.strings must localize ${key}`,
+    );
+  }
+}
 
 const macPlatform = read(
   "pinvou3-app/src-tauri/src/features/voice/platform/macos.rs",

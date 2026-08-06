@@ -182,6 +182,11 @@ assert.equal(
   "runtime/codex-bridge",
 );
 assert.equal(
+  macos.bundle.resources["packaging/macos/infoplist/"],
+  "./",
+  "macOS must bundle localized privacy purpose strings",
+);
+assert.equal(
   macos.bundle.resources["resources/platforms/macos/aarch64/asr/"],
   undefined,
   "macOS system Speech must not bundle the legacy SenseVoice runtime",
@@ -191,6 +196,14 @@ assert.ok(
   macosManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
   "macOS resource manifest must contain the Codex ACP Bridge runtime",
 );
+for (const locale of ["en", "zh-Hans", "ja"]) {
+  assert.ok(
+    macosManifest.files.some(
+      (file) => file.destination === `${locale}.lproj/InfoPlist.strings`,
+    ),
+    `macOS resource manifest must contain ${locale} privacy purpose strings`,
+  );
+}
 assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
   "macOS resource manifest must not contain a legacy ASR runtime",
