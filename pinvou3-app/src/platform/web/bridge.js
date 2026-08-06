@@ -8205,6 +8205,15 @@
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
+  // 知识库「添加文件夹」：host-file-picker 目录模式返回单个目录路径，
+  // 包成数组交给后端 kb_collection_add_sources（在桌面进程用 WalkDir 递归展开）。
+  async function pickFolders() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    if (!selected) return [];
+    var p = Array.isArray(selected) ? selected[0] : selected;
+    return p ? [p] : [];
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     var selected = await dialogOpen({
@@ -8477,6 +8486,7 @@
     submitWorkflowUserInput: submitWorkflowUserInput,
     pickAndAddMaterials: pickAndAddMaterials,
     pickFiles: pickFiles,
+    pickFolders: pickFolders,
     pickFeedbackFiles: pickFeedbackFiles,
     addMaterialsToSession: addMaterialsToSession,
     attachRun: attachRun,

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Database, Download, Edit2, ExternalLink, FileText, FolderOpen, GridIcon, IconList, ImageIcon, Package, Plus, PresentationIcon, RefreshCw, TableIcon, Trash2, X } from '../../components/icons.jsx';
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
@@ -772,22 +773,47 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       };
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
-      const addSources = async (cid) => {
-        if (!canPickHostFiles) return;
+      // kind='files' 走文件多选；kind='folders' 走目录选择，后端 WalkDir 递归展开。
+      const doAdd = async (cid, kind) => {
+        if (!canPickHostFiles || indexing) return;
+        const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
+        if (!picker) return;
         let paths = [];
-        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = await picker(); } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: cid, paths })); } catch (e) {}
       };
-      // 知识库页底部入口：选文件 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
-      const dzPick = async () => {
-        if (!canPickHostFiles) return;
+      // 知识库页底部入口：选文件/文件夹 → 单知识集直接加；多个/无则走「加入知识库」浮层选择。
+      const dzPick = async (kind) => {
+        if (!canPickHostFiles || indexing) return;
+        const picker = bridge && bridge.files && (kind === 'folders' ? bridge.files.pickFolders : bridge.files.pickFiles);
+        if (!picker) return;
         let paths = [];
-        try { paths = (bridge && bridge.files.pickFiles) ? await bridge.files.pickFiles() : []; } catch (e) { paths = []; }
+        try { paths = await picker(); } catch (e) { paths = []; }
         if (!paths || !paths.length) return;
         if (colls.length === 1) { try { replaceIndexState(await inv('kb_collection_add_sources', { collectionId: colls[0].id, paths })); } catch (e) {} }
         else { setAddToKb(paths); }
       };
+      // 「+ 添加 ▾」下拉菜单：文件 / 文件夹。portal 到 body 以免被 overflow-y-auto 裁剪。
+      const [addMenu, setAddMenu] = useState(null); // null | {left,top,width,src}
+      const openAddMenu = (src, el) => {
+        const r = el.getBoundingClientRect(); const w = 188, h = 96;
+        const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+        const top = (r.bottom + 6 + h > window.innerHeight) ? Math.max(8, r.top - h - 6) : Math.max(8, r.bottom + 6);
+        setAddMenu({ left, top, width: w, src });
+      };
+      useEffect(() => {
+        if (!addMenu) return;
+        const close = () => setAddMenu(null);
+        const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+        document.addEventListener('pointerdown', close);
+        window.addEventListener('keydown', esc);
+        window.addEventListener('resize', close);
+        window.addEventListener('scroll', close, true);
+        return () => { document.removeEventListener('pointerdown', close); window.removeEventListener('keydown', esc); window.removeEventListener('resize', close); window.removeEventListener('scroll', close, true); };
+      }, [addMenu]);
+      const chooseAdd = (kind) => { const src = addMenu && addMenu.src; setAddMenu(null); if (src === 'coll') doAdd(activeColl && activeColl.id, kind); else dzPick(kind); };
+      const folderPickerAvailable = !!(bridge && bridge.files && bridge.files.pickFolders);
       const StatusPill = ({ s }) => {
         const map = { ready: ['●', t.kbStReady, isDark ? 'text-[#7DD3A8]' : 'text-[#18a957]'], indexing: ['◐', t.kbStIndexing, isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'], pending: ['○', t.kbStPending, isDark ? 'text-[#E8C468]' : 'text-[#c98a00]'] };
         const v = map[s] || map.ready;
@@ -1418,9 +1444,10 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                         </>}
                       </div>
                       {activeColl && <div className="flex items-center gap-2 shrink-0">
-                            <button onClick={() => addSources(activeColl.id)} disabled={indexing || !canPickHostFiles} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${(indexing || !canPickHostFiles) ? 'opacity-60 cursor-default' : ''} ${soft}`}>
+                            <button onClick={(e) => { e.stopPropagation(); openAddMenu('coll', e.currentTarget); }} disabled={indexing || !canPickHostFiles} className={`flex items-center gap-2 px-4 py-2 rounded-full text-[13px] font-medium ${(indexing || !canPickHostFiles) ? 'opacity-60 cursor-default' : ''} ${soft}`}>
                           {indexing ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
-                          {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAddFiles}
+                          {!indexing && <ChevronDown size={13} className="opacity-70" />}
+                          {indexing ? `${t.kbIndexing} ${idx.done}/${idx.total}` : t.kbAdd}
                         </button>
                         <button title={t.kbEditColl} onClick={() => setNewColl({ id: activeColl.id, name: activeColl.name, category: activeColl.category || '', description: activeColl.description ?? null })} className={`p-2 rounded-full ${iconHover}`}><Edit2 size={15} /></button>
                         <button title={t.kbDeleteColl} onClick={() => setDelColl(activeColl)} className={`p-2 rounded-full ${iconHover}`}><Trash2 size={15} /></button>
@@ -1468,11 +1495,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 )}
 
-                {/* 加入知识库入口：点击选文件(单知识集直接加，多个弹选择) */}
-                <div onClick={dzPick}
-                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${canPickHostFiles ? 'cursor-pointer' : 'cursor-default opacity-60'} ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
+                {/* 加入知识库入口：点击选文件/文件夹(单知识集直接加，多个弹选择) */}
+                <div onClick={(e) => { if (indexing || !canPickHostFiles) return; e.stopPropagation(); openAddMenu('dz', e.currentTarget); }}
+                  className={`mt-5 flex items-center justify-center gap-2 px-4 py-5 rounded-2xl border border-dashed transition-colors ${(indexing || !canPickHostFiles) ? 'cursor-default opacity-60' : 'cursor-pointer'} ${isDark ? 'border-[#444746] hover:border-[#A8C7FA] text-[#C4C7C5]' : 'border-[#d4d8e2] hover:border-[#0B57D0] text-[#444746]'}`}>
                   <Plus size={16} className={isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'} />
                   <span className="text-[13px]">{t.kbAddToKb}</span>
+                  {!(indexing || !canPickHostFiles) && <ChevronDown size={13} className="opacity-60" />}
                 </div>
               </div>
             )}
@@ -1533,6 +1561,14 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
               </div>
             </div>
           )}
+
+          {/* 「+ 添加 ▾」下拉菜单：文件 / 文件夹(后端 WalkDir 递归展开目录) */}
+          {addMenu && typeof document !== 'undefined' && createPortal(
+            <div onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
+              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}>
+              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
+              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]') : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
+            </div>, document.body)}
         </div>
       );
     };

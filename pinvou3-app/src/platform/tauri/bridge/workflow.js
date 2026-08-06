@@ -167,6 +167,14 @@
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
+  // 知识库「添加文件夹」：递归导入需要返回目录路径数组（可多选）。
+  // 后端 kb_collection_add_sources → expand_import_roots 会用 WalkDir 递归展开目录。
+  async function pickFolders() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ directory: true, multiple: true, title: bt("workflowPickWorkDirTitle") });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     var selected = await dialogOpen({
@@ -232,6 +240,7 @@
       pickAndAddMaterials: pickAndAddMaterials,
       pickFiles: pickFiles,
       pickFolder: pickFolder,
+      pickFolders: pickFolders,
       pickFeedbackFiles: pickFeedbackFiles,
       addMaterialsToSession: addMaterialsToSession,
       approveWorkflowGate: approveWorkflowGate,

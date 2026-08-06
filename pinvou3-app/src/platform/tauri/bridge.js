@@ -2004,6 +2004,7 @@
   var pickAndAddMaterials = workflowFeature.pickAndAddMaterials;
   var pickFiles = workflowFeature.pickFiles;
   var pickFolder = workflowFeature.pickFolder;
+  var pickFolders = workflowFeature.pickFolders;
   var pickFeedbackFiles = workflowFeature.pickFeedbackFiles;
   var addMaterialsToSession = workflowFeature.addMaterialsToSession;
   var approveWorkflowGate = workflowFeature.approveWorkflowGate;
@@ -2243,6 +2244,7 @@
     },
     files: {
       pickFiles: pickFiles,
+      pickFolders: pickFolders,
       pickFeedbackFiles: pickFeedbackFiles,
     },
     personas: {

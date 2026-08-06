@@ -211,12 +211,14 @@ async function clickContains(page, sel, text) {
     const x = document.body.innerText;
     const reset = [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '全部'
       && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件'));
-    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
+    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加') };
   });
   rec('④ 聚焦知识集后显示范围/文档列表/添加文件', focused.scoped && focused.docList && focused.addBtn, JSON.stringify(focused));
 
-  // 聚焦后添加文件：dialog mock 返回路径，必须透传到当前知识集。
-  await clickContains(page, 'button', '添加文件');
+  // 聚焦后添加文件：先点「添加」触发按钮打开下拉菜单，再点「文件」菜单项；dialog mock 返回路径，必须透传到当前知识集。
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled); if (b) b.click(); });
+  await sleep(300);
+  await page.evaluate(() => { const item = document.querySelector('[data-testid="kb-add-files"]'); if (item) item.click(); });
   await sleep(500);
   const added = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_collection_add_sources'
     && c.args && c.args.collectionId === 1 && Array.isArray(c.args.paths) && c.args.paths.includes('/home/x/新文档.pdf')));
