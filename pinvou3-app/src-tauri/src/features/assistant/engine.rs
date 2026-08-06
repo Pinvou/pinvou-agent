@@ -21,7 +21,6 @@ use anyhow::{Context, Result};
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::error_taxonomy::ErrorCategory;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
@@ -1593,23 +1592,6 @@ fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
-        // 连续流式 stall 兜底计数（修复本地端点 0-token 反复超时导致的
-        // 「永远正在处理」）：流式 stall（SSE idle timeout）按原设计不发
-        // chat:done(引擎还会 retry)，但若同一 turn 连续 N 次都 stall 且
-        // 从未产出任何 token，说明端点根本没在响应——此时应升级为终态，让前端
-        // 收到明确错误并复位 busy，而不是让用户干等数十分钟的重试预算耗尽。
-        //
-        // 只计 `Timeout` 类的 recoverable 错误（即真正的流 stall），**不**对所有
-        // recoverable 事件计数：底座的 recoverable 集合很宽（rate limit / server
-        // error / network / context_overflow / stream Overflow / DurationLimit
-        // 等），其中很多是正常轮次里的瞬态抖动或致命但被标 recoverable 的边界，
-        // 一律计数会误杀还在思考/执行工具的有效轮次，与底座自身的恢复和工具降级
-        // 语义冲突。真正的本地端点「prefill 卡死」几乎只表现为反复 stream stall。
-        let mut consecutive_stream_stalls: u32 = 0;
-        // 本轮是否出现过任何有效进度信号（答案 delta、思考 delta、工具调用）。
-        // 出现任一即说明端点在响应，清空 stall 计数；不再仅认 MessageDelta，
-        // 避免对「只思考 / 只跑工具还没产出答案 token」的有效轮次误判为卡死。
-        let mut any_progress_this_turn = false;
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -1624,8 +1606,6 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
-                    consecutive_stream_stalls = 0;
-                    any_progress_this_turn = false;
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
                         log::error!(
                             "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
@@ -1640,10 +1620,6 @@ fn spawn_event_forwarder(
                     }
                 }
                 Event::MessageDelta { content, .. } => {
-                    // 模型产出了真实答案 token → 端点在正常工作，清空 stall 计数
-                    //（后续若再次 idle timeout 才重新累计）。
-                    any_progress_this_turn = true;
-                    consecutive_stream_stalls = 0;
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
@@ -1664,13 +1640,6 @@ fn spawn_event_forwarder(
                 Event::ThinkingDelta { index, content } => {
                     // 只转发底座已经识别为 ThinkingDelta 的独立思考内容。普通
                     // MessageDelta 不做启发式猜测，避免把最终回答误折叠成思考。
-                    // 思考流也是「端点在响应」的信号：本地端点 prefill 期间会持续
-                    // 产出 ThinkingDelta，把它视为有效进度可避免对「只思考、还没
-                    // 产出答案 token」的长推理轮次误判为 stall 卡死而强制取消。
-                    if !content.is_empty() {
-                        any_progress_this_turn = true;
-                        consecutive_stream_stalls = 0;
-                    }
                     let payload =
                         json!({ "session_id": session_id, "index": index, "text": content });
                     let _ = app.emit("chat:reasoning_delta", payload.clone());
@@ -1690,11 +1659,6 @@ fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallStarted { id, name, input } => {
-                    // 模型已发起工具调用 = 本轮在推进，端点有在响应；视为有效进度，
-                    // 清空 stall 计数，避免对「边跑工具边偶发抖动」的有效 agentic
-                    // 轮次误判为卡死。
-                    any_progress_this_turn = true;
-                    consecutive_stream_stalls = 0;
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
@@ -2844,36 +2808,6 @@ fn spawn_event_forwarder(
                             "chat:transient_error",
                             payload,
                         );
-                        // 连续 stream stall 兜底：仅对 `Timeout` 类的 recoverable
-                        // 错误（即真正的 SSE idle timeout / stream stall）计数。
-                        // 底座的 recoverable 集合很宽（rate limit / server error /
-                        // network / context_overflow / stream Overflow / DurationLimit
-                        // 等），其中：① rate limit / network 抖动是正常轮次的瞬态
-                        // 噪声，不应因连续几次就杀掉还在 retry 的健康轮次；②
-                        // stream Overflow / DurationLimit 虽标 recoverable，但底座
-                        // 随后会 break 并发 TurnComplete 终态，此时再 cancel 是与
-                        // 即将到来的权威终态抢跑道。真正的本地端点「prefill 卡死」
-                        // 几乎只表现为反复 stream stall，把这个症状钉死即可。
-                        // 若同一 turn 连续 3 次 stream stall 且从未出现任何有效进度
-                        //（答案/思考 token、工具调用），说明端点根本没在响应；底座
-                        // 虽然还会按重试预算继续跑(最长数十分钟)，但用户已干等三个
-                        // 超时周期——此时主动 cancel，让 turn_loop 正常跳出并发
-                        // TurnComplete(Interrupted) → chat:done。阈值取 3：单次 stall
-                        //（云端代理抖动）不会误杀，连续 3 次几乎必然是端点问题。
-                        if !any_progress_this_turn && envelope.category == ErrorCategory::Timeout {
-                            consecutive_stream_stalls = consecutive_stream_stalls.saturating_add(1);
-                            if consecutive_stream_stalls >= 3 {
-                                log::warn!(
-                                    "[pinvou3][chat] aborting turn after {consecutive_stream_stalls} \
-                                     consecutive stream stalls with zero output sid={} — \
-                                     endpoint likely unresponsive: {}",
-                                    session_id,
-                                    envelope.message
-                                );
-                                approve_handle.cancel();
-                                consecutive_stream_stalls = 0;
-                            }
-                        }
                     } else {
                         // 底座在致命 Error 后仍会发权威 TurnComplete(Failed)。这里只缓存
                         // 文本；完成、持久化和 chat:done 全部由 TurnComplete 单点处理。
