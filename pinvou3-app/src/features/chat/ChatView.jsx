@@ -127,6 +127,19 @@ const openChatExternalUrl = (url) => {
   invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
+function parseCollaborationMention(text) {
+  const match = String(text || '').trim().match(/^@([^\s@]+)\s+([\s\S]+)$/);
+  if (!match) return null;
+  const toDisplayName = match[1].trim();
+  const instruction = match[2].trim();
+  if (!toDisplayName || !instruction) return null;
+  const normalized = toDisplayName.toLowerCase();
+  if (toDisplayName === '我' || toDisplayName === '自己' || normalized === 'me') {
+    return { kind: 'self', instruction };
+  }
+  return { kind: 'peer', toDisplayName, instruction };
+}
+
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isDark = theme === 'dark';
       const [hovered, setHovered] = useState(null);
@@ -411,11 +424,56 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
+    const CollaborationTaskCard = ({ item, theme, onOpenWorkbench }) => {
+      const isDark = theme === 'dark';
+      const title = item.title || item.instruction || '本地任务';
+      const status = item.statusLabel || '待处理';
+      const assignee = item.assignee || '我';
+      return (
+        <div className="flex justify-start" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+          <div
+            className="w-full max-w-[430px] overflow-hidden rounded-[24px] border p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.45)]"
+            style={{
+              background: isDark ? 'rgba(28,28,30,0.88)' : 'rgba(255,255,255,0.88)',
+              borderColor: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(60,60,67,0.12)',
+              backdropFilter: 'blur(18px)',
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-[16px] bg-[#007AFF] text-white shadow-[0_10px_24px_-10px_rgba(0,122,255,0.75)]">
+                <Briefcase size={20} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold text-[#007AFF] dark:text-[#0A84FF]">已创建本地任务</div>
+                <div className="mt-1 text-[16px] font-bold leading-snug text-gray-950 dark:text-white">{title}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px] font-semibold text-gray-500 dark:text-gray-400">
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 dark:bg-white/10">执行人：{assignee}</span>
+                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[#007AFF] dark:bg-blue-500/15 dark:text-[#0A84FF]">{status}</span>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-black/[0.06] pt-3 dark:border-white/10">
+              <span className="min-w-0 truncate text-[12px] font-medium text-gray-500 dark:text-gray-400">已放入工作台，可继续在这里推进。</span>
+              <button
+                type="button"
+                onClick={onOpenWorkbench}
+                className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-[#007AFF] px-3 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 active:opacity-70 dark:bg-[#0A84FF]"
+              >
+                查看工作台
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
+      const collaborationBridge = bridge.collaboration || {};
       const workModeSubtabs = localizeSceneTabs(WORK_MODE_SUBTABS, sceneCopy);
       const designModeSubtabs = localizeSceneTabs(DESIGN_MODE_SUBTABS, sceneCopy);
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
@@ -426,6 +484,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
       const [inputText, setInputTextState] = useState(initialInput.text);
       const [inputLimitReached, setInputLimitReached] = useState(initialInput.limitReached);
+      const [selectedMention, setSelectedMention] = useState(null);
       const inputTextRef = useRef(initialInput.text);
       const setInputText = useCallback((valueOrUpdater) => {
         const rawValue = typeof valueOrUpdater === 'function'
@@ -433,6 +492,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           : valueOrUpdater;
         const constrained = constrainChatInput(rawValue);
         inputTextRef.current = constrained.text;
+        setSelectedMention(current => {
+          if (!current) return null;
+          return constrained.text.startsWith(`@${current.displayName} `) ? current : null;
+        });
         setInputTextState(constrained.text);
         setInputLimitReached(constrained.limitReached);
         if (bridge.available && bridge.chat && bridge.chat.setComposerDraft) {
@@ -1008,6 +1071,41 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
+      const collaborationState = (bs && bs.collaboration) || {};
+      const collaborationPeers = Array.isArray(collaborationState.peers) ? collaborationState.peers : [];
+      const collaborationSelfPeerId = collaborationState.config && collaborationState.config.peerId;
+      const mentionMatch = attachments.length === 0 ? inputText.match(/^@([^\s@]*)$/) : null;
+      const mentionQuery = mentionMatch ? mentionMatch[1].trim().toLowerCase() : null;
+      const mentionOptions = mentionQuery == null ? [] : [
+        { kind: 'self', displayName: '我', subtitle: '创建本地任务' },
+        ...collaborationPeers
+          .filter(peer => peer && peer.peerId && peer.peerId !== collaborationSelfPeerId)
+          .filter(peer => {
+            if (!mentionQuery) return true;
+            const name = String(peer.displayName || peer.peerId || '').toLowerCase();
+            return name.includes(mentionQuery);
+          })
+          .slice(0, 8)
+          .map(peer => ({
+            kind: 'peer',
+            peerId: peer.peerId,
+            displayName: peer.displayName || peer.peerId,
+            status: peer.status || 'offline',
+            subtitle: peer.status === 'online' ? '在线' : '离线，稍后送达',
+          })),
+      ].slice(0, 9);
+      const showMentionPicker = mentionOptions.length > 0;
+      const insertMentionOption = option => {
+        if (!option) return;
+        setInputText(`@${option.displayName} `);
+        setSelectedMention(option.kind === 'peer' ? {
+          peerId: option.peerId,
+          displayName: option.displayName,
+        } : null);
+        requestAnimationFrame(() => {
+          if (composerRef.current) composerRef.current.focus();
+        });
+      };
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
@@ -1187,6 +1285,30 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setInputText(constrained.text);
           return;
         }
+        const text = constrained.text.trim();
+        const mention = attachments.length === 0 ? parseCollaborationMention(text) : null;
+        if (mention && mention.kind === 'self' && bridge.available && collaborationBridge.collaborationCreateLocalTask) {
+          try {
+            await collaborationBridge.collaborationCreateLocalTask(mention);
+            setInputText('');
+          } catch (error) {
+            console.warn('[collaboration] create local task failed', error);
+          }
+          return;
+        }
+        if (mention && mention.kind === 'peer' && bridge.available && collaborationBridge.collaborationCreateTask) {
+          try {
+            const request = selectedMention && selectedMention.displayName === mention.toDisplayName
+              ? { ...mention, toPeerId: selectedMention.peerId }
+              : mention;
+            await collaborationBridge.collaborationCreateTask(request);
+            setInputText('');
+            setSelectedMention(null);
+          } catch (error) {
+            console.warn('[collaboration] create task failed', error);
+          }
+          return;
+        }
         const accepted = await sendChatMessage(constrained.text);
         if (accepted) {
           setInputText('');
@@ -1194,6 +1316,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setPersonalWorkbenchTemplateId(null);
         }
       }
+
+      const openCollaborationWorkbench = useCallback(() => {
+        if (onSwitchHomeMode) onSwitchHomeMode('collaboration');
+      }, [onSwitchHomeMode]);
 
       function handleKeyDown(e) {
         // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
@@ -1428,6 +1554,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                           onPrefill={(text) => setInputText(text)}
                           onSend={sendChatMessage}
                           onOpenEditor={onOpenEditor}
+                          onOpenWorkbench={openCollaborationWorkbench}
                           isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
                           allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
                         />
@@ -1453,6 +1580,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         onSend={sendChatMessage}
                         editable={!busy && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
+                        onOpenWorkbench={openCollaborationWorkbench}
                         isLatestArtifact={latestArtifactIds.has(item.id)}
                         allowScheduledTaskDraft={isScheduledTaskCreationChat}
                       />
@@ -1734,6 +1862,40 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 className="mb-0.5"
                 copy={t.uiConversation}
               />
+              {showMentionPicker && (
+                <div className="mb-2 ml-1 w-[min(360px,calc(100vw-48px))] overflow-hidden rounded-[18px] border border-black/[0.06] bg-white/95 shadow-[0_14px_35px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#1C1C1E]/95">
+                  {mentionOptions.map(option => (
+                    <button
+                      key={option.kind === 'self' ? 'self' : option.peerId}
+                      type="button"
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => insertMentionOption(option)}
+                      className="flex h-[52px] w-full items-center gap-2.5 px-2.5 text-left transition-colors hover:bg-gray-100 active:bg-gray-200 dark:hover:bg-white/[0.08] dark:active:bg-white/[0.12]"
+                    >
+                      <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-[13px] font-bold ${
+                        option.kind === 'self'
+                          ? 'bg-blue-600 text-white'
+                          : (isDark ? 'bg-white/10 text-[#E3E3E3]' : 'bg-gray-100 text-gray-700')
+                      }`}>
+                        {option.kind === 'self' ? '我' : String(option.displayName || '?').slice(0, 1)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] font-semibold text-gray-950 dark:text-white">{option.displayName}</span>
+                        <span className="block truncate text-[12px] font-medium text-gray-500 dark:text-gray-400">{option.subtitle}</span>
+                      </span>
+                      {option.kind === 'peer' && (
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                          option.status === 'online'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'
+                            : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400'
+                        }`}>
+                          {option.status === 'online' ? '在线' : '离线'}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -2418,7 +2580,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, onOpenWorkbench, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -2442,6 +2604,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
+      if (item.type === 'collaboration_task_card') return <CollaborationTaskCard item={item} theme={theme} onOpenWorkbench={onOpenWorkbench} />;
       if (item.type === 'user') {
         return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }

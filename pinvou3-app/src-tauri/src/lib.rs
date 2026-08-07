@@ -9,6 +9,7 @@
 //! 由 `engine::spawn_event_forwarder` 转译成 Tauri 事件推到前端。
 
 mod app;
+mod collaboration;
 mod core;
 pub mod features;
 pub mod platform;
@@ -17,8 +18,11 @@ pub mod platform;
 pub use app::commands::attachments::build_message_with_attachments;
 
 use tauri::Manager;
+#[cfg(any(windows, target_os = "linux"))]
+use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::app::commands;
+use crate::collaboration::CollaborationManager;
 use crate::features::{
     assistant::{engine_pool::EnginePool, platform::bridge},
     connectors::connector_cli,
@@ -189,6 +193,13 @@ pub fn run() {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let main_navigation_origin = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         // These no-op probe plugins bracket Tauri's own plugin initialization.
         // The main window is created by Tauri before the application setup hook,
         // so their lifecycle hooks expose time that was previously one opaque gap.
@@ -265,13 +276,7 @@ pub fn run() {
                 })
                 .build()
         })
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri::plugin::Builder::<_, ()>::new("startup-probe-single-instance")
                 .setup(|_app, _api| {
@@ -320,6 +325,14 @@ pub fn run() {
                 )?;
             }
             startup::mark("setup:plugins_ready");
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                // Static registration happens in installed builds. Runtime registration
+                // makes deep-link testing work in dev builds and repairs stale handlers.
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("[pinvou3-app] deep-link register_all failed: {error}");
+                }
+            }
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
@@ -383,6 +396,9 @@ pub fn run() {
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
             ));
             app.handle().manage(remote_control_manager.clone());
+            let collaboration_manager = CollaborationManager::new(app.handle().clone());
+            collaboration_manager.start_if_configured();
+            app.handle().manage(collaboration_manager);
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -764,6 +780,24 @@ pub fn run() {
             commands::remote_control::web_access_get_role_outputs,
             commands::remote_control::web_access_get_role_logs,
             commands::remote_control::web_access_get_gate_report,
+            collaboration::collaboration_status,
+            collaboration::collaboration_get_config,
+            collaboration::collaboration_start,
+            collaboration::collaboration_register_identity,
+            collaboration::collaboration_create_project,
+            collaboration::collaboration_join_project,
+            collaboration::collaboration_export_member_invite,
+            collaboration::collaboration_create_invite,
+            collaboration::collaboration_inspect_invite,
+            collaboration::collaboration_join_invite,
+            collaboration::collaboration_create_task,
+            collaboration::collaboration_get_task_context,
+            collaboration::collaboration_create_local_task,
+            collaboration::collaboration_list_local_tasks,
+            collaboration::collaboration_update_local_task,
+            collaboration::collaboration_complete_local_task,
+            collaboration::collaboration_accept_task,
+            collaboration::collaboration_reject_task,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::memory::get_memory_profile,

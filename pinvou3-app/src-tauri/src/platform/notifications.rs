@@ -6,6 +6,7 @@ use tauri_plugin_notification::NotificationExt;
 
 const TASK_COMPLETED_TITLE: &str = "任务已完成";
 const TASK_COMPLETED_BODY: &str = "任务已成功完成。您可以在编辑器中查看结果。";
+const COLLABORATION_TASK_TITLE: &str = "收到协作任务";
 
 #[derive(Default)]
 pub struct NotificationState {
@@ -33,42 +34,76 @@ pub fn task_completion_enabled() -> bool {
 }
 
 pub fn notify_task_completed(app: &AppHandle) {
+    notify(
+        app,
+        TASK_COMPLETED_TITLE,
+        TASK_COMPLETED_BODY,
+        "task completion",
+    );
+}
+
+pub fn notify_collaboration_task_received(
+    app: &AppHandle,
+    from_display_name: &str,
+    task_title: &str,
+) {
+    if !notifications_enabled() {
+        return;
+    }
+    let mut body = format!("{}：{}", from_display_name.trim(), task_title.trim());
+    const MAX_BODY_CHARS: usize = 96;
+    if body.chars().count() > MAX_BODY_CHARS {
+        body = body.chars().take(MAX_BODY_CHARS).collect::<String>();
+        body.push('…');
+    }
+    notify(app, COLLABORATION_TASK_TITLE, &body, "collaboration task");
+}
+
+fn notify(app: &AppHandle, title: &str, body: &str, label: &str) {
     #[cfg(target_os = "linux")]
     {
-        if let Err(e) = send_notify_send() {
+        if let Err(e) = send_notify_send(title, body) {
             eprintln!(
-                "[pinvou3-app] notify-send task completion notification failed: {e}; trying native notification"
+                "[pinvou3-app] notify-send {label} notification failed: {e}; trying native notification"
             );
-            if let Err(native) = send_native_notification(app) {
-                eprintln!("[pinvou3-app] native task completion notification failed: {native}");
+            if let Err(native) = send_native_notification(app, title, body) {
+                eprintln!("[pinvou3-app] native {label} notification failed: {native}");
             }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        if let Err(e) = send_native_notification(app) {
-            eprintln!("[pinvou3-app] native task completion notification failed: {e}");
+        if let Err(e) = send_native_notification(app, title, body) {
+            eprintln!("[pinvou3-app] native {label} notification failed: {e}");
         }
     }
 }
 
-fn send_native_notification(app: &AppHandle) -> Result<(), String> {
+pub fn notifications_enabled() -> bool {
+    let prefs = std::fs::read_to_string(crate::bridge::paths::settings_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<NotificationPrefsOnly>(&raw).ok())
+        .unwrap_or_default();
+    prefs.notifications.enabled
+}
+
+fn send_native_notification(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
     app.notification()
         .builder()
-        .title(TASK_COMPLETED_TITLE)
-        .body(TASK_COMPLETED_BODY)
+        .title(title)
+        .body(body)
         .show()
         .map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "linux")]
-fn send_notify_send() -> Result<(), String> {
+fn send_notify_send(title: &str, body: &str) -> Result<(), String> {
     use std::process::Command;
 
     Command::new("notify-send")
-        .arg(TASK_COMPLETED_TITLE)
-        .arg(TASK_COMPLETED_BODY)
+        .arg(title)
+        .arg(body)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
