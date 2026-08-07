@@ -18,6 +18,7 @@ pub mod platform;
 pub use app::commands::attachments::build_message_with_attachments;
 
 use tauri::Manager;
+#[cfg(any(windows, target_os = "linux"))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::app::commands;
