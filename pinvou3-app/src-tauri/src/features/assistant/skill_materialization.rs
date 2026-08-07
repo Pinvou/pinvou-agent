@@ -551,6 +551,11 @@ mod tests {
                 "project version",
             );
 
+            // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
+            // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
+            // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
+            save_disabled_skills_for(ConnectorScope::Code, &[]);
+
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
             assert!(
