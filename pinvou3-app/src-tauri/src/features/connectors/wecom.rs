@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键 + 停用标志名)。
 const ID: &str = "wecom";
@@ -212,21 +213,30 @@ pub async fn wecom_logout() -> Result<Value, String> {
 // 规则:**已连接(ready) 且 未手动停用** 才写技能;否则删掉(省 token / 关闭)。
 // 手动停用标志:`~/.pinvou3/wecom_disabled` 文件存在 = 停用。与连接状态正交。
 
-fn wecom_disabled_path() -> std::path::PathBuf {
-    crate::platform::paths::pinvou3_home().join("wecom_disabled")
+/// 企微技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
+/// `apply_skills` 指向 `apply_wecom_skills`。
+struct WecomGate;
+impl ConnectorSkillGate for WecomGate {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn disabled_filename(&self) -> &'static str {
+        "wecom_disabled"
+    }
+    fn apply_skills(&self, visible: bool) -> Result<(), String> {
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_wecom_skills(visible)
+            .map_err(|e| format!("更新企微技能失败: {e}"))
+    }
 }
+const GATE: WecomGate = WecomGate;
 
 pub fn is_wecom_disabled() -> bool {
-    wecom_disabled_path().exists()
+    GATE.is_disabled()
 }
 
-fn set_wecom_disabled_flag(disabled: bool) {
-    let p = wecom_disabled_path();
-    if disabled {
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
-    }
+fn set_wecom_disabled_flag(disabled: bool) -> Result<(), String> {
+    GATE.set_disabled_flag(disabled)
 }
 
 /// 企微技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
@@ -237,28 +247,29 @@ pub fn wecom_skills_should_show() -> bool {
 
 /// 按当前"应否可见"状态写 / 删技能文件。前端在连接成功 / 断开 / 切开关后调。
 pub async fn wecom_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| {
+    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = wecom_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_wecom_skills(show);
-        show
+        GATE.apply_skills(show)?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "visible": show }))
 }
 
 /// composer 企微开关:写停用标志 → 按规则增删技能。
+///
+/// 注:停用标志写盘此前用 `let _ =` 静默忽略失败,现统一为 `Result` 传播
+/// (Wave 1 批准的契约面变更)。
 pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || {
-        set_wecom_disabled_flag(!enabled);
+    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        set_wecom_disabled_flag(!enabled)?;
         let show = wecom_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_wecom_skills(show);
-        show
+        GATE.apply_skills(show)?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "ok": true, "visible": show }))
 }
 
@@ -313,13 +324,13 @@ mod tests {
         let _ = std::fs::create_dir_all(crate::platform::paths::pinvou3_home());
 
         // 默认(无文件)= 未停用
-        set_wecom_disabled_flag(false);
+        set_wecom_disabled_flag(false).unwrap();
         assert!(!is_wecom_disabled());
         // 置停用 → 文件在 → 停用
-        set_wecom_disabled_flag(true);
+        set_wecom_disabled_flag(true).unwrap();
         assert!(is_wecom_disabled());
         // 复位 → 文件删 → 未停用
-        set_wecom_disabled_flag(false);
+        set_wecom_disabled_flag(false).unwrap();
         assert!(!is_wecom_disabled());
 
         std::env::remove_var("PINVOU3_HOME");

@@ -542,9 +542,7 @@ pub async fn edit_last_turn(
     if new_message.trim().is_empty() {
         return Err("empty new_message".into());
     }
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
     pool.edit_last_turn(&sid, new_message)
