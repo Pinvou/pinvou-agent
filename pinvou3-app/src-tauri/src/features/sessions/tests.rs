@@ -87,80 +87,80 @@ fn task_workspace(store: &SessionStore, task_id: &str) -> PathBuf {
         .expect("valid scheduled task workspace")
 }
 
-    #[test]
-    fn create_new_persists_and_lists() {
-        let (store, _g) = isolated_store();
-        let s = store
-            .create_new("/model".into(), None, std::env::temp_dir())
-            .expect("create");
-        let list = store.list().expect("list");
-        assert!(list.iter().any(|m| m.id == s.metadata.id));
-    }
+#[test]
+fn create_new_persists_and_lists() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let list = store.list().expect("list");
+    assert!(list.iter().any(|m| m.id == s.metadata.id));
+}
 
-    #[test]
-    fn session_roots_plain_session_shares_private_root() {
-        let (store, _g) = isolated_store();
-        let s = store
-            .create_new("/model".into(), None, std::env::temp_dir())
-            .expect("create");
-        let private = paths::session_workspace_dir(&s.metadata.id);
-        let roots = store.session_roots(&s.metadata.id).expect("roots");
-        assert_eq!(roots.execution, private);
-        assert_eq!(roots.ledger, private);
-        assert_eq!(
-            store.ledger_root(&s.metadata.id).expect("ledger root"),
-            private
-        );
-    }
+#[test]
+fn session_roots_plain_session_shares_private_root() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let private = paths::session_workspace_dir(&s.metadata.id);
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, private);
+    assert_eq!(roots.ledger, private);
+    assert_eq!(
+        store.ledger_root(&s.metadata.id).expect("ledger root"),
+        private
+    );
+}
 
-    #[test]
-    fn session_roots_bound_project_keeps_ledger_on_private_root() {
-        let (store, _g) = isolated_store();
-        let s = store
-            .create_new("/model".into(), None, std::env::temp_dir())
-            .expect("create");
-        let bound_id = s.metadata.id.clone();
-        let project = std::env::temp_dir().join("pinvou3-bound-project-roots-test");
-        store.set_execution_root_resolver(Arc::new(move |id: &str| {
-            (id == bound_id).then(|| project.clone())
-        }));
-        let roots = store.session_roots(&s.metadata.id).expect("roots");
-        assert_eq!(
-            roots.execution,
-            std::env::temp_dir().join("pinvou3-bound-project-roots-test")
-        );
-        // 绑了项目目录的原生代码会话：账本根恒为会话私有目录，不污染用户项目。
-        let private = paths::session_workspace_dir(&s.metadata.id);
-        assert_eq!(roots.ledger, private);
-        assert_eq!(
-            store.ledger_root(&s.metadata.id).expect("ledger root"),
-            private
-        );
-        // 未绑定的会话不受 resolver 影响，两根仍一致。
-        let other = store
-            .create_new("/model".into(), None, std::env::temp_dir())
-            .expect("create other");
-        let other_roots = store.session_roots(&other.metadata.id).expect("roots");
-        assert_eq!(other_roots.execution, other_roots.ledger);
-    }
+#[test]
+fn session_roots_bound_project_keeps_ledger_on_private_root() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_id = s.metadata.id.clone();
+    let project = std::env::temp_dir().join("pinvou3-bound-project-roots-test");
+    store.set_execution_root_resolver(Arc::new(move |id: &str| {
+        (id == bound_id).then(|| project.clone())
+    }));
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(
+        roots.execution,
+        std::env::temp_dir().join("pinvou3-bound-project-roots-test")
+    );
+    // 绑了项目目录的原生代码会话：账本根恒为会话私有目录，不污染用户项目。
+    let private = paths::session_workspace_dir(&s.metadata.id);
+    assert_eq!(roots.ledger, private);
+    assert_eq!(
+        store.ledger_root(&s.metadata.id).expect("ledger root"),
+        private
+    );
+    // 未绑定的会话不受 resolver 影响，两根仍一致。
+    let other = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create other");
+    let other_roots = store.session_roots(&other.metadata.id).expect("roots");
+    assert_eq!(other_roots.execution, other_roots.ledger);
+}
 
-    #[test]
-    fn session_roots_scheduled_run_uses_automation_workspace_for_both_roots() {
-        let (store, _g) = isolated_store();
-        let saved = store
-            .create_scheduled_run(scheduled_profile("task-roots"))
-            .expect("scheduled run");
-        let workspace = task_workspace(&store, "task-roots");
-        let roots = store.session_roots(&saved.metadata.id).expect("roots");
-        assert_eq!(roots.execution, workspace);
-        assert_eq!(roots.ledger, workspace);
-        assert_eq!(
-            store.ledger_root(&saved.metadata.id).expect("ledger root"),
-            workspace
-        );
-    }
+#[test]
+fn session_roots_scheduled_run_uses_automation_workspace_for_both_roots() {
+    let (store, _g) = isolated_store();
+    let saved = store
+        .create_scheduled_run(scheduled_profile("task-roots"))
+        .expect("scheduled run");
+    let workspace = task_workspace(&store, "task-roots");
+    let roots = store.session_roots(&saved.metadata.id).expect("roots");
+    assert_eq!(roots.execution, workspace);
+    assert_eq!(roots.ledger, workspace);
+    assert_eq!(
+        store.ledger_root(&saved.metadata.id).expect("ledger root"),
+        workspace
+    );
+}
 
-    fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
+fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
     ScheduledRunProfile {
         task_id: task_id.to_string(),
         model: "/scheduled-model".to_string(),
