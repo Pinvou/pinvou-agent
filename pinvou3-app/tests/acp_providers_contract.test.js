@@ -374,10 +374,22 @@ assert.ok(
   MOD.includes('请检查网络连接后重试'),
   '安装脚本失败且 stderr 无信息时必须给出可操作提示'
 );
+// 手动安装指引按 Agent 动态生成（不能一律指向 codex）：模板引用 {npm_pkg}
+// 占位，且为 codex/claude/kimi 各自映射真实 npm 包名。
 assert.ok(
-  MOD.includes('npm install -g @openai/codex'),
-  '提示必须包含 npm 手动安装路径'
+  MOD.includes('npm install -g {npm_pkg}'),
+  '提示必须含 npm 手动安装路径（按 Agent 动态生成 npm_pkg）'
 );
+for (const [backend, pkg] of [
+  ['CodexAcp', '@openai/codex'],
+  ['ClaudeAcp', '@anthropic-ai/claude-code'],
+  ['KimiAcp', '@moonshot-ai/kimi-code'],
+]) {
+  assert.ok(
+    MOD.includes(`${backend} => "${pkg}"`),
+    `手动安装提示必须为 ${backend} 映射 npm 包名 ${pkg}`
+  );
+}
 // 前端：安装 busy 按 agent 隔离 + 文案为「正在安装」而非「保存中」
 assert.match(
   PROVIDERS_SECTION,
