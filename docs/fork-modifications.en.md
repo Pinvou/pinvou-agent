@@ -30,6 +30,9 @@ Defines the Pinvou tool surface, write-size limits, truncated-argument guidance,
 
 Lets the app own the static prompt composer, accepts only explicitly injected project instructions, and discovers Skills only from the explicit `EngineConfig.skills_dir` root. The current app injects the Pinvou runtime bundle and filters disabled Skills; CodeWhale no longer adds an implicit bundle fallback. Internal reminders stay out of the working set.
 
+- (2026-08-06) Skill discovery is fully driven by the single `EngineConfig.skills_dir` root (see the Chinese entry under the same section for the full rationale) — the hardcoded `~/.pinvou3/bundle/skills` entry was removed so per-session combined skill dirs can actually filter the discovery set.
+- (2026-08-06, fork ②) `EngineConfig.hidden_tools: Option<Vec<String>>` makes the built-in tool hide list **injectable per session**: `Some` uses the injected set (the app computes constant − profile `tools.include`), `None` falls back to the compile-time `PINVOU3_HIDDEN_TOOLS` constant (byte-identical existing behavior). Invariants: the `tool_search` gate always consults the constant and is not injectable (`forkguard_tool_search_always_gated`), the `request_user_input` exemption is unaffected by injection, and injected sets take effect (`forkguard_hidden_tools_injectable`). Hidden-set changes only take effect on respawn (no hot-refresh channel), unlike `disallowed_tools`.
+
 ### T4 — Scheduled execution and history lifecycle
 
 Keeps a stable conversation identity for each automation, persists run links, anchors hourly schedules, skips offline misfires, prevents overlapping runs, and deletes only terminal task history and its artifacts.

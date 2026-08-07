@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "mode": "plain",
+      "skills": { "exclude": [], "include_project": false },
+      "tools": { "base": "default", "exclude": [], "include": [] },
+      "connectors": { "scope_defaults": {} }
+    },
+    {
+      "mode": "code",
+      "skills": { "exclude": [], "include_project": false },
+      "tools": { "base": "default", "exclude": [], "include": ["git_status", "git_diff"] },
+      "connectors": { "scope_defaults": {} }
+    }
+  ]
+}
