@@ -58,6 +58,38 @@ pub async fn exit_plan_to_yolo(
     Ok(store.mode_state(&session_id))
 }
 
+// ===================== 多智能体模式开关（ADR-0006） =====================
+
+/// 模型列表下方的会话级开关。开启：装配专家名册，并让下一次发送按多智能体
+/// 资源边界重建引擎；关闭：让下一次发送恢复普通对话的底座资源配置。切换时
+/// 回收空闲旧引擎，避免旧 hook / 深度 / 并发配置泄漏到新模式；正在生成时拒绝
+/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（委派提醒
+/// 不教学不推荐），裸 `agent` 本就对所有会话可用。
+#[tauri::command]
+pub async fn set_multi_agent_mode(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<SessionModeState, String> {
+    // 任何副作用（建目录、写角色文件）之前先过两道门：id 形状
+    // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
+    // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
+    crate::features::sessions::validate_session_id(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
+    store
+        .load(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
+    // EngineConfig 的深度、并发、准入上限不能完整热切；同时 SendMessage 会覆盖
+    // engine 级 hook。名册装配、状态持久化与旧引擎回收必须和发送共用同一个
+    // lifecycle + turn gate，避免切换/发送竞态。关闭也必须回收，否则普通对话
+    // 会继续背着多智能体限制。生成中 reserve 会直接拒绝，不会打断当前回复。
+    pool.reconfigure_multi_agent_mode(&session_id, enabled)
+        .await
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): {error:#}"))?;
+    Ok(store.mode_state(&session_id))
+}
+
 /// `accept_plan` 切 Yolo 后注入的执行指令文本。抽成函数供单测钉契约:
 /// 必须裹住方案全文 + 带明确"立即执行"信号,否则切了 Yolo 但 AI 收到空指令不知道干嘛。
 pub(super) fn accept_plan_instruction(plan_markdown: &str) -> String {
@@ -91,7 +123,13 @@ pub async fn accept_plan(
             accepted_mode_state.clone(),
         ))
         .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
-    let instruction = accept_plan_instruction(&plan_markdown);
+    let instruction = super::multiagent::prepend_delegation_reminder(
+        pool.inner(),
+        &session_id,
+        accepted_mode_state.multi_agent,
+        &plan_markdown,
+        accept_plan_instruction(&plan_markdown),
+    );
     let display_content = display_message
         .map(|message| message.trim().to_string())
         .filter(|message| !message.is_empty())

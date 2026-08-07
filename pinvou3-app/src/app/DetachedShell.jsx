@@ -10,7 +10,10 @@ import { emitTauri, isTauriAvailable } from '../platform/tauri/client.js';
 import { dict, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {
-  const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings', 'workflow']);
+  const bs = useBridgeState([
+    'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings',
+    'workflow',
+  ]);
   const [language, setLanguage] = useState('zh');
   const [activeTheme, setActiveTheme] = useState('dark');
   const initRef = useRef(false);

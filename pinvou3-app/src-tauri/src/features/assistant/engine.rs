@@ -62,6 +62,9 @@ pub struct AppEngine {
     /// 发送 op 构造按它取会话策略。headless harness 无 session 概念,置空。
     pub(crate) session_id: String,
     pub(crate) workspace: PathBuf,
+    /// 启动本引擎时会话是否处于多智能体模式。开关切换会先回收旧引擎，
+    /// 因而该值在一个引擎实例的生命周期内保持稳定。
+    multi_agent_enabled: bool,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
@@ -338,6 +341,9 @@ struct TerminalTransition {
 #[derive(Debug)]
 struct StartedTransition {
     admission: Option<TurnAdmission>,
+    /// 本次 Started 是否把轮次从空闲翻成活跃（去重：一轮内的重复 Started
+    /// 不再重复宣告）。
+    newly_active: bool,
 }
 
 pub(crate) fn emit_chat_terminal(
@@ -359,13 +365,17 @@ pub(crate) fn emit_chat_terminal(
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
+fn emit_turn_started(app: &AppHandle, session_id: &str) {
+    let started_payload = json!({ "session_id": session_id });
+    let _ = app.emit("chat:turn_started", started_payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+}
+
 fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
     let user_payload = admission.user_payload(session_id);
     let _ = app.emit("chat:user_message", user_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:user_message", user_payload);
-    let started_payload = json!({ "session_id": session_id });
-    let _ = app.emit("chat:turn_started", started_payload.clone());
-    crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+    emit_turn_started(app, session_id);
 }
 
 impl TurnLifecycle {
@@ -622,6 +632,7 @@ impl TurnLifecycle {
         }
         let transition = StartedTransition {
             admission: Self::take_admission_locked(&mut state),
+            newly_active,
         };
         drop(state);
         Some(transition)
@@ -639,6 +650,12 @@ impl TurnLifecycle {
         };
         if let Some(admission) = transition.admission {
             emit_turn_admission(app, session_id, admission);
+        } else if transition.newly_active {
+            // 底座自启的续跑轮（如子智能体完成后的父模型汇总轮）没有外部
+            // admission：不发 user_message，但 turn_started 必须照发——否则
+            // 界面显示空闲、停止按钮缺席、再发消息撞"已有运行中轮次"，且与
+            // "停止级联取消"的既定语义冲突（复核 P1）。
+            emit_turn_started(app, session_id);
         }
         true
     }
@@ -913,6 +930,14 @@ async fn finish_reclaimed_lifecycle_turn(
             }
         }
     }
+    // 时间线必须先于 chat:done 落盘。前端收到终态后会重新读取权威时间线；
+    // 若先 emit 再写文件，后台/恢复会话会读到旧快照并漏掉完成状态与耗时。
+    let status_text = format!("{terminal_status:?}");
+    crate::features::assistant::timing::finish_turn(
+        session_id,
+        &status_text,
+        terminal_error.as_deref(),
+    );
     emit_chat_terminal(
         app,
         session_id,
@@ -955,14 +980,23 @@ impl AppEngine {
         } else {
             None
         };
-        // 执行根统一由 SessionStore::session_roots 解析（scheduled = automation
-        // workspace，原生代码绑项目会话 = 项目目录，其余 = 会话私有目录）。
-        // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
+        // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        let multi_agent_enabled = scheduled_profile.is_none()
+            && bridge
+                .session_policy(session_id)
+                .multi_agent_mode_available()
+            && store.mode_state(session_id).multi_agent;
         let workspace = store
             .session_roots(session_id)
             .map(|roots| roots.execution)
             .unwrap_or_else(|_| bridge.session_workspace(session_id));
-        let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
+        let mut engine_config = if multi_agent_enabled {
+            // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
+            // 完全一致，普通会话不继承这些限制。
+            bridge.build_engine_config_for_multi_agent(session_id, workspace)
+        } else {
+            bridge.build_engine_config_for_session_at(session_id, workspace)
+        };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
         // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
@@ -971,6 +1005,9 @@ impl AppEngine {
         // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search/kb_open_source。compute 返回
         // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
         // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
+        //
+        // 该列表来自 compute_disallowed_tools;多智能体会话不改写它——
+        // 工具面与主线持平,workflow 与裸 agent 都不在禁用列表。
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -990,6 +1027,9 @@ impl AppEngine {
             Some(disallowed)
         };
         let dt_config = bridge.build_dt_config();
+        // 多智能体宿主不再改写 Workflow 审批配置："每张图必停"的旧约束已按
+        // 产品定义收缩撤除，只读图按底座默认自动起跑，写入/提权图由底座的
+        // require_approval_for_writes 走普通审批（确认卡只在那时出现）。
 
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
@@ -1025,6 +1065,7 @@ impl AppEngine {
                 bridge,
                 session_id: session_id.to_string(),
                 workspace,
+                multi_agent_enabled,
                 turn_events,
                 scheduled_unattended,
                 turn_lifecycle,
@@ -1057,6 +1098,7 @@ impl AppEngine {
             bridge,
             session_id: String::new(),
             workspace,
+            multi_agent_enabled: false,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
@@ -1077,8 +1119,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
-            &self.session_id,
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
@@ -1095,14 +1136,40 @@ impl AppEngine {
         restrict_tools: bool,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
-            &self.session_id,
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
             restrict_tools,
         )?;
         self.send_reserved_turn_op(op, reservation).await
+    }
+
+    fn build_interactive_send_message_op(
+        &self,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<Op> {
+        if self.multi_agent_enabled {
+            self.bridge.build_multi_agent_send_message_op(
+                &self.session_id,
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                &self.workspace,
+            )
+        } else {
+            self.bridge.build_send_message_op(
+                &self.session_id,
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+            )
+        }
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable
@@ -1421,6 +1488,18 @@ pub(crate) fn emit_workflow_blocked(
     );
 }
 
+fn tool_call_result_parts(
+    result: std::result::Result<
+        deepseek_tui::tools::spec::ToolResult,
+        deepseek_tui::tools::spec::ToolError,
+    >,
+) -> (String, bool, Option<serde_json::Value>) {
+    match result {
+        Ok(result) => (result.content, result.success, result.metadata),
+        Err(error) => (format!("{error:?}"), false, None),
+    }
+}
+
 pub(crate) async fn apply_harness_action(
     action: crate::features::assistant::harness::HarnessAction,
     app: &AppHandle,
@@ -1592,11 +1671,13 @@ pub(crate) async fn apply_harness_action(
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
 ///
-/// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`——
-/// 上游 `Op::SendMessage.auto_approve` 不旁路 `await_tool_approval`
-/// （turn_loop.rs:1117 只看 ToolSpec.approval_requirement，不看
-/// session.auto_approve），需要 frontend 端主动发 ApprovalDecision::Approved
-/// 才能解锁工具执行。
+/// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`。
+/// 注意底座语义：`auto_approve = true` 时 `registered_tool_approval_required`
+/// 会直接**旁路**可绕过的 Required 审批、不发事件（turn_loop.rs，非绕过名单仅
+/// rlm_eval / start_mcp_server）。因此本臂对普通会话只在 auto_approve 关闭的
+/// 场景（定时任务按 profile、工作流运行按 `apply_workflow_turn_policy`）收到
+/// 事件；工作流编排图交给用户裁定，工作流宿主的其它副作用工具拒绝，普通会话
+/// 仍沿用既有批准策略。
 ///
 /// Plan ready 触发：监听 `update_plan` 工具结果 + TurnComplete，
 /// 若 active session mode=Plan + 本 turn 调过 update_plan + plan 非空 →
@@ -1751,10 +1832,7 @@ fn spawn_event_forwarder(
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
-                    let (output, success, metadata) = match result {
-                        Ok(r) => (r.content, true, r.metadata),
-                        Err(e) => (format!("{e:?}"), false, None),
-                    };
+                    let (output, success, metadata) = tool_call_result_parts(result);
                     let background_task_id =
                         if matches!(name.as_str(), "exec_shell" | "task_shell_start")
                             && metadata
@@ -2003,8 +2081,9 @@ fn spawn_event_forwarder(
                     approval_force_prompt,
                     ..
                 } => {
-                    // 只有无人值守的初始定时执行使用任务保存的批准策略；用户从
-                    // 运行历史进入后继续对话，行为与普通对话一致。
+                    // 多智能体会话与普通对话共用同一套审批语义（ADR-0006）：
+                    // 只有无人值守的初始定时执行使用任务保存的批准策略；
+                    // 其余会话按普通对话处理。
                     let should_approve = if scheduled_profile.is_some()
                         && scheduled_unattended.load(Ordering::Acquire)
                     {
@@ -2051,20 +2130,21 @@ fn spawn_event_forwarder(
                 Event::AgentSpawned { id, prompt, .. } => {
                     agent_roles.insert(id, prompt);
                 }
+                // 台账退役（ADR-0006）：workflow 内部生命周期不再转发，子智能体
+                // 状态一律走 AgentProgress / AgentComplete 与落盘 worker ledger。
+                Event::WorkflowUi { .. } => {}
                 // [edict-obs] SubAgent 每步进展(底座自动发,不靠 prompt 纪律)→ 前端看板。
                 Event::AgentProgress { id, status, .. } => {
                     // 早期事件可能赶在第二发 AgentSpawned(role_id)之前到 —— 兜底用
                     // agent_id 而不是空串,跟 TokenUsage 臂的 fallback 语义一致。
                     let role = agent_roles.get(&id).cloned().unwrap_or_else(|| id.clone());
-                    let _ = app.emit(
-                        "workflow:agent_progress",
-                        json!({
-                            "session_id": session_id,
-                            "agent_id": id,
-                            "role_id": role,
-                            "status": status,
-                        }),
-                    );
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": id,
+                        "role_id": role,
+                        "status": status,
+                    });
+                    let _ = app.emit("workflow:agent_progress", payload);
                 }
                 // [edict-obs] mailbox 信封:工具调用→progress;TokenUsage→账本+审计;
                 // Completed/Failed→审计。审计写盘是同步 IO,但单行 append 微秒级,
@@ -2141,15 +2221,13 @@ fn spawn_event_forwarder(
                                 .get(&agent_id)
                                 .cloned()
                                 .unwrap_or_else(|| agent_id.clone());
-                            let _ = app.emit(
-                                "workflow:agent_progress",
-                                json!({
-                                    "session_id": session_id,
-                                    "agent_id": agent_id,
-                                    "role_id": role,
-                                    "status": format!("🔧 {tool_name} (step {step})"),
-                                }),
-                            );
+                            let payload = json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "role_id": role,
+                                "status": format!("🔧 {tool_name} (step {step})"),
+                            });
+                            let _ = app.emit("workflow:agent_progress", payload);
                         }
                         MM::Completed { agent_id, summary } => {
                             turn_shell_tasks.complete_agent(&agent_id);
@@ -2210,10 +2288,18 @@ fn spawn_event_forwarder(
                         "[harness] subagent {id} complete ({} chars summary, failed={failed})",
                         result.len()
                     );
-                    let _ = app.emit(
-                        "workflow:agent_complete",
-                        json!({ "session_id": session_id, "agent_id": id }),
-                    );
+                    // role/failed 是新增字段:老的工作流看板只认 agent_id,多带两个字段
+                    // 不影响它;多智能体工位看板要靠这两个判断"谁完成了、成没成功",
+                    // 缺了就只能显示一个没有归属的完成信号。
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": id,
+                        "role_id": envelope_role
+                            .clone()
+                            .or_else(|| agent_roles.get(&id).cloned()),
+                        "failed": failed,
+                    });
+                    let _ = app.emit("workflow:agent_complete", payload);
                     let state = store.mode_state(&session_id);
                     if state.active_skill.is_some() {
                         // [C2] 完成→节点关联完全用信封 role（SDAN Result.from）。
@@ -2622,6 +2708,27 @@ fn spawn_event_forwarder(
                         (plan_used, plan_snapshot, todos_snapshot)
                     };
 
+                    // 先完成权威时间线，再发 chat:done。前端终态事件会据此重新
+                    // 读取整份时间线，补齐后台运行/页面恢复期间漏掉的本地事件。
+                    let status_text = format!("{terminal_status:?}");
+                    crate::features::assistant::timing::finish_turn_with_usage(
+                        &session_id,
+                        &status_text,
+                        terminal_error.as_deref(),
+                        Some(crate::features::assistant::timing::TurnUsage {
+                            input_tokens: u64::from(usage.input_tokens),
+                            output_tokens: u64::from(usage.output_tokens),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+                            cache_miss_tokens: u64::from(
+                                usage.prompt_cache_miss_tokens.unwrap_or(0),
+                            ),
+                            cache_write_tokens: u64::from(
+                                usage.prompt_cache_write_tokens.unwrap_or(0),
+                            ),
+                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                        }),
+                    );
+
                     {
                         // 多引擎:mode 判据基于本 forwarder 的 session_id,不读全局 active。
                         let active_id = session_id.clone();
@@ -2723,31 +2830,6 @@ fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
-                    let status_text = format!("{terminal_status:?}");
-                    // 落 usage 进 timing_events.jsonl,作为模型耗时/失败/上下文消耗的
-                    // 内部诊断数据源。usage.input/output_tokens 是 u32,
-                    // prompt_cache_*_tokens / reasoning_tokens 是 Option<u32>,
-                    // 统一 unwrap_or(0) + u64 转换落盘。
-                    // [F3] 转发 cache_write_tokens(Anthropic cache-write 按 1.25x 计费)
-                    // 与 reasoning_tokens(DeepSeek V4 思考模型主要成本),否则字段一旦缺
-                    // 持久化就回填不了,影响将来真实 cost 估算。
-                    crate::features::assistant::timing::finish_turn_with_usage(
-                        &session_id,
-                        &status_text,
-                        terminal_error.as_deref(),
-                        Some(crate::features::assistant::timing::TurnUsage {
-                            input_tokens: u64::from(usage.input_tokens),
-                            output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
-                            cache_miss_tokens: u64::from(
-                                usage.prompt_cache_miss_tokens.unwrap_or(0),
-                            ),
-                            cache_write_tokens: u64::from(
-                                usage.prompt_cache_write_tokens.unwrap_or(0),
-                            ),
-                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
-                        }),
-                    );
                     if crate::features::memory::memory_enabled() {
                         if let Some(capture) =
                             crate::features::memory::take_turn_capture(&session_id)
@@ -2986,6 +3068,21 @@ mod token_ledger_tests {
         assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
         assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
         assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
+    }
+}
+
+#[cfg(test)]
+mod tool_result_projection_tests {
+    use super::tool_call_result_parts;
+
+    #[test]
+    fn unsuccessful_tool_result_is_not_promoted_to_success() {
+        let (output, success, metadata) = tool_call_result_parts(Ok(
+            deepseek_tui::tools::spec::ToolResult::error("interrupted"),
+        ));
+        assert_eq!(output, "interrupted");
+        assert!(!success, "chat:tool_end must preserve ToolResult.success");
+        assert!(metadata.is_none());
     }
 }
 

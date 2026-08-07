@@ -51,14 +51,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo" };
+      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
 
@@ -96,7 +96,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo" };
+    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
   }
 
   function isActionablePlanCard(sid, itemId, planId) {
@@ -233,6 +233,63 @@
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
   }
+  // 多智能体开关（ADR-0006）：模型列表下方的会话级开关。后端做名册装配
+  // + 名册装配与即时推送；前端只认返回的权威状态。
+  // in-flight 期间丢弃**同会话**的后续调用（防重入兜底）：第二次点击会带
+  // 着旧的 multiAgentOn 重复提交，其中一次失败的回滚还会覆盖另一次的新
+  // 状态。按会话记账而非全局布尔：A 开启在途时不得殃及 B 的开关（复核 P3）。
+  var multiAgentToggleInFlight = new Set();
+  async function setMultiAgentMode(enabled) {
+    var flightKey = state.activeSessionId || "__draft__";
+    if (multiAgentToggleInFlight.has(flightKey)) return;
+    multiAgentToggleInFlight.add(flightKey);
+    try {
+      var sid = state.activeSessionId;
+      if (!sid) {
+        // 草稿态**不物化会话**：否则开个开关就在左侧列表凭空造出一条空
+        // 对话（真机反馈）。意图寄存在草稿上，首条消息经 ensureSession
+        // 创建会话时才落后端；这里只翻开关行的显示，权威状态以物化时的
+        // 后端返回为准。
+        state.pendingDraftMultiAgent = !!enabled;
+        state.modeState = {
+          mode: (state.modeState && state.modeState.mode) || "yolo",
+          multiAgent: !!enabled,
+        };
+        // 草稿分支会从 try 内提前返回，走不到函数末尾的 notify()。
+        // 必须在这里主动发布快照，否则拨杆只能等下一次无关状态事件才刷新。
+        notify();
+        return;
+      }
+      // 乐观翻转：开启在后端要做名册装配与引擎同步（可能耗时数百毫秒），
+      // 等返回再翻拨杆会像"点了没反应"。先翻显示并 notify，成功后用后端
+      // 权威状态复核；失败回滚显示并提示。in-flight 闸已挡并发重入。
+      var previousMultiAgent = !!(state.modeState && state.modeState.multiAgent);
+      state.modeState = {
+        mode: (state.modeState && state.modeState.mode) || "yolo",
+        multiAgent: !!enabled,
+      };
+      notify();
+      try {
+        var st = await invoke("set_multi_agent_mode", { sessionId: sid, enabled: !!enabled });
+        runOnSession(sid, function () { applyModeFromState(st); });
+      } catch (invokeError) {
+        // 回滚与报错必须定向回触发会话：await 期间用户可能已切走，直接改
+        // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
+        runOnSession(sid, function () {
+          state.modeState = {
+            mode: (state.modeState && state.modeState.mode) || "yolo",
+            multiAgent: previousMultiAgent,
+          };
+          addSystemItem(bt("switchModeFailed") + invokeError);
+        });
+      }
+    } catch (e) {
+      addSystemItem(bt("switchModeFailed") + e);
+    } finally {
+      multiAgentToggleInFlight.delete(flightKey);
+    }
+    notify();
+  }
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
@@ -321,6 +378,7 @@
       discardPlan: discardPlan,
       exitPlanToYolo: exitPlanToYolo,
       setPlanModeNext: setPlanModeNext,
+      setMultiAgentMode: setMultiAgentMode,
       planStuckReplan: planStuckReplan,
       planStuckGo: planStuckGo,
       submitUserInput: submitUserInput,

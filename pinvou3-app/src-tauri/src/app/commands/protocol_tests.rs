@@ -144,6 +144,7 @@ command_protocol!(
         "get_mode_state",
         "set_plan_mode_next",
         "exit_plan_to_yolo",
+        "set_multi_agent_mode",
         "accept_plan",
         "get_super_permission_status",
         "set_super_permission",
@@ -464,4 +465,11 @@ command_protocol!(
         "get_session_active_skill",
         "list_session_skill_bindings"
     ]
+);
+// 多智能体（会话内主动委派，ADR-0006）。独立入口/台账/审批命令已随收缩
+// 退役，只剩子智能体执行记录的只读投影；开关命令在 interaction.rs。
+command_protocol!(
+    multiagent_protocol,
+    "multiagent.rs",
+    ["list_subagent_transcripts", "read_subagent_transcript"]
 );

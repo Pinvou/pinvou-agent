@@ -393,7 +393,12 @@
 
     if (!state.activeSessionId) {
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
-      if (!state.activeSessionId) return;
+      if (!state.activeSessionId) {
+        // 物化中止（如草稿态多智能体开关落盘失败）：把输入放回输入框，
+        // 不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
+        prefillComposer(text);
+        return;
+      }
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);

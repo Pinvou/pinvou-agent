@@ -400,14 +400,11 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
-            // 先回收该 session 的 engine(cancel 在跑的 turn + shutdown + abort forwarder),
-            // 再删盘上数据,避免僵尸 engine 继续往已删 session 写产物。
-            pool.evict(&id).await;
-            let result = store
-                .delete(&id)
-                .map_err(|e| format!("delete_session({id}): {e:?}"));
+            let result = pool
+                .delete_chat_session(&id)
+                .await
+                .map_err(|error| format!("delete_session({id}): {error:#}"));
             if result.is_ok() {
-                pool.forget_session(&id);
                 acp_pool
                     .agents()
                     .remove(&id)

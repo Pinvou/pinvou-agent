@@ -19,7 +19,8 @@ const indexHtml = [
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow'
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow',
+  'multiagent'
 ];
 const bridgeMessages = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
@@ -436,7 +437,7 @@ assert.ok(
   'an older autosave completion must not flash an error over newer pending edits'
 );
 assert.ok(
-  /editable=\{!busy && item\.id === lastUserId\}/.test(indexHtml) &&
+  /editable=\{!busy && !isMultiAgentReadOnly && item\.id === lastUserId\}/.test(indexHtml) &&
     !/async function editLastTurn\(newText\)[\s\S]{0,420}isScheduledRunSession\(state\.activeSessionId\)\) return false/.test(tauriBridge) &&
     !indexHtml.includes('定时运行使用创建时锁定的模型'),
   'a scheduled run opened from history should use the ordinary chat editor and composer controls'
@@ -478,6 +479,16 @@ assert.ok(
     tauriBridge.includes('item.interruptedDisplayOnly = true') &&
     webBridge.includes('item.interruptedDisplayOnly = true'),
   'desktop and Web bridges must share the display-only interrupted response behavior'
+);
+assert.ok(
+  tauriBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"') &&
+    webBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"'),
+  'desktop and Web bridges must both hide internal runtime and sub-agent handoff messages'
+);
+assert.ok(
+  tauriBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage') &&
+    webBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage'),
+  'desktop and Web live event paths must not render internal runtime messages'
 );
 assert.ok(
   /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
@@ -742,6 +753,122 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
   assert.strictEqual(completed[3].turn_id, "turn-current");
   assert.strictEqual(completed[3].status, "Failed");
   assert.strictEqual(completed[3].error, "模型失败");
+}
+
+async function internalSubagentHandoffStaysOutOfPresentation() {
+  var harness = createBridgeHarness();
+  var sessionId = "chat-subagent-handoff";
+  var completionText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'child-only completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 3 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "请调研这个问题" }] },
+        { role: "user", content: [
+          { type: "text", text: completionText },
+          { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff\nInput authority: non_authoritative\n</turn_meta>" },
+        ] },
+        { role: "assistant", content: [{ type: "text", text: "这是父智能体的最终汇总" }] },
+      ],
+      artifacts: [],
+    };
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  var state = harness.bridge.state.get("chat");
+  var visible = JSON.stringify(state.chatItems);
+  var raw = JSON.stringify(state.messages);
+  assert.ok(visible.includes("请调研这个问题"), "real user input must remain visible");
+  assert.ok(visible.includes("这是父智能体的最终汇总"), "parent synthesis must remain visible");
+  assert.ok(!visible.includes("child-only completion summary"), "sub-agent handoff must not render as a user bubble");
+  assert.ok(!visible.includes("codewhale:runtime_event"), "internal runtime XML must stay out of the presentation");
+  assert.ok(raw.includes("child-only completion summary"), "sub-agent completion must remain in the parent model context");
+  assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: completionText,
+    operation: "append",
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
+  assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+}
+
+async function draftToggleFailureAbortsFirstSend() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  harness.handlers.set_multi_agent_mode = function () { throw new Error("git missing"); };
+
+  await bridge.interaction.setMultiAgentMode(true); // 草稿态寄存意图
+  await bridge.chat.sendMessage("并行调研测试");
+
+  var calls = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(!calls.includes("chat"), "开关落盘失败后首条消息不得发出（否则静默退化成普通对话）");
+  assert.ok(calls.includes("delete_session"), "中止物化必须清掉刚建的空会话");
+  assert.equal(bridge.state.get("sessions").activeSessionId, null, "必须回到草稿态");
+  assert.ok(
+    JSON.stringify(bridge.state.get("chat").chatItems).includes("git missing"),
+    "失败原因要如实提示"
+  );
+  assert.equal(
+    bridge.state.get("chat").composerPrefill.text,
+    "并行调研测试",
+    "被中止的输入必须回填输入框，不得静默丢字"
+  );
+
+  // 意图保留：修好依赖后再次发送，开关重试且消息正常发出。
+  harness.handlers.set_multi_agent_mode = function () { return { mode: "yolo", multi_agent: true }; };
+  await bridge.chat.sendMessage("再来一次");
+  var after = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(
+    after.filter(function (cmd) { return cmd === "set_multi_agent_mode"; }).length >= 2,
+    "草稿开关意图必须保留到下一次物化重试"
+  );
+  assert.ok(after.includes("chat"), "开关成功后消息正常发出");
+}
+
+async function multiAgentToggleFailureIsRoutedToTriggerSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var rejectToggle = null;
+  harness.handlers.set_multi_agent_mode = function () {
+    return new Promise(function (_resolve, reject) { rejectToggle = reject; });
+  };
+  harness.handlers.get_mode_state = function (args) {
+    return { mode: "yolo", multi_agent: args.sessionId === "chat-b" };
+  };
+
+  await bridge.sessions.switchToSession("chat-a");
+  var flight = bridge.interaction.setMultiAgentMode(true);
+  for (var i = 0; i < 20 && !rejectToggle; i++) await Promise.resolve();
+  assert.ok(rejectToggle, "toggle request must reach the backend handler");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, true,
+    "optimistic flip must be visible on the trigger session immediately");
+
+  // 请求还没返回，用户切到另一个开着多智能体的会话 B。
+  await bridge.sessions.switchToSession("chat-b");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, true, "B is on");
+  rejectToggle(new Error("roster boom"));
+  await flight;
+
+  var chatOnB = bridge.state.get("chat");
+  assert.strictEqual(chatOnB.modeState.multiAgent, true,
+    "the rollback must not clobber the session the user switched to");
+  assert.ok(!JSON.stringify(chatOnB.chatItems).includes("roster boom"),
+    "the failure toast must not land in the session the user switched to");
+
+  await bridge.sessions.switchToSession("chat-a");
+  assert.ok(JSON.stringify(bridge.state.get("chat").chatItems).includes("roster boom"),
+    "the failure toast must be routed back to the trigger session");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, false,
+    "the trigger session must end up rolled back to off");
 }
 
 async function scheduledRunUnreadBehavior() {
@@ -3647,6 +3774,9 @@ Promise.resolve()
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
+  .then(internalSubagentHandoffStaysOutOfPresentation)
+  .then(multiAgentToggleFailureIsRoutedToTriggerSession)
+  .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)

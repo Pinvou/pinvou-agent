@@ -27,7 +27,7 @@ use deepseek_tui::config::{
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
+use deepseek_tui::hooks::{Hook, HookCondition, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
 
@@ -42,6 +42,13 @@ use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 // ops 同步要求见 `ModelPreset::default_model` 的 LocalVllm 注释（prefs/model.rs）。
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
+
+// 多智能体是“主会话总协调、复杂任务最多再拆一层”的 agent 集群，不是
+// 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
+// 会话收紧资源预算。
+const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
+const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
+const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -1237,14 +1244,12 @@ impl Pinvou3Bridge {
             goal_status,
             // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
             // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
-            disallowed_tools: {
-                let n = crate::features::marketplace::disabled_tool_names();
-                if n.is_empty() {
-                    None
-                } else {
-                    Some(n)
-                }
-            },
+            //
+            // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
+            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平（复核指出
+            // 全局禁用是能力回退）。委派提醒只教 agent 集群、不教 workflow；底座
+            // read_only 钳制与阶段结果不传递两处已知限制记录在 ADR-0006。
+            disallowed_tools: Some(crate::features::marketplace::disabled_tool_names()),
             // CodeWhale r4 新增会话隐藏集注入。父仓本次只接入底座基线，继续使用
             // 编译期 PINVOU3_HIDDEN_TOOLS；能力档案启用另行在 app 层按会话计算。
             hidden_tools: None,
@@ -1293,6 +1298,66 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&workspace);
         cfg.workspace = workspace;
         cfg.instructions = self.session_instructions(session_id);
+        cfg
+    }
+
+    /// 多智能体会话专用配置（ADR-0006）。
+    ///
+    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡写进
+    /// 会话工作区（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
+    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
+    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
+    /// 提醒不教学不推荐）。本产品模式仅供 Work 会话使用：默认直属实例为叶子；
+    /// 复杂任务允许直属实例再拆一层，第二层不得继续派生；直属并行 4 / 全树
+    /// 准入 8。更深后代为避免父子互等死锁不占直属 launch gate，但仍受整棵树
+    /// 的准入上限约束。
+    pub fn build_engine_config_for_multi_agent(
+        &self,
+        session_id: &str,
+        workspace: PathBuf,
+    ) -> EngineConfig {
+        let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
+        // This builder configures Pinvou's opt-in Work multi-agent mode. Keep
+        // it scoped here so stale state or a future direct caller cannot project
+        // expert profiles into a native Code project. Returning the ordinary
+        // config deliberately preserves CodeWhale's base agent/workflow tools.
+        if !self.session_policy(session_id).multi_agent_mode_available() {
+            return cfg;
+        }
+        // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
+        // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
+        // 开启之前，这里只兜底记录。
+        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
+            eprintln!("[multiagent] {err}");
+        }
+        // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
+        // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
+        // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
+        // 收窄）与全局准入/并发额度兜底。
+        cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
+        let max_concurrent = MULTI_AGENT_WORK_MAX_CONCURRENT;
+        let max_admitted = MULTI_AGENT_WORK_MAX_ADMITTED;
+        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
+        // 使用工作模式的产品默认。
+        cfg.max_subagents = self
+            .prefs
+            .advanced
+            .max_subagents
+            .map_or(max_admitted, |configured| configured.min(max_admitted));
+        cfg.max_admitted_subagents = cfg
+            .max_admitted_subagents
+            .min(max_admitted)
+            .max(cfg.max_subagents);
+        cfg.launch_concurrency = cfg
+            .launch_concurrency
+            .min(max_concurrent)
+            .min(cfg.max_subagents);
+        cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
+        cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+            &codewhale_config::FleetConfigToml::default(),
+            &cfg.workspace,
+        ));
         cfg
     }
 
@@ -1465,6 +1530,50 @@ impl Pinvou3Bridge {
         ))
     }
 
+    /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 2` 允许直属
+    /// 代理为复杂任务再拆一层；该 hook 拦住**主会话**在 `agent` / `workflow`
+    /// 调用中用正数深度覆盖参数扩大上限，并要求 Workflow 文件调用改用
+    /// 可检查的 inline 输入。嵌套子代理的工具调用不经过 ToolCallBefore
+    /// hook——那一层由继承上限与全局准入/并发额度兜底，提醒词只作教学。
+    /// 普通对话不挂载此 hook。
+    fn build_multi_agent_hook_executor(&self, workspace: &std::path::Path) -> Arc<HookExecutor> {
+        #[cfg(windows)]
+        let command = {
+            let script = self.bundle.multiagent_depth_guard_ps1.to_string_lossy();
+            format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let script = self
+                .bundle
+                .multiagent_depth_guard_sh
+                .to_string_lossy()
+                .replace('\'', "'\\''");
+            format!("bash '{script}'")
+        };
+
+        let mut config = self.build_hooks_config();
+        config.hooks.push(Hook {
+            event: HookEvent::ToolCallBefore,
+            command,
+            condition: Some(HookCondition::Any {
+                conditions: vec![
+                    HookCondition::ToolName {
+                        name: "agent".to_string(),
+                    },
+                    HookCondition::ToolName {
+                        name: "workflow".to_string(),
+                    },
+                ],
+            }),
+            timeout_secs: 5,
+            background: false,
+            continue_on_error: false,
+            name: Some("pinvou3-multiagent-depth-guard".into()),
+        });
+        Arc::new(HookExecutor::new(config, workspace.to_path_buf()))
+    }
+
     /// 构造发给 engine 的 [`Op::SendMessage`]——按 `mode` 切换 trust/approval/sandbox。
     ///
     /// 决策来源：`docs/Plan-YOLO双模式-设计决策.md` 第 4.1 节复用底座 mode 字段。
@@ -1479,9 +1588,11 @@ impl Pinvou3Bridge {
     /// 强制特定状态行为。Qwen3.6 短期注意力强,放 message 顶端命中率高。
     /// 见决策文档 V2 §13.1。
     ///
-    /// 注：CodeWhale 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
-    /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
-    /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
+    /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
+    /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
+    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
+    /// 因此多智能体工作流由 `engine.rs::apply_workflow_turn_policy` 同时收紧 mode、
+    /// trust 与审批字段，定时任务则按 profile。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -1519,6 +1630,46 @@ impl Pinvou3Bridge {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
+    ) -> Result<Op> {
+        self.build_send_message_op_with_hooks(
+            session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            self.build_hook_executor(),
+        )
+    }
+
+    /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
+    /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
+    pub(crate) fn build_multi_agent_send_message_op(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        workspace: &std::path::Path,
+    ) -> Result<Op> {
+        self.build_send_message_op_with_hooks(
+            session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            self.build_multi_agent_hook_executor(workspace),
+        )
+    }
+
+    fn build_send_message_op_with_hooks(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        hook_executor: Arc<HookExecutor>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1598,7 +1749,7 @@ impl Pinvou3Bridge {
             },
             // 底座会用这里的值覆盖 Engine 级 hook_executor；必须每轮显式携带，
             // 否则 ToolCallBefore 防火墙会在第一条消息时被 None 清掉。
-            hook_executor: Some(self.build_hook_executor()),
+            hook_executor: Some(hook_executor),
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
             verbosity: None,
             // dynamic_tools: per-message 动态工具;pinvou3 不用,空。
@@ -4036,5 +4187,210 @@ mod tests {
         );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+    }
+
+    /// 工具面与主线持平：不得往基础配置里追加 `workflow` 禁令（复核指出
+    /// 全局禁用改变了主分支已有能力）。禁用列表只来自连接器开关。
+    #[test]
+    fn chat_engine_config_keeps_the_workflow_tool_available() {
+        let bridge = fixture_bridge();
+        let cfg = bridge.build_engine_config();
+        let disallowed = cfg.disallowed_tools.unwrap_or_default();
+        assert!(
+            !disallowed.iter().any(|name| name == "workflow"),
+            "不得禁用 workflow——与主线能力持平，实际: {disallowed:?}"
+        );
+    }
+
+    #[test]
+    fn code_session_keeps_base_agents_without_multi_agent_projection() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "code-session"
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-multiagent-gate-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+
+        let plain = bridge.build_engine_config_for_session_at("plain-session", root.join("plain"));
+        let code_workspace = root.join("code");
+        let code =
+            bridge.build_engine_config_for_multi_agent("code-session", code_workspace.clone());
+
+        assert!(plain.subagents_enabled, "Work 会话保持底座委派能力");
+        assert!(
+            code.subagents_enabled,
+            "收缩 Pinvou 多智能体入口不得禁用 CodeWhale 原有 agent/workflow"
+        );
+        let code_has_multi_agent_guard = code.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        assert!(
+            !code_has_multi_agent_guard,
+            "Code 会话不得装配多智能体专用深度护栏"
+        );
+        assert!(
+            !code_workspace.join(".codewhale").exists(),
+            "Code 会话不得向用户项目投影专家名册"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
+    /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
+    #[test]
+    fn multi_agent_engine_config_adds_roles_and_resource_guards() {
+        let bridge = fixture_bridge();
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-wf-roles-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        let ordinary = bridge.build_engine_config();
+        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", workspace.clone());
+
+        assert_eq!(
+            cfg.disallowed_tools, ordinary.disallowed_tools,
+            "多智能体会话的禁用列表必须与普通对话一字不差"
+        );
+        assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
+        assert_eq!(cfg.max_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_WORK_MAX_CONCURRENT);
+        assert_ne!(
+            ordinary.max_spawn_depth, cfg.max_spawn_depth,
+            "普通对话应保持底座原有深度，只收紧多智能体会话"
+        );
+        let ordinary_has_guard = ordinary.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        let multi_agent_has_guard = cfg.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        assert!(!ordinary_has_guard, "普通对话不得挂载多智能体深度护栏");
+        assert!(multi_agent_has_guard, "多智能体会话必须拦截深度覆盖");
+
+        // 专家池卡片使用 exp-* profile；不得播种旧版非 exp 默认角色文件。
+        // 底座自带的内置成员（verifier 等）也保持可用。
+        let agents_dir = workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+        let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| !n.starts_with("exp-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(seeded.is_empty(), "不得再播种内置角色文件: {seeded:?}");
+        assert!(
+            cfg.fleet_roster
+                .get("exp-engineering-frontend-developer")
+                .is_some(),
+            "专家池内置前端专家应注册为可派 profile"
+        );
+        assert!(
+            cfg.fleet_roster.get("verifier").is_some(),
+            "底座内置成员应保持可用"
+        );
+
+        let mut disabled_bridge = fixture_bridge();
+        disabled_bridge.prefs.advanced.max_subagents = Some(0);
+        let disabled =
+            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", workspace.clone());
+        assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
+        assert_eq!(disabled.launch_concurrency, 0);
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 多智能体与普通对话保持相同模式、工具面和审批语义；每轮唯一差异是
+    /// 多智能体附加直属深度护栏，且普通对话不得受影响。
+    #[test]
+    fn multi_agent_send_path_only_adds_resource_guard() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-flash",
+            "https://api.deepseek.com",
+            "k",
+        );
+        let ordinary_op = bridge
+            .build_send_message_op("plain-session", "hi".into(), AppMode::Yolo, None, false)
+            .expect("build op");
+        let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
+        let multi_agent_op = bridge
+            .build_multi_agent_send_message_op(
+                "multi-agent-session",
+                "hi".into(),
+                AppMode::Yolo,
+                None,
+                false,
+                &workspace,
+            )
+            .expect("build multi-agent op");
+        let deepseek_tui::core::ops::Op::SendMessage {
+            mode,
+            allowed_tools,
+            hook_executor: ordinary_hooks,
+            ..
+        } = ordinary_op
+        else {
+            panic!("SendMessage op expected");
+        };
+        let deepseek_tui::core::ops::Op::SendMessage {
+            mode: multi_mode,
+            allowed_tools: multi_allowed_tools,
+            hook_executor: multi_hooks,
+            ..
+        } = multi_agent_op
+        else {
+            panic!("multi-agent SendMessage op expected");
+        };
+        assert_eq!(mode, AppMode::Yolo, "会话模式原样透传，不被多智能体改写");
+        assert_eq!(multi_mode, mode);
+        assert_eq!(
+            allowed_tools, None,
+            "完整工具面：不得再为多智能体收紧单工具白名单"
+        );
+        assert_eq!(multi_allowed_tools, allowed_tools);
+        let has_hook = |executor: &Option<Arc<HookExecutor>>, name: &str| {
+            executor.as_ref().is_some_and(|executor| {
+                executor
+                    .config()
+                    .hooks
+                    .iter()
+                    .any(|hook| hook.name.as_deref() == Some(name))
+            })
+        };
+        assert!(
+            !has_hook(&ordinary_hooks, "pinvou3-multiagent-depth-guard"),
+            "普通对话每轮不得挂载多智能体深度护栏"
+        );
+        assert!(
+            has_hook(&multi_hooks, "pinvou3-multiagent-depth-guard"),
+            "多智能体每轮必须重新携带深度护栏"
+        );
+        assert!(
+            !has_hook(&multi_hooks, "pinvou3-workflow-approval"),
+            "强制 ask Hook 已随每图必停协议退役"
+        );
     }
 }

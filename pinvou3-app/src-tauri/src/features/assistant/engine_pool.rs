@@ -196,6 +196,11 @@ struct EngineEntry {
     forwarder: JoinHandle<()>,
     /// 创建该 engine 时实际使用的运行时模型、提供器版本和本地模型修订号。
     runtime_model: PreparedRuntimeState,
+    /// 引擎纪元（UNIX ms）：worker ledger 上"仍在跑"的记录只有在本纪元内
+    /// 有过活动才算真的活着。底座重启加载只翻内存状态、不回写落盘 running
+    /// （subagent/mod.rs 的 load 路径），少了这道甄别，父会话重建引擎后
+    /// 上一进程的僵尸 worker 会重新显示"工作中"并被永久轮询。
+    spawned_at_ms: u64,
 }
 
 #[derive(Clone, Default)]
@@ -541,9 +546,20 @@ impl EnginePool {
                 engine: engine.clone(),
                 forwarder,
                 runtime_model: prepared,
+                spawned_at_ms: Self::now_epoch_ms(),
             },
         );
         Ok(engine)
+    }
+
+    /// 该 session 引擎的纪元时间戳（UNIX ms）。None = 引擎没起。
+    /// transcripts 投影用它甄别 worker ledger 里上一进程遗留的"running"。
+    pub async fn engine_epoch_ms(&self, session_id: &str) -> Option<u64> {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| e.spawned_at_ms)
     }
 
     /// 取已存在的 engine(不 spawn)。cancel / submit_user_input 等用:engine 没起
@@ -567,7 +583,6 @@ impl EnginePool {
     /// Delete an ordinary chat under the exact turn gate used by lazy spawn
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
-    #[allow(dead_code)]
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
         delete_chat_session_with_gate(
             &self.turn_locks,
@@ -576,7 +591,34 @@ impl EnginePool {
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
         )
-        .await
+        .await?;
+        // 裸 `agent` 对**所有**会话可用（不只多智能体开关开启的），
+        // 底座取消子智能体后的后台 ledger 写
+        // （write_json_atomic 重建父目录）可能复活刚删的 sessions/<id>/。
+        // 目录不存在是常态零成本，Shutdown 处理完后不再有新写入，必然收敛。
+        Self::schedule_late_sweep(
+            crate::platform::paths::sessions_root().join(session_id),
+            "late sweep of deleted chat",
+        );
+        Ok(())
+    }
+
+    /// 删除后的延迟清扫：底座取消子智能体后在后台线程异步写 worker ledger
+    /// （write_json_atomic 会重建父目录），刚删的目录可能被复活成孤儿。
+    /// 两次延迟重删兜底；目标不存在视为已收敛。
+    fn schedule_late_sweep(dir: std::path::PathBuf, label: &'static str) {
+        tauri::async_runtime::spawn(async move {
+            for delay_ms in [2000u64, 6000] {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
+                    }
+                }
+            }
+        });
     }
 
     /// Atomically closes the live engine and removes a scheduled session under
@@ -600,6 +642,13 @@ impl EnginePool {
             self.forget_session(session_id);
         }
         result
+    }
+
+    /// 引擎回收时的收尾 op 序列：**先**级联取消全部子智能体，**后**关闭引擎。
+    /// 顺序有语义——两个 op 走同一条 mpsc 通道，FIFO 保证引擎在处理 Shutdown
+    /// 前先处理完取消；颠倒顺序等于没取消（Shutdown 直接 break 出事件循环）。
+    fn shutdown_cancel_cascade_ops() -> [Op; 2] {
+        [Op::CancelSubAgents, Op::Shutdown]
     }
 
     async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {
@@ -635,10 +684,16 @@ impl EnginePool {
                 "[engine_pool] emitted interrupted terminal before reclaim sid={}",
                 session_id
             );
-            crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
         }
-        if let Err(e) = engine.handle.send(Op::Shutdown).await {
-            eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
+        // 先级联取消全部后台子智能体，再关闭引擎（ADR-0006）。两个 op 走同一条
+        // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
+        // 裸子智能体会以孤儿任务继续跑到自己的步数/时限上限。已知限制：取消是
+        // abort 不 join，子智能体已启动的独立 shell 子进程仍可能残留。
+        for op in Self::shutdown_cancel_cascade_ops() {
+            if let Err(e) = engine.handle.send(op).await {
+                eprintln!("[engine_pool] shutdown {session_id} failed: {e:?}");
+                break;
+            }
         }
     }
 
@@ -718,6 +773,40 @@ impl EnginePool {
 
     // ── 高层路由(commands.rs 调用)─────────────────────────────────
 
+    /// 原子切换多智能体资源策略：先占用与发送相同的 lifecycle 槽位，再在
+    /// session turn gate 内持久化状态并回收旧引擎。这样发送与切换不可能交错成
+    /// “新开关 + 旧引擎”或“旧开关 + 新引擎”。未提交 reservation 会在回收时
+    /// 静默失效，不产生伪造的 chat:done。
+    pub(crate) async fn reconfigure_multi_agent_mode(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        if enabled && !self.multi_agent_mode_available(session_id) {
+            anyhow::bail!("Pinvou 多智能体模式本期仅支持工作会话");
+        }
+        let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        if enabled {
+            // 先占 lifecycle 再写名册：慢磁盘期间若允许发送抢先 reserve，首轮会
+            // 落进旧引擎，随后切换失败并回滚，形成界面已开但该轮未受限的竞态。
+            let workspace = self.bridge.session_workspace(session_id);
+            let sid = session_id.to_string();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                std::fs::create_dir_all(&workspace)
+                    .with_context(|| format!("set_multi_agent_mode({sid}): 建工作区失败"))?;
+                crate::features::multiagent::roster::enroll_expert_roles(&workspace)
+                    .map_err(anyhow::Error::msg)
+            })
+            .await
+            .with_context(|| format!("set_multi_agent_mode({session_id}): 后台任务失败"))??;
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        self.store.set_multi_agent(session_id, enabled)?;
+        self.evict_locked(session_id).await;
+        Ok(())
+    }
+
     /// Atomically reserve the single turn slot for a session before callers
     /// consume one-shot state, stage attachments, or perform other side effects.
     /// Dropping the returned guard before submission restores the slot.
@@ -733,6 +822,26 @@ impl EnginePool {
         self.turn_lifecycles
             .get(session_id)
             .is_some_and(|lifecycle| lifecycle.is_active())
+    }
+
+    /// Whether this session uses Pinvou's native Code execution lane.
+    pub(crate) fn is_code_session(&self, session_id: &str) -> bool {
+        self.bridge.is_code_session(session_id)
+    }
+
+    /// Product capability gate for Pinvou's multi-agent mode. This is shared
+    /// by command, prompt, engine and roster paths so a hidden control cannot
+    /// be bypassed by stale state or a direct IPC call.
+    pub(crate) fn multi_agent_mode_available(&self, session_id: &str) -> bool {
+        self.bridge
+            .session_policy(session_id)
+            .multi_agent_mode_available()
+    }
+
+    /// Resolve the Engine workspace, including a project-bound native Code
+    /// session. CodeWhale keeps its project-scoped `.codewhale` state here.
+    pub(crate) fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
+        self.bridge.session_workspace(session_id)
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
@@ -893,7 +1002,8 @@ impl EnginePool {
         result
     }
 
-    /// 取消指定 session 正在生成的回复。engine 没起则 no-op。
+    /// 取消指定 session 正在生成的回复，并级联取消它派生的全部后台子智能体。
+    /// engine 没起则 no-op。
     ///
     /// 分两阶段执行，避免与 `send_reserved_user_message` 争抢 `turn_lock` 导致
     /// 「停止按钮无响应」：cancel_token 是独立原子，置位不需要 turn_lock 保护，
@@ -905,6 +1015,9 @@ impl EnginePool {
     /// 保留着上一轮的空闲 Engine，都立即认领未提交 Interrupted 终态并补发
     /// `chat:done`，使 reservation 失效（后续 `ensure_active` 失败、消息不再提交），
     /// 保证前端 busy 一定能复位。
+    ///
+    /// 「停止」按钮是子智能体唯一的确定性停止入口（卡片上没有取消按钮，
+    /// 自然语言指令只是建议）；只取消宿主轮会留下继续烧钱的后台子智能体。
     pub async fn cancel(&self, session_id: &str) {
         // 阶段一：无锁先触发 cancel_token。
         // handle_for 只瞬时取 entries 锁(与 send 内部瞬时取 entries 锁不冲突)，
@@ -936,11 +1049,12 @@ impl EnginePool {
         let claimed_unsubmitted = lifecycle
             .as_ref()
             .is_some_and(|lc| lc.emit_unsubmitted_interrupted_terminal(&self.app, session_id));
+        let engine = self.handle_for(session_id).await;
         if !claimed_unsubmitted {
             // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
             // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
             // 这里拿到刚注册的 engine 补 cancel。
-            if let Some(engine) = self.handle_for(session_id).await {
+            if let Some(engine) = engine.as_ref() {
                 // 已提交（op 已入队或 TurnStarted 已抵达）：
                 //  - TurnStarted 未抵达：arm pending，转发器收到 TurnStarted 后
                 //    （reset_cancel_token 已完成）补 cancel 命中活跃 token；
@@ -950,6 +1064,13 @@ impl EnginePool {
                     lifecycle.arm_pending_cancel();
                 }
                 engine.cancel_current();
+            }
+        }
+        // 在 turn_lock 内对当前权威 engine 发级联取消，避免锁等待期间发生的
+        // engine 替换让后台子智能体漏取消，也避免取消误伤随后开始的新一轮。
+        if let Some(engine) = engine {
+            if let Err(e) = engine.handle.send(Op::CancelSubAgents).await {
+                eprintln!("[engine_pool] cancel subagents {session_id} failed: {e:?}");
             }
         }
         if let Some(cancellation) = shell_cancellation {
@@ -962,14 +1083,20 @@ impl EnginePool {
     /// 没起的会话下次 spawn 时从持久列表读初值(build_engine_config),所以新窗口/新对话
     /// 都继承同一份禁用状态。
     pub async fn set_disallowed_all(&self, tools: Vec<String>) {
-        let entries = self.entries.lock().await;
-        for (sid, entry) in entries.iter() {
-            // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏）。
-            if let Err(e) = entry
-                .engine
+        let targets = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
+            .collect::<Vec<_>>();
+        for (sid, engine) in targets {
+            // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏），
+            // 且发送前释放 entries 锁，避免跨 await 持有全局引擎表锁。
+            if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: self.bridge.shape_disallowed_tools(sid, tools.clone()),
+                    tools: self.bridge.shape_disallowed_tools(&sid, tools.clone()),
                 })
                 .await
             {
@@ -978,14 +1105,88 @@ impl EnginePool {
         }
     }
 
-    /// 编辑/重发指定 session 最后一轮 user 消息。
-    pub async fn edit_last_turn(&self, session_id: &str, new_message: String) -> Result<()> {
-        let reservation = self.reserve_turn(session_id)?;
-        let display_message = user_display_message(new_message.clone());
-        self.edit_last_turn_reserved(session_id, new_message, display_message, reservation)
+    /// 专家池增删改后的名册联动（ADR-0006）：刷新所有开着多智能体开关的
+    /// 会话，以及仍在运行且留有专家投影的已关闭会话。后者不能跳过：开关
+    /// 关闭不会重建引擎，若此时删卡，旧 roster 会让已删除专家继续可用。
+    /// 返回聚合错误：调用方（专家池命令）要如实告知用户哪些会话没刷新成功，
+    /// 而不是界面显示成功、子智能体却用旧名单。
+    pub async fn refresh_multi_agent_rosters_after_expert_change(&self) -> Result<(), String> {
+        let mut failures: Vec<String> = Vec::new();
+        let mut targets = self
+            .store
+            .multi_agent_session_ids()
+            .into_iter()
+            .filter(|session_id| self.multi_agent_mode_available(session_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        let live_session_ids = self
+            .entries
+            .lock()
             .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in live_session_ids {
+            if !self.multi_agent_mode_available(&session_id) {
+                continue;
+            }
+            let workspace = self.bridge.session_workspace(&session_id);
+            if crate::features::multiagent::roster::has_expert_role_projection(&workspace) {
+                targets.insert(session_id);
+            }
+        }
+        for session_id in targets {
+            let workspace = self.bridge.session_workspace(&session_id);
+            if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&workspace) {
+                failures.push(format!("{session_id}: {err}"));
+                continue;
+            }
+            if let Err(err) = self.refresh_multi_agent_roster(&session_id).await {
+                failures.push(format!("{session_id}: {err}"));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("；"))
+        }
     }
 
+    /// 多智能体开关开启后的即时名册刷新（ADR-0006）：把刚装配进会话工作区的
+    /// 专家名册整册推给在跑引擎（底座 `Op::SetFleetRoster`，下一轮生效），
+    /// 否则模型能在提醒里看到专家名字、启动时却报"不存在该 profile"。
+    /// 工具面不随开关变化（与主线持平，不按会话改写禁用列表），引擎没起则 no-op——
+    /// 下次 spawn 由 `build_engine_config_for_multi_agent` 从工作区装配。
+    pub async fn refresh_multi_agent_roster(&self, session_id: &str) -> Result<(), String> {
+        if !self.multi_agent_mode_available(session_id) {
+            return Ok(());
+        }
+        let Some(engine) = self.handle_for(session_id).await else {
+            // 引擎没起不是错误：下次 spawn 从工作区装配。
+            return Ok(());
+        };
+        let workspace = self.bridge.session_workspace(session_id);
+        let roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+            &codewhale_config::FleetConfigToml::default(),
+            &workspace,
+        ));
+        engine
+            .handle
+            .send(Op::SetFleetRoster { roster })
+            .await
+            .map_err(|e| format!("向在跑引擎推送名册失败: {e:?}"))
+    }
+
+    /// 当前 UNIX 时刻（毫秒）。引擎纪元与 worker ledger 的
+    /// created_at_ms/updated_at_ms 同源（都是 SystemTime），可直接比较。
+    fn now_epoch_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    /// 编辑/重发指定 session 最后一轮 user 消息。调用方在预留 turn 后分别传入
+    /// 模型内容与干净展示消息，避免运行时提醒进入可见历史。
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         session_id: &str,
@@ -1252,6 +1453,22 @@ mod scheduled_model_tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+
+    /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
+    /// 两个 op 同通道 FIFO；颠倒顺序等于没取消（Shutdown 直接跳出事件循环，
+    /// 会话派生的裸子智能体会以孤儿任务继续跑）。
+    #[test]
+    fn reclaim_cascade_cancels_subagents_before_shutdown() {
+        let ops = super::EnginePool::shutdown_cancel_cascade_ops();
+        assert!(
+            matches!(ops[0], deepseek_tui::core::ops::Op::CancelSubAgents),
+            "级联取消必须先行"
+        );
+        assert!(
+            matches!(ops[1], deepseek_tui::core::ops::Op::Shutdown),
+            "Shutdown 必须殿后"
+        );
+    }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
         SavedModel {
