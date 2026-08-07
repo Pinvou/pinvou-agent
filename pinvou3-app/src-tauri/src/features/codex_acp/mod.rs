@@ -4483,10 +4483,9 @@ fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static st
     }
 }
 
-/// installed=false 时的安装动作：brew 来源保持 brew 升级（与安装方式一致）；
-/// 其余情况 npm 可用一律走 npm（`npm install -g` 对首次安装同样幂等），
-/// 避免官方脚本对慢速镜像源与本机工具链（如 tar 实现差异）的依赖；
-/// npm 不可用时回退各 Agent 的官方脚本，最后才是手动安装。
+/// installed=false 时的安装动作：探测到 CLI 且来源可识别时优先包管理器
+/// 升级（brew/npm），其余来源或无 CLI 时维持各 Agent 的默认安装方式
+/// （官方脚本优先：原生二进制启动快、装完无需重启即可探测）。
 fn install_action_for(
     _backend: AgentBackend,
     install_source: Option<&'static str>,
@@ -4495,7 +4494,7 @@ fn install_action_for(
 ) -> &'static str {
     match install_source {
         Some("brew") => "brew_upgrade",
-        _ if npm_available => "npm_upgrade",
+        Some("npm") if npm_available => "npm_upgrade",
         _ if official_script_supported => "official_script",
         _ => "manual",
     }
@@ -5748,8 +5747,9 @@ max_context_size = 262144
                 "npm_upgrade"
             );
         }
-        // npm 可用时：script/未知来源/首次安装（None）一律走 npm；
-        // npm 不可用时回到官方脚本，脚本也不支持时手动。
+        // 官方脚本优先（原设计）：script/未知来源/首次安装（None）即使 npm
+        // 可用也走官方脚本；npm 仅作为 npm 来源的升级通道；npm 不可用或脚本
+        // 不支持时依次回退脚本/手动。
         for backend in [
             AgentBackend::CodexAcp,
             AgentBackend::ClaudeAcp,
@@ -5757,9 +5757,16 @@ max_context_size = 262144
         ] {
             assert_eq!(
                 install_action_for(backend, Some("script"), true, true),
+                "official_script"
+            );
+            assert_eq!(
+                install_action_for(backend, None, true, true),
+                "official_script"
+            );
+            assert_eq!(
+                install_action_for(backend, Some("npm"), true, true),
                 "npm_upgrade"
             );
-            assert_eq!(install_action_for(backend, None, true, true), "npm_upgrade");
             assert_eq!(
                 install_action_for(backend, Some("script"), false, true),
                 "official_script"
