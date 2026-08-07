@@ -55,3 +55,21 @@ export function startTranscriptPolling({
     if (timer !== null) cancel(timer);
   };
 }
+
+/**
+ * 仅在清单已经解析且确认存在 transcript 时启动详情轮询。把门禁与首次读取
+ * 放在同一入口，避免面板初次渲染时因 agent 尚未解析而发起必败读取。
+ */
+export function startSubagentTranscriptPolling({
+  bridgeAvailable,
+  selectedAgentId,
+  agentResolved,
+  transcriptUnavailable,
+  agentDone,
+  ...polling
+}) {
+  if (!bridgeAvailable || !selectedAgentId || !agentResolved || transcriptUnavailable) {
+    return undefined;
+  }
+  return startTranscriptPolling({ ...polling, active: !agentDone });
+}

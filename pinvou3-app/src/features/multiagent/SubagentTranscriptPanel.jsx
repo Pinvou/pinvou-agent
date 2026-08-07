@@ -16,6 +16,7 @@ import {
 import {
   isTranscriptChunk,
   mergeTranscriptMessages,
+  startSubagentTranscriptPolling,
   startTranscriptPolling,
 } from './runState.mjs';
 
@@ -218,9 +219,10 @@ export function SubagentTranscriptPanel({
   const [transcriptReadFailed, setTranscriptReadFailed] = useState(false);
   const [visibleTranscriptItems, setVisibleTranscriptItems] = useState(TRANSCRIPT_WINDOW_STEP);
   const transcriptCursorRef = useRef(null);
-  const terminalWithoutTranscript = !!(
-    agent && agent.done && agent.has_transcript === false
-  );
+  const agentResolved = !!agent;
+  const agentDone = !!(agent && agent.done);
+  const transcriptUnavailable = !!(agent && agent.has_transcript === false);
+  const terminalWithoutTranscript = agentDone && transcriptUnavailable;
   useEffect(() => {
     setVisibleTranscriptItems(TRANSCRIPT_WINDOW_STEP);
   }, [sessionId, selectedAgentId]);
@@ -231,9 +233,12 @@ export function SubagentTranscriptPanel({
     // 排队/刚启动（ledger 有、transcript 未落盘）不轮询详情：读必失败，
     // 徒增无效 IPC 与告警日志；若它在建文件前已经失败，直接展示 ledger
     // 错误，不再把明确的启动失败伪装成“记录读取失败”。
-    const transcriptUnavailable = !!(agent && agent.has_transcript === false);
-    if (!bridge.available || !selectedAgentId || transcriptUnavailable) return undefined;
-    return startTranscriptPolling({
+    return startSubagentTranscriptPolling({
+      bridgeAvailable: bridge.available,
+      selectedAgentId,
+      agentResolved,
+      transcriptUnavailable,
+      agentDone,
       read: () => bridge.multiAgent.readSubagentTranscript(
         sessionId,
         selectedAgentId,
@@ -252,9 +257,8 @@ export function SubagentTranscriptPanel({
           setTranscriptReadFailed(true);
         }
       },
-      active: !(agent && agent.done),
     });
-  }, [sessionId, selectedAgentId, !!(agent && agent.done), !!(agent && agent.has_transcript === false)]);
+  }, [sessionId, selectedAgentId, agentResolved, agentDone, transcriptUnavailable]);
 
   const projectedAgentId = agent ? agent.agent_id : null;
   const projectedAgentRole = agent ? agent.role : null;

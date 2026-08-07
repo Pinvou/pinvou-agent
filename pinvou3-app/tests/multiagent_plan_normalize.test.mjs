@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isTranscriptChunk,
   mergeTranscriptMessages,
+  startSubagentTranscriptPolling,
   startTranscriptPolling,
 } from '../src/features/multiagent/runState.mjs';
 import {
@@ -561,6 +562,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     '子智能体在建 transcript 前失败时必须直接显示 ledger 错误，不能再发必败读取',
   );
   assert.match(panelSource, /copy\.agentNoTranscript\(agent && agent\.error\)/);
+  assert.match(panelSource, /const agentResolved = !!agent/);
   assert.match(panelSource, /const transcriptUnavailable = !!\(agent && agent\.has_transcript === false\)/);
   assert.match(
     panelSource,
@@ -973,7 +975,7 @@ test('子智能体侧栏开合后保持聊天阅读位置', () => {
 test('面板是只读执行记录：列表→详情两级，复用共享对话时间线', () => {
   assert.match(panelSource, /<ConversationTimeline/, '必须复用共享对话时间线组件');
   assert.match(panelSource, /projectSubagentTranscript\(\{/);
-  assert.match(panelSource, /startTranscriptPolling\(\{[\s\S]*active: !\(agent && agent\.done\)/);
+  assert.match(panelSource, /startSubagentTranscriptPolling\(\{[\s\S]*agentResolved,[\s\S]*agentDone,/);
   assert.match(panelSource, /accept: isTranscriptChunk/);
   assert.match(panelSource, /transcriptCursorRef\.current/);
   assert.match(panelSource, /mergeTranscriptMessages\(current, chunk\)/);
@@ -1191,4 +1193,43 @@ test('transcript 运行中串行轮询，停止后取消 timer；终态只做最
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(dynamicSchedules, 0, '全部子智能体终态后停止列表轮询');
+});
+
+test('详情清单未解析或终态无 transcript 时不发起读取', async () => {
+  const cases = [
+    {
+      name: '清单尚未解析',
+      agentResolved: false,
+      transcriptUnavailable: false,
+      agentDone: false,
+    },
+    {
+      name: '终态且无 transcript',
+      agentResolved: true,
+      transcriptUnavailable: true,
+      agentDone: true,
+    },
+  ];
+
+  for (const testCase of cases) {
+    let reads = 0;
+    const stop = startSubagentTranscriptPolling({
+      bridgeAvailable: true,
+      selectedAgentId: 'agent_12345678',
+      agentResolved: testCase.agentResolved,
+      transcriptUnavailable: testCase.transcriptUnavailable,
+      agentDone: testCase.agentDone,
+      read: async () => {
+        reads += 1;
+        return { messages: [], next_offset: 0, revision: 'r1', reset: false };
+      },
+      accept: isTranscriptChunk,
+      onMessages: () => {},
+      schedule: () => { throw new Error(`${testCase.name} 不得安排详情轮询`); },
+      cancel: () => {},
+    });
+    await Promise.resolve();
+    assert.equal(stop, undefined, `${testCase.name} 不应启动详情轮询`);
+    assert.equal(reads, 0, `${testCase.name} 的详情读取次数必须为 0`);
+  }
 });
