@@ -1086,6 +1086,7 @@ export function CodexAcpView({
   onSwitchHomeMode,
   bs = null,
   onGotoTools,
+  fixedSession = false,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState([]);
@@ -2482,15 +2483,19 @@ export function CodexAcpView({
                 data-testid="codex-workspace-unavailable"
                 className="rounded-xl bg-red-500/8 px-3 py-2 text-[12px] text-red-600 dark:text-red-300"
               >
-                {codexCopy.recreatePrefix}
-                <button
-                  type="button"
-                  data-testid="codex-recreate-session"
-                  onClick={recreateUnavailableWorkspaceSession}
-                  className="font-medium underline underline-offset-2 hover:text-red-700 dark:hover:text-red-200"
-                >
-                  {codexCopy.recreate}
-                </button>
+                {fixedSession ? codexCopy.projectMissing : (
+                  <>
+                    {codexCopy.recreatePrefix}
+                    <button
+                      type="button"
+                      data-testid="codex-recreate-session"
+                      onClick={recreateUnavailableWorkspaceSession}
+                      className="font-medium underline underline-offset-2 hover:text-red-700 dark:hover:text-red-200"
+                    >
+                      {codexCopy.recreate}
+                    </button>
+                  </>
+                )}
               </div>
             ) : isNativeAgent ? (
               // 原生（品悟）会话没有 ACP 登录/安装状态机；错误由 chat:done 事件内联展示。

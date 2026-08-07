@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeSource = fs.readFileSync(path.join(root, 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
 const detachedShellSource = fs.readFileSync(path.join(root, 'src', 'app', 'DetachedShell.jsx'), 'utf8');
+const mainSource = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
+const navigationSource = fs.readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
 const monitorViewSource = fs.readFileSync(path.join(root, 'src', 'features', 'monitor', 'MonitorView.jsx'), 'utf8');
 
 function featureRegistry(calls) {
@@ -113,5 +115,19 @@ assert.match(monitorViewSource, /monitor\.startMonitorPolling/,
   'MonitorView must remain the single owner of monitor polling');
 assert.match(monitorViewSource, /monitor\.stopMonitorPolling/,
   'MonitorView must stop polling when it unmounts');
+assert.match(mainSource, /chat\.taskKind === ['"]codex['"] \? ['"]codex-session['"] : ['"]session['"]/,
+  'Coding session rows must use their own detached window kind');
+assert.doesNotMatch(mainSource, /chat\.taskKind !== ['"]codex['"] && canDetachWindows/,
+  'Coding sessions must not remain excluded from tear-off');
+assert.match(navigationSource, /dragKind = ['"]session['"]/,
+  'recent items must accept the caller-owned drag kind');
+assert.match(detachedShellSource, /['"]codex-session['"]:\s*\(\{ id, theme, t, bs \}\)/,
+  'DetachedShell must route Coding sessions to a dedicated fixed-session view');
+assert.match(detachedShellSource, /invokeTauri\(['"]list_codex_acp_sessions['"]\)/,
+  'detached Coding view must load its own session metadata before rendering');
+assert.match(detachedShellSource, /activeId=\{id\}/,
+  'detached Coding view must remain bound to the requested session id');
+assert.match(detachedShellSource, /fixedSession/,
+  'detached Coding view must disable flows that would replace its fixed session id');
 
 console.log('detached window lifecycle tests passed');

@@ -166,6 +166,7 @@ pub fn detached_label(kind: &str, id: Option<&str>) -> String {
 pub fn view_title(kind: &str) -> &'static str {
     match kind {
         "session" => "对话",
+        "codex-session" => "Coding 对话",
         "persona" => "专家",
         "workflow" => "工作流",
         "monitor" => "系统监控",
@@ -372,6 +373,7 @@ mod tests {
     #[test]
     fn view_title_known_and_fallback() {
         assert_eq!(view_title("workflow"), "工作流");
+        assert_eq!(view_title("codex-session"), "Coding 对话");
         assert_eq!(view_title("outputs"), "产出物");
         assert_eq!(view_title("???"), "PINVOU");
     }
