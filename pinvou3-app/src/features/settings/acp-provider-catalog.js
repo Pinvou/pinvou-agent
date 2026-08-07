@@ -8,8 +8,6 @@
 // docs.x.ai）。预设只提供 base URL 与协议，模型由用户自行填写（见
 // ProviderFormModal：选择预设不自动填 model）。
 
-import { BRAND_ICON_BY_VENDOR } from './model-catalog.js';
-
 // wireApi: 'anthropic'（Anthropic 兼容）/ 'openai'（OpenAI 兼容）/ 'kimi'（Kimi 原生）
 // models: 该厂商官方在列模型名单（选择预设后模型建议列表按此筛选；
 // 空数组表示无固定名单，如豆包按接入点（endpoint）区分，由用户自行填写）。
@@ -19,23 +17,25 @@ import { BRAND_ICON_BY_VENDOR } from './model-catalog.js';
 // 拼成 {baseUrl}/v1/messages，因此该值**不含 /v1 尾**（N9）：Kimi Code 托管
 // 为 api.kimi.com/coding（拼出 /coding/v1/messages），DeepSeek 为
 // api.deepseek.com/anthropic（官方 Anthropic 兼容端点）。
+// nameKey: i18n 键（`uiAcpProviders` 下），展示名按当前语言查表；`name` 仅作
+// 缺失 key 时的兜底回退，不直接渲染。
 export const ACP_PROVIDER_PRESETS = [
-  { key: 'anthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
-  { key: 'openai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
-  { key: 'moonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
+  { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
+  { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
+  { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"
   // 表名的 kimi-code/ 前缀是别名，实际请求的 model 字段是无前缀的 "k3"）。
   // Kimi Code 托管的 1M 变体仅 k3 一个（k3-256k 等其余档位无 1M 声明）。
-  { key: 'kimi-code', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3[1m]'] },
-  { key: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', baseUrlAnthropic: 'https://api.deepseek.com/anthropic', wireApi: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], models1m: ['deepseek-v4-flash[1m]', 'deepseek-v4-pro[1m]'] },
-  { key: 'zhipu', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'openai', models: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash'] },
-  { key: 'qwen', name: '通义千问 Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', wireApi: 'openai', models: ['qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus'] },
-  { key: 'doubao', name: '豆包 Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', wireApi: 'openai', models: [] },
-  { key: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.1'] },
-  { key: 'xai', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', wireApi: 'openai', models: ['grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-build-0.1'] },
-  { key: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', wireApi: 'openai', models: [] },
-  { key: 'siliconflow', name: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', wireApi: 'openai', models: [] },
-  { key: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', wireApi: 'openai', models: [] },
+  { key: 'kimi-code', nameKey: 'presetKimiCode', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3[1m]'] },
+  { key: 'deepseek', nameKey: 'presetDeepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', baseUrlAnthropic: 'https://api.deepseek.com/anthropic', wireApi: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], models1m: ['deepseek-v4-flash[1m]', 'deepseek-v4-pro[1m]'] },
+  { key: 'zhipu', nameKey: 'presetZhipu', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'openai', models: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash'] },
+  { key: 'qwen', nameKey: 'presetQwen', name: '通义千问 Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', wireApi: 'openai', models: ['qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus'] },
+  { key: 'doubao', nameKey: 'presetDoubao', name: '豆包 Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', wireApi: 'openai', models: [] },
+  { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.1'] },
+  { key: 'xai', nameKey: 'presetXai', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', wireApi: 'openai', models: ['grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-build-0.1'] },
+  { key: 'openrouter', nameKey: 'presetOpenrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', wireApi: 'openai', models: [] },
+  { key: 'siliconflow', nameKey: 'presetSiliconflow', name: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', wireApi: 'openai', models: [] },
+  { key: 'groq', nameKey: 'presetGroq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', wireApi: 'openai', models: [] },
 ];
 
 // 表单 model 字段的官方在列模型建议（datalist，可自由输入其他模型名）。
@@ -68,17 +68,3 @@ export const ACP_MODEL_1M_VARIANTS = ACP_PROVIDER_PRESETS.flatMap(preset => pres
 // Claude Code 细化模型槽位 id（与后端 CLAUDE_MODEL_SLOTS 一一对应）。
 // 槽位不填时 CC 的子 agent 会回落官方模型走官方流量，表单将其设为必填。
 export const CLAUDE_MODEL_SLOT_IDS = ['opus', 'sonnet', 'haiku', 'fable', 'subagent'];
-
-export function providerPresetLabel(preset) {
-  return preset && (preset.name || preset.key) || '';
-}
-
-export function brandIconForPreset(preset) {
-  if (!preset) return null;
-  const vendorKey = {
-    anthropic: 'anthropic', openai: 'openai', moonshot: 'kimi', 'kimi-code': 'kimi',
-    deepseek: 'deepseek', zhipu: 'glm', qwen: 'qwen', doubao: 'doubao',
-    minimax: 'minimax', xai: 'xai',
-  }[preset.key];
-  return vendorKey ? (BRAND_ICON_BY_VENDOR[vendorKey] || null) : null;
-}
