@@ -3129,10 +3129,12 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
 // 者确认；正式登记文字见 .luzeyang/code-plain-decoupling/code-native-agent-安全审查问题清单.md（已归档）。
 /// 新形态多智能体会话（普通 id + 开关标志）在 Web 上是只读的（ADR-0006，
 /// 桌面专属）：查看/列表照常放行（只读横幅要能取数），一切会触发新一轮
-/// 模型执行的入口统一拦截——此前只拦了输入框，编辑重发/计划裁决/澄清
-/// 提交都能绕过（复核 P1）。桌面端不经本漏斗，不受影响。
+/// 模型执行或改变运行中 turn 状态的入口统一拦截——此前只拦了输入框，
+/// 编辑重发/计划裁决/取消审批/停止生成都能绕过（复核 P1）。桌面端不经本
+/// 漏斗，不受影响。
 const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "accept_plan",
+    "cancel_generation",
     "cancel_user_input",
     "compact_now",
     "discard_plan",
@@ -4644,6 +4646,8 @@ mod tests {
     }
 
     /// Web 只读封禁表：执行型入口全在表内，查看型不在（只读横幅要取数）。
+    /// `cancel_generation` 与 `cancel_user_input` 同属改变运行中 turn 状态的
+    /// 取消类入口（前者终态整个生成并级联取消子智能体），必须一并封禁。
     #[test]
     fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
         for command in [
@@ -4653,6 +4657,7 @@ mod tests {
             "discard_plan",
             "exit_plan_to_yolo",
             "submit_user_input",
+            "cancel_generation",
             "cancel_user_input",
             "compact_now",
             "summon_pinvou",
