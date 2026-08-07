@@ -28,7 +28,7 @@ pub(super) fn ensure_chat_session(
 ) -> Result<(), String> {
     match store
         .session_kind(id)
-        .map_err(|error| format!("{action}({id}): {error:?}"))?
+        .map_err(|error| format!("{action}({id}): {error:#}"))?
     {
         SessionKind::Chat => Ok(()),
         SessionKind::ScheduledRun => Err(format!(
@@ -139,7 +139,7 @@ pub async fn list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<SessionListItem>, String> {
-    let mut metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let mut metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
             && !acp_pool.is_acp_metadata(m)
@@ -304,11 +304,11 @@ pub async fn list_archived_sessions(
 ) -> Result<Vec<HiddenSessionListItem>, String> {
     let mut metas = store
         .list()
-        .map_err(|e| format!("list_archived_sessions: {e:?}"))?;
+        .map_err(|e| format!("list_archived_sessions: {e:#}"))?;
     metas.extend(
         store
             .list_scheduled()
-            .map_err(|e| format!("list_archived_sessions: {e:?}"))?,
+            .map_err(|e| format!("list_archived_sessions: {e:#}"))?,
     );
     metas.retain(|m| {
         store.is_hidden(&m.id)
@@ -343,7 +343,7 @@ pub(super) fn create_session_record(
     let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, model_id, workspace)
-        .map_err(|e| format!("create_session: {e:?}"))?;
+        .map_err(|e| format!("create_session: {e:#}"))?;
     if set_active {
         store.set_active(Some(session.metadata.id.clone()));
     }
@@ -374,7 +374,7 @@ pub async fn load_session(
 ) -> Result<SavedSession, String> {
     let session = store
         .load(&id)
-        .map_err(|e| format!("load_session({id}): {e:?}"))?;
+        .map_err(|e| format!("load_session({id}): {e:#}"))?;
     if set_active.unwrap_or(true) {
         store.set_active(Some(id.clone()));
     }
@@ -396,7 +396,7 @@ pub async fn delete_session(
 ) -> Result<(), String> {
     let result = match store
         .session_kind(&id)
-        .map_err(|e| format!("delete_session({id}): {e:?}"))?
+        .map_err(|e| format!("delete_session({id}): {e:#}"))?
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
@@ -405,7 +405,7 @@ pub async fn delete_session(
             pool.evict(&id).await;
             let result = store
                 .delete(&id)
-                .map_err(|e| format!("delete_session({id}): {e:?}"));
+                .map_err(|e| format!("delete_session({id}): {e:#}"));
             if result.is_ok() {
                 pool.forget_session(&id);
                 acp_pool
@@ -441,7 +441,7 @@ pub async fn rename_session(
 ) -> Result<(), String> {
     store
         .set_title(&id, title)
-        .map_err(|e| format!("rename_session({id}): {e:?}"))?;
+        .map_err(|e| format!("rename_session({id}): {e:#}"))?;
     emit_session_event(&app, "session:list_changed", &id, "renamed");
     Ok(())
 }
@@ -457,7 +457,7 @@ pub async fn set_session_pinned(
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
-        .map_err(|e| format!("set_session_pinned({id}): {e:?}"))?;
+        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
     store.set_pinned(&id, pinned);
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
@@ -475,7 +475,7 @@ pub async fn set_session_archived(
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)
-        .map_err(|e| format!("set_session_archived({id}): {e:?}"))?;
+        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
     store.set_hidden(&id, archived);
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
@@ -499,7 +499,7 @@ pub async fn save_session_messages(
     ensure_chat_session(&store, &id, "save_session_messages")?;
     store
         .update_messages(&id, messages)
-        .map_err(|e| format!("save_session_messages({id}): {e:?}"))
+        .map_err(|e| format!("save_session_messages({id}): {e:#}"))
 }
 
 /// 落盘 session 的产物 paths 列表。前端跟踪 write_file / append_file 调用后调用,
@@ -514,7 +514,7 @@ pub async fn save_session_artifacts(
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
     store
         .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts({id}): {e:?}"))
+        .map_err(|e| format!("save_session_artifacts({id}): {e:#}"))
 }
 
 fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json::Value, String> {

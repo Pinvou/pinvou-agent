@@ -266,16 +266,16 @@ pub(crate) async fn chat_with_reservation(
             crate::features::assistant::timing::finish_turn(
                 &sid,
                 "send_error",
-                Some(&format!("{e:?}")),
+                Some(&format!("{e:#}")),
             );
             log::error!(
-                "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:?}",
+                "[pinvou3][chat] engine send failed sid={} send_elapsed_ms={} total_elapsed_ms={} error={:#}",
                 sid,
                 send_started_at.elapsed().as_millis(),
                 chat_started_at.elapsed().as_millis(),
                 e
             );
-            Err(format!("send_user_message failed: {e:?}"))
+            Err(format!("send_user_message failed: {e:#}"))
         }
     }
 }

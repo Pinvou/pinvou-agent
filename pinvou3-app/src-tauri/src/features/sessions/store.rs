@@ -31,8 +31,10 @@ use super::validators::{
     generate_session_id, persisted_system_prompt, validate_scheduled_session_id,
     validate_session_id,
 };
-use super::{session_roots_for, ExecutionRootResolver, SessionKind, SessionRoots, SessionStore};
-use crate::core::mode_state::{MountedCollection, MountedCollectionsSnapshot};
+use super::{
+    session_roots_for, ExecutionRootResolver, MountedCollection, MountedCollectionsSnapshot,
+    SessionKind, SessionRoots, SessionStore,
+};
 
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].

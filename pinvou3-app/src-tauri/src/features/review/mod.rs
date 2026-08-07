@@ -541,6 +541,18 @@ enum ReviewReasoningDialect {
     Minimax,
 }
 
+impl From<crate::core::reasoning_dialect::ReasoningDialect> for ReviewReasoningDialect {
+    fn from(d: crate::core::reasoning_dialect::ReasoningDialect) -> Self {
+        use crate::core::reasoning_dialect::ReasoningDialect as D;
+        match d {
+            D::None => ReviewReasoningDialect::None,
+            D::ThinkingDisabled => ReviewReasoningDialect::ThinkingDisabled,
+            D::QwenEnableThinking => ReviewReasoningDialect::QwenEnableThinking,
+            D::Minimax => ReviewReasoningDialect::Minimax,
+        }
+    }
+}
+
 fn apply_review_reasoning_controls(
     body: &mut Value,
     preset: ModelPreset,
@@ -572,6 +584,9 @@ fn review_reasoning_dialect(
     base_url: &str,
     model: &str,
 ) -> ReviewReasoningDialect {
+    use crate::core::reasoning_dialect::{
+        kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
+    };
     if provider == "vllm" || preset == ModelPreset::LocalVllm {
         return ReviewReasoningDialect::VllmChatTemplate;
     }
@@ -598,50 +613,8 @@ fn review_reasoning_dialect(
         | ModelPreset::Openai
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
-        | ModelPreset::Xai => review_reasoning_dialect_from_base_url(base_url, model),
+        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model).into(),
     }
-}
-
-#[allow(clippy::if_same_then_else)]
-fn review_reasoning_dialect_from_base_url(base_url: &str, model: &str) -> ReviewReasoningDialect {
-    let normalized = base_url
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/chat/completions")
-        .trim_end_matches("/v1")
-        .to_ascii_lowercase();
-
-    if normalized.contains("api.deepseek.com") || normalized.contains("api.deepseeki.com") {
-        ReviewReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("dashscope.aliyuncs.com") {
-        ReviewReasoningDialect::QwenEnableThinking
-    } else if normalized.contains("moonshot.cn") || normalized.contains("moonshot.ai") {
-        if kimi_supports_disabled_thinking(model) {
-            ReviewReasoningDialect::ThinkingDisabled
-        } else {
-            ReviewReasoningDialect::None
-        }
-    } else if normalized.contains("volces.com")
-        || normalized.contains("volcengine")
-        || normalized.contains("byteplus.com")
-    {
-        ReviewReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("minimax.chat") || normalized.contains("minimaxi.com") {
-        ReviewReasoningDialect::Minimax
-    } else if normalized.contains("bigmodel.cn") || normalized.contains("z.ai") {
-        ReviewReasoningDialect::ThinkingDisabled
-    } else if normalized.contains("xiaomimimo.com") {
-        ReviewReasoningDialect::ThinkingDisabled
-    } else {
-        ReviewReasoningDialect::None
-    }
-}
-
-fn kimi_supports_disabled_thinking(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
-        && !model.contains("thinking")
-        && !model.contains("k2.7")
 }
 
 fn parse_model_review(content: &str) -> Result<ModelReview> {

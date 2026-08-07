@@ -5,6 +5,10 @@ pub(crate) mod macos;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
 
+/// Unix 通用 helper（linux 与 macOS 共享）。
+#[cfg(unix)]
+pub(crate) mod posix;
+
 // `unsupported` 是「尚未实现能力」的桩集合,供 macos 借用未实现的符号(见
 // `macos/mod.rs` 的 `pub use super::unsupported::*`),并在非三大桌面平台上作为
 // 默认 platform。因此除 linux/windows 外均需声明此模块。
@@ -31,10 +35,10 @@ pub use interface::{
     msg_converter_required, msg_native_supported, nvidia_smi_candidates, obsidian_config_path,
     ocr_dependency_packages, ocr_tessdata_dir, ocr_tool_exists, ocr_tool_path, open_target,
     pandoc_dependency_packages, pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path,
-    path_component_eq, pdf_dependency_packages, pdf_ocr_missing_message,
-    pdf_render_missing_message, pdf_text_missing_message, pdf_tool_exists, pdf_tool_path,
-    platform_compat_path, presentation_pdf_missing_message, python_command, reveal_target,
-    show_archive_dependency_check, show_ocr_dependency_check, show_pandoc_dependency_check,
-    show_pdf_dependency_check, super_permission_is_enabled, super_permission_turn_reminder,
-    system_default_open_supported, user_home_dir, validate_upload_location,
+    pdf_dependency_packages, pdf_ocr_missing_message, pdf_render_missing_message,
+    pdf_text_missing_message, pdf_tool_exists, pdf_tool_path, platform_compat_path,
+    presentation_pdf_missing_message, python_command, reveal_target, show_archive_dependency_check,
+    show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
+    super_permission_is_enabled, super_permission_turn_reminder, system_default_open_supported,
+    user_home_dir, validate_upload_location,
 };

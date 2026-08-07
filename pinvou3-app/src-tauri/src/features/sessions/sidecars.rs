@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use parking_lot::RwLock;
 
-use crate::core::mode_state::SessionModeState;
+use super::SessionModeState;
 
 use super::SessionStore;
 
@@ -32,7 +32,7 @@ const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
 pub(crate) fn save_skill_bindings(mode_states: &RwLock<HashMap<String, SessionModeState>>) {
     let bindings_file = crate::platform::paths::sessions_root().join(SKILL_BINDINGS_FILE);
     let m = mode_states.read();
-    let bindings: HashMap<String, &crate::core::mode_state::ActiveSkillBinding> = m
+    let bindings: HashMap<String, &super::ActiveSkillBinding> = m
         .iter()
         .filter_map(|(id, state)| state.active_skill.as_ref().map(|s| (id.clone(), s)))
         .collect();
@@ -55,14 +55,14 @@ pub(crate) fn load_skill_bindings(mode_states: &RwLock<HashMap<String, SessionMo
         Ok(c) => c,
         Err(_) => return,
     };
-    let bindings: HashMap<String, crate::core::mode_state::ActiveSkillBinding> =
-        match serde_json::from_str(&content) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[sessions] load_skill_bindings failed: {e}");
-                return;
-            }
-        };
+    let bindings: HashMap<String, super::ActiveSkillBinding> = match serde_json::from_str(&content)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[sessions] load_skill_bindings failed: {e}");
+            return;
+        }
+    };
     let mut m = mode_states.write();
     for (id, binding) in bindings {
         let entry = m.entry(id).or_default();
