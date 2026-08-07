@@ -64,9 +64,11 @@ function ModelSuggestInput({ value, onChange, suggestions, inputClass, placehold
 
 // 预设选择器（替代原生 select，与 ModelSuggestInput 同款面板样式）：
 // 按钮展示当前选择，点开全量列表，失焦/Esc 关闭。
-function PresetSelect({ value, onChange, presets, otherLabel, inputClass }) {
+function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }) {
   const [open, setOpen] = useState(false);
   const current = presets.find(preset => preset.key === value) || null;
+  // 展示名走 i18n（copy[preset.nameKey]），缺失 key 时回退 preset.name
+  const label = preset => (preset && copy && copy[preset.nameKey]) || (preset && preset.name) || '';
   return (
     <div className="relative mt-1.5">
       <button
@@ -77,7 +79,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, inputClass }) {
         onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}
         className={`${inputClass} flex items-center justify-between gap-2 text-left`}
       >
-        <span className="truncate">{current ? current.name : otherLabel}</span>
+        <span className="truncate">{current ? label(current) : otherLabel}</span>
         <ChevronDown size={14} className="shrink-0 opacity-60" />
       </button>
       {open && (
@@ -101,7 +103,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, inputClass }) {
               onMouseDown={event => { event.preventDefault(); onChange(preset.key); setOpen(false); }}
               className={`block w-full px-3 py-2 text-left text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${preset.key === value ? 'font-semibold text-[#007AFF]' : ''}`}
             >
-              {preset.name}
+              {label(preset)}
             </button>
           ))}
         </div>
@@ -319,6 +321,7 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
               }}
               presets={ACP_PROVIDER_PRESETS}
               otherLabel={copy.providerOther}
+              copy={copy}
               inputClass={inputClass}
             />
           </div>
