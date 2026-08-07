@@ -77,7 +77,17 @@ fn load_disabled_skills_file() -> DisabledSkillsFile {
         save_disabled_skills_file(&file);
         return file;
     }
-    serde_json::from_str(&content).unwrap_or_default()
+    let mut file: DisabledSkillsFile = serde_json::from_str(&content).unwrap_or_default();
+    // 防御：剥除 `skill:` 前缀（旧前端 bug 窗口期误写入的带前缀 id；
+    // 物化/展示/UI 判定全部按裸 id 匹配，读者在此统一归一）。
+    for ids in [&mut file.plain, &mut file.code] {
+        for id in ids.iter_mut() {
+            if let Some(stripped) = id.strip_prefix("skill:") {
+                *id = stripped.to_string();
+            }
+        }
+    }
+    file
 }
 
 /// 旧版技能开关借道 `disabled_connectors.json` 的 `skill:<id>` 条目（本分支
@@ -183,15 +193,21 @@ pub fn load_disabled_skills_for(scope: ConnectorScope) -> Vec<String> {
 }
 
 /// 写某 scope 被禁用的技能 id 列表。code scope 写入时置 `code_initialized=true`。
+/// 入参统一剥 `skill:` 命名空间前缀（前端行 id 带前缀，物化/匹配按裸 id；
+/// 防御历史版本误写入的带前缀条目在下次保存时被清洗）。
 pub fn save_disabled_skills_for(scope: ConnectorScope, ids: &[String]) {
     let _guard = DISABLED_SKILLS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let normalized: Vec<String> = ids
+        .iter()
+        .map(|id| id.strip_prefix("skill:").unwrap_or(id).to_string())
+        .collect();
     let mut file = load_disabled_skills_file();
     match scope {
-        ConnectorScope::Plain => file.plain = ids.to_vec(),
+        ConnectorScope::Plain => file.plain = normalized,
         ConnectorScope::Code => {
-            file.code = ids.to_vec();
+            file.code = normalized;
             file.code_initialized = true;
         }
     }

@@ -1012,8 +1012,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         if (!canMutateToolStore) return;
         // 技能行走独立双 scope 开关（disabled_skills.json）；工具/服务行走连接器开关。
         if (kind === 'skill') {
+          // 技能行 row.id 带 `skill:` 命名空间前缀，后端与组合目录物化按裸 id
+          // 匹配——传前缀会导致开关不落盘、视觉不翻转（strip 对齐契约）。
+          const skillId = id.startsWith('skill:') ? id.slice('skill:'.length) : id;
           const next = new Set(disabledSkills);
-          next.has(id) ? next.delete(id) : next.add(id);
+          next.has(skillId) ? next.delete(skillId) : next.add(skillId);
           setDisabledSkills(next);
           if (bridge.available) {
             invokeTauri('set_disabled_skills',
