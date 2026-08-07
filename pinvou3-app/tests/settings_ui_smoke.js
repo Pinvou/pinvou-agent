@@ -110,6 +110,7 @@ function injectSource() {
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    var dependencyCheckResponse = [];
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -188,7 +189,8 @@ function injectSource() {
         case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
-        case 'check_dependencies': return Promise.resolve([]);
+        case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
+        case 'install_dependencies': return Promise.resolve(null);
         case 'submit_feedback': return Promise.resolve({ status: 'submitted', message: '反馈已提交，感谢你的帮助。' });
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
@@ -209,6 +211,7 @@ function injectSource() {
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setDependencyCheckResponse: function (next) { dependencyCheckResponse = (next || []).slice(); },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -854,7 +857,39 @@ async function modalWidth(page, headingText) {
       && deleteLaterSaved.metasoAction === 'delete',
     JSON.stringify({ width: searchDeleteWidth, savesBeforeDeleteLater, savesAfterDeleteLater, restartsBeforeDeleteLater, restartsAfterDeleteLater, deleteLaterSaved }));
 
+  await page.evaluate(() => window.__SETTINGS_TEST__.setDependencyCheckResponse([
+    { key: 'voice_asr_model', installed: false, apt: '', install_action: 'voice_asr_model' },
+    { key: 'knowledge_embedding_model', installed: false, apt: '', install_action: 'knowledge_embedding_model' },
+  ]));
   await clickSettingsSection(page, '权限与环境');
+  await page.evaluate(() => document.querySelector('#settings-dependencies button')?.click());
+  await sleep(300);
+  const onDemandModels = await page.evaluate(() => {
+    const section = document.querySelector('#settings-dependencies');
+    const text = section?.textContent || '';
+    const buttons = [...(section?.querySelectorAll('button') || [])];
+    buttons.at(-1)?.click();
+    return {
+      voiceModelVisible: text.includes('SenseVoice q8'),
+      knowledgeModelVisible: text.includes('bge-m3'),
+      runtimeItemHidden: !text.includes('本地语音识别'),
+      buttonCount: buttons.length,
+    };
+  });
+  await sleep(300);
+  const modelInstallCall = await page.evaluate(() => {
+    const call = window.__SETTINGS_TEST__.calls.find(item => item.cmd === 'install_dependencies');
+    return call && call.args;
+  });
+  rec('⑭.1 Windows 仅展示可修复模型并调用对应下载动作',
+    onDemandModels.voiceModelVisible
+      && onDemandModels.knowledgeModelVisible
+      && onDemandModels.runtimeItemHidden
+      && onDemandModels.buttonCount === 2
+      && Array.isArray(modelInstallCall?.packages)
+      && modelInstallCall.packages.length === 0
+      && JSON.stringify(modelInstallCall.actions) === JSON.stringify(['voice_asr_model', 'knowledge_embedding_model']),
+    JSON.stringify({ onDemandModels, modelInstallCall }));
   await page.evaluate(() => {
     const row = [...document.querySelectorAll('div')].find(node => (node.textContent || '').includes('高级执行权限') && node.querySelector('[role="switch"]'));
     const button = row && row.querySelector('[role="switch"]');

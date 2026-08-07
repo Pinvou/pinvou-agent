@@ -86,6 +86,7 @@ pub struct DependencyCheckItem {
     pub key: String,
     pub installed: bool,
     pub apt: String,
+    pub install_action: Option<String>,
 }
 
 /// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
@@ -96,6 +97,7 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         key: key.into(),
         installed,
         apt: apt.into(),
+        install_action: None,
     };
     let libreoffice = crate::platform::os::command_exists("soffice")
         || crate::platform::os::command_exists("libreoffice");
