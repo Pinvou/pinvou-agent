@@ -575,6 +575,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const chatItems = bs ? bs.chatItems : [];
       const activeSessionId = bs ? bs.activeSessionId : null;
       const busy = bs ? bs.busy : false;
+      // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
+      // 双击会发第二个并发取消请求。cancelling 在 invoke 完成前禁用按钮,
+      // 配合后端 turn generation 守护,消除跨轮误取消窗口。
+      const [cancelling, setCancelling] = useState(false);
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
@@ -1282,8 +1286,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function handleCancel() {
-        if (bridge.available) bridge.chat.cancelGeneration();
+      async function handleCancel() {
+        // single-flight:已在取消中则忽略后续点击，避免并发 cancel_generation。
+        if (!bridge.available || cancelling) return;
+        setCancelling(true);
+        try {
+          await bridge.chat.cancelGeneration();
+        } finally {
+          setCancelling(false);
+        }
       }
 
       function finishFloatingVoicePointer(pointerId, event, releaseCapture, reason) {
@@ -1913,8 +1924,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </button>
                 )}
                 {busy ? (
-                  <button onClick={handleCancel}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                  <button onClick={handleCancel} disabled={cancelling}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
