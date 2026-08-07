@@ -2,7 +2,9 @@
 //! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
 //! 能力档案统一后，策略对象同时是
 //! **统一解析器**：`resolve()` 按会话模式加载能力档案（capability_profile.rs），
-//! 产出三通道值——if-else 只保留在解析器内部，外部消费者统一走 resolve。
+//! 产出两通道差量（disallowed_tools / hidden_tools）与模式固有属性——if-else
+//! 只保留在解析器内部，外部消费者统一走 resolve。技能线不做设计期差量（运行时
+//! 双 scope 开关 + 组合目录治理，见 skill_materialization）。
 
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::capability_profile::{profile_for, CapabilityProfile};
@@ -75,9 +77,9 @@ impl SessionPolicy {
         profile_for(self.mode)
     }
 
-    /// 统一解析入口：按会话模式加载档案，产出三通道值。
+    /// 统一解析入口：按会话模式加载档案，产出两通道差量 + 模式固有属性。
     /// **if-else 只保留在解析器内部**；外部消费者（shape_disallowed_tools /
-    /// engine config 构造 / 组合目录物化）一律走本方法取数。
+    /// engine config 构造）一律走本方法取数。
     pub fn resolve(&self) -> ResolvedCapabilities {
         let profile = self.profile();
         ResolvedCapabilities {
@@ -150,7 +152,7 @@ mod tests {
         assert!(policy.extra_hidden_tools().is_empty());
     }
 
-    /// 能力档案统一解析（U-2 档案即数据）：resolve 三通道值来自档案——
+    /// 能力档案统一解析（U-2 档案即数据）：resolve 两通道差量来自档案——
     /// plain 零差量；code 按档案 include 声明（v1：git 只读工具放出）。
     #[test]
     fn resolve_loads_profile_per_mode() {

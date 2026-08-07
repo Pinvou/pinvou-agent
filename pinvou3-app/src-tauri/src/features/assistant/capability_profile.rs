@@ -1,8 +1,9 @@
 //! 能力档案（Capability Profile）：per-mode 声明式能力配置。
 //!
 //! 把「哪个模式能用什么能力」从散落的 if-else / 编译期常量收敛为**一份档案、
-//! 一个解析器（[`SessionPolicy::resolve`]）、三个生效通道**（skills_dir 组合
-//! 目录 / disallowed_tools / hidden_tools）。
+//! 一个解析器（[`SessionPolicy::resolve`]）、两个生效通道**（disallowed_tools /
+//! hidden_tools）。技能线不做设计期差量：技能可见性由运行时双 scope 开关 +
+//! 组合目录治理（`features/assistant/skill_materialization.rs`）闭环。
 //!
 //! v1 语义：
 //!   - **编译内嵌 JSON，不写用户数据**（规避版本迁移；"运行期不变"是 v1
@@ -20,18 +21,6 @@ use crate::core::session_mode::SessionMode;
 
 /// 档案文件（编译内嵌；与 bundle 运行时资源无关，纯设计期配置）。
 const PROFILES_JSON: &str = include_str!("../../../resources/common/capability-profiles.json");
-
-/// 技能线档案：设计期默认的技能排除与项目级 skills 开关。
-/// v1：`exclude` 空（技能开关仍由用户 `disabled_skills.json` 双 scope 持久化
-/// 驱动）；`include_project` 与用户开关（`skill_scope::project_skills_enabled`）
-/// 叠加，v1 默认 false。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SkillsProfile {
-    #[serde(default)]
-    pub exclude: Vec<String>,
-    #[serde(default)]
-    pub include_project: bool,
-}
 
 /// 工具线档案：base + 差量。
 /// - `base`：继承的基础集（"default" = 底座隐藏常量的补集，即当前全部会话
@@ -67,8 +56,6 @@ pub struct ConnectorsProfile {
 pub struct CapabilityProfile {
     /// 档案所属模式（"plain" / "code"）。
     pub mode: String,
-    #[serde(default)]
-    pub skills: SkillsProfile,
     #[serde(default)]
     pub tools: ToolsProfile,
     #[serde(default)]
@@ -130,10 +117,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn skills_profile_defaults_closed() {
-        // 项目级 skills 默认关（prompt-injection 面，显式开启才扫描）
-        assert!(!profile_for(SessionMode::Code).skills.include_project);
-        assert!(profile_for(SessionMode::Code).skills.exclude.is_empty());
-    }
 }
