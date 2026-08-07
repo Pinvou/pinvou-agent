@@ -351,10 +351,6 @@ impl EnginePool {
         tools
     }
 
-    /// skill 双 scope 治理：事件驱动**增量重写**所有在线会话的组合目录
-    /// （skill toggle / 安装 / 卸载命令落盘后调用，§2.3.2）。每个会话按自己的
-    /// scope 计算启用集，只增删变化部分（diff 幂等）；底座每轮重扫，下一轮
-    /// prompt 即生效。不在线的会话不管（下次 spawn 全量拼，§2.3.1）。
     /// 该会话的项目执行根（绑项目 code 会话 = 项目目录）。解析失败 → None
     /// （项目级技能不参与组合目录，行为与未绑定一致）。
     fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
