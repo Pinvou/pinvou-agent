@@ -364,21 +364,17 @@ mod tests {
     #[test]
     fn code_scope_uninitialized_defaults_to_all_disabled() {
         with_temp_home(|| {
-            std::fs::create_dir_all(paths::bundle_skills_dir()).unwrap();
-            std::fs::write(
-                paths::bundle_skills_dir()
-                    .join("visualizer")
-                    .join("SKILL.md"),
-                "---\nname: visualizer\n---\n",
-            )
-            .unwrap();
-            std::fs::write(
-                paths::bundle_skills_dir()
-                    .join("government-writing")
-                    .join("SKILL.md"),
-                "---\nname: government-writing\n---\n",
-            )
-            .unwrap();
+            // 每个 skill 需先建子目录再写 SKILL.md（裸 fs::write 不递归建目录，
+            // 否则父目录缺失 → NotFound panic）。
+            for name in ["visualizer", "government-writing"] {
+                let dir = paths::bundle_skills_dir().join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\n---\n"),
+                )
+                .unwrap();
+            }
             // 未初始化：code 默认全禁已装技能
             let mut disabled = load_disabled_skills_for(ConnectorScope::Code);
             disabled.sort();
