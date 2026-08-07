@@ -17,14 +17,3 @@ pub use macos::install_dependencies;
 pub use unsupported::install_dependencies;
 #[cfg(target_os = "windows")]
 pub use windows::install_dependencies;
-
-pub(super) fn dependency_check_policy() -> super::DependencyCheckPolicy {
-    #[cfg(target_os = "linux")]
-    return linux::dependency_check_policy();
-    #[cfg(target_os = "macos")]
-    return macos::dependency_check_policy();
-    #[cfg(target_os = "windows")]
-    return windows::dependency_check_policy();
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    return unsupported::dependency_check_policy();
-}
