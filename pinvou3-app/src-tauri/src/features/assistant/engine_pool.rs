@@ -351,6 +351,56 @@ impl EnginePool {
         tools
     }
 
+    /// 该会话的项目执行根（绑项目 code 会话 = 项目目录）。解析失败 → None
+    /// （项目级技能不参与组合目录，行为与未绑定一致）。
+    fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
+        self.store
+            .session_roots(session_id)
+            .ok()
+            .map(|roots| roots.execution)
+    }
+
+    /// skill 双 scope 治理：事件驱动**增量重写**所有在线会话的组合目录
+    /// （skill toggle / 安装 / 卸载命令落盘后调用，§2.3.2）。每个会话按自己的
+    /// scope 计算启用集，只增删变化部分（diff 幂等）；底座每轮重扫，下一轮
+    /// prompt 即生效。不在线的会话不管（下次 spawn 全量拼，§2.3.1）。
+    pub async fn refresh_live_sessions_skills(&self) {
+        let sids: Vec<String> = {
+            let entries = self.entries.lock().await;
+            entries.keys().cloned().collect()
+        };
+        for sid in sids {
+            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let project_workspace = self.project_workspace_for(&sid);
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::features::assistant::skill_materialization::rewrite_session_skills(
+                    &sid,
+                    scope,
+                    project_workspace.as_deref(),
+                );
+            })
+            .await;
+        }
+    }
+
+    /// 同步版在线会话组合目录重写（给保持同步签名的 tauri 命令用，如
+    /// `uninstall_marketplace_tool`）。组合目录体量小、diff 重写极快，阻塞可接受。
+    pub fn refresh_live_sessions_skills_blocking(&self) {
+        let sids: Vec<String> = {
+            let entries = self.entries.blocking_lock();
+            entries.keys().cloned().collect()
+        };
+        for sid in sids {
+            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let project_workspace = self.project_workspace_for(&sid);
+            crate::features::assistant::skill_materialization::rewrite_session_skills(
+                &sid,
+                scope,
+                project_workspace.as_deref(),
+            );
+        }
+    }
+
     /// 为独立调用构造该 session 的 bridge。与 EnginePool lazy spawn 共用同一套
     /// runtime provider，保证检阅等旁路入口也不会绕过运行时凭据准备。
     pub(crate) async fn fresh_bridge_for(&self, session_id: &str) -> Result<Pinvou3Bridge> {
@@ -492,6 +542,24 @@ impl EnginePool {
         extra_tools.push(Arc::new(
             crate::features::connectors::ima::ImaOpenApiTool::new(),
         ));
+        // skill 双 scope 治理：spawn 全量拼组合目录（物化时机一，V-7）。组合目录
+        // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_at
+        // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
+        {
+            let sid = session_id.to_string();
+            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let project_workspace = self.project_workspace_for(&sid);
+            tokio::task::spawn_blocking(move || {
+                crate::features::assistant::skill_materialization::materialize_session_skills(
+                    &sid,
+                    scope,
+                    project_workspace.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("materialize session skills join: {e}"))?
+            .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
+        }
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),

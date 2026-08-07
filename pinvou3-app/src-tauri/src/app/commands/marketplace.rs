@@ -408,10 +408,21 @@ pub async fn cancel_marketplace_tool_oauth_login(
 }
 
 #[tauri::command]
-pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
+pub fn uninstall_marketplace_tool(
+    tool_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    uninstall_marketplace_tool_sync(&tool_id)?;
+    // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
+    // （阻塞版：命令保持同步，目录体量小、重写极快）。
+    pool.refresh_live_sessions_skills_blocking();
+    Ok(())
+}
+
+pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
     let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let companions = mgr.companion_skills(&tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
-    if let Some(server_name) = mgr.oauth_remote_server_name(&tool_id) {
+    let companions = mgr.companion_skills(tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
+    if let Some(server_name) = mgr.oauth_remote_server_name(tool_id) {
         match marketplace_oauth_server_from_mcp_config(&server_name)? {
             Some(server) => {
                 deepseek_tui::mcp::oauth::delete_oauth_tokens_for_server(&server_name, &server)
@@ -424,13 +435,15 @@ pub fn uninstall_marketplace_tool(tool_id: String) -> Result<(), String> {
             }
         }
     }
-    mgr.uninstall(&tool_id)?;
+    mgr.uninstall(tool_id)?;
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    crate::features::marketplace::remove_connector_from_disabled_scopes(&tool_id);
+    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
     // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
     for sid in companions {
         let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
             .uninstall(&sid);
+        // 已卸载技能从两个 scope 禁用集清除残留。
+        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(&sid);
     }
     Ok(())
 }
@@ -448,19 +461,26 @@ pub fn list_marketplace_skills(
 }
 
 #[tauri::command]
-pub async fn install_marketplace_skill(skill_id: String) -> Result<(), String> {
+pub async fn install_marketplace_skill(
+    skill_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
     tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&skill_id))
         .await
-        .map_err(|e| format!("任务执行失败: {e}"))?
+        .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
+    // code scope 已初始化时新装技能默认仍关闭（sync 进 code 禁用集，见下面
+    // install_marketplace_skill_sync），plain 会话立即可见。
+    pool.refresh_live_sessions_skills().await;
+    Ok(())
 }
 
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .install(skill_id)?;
-    // disabled_connectors.json 会保留 `skill:<id>` 的用户选择。技能卸载后启动时，
-    // refresh 会因未安装而从底座运行态过滤掉；重装成功后必须立即再推一次，避免
-    // composer 显示“已关闭”但模型实际仍能 load_skill。
-    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
+    // 新装技能默认加入 code 禁用集（与连接器同语义：外部能力显式开启）；
+    // 组合目录由调用方在命令层重写（install_marketplace_skill）。
+    crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(skill_id);
     Ok(())
 }
 
@@ -468,7 +488,10 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
 /// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
 /// 返回 true=已导入,false=用户取消。
 #[tauri::command]
-pub fn import_skill_package(app: tauri::AppHandle) -> Result<bool, String> {
+pub async fn import_skill_package(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
     let Some(picked) = app
         .dialog()
@@ -481,21 +504,35 @@ pub fn import_skill_package(app: tauri::AppHandle) -> Result<bool, String> {
     let path = picked
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
-    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-        .import_package(&path.to_string_lossy())?;
-    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .import_package(&path.to_string_lossy())
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 导入技能默认加入 code 禁用集（外部能力显式开启），并重写在线会话组合目录。
+    pool.refresh_live_sessions_skills().await;
     Ok(true)
 }
 
 #[tauri::command]
-pub fn uninstall_marketplace_skill(skill_id: String) -> Result<(), String> {
-    uninstall_marketplace_skill_sync(&skill_id)
+pub async fn uninstall_marketplace_skill(
+    skill_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || uninstall_marketplace_skill_sync(&skill_id))
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
+    pool.refresh_live_sessions_skills().await;
+    Ok(())
 }
 
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
-    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
+    // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
+    crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
     Ok(())
 }
 use super::prelude::*;
