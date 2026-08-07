@@ -6,9 +6,8 @@
 /// 工作流卡片不显示的 skill 名单。这些是 pinvou3 自带的基础能力组件
 /// (review 流程内部用),不应作为用户主动启用的工作流入口。
 ///
-/// 后续真正物理隔离会把这俩从 `bundle/skills/` 移到独立目录 +
-/// CodeWhale fork patch 让 EngineConfig 支持多 skills_dir。当前
-/// 用 skiplist 软隔离,工作量小,效果一致。
+/// 后续真正物理隔离需要由 app 按会话生成组合目录，再通过 CodeWhale 的单一
+/// `EngineConfig.skills_dir` 注入。当前用 skiplist 软隔离，工作量小、效果一致。
 const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
 
 /// 工作流视图卡片渲染需要的 skill 摘要 — 跟 CodeWhale runtime_api 的
