@@ -4676,8 +4676,25 @@ async fn run_official_install_script(
         let stderr_tail = output_tail(&stderr, 4);
         // stderr 无有效内容（空或仅系统噪音如「重试」）时给出可操作提示：
         // 官方脚本依赖 releases.openai.com / GitHub，下载失败多为网络原因。
+        // 手动安装指引按 Agent 各自包名/脚本生成（不能一律指向 codex）。
         let hint = if stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8 {
-            "；请检查网络连接后重试。也可手动安装：npm install -g @openai/codex，或运行官方安装脚本（macOS/Linux: curl -fsSL https://chatgpt.com/codex/install.sh | sh；Windows: irm https://chatgpt.com/codex/install.ps1 | iex）"
+            let npm_pkg = match backend {
+                AgentBackend::CodexAcp => "@openai/codex",
+                AgentBackend::ClaudeAcp => "@anthropic-ai/claude-code",
+                AgentBackend::KimiAcp => "@moonshot-ai/kimi-code",
+                AgentBackend::Deepseek => "",
+            };
+            let (unix_url, windows_url) = match backend {
+                AgentBackend::CodexAcp => (CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS),
+                AgentBackend::ClaudeAcp => {
+                    (CLAUDE_INSTALL_SCRIPT_UNIX, CLAUDE_INSTALL_SCRIPT_WINDOWS)
+                }
+                AgentBackend::KimiAcp => (KIMI_INSTALL_SCRIPT_UNIX, KIMI_INSTALL_SCRIPT_WINDOWS),
+                AgentBackend::Deepseek => ("", ""),
+            };
+            &format!(
+                "；请检查网络连接后重试。也可手动安装：npm install -g {npm_pkg}，或运行官方安装脚本（macOS/Linux: curl -fsSL {unix_url} | sh；Windows: irm {windows_url} | iex）"
+            )
         } else {
             ""
         };
