@@ -437,6 +437,8 @@ mod tests {
             login_input_required: false,
             installing: false,
             error: None,
+            install_command: None,
+            install_latest_line: None,
             setup_hint: None,
         }
     }

@@ -6,7 +6,7 @@ import {
   AlertTriangle, ChevronDown, Download, Edit2, Lock, Plus, RefreshCw,
   Terminal, Trash2, Upload, X,
 } from '../../components/icons.jsx';
-import { invokeTauri } from '../../platform/tauri/client.js';
+import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import {
   markAcpModelsProbePending,
   reseedDraftControlsAfterProviderSwitch,
@@ -50,6 +50,12 @@ function KeyDot({ hasCredential, copy }) {
 // 随后后台静默刷新。键 = agent id；仅在本次 app 运行期内有效。
 const PROVIDER_SECTION_CACHE = new Map();
 
+// 安装进度缓存：command 事件只在安装开始时发一次，设置面板/App 关闭重开后
+// 组件重新订阅事件流时已收不到 command——缓存让重开后面板仍能显示「执行
+// 命令」与「最新输出」，后续事件继续刷新最新行。log 含 agent；phase 同步
+// 缓存（结束态保留供重开查看，安装结束不再自动收起）。
+const INSTALL_LOG_CACHE = { log: null, phase: null };
+
 export function ProvidersSection({ t, isDark }) {
   const copy = t.uiAcpProviders;
   const [activeAgent, setActiveAgent] = useState('codex');
@@ -62,6 +68,19 @@ export function ProvidersSection({ t, isDark }) {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [uninstallConfirm, setUninstallConfirm] = useState(null);
   const [busy, setBusy] = useState('');
+  // busy 按 Agent 隔离：busy 记录触发时的标签页（后端安装/升级本就按 Agent
+  // 互斥），切换标签页后其他 Agent 的按钮不被全局 busy 堵住。busyAgent 在
+  // clearBusy 时清空，busyOnAgent 是「当前标签页有操作进行中」的派生值。
+  const [busyAgent, setBusyAgent] = useState(null);
+  const runBusy = op => {
+    setBusy(op);
+    setBusyAgent(activeAgent);
+  };
+  const clearBusy = () => {
+    setBusy('');
+    setBusyAgent(null);
+  };
+  const busyOnAgent = busy !== '' && busyAgent === activeAgent;
   const [notice, setNotice] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportJson, setExportJson] = useState('');
@@ -71,6 +90,23 @@ export function ProvidersSection({ t, isDark }) {
   const [loginCode, setLoginCode] = useState('');
   const loginPollRef = useRef(null);
   const noticeTimer = useRef(null);
+  // CLI 区「重新检测」局部 busy：recheck=true 会强制后端重新 spawn --version
+  // 探测（最长 15s），期间必须给按钮转圈反馈，否则看起来「按了没反应」。
+  // recheckingAgent 按标签页隔离：按一个只转当前标签页的按钮（后端本就只
+  // 重探测该 Agent，其他标签页不该显示「在检测」）。
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckingAgent, setRecheckingAgent] = useState(null);
+  const recheckingOnAgent = rechecking && recheckingAgent === activeAgent;
+  // 安装进度展示：installLog = { agent, command, line }（实际命令行 + 输出最新
+  // 一行，来自 acp:install-progress 事件）；installPhase = checking/installing/
+  // done/failed/cancelled 阶段标签。结束态保留展示（不自动收起），下次安装
+  // 或重开窗口从缓存恢复。
+  const [installLog, setInstallLog] = useState(INSTALL_LOG_CACHE.log);
+  const [installPhase, setInstallPhase] = useState(() => INSTALL_LOG_CACHE.phase);
+  // 阶段同步进模块缓存：关设置窗口重开后恢复结束态/进行中态展示。
+  useEffect(() => {
+    INSTALL_LOG_CACHE.phase = installPhase;
+  }, [installPhase]);
   // 安装中状态从 status 派生而非本地 busy：设置页关闭重开后仍能恢复进行中 UI。
   const installing = Boolean(status && status.installing);
 
@@ -101,7 +137,7 @@ export function ProvidersSection({ t, isDark }) {
   };
 
   const startLogin = async () => {
-    setBusy('login:' + activeAgent);
+    runBusy('login:' + activeAgent);
     setError('');
     try {
       const next = await invokeTauri('login_acp_agent', { agentId: activeAgent });
@@ -113,12 +149,12 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
   const submitLoginCode = async () => {
-    setBusy('login:' + activeAgent);
+    runBusy('login:' + activeAgent);
     try {
       const next = await invokeTauri('submit_acp_agent_login_code', {
         agentId: activeAgent,
@@ -129,12 +165,12 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
   const doLogout = async () => {
-    setBusy('logout:' + activeAgent);
+    runBusy('logout:' + activeAgent);
     try {
       await invokeTauri('logout_acp_agent', { agent: activeAgent });
       notify(copy.loggedOut);
@@ -142,7 +178,7 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
@@ -186,6 +222,18 @@ export function ProvidersSection({ t, isDark }) {
     [loadAgent],
   );
 
+  // CLI 区「重新检测」：强制后端重探测并给按钮转圈反馈（recheck 探测最长 15s）。
+  const recheck = async () => {
+    setRechecking(true);
+    setRecheckingAgent(activeAgent);
+    try {
+      await refresh(true);
+    } finally {
+      setRechecking(false);
+      setRecheckingAgent(null);
+    }
+  };
+
   useEffect(() => {
     setError('');
     // 进入页面/切换标签页：三个 Agent 并行加载。当前标签页有缓存先展示，
@@ -227,6 +275,51 @@ export function ProvidersSection({ t, isDark }) {
     return () => window.clearInterval(timer);
   }, [installInFlight, refresh]);
 
+  // 安装进度事件：后端逐行推送（kind=command 为实际执行的命令行，stdout/stderr
+  // 为输出最新一行，80ms 限流）。只消费当前标签页 Agent 的事件，避免切页串扰。
+  useEffect(() => {
+    if (!isTauriAvailable()) return undefined;
+    let unlisten = null;
+    tauriEvents
+      .listen('acp:install-progress', event => {
+        const payload = event.payload || {};
+        if (payload.agent !== activeAgentRef.current) return;
+        if (payload.kind === 'command') {
+          setInstallPhase('installing');
+          applyInstallLog({ agent: payload.agent, command: payload.value });
+        } else if (payload.value) {
+          applyInstallLog({ agent: payload.agent, line: payload.value });
+        }
+      })
+      .then(fn => {
+        unlisten = fn;
+      });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // 设置面板/App 关闭重开后恢复安装进度卡：
+  // 1) 模块缓存里有（关设置窗口，App 未退出）→ 恢复缓存阶段（进行中/结束态）；
+  // 2) 缓存空但 status 带进度（App 重启且安装仍在进行）→ 恢复 installing，
+  //    command/latest 行取自后端 status（installCommand/installLatestLine）。
+  useEffect(() => {
+    const cachedLog = INSTALL_LOG_CACHE.log;
+    if (cachedLog && cachedLog.agent === activeAgent && INSTALL_LOG_CACHE.phase) {
+      setInstallPhase(INSTALL_LOG_CACHE.phase);
+      return;
+    }
+    if (status && status.installing && status.install_command) {
+      setInstallPhase('installing');
+      applyInstallLog(prev => ({
+        ...(prev || {}),
+        agent: activeAgent,
+        command: status.install_command,
+        line: status.install_latest_line || (prev && prev.line),
+      }));
+    }
+  }, [status, activeAgent]);
+
   useEffect(() => {
     return () => {
       if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -234,7 +327,7 @@ export function ProvidersSection({ t, isDark }) {
   }, []);
 
   const switchTo = async (providerId, official) => {
-    setBusy(official ? 'official' : providerId);
+    runBusy(official ? 'official' : providerId);
     try {
       if (official) {
         await invokeTauri('switch_acp_provider_official', { agent: activeAgent });
@@ -281,12 +374,14 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
   const remove = async () => {
-    setBusy('delete');
+    runBusy('delete');
+    // 点击确认即关闭弹窗：失败时不留滞，错误直接显示在红错区（与卸载一致）。
+    setDeleteConfirm(null);
     try {
       // 删除当前 Provider 会触发后端自动恢复官方：官方默认模型无法预知，
       // 快照失效（传 null）；删非当前 Provider 不影响草稿快照
@@ -297,54 +392,83 @@ export function ProvidersSection({ t, isDark }) {
         // 删除当前 Provider 即回到官方：同样探一次拿官方真实模型列表。
         markAcpModelsProbePending(activeAgent);
       }
-      setDeleteConfirm(null);
-            notify(copy.deleted);
+      notify(copy.deleted);
       await refresh(true);
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
+  // 安装日志更新/清空同步模块级缓存：设置面板关闭重开后「执行命令」行不丢
+  //（command 事件只在安装开始时发一次，重挂载后收不到）。
+  const applyInstallLog = patch => {
+    setInstallLog(prev => {
+      const next = { ...(prev || {}), ...patch };
+      INSTALL_LOG_CACHE.log = next;
+      return next;
+    });
+  };
+  const resetInstallLog = () => {
+    INSTALL_LOG_CACHE.log = null;
+    setInstallLog(null);
+  };
+
   const installOrUpdate = async action => {
-    setBusy('install:' + activeAgent);
+    runBusy('install:' + activeAgent);
+    resetInstallLog();
+    // 自检中：后端开始前跑预检（脚本源可达性/坏残留），通过后第一条
+    // acp:install-progress command 事件切换为「下载安装中」。
+    setInstallPhase('checking');
     try {
       // 安装命令要等装完才返回；先刷新一次让 status.installing 变 true
       // （取消按钮立即可见、安装中轮询启动），再收口安装结果。
       const pending = invokeTauri('install_acp_agent', { agent: activeAgent, action: action || null });
       await refresh(true);
       await pending;
+      // 结束态保留展示（不自动收起）：关设置窗口重开仍能看到结果。
+      setInstallPhase('done');
     } catch (e) {
-      setError(String(e));
+      // 后端把取消写成失败退出；这里按语义收口为「已取消」，不重复报红错。
+      if (String(e).includes('已取消')) {
+        setInstallPhase('cancelled');
+      } else {
+        setInstallPhase('failed');
+        setError(String(e));
+      }
     } finally {
-      setBusy('');
+      clearBusy();
       await refresh(true);
     }
   };
 
   // 取消安装：后端按登记的 pid 杀安装进程树，等待侧以「安装已取消」收尾
   const cancelInstall = async () => {
-    setBusy('cancel-install:' + activeAgent);
+    runBusy('cancel-install:' + activeAgent);
     try {
       await invokeTauri('cancel_acp_agent_install', { agent: activeAgent });
+      // 已取消阶段保留展示（不自动收起）：重开窗口仍能看到结果。
+      setInstallPhase('cancelled');
       notify(copy.installCancelled);
       await refresh(true);
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
   const uninstall = async () => {
-    setBusy('uninstall:' + activeAgent);
+    runBusy('uninstall:' + activeAgent);
+    // 点击确认即关闭弹窗：后端失败（如运行中会话拦截/文件被占用）时弹窗
+    // 不留滞，错误直接显示在红错区——否则弹窗盖住错误，看起来「点了没反应」。
+    setUninstallConfirm(null);
     try {
       const next = await invokeTauri('uninstall_acp_agent', {
         agent: activeAgent,
         cleanup: uninstallConfirm.cleanup,
       });
-      setUninstallConfirm(null);
       // 另一渠道仍有安装时后端通过 status.error 告知（「已卸载但仍有另一份」）
       if (next && next.error) {
         setError(String(next.error));
@@ -355,7 +479,7 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
@@ -369,7 +493,7 @@ export function ProvidersSection({ t, isDark }) {
   };
 
   const doImport = async () => {
-    setBusy('import');
+    runBusy('import');
     try {
       const result = await invokeTauri('import_acp_providers', {
         agent: activeAgent,
@@ -382,7 +506,7 @@ export function ProvidersSection({ t, isDark }) {
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy('');
+      clearBusy();
     }
   };
 
@@ -394,6 +518,19 @@ export function ProvidersSection({ t, isDark }) {
       : status
         ? 'install'
         : null;
+
+  // 安装进度阶段标签；进度卡只显示当前标签页 Agent 的日志（checking 阶段尚无
+  // 日志时按 busy 匹配，避免切页后把别的 Agent 的进行中态渲染出来）。
+  const phaseLabel = {
+    checking: copy.phaseChecking,
+    installing: copy.phaseInstalling,
+    done: copy.phaseDone,
+    failed: copy.phaseFailed,
+    cancelled: copy.phaseCancelled,
+  }[installPhase];
+  const showInstallLog =
+    Boolean(installPhase) &&
+    (installLog ? installLog.agent === activeAgent : busy === 'install:' + activeAgent);
 
   const cardStyle = `rounded-[20px] p-4 ${isDark ? 'bg-white/[0.05]' : 'bg-[#F0F4F9]'}`;
   const badge = (label, tone) => (
@@ -440,16 +577,24 @@ export function ProvidersSection({ t, isDark }) {
         ))}
       </div>
 
-      {error && (
-        <div data-testid="acp-providers-error" className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 ${isDark ? 'bg-red-500/[0.08]' : 'bg-red-500/[0.06]'}`}>
-          {error}
-          <button onClick={refresh} className="ml-2 underline">{copy.retry}</button>
-        </div>
-      )}
-
-      {notice && (
-        <div className={`rounded-xl px-3 py-2.5 text-[12px] ${isDark ? 'bg-emerald-500/[0.1] text-emerald-300' : 'bg-emerald-500/[0.1] text-emerald-700'}`}>
-          {notice}
+      {/* 顶部提示区：红错 + 绿色通知统一吸顶（滚动到任何操作位置都可见）；
+          同容器避免两者同时出现时各自吸顶互相重叠 */}
+      {(error || notice) && (
+        <div className="sticky top-0 z-10 space-y-2">
+          {error && (
+            <div
+              data-testid="acp-providers-error"
+              className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 shadow-lg backdrop-blur-md ${isDark ? 'bg-[#2A1A1A]/95' : 'bg-[#FEF2F2]/95'}`}
+            >
+              {error}
+              <button onClick={refresh} className="ml-2 underline">{copy.retry}</button>
+            </div>
+          )}
+          {notice && (
+            <div className={`rounded-xl px-3 py-2.5 text-[12px] shadow-lg backdrop-blur-md ${isDark ? 'bg-[#0F2A1A]/95 text-emerald-300' : 'bg-[#F0FDF4]/95 text-emerald-700'}`}>
+              {notice}
+            </div>
+          )}
         </div>
       )}
 
@@ -586,7 +731,7 @@ export function ProvidersSection({ t, isDark }) {
                     <button
                       data-testid={`acp-provider-switch-${provider.id}`}
                       onClick={() => switchTo(provider.id, false)}
-                      disabled={Boolean(busy) || !provider.hasCredential}
+                      disabled={busyOnAgent || !provider.hasCredential}
                       title={provider.hasCredential ? undefined : copy.apiKeyHint}
                       className="h-8 px-3 rounded-full bg-[#007AFF] text-white text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
                     >
@@ -625,7 +770,7 @@ export function ProvidersSection({ t, isDark }) {
             <button
               data-testid="acp-provider-switch-official"
               onClick={() => switchTo(null, true)}
-              disabled={Boolean(busy)}
+              disabled={busyOnAgent}
               className="h-8 px-3 rounded-full border border-black/[0.08] dark:border-white/[0.12] text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
             >
               {busy === 'official' && <RefreshCw size={11} className="animate-spin" />}
@@ -656,7 +801,7 @@ export function ProvidersSection({ t, isDark }) {
                 <button
                   data-testid="acp-cli-install-update"
                   onClick={() => installOrUpdate(status.install_action)}
-                  disabled={installing || Boolean(busy)}
+                  disabled={installing || busyOnAgent}
                   className="h-8 px-3.5 rounded-full bg-[#007AFF] text-white text-[11px] font-semibold disabled:opacity-50"
                 >
                   {installing || busy === 'install:' + activeAgent ? copy.installing : runInstallAction === 'update' ? copy.update : copy.install}
@@ -676,7 +821,7 @@ export function ProvidersSection({ t, isDark }) {
                 <button
                   data-testid="acp-cli-login"
                   onClick={startLogin}
-                  disabled={Boolean(busy)}
+                  disabled={busyOnAgent}
                   className="h-8 px-3.5 rounded-full bg-[#007AFF] text-white text-[11px] font-semibold disabled:opacity-50"
                 >
                   {copy.login}
@@ -688,7 +833,7 @@ export function ProvidersSection({ t, isDark }) {
                 <button
                   data-testid="acp-cli-logout"
                   onClick={doLogout}
-                  disabled={Boolean(busy) || Boolean(view && !view.officialActive)}
+                  disabled={busyOnAgent || Boolean(view && !view.officialActive)}
                   title={view && !view.officialActive ? copy.logoutRelayDisabled : undefined}
                   className="h-8 px-3.5 rounded-full border border-black/[0.08] dark:border-white/[0.12] text-[11px] font-semibold disabled:opacity-50"
                 >
@@ -699,19 +844,48 @@ export function ProvidersSection({ t, isDark }) {
                 <button
                   data-testid="acp-cli-uninstall"
                   onClick={() => setUninstallConfirm({ cleanup: false })}
-                  disabled={Boolean(busy)}
+                  disabled={busyOnAgent}
                   className="h-8 px-3.5 rounded-full border border-red-500/30 text-red-500 text-[11px] font-semibold disabled:opacity-50"
                 >
-                  {copy.uninstall}
+                  {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
                 </button>
               )}
               <button
-                onClick={() => refresh(true)}
-                className="h-8 px-3 rounded-full text-[11px] font-medium border border-black/[0.08] dark:border-white/[0.12]"
+                onClick={recheck}
+                disabled={recheckingOnAgent || busyOnAgent}
+                className="h-8 px-3 rounded-full text-[11px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5 disabled:opacity-50"
               >
-                {copy.recheck}
+                {recheckingOnAgent && <RefreshCw size={11} className="animate-spin" />}
+                {recheckingOnAgent ? copy.rechecking : copy.recheck}
               </button>
             </div>
+            {/* 安装进度：阶段标签 + 实际执行的命令行 + 输出最新一行（等宽截断） */}
+            {showInstallLog && (
+              <div data-testid="acp-cli-install-progress" className={`rounded-xl px-3 py-2.5 space-y-1.5 ${isDark ? 'bg-white/[0.05]' : 'bg-black/[0.03]'}`}>
+                <div className="flex items-center gap-2 text-[12px] font-semibold">
+                  {installPhase === 'checking' || installPhase === 'installing' ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : installPhase === 'done' ? (
+                    <span className="text-emerald-500">✓</span>
+                  ) : installPhase === 'failed' ? (
+                    <span className="text-red-500">✕</span>
+                  ) : null}
+                  {phaseLabel}
+                </div>
+                {installLog && installLog.command && (
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] opacity-70 min-w-0">
+                    <span className="shrink-0">{copy.installCmd}:</span>
+                    <span className="truncate" title={installLog.command}>{installLog.command}</span>
+                  </div>
+                )}
+                {installLog && installLog.line && (
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] opacity-70 min-w-0">
+                    <span className="shrink-0">{copy.installLatest}:</span>
+                    <span className="truncate" title={installLog.line}>{installLog.line}</span>
+                  </div>
+                )}
+              </div>
+            )}
             {/* 登录引导：URL + （claude 的）授权码输入，轮询直到完成/失败 */}
             {loginWaiting && status && status.login_in_progress && (
               <div className={`rounded-xl px-3 py-2.5 space-y-2 ${isDark ? 'bg-white/[0.05]' : 'bg-black/[0.03]'}`}>
@@ -773,7 +947,7 @@ export function ProvidersSection({ t, isDark }) {
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.deleteDesc(deleteConfirm.name)}</p>
             <div className="mt-6 flex justify-end gap-2">
               <button onClick={() => setDeleteConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button data-testid="acp-provider-delete-confirm" onClick={remove} disabled={Boolean(busy)} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
+              <button data-testid="acp-provider-delete-confirm" onClick={remove} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
             </div>
           </div>
         </div>
@@ -800,7 +974,7 @@ export function ProvidersSection({ t, isDark }) {
             </label>
             <div className="mt-6 flex justify-end gap-2">
               <button onClick={() => setUninstallConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button data-testid="acp-uninstall-confirm" onClick={uninstall} disabled={Boolean(busy)} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">
+              <button data-testid="acp-uninstall-confirm" onClick={uninstall} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">
                 {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
               </button>
             </div>
@@ -860,7 +1034,7 @@ export function ProvidersSection({ t, isDark }) {
               <button
                 data-testid="acp-provider-import-confirm"
                 onClick={doImport}
-                disabled={Boolean(busy) || !String(importJson || '').trim()}
+                disabled={busyOnAgent || !String(importJson || '').trim()}
                 className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[13px] font-semibold disabled:opacity-50"
               >
                 {busy === 'import' ? copy.saving : copy.import}
