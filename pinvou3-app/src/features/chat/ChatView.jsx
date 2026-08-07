@@ -10,7 +10,7 @@ import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsVie
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ArtifactCard, localizeTool, tsToolsData } from '../tools/tool-common.jsx';
-import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
+import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
@@ -75,12 +75,6 @@ import {
 } from './composer-controls.jsx';
 
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
-// Inlined from cardBtnCls(isDark, variant) in tool-renderers.jsx so ChatView can drop its
-// local isDark. P1-7/P3 may collapse these back to cardBtnCls(variant) once that helper
-// no longer takes a theme arg. Non-primary dark originally had no border → dark:border-transparent
-// suppresses the light-side border in dark.
-const CARD_BTN = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746] dark:border-transparent';
-const CARD_BTN_PRIMARY = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]';
 
 function unifiedConversationUiEnabled() {
   try {
@@ -1428,7 +1422,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     renderToolItem={(item) => item.legacyItem
                       && !isSearchTool(item.tool)
                       && !isFetchTool(item.tool)
-                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
+                      ? <ToolCard item={item.legacyItem} t={t} variant="timeline" />
                       : undefined}
                     onOpenExternal={openChatExternalUrl}
                   />
@@ -1808,7 +1802,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               data-testid="artifact-fullscreen-panel">
               <ArtifactsPanel
                 bs={bs}
-                theme={theme}
                 t={t}
                 onClose={closeArtifactsPanel}
                 isWide={true}
@@ -1845,7 +1838,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 style={{ width: artifactW + 'px' }}>
                 <ArtifactsPanel
                   bs={bs}
-                  theme={theme}
                   t={t}
                   onClose={closeArtifactsPanel}
                   isWide={true}
@@ -1874,7 +1866,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           {artifactsVisible && !isWide && !artifactsFullscreen && (
             <ArtifactsPanel
               bs={bs}
-              theme={theme}
               t={t}
               onClose={closeArtifactsPanel}
               isWide={false}
@@ -2167,8 +2158,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button className={CARD_BTN} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
-                <button className={CARD_BTN_PRIMARY} onClick={commit}>{t.resend}</button>
+                <button className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
           </div>
@@ -2422,10 +2413,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const assistantSelectionTargetRef = useRef(null);
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} theme={theme} t={t} isLatest={isLatestArtifact} />;
-      if (item.type === 'plan_card') return <PlanCard item={item} theme={theme} t={t} onPrefill={onPrefill} />;
-      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} theme={theme} t={t} />;
-      if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
-      if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
+      if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
+      if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} />;
+      if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
+      if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
         return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }
@@ -2510,7 +2501,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       if (item.type === 'tool') {
-        return <ToolCard item={item} theme={theme} t={t} />;
+        return <ToolCard item={item} t={t} />;
       }
 
       if (item.type === 'persona_equip') {
