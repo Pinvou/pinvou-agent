@@ -70,6 +70,17 @@
     组合目录过滤失效、`## Skills` 仍印出禁用技能与磁盘路径（泄露面）。守护：
     `forkguard_skill_discovery_is_single_root_engine_config_skills_dir`（无 skills_dir 发现
     集为空、`_and_dir` 只扫注入目录）。
+  - （能力档案 fork ② 2026-08-06，经 PR #7 合入 `pinvou3-clean`）
+    `EngineConfig.hidden_tools: Option<Vec<String>>`：内置工具隐藏判定支持**按会话
+    注入**——`None` 回退编译期常量 `PINVOU3_HIDDEN_TOOLS`（现有行为逐字节不变）；
+    `Some` 时经 `is_pinvou3_hidden_for_session`（`pinvou3_blocklist.rs`）判定，**注入集
+    是常量的收窄**（只能从中放出工具，不能把原本可见的工具新纳入隐藏；app 按能力
+    档案算：常量 − 档案 tools.include）。不变式：`tool_search` 的 gate **恒查常量、
+    不可注入**（`forkguard_tool_search_always_gated` 守护，防模型用搜索复活被藏工具）；
+    `request_user_input` 硬豁免不受注入影响
+    （`forkguard_request_user_input_exempt_from_injected_hidden`）；注入集生效由
+    `forkguard_hidden_tools_injectable` 守护。hidden 变化仅 respawn 生效（无热刷
+    通道），与 `disallowed_tools` 的热刷语义不同。
   - 内部 `<system-reminder>` 不参与 Working Set 路径提取。
   - instructions/用户记忆 fragment 沿用 100KB 指令上限，避免被 v0.9 WorldState 默认 4KB 静默截断。
 - **为什么留 fork**：这是 pinvou3 的单一知识/指令来源和 prefix-cache 稳定性约束，上游通用 CLI 不能默认采用。
