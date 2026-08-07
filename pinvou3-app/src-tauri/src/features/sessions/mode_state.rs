@@ -209,18 +209,6 @@ impl SessionStore {
             .take()
     }
 
-    // ── 知识库挂载(会话级粘连,仿 persona,仅驻内存) ──
-    pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
-        self.mode_states
-            .write()
-            .entry(id.to_string())
-            .or_default()
-            .mounted_collection = collection_id;
-    }
-    pub fn mounted_collection(&self, id: &str) -> Option<i64> {
-        self.mode_states.read().get(id)?.mounted_collection
-    }
-
     /// Atomically checkout every one-shot prompt injection for a turn. The
     /// returned guard restores them on any pre-submission error or cancelled
     /// future; callers commit it only after EngineHandle accepts the operation.
