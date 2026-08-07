@@ -51,15 +51,15 @@ use deepseek_tui::session_manager::SessionMetadata;
 pub use events::AcpEventEnvelope;
 use events::{load_timeline, patch_acp_state, persist_acp_state, EventBridge};
 use latest::LatestVersionProbe;
+pub use providers::{
+    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
+};
 use runtime::{
     resolve_codex_path, system_codex_incompatible, version_at_least, ResolvedCodex,
     MIN_CODEX_VERSION,
 };
 pub use store::{
     validate_codex_project_workspace, AgentBackend, CodexWorkspaceKind, SessionAgentStore,
-};
-pub use providers::{
-    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 
@@ -1484,19 +1484,23 @@ impl AcpPool {
                 node.as_deref().and_then(installed_node_version)
             });
             let brew_task = tokio::task::spawn_blocking(platform::brew_available);
-            let incompatible_task =
-                tokio::task::spawn_blocking(move || system_codex_incompatible(system_codex_for_incompat));
+            let incompatible_task = tokio::task::spawn_blocking(move || {
+                system_codex_incompatible(system_codex_for_incompat)
+            });
             match tokio::join!(resolve_task, node_task, brew_task, incompatible_task) {
-                (Ok((codex, codex_install_source)), Ok(node_version), Ok(brew_available), Ok(system_incompatible)) => {
-                    Ok(RuntimeProbeCache {
-                        initialized: true,
-                        node_version,
-                        codex,
-                        brew_available,
-                        codex_install_source,
-                        system_codex_incompatible: system_incompatible,
-                    })
-                }
+                (
+                    Ok((codex, codex_install_source)),
+                    Ok(node_version),
+                    Ok(brew_available),
+                    Ok(system_incompatible),
+                ) => Ok(RuntimeProbeCache {
+                    initialized: true,
+                    node_version,
+                    codex,
+                    brew_available,
+                    codex_install_source,
+                    system_codex_incompatible: system_incompatible,
+                }),
                 _ => Err(()),
             }
         };
@@ -2130,11 +2134,7 @@ impl AcpPool {
 
     /// 卸载 ACP Agent CLI。有运行中会话时拒绝；`cleanup=true` 时额外删除该 Agent
     /// 的配置目录、受管 Provider 与对应凭据（前端默认不勾选）。
-    pub async fn uninstall_acp_agent(
-        &self,
-        agent: &str,
-        cleanup: bool,
-    ) -> Result<CodexAcpStatus> {
+    pub async fn uninstall_acp_agent(&self, agent: &str, cleanup: bool) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent}");
@@ -2181,8 +2181,7 @@ impl AcpPool {
                 .map(str::to_string),
             AgentBackend::Deepseek => None,
         };
-        let command =
-            providers::lifecycle::uninstall_command(backend, install_source.as_deref());
+        let command = providers::lifecycle::uninstall_command(backend, install_source.as_deref());
         let operation_id = diagnostics::operation_id("uninstall");
         match command {
             providers::lifecycle::UninstallCommand::Spawn((program, args)) => {
@@ -2264,8 +2263,12 @@ impl AcpPool {
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent}");
         }
-        let args = providers::lifecycle::logout_args(backend)
-            .with_context(|| format!("{} 的 CLI 不支持非交互登出（可在终端内使用其 TUI 的 /logout）", backend.display_name()))?;
+        let args = providers::lifecycle::logout_args(backend).with_context(|| {
+            format!(
+                "{} 的 CLI 不支持非交互登出（可在终端内使用其 TUI 的 /logout）",
+                backend.display_name()
+            )
+        })?;
         let executable = self
             .login_executable(backend)
             .with_context(|| format!("未检测到可用的 {} CLI", backend.display_name()))?;
@@ -3501,9 +3504,7 @@ impl AcpPool {
             return Ok(());
         };
         command.env("OPENAI_API_KEY", key);
-        eprintln!(
-            "[pinvou3-app] injected OPENAI_API_KEY for codex session {pinvou_session_id}"
-        );
+        eprintln!("[pinvou3-app] injected OPENAI_API_KEY for codex session {pinvou_session_id}");
         Ok(())
     }
 
@@ -4283,7 +4284,7 @@ fn npm_package(backend: AgentBackend) -> Option<&'static str> {
 }
 
 /// npm 可执行文件：Windows 上是 npm.cmd。
-fn npm_executable() -> Option<PathBuf> {
+pub(crate) fn npm_executable() -> Option<PathBuf> {
     if crate::platform::capabilities::is_windows() {
         find_in_path("npm.cmd").or_else(|| find_in_path("npm"))
     } else {
@@ -4416,10 +4417,9 @@ fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static st
     }
 }
 
-/// installed=false 时的安装动作：brew 来源保持 brew 升级（与安装方式一致）；
-/// 其余情况 npm 可用一律走 npm（`npm install -g` 对首次安装同样幂等），
-/// 避免官方脚本对慢速镜像源与本机工具链（如 tar 实现差异）的依赖；
-/// npm 不可用时回退各 Agent 的官方脚本，最后才是手动安装。
+/// installed=false 时的安装动作：探测到 CLI 且来源可识别时优先包管理器
+/// 升级（brew/npm），其余来源或无 CLI 时维持各 Agent 的默认安装方式
+/// （官方脚本优先：原生二进制启动快、装完无需重启即可探测）。
 fn install_action_for(
     _backend: AgentBackend,
     install_source: Option<&'static str>,
@@ -4428,7 +4428,7 @@ fn install_action_for(
 ) -> &'static str {
     match install_source {
         Some("brew") => "brew_upgrade",
-        _ if npm_available => "npm_upgrade",
+        Some("npm") if npm_available => "npm_upgrade",
         _ if official_script_supported => "official_script",
         _ => "manual",
     }
@@ -5681,8 +5681,9 @@ max_context_size = 262144
                 "npm_upgrade"
             );
         }
-        // npm 可用时：script/未知来源/首次安装（None）一律走 npm；
-        // npm 不可用时回到官方脚本，脚本也不支持时手动。
+        // 官方脚本优先（原设计）：script/未知来源/首次安装（None）即使 npm
+        // 可用也走官方脚本；npm 仅作为 npm 来源的升级通道；npm 不可用或脚本
+        // 不支持时依次回退脚本/手动。
         for backend in [
             AgentBackend::CodexAcp,
             AgentBackend::ClaudeAcp,
@@ -5690,10 +5691,14 @@ max_context_size = 262144
         ] {
             assert_eq!(
                 install_action_for(backend, Some("script"), true, true),
-                "npm_upgrade"
+                "official_script"
             );
             assert_eq!(
                 install_action_for(backend, None, true, true),
+                "official_script"
+            );
+            assert_eq!(
+                install_action_for(backend, Some("npm"), true, true),
                 "npm_upgrade"
             );
             assert_eq!(

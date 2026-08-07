@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use toml::Value;
 
 use super::{
-    AgentConfigWriter, EffectiveConfig, EffectiveEntry, PROVIDER_ID_PREFIX, ProviderTarget,
-    ProviderWireApi, atomic_write,
+    atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget,
+    ProviderWireApi, PROVIDER_ID_PREFIX,
 };
 
 pub struct KimiConfigWriter {
@@ -184,9 +184,9 @@ impl AgentConfigWriter for KimiConfigWriter {
             .with_context(|| format!("读取 {} 失败", self.config_path.display()))?;
         // 解析失败必须返回 Err（而非静默按官方处理），让 config_unreadable
         // 生效——否则损坏的 config.toml 会显示「官方登录」且无警告条。
-        let config = raw.parse::<Value>().with_context(|| {
-            format!("解析 {} 失败", self.config_path.display())
-        })?;
+        let config = raw
+            .parse::<Value>()
+            .with_context(|| format!("解析 {} 失败", self.config_path.display()))?;
         let Some(default_model) = config
             .get("default_model")
             .and_then(Value::as_str)
@@ -300,10 +300,7 @@ impl AgentConfigWriter for KimiConfigWriter {
         if !needs_restore {
             return Ok(());
         }
-        table.insert(
-            "default_model".into(),
-            Value::String(model.to_string()),
-        );
+        table.insert("default_model".into(), Value::String(model.to_string()));
         let raw = toml::to_string_pretty(&config).context("序列化 kimi config.toml 失败")?;
         atomic_write(&self.config_path, raw.as_bytes())
     }
@@ -341,15 +338,23 @@ mod tests {
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         // 产物必须通过官方校验函数（真实解析路径）
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(&raw, false));
+        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
+            &raw, false
+        ));
         let config: Value = raw.parse().unwrap();
         assert_eq!(config["default_model"], "pv-aaaaaaaaaaaa-main".into());
-        assert_eq!(config["providers"]["pv-aaaaaaaaaaaa"]["type"], "openai".into());
+        assert_eq!(
+            config["providers"]["pv-aaaaaaaaaaaa"]["type"],
+            "openai".into()
+        );
         assert_eq!(
             config["providers"]["pv-aaaaaaaaaaaa"]["api_key"],
             "test-api-key-1234567890".into()
         );
-        assert_eq!(config["models"]["pv-aaaaaaaaaaaa-main"]["provider"], "pv-aaaaaaaaaaaa".into());
+        assert_eq!(
+            config["models"]["pv-aaaaaaaaaaaa-main"]["provider"],
+            "pv-aaaaaaaaaaaa".into()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -363,9 +368,14 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = raw.parse().unwrap();
         // Kimi 原生协议 → type = "kimi"（Kimi Code 官方文档专用类型）
-        assert_eq!(config["providers"]["pv-aaaaaaaaaaaa"]["type"], "kimi".into());
+        assert_eq!(
+            config["providers"]["pv-aaaaaaaaaaaa"]["type"],
+            "kimi".into()
+        );
         // 产物仍通过官方校验函数
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(&raw, false));
+        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
+            &raw, false
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -398,8 +408,10 @@ mod tests {
         )
         .unwrap();
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        let config: Value =
-            fs::read_to_string(dir.join("config.toml")).unwrap().parse().unwrap();
+        let config: Value = fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
         // 官方表保留
         assert!(config["providers"]["official-oauth"]["oauth"].is_table());
         assert_eq!(config["models"]["kimi-k2.5"]["model"], "kimi-k2.5".into());
@@ -419,11 +431,22 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = raw.parse().unwrap();
         assert!(config.get("default_model").is_none());
-        assert!(config.get("providers").unwrap().get("pv-aaaaaaaaaaaa").is_none());
-        assert!(config.get("models").unwrap().get("pv-aaaaaaaaaaaa-main").is_none());
+        assert!(config
+            .get("providers")
+            .unwrap()
+            .get("pv-aaaaaaaaaaaa")
+            .is_none());
+        assert!(config
+            .get("models")
+            .unwrap()
+            .get("pv-aaaaaaaaaaaa-main")
+            .is_none());
         // 官方表保留
         assert_eq!(config["models"]["official"]["model"], "kimi-k2.5".into());
-        assert_eq!(config["providers"]["official-oauth"]["type"], "anthropic".into());
+        assert_eq!(
+            config["providers"]["official-oauth"]["type"],
+            "anthropic".into()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -444,10 +467,7 @@ mod tests {
         let broken = "default_model = \"x\"\n[unclosed";
         fs::write(dir.join("config.toml"), broken).unwrap();
         assert!(writer.apply(&target("pv-aaaaaaaaaaaa")).is_err());
-        assert_eq!(
-            fs::read_to_string(dir.join("config.toml")).unwrap(),
-            broken
-        );
+        assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), broken);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -479,9 +499,15 @@ mod tests {
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = raw.parse().unwrap();
         assert_eq!(config["default_model"], "kimi-code/k3".into());
-        assert!(config.get("providers").unwrap().get("pv-aaaaaaaaaaaa").is_none());
+        assert!(config
+            .get("providers")
+            .unwrap()
+            .get("pv-aaaaaaaaaaaa")
+            .is_none());
         // 恢复后的产物重新通过官方校验（官方登录态不断裂）
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(&raw, true));
+        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
+            &raw, true
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -564,7 +590,10 @@ mod tests {
             "default_model = \"kimi-code/k3\"\n\n[models.\"kimi-code/k3\"]\nprovider = \"managed:kimi-code\"\nmodel = \"k3\"\nmax_context_size = 1048576\n\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\napi_key = \"sk-x\"\n",
         )
         .unwrap();
-        assert!(writer.effective().unwrap().relay_active, "无 oauth 子表的自定义 provider 应判为中转");
+        assert!(
+            writer.effective().unwrap().relay_active,
+            "无 oauth 子表的自定义 provider 应判为中转"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

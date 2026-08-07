@@ -13,8 +13,8 @@ pub(crate) mod lifecycle;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
@@ -562,12 +562,11 @@ impl ProviderManager {
         // 配置文件的 relay 配置归因：codex/kimi 可反推 id 精确匹配；claude 的 env
         // 无法反推，只要 store 有当前 provider 且文件有 relay 配置即归因 App 写入。
         let managed = effective.relay_active
-            && state.current_provider_id.as_deref().is_some_and(|current| match effective
-                .provider_hint
-                .as_deref()
-            {
-                Some(hint) => hint == current,
-                None => state.providers.iter().any(|record| record.id == current),
+            && state.current_provider_id.as_deref().is_some_and(|current| {
+                match effective.provider_hint.as_deref() {
+                    Some(hint) => hint == current,
+                    None => state.providers.iter().any(|record| record.id == current),
+                }
             });
         Ok(AcpProvidersView {
             providers: state
@@ -863,8 +862,8 @@ impl ProviderManager {
             #[serde(alias = "apiKey", default)]
             api_key: Option<String>,
         }
-        let entries: Vec<ImportEntry> = serde_json::from_str(json)
-            .context("导入文件不是有效的 Provider JSON")?;
+        let entries: Vec<ImportEntry> =
+            serde_json::from_str(json).context("导入文件不是有效的 Provider JSON")?;
         let mut result = ImportResult::default();
         for entry in entries {
             if entry.name.trim().is_empty() || validate_base_url(&entry.base_url).is_err() {
@@ -927,9 +926,7 @@ impl ProviderManager {
                     model: entry.model,
                     model_slots,
                     context_window: entry.context_window,
-                    wire_api: entry
-                        .wire_api
-                        .unwrap_or_default(),
+                    wire_api: entry.wire_api.unwrap_or_default(),
                     credential,
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
@@ -983,12 +980,18 @@ mod tests {
             model_slots: None,
             context_window: None,
             wire_api: ProviderWireApi::Openai,
-            credential: Some(CredentialReference::for_acp_provider("codex", "pv-1234567890ab")),
+            credential: Some(CredentialReference::for_acp_provider(
+                "codex",
+                "pv-1234567890ab",
+            )),
             created_at: "2026-08-04T00:00:00Z".into(),
         };
         store.upsert("codex", record.clone()).unwrap();
         store.set_current("codex", Some("pv-1234567890ab")).unwrap();
-        assert_eq!(store.get("codex", "pv-1234567890ab").unwrap().name, "我的中转");
+        assert_eq!(
+            store.get("codex", "pv-1234567890ab").unwrap().name,
+            "我的中转"
+        );
         assert_eq!(store.current("codex").unwrap(), "pv-1234567890ab");
         // 原子写：无残留 .tmp 文件
         assert!(!store.path.with_extension("json.tmp").exists());
@@ -1005,7 +1008,9 @@ mod tests {
     fn load_from_path(path: &Path) -> AcpProvidersStore {
         let agents = if path.exists() {
             let raw = fs::read_to_string(path).unwrap();
-            serde_json::from_str::<AcpProvidersFile>(&raw).unwrap().agents
+            serde_json::from_str::<AcpProvidersFile>(&raw)
+                .unwrap()
+                .agents
         } else {
             HashMap::new()
         };
@@ -1017,7 +1022,8 @@ mod tests {
 
     #[test]
     fn remove_clears_current_candidate() {
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-rm-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("acp-providers-test-rm-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let store = tmp_store(&dir);
@@ -1062,8 +1068,14 @@ mod tests {
 
     #[test]
     fn wire_api_parse() {
-        assert_eq!(ProviderWireApi::parse(None).unwrap(), ProviderWireApi::Anthropic);
-        assert_eq!(ProviderWireApi::parse(Some("openai")).unwrap(), ProviderWireApi::Openai);
+        assert_eq!(
+            ProviderWireApi::parse(None).unwrap(),
+            ProviderWireApi::Anthropic
+        );
+        assert_eq!(
+            ProviderWireApi::parse(Some("openai")).unwrap(),
+            ProviderWireApi::Openai
+        );
         assert!(ProviderWireApi::parse(Some("bogus")).is_err());
     }
 }

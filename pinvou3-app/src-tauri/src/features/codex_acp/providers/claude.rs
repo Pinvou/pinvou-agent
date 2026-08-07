@@ -11,9 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget, atomic_write};
+use super::{atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget};
 
 const ENV_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const ENV_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
@@ -53,9 +53,7 @@ impl AgentConfigWriter for ClaudeConfigWriter {
         let top = config
             .as_object_mut()
             .context("settings.json 顶层必须是 JSON 对象")?;
-        let env = top
-            .entry("env")
-            .or_insert_with(|| json!({}));
+        let env = top.entry("env").or_insert_with(|| json!({}));
         let env_obj = env
             .as_object_mut()
             .context("settings.json 的 env 必须是对象")?;
@@ -109,7 +107,11 @@ impl AgentConfigWriter for ClaudeConfigWriter {
         };
         let removed = [ENV_BASE_URL, ENV_AUTH_TOKEN, ENV_MODEL]
             .into_iter()
-            .chain(super::CLAUDE_MODEL_SLOTS.iter().map(|(_, env_name)| *env_name))
+            .chain(
+                super::CLAUDE_MODEL_SLOTS
+                    .iter()
+                    .map(|(_, env_name)| *env_name),
+            )
             .filter(|name| env_obj.remove(*name).is_some())
             .count();
         if removed == 0 {
@@ -209,10 +211,22 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
         // 五个细化槽位全部写入对应 env 键
         assert_eq!(config["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "relay-opus");
-        assert_eq!(config["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "relay-sonnet");
-        assert_eq!(config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "relay-haiku");
-        assert_eq!(config["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"], "relay-fable");
-        assert_eq!(config["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "relay-subagent");
+        assert_eq!(
+            config["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            "relay-sonnet"
+        );
+        assert_eq!(
+            config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            "relay-haiku"
+        );
+        assert_eq!(
+            config["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"],
+            "relay-fable"
+        );
+        assert_eq!(
+            config["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+            "relay-subagent"
+        );
         // 恢复官方：受管槽位键全部删除
         writer.revert_to_official(None).unwrap();
         let config: Value =
@@ -232,7 +246,10 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
         assert!(config["env"].get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
         assert!(config["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
-        assert_eq!(config["env"]["ANTHROPIC_BASE_URL"], "https://api.example.com/anthropic");
+        assert_eq!(
+            config["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.example.com/anthropic"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -249,8 +266,14 @@ mod tests {
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let config: Value =
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
-        assert_eq!(config["env"]["ANTHROPIC_BASE_URL"], "https://api.example.com/anthropic");
-        assert_eq!(config["env"]["ANTHROPIC_AUTH_TOKEN"], "test-api-key-1234567890");
+        assert_eq!(
+            config["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.example.com/anthropic"
+        );
+        assert_eq!(
+            config["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "test-api-key-1234567890"
+        );
         assert_eq!(config["env"]["ANTHROPIC_MODEL"], "claude-sonnet-4-5");
         // 其他键保留
         assert_eq!(config["model"], "claude-sonnet-4-5");
@@ -270,8 +293,16 @@ mod tests {
         writer.revert_to_official(None).unwrap();
         let config: Value =
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
-        assert!(config.get("env").unwrap().get("ANTHROPIC_BASE_URL").is_none());
-        assert!(config.get("env").unwrap().get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert!(config
+            .get("env")
+            .unwrap()
+            .get("ANTHROPIC_BASE_URL")
+            .is_none());
+        assert!(config
+            .get("env")
+            .unwrap()
+            .get("ANTHROPIC_AUTH_TOKEN")
+            .is_none());
         assert!(config.get("env").unwrap().get("ANTHROPIC_MODEL").is_none());
         // 其他 env 键与顶层保留
         assert_eq!(config["env"]["CUSTOM"], "v");
@@ -316,10 +347,7 @@ mod tests {
         let backup = dir.join("settings.json.pinvou3-bak");
         assert!(backup.exists());
         // 备份保留初始状态且只写一次
-        assert_eq!(
-            fs::read_to_string(backup).unwrap(),
-            r#"{"model":"x"}"#
-        );
+        assert_eq!(fs::read_to_string(backup).unwrap(), r#"{"model":"x"}"#);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -360,13 +388,17 @@ mod tests {
         let effective = writer.effective().unwrap();
         assert_eq!(effective.relay_active, true);
         // base_url 与 model 展示；AUTH_TOKEN（凭据）绝不出现
-        let keys: Vec<&str> = effective.entries.iter().map(|entry| entry.key.as_str()).collect();
-        assert_eq!(
-            keys,
-            vec!["ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"]
-        );
+        let keys: Vec<&str> = effective
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"]);
         assert!(
-            !effective.entries.iter().any(|entry| entry.key.contains("AUTH_TOKEN")),
+            !effective
+                .entries
+                .iter()
+                .any(|entry| entry.key.contains("AUTH_TOKEN")),
             "凭据字段不得出现在生效值展示中"
         );
         assert!(
