@@ -101,12 +101,14 @@ fn run_brew(
     // scope 在返回前 join 两个线程,排空完毕后才 wait(),不存在管道写满死锁。
     let (stdout, stderr) = std::thread::scope(|s| {
         // stderr 线程负责累积全部文本(失败时取最后几行汇总);stdout 线程只回调不存。
-        let stderr_handle = child.stderr.take().map(|pipe| {
-            s.spawn(move || drain_lines(pipe, progress, package, current, total))
-        });
-        let stdout_handle = child.stdout.take().map(|pipe| {
-            s.spawn(move || drain_lines(pipe, progress, package, current, total))
-        });
+        let stderr_handle = child
+            .stderr
+            .take()
+            .map(|pipe| s.spawn(move || drain_lines(pipe, progress, package, current, total)));
+        let stdout_handle = child
+            .stdout
+            .take()
+            .map(|pipe| s.spawn(move || drain_lines(pipe, progress, package, current, total)));
         let stderr = stderr_handle
             .and_then(|h| h.join().ok())
             .unwrap_or_default();
@@ -116,9 +118,7 @@ fn run_brew(
         (stdout, stderr)
     });
     let _ = stdout; // stdout 仅用于实时回调,这里不参与错误汇总。
-    let output = child
-        .wait()
-        .map_err(|e| format!("brew 等待失败: {e}"))?;
+    let output = child.wait().map_err(|e| format!("brew 等待失败: {e}"))?;
     if output.success() {
         return Ok(());
     }
@@ -134,6 +134,10 @@ fn run_brew(
 /// 逐行读取一个管道,对每条非空行触发进度回调;返回累积的全部文本。
 /// 对 stdout 与 stderr 各在一个作用域线程里调用一次(见 `run_brew`),故 `progress`
 /// 必须可跨线程共享调用(`+ Sync`)。
+///
+/// 除 `\n` 外也按 `\r` 切分:curl 式下载进度(`Downloading … 45%`)用 `\r` 在同一行
+/// 内覆盖刷新、中间不带 `\n`;只按 `\n` 切分会把所有百分比缓冲到该行结束才一次性
+/// 吐出。按 `\r` 切分能让每个百分比快照实时上报。
 fn drain_lines<R: std::io::Read>(
     stream: R,
     progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
@@ -142,23 +146,31 @@ fn drain_lines<R: std::io::Read>(
     total: usize,
 ) -> String {
     let mut buf = String::new();
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
+    let mut reader = BufReader::new(stream);
+    let mut raw: Vec<u8> = Vec::new();
+    loop {
+        raw.clear();
+        let n = match reader.read_until(b'\n', &mut raw) {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
             Err(_) => break, // 管道读取错误不可恢复,停止排空。
         };
-        if let Some(report) = progress {
-            if !line.trim().is_empty() {
-                report(package, current, total, Some(line.as_str()));
+        // read_until 读到 `\n`(含)为止,行内的 `\r` 仍保留;末尾无 `\n` 的最后一段也照常处理。
+        let segment = String::from_utf8_lossy(&raw[..n]);
+        // 按 `\r` 切分:每段是 curl 进度的一个快照,或普通的一行输出。
+        for piece in segment.split('\r') {
+            let line = piece.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(report) = progress {
+                report(package, current, total, Some(line));
             }
         }
-        buf.push_str(&line);
-        buf.push('\n');
+        buf.push_str(&segment);
     }
     buf
 }
-
 
 /// - `package`: 当前正在安装的包名
 /// - `current` / `total`: 1-based 序号 / 本批待装总数(含 formula 与 cask)
@@ -284,6 +296,31 @@ mod tests {
         assert!(buf.contains("Installing foo"));
     }
 
+    // curl 式下载进度用 \r 在同一行内覆盖刷新百分比(中间无 \n)。
+    // drain_lines 应按 \r 切分,让每个百分比快照都实时上报,而非缓冲到行尾。
+    #[test]
+    fn drain_lines_splits_carriage_return_progress_segments() {
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let report = move |_pkg: &str, _cur: usize, _total: usize, detail: Option<&str>| {
+            if let Some(line) = detail {
+                calls_clone.lock().unwrap().push(line.to_string());
+            }
+        };
+        // 模拟 curl 下载:同一行用 \r 反复覆盖刷新百分比,最后 \n 结束。
+        let input = "Downloading X\rDownloading X  45%\rDownloading X done\n";
+        let _ = drain_lines(input.as_bytes(), Some(&report), "X", 1, 1);
+        let recorded = calls.lock().unwrap();
+        assert_eq!(
+            recorded.as_slice(),
+            &[
+                "Downloading X".to_string(),
+                "Downloading X  45%".to_string(),
+                "Downloading X done".to_string(),
+            ]
+        );
+    }
+
     // 白名单应拒绝未知包名(安全护栏,防注入任意 brew 包)。
     #[test]
     fn rejects_unknown_package() {
@@ -325,14 +362,20 @@ mod tests {
         // 复刻 run_brew 的并发排空段:两个作用域线程各持一份 `&report` 引用并发排空。
         // `report` 本身只借用 calls_clone(Arc)故 Sync,两个线程可并发调用。
         let (stdout, stderr) = std::thread::scope(|s| {
-            let stderr_handle = child.stderr.take().map(|pipe| {
-                s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1))
-            });
-            let stdout_handle = child.stdout.take().map(|pipe| {
-                s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1))
-            });
-            let stderr = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
-            let stdout = stdout_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+            let stderr_handle = child
+                .stderr
+                .take()
+                .map(|pipe| s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1)));
+            let stdout_handle = child
+                .stdout
+                .take()
+                .map(|pipe| s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1)));
+            let stderr = stderr_handle
+                .and_then(|h| h.join().ok())
+                .unwrap_or_default();
+            let stdout = stdout_handle
+                .and_then(|h| h.join().ok())
+                .unwrap_or_default();
             (stdout, stderr)
         });
         child.wait().expect("wait sh");
@@ -341,7 +384,14 @@ mod tests {
         assert_eq!(recorded.len(), 3);
         let mut all = recorded.clone();
         all.sort();
-        assert_eq!(all, vec!["err-c".to_string(), "out-a".to_string(), "out-b".to_string()]);
+        assert_eq!(
+            all,
+            vec![
+                "err-c".to_string(),
+                "out-a".to_string(),
+                "out-b".to_string()
+            ]
+        );
         // 累积文本分别只含各自管道的内容。
         assert!(stdout.contains("out-a") && stdout.contains("out-b") && !stdout.contains("err-c"));
         assert!(stderr.contains("err-c") && !stderr.contains("out-a"));
