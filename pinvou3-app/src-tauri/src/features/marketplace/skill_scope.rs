@@ -369,11 +369,7 @@ mod tests {
             for name in ["visualizer", "government-writing"] {
                 let dir = paths::bundle_skills_dir().join(name);
                 std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(
-                    dir.join("SKILL.md"),
-                    format!("---\nname: {name}\n---\n"),
-                )
-                .unwrap();
+                std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
             }
             // 未初始化：code 默认全禁已装技能
             let mut disabled = load_disabled_skills_for(ConnectorScope::Code);
