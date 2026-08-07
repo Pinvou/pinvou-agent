@@ -152,6 +152,19 @@
   // return before chat listeners, session loading, polling, or update checks.
   const locationSearch = String((window.location && window.location.search) || "");
   const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
+  const isDetachedWindow = /(?:^|[?&])detached=1(?:&|$)/.test(locationSearch);
+  function detachedQueryValue(name) {
+    var query = locationSearch.replace(/^\?/, "").split("&");
+    for (var i = 0; i < query.length; i++) {
+      var pair = query[i].split("=");
+      if (pair[0] !== name) continue;
+      try { return decodeURIComponent((pair.slice(1).join("=") || "").replace(/\+/g, " ")); }
+      catch (_) { return pair.slice(1).join("=") || ""; }
+    }
+    return "";
+  }
+  const detachedWindowKind = isDetachedWindow ? (detachedQueryValue("kind") || "monitor") : "";
+  const detachedWindowSessionId = isDetachedWindow ? detachedQueryValue("id") : "";
   if (isPetWindow) {
     window.TauriBridge = {
       available: false,
@@ -1961,7 +1974,7 @@
     bt: bt,
   });
   // 撕离窗口不是权威主 WebView，不注册桌面 RPC 代理。
-  if (!/(?:^|[?&])detached=1(?:&|$)/.test(locationSearch)) {
+  if (!isDetachedWindow) {
     Promise.resolve(remoteControlFeature.startDesktopProxy()).catch(function (error) {
       console.error("[WebAccess] desktop proxy startup failed", error);
     });
@@ -2021,9 +2034,11 @@
     await startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities);
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
-    loadScheduledTasks().catch(function () {}).then(function () {
-      loadScheduledTaskRecentRuns().catch(function () {});
-    });
+    if (!isDetachedWindow) {
+      loadScheduledTasks().catch(function () {}).then(function () {
+        loadScheduledTaskRecentRuns().catch(function () {});
+      });
+    }
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
     await startupAwait("bridge:load_settings", loadSettings);
     await startupAwait("bridge:load_selected_pet", loadSelectedPet);
@@ -2031,18 +2046,37 @@
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
     await startupAwait("bridge:refresh_history", refreshHistoryList);
-    enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
-    startupMark("bridge:draft_entered");
-    await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
-    loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
-    startupMark("bridge:personas_load_started");
-    pollBackendStatus();
-    setInterval(pollBackendStatus, 10000);
-    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
-    checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    // 分离会话必须在同一初始化链内绑定目标 id。此前 DetachedShell 的独立 effect
+    // 会与这里的 enterDraft() 并发，慢初始化时已加载的原会话会被重置成空白草稿。
+    if (isDetachedWindow && detachedWindowKind === "session" && detachedWindowSessionId) {
+      await startupAwait("bridge:detached_session", function () {
+        return switchToSession(detachedWindowSessionId);
+      });
+    } else {
+      enterDraft(); // 主窗口及非会话分离视图使用本窗口自己的空白工作集
+      startupMark("bridge:draft_entered");
+    }
+    var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
+    if (needsSessionRuntime) {
+      await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
+    }
+    if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
+      loadPersonas(); // 会话和卡池需要本窗口自己的卡牌投影，fire-and-forget
+      startupMark("bridge:personas_load_started");
+    }
+    if (needsSessionRuntime) {
+      pollBackendStatus();
+      setInterval(pollBackendStatus, 10000);
+    }
+    if (!isDetachedWindow) {
+      reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
+      checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    }
     startupMark("bridge:background_checks_started");
-    refreshRemoteControlStatus(); // fire-and-forget
-    await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
+    if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
+    if (!isDetachedWindow || detachedWindowKind === "workflow") {
+      await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // 工作流窗口需要恢复后端共享 run
+    }
     notify();
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
