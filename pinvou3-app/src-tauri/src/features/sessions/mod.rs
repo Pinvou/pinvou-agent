@@ -15,7 +15,7 @@
 //! **Arc + RwLock 包装**：所有字段都是 `Arc`，整个 `SessionStore` 可以
 //! 廉价 Clone 进 Tauri State + 多个 task 共享。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -627,8 +627,34 @@ impl SessionStore {
 
     /// 注入品悟原生 code 会话判定；由 app 组合根与执行根解析器同点注入，
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包。
+    ///
+    /// `load_skill_bindings` 在启动早期、谓词注入前执行，对绑过 skill 的 code
+    /// 会话用 `or_default()` 物化出 `mode=Yolo` 的条目（`SessionModeState` 默认
+    /// mode 即 Yolo）；`load_code_mode_states` 只覆盖 `_code_mode_states.json`
+    /// 里有显式记录的会话。于是「code 会话 + 绑 skill + 从未显式切 mode」重启后
+    /// 会带着 Yolo 残留绕过 `resolved_default_mode`，错误回到 Yolo 而非 Plan 首启。
+    /// 谓词注入后立刻 reconcile 这类残留：无持久化记录的 code 会话 mode 拨回 Plan。
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         *self.code_session_predicate.write() = Some(predicate);
+        self.reconcile_code_default_modes();
+    }
+
+    /// 把启动期被 `load_skill_bindings` 物化成 Yolo、但没有 per-session 持久化
+    /// 记录的 code 会话 mode 拨回 Plan 首启默认。仅修 `mode` 字段，保留
+    /// `active_skill`/`pinvou_review_enabled` 等其他字段。
+    fn reconcile_code_default_modes(&self) {
+        // 有显式 per-session 记录的 code 会话：交给 load_code_mode_states 覆盖，
+        // 不在此处理。
+        let persisted: HashSet<String> = self.code_mode_states.read().keys().cloned().collect();
+        let mut m = self.mode_states.write();
+        for (id, state) in m.iter_mut() {
+            if state.mode == SerializableMode::Yolo
+                && !persisted.contains(id)
+                && self.is_code_session(id)
+            {
+                state.mode = SerializableMode::Plan;
+            }
+        }
     }
 
     /// 统一解析一个会话的两个根(执行根 + 账本根)。调用方按用途显式选择
@@ -4235,6 +4261,61 @@ mod tests {
         assert!(UserPrefs::load().code_permission.yolo_confirmed);
         let reopened = reopen_store(&store).expect("reboot");
         assert!(reopened.code_permission_prefs().yolo_confirmed);
+    }
+
+    /// 重启回归：绑过 skill 但从未显式切 mode 的 code 会话，重启后必须回到 Plan
+    /// 首启默认，不能被 `load_skill_bindings` 启动期物化的 `or_default()`(=Yolo)
+    /// 条目盖掉。谓词在启动后才注入，`load_skill_bindings` 当时无法判 code 会话，
+    /// 故在 `set_code_session_predicate` 注入后做一次 reconcile 修正这类残留。
+    #[test]
+    fn code_session_with_skill_binding_defaults_to_plan_after_reboot() {
+        // 绑 skill 的 code 会话重启后回 Plan，不被 Yolo 残留盖掉。
+        let (store, _g) = isolated_store();
+        // code-1 绑定 skill（谓词未注入 → 等同 `load_skill_bindings` 启动期物化
+        // 出 mode=Yolo 的条目），落盘后从不显式切 mode（无 per-session 记录）。
+        store.bind_skill(
+            "code-1",
+            ActiveSkillBinding {
+                name: "demo".into(),
+                pending_instruction: None,
+                phases: vec![],
+                project_dir: None,
+            },
+        );
+        store.save_skill_bindings();
+        assert!(store.mode_state("code-1").active_skill.is_some());
+
+        // 重启：load_skill_bindings 恢复出 mode=Yolo + active_skill，
+        // load_code_mode_states 因无 code-1 条目不覆盖。
+        let reopened = reopen_store(&store).expect("reboot");
+        // 谓词注入触发 reconcile：无持久化记录的 code 会话 mode 修正为 Plan。
+        with_code_sessions(&reopened, &["code-1"]);
+        assert_eq!(
+            reopened.mode_state("code-1").mode,
+            SerializableMode::Plan,
+            "绑 skill 的 code 会话重启后应回 Plan 首启默认，而非 Yolo 残留"
+        );
+        // active_skill 必须保留（reconcile 只修 mode，不动其他字段）。
+        assert!(reopened.mode_state("code-1").active_skill.is_some());
+    }
+
+    /// reconcile 只修正无持久化记录的 code 会话；显式切过的 mode 必须原样保留。
+    /// 拆成独立测试：`isolated_store` 持有进程级 ENV_LOCK 直到 guard drop，同一线程
+    /// 内二次调用会自死锁（`std::sync::Mutex` 不可重入），每测试只调一次。
+    #[test]
+    fn reconcile_does_not_overwrite_explicitly_persisted_mode() {
+        let (store, _g) = isolated_store();
+        with_code_sessions(&store, &["code-2"]);
+        store
+            .set_mode("code-2", SerializableMode::Yolo)
+            .expect("code-2 explicit yolo");
+        let reopened = reopen_store(&store).expect("reboot");
+        with_code_sessions(&reopened, &["code-2"]);
+        assert_eq!(
+            reopened.mode_state("code-2").mode,
+            SerializableMode::Yolo,
+            "显式切过的 mode 不应被 reconcile 改写"
+        );
     }
 
     #[test]

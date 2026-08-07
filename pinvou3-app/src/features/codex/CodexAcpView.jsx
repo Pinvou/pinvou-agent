@@ -730,6 +730,20 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
 // UI 层确认，后端不强制门控）。按钮样式复用方案审批卡的 cardBtnCls。
 function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
   const isDark = theme === 'dark';
+  const dialogRef = useRef(null);
+  // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
+  // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
   return (
     <div data-testid="native-yolo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
@@ -738,10 +752,16 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
         className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
         onClick={onCancel}
       />
-      <div className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl ${
-        isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
-      }`}>
-        <div className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="native-yolo-confirm-title"
+        tabIndex={-1}
+        className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
+        }`}>
+        <div id="native-yolo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           {t.modeYoloConfirmTitle}
         </div>
         <div className={`mt-2 text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
