@@ -456,6 +456,12 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
+                    // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
+                    // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
+                    store_for_engine.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
                     // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
                     // bridge 共用同一份 SessionAgentStore 判定）。
                     remote_control_manager.set_code_session_predicate(std::sync::Arc::new({
@@ -825,6 +831,8 @@ pub fn run() {
             commands::files::save_paste_image,
             commands::interaction::compact_now,
             commands::interaction::get_mode_state,
+            commands::interaction::get_code_permission_prefs,
+            commands::interaction::confirm_code_yolo,
             commands::interaction::set_plan_mode_next,
             commands::interaction::exit_plan_to_yolo,
             commands::interaction::accept_plan,

@@ -30,6 +30,25 @@ pub async fn get_mode_state(
     Ok(store.mode_state(&session_id))
 }
 
+/// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
+/// None = 首次使用 → Plan）与 yolo 一次性确认标志。前端 code 页启动/进草稿时拉取。
+#[tauri::command]
+pub async fn get_code_permission_prefs(
+    store: State<'_, SessionStore>,
+) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
+    Ok(store.code_permission_prefs())
+}
+
+/// 用户在 code 页确认卡【确认】切 yolo：全局记住，之后任何会话 Plan↔yolo
+/// 切换不再弹卡。确认是 UI 层语义（与 VS Code 同款），后端不在
+/// `exit_plan_to_yolo` 强制门控。
+#[tauri::command]
+pub async fn confirm_code_yolo(
+    store: State<'_, SessionStore>,
+) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
+    store.confirm_code_yolo()
+}
+
 // ===================== 卡片池: 专家面具 =====================
 
 /// 用户在 composer chip 选 Plan：设 mode=Plan。

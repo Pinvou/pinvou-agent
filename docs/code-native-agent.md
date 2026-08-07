@@ -162,6 +162,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 恢复：`get_pending_user_inputs { sessionId }` → `{busy, pending}`。
 - Plan 闭环（R-1）：事件 `chat:plan_snapshot` / `chat:plan_ready`；批准 `accept_plan { sessionId, planId, planMarkdown, displayMessage? }`，放弃 `discard_plan { sessionId, planId }`。
 - 压缩与记忆（R-3）：手动压缩 `compact_now { sessionId }`（兼入口=用量 chip）；事件 `chat:usage`（已用 token）、`chat:memory`（记忆快照）。
+- 权限默认值与确认（2026-08-06）：`get_code_permission_prefs` → `{ last_mode, yolo_confirmed }`；`confirm_code_yolo`（首次切 yolo 确认后置全局标志）。语义见 §8.6。
 - 配置：`set_session_model`/`get_session_model_id`、`session_mount_collection`/`session_unmount_collection`/`session_mounted_collection`、`set_plan_mode_next`/`exit_plan_to_yolo`/`get_mode_state`，全部显式 sessionId。
 
 ## 7. 验证记录
@@ -221,7 +222,6 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   影响；predicate 未注入时行为与注入前一致。
 
 ### 8.5 受限项目规则注入（AGENTS.md）
-
 - 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
   `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
   在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
@@ -247,6 +247,28 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 取舍：AGENTS.md 内容计入每次请求的 token 成本；仅绑项目会话注入 + 家目录
   边界 + symlink 拒读，是「不引入全局上下文风险」与「项目规则可用」之间的
   折中。
+
+### 8.6 权限默认值与两层持久化（2026-08-06）
+
+原生 code 会话的 Plan/Yolo 默认值与记忆策略（plain 会话行为不变：mode 仅驻
+内存、默认 Yolo、不落盘）：
+
+- **首次默认 Plan**：用户从未使用过 code 模式时，新建原生 code 会话默认 Plan
+  （只读调研 + R-1 方案审批卡兜底）；`mode_state` 无记录时按
+  `resolved_default_mode` 解析——code 会话取全局 `last_mode`，无记录回退 Plan。
+- **切 yolo 一次性确认**：任何 code 会话首次切到 yolo 时弹确认卡（"全自动读写
+  项目目录、可执行 shell、无逐步审批"），确认后写全局 `yolo_confirmed`，之后
+  任何会话、任何次切换不再弹；确认是 UI 层语义，`exit_plan_to_yolo` 后端不
+  强制门控（与 VS Code 首次选 Bypass 弹警告同款）。
+- **两层持久化**：每会话 mode 存 `~/.pinvou3/sessions/_code_mode_states.json`
+  （仿 `_skill_bindings.json` 模式，删除会话同步清理，仅 code 会话落盘）；
+  全局 `code_permission.last_mode` / `yolo_confirmed` 挂 settings.json
+  （`UserPrefs` 字段级事务写），新建 code 会话默认跟随上次使用的 mode。
+- **任务级切换不记忆**：`accept_plan` 经 `claim_pending_plan` 切 yolo 属任务级
+  动作（执行该方案），不写两层持久化——重启后会话恢复其持久化的 mode。
+- 关键正确性：plan/技能/persona/知识库等 9 处条目物化站点统一走
+  `mode_state_entry`，避免把"首次默认 Plan"的会话物化成 Yolo 导致 plan 卡
+  静默丢失（有单测钉住）。
 
 ## 9. 已知限制与遗留风险
 
