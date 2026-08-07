@@ -6,6 +6,11 @@ use std::io::{BufWriter, Write};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::codex_acp::{
+    project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
+    AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation, CodexAcpPendingPermission,
+    CodexAcpSessionInfo,
+};
 use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
 use crate::features::remote_control::{
     RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
@@ -15,6 +20,11 @@ use crate::platform::prefs::UserPrefs;
 
 const MAX_WEB_ARTIFACT_RPC_BYTES: usize = 2 * 1024 * 1024;
 const WEB_SESSION_SERIALIZATION_HEADROOM: usize = 1024 * 1024;
+const DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS: usize = 128;
+const MAX_WEB_ACP_TIMELINE_PAGE_EVENTS: usize = 256;
+// Keep ample room for the RPC envelope below manager::MAX_RPC_RESPONSE_BYTES.
+const MAX_WEB_ACP_TIMELINE_PAGE_BYTES: usize = 1024 * 1024;
+const MAX_WEB_ACP_TIMELINE_EVENT_BYTES: usize = MAX_WEB_ACP_TIMELINE_PAGE_BYTES;
 
 fn require_main_webview(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
@@ -451,6 +461,266 @@ pub async fn web_access_chat(
     .await
 }
 
+/// Web-safe ACP prompt entry point. Browser and host-picked attachments are
+/// represented only by one-shot opaque handles; native paths and parsed
+/// contents never cross Relay. The underlying ACP command remains the single
+/// implementation of title, workspace-reference, and turn semantics.
+#[tauri::command]
+pub async fn web_access_codex_acp_prompt(
+    session_id: String,
+    message: String,
+    attachment_handles: Option<Vec<String>>,
+    workspace_references: Option<Vec<String>>,
+    manager: State<'_, RemoteControlManager>,
+    store: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    crate::features::sessions::validate_session_id(&session_id)
+        .map_err(|error| format!("invalid ACP Session id: {error:#}"))?;
+    store
+        .load(&session_id)
+        .map_err(|error| format!("load ACP Session {session_id}: {error:#}"))?;
+    if !acp_pool.is_acp(&session_id) {
+        return Err("当前会话不是 ACP 会话".to_string());
+    }
+
+    let attachment_handles = attachment_handles.unwrap_or_default();
+    let (attachment_reservation, attachments) =
+        manager.reserve_web_attachments(&attachment_handles)?;
+    let (attachments, staged_sources) =
+        match stage_uploaded_attachments(attachments, &session_id, &store) {
+            Ok(staged) => staged,
+            Err(error) => {
+                if let Err(release_error) = manager.finish_web_attachment_reservation(
+                    &attachment_reservation,
+                    &attachment_handles,
+                    false,
+                ) {
+                    eprintln!(
+                        "[web-access] release ACP attachment reservation failed: {release_error}"
+                    );
+                }
+                return Err(error);
+            }
+        };
+    let result = super::codex::codex_acp_prompt_with_attachments(
+        session_id,
+        message,
+        attachments,
+        workspace_references.unwrap_or_default(),
+        &store,
+        &acp_pool,
+    )
+    .await;
+    if result.is_err() {
+        cleanup_staged_attachment_sources(&staged_sources);
+    }
+    let consume = result.is_ok();
+    if let Err(error) = manager.finish_web_attachment_reservation(
+        &attachment_reservation,
+        &attachment_handles,
+        consume,
+    ) {
+        if consume {
+            eprintln!("[web-access] finalize accepted ACP attachments failed: {error}");
+        } else {
+            return Err(format!(
+                "{}; additionally failed to release attachments: {error}",
+                result
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .unwrap_or_else(|| "ACP prompt submission failed".to_string())
+            ));
+        }
+    }
+    result
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebAcpTimelinePage {
+    events: Vec<AcpEventEnvelope>,
+    next_after_seq: Option<u64>,
+    next_cursor: Option<u64>,
+    has_more: bool,
+}
+
+/// Return one bounded page of the authoritative ACP timeline after projecting
+/// out desktop-only adapter metadata and credential-bearing diagnostic fields.
+#[tauri::command]
+pub fn web_access_get_codex_acp_timeline(
+    session_id: String,
+    after_seq: Option<u64>,
+    after_cursor: Option<u64>,
+    limit: Option<usize>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WebAcpTimelinePage, String> {
+    let limit = limit.unwrap_or(DEFAULT_WEB_ACP_TIMELINE_PAGE_EVENTS);
+    if limit == 0 || limit > MAX_WEB_ACP_TIMELINE_PAGE_EVENTS {
+        return Err(format!(
+            "Web ACP timeline page limit must be between 1 and {MAX_WEB_ACP_TIMELINE_PAGE_EVENTS}"
+        ));
+    }
+    let page = acp_pool
+        .web_timeline_page(
+            &session_id,
+            after_seq.unwrap_or(0),
+            after_cursor,
+            limit,
+            MAX_WEB_ACP_TIMELINE_PAGE_BYTES,
+            MAX_WEB_ACP_TIMELINE_EVENT_BYTES,
+        )
+        .map_err(|error| format!("读取 Web ACP timeline 失败: {error:#}"))?;
+    Ok(WebAcpTimelinePage {
+        next_after_seq: page.events.last().map(|event| event.seq),
+        next_cursor: page.next_cursor,
+        has_more: page.has_more,
+        events: page.events,
+    })
+}
+
+fn project_acp_pending_permission_for_web(
+    mut pending: CodexAcpPendingPermission,
+) -> CodexAcpPendingPermission {
+    pending.request = project_acp_permission_request_for_web(pending.request);
+    pending
+}
+
+fn project_acp_pending_elicitation_for_web(
+    mut pending: CodexAcpPendingElicitation,
+) -> CodexAcpPendingElicitation {
+    pending.request = project_acp_elicitation_request_for_web(pending.request);
+    pending
+}
+
+fn project_acp_session_info_for_web(mut info: CodexAcpSessionInfo) -> CodexAcpSessionInfo {
+    info.pending_permissions = info
+        .pending_permissions
+        .into_iter()
+        .map(project_acp_pending_permission_for_web)
+        .collect();
+    info.pending_elicitations = info
+        .pending_elicitations
+        .into_iter()
+        .map(project_acp_pending_elicitation_for_web)
+        .collect();
+    info
+}
+
+#[tauri::command]
+pub async fn web_access_get_codex_acp_session_info(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpSessionInfo, String> {
+    acp_pool
+        .session_info(&session_id)
+        .await
+        .map(project_acp_session_info_for_web)
+        .map_err(|error| format!("读取 Web ACP 会话信息失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn web_access_set_codex_acp_model(
+    session_id: String,
+    model_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpSessionInfo, String> {
+    acp_pool
+        .set_model(&session_id, &model_id)
+        .await
+        .map(project_acp_session_info_for_web)
+        .map_err(|error| format!("切换 Web ACP 模型失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn web_access_set_codex_acp_mode(
+    session_id: String,
+    mode_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpSessionInfo, String> {
+    acp_pool
+        .set_mode(&session_id, &mode_id)
+        .await
+        .map(project_acp_session_info_for_web)
+        .map_err(|error| format!("切换 Web ACP 权限模式失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn web_access_set_codex_acp_config_option(
+    session_id: String,
+    config_id: String,
+    value_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<CodexAcpSessionInfo, String> {
+    acp_pool
+        .set_config_option(&session_id, &config_id, &value_id)
+        .await
+        .map(project_acp_session_info_for_web)
+        .map_err(|error| format!("更新 Web ACP 会话配置失败: {error:#}"))
+}
+
+#[tauri::command]
+pub async fn web_access_get_codex_acp_pending_permissions(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<CodexAcpPendingPermission>, String> {
+    if !acp_pool.is_acp(&session_id) {
+        return Err("当前会话不是 ACP 会话".to_string());
+    }
+    Ok(acp_pool
+        .pending_permissions_for(&session_id)
+        .await
+        .into_iter()
+        .map(project_acp_pending_permission_for_web)
+        .collect())
+}
+
+#[tauri::command]
+pub async fn web_access_get_codex_acp_pending_elicitations(
+    session_id: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<CodexAcpPendingElicitation>, String> {
+    if !acp_pool.is_acp(&session_id) {
+        return Err("当前会话不是 ACP 会话".to_string());
+    }
+    Ok(acp_pool
+        .pending_elicitations_for(&session_id)
+        .await
+        .into_iter()
+        .map(project_acp_pending_elicitation_for_web)
+        .collect())
+}
+
+fn project_acp_status_for_web(
+    mut status: crate::features::codex_acp::CodexAcpStatus,
+) -> crate::features::codex_acp::CodexAcpStatus {
+    status.adapter_path = None;
+    status.codex_path = None;
+    status.login_url = None;
+    status.login_code = None;
+    status.error = None;
+    status
+}
+
+#[tauri::command]
+pub async fn web_access_list_acp_agents(
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
+    super::codex::list_acp_agents_for_pool(&acp_pool).await
+}
+
+#[tauri::command]
+pub async fn web_access_get_acp_agent_status(
+    agent_id: String,
+    recheck: Option<bool>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<crate::features::codex_acp::CodexAcpStatus, String> {
+    super::codex::get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool)
+        .await
+        .map(project_acp_status_for_web)
+}
+
 async fn web_access_chat_for_session(
     message: String,
     attachment_handles: Option<Vec<String>>,
@@ -475,21 +745,22 @@ async fn web_access_chat_for_session(
     let attachment_handles = attachment_handles.unwrap_or_default();
     let (attachment_reservation, attachments) =
         manager.reserve_web_attachments(&attachment_handles)?;
-    let attachments = match stage_uploaded_attachments(attachments, &session_id, store) {
-        Ok(attachments) => attachments,
-        Err(error) => {
-            if let Err(release_error) = manager.finish_web_attachment_reservation(
-                &attachment_reservation,
-                &attachment_handles,
-                false,
-            ) {
-                eprintln!(
+    let (attachments, staged_sources) =
+        match stage_uploaded_attachments(attachments, &session_id, store) {
+            Ok(staged) => staged,
+            Err(error) => {
+                if let Err(release_error) = manager.finish_web_attachment_reservation(
+                    &attachment_reservation,
+                    &attachment_handles,
+                    false,
+                ) {
+                    eprintln!(
                     "[web-access] release staged attachment reservation failed: {release_error}"
                 );
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
+        };
     let result = super::chat::chat_with_reservation(
         message,
         Some(attachments),
@@ -501,6 +772,9 @@ async fn web_access_chat_for_session(
         app,
     )
     .await;
+    if result.is_err() {
+        cleanup_staged_attachment_sources(&staged_sources);
+    }
     let consume = result.is_ok();
     if let Err(error) = manager.finish_web_attachment_reservation(
         &attachment_reservation,
@@ -533,30 +807,53 @@ fn stage_uploaded_attachments(
     mut attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     session_id: &str,
     store: &SessionStore,
-) -> Result<Vec<crate::features::files::file_ingest::IngestResult>, String> {
+) -> Result<
+    (
+        Vec<crate::features::files::file_ingest::IngestResult>,
+        Vec<std::path::PathBuf>,
+    ),
+    String,
+> {
     let uploads_base = manager::web_attachment_uploads_base();
     if attachments
         .iter()
         .all(|attachment| !std::path::Path::new(&attachment.path).starts_with(&uploads_base))
     {
-        return Ok(attachments);
+        return Ok((attachments, Vec::new()));
     }
     let workspace = store
         .ledger_root(session_id)
         .map_err(|error| format!("resolve attachment workspace: {error:#}"))?;
+    let mut staged_sources = Vec::new();
     for attachment in &mut attachments {
         if !std::path::Path::new(&attachment.path).starts_with(&uploads_base) {
             continue;
         }
-        let staged = super::attachments::stage_remote_attachment_source(
+        let Some(staged) = super::attachments::stage_remote_attachment_source(
             &attachment.path,
             &attachment.basename,
             &workspace,
-        )
-        .ok_or_else(|| format!("暂存远程上传附件失败：{}", attachment.basename))?;
+        ) else {
+            cleanup_staged_attachment_sources(&staged_sources);
+            return Err(format!("暂存远程上传附件失败：{}", attachment.basename));
+        };
         attachment.path = staged.to_string_lossy().into_owned();
+        staged_sources.push(staged);
     }
-    Ok(attachments)
+    Ok((attachments, staged_sources))
+}
+
+fn cleanup_staged_attachment_sources(paths: &[std::path::PathBuf]) {
+    for path in paths {
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "[web-access] cleanup rejected staged attachment {} failed: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Persist a potentially large Web transcript through bounded upload chunks.

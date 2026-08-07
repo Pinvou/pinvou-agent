@@ -200,20 +200,6 @@ impl AcpPool {
         }
         Ok(self.status_for_async(backend).await)
     }
-
-    pub async fn agent_statuses(&self) -> Vec<CodexAcpStatus> {
-        self.refresh_runtime_probe(false).await;
-        let pool = self.clone();
-        tokio::task::spawn_blocking(move || pool.cli_probe())
-            .await
-            .expect("ACP CLI 列表探测任务异常退出");
-        let (codex, claude, kimi) = tokio::join!(
-            self.status_for_async(AgentBackend::CodexAcp),
-            self.status_for_async(AgentBackend::ClaudeAcp),
-            self.status_for_async(AgentBackend::KimiAcp),
-        );
-        vec![codex, claude, kimi]
-    }
 }
 
 /// 升级完成后校验 CLI 版本门禁：仍不合规说明包管理器源没有提供更新版本。

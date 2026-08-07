@@ -201,6 +201,10 @@ fn upload_completed_dir(workspace: &Path, upload_id: &str) -> PathBuf {
     completed_root(workspace).join(upload_id)
 }
 
+pub(crate) fn draft_attachment_workspace() -> PathBuf {
+    crate::platform::paths::pinvou3_home().join("draft-attachments")
+}
+
 async fn remove_dir_if_present(path: &Path) -> Result<(), String> {
     match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
@@ -218,10 +222,10 @@ async fn cleanup_stale_staging(workspace: &Path, keep_upload_id: &str) {
         if entry.file_name().to_str() == Some(keep_upload_id) {
             continue;
         }
-        let Ok(metadata) = entry.metadata().await else {
+        let Ok(metadata) = tokio::fs::symlink_metadata(entry.path()).await else {
             continue;
         };
-        if !metadata.is_dir()
+        if !metadata.file_type().is_dir()
             || !metadata
                 .modified()
                 .ok()
@@ -232,6 +236,151 @@ async fn cleanup_stale_staging(workspace: &Path, keep_upload_id: &str) {
         }
         let _ = tokio::fs::remove_dir_all(entry.path()).await;
     }
+}
+
+async fn cleanup_stale_completed_uploads(workspace: &Path, keep_upload_id: &str) {
+    let mut entries = match tokio::fs::read_dir(completed_root(workspace)).await {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_name().to_str() == Some(keep_upload_id) {
+            continue;
+        }
+        let Ok(metadata) = tokio::fs::symlink_metadata(entry.path()).await else {
+            continue;
+        };
+        if !metadata.file_type().is_dir()
+            || !metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= STALE_STAGING_AGE)
+        {
+            continue;
+        }
+        let _ = tokio::fs::remove_dir_all(entry.path()).await;
+    }
+}
+
+/// Append a browser `File` into an application-owned draft area. Unlike the
+/// legacy session-scoped drop command this does not require, or create, a
+/// conversation. The completed upload is adopted by the target session only
+/// when the user actually sends the draft.
+pub async fn append_draft_chunk(
+    upload_id: &str,
+    filename: &str,
+    offset: usize,
+    total: usize,
+    data: &[u8],
+    commit: bool,
+) -> Result<Option<IngestResult>, String> {
+    let workspace = draft_attachment_workspace();
+    if offset == 0 {
+        cleanup_stale_completed_uploads(&workspace, upload_id).await;
+    }
+    append_chunk(&workspace, upload_id, filename, offset, total, data, commit).await
+}
+
+pub async fn abort_draft_upload(upload_id: &str) -> Result<(), String> {
+    abort_staging_upload(&draft_attachment_workspace(), upload_id).await
+}
+
+pub async fn cancel_draft_upload(upload_id: &str) -> Result<(), String> {
+    cancel_upload(&draft_attachment_workspace(), upload_id).await
+}
+
+async fn managed_completed_file(
+    workspace: &Path,
+    upload_id: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let upload_id = validate_upload_id(upload_id)?;
+    let root = completed_root(workspace);
+    let canonical_root = tokio::fs::canonicalize(&root)
+        .await
+        .map_err(|_| "附件草稿不存在".to_string())?;
+    let upload_dir = upload_completed_dir(workspace, upload_id);
+    let canonical_dir = tokio::fs::canonicalize(&upload_dir)
+        .await
+        .map_err(|_| "附件草稿不存在".to_string())?;
+    if canonical_dir.parent() != Some(canonical_root.as_path()) {
+        return Err("附件草稿目录无效".into());
+    }
+
+    let mut entries = tokio::fs::read_dir(&canonical_dir)
+        .await
+        .map_err(|error| format!("读取附件草稿失败：{error}"))?;
+    let mut file = None;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| format!("读取附件草稿失败：{error}"))?
+    {
+        let metadata = tokio::fs::symlink_metadata(entry.path())
+            .await
+            .map_err(|error| format!("读取附件草稿失败：{error}"))?;
+        if !metadata.file_type().is_file() || file.is_some() {
+            return Err("附件草稿内容无效".into());
+        }
+        file = Some(entry.path());
+    }
+    let file = file.ok_or_else(|| "附件草稿为空".to_string())?;
+    let filename = file
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "附件草稿文件名无效".to_string())?;
+    validate_filename(filename)?;
+    Ok((canonical_dir, file))
+}
+
+/// Move a sessionless draft upload into the target session workspace. Copy is
+/// used instead of rename because project workspaces may live on another
+/// volume. A repeated call is idempotent so an IPC response lost after the
+/// copy cannot strand the attachment.
+pub async fn adopt_draft_upload(
+    target_workspace: &Path,
+    upload_id: &str,
+) -> Result<IngestResult, String> {
+    validate_upload_id(upload_id)?;
+    let draft_workspace = draft_attachment_workspace();
+    adopt_upload(&draft_workspace, target_workspace, upload_id).await
+}
+
+async fn adopt_upload(
+    source_workspace: &Path,
+    target_workspace: &Path,
+    upload_id: &str,
+) -> Result<IngestResult, String> {
+    validate_upload_id(upload_id)?;
+    let target_dir = upload_completed_dir(target_workspace, upload_id);
+
+    if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
+        let (_, target_file) = managed_completed_file(target_workspace, upload_id).await?;
+        let _ = remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
+        return Ok(file_ingest::ingest(&target_file));
+    }
+
+    let (source_dir, source_file) = managed_completed_file(source_workspace, upload_id).await?;
+    let filename = source_file
+        .file_name()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "附件草稿文件名无效".to_string())?;
+    tokio::fs::create_dir_all(completed_root(target_workspace))
+        .await
+        .map_err(|error| format!("创建会话附件目录失败：{error}"))?;
+    tokio::fs::create_dir(&target_dir)
+        .await
+        .map_err(|error| format!("创建会话附件目录失败：{error}"))?;
+    let target_file = target_dir.join(&filename);
+    if let Err(error) = tokio::fs::copy(&source_file, &target_file).await {
+        let _ = remove_dir_if_present(&target_dir).await;
+        return Err(format!("迁移附件草稿失败：{error}"));
+    }
+    let result = file_ingest::ingest(&target_file);
+    if let Err(error) = remove_dir_if_present(&source_dir).await {
+        eprintln!("[attachment] cleanup adopted draft failed: {error}");
+    }
+    Ok(result)
 }
 
 /// Append one HTML5 drop chunk inside a session-owned workspace.
@@ -388,10 +537,11 @@ pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_staging_upload, append_chunk, conversation_attachment_names_for_display_prefix,
-        conversation_attachment_refs_path, discard_attachment, record_conversation_attachments,
-        resolve_conversation_attachment, upload_staging_dir, validate_filename, validate_upload_id,
-        ConversationAttachmentRecord, ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
+        abort_staging_upload, adopt_upload, append_chunk,
+        conversation_attachment_names_for_display_prefix, conversation_attachment_refs_path,
+        discard_attachment, record_conversation_attachments, resolve_conversation_attachment,
+        upload_staging_dir, validate_filename, validate_upload_id, ConversationAttachmentRecord,
+        ConversationAttachmentReference, MAX_ATTACHMENT_CHUNK_BYTES,
     };
     use std::path::PathBuf;
 
@@ -508,6 +658,43 @@ mod tests {
         assert_eq!(std::fs::read(&original.path).unwrap(), b"original");
         assert!(!upload_staging_dir(&workspace, upload_id).exists());
         std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn adopts_sessionless_draft_into_target_workspace_idempotently() {
+        let source_workspace = test_workspace("draft-source");
+        let target_workspace = test_workspace("draft-target");
+        let upload_id = "desktop_attach_adopt_draft";
+        let bytes = b"draft attachment";
+        let source = append_chunk(
+            &source_workspace,
+            upload_id,
+            "draft.txt",
+            0,
+            bytes.len(),
+            bytes,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let adopted = adopt_upload(&source_workspace, &target_workspace, upload_id)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&adopted.path).unwrap(), bytes);
+        assert!(!std::path::Path::new(&source.path).exists());
+        assert!(std::path::Path::new(&adopted.path).starts_with(&target_workspace));
+
+        let retried = adopt_upload(&source_workspace, &target_workspace, upload_id)
+            .await
+            .unwrap();
+        assert_eq!(retried.path, adopted.path);
+
+        if source_workspace.exists() {
+            std::fs::remove_dir_all(source_workspace).unwrap();
+        }
+        std::fs::remove_dir_all(target_workspace).unwrap();
     }
 
     #[test]

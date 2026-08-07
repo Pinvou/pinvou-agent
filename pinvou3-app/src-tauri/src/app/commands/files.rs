@@ -33,6 +33,50 @@ pub async fn ingest_file(
     Ok(crate::features::files::file_ingest::ingest(&p))
 }
 
+/// Receive an HTML5 `File` into a sessionless draft area. Dropping or pasting
+/// a file must not materialize a conversation; `adopt_draft_attachment`
+/// transfers it into the selected session immediately before submission.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ingest_draft_file_chunk(
+    upload_id: String,
+    filename: String,
+    offset: usize,
+    total: usize,
+    data_base64: String,
+    commit: bool,
+) -> Result<Option<crate::features::files::file_ingest::IngestResult>, String> {
+    let result = async {
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(data_base64)
+            .map_err(|error| format!("解码附件分块失败：{error}"))?;
+        crate::features::files::attachment_upload::append_draft_chunk(
+            &upload_id, &filename, offset, total, &data, commit,
+        )
+        .await
+    }
+    .await;
+    if result.is_err() {
+        let _ = crate::features::files::attachment_upload::abort_draft_upload(&upload_id).await;
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn cancel_draft_file_upload(upload_id: String) -> Result<(), String> {
+    crate::features::files::attachment_upload::cancel_draft_upload(&upload_id).await
+}
+
+#[tauri::command]
+pub async fn adopt_draft_attachment(
+    session_id: String,
+    upload_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<crate::features::files::file_ingest::IngestResult, String> {
+    let (workspace, _) = conversation_attachment_context(&store, &session_id)?;
+    crate::features::files::attachment_upload::adopt_draft_upload(&workspace, &upload_id).await
+}
+
 /// Windows WebView2 的 HTML5 文件拖拽无法暴露源文件路径，因此通过有界分块
 /// 直接写入当前会话工作区，再复用统一的文件摄入流程。
 #[tauri::command]

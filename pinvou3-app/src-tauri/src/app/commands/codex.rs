@@ -14,7 +14,7 @@ use crate::features::codex_acp::workspace::{
     self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
 use crate::features::codex_acp::{
-    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, AgentBackend,
+    validate_codex_project_workspace, AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend,
     CodexAcpPendingElicitation, CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus,
     CodexAcpWorkspaceInfo, CodexWorkspaceKind,
 };
@@ -49,8 +49,16 @@ pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexA
 }
 
 #[tauri::command]
-pub async fn list_acp_agents(acp_pool: State<'_, AcpPool>) -> Result<Vec<CodexAcpStatus>, String> {
-    Ok(acp_pool.agent_statuses().await)
+pub async fn list_acp_agents(
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<AcpAgentDescriptor>, String> {
+    list_acp_agents_for_pool(&acp_pool).await
+}
+
+pub(crate) async fn list_acp_agents_for_pool(
+    _acp_pool: &AcpPool,
+) -> Result<Vec<AcpAgentDescriptor>, String> {
+    Ok(AcpPool::agent_catalog())
 }
 
 #[tauri::command]
@@ -59,17 +67,25 @@ pub async fn get_acp_agent_status(
     recheck: Option<bool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
+    get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool).await
+}
+
+pub(crate) async fn get_acp_agent_status_for_pool(
+    agent_id: String,
+    recheck: Option<bool>,
+    acp_pool: &AcpPool,
+) -> Result<CodexAcpStatus, String> {
     // recheck=true 时忽略探测缓存强制重探测：用户在 App 外手动安装/升级
     // CLI 后点击「重新检测」必须拿到最新状态。轮询调用不传，保持读缓存。
     if recheck.unwrap_or(false) {
-        let pool = acp_pool.inner().clone();
+        let pool = acp_pool.clone();
         return pool
             .recheck_agent_status(&agent_id)
             .await
             .map_err(|error| format!("重新检测 ACP Agent 状态失败: {error:#}"));
     }
-    let pool = acp_pool.inner().clone();
-    pool.status_for_agent(&agent_id)
+    acp_pool
+        .status_for_agent(&agent_id)
         .await
         .map_err(|error| format!("读取 ACP Agent 状态失败: {error:#}"))
 }
@@ -204,9 +220,26 @@ pub async fn codex_acp_prompt(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
+    codex_acp_prompt_with_attachments(
+        session_id,
+        message,
+        attachments.unwrap_or_default(),
+        workspace_references.unwrap_or_default(),
+        &store,
+        &acp_pool,
+    )
+    .await
+}
+
+pub(crate) async fn codex_acp_prompt_with_attachments(
+    session_id: String,
+    message: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace_references: Vec<String>,
+    store: &SessionStore,
+    acp_pool: &AcpPool,
+) -> Result<(), String> {
     let message = message.trim().to_string();
-    let attachments = attachments.unwrap_or_default();
-    let workspace_references = workspace_references.unwrap_or_default();
     if message.is_empty() && attachments.is_empty() && workspace_references.is_empty() {
         return Err("empty message".to_string());
     }
