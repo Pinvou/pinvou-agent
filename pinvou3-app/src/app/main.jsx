@@ -155,6 +155,132 @@ function hasPendingCollaborationTasks(bs) {
   return incoming.length > 0 || local.some(task => task && task.status !== 'completed');
 }
 
+    const PinvouRegistrationGate = ({ theme, collaboration, open, onClose }) => {
+      const isDark = theme === 'dark';
+      const configState = collaboration?.configState || {};
+      const [form, setForm] = useState({ name: '', capabilities: '' });
+      const [selectedCapabilities, setSelectedCapabilities] = useState([]);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const collaborationBridge = bridge.collaboration || {};
+
+      if (!open || (configState.identityRegistered && configState.projectConfigured)) return null;
+
+      const capabilities = [...selectedCapabilities, ...parsePinvouCapabilities(form.capabilities)]
+        .filter((item, index, all) => item && all.indexOf(item) === index)
+        .slice(0, 12);
+      const generatedDescription = buildPinvouEmployeeDescription(form.name, capabilities);
+
+      const submit = async event => {
+        event.preventDefault();
+        const name = form.name.trim();
+        if (!name || busy || !bridge.available || !collaborationBridge.collaborationStart) return;
+        setBusy(true);
+        setError('');
+        try {
+          await collaborationBridge.collaborationStart({
+            name,
+            capabilities,
+            description: generatedDescription,
+          });
+          if (onClose) onClose();
+        } catch (err) {
+          setError(String(err && err.message ? err.message : err).slice(0, 240));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-6" style={{ background: isDark ? 'rgba(19,19,20,.94)' : 'rgba(246,248,251,.94)' }}>
+          <form onSubmit={submit} className={`relative w-full max-w-[680px] rounded-[28px] border p-6 shadow-2xl ${isDark ? 'border-white/10 bg-[#1C1C1E] text-white' : 'border-slate-200 bg-white text-slate-950'}`}>
+            <button
+              type="button"
+              aria-label="关闭"
+              onClick={onClose}
+              disabled={busy}
+              className={`absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-full transition-colors ${isDark ? 'bg-white/10 text-[#C7C7CC] hover:bg-white/15' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+            >
+              <X size={16} />
+            </button>
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white">
+                <Briefcase size={24} />
+              </div>
+              <div>
+                <h2 className="text-[22px] font-bold tracking-tight">注册你的 Pinvou</h2>
+                <p className={`mt-1 text-[13px] leading-relaxed ${isDark ? 'text-[#C7C7CC]' : 'text-slate-500'}`}>
+                  每个 Pinvou 都是一个员工身份。选几项常做的工作，完成后才能进入工作台。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-5">
+              <label className="block">
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>你的名字</span>
+                <input
+                  value={form.name}
+                  onChange={event => setForm(previous => ({ ...previous, name: event.target.value }))}
+                  placeholder="例如：徐雅婧"
+                  className={`h-12 w-full rounded-2xl border px-4 text-[15px] outline-none transition-colors ${isDark ? 'border-white/10 bg-black/20 text-white placeholder:text-[#636366] focus:border-blue-500' : 'border-slate-200 bg-slate-50 text-slate-950 placeholder:text-slate-400 focus:border-blue-500'}`}
+                />
+              </label>
+
+              <div>
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>常做的工作</span>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {DEFAULT_PINVOU_CAPABILITIES.map(capability => {
+                    const active = selectedCapabilities.includes(capability);
+                    return (
+                      <button
+                        key={capability}
+                        type="button"
+                        onClick={() => setSelectedCapabilities(previous => (
+                          previous.includes(capability)
+                            ? previous.filter(item => item !== capability)
+                            : [...previous, capability]
+                        ))}
+                        className={`rounded-2xl border px-3 py-3 text-[13px] font-semibold transition-all ${active ? 'border-blue-500 bg-blue-600 text-white shadow-lg shadow-blue-500/20' : isDark ? 'border-white/10 bg-black/20 text-[#E5E5EA] hover:border-white/20' : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300'}`}
+                      >
+                        {capability}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <label className="block">
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>补充能力</span>
+                <input
+                  value={form.capabilities}
+                  onChange={event => setForm(previous => ({ ...previous, capabilities: event.target.value }))}
+                  placeholder="例如：合同审核，供应链，短视频脚本"
+                  className={`h-12 w-full rounded-2xl border px-4 text-[15px] outline-none transition-colors ${isDark ? 'border-white/10 bg-black/20 text-white placeholder:text-[#636366] focus:border-blue-500' : 'border-slate-200 bg-slate-50 text-slate-950 placeholder:text-slate-400 focus:border-blue-500'}`}
+                />
+              </label>
+
+              <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'border-white/10 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+                <div className={`mb-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-slate-500'}`}>自动生成的员工描述</div>
+                <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>{generatedDescription}</div>
+              </div>
+            </div>
+
+            {error && <div className="mt-4 rounded-2xl bg-red-500/10 px-4 py-3 text-[13px] text-red-500">{error}</div>}
+
+            <button
+              type="submit"
+              disabled={busy || !form.name.trim() || !bridge.available || !collaborationBridge.collaborationStart}
+              className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-[15px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <CheckCircle2 size={18} />
+              {busy ? '注册中...' : '完成注册'}
+            </button>
+          </form>
+        </div>
+      );
+    };
+
+
     const App = () => {
       if (!appFirstRenderMarked) {
         appFirstRenderMarked = true;
