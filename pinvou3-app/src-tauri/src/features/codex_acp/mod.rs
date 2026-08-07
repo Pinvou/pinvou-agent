@@ -1468,26 +1468,78 @@ impl AcpPool {
         // 并行探测：codex 解析（--version）、node --version、brew、系统 codex
         // 兼容性检查各自独立 spawn_blocking——Node 版 codex 冷启动 ~9s，串行
         // 时总耗时是各项之和（实测 ~20s），并行后取最慢一项（~9-10s）。
+        // 每个子任务记录完成耗时 + 60s 看门狗记录未归任务：此前出现过一次
+        // 449s 的探测卡死（锁内），需要能定位到具体子任务。
         let system_codex_for_incompat = system_codex.clone();
         let detected = {
-            let resolve_task = tokio::task::spawn_blocking(move || {
-                let codex = resolve_codex_path(system_codex.clone(), legacy_codex);
-                // 已解析（合规）或 PATH 中过旧的 codex 都判定安装来源，供升级分派。
-                let codex_install_source = codex
-                    .as_ref()
-                    .map(|resolved| resolved.path.clone())
-                    .or_else(|| system_codex.clone())
-                    .and_then(|path| detect_install_source(AgentBackend::CodexAcp, &path));
-                (codex, codex_install_source)
+            let task_start = Instant::now();
+            async fn probe_task<T>(
+                op: String,
+                name: &'static str,
+                handle: tokio::task::JoinHandle<T>,
+            ) -> Result<T, tokio::task::JoinError> {
+                let task_start = Instant::now();
+                let result = handle.await;
+                diagnostics::write(
+                    &op,
+                    "probe:task",
+                    format!(
+                        "task={name} elapsed_ms={} ok={}",
+                        task_start.elapsed().as_millis(),
+                        result.is_ok()
+                    ),
+                );
+                result
+            }
+            let resolve_task = probe_task(
+                operation_id.clone(),
+                "resolve_codex",
+                tokio::task::spawn_blocking(move || {
+                    let codex = resolve_codex_path(system_codex.clone(), legacy_codex);
+                    // 已解析（合规）或 PATH 中过旧的 codex 都判定安装来源，供升级分派。
+                    let codex_install_source = codex
+                        .as_ref()
+                        .map(|resolved| resolved.path.clone())
+                        .or_else(|| system_codex.clone())
+                        .and_then(|path| detect_install_source(AgentBackend::CodexAcp, &path));
+                    (codex, codex_install_source)
+                }),
+            );
+            let node_task = probe_task(
+                operation_id.clone(),
+                "node_version",
+                tokio::task::spawn_blocking(move || {
+                    node.as_deref().and_then(installed_node_version)
+                }),
+            );
+            let brew_task = probe_task(
+                operation_id.clone(),
+                "brew",
+                tokio::task::spawn_blocking(platform::brew_available),
+            );
+            let incompatible_task = probe_task(
+                operation_id.clone(),
+                "system_incompatible",
+                tokio::task::spawn_blocking(move || {
+                    system_codex_incompatible(system_codex_for_incompat)
+                }),
+            );
+            // 看门狗：60s 未全部完成时告警（任务自身完成日志在上面的 probe:task）。
+            let watchdog_op = operation_id.clone();
+            let watchdog = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                diagnostics::write(
+                    &watchdog_op,
+                    "probe:watchdog",
+                    format!(
+                        "探测超过 60s 未完成（gate 持有中），elapsed_ms={}",
+                        task_start.elapsed().as_millis()
+                    ),
+                );
             });
-            let node_task = tokio::task::spawn_blocking(move || {
-                node.as_deref().and_then(installed_node_version)
-            });
-            let brew_task = tokio::task::spawn_blocking(platform::brew_available);
-            let incompatible_task = tokio::task::spawn_blocking(move || {
-                system_codex_incompatible(system_codex_for_incompat)
-            });
-            match tokio::join!(resolve_task, node_task, brew_task, incompatible_task) {
+            let joined = tokio::join!(resolve_task, node_task, brew_task, incompatible_task);
+            watchdog.abort();
+            match joined {
                 (
                     Ok((codex, codex_install_source)),
                     Ok(node_version),
