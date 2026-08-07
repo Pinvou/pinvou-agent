@@ -5,12 +5,12 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { CardPoolView } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
-import { bridge, useBridgeState } from '../hooks/useBridge.js';
+import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, isTauriAvailable } from '../platform/tauri/client.js';
 import { dict, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {
-  const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings', 'workflow']);
+  const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor', 'settings', 'personas', 'workflow']);
   const [language, setLanguage] = useState('zh');
   const [activeTheme, setActiveTheme] = useState('dark');
   const initRef = useRef(false);
@@ -63,18 +63,6 @@ const DETACHED_VIEWS = {
 export function DetachedShell({ kind, id }) {
   const { bs, activeTheme, t } = useDetachedBase();
 
-  useEffect(() => {
-    if (kind === 'session' && id && bridge.available && bridge.sessions.switchToSession) {
-      bridge.sessions.switchToSession(id);
-    }
-  }, [kind, id]);
-  useEffect(() => {
-    if (kind !== 'monitor' || !bridge.available) return undefined;
-    bridge.monitor.startMonitorPolling();
-    return () => {
-      if (bridge.monitor.stopMonitorPolling) bridge.monitor.stopMonitorPolling();
-    };
-  }, [kind]);
   useEffect(() => {
     const key = `${kind}:${id || ''}`;
     const onUnload = () => {
