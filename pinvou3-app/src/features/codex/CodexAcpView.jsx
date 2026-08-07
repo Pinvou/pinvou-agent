@@ -1322,7 +1322,8 @@ export function CodexAcpView({
     modelId: null,
     mountedId: null,
     mode: CODE_MODE_FALLBACK,
-  });  const [nativeDraftControls, setNativeDraftControls] = useState({});
+  });
+  const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：

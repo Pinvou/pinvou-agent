@@ -2057,7 +2057,6 @@ function workspaceDisplayName(path) {
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
-                onGotoModelSettings={() => openSettingsSection('model')}
               />
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
