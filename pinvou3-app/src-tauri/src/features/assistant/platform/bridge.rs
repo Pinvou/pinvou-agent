@@ -425,9 +425,9 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）取数。plain 会话原样返回
-    /// （不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并追加策略
-    /// 隐藏工具。spawn 初值与全局热刷都经此整形。
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果取数。plain 会话
+    /// 原样返回（不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并
+    /// 追加策略隐藏工具。spawn 初值与全局热刷都经此整形。
     ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
     /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
@@ -437,23 +437,35 @@ impl Pinvou3Bridge {
     /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
     /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
     /// 检查是磁盘 I/O,策略对象保持纯数据）。
+    ///
+    /// 能力档案（capability_profile）：`tools.exclude` 并入 disallowed 通道
+    /// （两模式各自生效，下轮请求即生效——U-3/T-V5；v1 plain 差量为空，
+    /// 等价不变）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         let policy = self.session_policy(session_id);
-        // plain：不移除、不追加,原样返回。
+        let resolved = policy.resolve();
+        // 档案 tools.exclude：基础集上再藏（设计期声明）。
+        for excluded in resolved.tool_exclude {
+            if !tools.iter().any(|tool| tool == excluded) {
+                tools.push(excluded.clone());
+            }
+        }
+        // plain：连接器/隐藏工具零差异,原样返回（档案 plain 差量为空,与历史
+        // 实现逐字节等价）。
         if !policy.mode().is_code() {
             return tools;
         }
         // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
         let plain_connector = crate::features::marketplace::disabled_tool_names();
         let code_connector =
-            crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
+            crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
         tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
         for blocked in code_connector {
             if !tools.iter().any(|tool| tool == &blocked) {
                 tools.push(blocked);
             }
         }
-        for hidden in policy.extra_hidden_tools() {
+        for hidden in resolved.extra_hidden_tools {
             if !tools.iter().any(|tool| tool == hidden) {
                 tools.push((*hidden).to_string());
             }
@@ -1046,6 +1058,9 @@ impl Pinvou3Bridge {
             tools,
             // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
+            // [pinvou3-fork] hidden_tools：能力档案 include 通道按会话注入，
+            // 仅在 build_engine_config_for_session_at 设置（headless 保持 None）。
+            hidden_tools: _,
             hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
@@ -1067,7 +1082,6 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
-            hidden_tools: _,     // pinvou3 暂不启用会话裁剪,显式保持底座固定隐藏集
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1255,8 +1269,9 @@ impl Pinvou3Bridge {
                     Some(n)
                 }
             },
-            // CodeWhale r4 新增会话隐藏集注入。父仓本次只接入底座基线，继续使用
-            // 编译期 PINVOU3_HIDDEN_TOOLS；能力档案启用另行在 app 层按会话计算。
+            // [pinvou3-fork] hidden_tools：headless 单引擎路径不按会话注入
+            // （None = 底座回退常量）；按会话注入在
+            // `build_engine_config_for_session_at`（能力档案 include 通道）。
             hidden_tools: None,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
@@ -1309,6 +1324,27 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // 能力档案 include 通道（fork ②）：
+        // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
+        // 仅当档案 include 非空时注入 Some（空 → None → 底座回退常量，与现状
+        // 逐字节等价，plain 零影响）。
+        //
+        // ⚠️ 生效语义（U-7，与 disallowed 通道不同）：hidden 集在 **spawn 时
+        // 定型**、运行期不变（v1 档案是设计期产物）——档案变更仅 respawn 生效，
+        // 无热刷通道（`set_disallowed_all` 只覆盖 disallowed，不覆盖 hidden）。
+        // 两通道在 spawn 时的叠加顺序：disallowed 在 catalog 构建后硬删
+        // （filter_tool_catalog_for_gates），hidden 在 catalog 构建时贴 defer
+        // 标签——互不重叠，顺序无影响。
+        let profile = self.session_policy(session_id).profile();
+        if !profile.tools.include.is_empty() {
+            cfg.hidden_tools = Some(
+                deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS
+                    .iter()
+                    .filter(|name| !profile.tools.include.iter().any(|inc| inc == *name))
+                    .map(|name| name.to_string())
+                    .collect(),
+            );
+        }
         cfg
     }
 

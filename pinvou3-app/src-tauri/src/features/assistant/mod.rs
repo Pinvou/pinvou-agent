@@ -1,4 +1,5 @@
 pub(crate) mod audit;
+pub(crate) mod capability_profile;
 pub mod engine;
 pub(crate) mod engine_pool;
 mod engine_support;

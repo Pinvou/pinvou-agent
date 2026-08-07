@@ -1,7 +1,13 @@
 //! 会话模式策略：把 plain/code 的行为差异收敛为数据，共享链路不再 if 分流。
 //! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
+//! 能力档案统一后，策略对象同时是
+//! **统一解析器**：`resolve()` 按会话模式加载能力档案（capability_profile.rs），
+//! 产出两通道差量（disallowed_tools / hidden_tools）与模式固有属性——if-else
+//! 只保留在解析器内部，外部消费者统一走 resolve。技能线不做设计期差量（运行时
+//! 双 scope 开关 + 组合目录治理，见 skill_materialization）。
 
 use crate::core::session_mode::SessionMode;
+use crate::features::assistant::capability_profile::{profile_for, CapabilityProfile};
 use crate::features::marketplace::ConnectorScope;
 use deepseek_tui::tui::approval::ApprovalMode;
 
@@ -33,6 +39,21 @@ pub struct SessionPolicy {
     mode: SessionMode,
 }
 
+/// 能力档案统一解析结果：一份档案、一个解析器、三个生效通道。
+/// 消费者按通道取数，不再各自 if 分流（档案即数据，新增模式=加档案条目）。
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedCapabilities {
+    /// 连接器禁用集 scope（shape_disallowed_tools 的连接器替换用）。
+    pub connector_scope: ConnectorScope,
+    /// app 侧恒额外隐藏的工具（disallowed_tools 通道；code：产物卡）。
+    pub extra_hidden_tools: &'static [&'static str],
+    /// 档案 tools.exclude：基础集上再藏（disallowed_tools 通道，下轮生效）。
+    pub tool_exclude: &'static [String],
+    /// 档案 tools.include：从底座隐藏常量放出（EngineConfig.hidden_tools 通道，
+    /// respawn 生效——hidden = 常量 − include）。
+    pub tool_include: &'static [String],
+}
+
 impl SessionPolicy {
     pub fn for_mode(mode: SessionMode) -> Self {
         Self { mode }
@@ -42,21 +63,39 @@ impl SessionPolicy {
         self.mode
     }
 
+    /// 该模式的能力档案（v1 编译内嵌；缺省回退 plain 档案）。
+    pub fn profile(&self) -> &'static CapabilityProfile {
+        profile_for(self.mode)
+    }
+
+    /// 统一解析入口：按会话模式加载档案，产出两通道差量 + 模式固有属性。
+    /// **if-else 只保留在解析器内部**；外部消费者（shape_disallowed_tools /
+    /// engine config 构造）一律走本方法取数。
+    pub fn resolve(&self) -> ResolvedCapabilities {
+        let profile = self.profile();
+        ResolvedCapabilities {
+            connector_scope: match self.mode {
+                SessionMode::Plain => ConnectorScope::Plain,
+                SessionMode::Code => ConnectorScope::Code,
+            },
+            extra_hidden_tools: match self.mode {
+                SessionMode::Plain => &[],
+                SessionMode::Code => &[PRESENT_ARTIFACT],
+            },
+            tool_exclude: &profile.tools.exclude,
+            tool_include: &profile.tools.include,
+        }
+    }
+
     /// 连接器禁用集 scope：plain 用全局 scope，code 用 Code scope。
     pub fn connector_scope(&self) -> ConnectorScope {
-        match self.mode {
-            SessionMode::Plain => ConnectorScope::Plain,
-            SessionMode::Code => ConnectorScope::Code,
-        }
+        self.resolve().connector_scope
     }
 
     /// 该模式恒额外隐藏的工具（code：产物卡；load_skill 不在此列——其隐藏与否
     /// 由该会话组合目录是否为空动态决定，见 bridge::shape_disallowed_tools）。
     pub fn extra_hidden_tools(&self) -> &'static [&'static str] {
-        match self.mode {
-            SessionMode::Plain => &[],
-            SessionMode::Code => &[PRESENT_ARTIFACT],
-        }
+        self.resolve().extra_hidden_tools
     }
 
     /// Plan 模式 per-turn reminder。两模式同文：R-1 已为 code 页接上方案审批卡，
@@ -97,6 +136,24 @@ mod tests {
         assert_eq!(policy.mode(), SessionMode::Plain);
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
+    }
+
+    /// 能力档案统一解析（U-2 档案即数据）：resolve 两通道差量来自档案——
+    /// plain 零差量；code 按档案 include 声明（v1：git 只读工具放出）。
+    #[test]
+    fn resolve_loads_profile_per_mode() {
+        let plain = SessionPolicy::for_mode(SessionMode::Plain).resolve();
+        assert_eq!(plain.connector_scope, ConnectorScope::Plain);
+        assert!(plain.extra_hidden_tools.is_empty());
+        assert!(plain.tool_exclude.is_empty());
+        assert!(plain.tool_include.is_empty(), "plain 不得放出工具");
+
+        let code = SessionPolicy::for_mode(SessionMode::Code).resolve();
+        assert_eq!(code.connector_scope, ConnectorScope::Code);
+        assert_eq!(code.extra_hidden_tools, &["mcp_pinvou3_present_artifact"]);
+        assert!(code.tool_exclude.is_empty());
+        // include 与档案一致（04 PR-E：首个 include 只放 git_status，逐个放出）
+        assert_eq!(code.tool_include, &["git_status".to_string()]);
     }
 
     /// 同文断言：R-1 审批卡落地后 reminder 对两模式都是真实描述，保持同文；
