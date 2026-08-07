@@ -9,7 +9,7 @@
     {
       "mode": "code",
       "skills": { "exclude": [], "include_project": false },
-      "tools": { "base": "default", "exclude": [], "include": ["git_status", "git_diff"] },
+      "tools": { "base": "default", "exclude": [], "include": ["git_status"] },
       "connectors": { "scope_defaults": {} }
     }
   ]

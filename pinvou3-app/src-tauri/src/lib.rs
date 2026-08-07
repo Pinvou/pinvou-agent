@@ -782,6 +782,7 @@ pub fn run() {
             commands::connectors::get_disabled_skills,
             commands::connectors::set_project_skills_enabled,
             commands::connectors::get_project_skills_enabled,
+            commands::connectors::get_profile_tools,
             commands::memory::get_memory_profile,
             commands::memory::update_memory_profile,
             commands::memory::clear_memory_profile,
