@@ -7,7 +7,7 @@ use super::linux_packages::validate_packages;
 /// 输出可流式),保持既有行为不变。
 pub fn install_dependencies(
     packages: Vec<String>,
-    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
 ) -> Result<(), String> {
     validate_packages(&packages)?;
     if let Some(report) = progress {

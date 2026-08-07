@@ -87,7 +87,7 @@ fn install_failure_message(code: i32, stdout: &[u8], stderr: &[u8]) -> String {
 
 pub fn install_dependencies(
     packages: Vec<String>,
-    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
 ) -> Result<(), String> {
     if packages.is_empty() {
         return Err("没有需要安装的依赖".into());

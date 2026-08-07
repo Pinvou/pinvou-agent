@@ -72,9 +72,16 @@ fn brew_not_found_error(packages: &[String]) -> String {
 /// 并在失败时汇总最后几行 stderr。`args` 以 `["install"[, "--cask"], name]` 形式传入。
 ///
 /// 返回 `Ok(())` 表示该包安装成功(exit 0),`Err(message)` 表示失败。
+///
+/// stdout 与 stderr 用两个作用域线程**并发**排空,而非先排空一个再排空另一个:
+/// 否则若 brew 在未被读取的那个管道上写满 OS 管道缓冲(macOS 通常 64KB),
+/// 写入会阻塞并连带拖死正在读取的另一端 —— 这是 `std::process::Child` 文档明确
+/// 警告的反模式。connectors(`connector_cli::drain_for_url`)正是给每个管道各开
+/// 一个线程来规避;这里在 `spawn_blocking` 线程内用 `thread::scope` 同模式处理,
+/// scope 保证两个排空线程在 `wait()` 前都 join 完,借用无需 `'static`。
 fn run_brew(
     args: &[&str],
-    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
     package: &str,
     current: usize,
     total: usize,
@@ -89,16 +96,26 @@ fn run_brew(
                 "brew 启动失败(请确认已装 Homebrew: https://brew.sh): {e}\n  探测路径: /opt/homebrew/bin/brew, /usr/local/bin/brew"
             )
         })?;
-    // 逐行排空两个管道。stderr 收集最后几行用于失败汇总;stdout/stderr 每读到非空
-    // 行就回调一次,让前端看到 brew 实时输出(libreoffice 下载进度等)。
-    let stderr = child
-        .stderr
-        .take()
-        .map(|s| drain_lines(s, progress, package, current, total))
-        .unwrap_or_default();
-    if let Some(out) = child.stdout.take() {
-        drain_lines(out, progress, package, current, total);
-    }
+    // 两个作用域线程并发排空 stdout/stderr:每读到非空行就回调一次,让前端看到
+    // brew 实时输出(libreoffice 下载进度等);stderr 另存累积文本用于失败汇总。
+    // scope 在返回前 join 两个线程,排空完毕后才 wait(),不存在管道写满死锁。
+    let (stdout, stderr) = std::thread::scope(|s| {
+        // stderr 线程负责累积全部文本(失败时取最后几行汇总);stdout 线程只回调不存。
+        let stderr_handle = child.stderr.take().map(|pipe| {
+            s.spawn(move || drain_lines(pipe, progress, package, current, total))
+        });
+        let stdout_handle = child.stdout.take().map(|pipe| {
+            s.spawn(move || drain_lines(pipe, progress, package, current, total))
+        });
+        let stderr = stderr_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        let stdout = stdout_handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        (stdout, stderr)
+    });
+    let _ = stdout; // stdout 仅用于实时回调,这里不参与错误汇总。
     let output = child
         .wait()
         .map_err(|e| format!("brew 等待失败: {e}"))?;
@@ -115,11 +132,11 @@ fn run_brew(
 }
 
 /// 逐行读取一个管道,对每条非空行触发进度回调;返回累积的全部文本。
-/// 对 stdout 与 stderr 各调一次。与 connectors 的 `drain_for_url` 同模式
-/// (BufReader::new(..).lines()),但这里在阻塞线程内联读,无需另起线程。
+/// 对 stdout 与 stderr 各在一个作用域线程里调用一次(见 `run_brew`),故 `progress`
+/// 必须可跨线程共享调用(`+ Sync`)。
 fn drain_lines<R: std::io::Read>(
     stream: R,
-    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
     package: &str,
     current: usize,
     total: usize,
@@ -152,7 +169,7 @@ fn drain_lines<R: std::io::Read>(
 /// (file_ingest.rs)把它转成 `app.emit("deps:install_progress", …)`。
 pub fn install_dependencies(
     packages: Vec<String>,
-    progress: Option<&dyn Fn(&str, usize, usize, Option<&str>)>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
 ) -> Result<(), String> {
     if packages.is_empty() {
         return Err("没有需要安装的依赖".into());
@@ -279,5 +296,54 @@ mod tests {
     fn filters_empty_package_names() {
         let err = install_dependencies(vec!["".into()], None).unwrap_err();
         assert_eq!(err, "没有需要安装的依赖");
+    }
+
+    // run_brew 用两个作用域线程并发排空 stdout/stderr(防管道写满死锁)。
+    // 两侧的行都应能到达回调,且回调从不同线程并发调用 —— 本测试用足够小的输入
+    // 验证「两侧都被读到、无丢行」,死锁则会表现为 hang(测试超时)。
+    #[test]
+    fn run_brew_concurrent_drain_reports_lines_from_both_pipes() {
+        // 用一个会快速结束的命令(`true`)作为 brew 替身:exit 0、stdout 写一条、
+        // stderr 写一条,验证两个管道的行都进了回调。`brew_bin()` 不可控,故直接
+        // 复刻 run_brew 的排空逻辑对一个 sh 子进程跑一遍。
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let report = move |_pkg: &str, _cur: usize, _total: usize, detail: Option<&str>| {
+            if let Some(line) = detail {
+                calls_clone.lock().unwrap().push(line.to_string());
+            }
+        };
+        // `&report` 是 Copy,可被两个 move 闭包各自复制一份 —— 与 run_brew 里
+        // `progress: Option<&dyn … + Sync>` 在两个 s.spawn 间被复制同构。
+        let report: &(dyn Fn(&str, usize, usize, Option<&str>) + Sync) = &report;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf 'out-a\\nout-b\\n' >&1; printf 'err-c\\n' >&2"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        // 复刻 run_brew 的并发排空段:两个作用域线程各持一份 `&report` 引用并发排空。
+        // `report` 本身只借用 calls_clone(Arc)故 Sync,两个线程可并发调用。
+        let (stdout, stderr) = std::thread::scope(|s| {
+            let stderr_handle = child.stderr.take().map(|pipe| {
+                s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1))
+            });
+            let stdout_handle = child.stdout.take().map(|pipe| {
+                s.spawn(move || drain_lines(pipe, Some(report), "x", 1, 1))
+            });
+            let stderr = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+            let stdout = stdout_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+            (stdout, stderr)
+        });
+        child.wait().expect("wait sh");
+        // 三行都到达回调(stdout 两行 + stderr 一行),无丢行。
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        let mut all = recorded.clone();
+        all.sort();
+        assert_eq!(all, vec!["err-c".to_string(), "out-a".to_string(), "out-b".to_string()]);
+        // 累积文本分别只含各自管道的内容。
+        assert!(stdout.contains("out-a") && stdout.contains("out-b") && !stdout.contains("err-c"));
+        assert!(stderr.contains("err-c") && !stderr.contains("out-a"));
     }
 }
