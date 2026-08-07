@@ -150,9 +150,8 @@ mod tests {
         assert_eq!(code.connector_scope, ConnectorScope::Code);
         assert_eq!(code.extra_hidden_tools, &["mcp_pinvou3_present_artifact"]);
         assert!(code.tool_exclude.is_empty());
-        // include 与档案一致（v1 只放已评估事件渲染的 git 只读工具）
-        assert!(code.tool_include.contains(&"git_status".to_string()));
-        assert!(code.tool_include.contains(&"git_diff".to_string()));
+        // include 与档案一致（04 PR-E：首个 include 只放 git_status，逐个放出）
+        assert_eq!(code.tool_include, &["git_status".to_string()]);
     }
 
     /// 同文断言：R-1 审批卡落地后 reminder 对两模式都是真实描述，保持同文；
