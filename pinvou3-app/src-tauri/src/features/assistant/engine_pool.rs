@@ -189,6 +189,99 @@ where
     finish_reclaimed().await
 }
 
+/// 两个 epoch 快照是否仍指向同一轮次，供 cancel 跨 turn_lock 边界守护使用。
+///
+/// `(None, None)`（空闲→空闲）视为匹配：空闲会话的 cancel 本就是 no-op，
+/// 走原逻辑无副作用；`(Some, Some)` 且相等才匹配；跨 `Some`/`None` 或不相等
+/// 都表示目标轮已结束、新轮已 reserve，cancel 必须整体 no-op。
+fn generation_matches(target: Option<u64>, current: Option<u64>) -> bool {
+    match (target, current) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// 取消逻辑的可测主体，从 [`EnginePool::cancel`] 抽出以便用裸 Default 组件
+/// （`SessionTurnLocks` / `SessionTurnLifecycles` / `SessionTurnShellTasks`）+
+/// 闭包注入确定性测试，绕开 `Pinvou3Bridge::boot` / `AppHandle` / 真实
+/// `EngineHandle`（跨 crate 私有不可构造）。
+///
+/// **两阶段 generation 守护**：cancel 不绑定发起时刻的轮次身份时，并发取消
+/// 请求（C1/C2）中排队较晚的 C2 在 `turn_lock` 释放后会读到「当前 lifecycle」
+/// （可能已是新轮），无差别取消新轮。这里在两阶段各比对一次 epoch：
+///
+/// - 阶段一（无锁 `cancel_engine`）前快照 `target`，与即时 `current` 比对；
+/// - 阶段二（持 `turn_lock`）后再次比对，不匹配则在 `request_cancel` /
+///   `claim_unsubmitted` / `arm_pending_cancel` / `cancel_engine` 全部之前
+///   early-return，避免误取消新轮的 engine 与 shell scope。
+///
+/// `cancel_engine` 闭包返回 `true` 表示已对在场 engine 触发取消；`false` 表示
+/// 无 engine（走未提交认领终态）。`claim_unsubmitted` 在「未提交 reservation」
+/// 时认领 Interrupted 终态并补发 `chat:done`，返回是否认领。
+async fn cancel_turn_with_gates<E, EFut, C>(
+    turn_locks: &SessionTurnLocks,
+    turn_lifecycles: &SessionTurnLifecycles,
+    turn_shell_tasks: &SessionTurnShellTasks,
+    session_id: &str,
+    mut cancel_engine: E,
+    claim_unsubmitted: C,
+) where
+    E: FnMut() -> EFut,
+    EFut: Future<Output = bool>,
+    C: Fn(&Arc<TurnLifecycle>) -> bool,
+{
+    // 阶段一：无锁先触发 cancel_token——仅在仍是发起时刻那一轮时才取消，
+    // 否则会误命中随后已 reset_cancel_token 的新轮活跃 token。
+    let target = turn_lifecycles
+        .get(session_id)
+        .and_then(|lc| lc.current_turn_generation());
+    if generation_matches(
+        target,
+        turn_lifecycles
+            .get(session_id)
+            .and_then(|lc| lc.current_turn_generation()),
+    ) {
+        // 仅取一次副作用：cancel_engine 返回是否真取消了 engine。
+        // 这里忽略返回值——是否补未提交终态以持锁后的权威 lifecycle 为准。
+        let _ = cancel_engine().await;
+    }
+
+    // 阶段二：持锁清理 turn 状态与 shell 任务。
+    let turn_lock = turn_locks.for_session(session_id).await;
+    let _turn = turn_lock.lock().await;
+
+    let lifecycle = turn_lifecycles.get(session_id);
+    let current = lifecycle
+        .as_ref()
+        .and_then(|lc| lc.current_turn_generation());
+    if !generation_matches(target, current) {
+        // 目标轮已结束（新轮已 reserve）：整体 no-op。此 early-return 必须在
+        // request_cancel / claim_unsubmitted / cancel_engine 之前——request_cancel
+        // 会取消当前 active shell scope，若已是新轮会误清理新轮的 shell 任务。
+        return;
+    }
+
+    // generation 匹配，目标轮仍是发起时刻那一轮：清理它的 shell 任务。
+    let shell_cancellation = turn_shell_tasks.request_cancel(session_id);
+    let claimed_unsubmitted = lifecycle.as_ref().is_some_and(|lc| claim_unsubmitted(lc));
+    if !claimed_unsubmitted {
+        // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
+        // 幂等：阶段一已取消则再 cancel 是 no-op；阶段一未取消则这里补 cancel。
+        if cancel_engine().await {
+            if let Some(lifecycle) = lifecycle {
+                // arm 到当前 epoch（已校验仍是 target 轮），转发器在 TurnStarted
+                // 后 take_pending_cancel 时再次校验 epoch，跨轮 stale pending 被丢弃。
+                let epoch = lifecycle.current_turn_generation().unwrap_or(0);
+                lifecycle.arm_pending_cancel(epoch);
+            }
+        }
+    }
+    if let Some(cancellation) = shell_cancellation {
+        cancellation.cleanup().await;
+    }
+}
+
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
 struct EngineEntry {
     engine: AppEngine,
@@ -906,55 +999,30 @@ impl EnginePool {
     /// `chat:done`，使 reservation 失效（后续 `ensure_active` 失败、消息不再提交），
     /// 保证前端 busy 一定能复位。
     pub async fn cancel(&self, session_id: &str) {
-        // 阶段一：无锁先触发 cancel_token。
-        // handle_for 只瞬时取 entries 锁(与 send 内部瞬时取 entries 锁不冲突)，
-        // 不等 turn_lock——即使 send 正持锁，cancel 也能立刻让 turn_loop 跳出。
-        if let Some(engine) = self.handle_for(session_id).await {
-            engine.cancel_current();
-        }
-        // 阶段二：持锁清理 turn 状态与 shell 任务。
-        let shell_cancellation = self.turn_shell_tasks.request_cancel(session_id);
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        // 持锁后以 lifecycle 的提交状态（而非 Engine 是否存在）为权威依据。
-        // reserve_turn 不取 turn_lock，chat 在 reserve 与 send 之间有
-        // set_disallowed_all 等异步让出点（chat.rs）；若该会话保留着上一轮的空闲
-        // Engine，旧实现按「Engine 是否存在」分流会错误走 pending 分支：只 arm
-        // pending、不认领终态、不发 chat:done，reservation 仍有效，原 chat future
-        // 后续照常提交消息，前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
-        //
-        // emit_unsubmitted_interrupted_terminal 内部 claim 检查「active && !submitted」：
-        // 命中（含 engine 未 spawn 的 probe 窗口与空闲 engine 存在的未提交窗口）=
-        // 认领 Interrupted 终态 + 发 chat:done + 重置闸门，reservation 随之失效
-        // （后续 send 的 ensure_active 失败，消息不再提交）；未命中（已 submitted
-        // 或无活动 turn）返回 false 且无副作用，fallthrough 到 engine 分支。
-        // 必须用 claim（而非裸 invalidate）：reserve_turn 不取 turn_lock，若仅在
-        // invalidate 后、chat:done 发出前释放闸门，新一轮 reserve 可抢先成功，迟到
-        // 的 chat:done 会清掉新一轮 busy——claim 在发终态期间置 terminal_closing
-        // 关闸，与权威终态路径一致的防重入语义。
-        let lifecycle = self.turn_lifecycles.get(session_id);
-        let claimed_unsubmitted = lifecycle
-            .as_ref()
-            .is_some_and(|lc| lc.emit_unsubmitted_interrupted_terminal(&self.app, session_id));
-        if !claimed_unsubmitted {
-            // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
-            // 若阶段一已 cancel_current，这里再 cancel 是幂等 no-op；若阶段一没拿到，
-            // 这里拿到刚注册的 engine 补 cancel。
-            if let Some(engine) = self.handle_for(session_id).await {
-                // 已提交（op 已入队或 TurnStarted 已抵达）：
-                //  - TurnStarted 未抵达：arm pending，转发器收到 TurnStarted 后
-                //    （reset_cancel_token 已完成）补 cancel 命中活跃 token；
-                //  - TurnStarted 已抵达：cancel_current 直接命中当前活跃 token。
-                // 必须在 cancel_current() 之前 arm——见 arm_pending_cancel 文档。
-                if let Some(lifecycle) = lifecycle {
-                    lifecycle.arm_pending_cancel();
+        // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
+        // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
+        // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
+        let app = &self.app;
+        cancel_turn_with_gates(
+            &self.turn_locks,
+            &self.turn_lifecycles,
+            &self.turn_shell_tasks,
+            session_id,
+            // cancel_engine：取在场 engine 并 cancel_current，返回是否取消了 engine。
+            // handle_for 只瞬时取 entries 锁（与 send 内部瞬时取 entries 锁不冲突），
+            // 不等 turn_lock——阶段一无锁先触发，turn_loop 的 biased select 立即跳出。
+            || async move {
+                if let Some(engine) = self.handle_for(session_id).await {
+                    engine.cancel_current();
+                    true
+                } else {
+                    false
                 }
-                engine.cancel_current();
-            }
-        }
-        if let Some(cancellation) = shell_cancellation {
-            cancellation.cleanup().await;
-        }
+            },
+            // claim_unsubmitted：未提交 reservation 的认领终态路径（同步认领+发终态）。
+            |lifecycle| lifecycle.emit_unsubmitted_interrupted_terminal(app, session_id),
+        )
+        .await
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给
@@ -1239,18 +1307,18 @@ fn resolve_spawn_model(
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        delete_chat_session_with_gate, delete_scheduled_run_with_gate,
-        quiesce_engine_before_reclaim, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_sync_session, ModelUpdateRevisions,
-        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
-        SessionTurnLifecycles, SessionTurnLocks,
+        cancel_turn_with_gates, delete_chat_session_with_gate, delete_scheduled_run_with_gate,
+        generation_matches, quiesce_engine_before_reclaim, resolve_scheduled_model,
+        resolve_spawn_model, scheduled_profile_after_turn_gate, should_sync_session,
+        ModelUpdateRevisions, PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
+        SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ModelPreset, SavedModel};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
     fn model(id: &str, wire_name: &str) -> SavedModel {
@@ -1629,6 +1697,203 @@ mod scheduled_model_tests {
         assert!(
             locks.locks.lock().await.len() <= 1,
             "dead per-session turn gates must be reclaimed"
+        );
+    }
+
+    // ── cancel turn generation 守护(review #4872749559 跨轮误取消回归)──────
+    // cancel_turn_with_gates 把 cancel 主体从 EnginePool::cancel 抽出，使这三组
+    // 测试能用裸 Default 组件 + 探针闭包确定性编排 C1/C2 时序，绕开 bridge /
+    // AppHandle / 真实 EngineHandle（跨 crate 私有）。
+
+    #[test]
+    fn generation_matches_treats_idle_to_idle_as_match() {
+        // (None, None)：空闲会话的 cancel 本就是 no-op，视为匹配走原逻辑。
+        assert!(generation_matches(None, None));
+        // 同一轮 epoch：匹配。
+        assert!(generation_matches(Some(1), Some(1)));
+        // 不同 epoch（目标轮已结束、新轮已 reserve）：不匹配 → no-op。
+        assert!(!generation_matches(Some(1), Some(2)));
+        // 跨 Some/None（目标轮活动、当前空闲，或反之）：不匹配 → no-op。
+        assert!(!generation_matches(Some(1), None));
+        assert!(!generation_matches(None, Some(1)));
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_after_turn_change_leaves_new_turn_intact() {
+        // reviewer 时序的正向验证（review #4872749559）：
+        //   C1/C2 并发取消 turn1。C1 先完整跑完（取消 turn1 + 发终态 + 清 shell），
+        //   turn2 在 C1 释放锁前 reserve_turn（不取 turn_lock）抢先 reserve。
+        //   C2 的**阶段一**（无锁 cancel_current）此时仍属 turn1（正确，会取消 turn1）；
+        //   真正的缺陷窗口在**阶段二**：C2 拿锁后已变 turn2，原实现会无差别
+        //   cancel/arm pending 到 turn2。generation 守护让阶段二 early-return。
+        //
+        // 这里直接编排「C2 快照 turn1 → turn1 终态 → turn2 reserve → C2 阶段二」：
+        // 先用 blocker 占住 turn_lock，让 C2 的阶段一快照 turn1 后在阶段二挂起，
+        // 主线程推进到 turn2，再释放锁让 C2 阶段二恢复。
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-stale-cancel";
+
+        let lifecycle = lifecycles.for_session(sid);
+        // turn1：on_submitted 激活（active+submitted+epoch 自增），使阶段一 cancel_engine
+        // 能匹配 generation，且 finish_once 可 claim（需 submitted）。
+        assert!(lifecycle.on_submitted());
+
+        let gate = locks.for_session(sid).await;
+        let blocker = gate.lock().await;
+
+        // 阶段二侧探针：阶段二若执行 cancel_engine 复查会置位。
+        let phase_two_cancel_called = Arc::new(AtomicBool::new(false));
+        let phase_one_count = Arc::new(AtomicU64::new(0));
+        let probe2 = phase_two_cancel_called.clone();
+        let probe1 = phase_one_count.clone();
+        // C2：阶段一无锁快照 target=Some(1) → 匹配 → cancel_engine（probe1++）；
+        //     阶段二持锁（被 blocker 阻塞），恢复后比对 current ≠ target → early return。
+        let cancel_task = tokio::spawn(async move {
+            cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                move || {
+                    let probe2 = probe2.clone();
+                    let probe1 = probe1.clone();
+                    async move {
+                        // 阶段一与阶段二复查都走这里：用计数区分。
+                        // 阶段一（turn1）probe1 0→1；阶段二若误执行 probe2 置位。
+                        let prev = probe1.fetch_add(1, Ordering::AcqRel);
+                        if prev >= 1 {
+                            probe2.store(true, Ordering::Release);
+                        }
+                        true
+                    }
+                },
+                // claim_unsubmitted 不应被调用（turn1 已 submitted）。
+                |_lc| false,
+            )
+            .await
+        });
+        // 让 C2 进展到阶段一完成、阶段二 gate.lock().await 挂起。
+        tokio::task::yield_now().await;
+
+        // turn1 终态（submitted，走 claim 路径）→ turn2 reserve（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+
+        // 释放 turn_lock，C2 阶段二恢复：current=Some(2) ≠ target=Some(1) → early return。
+        drop(blocker);
+        drop(gate);
+        cancel_task.await.expect("cancel task joins");
+
+        // 阶段一执行了一次（取消 turn1，正确）。
+        assert_eq!(
+            phase_one_count.load(Ordering::Acquire),
+            1,
+            "phase one cancel on the originating turn must run exactly once"
+        );
+        // 阶段二未误执行 cancel_engine（守护生效），turn2 不被误取消。
+        assert!(
+            !phase_two_cancel_called.load(Ordering::Acquire),
+            "phase two must not cancel the engine of a turn that started after the cancel was issued"
+        );
+        assert!(
+            reservation2.ensure_active().is_ok(),
+            "new turn reservation must remain valid after a stale cancel's phase two recovered"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_cancel_after_turn_change_still_cancels_new_turn() {
+        // 对照测试，防止 generation 守护过度：用户在新轮启动**后**才点停止，
+        // 快照到新轮 epoch，匹配 → 合法取消新轮（cancel_engine 触发）。
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-fresh-cancel";
+
+        let lifecycle = lifecycles.for_session(sid);
+        // turn1 reserve → 终态（未提交认领路径）→ turn2 reserve（epoch=2）。
+        let _reservation1 = lifecycle.reserve().expect("turn1 reserve");
+        assert!(lifecycle.finish_unsubmitted_once());
+        let _reservation2 = lifecycle.reserve().expect("turn2 reserve");
+
+        let cancel_called = Arc::new(AtomicBool::new(false));
+        let probe = cancel_called.clone();
+        cancel_turn_with_gates(
+            &locks,
+            &lifecycles,
+            &shell_tasks,
+            sid,
+            move || {
+                let probe = probe.clone();
+                async move {
+                    probe.store(true, Ordering::Release);
+                    true
+                }
+            },
+            |_lc| false,
+        )
+        .await;
+
+        // target=Some(2)=current → 匹配 → cancel_engine 触发。
+        assert!(
+            cancel_called.load(Ordering::Acquire),
+            "a fresh cancel on the current turn must still cancel its engine"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_skips_unsubmitted_claim_and_leaves_new_turn_intact() {
+        // invalidate 路径：cancel_engine 返回 false（模拟 engine 不在场）时，
+        // generation 不匹配必须阻止 claim_unsubmitted（认领未提交终态使 reservation
+        // 失效），否则新轮未提交 reservation 会被误清。
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-stale-invalidate";
+
+        let lifecycle = lifecycles.for_session(sid);
+        let _reservation1 = lifecycle.reserve().expect("turn1 reserve");
+        let gate = locks.for_session(sid).await;
+        let blocker = gate.lock().await;
+
+        let claimed = Arc::new(AtomicBool::new(false));
+        let probe = claimed.clone();
+        let cancel_task = tokio::spawn(async move {
+            cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                // engine 不在场 → 返回 false → 走 claim_unsubmitted 分支。
+                || async { false },
+                move |lc| {
+                    probe.store(true, Ordering::Release);
+                    // 复用真实的未提交认领路径以观察副作用。
+                    lc.claim_unsubmitted_terminal()
+                },
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        // turn1 终态（未提交认领路径）→ turn2 未提交 reservation（epoch=2）。
+        assert!(lifecycle.finish_unsubmitted_once());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+
+        drop(blocker);
+        drop(gate);
+        cancel_task.await.expect("cancel task joins");
+
+        // 断言：claim_unsubmitted 闭包未被调用，turn2 reservation 仍有效。
+        assert!(
+            !claimed.load(Ordering::Acquire),
+            "stale cancel must not claim an unsubmitted terminal on a new turn"
+        );
+        assert!(
+            reservation2.ensure_active().is_ok(),
+            "new turn unsubmitted reservation must survive a stale cancel"
         );
     }
 }
