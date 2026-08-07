@@ -1,6 +1,6 @@
 //! 会话模式策略：把 plain/code 的行为差异收敛为数据，共享链路不再 if 分流。
 //! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
-//! 能力档案统一方案（.luzeyang/capability-unified/）落地后，策略对象同时是
+//! 能力档案统一后，策略对象同时是
 //! **统一解析器**：`resolve()` 按会话模式加载能力档案（capability_profile.rs），
 //! 产出三通道值——if-else 只保留在解析器内部，外部消费者统一走 resolve。
 
