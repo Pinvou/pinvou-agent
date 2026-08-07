@@ -1338,7 +1338,7 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
-        // 能力档案 include 通道（fork ②，.luzeyang/capability-unified/ 方案）：
+        // 能力档案 include 通道（fork ②）：
         // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
         // 仅当档案 include 非空时注入 Some（空 → None → 底座回退常量，与现状
         // 逐字节等价，plain 零影响）。
