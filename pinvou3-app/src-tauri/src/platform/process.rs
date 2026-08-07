@@ -150,8 +150,11 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
             // 先下载校验内容再执行：claude.ai 等官方站点会对非浏览器客户端
             // 间歇返回 Cloudflare 验证页（HTML/JS），直接 iex 会变成莫名其妙的
             // 解析错误且 stderr 为空；校验到 HTML 就给出可操作的中文错误。
+            // 注意不能匹配任意 `<` 开头：kimi 官方脚本第一行是 `<#`（PowerShell
+            // 块注释），`^\s*<` 会把它误判成验证页导致 kimi 永远装不上（实测）。
+            // 只匹配真实 HTML 文档特征（Cloudflare 页以 <!DOCTYPE html> 开头）。
             .arg(format!(
-                "$s = irm {windows_url}; if ($s -match '^\\s*<') {{ throw '官方站点返回了验证页而非安装脚本（可能是网络拦截或频控），请稍后重试' }}; iex $s"
+                "$s = irm {windows_url}; if ($s -match '^\\s*<(html|!doctype|head|body|script)') {{ throw '官方站点返回了验证页而非安装脚本（可能是网络拦截或频控），请稍后重试' }}; iex $s"
             ));
         // Windows 开发机常见 PATH 顺序：Git for Windows 的 usr/bin 排在 System32
         // 前面，官方安装脚本调 tar 会命中 MSYS tar——盘符路径（C:\...）被当成

@@ -380,13 +380,17 @@ assert.ok(
   MOD.includes('npm install -g {npm_pkg}'),
   '提示必须含 npm 手动安装路径（按 Agent 动态生成 npm_pkg）'
 );
+assert.ok(
+  MOD.includes('npm_package(backend).unwrap_or("")'),
+  'npm 手动安装提示必须按 Agent 取包名，不得硬编码 codex'
+);
 for (const [backend, pkg] of [
   ['CodexAcp', '@openai/codex'],
   ['ClaudeAcp', '@anthropic-ai/claude-code'],
   ['KimiAcp', '@moonshot-ai/kimi-code'],
 ]) {
   assert.ok(
-    MOD.includes(`${backend} => "${pkg}"`),
+    MOD.includes(`${backend} => Some("${pkg}")`),
     `手动安装提示必须为 ${backend} 映射 npm 包名 ${pkg}`
   );
 }
@@ -423,6 +427,45 @@ assert.match(
   PROVIDERS_SECTION,
   /acp-cli-install-cancel/,
   '安装中必须提供取消按钮（cancel_acp_agent_install 的前端入口）'
+);
+// 升级后版本有效性校验：命令 exit 0 不等于升级生效（官方脚本假成功 /
+// npm allowScripts 拦截 postinstall 会让版本原地不动，必须如实报错）
+assert.ok(
+  MOD.includes('fn verify_upgrade_effective'),
+  'mod.rs 必须实现升级后版本有效性校验（防「成功但版本未变」）'
+);
+assert.ok(
+  MOD.includes('previous_version') && MOD.includes('previous_installed'),
+  '升级校验必须基于升级前版本与安装态（探测失败时 previous 缺失不能当全新安装跳过）'
+);
+assert.ok(
+  MOD.includes('action != "none"'),
+  '未执行安装动作（none）时跳过升级校验'
+);
+assert.ok(
+  MOD.includes('allow-scripts') && MOD.includes('npm approve-scripts'),
+  '升级未生效的错误必须给出 allow-scripts 拦截的处理指引'
+);
+// 官方脚本假成功（Claude install 检测到已存在就跳过覆盖却报成功）：升级前
+// 必须把旧二进制改名移开让脚本走全新安装路径，失败时恢复旧文件。
+assert.ok(
+  MOD.includes('fn move_official_binaries_aside'),
+  'official_script 升级前必须把旧二进制改名移开（防 install 假成功）'
+);
+assert.ok(
+  MOD.includes('pre-upgrade') && MOD.includes('restore_backups'),
+  '备份必须用 pre-upgrade 后缀，脚本失败必须恢复旧文件'
+);
+// 安装进度跨窗口/App 重启恢复：status 必须携带 install_command/install_latest_line，
+// 共享 store 在安装收口后清除（只保留进行中）。
+assert.ok(
+  MOD.includes('pub install_command: Option<String>')
+    && MOD.includes('pub install_latest_line: Option<String>'),
+  'status 必须携带安装进度字段（前端重挂载/重启后恢复「执行命令」行）'
+);
+assert.ok(
+  MOD.includes('struct InstallProgressStore') && MOD.includes('fn clear_install_progress'),
+  '安装进度必须走共享 store，且安装收口后清除'
 );
 
 // ---------------------------------------------------------------- 9. Claude 细化模型槽位 + env 生效值（改动 5）
@@ -629,8 +672,10 @@ assert.match(
 );
 
 // 安装/升级前必须停掉该 Agent 的运行中会话（防 Windows 二进制占用 EBUSY）
+// 锚点用分派处的 `let result = match action`：action 解析（let action = match
+// action）在 preflight 自检前已完成，restart 必须仍位于分派之前。
 {
-  const installFn = MOD.match(/pub async fn install_agent[\s\S]*?match action/);
+  const installFn = MOD.match(/pub async fn install_agent[\s\S]*?let result = match action/);
   assert.ok(installFn, 'install_agent body must exist');
   assert.ok(
     installFn[0].includes('restart_agent_sessions(backend)'),
