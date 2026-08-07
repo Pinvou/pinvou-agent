@@ -208,6 +208,10 @@ assert.ok(
   '卸载必须覆盖 brew / npm 来源'
 );
 assert.ok(
+  LIFECYCLE.includes('npm_executable()'),
+  'npm 卸载命令必须使用解析后的 npm 完整路径（Windows 裸名 npm 会 program not found）'
+);
+assert.ok(
   MOD.includes('运行中的会话') && MOD.includes('cleanup'),
   '卸载必须带运行中会话拦截与可选清理'
 );

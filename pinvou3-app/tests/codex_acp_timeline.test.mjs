@@ -397,7 +397,12 @@ try {
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
   'Codex controls must render from the session report or, in draft, the cached agent snapshot');
-  assert.ok(codexView.includes('pinvou_codex_draft_controls')
+  const draftControlsModule = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'acp-draft-controls.js'),
+    'utf8'
+  );
+  assert.ok(draftControlsModule.includes('pinvou_codex_draft_controls')
+    && codexView.includes('acp-draft-controls.js')
     && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
     && codexView.includes('stageDraftConfigSelection')
     && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),

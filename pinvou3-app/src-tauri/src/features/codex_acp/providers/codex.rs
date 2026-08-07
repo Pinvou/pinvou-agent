@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use toml::Value;
 
 use super::{
-    AgentConfigWriter, EffectiveConfig, EffectiveEntry, PROVIDER_ID_PREFIX, ProviderTarget,
-    atomic_write,
+    atomic_write, AgentConfigWriter, EffectiveConfig, EffectiveEntry, ProviderTarget,
+    PROVIDER_ID_PREFIX,
 };
 
 const ENV_KEY_NAME: &str = "OPENAI_API_KEY";
@@ -57,9 +57,7 @@ impl CodexConfigWriter {
 
     /// 生成/更新受管模型 catalog（幂等）。`context_window` 未指定时用保守默认。
     fn write_model_catalog(&self, model: &str, context_window: Option<i64>) -> Result<PathBuf> {
-        let catalog_path = self
-            .config_path
-            .with_file_name(CATALOG_FILE_NAME);
+        let catalog_path = self.config_path.with_file_name(CATALOG_FILE_NAME);
         let entry = serde_json::json!({
             "models": [{
                 "slug": model,
@@ -166,9 +164,7 @@ pub(crate) fn codex_config_relay_env_key_present(raw: &str) -> bool {
 impl AgentConfigWriter for CodexConfigWriter {
     fn apply(&self, target: &ProviderTarget) -> Result<()> {
         let mut config = self.read_config()?;
-        let table = config
-            .as_table_mut()
-            .context("config.toml 顶层必须是表")?;
+        let table = config.as_table_mut().context("config.toml 顶层必须是表")?;
         let providers = table
             .entry("model_providers")
             .or_insert_with(|| Value::Table(Default::default()));
@@ -332,8 +328,10 @@ mod tests {
         )
         .unwrap();
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        let config: Value =
-            fs::read_to_string(dir.join("config.toml")).unwrap().parse().unwrap();
+        let config: Value = fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
         let provider = &config["model_providers"]["pv-aaaaaaaaaaaa"];
         assert_eq!(provider["name"], "中转".into());
         assert_eq!(provider["base_url"], "https://api.example.com/v1".into());
@@ -355,14 +353,23 @@ mod tests {
             "model_provider = \"pv-aaaaaaaaaaaa\"\nmodel = \"gpt-5.2\"\n\n[model_providers.pv-aaaaaaaaaaaa]\nname = \"中转\"\nbase_url = \"https://api.example.com/v1\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"chat\"\n\n[model_providers.user-own]\nname = \"自建\"\nbase_url = \"https://other.example.com/v1\"\nenv_key = \"MY_KEY\"\nwire_api = \"chat\"\n\n[mcp_servers.demo]\ncommand = \"echo\"\n",
         )
         .unwrap();
-        writer.revert_to_official(Some(&target("pv-aaaaaaaaaaaa"))).unwrap();
+        writer
+            .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
+            .unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         let config: Value = raw.parse().unwrap();
         assert!(config.get("model_provider").is_none());
         assert!(config.get("model").is_none());
-        assert!(config.get("model_providers").unwrap().get("pv-aaaaaaaaaaaa").is_none());
+        assert!(config
+            .get("model_providers")
+            .unwrap()
+            .get("pv-aaaaaaaaaaaa")
+            .is_none());
         // 用户自建 provider 与无关表保留
-        assert_eq!(config["model_providers"]["user-own"]["env_key"], "MY_KEY".into());
+        assert_eq!(
+            config["model_providers"]["user-own"]["env_key"],
+            "MY_KEY".into()
+        );
         assert_eq!(config["mcp_servers"]["demo"]["command"], "echo".into());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -378,7 +385,10 @@ mod tests {
             &fs::read_to_string(dir.join("pinvou3-model-catalog.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(catalog["models"][0]["context_window"].as_i64().unwrap(), 1_048_576);
+        assert_eq!(
+            catalog["models"][0]["context_window"].as_i64().unwrap(),
+            1_048_576
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -399,9 +409,14 @@ mod tests {
         let model = &catalog["models"][0];
         assert_eq!(model["slug"].as_str().unwrap(), "gpt-5.2");
         assert!(model["context_window"].is_i64());
-        assert!(model["base_instructions"].as_str().unwrap().starts_with("You are Codex"));
+        assert!(model["base_instructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are Codex"));
         // 恢复官方：键删除 + 文件删除
-        writer.revert_to_official(Some(&target("pv-aaaaaaaaaaaa"))).unwrap();
+        writer
+            .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
+            .unwrap();
         let config: Value = fs::read_to_string(dir.join("config.toml"))
             .unwrap()
             .parse()
@@ -420,9 +435,13 @@ mod tests {
             "model_provider = \"pv-aaaaaaaaaaaa\"\nmodel = \"user-model\"\n\n[model_providers.pv-aaaaaaaaaaaa]\nname = \"中转\"\nbase_url = \"https://api.example.com/v1\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"chat\"\n",
         )
         .unwrap();
-        writer.revert_to_official(Some(&target("pv-aaaaaaaaaaaa"))).unwrap();
-        let config: Value =
-            fs::read_to_string(dir.join("config.toml")).unwrap().parse().unwrap();
+        writer
+            .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
+            .unwrap();
+        let config: Value = fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
         // 顶层 model 与受管 provider 的 model 不同 → 保留
         assert_eq!(config["model"], "user-model".into());
         let _ = fs::remove_dir_all(&dir);
@@ -445,10 +464,7 @@ mod tests {
         let broken = "model_provider = \"pv-x\"\n[unclosed";
         fs::write(dir.join("config.toml"), broken).unwrap();
         assert!(writer.apply(&target("pv-aaaaaaaaaaaa")).is_err());
-        assert_eq!(
-            fs::read_to_string(dir.join("config.toml")).unwrap(),
-            broken
-        );
+        assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), broken);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -470,7 +486,11 @@ mod tests {
     fn effective_errors_on_unparseable_file() {
         let dir = tmp_dir();
         let writer = CodexConfigWriter::new(&dir);
-        fs::write(dir.join("config.toml"), "model_provider = \"pv-x\"\n[unclosed").unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "model_provider = \"pv-x\"\n[unclosed",
+        )
+        .unwrap();
         // 损坏文件必须返回 Err（config_unreadable 依赖该 Err），而非静默按官方
         assert!(writer.effective().is_err());
         let _ = fs::remove_dir_all(&dir);

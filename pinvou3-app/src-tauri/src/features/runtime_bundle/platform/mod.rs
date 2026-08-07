@@ -298,10 +298,6 @@ const GONGWEN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
-const FILE_MASTER_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/file-master/server.py");
-const FILE_MASTER_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/file-master/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -375,9 +371,6 @@ impl Pinvou3Bundle {
         // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
         self.cleanup_removed_marketplace_tools()?;
         crate::platform::startup::mark("bundle_extract:cleanup_retired:done");
-        // file-master 双技能合并迁移:已装 file-master MCP 的老用户,companion 安装发生在
-        // 当初装 MCP 的时刻、升级不会重放;旧双技能残留刚被清掉,这里补装合并技能。
-        self.migrate_file_master_companion_skill();
         // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
         // (防 "VERSION 对得上但目录缺失"),无副作用。
         crate::platform::startup::mark("bundle_extract:write_workflows:start");
@@ -542,10 +535,6 @@ impl Pinvou3Bundle {
             ("pua", "pua"),
             ("huashu-nuwa", "nuwa"),
             ("brainstorming", "brainstorming"),
-            // file-master 双技能合并(0.7.4):旧 file-finder / disk-cleaner 被单个
-            // file-master 技能取代,老装机的残留在此清掉,补装见 migrate_file_master_companion_skill。
-            ("file-finder", "file-finder"),
-            ("disk-cleaner", "disk-cleaner"),
         ] {
             let dir = self.skills_dir.join(dir_name);
             if !dir.exists() {
@@ -561,26 +550,6 @@ impl Pinvou3Bundle {
             }
         }
         Ok(())
-    }
-
-    /// file-master 双技能合并迁移(0.7.4):file-finder / disk-cleaner 合并为单个
-    /// file-master 技能。老用户已装 file-master MCP 时 companion 安装发生在当初装 MCP
-    /// 的时刻、升级不会重放;旧双技能残留由 [`Self::cleanup_removed_marketplace_skills`]
-    /// 按标记清掉后,这里补装合并技能,免得升级后只剩 MCP 工具、技能引导缺失。
-    /// 未装 MCP 或技能目录已在(新装机/已迁移)直接跳过。
-    fn migrate_file_master_companion_skill(&self) {
-        let market = crate::features::marketplace::MarketplaceManager::new();
-        if !market.installed_ids().iter().any(|id| id == "file-master") {
-            return;
-        }
-        if self.skills_dir.join("file-master").exists() {
-            return;
-        }
-        if let Err(e) = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .install("file-master")
-        {
-            eprintln!("[bundle] file-master 合并技能迁移补装失败: {e}");
-        }
     }
 
     /// 清理已从工具市场移除的预置 MCP 工具残留。
@@ -892,15 +861,6 @@ impl Pinvou3Bundle {
         std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
         std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
         std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
-        // 工具市场：文件管理大师 MCP server（本地 stdio，纯 stdlib 零依赖：file_find /
-        // disk_scan / file_trash；test_server.py 与 gongwen 等先例一致不随包释放）
-        let file_master_dir = dir.join("file-master");
-        std::fs::create_dir_all(&file_master_dir)?;
-        std::fs::write(file_master_dir.join("server.py"), FILE_MASTER_SERVER_PY)?;
-        std::fs::write(
-            file_master_dir.join("manifest.json"),
-            FILE_MASTER_MANIFEST_JSON,
-        )?;
         Ok(())
     }
 }
@@ -1334,83 +1294,12 @@ mod tests {
         let brainstorm = bundle.skills_dir.join("brainstorming");
         std::fs::create_dir_all(&brainstorm).unwrap();
         std::fs::write(brainstorm.join(".installed-from"), "upload:my.zip").unwrap();
-        // file-finder / disk-cleaner:file-master 双技能合并前的市场安装残留 → 应删
-        for old in ["file-finder", "disk-cleaner"] {
-            let dir = bundle.skills_dir.join(old);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join(".installed-from"),
-                format!("pinvou3-marketplace:{old}"),
-            )
-            .unwrap();
-        }
 
         bundle.cleanup_removed_marketplace_skills().unwrap();
 
         assert!(!pua.exists(), "市场标记的 pua 应被删");
         assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
         assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
-        assert!(
-            !bundle.skills_dir.join("file-finder").exists()
-                && !bundle.skills_dir.join("disk-cleaner").exists(),
-            "合并前的 file-finder / disk-cleaner 市场残留应被删"
-        );
-
-        cleanup(&tmp);
-    }
-
-    /// file-master 双技能合并迁移:已装 MCP 的老用户清掉旧双技能残留后补装合并技能;
-    /// 未装 MCP 或技能目录已在时不动作。
-    #[test]
-    fn migrate_file_master_companion_skill_reinstalls_merged_skill() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        std::env::set_var("PINVOU3_HOME", &tmp);
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
-
-        // 未装 file-master MCP:不补装
-        bundle.migrate_file_master_companion_skill();
-        assert!(
-            !bundle.skills_dir.join("file-master").exists(),
-            "未装 file-master MCP 不应补装技能"
-        );
-
-        // 老装机:installed.json 有 file-master + 旧双技能残留
-        let marketplace_dir = paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(
-            marketplace_dir.join("installed.json"),
-            r#"["file-master"]"#,
-        )
-        .unwrap();
-        for old in ["file-finder", "disk-cleaner"] {
-            let dir = bundle.skills_dir.join(old);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join(".installed-from"),
-                format!("pinvou3-marketplace:{old}"),
-            )
-            .unwrap();
-        }
-
-        bundle.cleanup_removed_marketplace_skills().unwrap();
-        bundle.migrate_file_master_companion_skill();
-
-        assert!(!bundle.skills_dir.join("file-finder").exists());
-        assert!(!bundle.skills_dir.join("disk-cleaner").exists());
-        let merged = bundle.skills_dir.join("file-master");
-        assert!(merged.join("SKILL.md").is_file(), "合并技能应补装落盘");
-        assert_eq!(
-            std::fs::read_to_string(merged.join(".installed-from"))
-                .unwrap()
-                .trim(),
-            "pinvou3-marketplace:file-master"
-        );
-
-        // 已迁移(目录在):再跑不动作、不报错
-        bundle.migrate_file_master_companion_skill();
-        assert!(merged.join("SKILL.md").is_file());
 
         cleanup(&tmp);
     }
@@ -1492,35 +1381,6 @@ mod tests {
         );
 
         cleanup(&tmp);
-    }
-
-    /// file-master 内嵌 manifest 必须可被 marketplace ToolManifest 解析,且声明的
-    /// 配套技能与工具名前缀保持契约(同名 file-master 技能靠它联动装卸)。
-    #[test]
-    fn file_master_manifest_parses_and_declares_companions() {
-        let m: crate::features::marketplace::ToolManifest =
-            serde_json::from_str(FILE_MASTER_MANIFEST_JSON).unwrap();
-        assert_eq!(m.id, "file-master");
-        assert_eq!(m.command, "python");
-        assert_eq!(m.args, vec!["server.py".to_string()]);
-        assert!(m.pip_dependencies.is_empty(), "file-master 应零依赖");
-        assert_eq!(
-            m.mcp_tools,
-            vec![
-                "mcp_file_master_file_find".to_string(),
-                "mcp_file_master_disk_scan".to_string(),
-                "mcp_file_master_file_trash".to_string(),
-                "mcp_file_master_file_trash_status".to_string(),
-                "mcp_file_master_file_empty_recycle".to_string(),
-                "mcp_file_master_file_erase".to_string(),
-                "mcp_file_master_file_restore".to_string(),
-            ]
-        );
-        assert_eq!(m.companion_skills, vec!["file-master".to_string()]);
-        assert!(
-            FILE_MASTER_SERVER_PY.contains("pinvou3-file-master"),
-            "内嵌 server.py 应为 file-master 本体"
-        );
     }
 
     /// 旧版 mcp.json 的 present server key 是 `pinvou`(与产品名差一个 3,模型采样必漂成
