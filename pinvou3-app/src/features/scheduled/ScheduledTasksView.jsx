@@ -114,6 +114,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     const ScheduledSelect = ({
       value, options, onChange, testId, ariaLabel, theme, minWidth = 180,
       multiple = false, minSelected = 0, onClose, emptyLabel = '—', separator = '、',
+      footerAction,
     }) => {
       const [open, setOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
@@ -220,6 +221,17 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </button>
             );
           })}
+          {footerAction && (
+            <>
+              <div className={`my-1 mx-2 h-px ${isDark ? 'bg-[#3A3B3E]' : 'bg-[#DFE1E5]'}`} />
+              <button type="button"
+                onClick={() => { closeMenu(); footerAction.onClick(); }}
+                className={`flex w-full min-h-9 items-center gap-3 rounded-[8px] px-3 py-2 text-left text-[14px] transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#202124] hover:bg-[#F1F3F4]'}`}>
+                <Plus size={15} className={`shrink-0 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`} />
+                <span className="min-w-0 flex-1 truncate">{footerAction.label}</span>
+              </button>
+            </>
+          )}
         </div>,
         document.body
       ) : null;
@@ -369,7 +381,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       );
     };
 
-    const ScheduledTasksView = ({ theme, t, onOpenChat }) => {
+    const ScheduledTasksView = ({ theme, t, onOpenChat, onGotoModelSettings }) => {
       const bs = useBridgeState(['scheduled', 'models']);
       const appState = bs || {};
       const realTasks = appState.scheduledTasks || [];
@@ -380,6 +392,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const error = appState.scheduledTaskError || null;
       const isDark = theme === 'dark';
       const scheduledCopy = t.uiScheduled;
+      const modelManageAction = can('modelManagement') && onGotoModelSettings
+        ? { label: t.manageModels, onClick: onGotoModelSettings }
+        : undefined;
       const weekdayOptions = WEEKDAY_OPTIONS.map((option, index) => ({
         ...option,
         label: scheduledCopy.weekdays[index][0],
@@ -1344,7 +1359,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     <div className="flex items-center gap-1.5">
                       <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
                         onChange={value => editModel(value)}
-                        testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} />
+                        testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} footerAction={modelManageAction} />
                       <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
                     </div>
                   </div>
