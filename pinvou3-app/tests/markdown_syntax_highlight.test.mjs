@@ -206,8 +206,10 @@ assert.match(
   readApp('src', 'features', 'conversation', 'ConversationTimeline.jsx'),
   /import \{ renderMarkdown \} from '\.\.\/\.\.\/shared\/markdown-renderer\.js'/u,
 );
+// Personas.jsx 代码块明暗切换采用静态共存写法 light-code dark-code
+// （配合 base.css 的 .dark 祖先限定；P1 重构后 isDark 三元式已消除）。
 assert.match(
   readApp('src', 'features', 'personas', 'Personas.jsx'),
-  /isDark \? 'dark-code' : 'light-code'/u,
+  /light-code dark-code/u,
 );
 console.log('Markdown syntax highlighting contract: ok');

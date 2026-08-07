@@ -85,9 +85,8 @@ export function DetachedShell({ kind, id }) {
   }, [kind, id]);
 
   const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
-  const isDark = activeTheme === 'dark';
   return (
-    <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+    <div className={`h-screen w-screen flex flex-col bg-white text-[#1F1F1F] dark:bg-[#1B1C1D] dark:text-[#E3E3E3]`}>
       <div
         data-tauri-drag-region
         className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"

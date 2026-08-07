@@ -5,7 +5,6 @@ import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
-      const isDark = theme === 'dark';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -21,15 +20,14 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           className={`group border-0 text-left flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
           ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
-            ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
-            : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}
+            ? 'bg-[#D3E3FD] text-[#041E49] dark:bg-[#A8C7FA]'
+            : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}
         >
-          <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
+          <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? 'text-[#0B57D0] dark:text-[#041E49]' : ''}`}>
             {icon}
             {unread && (
               <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.navUnreadAria}
-                className="absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2"
-                style={{ background: '#0B57D0', borderColor: active ? (isDark ? '#A8C7FA' : '#D3E3FD') : (isDark ? '#1E1F20' : '#F0F4F9') }} />
+                className={"absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2 bg-[#0B57D0] " + (active ? 'border-[#D3E3FD] dark:border-[#A8C7FA]' : 'border-[#F0F4F9] dark:border-[#1E1F20]')} />
             )}
           </div>
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
@@ -62,39 +60,33 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             role="dialog"
             aria-modal="true"
             aria-labelledby="archive-confirm-title"
-            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl"
+            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
             style={{
-              background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(250,250,250,.96)',
-              color: isDark ? '#F2F2F7' : '#000',
+              // isDark dynamic-value: 保留 (boxShadow)
               boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
             }}
             onClick={e => e.stopPropagation()}
           >
             <div className="px-6 pt-6 pb-5 text-center">
               <div id="archive-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archiveConfirmTitle}</div>
-              <div className="mt-2.5 text-[15px] leading-[22px]" style={{ color: isDark ? 'rgba(235,235,245,.72)' : 'rgba(60,60,67,.72)' }}>
+              <div className="mt-2.5 text-[15px] leading-[22px] text-[rgba(60,60,67,.72)] dark:text-[rgba(235,235,245,.72)]">
                 <div>{t.archiveConfirmMessage}</div>
                 {t.archiveConfirmDetail && <div className="mt-1">{t.archiveConfirmDetail}</div>}
               </div>
             </div>
-            <div className="h-px" style={{ background: isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)' }} />
+            <div className="h-px bg-[rgba(60,60,67,.24)] dark:bg-[rgba(84,84,88,.65)]" />
             <div className="grid grid-cols-2">
               <button
                 type="button"
                 onClick={onCancel}
-                className="h-[50px] text-[17px] active:opacity-70"
-                style={{ color: isDark ? '#0A84FF' : '#007AFF' }}
+                className="h-[50px] text-[17px] active:opacity-70 text-[#007AFF] dark:text-[#0A84FF]"
               >
                 {t.cpCancel}
               </button>
               <button
                 type="button"
                 onClick={onConfirm}
-                className="h-[50px] text-[17px] font-semibold active:opacity-70"
-                style={{
-                  color: isDark ? '#0A84FF' : '#007AFF',
-                  borderLeft: `1px solid ${isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)'}`
-                }}
+                className="h-[50px] text-[17px] font-semibold active:opacity-70 text-[#007AFF] dark:text-[#0A84FF] border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]"
               >
                 {t.archiveConfirmAction}
               </button>
@@ -129,38 +121,32 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="archived-delete-confirm-title"
-            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl"
+            className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
             style={{
-              background: isDark ? 'rgba(44,44,46,.96)' : 'rgba(250,250,250,.96)',
-              color: isDark ? '#F2F2F7' : '#000',
+              // isDark dynamic-value: 保留 (boxShadow)
               boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
             }}
             onClick={e => e.stopPropagation()}
           >
             <div className="px-6 pt-6 pb-5 text-center">
               <div id="archived-delete-confirm-title" className="text-[20px] font-semibold leading-[26px]">{t.archivedDeleteTitle}</div>
-              <div className="mt-2.5 text-[15px] leading-[22px]" style={{ color: isDark ? 'rgba(235,235,245,.72)' : 'rgba(60,60,67,.72)' }}>
+              <div className="mt-2.5 text-[15px] leading-[22px] text-[rgba(60,60,67,.72)] dark:text-[rgba(235,235,245,.72)]">
                 {t.archivedDeleteMessage}
               </div>
             </div>
-            <div className="h-px" style={{ background: isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)' }} />
+            <div className="h-px bg-[rgba(60,60,67,.24)] dark:bg-[rgba(84,84,88,.65)]" />
             <div className="grid grid-cols-2">
               <button
                 type="button"
                 onClick={onCancel}
-                className="h-[50px] text-[17px] active:opacity-70"
-                style={{ color: isDark ? '#0A84FF' : '#007AFF' }}
+                className="h-[50px] text-[17px] active:opacity-70 text-[#007AFF] dark:text-[#0A84FF]"
               >
                 {t.cpCancel}
               </button>
               <button
                 type="button"
                 onClick={onConfirm}
-                className="h-[50px] text-[17px] font-semibold active:opacity-70"
-                style={{
-                  color: '#FF3B30',
-                  borderLeft: `1px solid ${isDark ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.24)'}`
-                }}
+                className="h-[50px] text-[17px] font-semibold active:opacity-70 text-[#FF3B30] border-l border-l-[rgba(60,60,67,.24)] dark:border-l-[rgba(84,84,88,.65)]"
               >
                 {t.archivedDeleteAction}
               </button>
@@ -171,14 +157,10 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
     };
 
     const ArchiveToast = ({ theme, t, onClose, onView }) => {
-      const isDark = theme === 'dark';
       return (
         <div
-          className="fixed left-1/2 top-6 z-[210] -translate-x-1/2 px-2 py-2 rounded-[18px] flex items-center gap-1 shadow-2xl"
+          className="fixed left-1/2 top-6 z-[210] -translate-x-1/2 px-2 py-2 rounded-[18px] flex items-center gap-1 shadow-2xl bg-[rgba(250,250,250,.94)] dark:bg-[rgba(44,44,46,.94)] text-[#1C1C1E] dark:text-[#F2F2F7] border border-[rgba(0,0,0,.08)] dark:border-[rgba(255,255,255,.10)]"
           style={{
-            background: isDark ? 'rgba(44,44,46,.94)' : 'rgba(250,250,250,.94)',
-            color: isDark ? '#F2F2F7' : '#1C1C1E',
-            border: `1px solid ${isDark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)'}`,
             backdropFilter: 'blur(18px) saturate(150%)',
             WebkitBackdropFilter: 'blur(18px) saturate(150%)',
             fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -188,16 +170,14 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <button
             type="button"
             onClick={onView}
-            className="h-8 min-w-[76px] px-3 rounded-[12px] text-[14px] font-semibold whitespace-nowrap active:opacity-70"
-            style={{ color: isDark ? '#0A84FF' : '#007AFF', background: isDark ? 'rgba(10,132,255,.12)' : 'rgba(0,122,255,.10)' }}
+            className="h-8 min-w-[76px] px-3 rounded-[12px] text-[14px] font-semibold whitespace-nowrap active:opacity-70 text-[#007AFF] dark:text-[#0A84FF] bg-[rgba(0,122,255,.10)] dark:bg-[rgba(10,132,255,.12)]"
           >
             {t.archiveSuccessView}
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full text-[18px] leading-none active:opacity-70"
-            style={{ color: isDark ? 'rgba(235,235,245,.62)' : 'rgba(60,60,67,.62)' }}
+            className="w-8 h-8 rounded-full text-[18px] leading-none active:opacity-70 text-[rgba(60,60,67,.62)] dark:text-[rgba(235,235,245,.62)]"
             aria-label={t.cpCancel}
           >
             ×
@@ -261,11 +241,11 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           window.removeEventListener('scroll', close, true);
         };
       }, [menuOpen]);
-      const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`;
+      const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div onPointerDown={e => e.stopPropagation()}
           data-testid={chat.menuTestId}
-          className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}
+          className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}
           style={menuStyle}>
           <button className={menuItemCls} onClick={() => { closeMenu(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}>
             {chat.pinned ? <PinOffIcon size={15} /> : <PinIcon size={15} />}
@@ -275,12 +255,12 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             <Edit2 size={15} />
             <span>{t.riRename}</span>
           </button>
-          <button className={`${menuItemCls} ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`} onClick={() => { closeMenu(); setConfirming(true); }}>
+          <button className={`${menuItemCls} text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]`} onClick={() => { closeMenu(); setConfirming(true); }}>
             <Trash2 size={15} />
             <span>{t.cpDelete}</span>
           </button>
           {(onOpenFolder || onArchive) && (
-            <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
+            <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
           )}
           {onOpenFolder && (
             <button className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
@@ -305,7 +285,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
               onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
-              className={`w-full px-3 py-1 rounded-full text-[15px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
+              className="w-full px-3 py-1 rounded-full text-[15px] outline-none bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]" />
           </div>
         );
       }
@@ -318,20 +298,20 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all
             ${personaTarget ? ''
-              : active ? (isDark ? 'bg-[#333537] text-white' : 'bg-[#E1E5EA] text-[#1F1F1F]')
-                     : (isDark ? 'text-[#E3E3E3] hover:bg-[#282A2C]' : 'text-[#1F1F1F] hover:bg-[#E1E5EA]')}`}>
-          {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5" style={{ color: isDark?'#0A84FF':'#007AFF' }} />}
+              : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
+                     : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
+          {personaTarget && <Sparkles size={13} className="shrink-0 mr-1.5 text-[#007AFF] dark:text-[#0A84FF]" />}
           {chat.leadingIcon && (
             <span className="mr-3 flex h-5 w-5 shrink-0 items-center justify-center opacity-95">
               {chat.leadingIcon}
             </span>
           )}
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
-          {chat.pinned && <PinIcon size={12} className={`shrink-0 mr-1.5 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
+          {chat.pinned && <PinIcon size={12} className="shrink-0 mr-1.5 rotate-45 text-[#8A8F94] dark:text-[#9AA0A6]" />}
           <span className="min-w-0 flex-1 pr-2">
             <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
             {chat.subtitle && (
-              <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
+              <span className="block truncate text-[12px] leading-4 text-[#8A8F94] dark:text-[#9AA0A6]">{chat.subtitle}</span>
             )}
           </span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
@@ -343,35 +323,35 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           )}
           {confirming ? (
             <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
-              <span className={`text-[11px] mr-0.5 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
+              <span className="text-[11px] mr-0.5 text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
               <button title={t.riDelConfirm} onClick={(e) => { e.stopPropagation(); onDelete(chat.id); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Check size={14} /></button>
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]"><Check size={14} /></button>
               <button title={t.cpCancel} onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><X size={13} /></button>
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><X size={13} /></button>
             </div>
           ) : (
             <>
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className={`text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>
+                <span className="text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}
               <div className="hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
                 <button title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}>
+                  className="w-6 h-6 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]">
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
                 </button>
                 <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Edit2 size={13} /></button>
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><Edit2 size={13} /></button>
                 <button title={t.archiveSession} onClick={(e) => { e.stopPropagation(); onArchive && onArchive(chat.id); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><Archive size={13} /></button>
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><Archive size={13} /></button>
                 <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF]'}`}><Trash2 size={13} /></button>
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#C4C7C5] dark:hover:text-[#F28B82] dark:hover:bg-[#5c2b29]"><Trash2 size={13} /></button>
                 <div className="relative">
                   <button title={t.riMore} onClick={toggleMenu}
-                    className={`w-6 h-6 rounded-full flex items-center justify-center ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}><MoreHorizontal size={14} /></button>
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><MoreHorizontal size={14} /></button>
                 </div>
               </div>
             </>

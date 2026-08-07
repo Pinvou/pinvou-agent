@@ -85,7 +85,6 @@ const ToolOutput = ({ item, isDark, t }) => {
     };
 
     const ToolCard = ({ item, theme, t, variant = 'legacy' }) => {
-      const isDark = theme === 'dark';
       const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';
       const [cancelling, setCancelling] = useState(false);
@@ -107,11 +106,15 @@ const ToolOutput = ({ item, isDark, t }) => {
       const quiet = QUIET_TOOLS.has(item.name);
       const summary = toolSummary(item.name, item.args, t);
 
+      // P3: isDark 仍为 ToolOutput 子组件 prop 透传保留(detail 行 <ToolOutput isDark={isDark} />)。
+      const isDark = theme === 'dark';
+
+      // 状态色:按 isRunning/isDone/isFailed 三态,各自给出 light base + dark: token。
       const statusColor = isRunning
-        ? (isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]')
+        ? 'text-[#0B57D0] dark:text-[#A8C7FA]'
         : isDone
-          ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
-          : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]');
+          ? 'text-[#137333] dark:text-[#93D5A6]'
+          : 'text-[#C5221F] dark:text-[#F28B82]';
 
       const statusText = isRunning ? t.toolRunning
         : (item.exitCode != null ? `${isDone ? t.toolDone : t.toolFailed} · exit ${item.exitCode}` : (isDone ? t.toolDone : t.toolFailed));
@@ -122,7 +125,7 @@ const ToolOutput = ({ item, isDark, t }) => {
           : isDone
             ? t.uiToolRender.done
             : t.uiToolRender.failed;
-      const mutedColor = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const mutedColor = 'text-[#757575] dark:text-[#8E8E8E]';
       const cancelBackground = async (event) => {
         event.stopPropagation();
         if (!item.taskId || cancelling) return;
@@ -144,14 +147,14 @@ const ToolOutput = ({ item, isDark, t }) => {
           data-shell-task-id={item.taskId}
           disabled={cancelling}
           onClick={cancelBackground}
-          className={`text-[11px] px-2 py-1 rounded-full disabled:opacity-50 ${isDark ? 'bg-white/10 text-[#F28B82] hover:bg-white/15' : 'bg-black/5 text-[#C5221F] hover:bg-black/10'}`}
+          className={`text-[11px] px-2 py-1 rounded-full disabled:opacity-50 bg-black/5 text-[#C5221F] hover:bg-black/10 dark:bg-white/10 dark:text-[#F28B82] dark:hover:bg-white/15`}
         >
           {cancelling ? t.cancelling : t.cancel}
         </button>
       ) : null;
 
       const detail = displayExpanded ? (
-        <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t ${isDark ? 'border-white/5' : 'border-black/5'}`}>
+        <div className={`${isTimeline ? 'px-3 pb-3' : 'px-4 pb-3'} border-t border-black/5 dark:border-white/5`}>
           {item.output != null
             ? <div className="mt-2"><ToolOutput item={item} isDark={isDark} t={t} /></div>
             : null}
@@ -209,9 +212,9 @@ const ToolOutput = ({ item, isDark, t }) => {
       if (quiet) {
         const iconColor = isDone ? mutedColor : statusColor;
         return (
-          <div className={expanded ? `rounded-[12px] overflow-hidden border ${isDark ? 'border-white/5' : 'border-black/5'}` : ''}>
+          <div className={expanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
             <div
-              className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer ${isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E8EDF2]'}`}
+              className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
               onClick={() => setExpanded(!expanded)}
             >
               <Wrench size={12} className={iconColor} />
@@ -231,13 +234,13 @@ const ToolOutput = ({ item, isDark, t }) => {
 
       // 有产出类：保留醒目卡片，标题行带摘要。
       return (
-        <div className={`rounded-[16px] overflow-hidden border ${isDark ? 'bg-[#1E1F20] border-white/5' : 'bg-[#F0F4F9] border-black/5'}`}>
+        <div className={`rounded-[16px] overflow-hidden border bg-[#F0F4F9] border-black/5 dark:bg-[#1E1F20] dark:border-white/5`}>
           <div
-            className={`flex items-center gap-3 px-4 py-3 cursor-pointer ${isDark ? 'hover:bg-[#282A2C]' : 'hover:bg-[#E8EDF2]'}`}
+            className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
             onClick={() => setExpanded(!expanded)}
           >
             <Wrench size={14} className={statusColor} />
-            <span className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+            <span className={`text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>
               {item.name}
             </span>
             {summary
@@ -245,10 +248,10 @@ const ToolOutput = ({ item, isDark, t }) => {
               : <span className="flex-1" />}
             <span className={`text-[12px] ${statusColor}`}>{statusText}</span>
             {cancelButton}
-            <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`} />
+            <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} text-[#444746] dark:text-[#C4C7C5]`} />
           </div>
           {shellCancelError && (
-            <div className={`px-4 pb-2 text-[11px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+            <div className={`px-4 pb-2 text-[11px] text-[#C5221F] dark:text-[#F28B82]`}>
               {shellCancelError}
             </div>
           )}
@@ -261,16 +264,16 @@ const ToolOutput = ({ item, isDark, t }) => {
     // Plan / 待办 步骤渲染
     // ==========================================
     const STEP_SYM = { completed: '●', in_progress: '◎', pending: '○' };
-    const PlanLayer = ({ label, explanation, items, field, isDark }) => {
+    const PlanLayer = ({ label, explanation, items, field }) => {
       if (!items || items.length === 0) return null;
       return (
         <section className="mb-2">
-          <div className={`text-[12px] font-semibold mb-1 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{label}</div>
-          {explanation && <p className={`text-[13px] mb-1.5 leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{explanation}</p>}
+          <div className={`text-[12px] font-semibold mb-1 text-[#0B57D0] dark:text-[#A8C7FA]`}>{label}</div>
+          {explanation && <p className={`text-[13px] mb-1.5 leading-relaxed text-[#444746] dark:text-[#C4C7C5]`}>{explanation}</p>}
           <ol className="space-y-1">
             {items.map((it, i) => (
-              <li key={i} className={`text-[13px] flex gap-2 leading-relaxed ${it.status === 'completed' ? 'opacity-60' : ''} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-                <span className={it.status === 'in_progress' ? (isDark ? 'text-[#FDD663]' : 'text-[#E37400]') : ''}>{STEP_SYM[it.status] || '○'}</span>
+              <li key={i} className={`text-[13px] flex gap-2 leading-relaxed ${it.status === 'completed' ? 'opacity-60' : ''} text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+                <span className={it.status === 'in_progress' ? 'text-[#E37400] dark:text-[#FDD663]' : ''}>{STEP_SYM[it.status] || '○'}</span>
                 <span>{it[field] || ''}</span>
               </li>
             ))}
@@ -304,11 +307,10 @@ const ToolOutput = ({ item, isDark, t }) => {
     //   issue.needs_verify(外部事实,AI 无知识)→ 让 AI 核实 / 我确认没问题;
     //   issue 其他(产物缺陷,AI 改得动)→ 让 AI 改 / 接受现状(high 默认勾)。
     // 「交给 AI 处理」按各条动作组装定向指令走 B1。单独子组件:useState 放这避 hooks 错位。
-    const PinvouRows = ({ review, theme, t, role }) => {
-      const isDark = theme === 'dark';
-      role = role || pvRole(false, isDark);
-      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
-      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+    const PinvouRows = ({ review, t, role }) => {
+      role = role || pvRole(false, false);
+      const body = 'text-[#000] dark:text-[#fff]';
+      const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       // iOS 语义色：high 红 / medium 橙 / low 灰
       const sevDot = (s) => s === 'high' ? '#FF3B30' : s === 'medium' ? '#FF9500' : '#C7C7CC';
       const rows = [
@@ -348,8 +350,8 @@ const ToolOutput = ({ item, isDark, t }) => {
       // iOS 分段按钮风：选中且需转交 AI=填充角色色(背景走 style)；选中但自行消化=灰填充；未选=描边。
       const chip = (on, active) => `text-[12px] px-2.5 py-1 rounded-full font-medium transition-all active:scale-[0.96] ${on
         ? (active ? 'text-white border border-transparent'
-                  : (isDark ? 'bg-white/15 text-[#fff] border border-transparent' : 'bg-black/[0.08] text-[#000] border border-transparent'))
-        : (isDark ? 'border border-white/15 text-[#EBEBF5]/70 hover:bg-white/5' : 'border border-black/[0.12] text-[#3C3C43]/80 hover:bg-black/5')}`;
+                  : 'bg-black/[0.08] text-[#000] border border-transparent dark:bg-white/15 dark:text-[#fff]')
+        : 'border border-black/[0.12] text-[#3C3C43]/80 hover:bg-black/5 dark:border-white/15 dark:text-[#EBEBF5]/70 dark:hover:bg-white/5'}`;
       const onResolve = () => {
         if (!bridge.available) return;
         // 弹窗里 review 是 notify 深拷贝,写它的 resolution 落不到原 state;把裁决按下标传给 bridge,
@@ -377,12 +379,12 @@ const ToolOutput = ({ item, isDark, t }) => {
               const decided = res[it.k];
               const passive = decided === 'accept' || decided === 'confirmed' || decided === 'skip';
               return (
-                <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} ${isDark ? 'bg-white/[0.06]' : 'bg-[#F2F2F7]'}`}>
+                <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} bg-[#F2F2F7] dark:bg-white/[0.06]`}>
                   <div className="flex gap-2.5">
                     <span className="mt-[7px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                     <div className="flex-1 min-w-0">
                       <div className={`text-[14px] leading-relaxed ${body}`}>
-                        {it.nv && <span className={`text-[10.5px] font-medium mr-1.5 px-1.5 py-px rounded-full align-[1px] ${isDark ? 'bg-[#FFD60A]/20 text-[#FFD60A]' : 'bg-[#FFF8E1] text-[#B25000]'}`}>{t.pvNeedsVerify}</span>}
+                        {it.nv && <span className={`text-[10.5px] font-medium mr-1.5 px-1.5 py-px rounded-full align-[1px] bg-[#FFF8E1] text-[#B25000] dark:bg-[#FFD60A]/20 dark:text-[#FFD60A]`}>{t.pvNeedsVerify}</span>}
                         {it.head}
                       </div>
                       {it.sub && <div className={`text-[13px] mt-0.5 ${muted}`}>{it.sub}</div>}
@@ -407,7 +409,7 @@ const ToolOutput = ({ item, isDark, t }) => {
               </button>
             )}
             <button onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} title={t.pvSkipTitle}
-              className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors ${isDark ? 'text-[#EBEBF5]/70 hover:bg-white/5' : 'text-[#3C3C43]/70 hover:bg-black/5'}`}>
+              className={`px-4 py-2 rounded-full text-[14px] font-medium transition-colors text-[#3C3C43]/70 hover:bg-black/5 dark:text-[#EBEBF5]/70 dark:hover:bg-white/5`}>
               {t.pvSkip}
             </button>
           </div>
@@ -423,7 +425,8 @@ const ToolOutput = ({ item, isDark, t }) => {
         return () => clearInterval(b);
       }, []);
       const role = pvRole(isWu, isDark);
-      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
+      // P3: isDark 保留——stroke 行内 style 与 pvRole(protected) 仍需它。
+      const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
       return (
         <div className="py-8 flex flex-col items-center text-center">
           {/* iOS activity spinner：底环 + 角色色弧，匀速旋转 */}
@@ -449,13 +452,14 @@ const ToolOutput = ({ item, isDark, t }) => {
       const isDark = theme === 'dark';
       const isWu = !!item.coverage; // 悟=发散(coverage)；品=查错
       const role = pvRole(isWu, isDark);
-      const muted = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
-      const body = isDark ? 'text-[#fff]' : 'text-[#000]';
+      const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+      const body = 'text-[#000] dark:text-[#fff]';
+      // P3: isDark 保留——pvRole(protected) 与 PinvouLoading isDark prop 仍需它。
       if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
       if (item.error) return (
         <div className="py-2">
           <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>
-          <div className={`text-[14px] mt-2 ${isDark ? 'text-[#FF453A]' : 'text-[#FF3B30]'}`}>{t.pvFail}{item.error}</div>
+          <div className={`text-[14px] mt-2 text-[#FF3B30] dark:text-[#FF453A]`}>{t.pvFail}{item.error}</div>
         </div>
       );
       const r = item.review || {};
@@ -476,7 +480,7 @@ const ToolOutput = ({ item, isDark, t }) => {
               {'Pinvou · ' + role.name}
               {primary.label && <span className={`text-[14px] font-normal ${muted}`}> · {primary.label + t.pvPerspective}</span>}
             </span>
-            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${isDark ? 'bg-[#30D158]/20 text-[#30D158]' : 'bg-[#34C759]/15 text-[#248A3D]'}`}>{t.pvVerdictPass}</span>}
+            {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#34C759]/15 text-[#248A3D] dark:bg-[#30D158]/20 dark:text-[#30D158]`}>{t.pvVerdictPass}</span>}
           </div>
           {alts.length > 0 && <div className={`text-[12px] -mt-1 mb-2 ${muted}`}>{t.pvAlsoInvolves} {alts.join(' / ')}</div>}
           {r.trace && <div className={`text-[14px] leading-relaxed mb-3 ${body}`}>{r.trace}</div>}
@@ -485,7 +489,7 @@ const ToolOutput = ({ item, isDark, t }) => {
               <span className="opacity-70">{t.pvFramework} · {(r.framework || []).length}{t.pvDims}: </span>{(r.framework || []).join(' · ')}
             </div>
           )}
-          {hasRows && <PinvouRows review={r} theme={theme} t={t} role={role} />}
+          {hasRows && <PinvouRows review={r} t={t} role={role} />}
         </div>
       );
     };
@@ -496,25 +500,26 @@ const ToolOutput = ({ item, isDark, t }) => {
     const PlanCard = ({ item, theme, t, onPrefill }) => {
       const isDark = theme === 'dark';
       const active = item.cardState === 'active' && !item.resolved && !!item.planId;
+      // P3: isDark 保留——cardBoxCls/cardBtnCls(protected) 仍需它。
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
-          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
+          <div className={`text-[14px] font-semibold mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>{t.planReady}</div>
           {(!item.plan && !item.todos)
-            ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planEmpty}</div>
+            ? <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{t.planEmpty}</div>
             : <>
-                <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" isDark={isDark} />
-                <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" isDark={isDark} />
+                <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" />
+                <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" />
               </>}
-          <div className={`h-px my-3 ${isDark ? 'bg-white/10' : 'bg-black/10'}`}></div>
+          <div className={`h-px my-3 bg-black/10 dark:bg-white/10`}></div>
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-[13px] mr-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planNext}</span>
+              <span className={`text-[13px] mr-1 text-[#444746] dark:text-[#C4C7C5]`}>{t.planNext}</span>
               <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.interaction.acceptPlan(item.id, item.planMarkdown, undefined, item.planId)}>{t.planGo}</button>
               <button className={cardBtnCls(isDark)} onClick={() => onPrefill && onPrefill(t.planRevisePrefill)}>{t.planEdit}</button>
               <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.discardPlan(item.id, item.planId)}>{t.planDrop}</button>
             </div>
           ) : (
-            <div className={`text-[13px] font-medium ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{item.statusLabel}</div>
+            <div className={`text-[13px] font-medium text-[#137333] dark:text-[#93D5A6]`}>{item.statusLabel}</div>
           )}
         </div>
       );
@@ -526,13 +531,14 @@ const ToolOutput = ({ item, isDark, t }) => {
     const PlanStuckCard = ({ item, theme, t }) => {
       const isDark = theme === 'dark';
       const done = item.resolved;
+      // P3: isDark 保留——cardBoxCls/cardBtnCls(protected) 仍需它。
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#FDD663]/30' : 'border-[#E37400]/20')}>
-          <div className={`text-[13px] leading-relaxed mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+          <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
             {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || t.uiToolRender.toolUnknown}</code> {t.stuckPlanPost}
           </div>
           {done ? (
-            <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{item.statusLabel || t.handled}</div>
+            <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
               <button className={cardBtnCls(isDark)} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
@@ -570,21 +576,22 @@ const ToolOutput = ({ item, isDark, t }) => {
       const humanReasons = [...new Set(rawReasons.map(r => humanizeReason(r, t)))];
       if (humanReasons.length === 0) humanReasons.push(t.rsDefault);
       const hasTech = rawReasons.length > 0 || rawSuggestions.length > 0;
+      // P3: isDark 保留——cardBoxCls(protected) 仍需它。
       return (
         <div className={cardBoxCls(isDark, isDark ? 'border-[#F28B82]/40' : 'border-[#C5221F]/30')}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.cbTitle}</div>
-          <div className={`text-[12px] mb-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.cbWant}</div>
-          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-2 overflow-x-auto ${isDark ? 'bg-[#131314] text-[#F28B82]' : 'bg-white text-[#C5221F]'}`}>{cmd}</pre>
+          <div className={`text-[14px] font-semibold mb-2 text-[#C5221F] dark:text-[#F28B82]`}>{t.cbTitle}</div>
+          <div className={`text-[12px] mb-1 text-[#757575] dark:text-[#8E8E8E]`}>{t.cbWant}</div>
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-2 overflow-x-auto bg-white text-[#C5221F] dark:bg-[#131314] dark:text-[#F28B82]`}>{cmd}</pre>
           <div className="mb-2">
-            <div className={`text-[12px] font-medium mb-1 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.cbWhy}</div>
-            <ul className={`list-disc pl-5 text-[13px] space-y-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{humanReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+            <div className={`text-[12px] font-medium mb-1 text-[#444746] dark:text-[#C4C7C5]`}>{t.cbWhy}</div>
+            <ul className={`list-disc pl-5 text-[13px] space-y-0.5 text-[#1F1F1F] dark:text-[#E3E3E3]`}>{humanReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
           </div>
-          <div className={`text-[12px] leading-relaxed mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.cbNote}</div>
+          <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>{t.cbNote}</div>
           {hasTech && (
             <div>
-              <button onClick={() => setShowTech(!showTech)} className={`text-[11px] ${isDark ? 'text-[#8AB4F8]' : 'text-[#0B57D0]'}`}>{showTech ? t.cbTechHide : t.cbTechShow}</button>
+              <button onClick={() => setShowTech(!showTech)} className={`text-[11px] text-[#0B57D0] dark:text-[#8AB4F8]`}>{showTech ? t.cbTechHide : t.cbTechShow}</button>
               {showTech && (
-                <div className={`mt-1 text-[11px] font-mono space-y-0.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
+                <div className={`mt-1 text-[11px] font-mono space-y-0.5 text-[#757575] dark:text-[#8E8E8E]`}>
                   {rawReasons.map((r, i) => <div key={'r' + i}>· {r}</div>)}
                   {rawSuggestions.map((s, i) => <div key={'s' + i}>→ {s}</div>)}
                 </div>

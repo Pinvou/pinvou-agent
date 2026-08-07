@@ -8,13 +8,19 @@ import { can, isWeb } from '../../shared/platform.js';
 import { dict } from '../../shared/i18n.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
-import { cardBtnCls } from '../tools/tool-renderers.jsx';
+// Inlined equivalents of cardBtnCls(theme-derived) / cardBtnCls(theme-derived,'primary')
+// from tool-renderers.jsx, expanded to static dark: variant strings. tool-renderers.jsx is
+// migrated in its own P1-7 PR; this file inlines the two variants here (instead of calling
+// the helper) so it has zero theme-derived references. P1-7/P3 may later restore the helper
+// call as cardBtnCls(variant). Base matches tool-renderers.jsx cardBtnCls base; non-primary
+// dark originally had no border so dark:border-transparent suppresses the light-side border.
+const WF_BTN = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]';
+const WF_BTN_PRIMARY = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]';
 
 const WidgetCard = ({ title, children, theme }) => {
-      const isDark = theme === 'dark';
       return (
-        <div className={`rounded-[24px] p-8 flex flex-col transition-shadow hover:shadow-md ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-          <div className={`text-[14px] font-medium tracking-wide mb-6 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>
+        <div className="rounded-[24px] p-8 flex flex-col transition-shadow hover:shadow-md bg-[#F0F4F9] dark:bg-[#1E1F20]">
+          <div className="text-[14px] font-medium tracking-wide mb-6 text-[#0B57D0] dark:text-[#A8C7FA]">
             {title}
           </div>
           <div className="flex-1 flex flex-col">
@@ -25,20 +31,19 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     const ProgressBar = ({ label, value, subValue, percentage, theme, color = "#0B57D0" }) => {
-      const isDark = theme === 'dark';
       return (
         <div>
           <div className="flex justify-between items-end mb-2">
-            <span className={`text-[14px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{label}</span>
+            <span className="text-[14px] text-[#1F1F1F] dark:text-[#E3E3E3]">{label}</span>
             <div className="text-right">
-              <span className={`text-[16px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{value}</span>
-              {subValue && <span className={`text-[13px] ml-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{subValue}</span>}
+              <span className="text-[16px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]">{value}</span>
+              {subValue && <span className="text-[13px] ml-2 text-[#444746] dark:text-[#C4C7C5]">{subValue}</span>}
             </div>
           </div>
-          <div className={`h-2 w-full rounded-full overflow-hidden ${isDark ? 'bg-[#333537]' : 'bg-[#E1E5EA]'}`}>
+          <div className="h-2 w-full rounded-full overflow-hidden bg-[#E1E5EA] dark:bg-[#333537]">
             <div
-              className="h-full rounded-full transition-all duration-1000 ease-out"
-              style={{ width: `${percentage > 0 ? percentage : 100}%`, backgroundColor: percentage > 0 ? color : (isDark ? '#444746' : '#C4C7C5') }}
+              className="h-full rounded-full transition-all duration-1000 ease-out bg-[#C4C7C5] dark:bg-[#444746]"
+              style={{ width: `${percentage > 0 ? percentage : 100}%`, backgroundColor: percentage > 0 ? color : undefined }}
             ></div>
           </div>
         </div>
@@ -46,12 +51,11 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     const ListRow = ({ label, value, border = true, theme }) => {
-      const isDark = theme === 'dark';
       return (
         <div className="flex justify-between items-center px-4 py-3 relative">
-          <span className={`text-[14px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{label}</span>
-          <span className={`text-[14px] font-mono ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{value}</span>
-          {border && <div className={`absolute bottom-0 right-4 left-4 h-[1px] ${isDark ? 'bg-white/5' : 'bg-black/5'}`}></div>}
+          <span className="text-[14px] text-[#1F1F1F] dark:text-[#E3E3E3]">{label}</span>
+          <span className="text-[14px] font-mono text-[#444746] dark:text-[#C4C7C5]">{value}</span>
+          {border && <div className="absolute bottom-0 right-4 left-4 h-[1px] bg-black/5 dark:bg-white/5"></div>}
         </div>
       );
     };
@@ -245,20 +249,20 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // [per_page] fan-out chip 网格：把一个 per_page 节点展开成 N 个 SubAgent 实时状态格子。
-    const FanoutGrid = ({ fanout, isDark, t }) => {
+    const FanoutGrid = ({ fanout, t }) => {
       if (!fanout || !fanout.pages || !fanout.pages.length) return null;
       const COLORS = {
-        running:  { bg: '#1A73E8', fg: '#fff', label: t.uiWorkflow.fanoutRunning },
-        done:     { bg: isDark ? '#1E3A2A' : '#137333', fg: '#fff', label: '✓' },
-        retrying: { bg: '#E8710A', fg: '#fff', label: '↻' },
-        queued:   { bg: isDark ? '#3C4043' : '#DADCE0', fg: isDark ? '#9AA0A6' : '#5F6368', label: '·' },
+        running:  { cls: 'bg-[#1A73E8] text-white', label: t.uiWorkflow.fanoutRunning },
+        done:     { cls: 'bg-[#137333] dark:bg-[#1E3A2A] text-white', label: '✓' },
+        retrying: { cls: 'bg-[#E8710A] text-white', label: '↻' },
+        queued:   { cls: 'bg-[#DADCE0] dark:bg-[#3C4043] text-[#5F6368] dark:text-[#9AA0A6]', label: '·' },
       };
       const pages = [...fanout.pages].sort((a, b) => a.page - b.page);
       const doneN = pages.filter(p => p.status === 'done').length;
       const runN = pages.filter(p => p.status === 'running' || p.status === 'retrying').length;
       return (
         <div className="mt-2 w-full">
-          <div className={`text-[10px] mb-1 text-center ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
+          <div className="text-[10px] mb-1 text-center text-[#757575] dark:text-[#8E8E8E]">
             {t.uiWorkflow.fanoutProgress(doneN, pages.length, runN)}
           </div>
           <div className="flex flex-wrap gap-1 justify-center">
@@ -268,8 +272,8 @@ const WidgetCard = ({ title, children, theme }) => {
               return (
                 <div key={p.page}
                   title={'p' + p.page + ' · ' + p.status}
-                  className={'flex items-center justify-center rounded text-[9px] font-semibold' + pulse}
-                  style={{ width: 22, height: 18, background: c.bg, color: c.fg }}>
+                  className={'flex items-center justify-center rounded text-[9px] font-semibold' + pulse + ' ' + c.cls}
+                  style={{ width: 22, height: 18 }}>
                   {p.page}
                 </div>
               );
@@ -280,7 +284,6 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     const AgentCard = ({ agent, status, failureReason, waitingFor, fanout, progress, tokens, theme, onApprove, onRetry, onClick, t }) => {
-      const isDark = theme === 'dark';
       const st = status || 'pending';
       const uiState = toUiState(st);
       const isActive = st === 'running' || st === 'reviewing' || st === 'briefing';
@@ -290,12 +293,15 @@ const WidgetCard = ({ title, children, theme }) => {
       const isWaiting = st === 'gate_waiting' || st === 'gate_approval' || st === 'waiting_human';
       const isBlocked = st === 'blocked' || st === 'blocked-upstream';
 
-      const cardBg = isDark
-        ? (isActive ? 'bg-[#1E2530]' : isDone ? 'bg-[#1A2420]' : isFailed ? 'bg-[#2A1A1A]' : isWaiting ? 'bg-[#2A2418]' : 'bg-[#1E1F20]')
-        : (isActive ? 'bg-white' : isDone ? 'bg-[#F8FFF8]' : isFailed ? 'bg-[#FFF5F5]' : isWaiting ? 'bg-[#FFFAF0]' : 'bg-[#F8F9FA]');
-      const borderColor = isDark
-        ? (isActive ? 'border-white/10' : isDone ? 'border-[#81C995]/20' : isFailed ? 'border-[#F28B82]/30' : 'border-white/5')
-        : (isActive ? 'border-[#1A73E8]/20' : isDone ? 'border-[#137333]/10' : isFailed ? 'border-[#C5221F]/15' : 'border-black/5');
+      const cardBg = isActive ? 'bg-white dark:bg-[#1E2530]'
+        : isDone ? 'bg-[#F8FFF8] dark:bg-[#1A2420]'
+        : isFailed ? 'bg-[#FFF5F5] dark:bg-[#2A1A1A]'
+        : isWaiting ? 'bg-[#FFFAF0] dark:bg-[#2A2418]'
+        : 'bg-[#F8F9FA] dark:bg-[#1E1F20]';
+      const borderColor = isActive ? 'border-[#1A73E8]/20 dark:border-white/10'
+        : isDone ? 'border-[#137333]/10 dark:border-[#81C995]/20'
+        : isFailed ? 'border-[#C5221F]/15 dark:border-[#F28B82]/30'
+        : 'border-black/5 dark:border-white/5';
 
       const statusLabels = t.uiWorkflow.statusLabels;
       const statusEmoji = {
@@ -322,24 +328,24 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className={`mb-2 transition-transform duration-700 ${isActive ? 'scale-105' : ''}`}>
             <AgentAvatar color={agent.color} status={st} size={92} avatar={agent.avatar} />
           </div>
-          <div className={`text-[14px] font-semibold mb-0.5 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{agent.name}</div>
-          <div className={`text-[11px] text-center mb-2 leading-relaxed line-clamp-2 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{agent.desc}</div>
+          <div className="text-[14px] font-semibold mb-0.5 text-[#1F1F1F] dark:text-[#E3E3E3]">{agent.name}</div>
+          <div className="text-[11px] text-center mb-2 leading-relaxed line-clamp-2 text-[#757575] dark:text-[#8E8E8E]">{agent.desc}</div>
           {waitingLabel && (
-            <div className={`text-[10px] text-center mb-1 px-1 ${isDark ? 'text-[#FCAD70]' : 'text-[#E8710A]'}`}>{waitingLabel}</div>
+            <div className="text-[10px] text-center mb-1 px-1 text-[#E8710A] dark:text-[#FCAD70]">{waitingLabel}</div>
           )}
           <div className={`text-[11px] font-medium px-2 py-0.5 rounded-full flex items-center gap-1 ${
-            isActive ? (isDark ? 'bg-white/10 text-white' : 'bg-black/5 text-[#1F1F1F]')
-            : isDone ? (isDark ? 'bg-[#81C995]/10 text-[#81C995]' : 'bg-[#E6F4EA] text-[#137333]')
-            : isFailed ? (isDark ? 'bg-[#F28B82]/10 text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
-            : isWaiting ? (isDark ? 'bg-[#FCAD70]/10 text-[#FCAD70]' : 'bg-[#FFF3E0] text-[#E8710A]')
-            : (isDark ? 'bg-white/5 text-[#5F6368]' : 'bg-black/5 text-[#9AA0A6]')
+            isActive ? 'bg-black/5 dark:bg-white/10 text-[#1F1F1F] dark:text-white'
+            : isDone ? 'bg-[#E6F4EA] dark:bg-[#81C995]/10 text-[#137333] dark:text-[#81C995]'
+            : isFailed ? 'bg-[#FCE8E6] dark:bg-[#F28B82]/10 text-[#C5221F] dark:text-[#F28B82]'
+            : isWaiting ? 'bg-[#FFF3E0] dark:bg-[#FCAD70]/10 text-[#E8710A] dark:text-[#FCAD70]'
+            : 'bg-black/5 dark:bg-white/5 text-[#9AA0A6] dark:text-[#5F6368]'
           }`}>
             <span>{statusEmoji[st] || '💤'}</span>
             <span>{statusLabels[st] || t.uiWorkflow.idle}</span>
           </div>
           {(isFailed || isBlocked) && failureReason ? (
             <div data-testid={`workflow-agent-error-${agent.id}`} title={failureReason}
-                 className={`mt-2 w-full text-[10px] leading-relaxed text-center line-clamp-3 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>
+                 className="mt-2 w-full text-[10px] leading-relaxed text-center line-clamp-3 text-[#C5221F] dark:text-[#F28B82]">
               {failureReason}
             </div>
           ) : null}
@@ -355,7 +361,7 @@ const WidgetCard = ({ title, children, theme }) => {
               ⬡ {((tokens.input + tokens.output) / 1000).toFixed(1)}k tok · {t.uiWorkflow.callsText(tokens.calls)}
             </div>
           ) : null}
-          <FanoutGrid fanout={fanout} isDark={isDark} t={t} />
+          <FanoutGrid fanout={fanout} t={t} />
           {isWaiting && onApprove && (
             <button onClick={(e) => { e.stopPropagation(); onApprove(agent.id); }}
               className="mt-2 text-[11px] px-4 py-1 rounded-full font-medium bg-[#1A73E8] text-white hover:bg-[#1557B0] transition-colors">
@@ -375,7 +381,6 @@ const WidgetCard = ({ title, children, theme }) => {
     // 自上而下 路由图：层层向下，符合古代权力分布(皇上→太子→三省→六部→回奏)。
     // 卡片居中；卡片之间按【实际路由依赖】用曲线相连——无明确路由的卡片不连线。
     const AgentPipelineView = ({ ui, agents, agentStates, agentErrors, agentDeps, fanout, progress, tokens, theme, onApprove, onRetry, onCardClick, t }) => {
-      const isDark = theme === 'dark';
       // 布局全按 run.ui(workflow.json)+ 实际 agents 算;差事动态分批在 layoutForRun 内处理。
       const { defs, lanes } = layoutForRun(ui, agents, t);
       const containerRef = useRef(null);
@@ -429,7 +434,6 @@ const WidgetCard = ({ title, children, theme }) => {
         return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
       }, [JSON.stringify((ui && ui.lanes) || null), JSON.stringify(agentStates), JSON.stringify(agentDeps)]);
 
-      const lineColor = isDark ? 'rgba(168,199,250,0.40)' : 'rgba(11,87,208,0.30)';
       // 紧凑视口：画布式连线在手机上放不下也看不清，降级为按层纵向列表
       //（卡片全宽、不画 SVG）；层标题保留，执行顺序仍然自上而下可读。
       if (compactViewport) {
@@ -437,7 +441,7 @@ const WidgetCard = ({ title, children, theme }) => {
           <div data-testid="workflow-pipeline-compact" className="flex flex-col gap-5 py-1">
             {lanes.map((lane, i) => (
               <div key={i}>
-                <div className={`text-[10px] uppercase tracking-wider mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#9AA0A6]'}`}>{lane.title}</div>
+                <div className="text-[10px] uppercase tracking-wider mb-1.5 text-[#9AA0A6] dark:text-[#8E8E8E]">{lane.title}</div>
                 <div className="flex flex-col gap-3">
                   {lane.agents.map(rid => {
                     const agent = defs.find(a => a.id === rid);
@@ -464,13 +468,14 @@ const WidgetCard = ({ title, children, theme }) => {
         <div ref={containerRef} className="relative flex flex-col gap-6 items-stretch py-1">
           <svg className="absolute inset-0 pointer-events-none" width={dims.w} height={dims.h} style={{ zIndex: 0, overflow: 'visible' }}>
             {edges.map((e, i) => (
-              <path key={i} fill="none" stroke={lineColor} strokeWidth="1.5"
+              <path key={i} fill="none" strokeWidth="1.5"
+                className="stroke-[rgba(11,87,208,0.30)] dark:stroke-[rgba(168,199,250,0.40)]"
                 d={`M ${e.x1} ${e.y1} C ${e.x1} ${(e.y1 + e.y2) / 2}, ${e.x2} ${(e.y1 + e.y2) / 2}, ${e.x2} ${e.y2}`} />
             ))}
           </svg>
           {lanes.map((lane, i) => (
             <div key={i} className="relative" style={{ zIndex: 1 }}>
-              <div className={`text-[10px] uppercase tracking-wider text-center mb-1.5 ${isDark ? 'text-[#8E8E8E]' : 'text-[#9AA0A6]'}`}>{lane.title}</div>
+              <div className="text-[10px] uppercase tracking-wider text-center mb-1.5 text-[#9AA0A6] dark:text-[#8E8E8E]">{lane.title}</div>
               <div className="flex flex-row flex-wrap gap-4 justify-center">
                 {lane.agents.map(rid => {
                   const agent = defs.find(a => a.id === rid);
@@ -499,7 +504,6 @@ const WidgetCard = ({ title, children, theme }) => {
     // [2026-06-07] 通用文件预览浮层:产出文件/产物点文件名内联看,不再甩浏览器。
     // json 自动 parse+缩进+解 \u 转义;md→markdown、html→iframe、text/json→<pre>;其余给外部打开兜底。
     const FilePreviewModal = ({ path, sessionId, theme, onClose, t }) => {
-      const isDark = theme === 'dark';
       const [pv, setPv] = useState({ loading: true });
       useEffect(() => {
         let alive = true;
@@ -529,29 +533,29 @@ const WidgetCard = ({ title, children, theme }) => {
         return () => { alive = false; };
       }, [path, sessionId]);
       const base = (path || '').split('/').pop();
-      const dim = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
+      const dim = 'text-[#757575] dark:text-[#8E8E8E]';
       return (
         <div className="absolute inset-0 z-[60] flex items-center justify-center pointer-events-auto">
           <div className="absolute inset-0 bg-black/50" onClick={onClose}></div>
-          <div className={`relative w-[860px] max-w-[92vw] h-[82vh] flex flex-col rounded-[16px] shadow-2xl overflow-hidden ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-            <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={path}>{base}</span>
+          <div className="relative w-[860px] max-w-[92vw] h-[82vh] flex flex-col rounded-[16px] shadow-2xl overflow-hidden bg-white dark:bg-[#1E1F20]">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
+              <span className="text-[14px] font-medium truncate text-[#1F1F1F] dark:text-[#E3E3E3]" title={path}>{base}</span>
               <div className="flex items-center gap-2">
-                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{isWeb ? t.uiWorkflow.download : t.uiWorkflow.openExternal}</button>}
-                <button onClick={onClose} className={`w-7 h-7 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
+                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path, sessionId)} className="px-2 py-1 text-[12px] rounded text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#333537]">{isWeb ? t.uiWorkflow.download : t.uiWorkflow.openExternal}</button>}
+                <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] dark:hover:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]">✕</button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
               {pv.loading ? <div className={`text-[13px] ${dim}`}>{t.uiWorkflow.loading}</div>
                 : pv.missing ? <div className={`text-[13px] ${dim}`}>{t.uiWorkflow.fileMissing}</div>
                 : pv.error ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.readFailed(pv.error)}</div>
-                : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(pv.text || '') }} />
+                : pv.kind === 'md' ? <div className="msg-md text-[14px] leading-relaxed light-code dark-code text-[#1F1F1F] dark:text-[#E3E3E3]" dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(pv.text || '') }} />
                 : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
-                : (pv.kind === 'json' || pv.kind === 'text') ? <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
+                : (pv.kind === 'json' || pv.kind === 'text') ? <pre className="text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed text-[#444746] dark:text-[#C4C7C5]">{pv.text}</pre>
                 : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.imageReadFailed(pv.imgErr)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
                 : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
-                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.uiWorkflow.previewUnsupported}</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{isWeb ? t.uiWorkflow.downloadArtifact : t.uiWorkflow.openExternalArtifact}</button>}</div>}
+                : <div><p className="text-[13px] mb-2 text-[#444746] dark:text-[#C4C7C5]">{t.uiWorkflow.previewUnsupported}</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal(path, sessionId)} className="px-3 py-1.5 rounded-full text-[13px] bg-[#0B57D0] dark:bg-[#A8C7FA] text-white dark:text-[#062E6F]">{isWeb ? t.uiWorkflow.downloadArtifact : t.uiWorkflow.openExternalArtifact}</button>}</div>}
             </div>
           </div>
         </div>
@@ -693,7 +697,6 @@ const WidgetCard = ({ title, children, theme }) => {
     // (ImageProviderPanel 已随 legacy-ppt-workflow 工作流 2026-06-11 存档下线:仅 illustrator 角色用)
 
     const CardDrawer = ({ roleId, projectDir, sessionId, failureReason, theme, onClose, t }) => {
-      const isDark = theme === 'dark';
       const [info, setInfo] = useState({ loading: false, error: null, data: null });
       const [outputs, setOutputs] = useState({ loading: false, error: null, data: null });
       const [gate, setGate] = useState({ loading: false, error: null, data: null });
@@ -728,22 +731,22 @@ const WidgetCard = ({ title, children, theme }) => {
       };
       const verdictStyle = (v) => {
         const s = String(v || '').toLowerCase();
-        if (['pass', 'passed', 'approve', 'approved', 'ok'].includes(s)) return isDark ? 'bg-[#1E3A2A] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]';
-        if (['fail', 'failed', 'reject', 'rejected', 'block', 'blocked'].includes(s)) return isDark ? 'bg-[#3A1E1E] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]';
-        return isDark ? 'bg-[#333537] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]';
+        if (['pass', 'passed', 'approve', 'approved', 'ok'].includes(s)) return 'bg-[#E6F4EA] dark:bg-[#1E3A2A] text-[#137333] dark:text-[#93D5A6]';
+        if (['fail', 'failed', 'reject', 'rejected', 'block', 'blocked'].includes(s)) return 'bg-[#FCE8E6] dark:bg-[#3A1E1E] text-[#C5221F] dark:text-[#F28B82]';
+        return 'bg-[#F0F4F9] dark:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]';
       };
       const fmtTs = (ts) => {
         if (!ts) return '';
         const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts);
         return isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
       };
-      const titleCls = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
-      const bodyCls = isDark ? 'text-[#C4C7C5]' : 'text-[#444746]';
-      const dimCls = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
-      const secHeadCls = `text-[12px] font-semibold mb-2 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`;
+      const titleCls = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
+      const bodyCls = 'text-[#444746] dark:text-[#C4C7C5]';
+      const dimCls = 'text-[#757575] dark:text-[#8E8E8E]';
+      const secHeadCls = 'text-[12px] font-semibold mb-2 text-[#0B57D0] dark:text-[#A8C7FA]';
       const StateLine = ({ st, empty }) => {
         if (st.loading) return <div className={`text-[13px] ${dimCls}`}>{t.uiWorkflow.loading}</div>;
-        if (st.error) return <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>⚠️ {st.error}</div>;
+        if (st.error) return <div className="text-[13px] text-[#C5221F] dark:text-[#F28B82]">⚠️ {st.error}</div>;
         if (empty) return <div className={`text-[13px] ${dimCls}`}>{empty}</div>;
         return null;
       };
@@ -760,19 +763,19 @@ const WidgetCard = ({ title, children, theme }) => {
       return (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/60" onClick={onClose}></div>
-          <div className={`relative w-[420px] max-w-[92vw] h-full flex flex-col shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'} animate-in slide-in-from-right duration-200`}>
-            <div className={`flex items-center justify-between px-4 py-3 border-b shrink-0 ${isDark ? 'border-white/10' : 'border-black/10'}`}>
+          <div className="relative w-[420px] max-w-[92vw] h-full flex flex-col shadow-2xl bg-white dark:bg-[#1E1F20] animate-in slide-in-from-right duration-200">
+            <div className="flex items-center justify-between px-4 py-3 border-b shrink-0 border-black/10 dark:border-white/10">
               <div className="min-w-0">
                 <div className={`text-[15px] font-medium truncate ${titleCls}`}>⚙️ {roleId}</div>
                 {projectDir && <div className={`text-[11px] font-mono truncate ${dimCls}`} title={projectDir}>{projectDir}</div>}
               </div>
-              <button onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ml-2 ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
+              <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 ml-2 hover:bg-[#F0F4F9] dark:hover:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
               {failureReason && (
                 <section data-testid="workflow-failure-reason">
-                  <div className={`text-[12px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.uiWorkflow.recentFailure}</div>
-                  <pre className={`text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono rounded-[12px] p-3 border ${isDark ? 'border-[#F28B82]/30 bg-[#2A1A1A] text-[#F28B82]' : 'border-[#C5221F]/20 bg-[#FFF5F5] text-[#A50E0E]'}`}>{failureReason}</pre>
+                  <div className="text-[12px] font-semibold mb-2 text-[#C5221F] dark:text-[#F28B82]">{t.uiWorkflow.recentFailure}</div>
+                  <pre className="text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono rounded-[12px] p-3 border border-[#C5221F]/20 dark:border-[#F28B82]/30 bg-[#FFF5F5] dark:bg-[#2A1A1A] text-[#A50E0E] dark:text-[#F28B82]">{failureReason}</pre>
                 </section>
               )}
               <section>
@@ -788,7 +791,7 @@ const WidgetCard = ({ title, children, theme }) => {
                       <div className={`${dimCls} mb-1`}>{t.uiWorkflow.tools}</div>
                       <div className="flex flex-wrap gap-1">
                         {(meta.tools || []).length ? (meta.tools).map((t, i) => (
-                          <span key={i} className={`text-[11px] px-1.5 py-0.5 rounded font-mono ${isDark ? 'bg-[#333537] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>{t}</span>
+                          <span key={i} className="text-[11px] px-1.5 py-0.5 rounded font-mono bg-[#F0F4F9] dark:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]">{t}</span>
                         )) : <span className={dimCls}>—</span>}
                       </div>
                     </div>
@@ -805,7 +808,7 @@ const WidgetCard = ({ title, children, theme }) => {
                         <ul className="mt-1 space-y-0.5">
                           {Object.keys(meta.output_schema).map((k, i) => (
                             <li key={i} className={`text-[12px] ${bodyCls}`}>
-                              <code className={`text-[11px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{k}</code>
+                              <code className="text-[11px] text-[#0B57D0] dark:text-[#A8C7FA]">{k}</code>
                               <span className={dimCls}> — {typeof meta.output_schema[k] === 'string' ? meta.output_schema[k] : JSON.stringify(meta.output_schema[k])}</span>
                             </li>
                           ))}
@@ -814,8 +817,8 @@ const WidgetCard = ({ title, children, theme }) => {
                     </div>
                     {promptMd && (
                       <details>
-                        <summary className={`cursor-pointer text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.viewFullPrompt}</summary>
-                        <pre className={`mt-2 text-[11px] whitespace-pre-wrap break-words font-mono max-h-[300px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border ${isDark ? 'border-white/10 bg-[#131314] text-[#C4C7C5]' : 'border-black/10 bg-[#F8FAFC] text-[#444746]'}`}>{promptMd}</pre>
+                        <summary className="cursor-pointer text-[12px] text-[#0B57D0] dark:text-[#A8C7FA]">{t.uiWorkflow.viewFullPrompt}</summary>
+                        <pre className="mt-2 text-[11px] whitespace-pre-wrap break-words font-mono max-h-[300px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border border-black/10 dark:border-white/10 bg-[#F8FAFC] dark:bg-[#131314] text-[#444746] dark:text-[#C4C7C5]">{promptMd}</pre>
                       </details>
                     )}
                   </div>
@@ -827,7 +830,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 {files.length > 0 && (
                   <div className="space-y-1">
                     {files.map((f, i) => (
-                      <div key={i} title={f.path || f.basename} className={`flex items-center gap-2 px-2.5 py-2 rounded-[12px] border ${isDark ? 'border-white/10 bg-[#131314]' : 'border-black/10 bg-[#F8FAFC]'}`}>
+                      <div key={i} title={f.path || f.basename} className="flex items-center gap-2 px-2.5 py-2 rounded-[12px] border border-black/10 dark:border-white/10 bg-[#F8FAFC] dark:bg-[#131314]">
                         <FileTypeIcon name={f.basename} className="h-4 w-4 shrink-0" />
                         <span onClick={() => f.path && setPreviewPath(f.path)} title={t.uiWorkflow.clickPreview} className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || t.uiWorkflow.unnamed}</span>
                         {f.path && (
@@ -863,7 +866,7 @@ const WidgetCard = ({ title, children, theme }) => {
                 <div className={secHeadCls}>{t.uiWorkflow.runLogs(60)}</div>
                 <StateLine st={logs} empty={!logs.loading && !logs.error && !tail ? t.uiWorkflow.noLogs : null} />
                 {!logs.loading && !logs.error && tail && (
-                  <pre className={`text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono max-h-[320px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border ${isDark ? 'border-white/10 bg-[#131314] text-[#C4C7C5]' : 'border-black/10 bg-[#F8FAFC] text-[#444746]'}`}>{tail}</pre>
+                  <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono max-h-[320px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border border-black/10 dark:border-white/10 bg-[#F8FAFC] dark:bg-[#131314] text-[#444746] dark:text-[#C4C7C5]">{tail}</pre>
                 )}
               </section>
             </div>
@@ -875,7 +878,6 @@ const WidgetCard = ({ title, children, theme }) => {
 
     // —— 底部交互区：问答卡 / gate 卡 / 系统卡 ——
     const WfUserInputCard = ({ card, theme, t }) => {
-      const isDark = theme === 'dark';
       const questions = card.questions || [];
       const [answers, setAnswers] = useState(() => questions.map(() => null));
       const [matState, setMatState] = useState({ busy: false, names: [] }); // [2026-06-06] 素材上传反馈
@@ -901,15 +903,15 @@ const WidgetCard = ({ title, children, theme }) => {
       if (locked) {
         const cancelled = card.cardState === 'cancelled';
         return (
-          <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.aiQuestions}</div>
-            <div className={`text-[13px] ${cancelled ? (isDark ? 'text-[#8E8E8E]' : 'text-[#757575]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{cancelled ? t.uiWorkflow.cancelled : t.uiWorkflow.submitted}</div>
+          <div className="rounded-[16px] border p-4 bg-white dark:bg-[#1E1F20] border-black/10 dark:border-white/10">
+            <div className="text-[14px] font-semibold mb-1 text-[#1F1F1F] dark:text-[#E3E3E3]">{t.uiWorkflow.aiQuestions}</div>
+            <div className={`text-[13px] ${cancelled ? 'text-[#757575] dark:text-[#8E8E8E]' : 'text-[#137333] dark:text-[#93D5A6]'}`}>{cancelled ? t.uiWorkflow.cancelled : t.uiWorkflow.submitted}</div>
           </div>
         );
       }
       return (
-        <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#A8C7FA]/30' : 'bg-white border-[#0B57D0]/20'}`}>
-          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.aiQuestions}</div>
+        <div className="rounded-[16px] border p-4 bg-white dark:bg-[#1E1F20] border-[#0B57D0]/20 dark:border-[#A8C7FA]/30">
+          <div className="text-[14px] font-semibold mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]">{t.uiWorkflow.aiQuestions}</div>
           {/* [2026-06-06] 素材上传：选文件 → 拷进当前 run 配套材料/ → 再选「已补充」让审计员重扫 */}
           <div className="mb-3 flex items-center flex-wrap gap-2">
             {(!isWeb || can('hostFilePicker')) && <button disabled={matState.busy}
@@ -918,48 +920,47 @@ const WidgetCard = ({ title, children, theme }) => {
                 try { const added = await bridge.workflow.pickAndAddMaterials(); setMatState({ busy: false, names: matState.names.concat(added || []) }); }
                 catch (e) { setMatState({ busy: false, names: matState.names }); }
               }}
-              className={`px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 ${isDark ? 'border-[#A8C7FA]/40 text-[#A8C7FA] hover:bg-[#A8C7FA]/10' : 'border-[#0B57D0]/30 text-[#0B57D0] hover:bg-[#0B57D0]/5'}`}>
+              className="px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 border-[#0B57D0]/30 dark:border-[#A8C7FA]/40 text-[#0B57D0] dark:text-[#A8C7FA] hover:bg-[#0B57D0]/5 dark:hover:bg-[#A8C7FA]/10">
               {matState.busy ? t.uiWorkflow.uploading : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{t.uiWorkflow.uploadMaterials}</span>}
             </button>}
-            {matState.names.length > 0 && <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.uiWorkflow.uploaded(matState.names.length)}{matState.names.join(t.uiWorkflow.listSep)}</span>}
+            {matState.names.length > 0 && <span className="text-[12px] text-[#137333] dark:text-[#93D5A6]">{t.uiWorkflow.uploaded(matState.names.length)}{matState.names.join(t.uiWorkflow.listSep)}</span>}
           </div>
           <div className="space-y-4">
             {questions.map((q, qi) => (
               <div key={q.id || qi}>
-                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || t.uiWorkflow.questionHeader(qi + 1)}</div>
-                <div className={`text-[13px] mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{q.question || ''}</div>
+                <div className="text-[12px] font-semibold text-[#0B57D0] dark:text-[#A8C7FA]">{q.header || t.uiWorkflow.questionHeader(qi + 1)}</div>
+                <div className="text-[13px] mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]">{q.question || ''}</div>
                 <div className="flex flex-col gap-1.5">
                   {(q.options || []).map((opt, oi) => {
                     const sel = answers[qi] && answers[qi].label === opt.label && answers[qi].value === opt.label;
                     return (
                       <button key={oi} onClick={() => pick(qi, opt)}
-                        className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${sel ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
-                        <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{opt.label}</div>
-                        {opt.description && <div className={`text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{opt.description}</div>}
+                        className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${sel ? 'border-[#0B57D0] bg-[#0B57D0]/5 dark:border-[#A8C7FA] dark:bg-[#A8C7FA]/10' : 'border-black/10 dark:border-white/10 hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]'}`}>
+                        <div className="text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]">{opt.label}</div>
+                        {opt.description && <div className="text-[12px] text-[#757575] dark:text-[#8E8E8E]">{opt.description}</div>}
                       </button>
                     );
                   })}
                   <button onClick={() => toggleOther(qi)}
-                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi]?.kind === 'other' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
-                    <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.otherOption}</div>
+                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi]?.kind === 'other' ? 'border-[#0B57D0] bg-[#0B57D0]/5 dark:border-[#A8C7FA] dark:bg-[#A8C7FA]/10' : 'border-black/10 dark:border-white/10 hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]'}`}>
+                    <div className="text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]">{t.uiWorkflow.otherOption}</div>
                   </button>
                   {otherOpen[qi] && (
                     <textarea rows="2" value={otherText[qi]} onChange={e => setOther(qi, e.target.value)} placeholder={t.uiWorkflow.otherPlaceholder}
-                      className={`w-full rounded-[10px] p-2 text-[13px] outline-none border ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
+                      className="w-full rounded-[10px] p-2 text-[13px] outline-none border bg-white dark:bg-[#131314] border-black/10 dark:border-white/10 text-[#1F1F1F] dark:text-[#E3E3E3]" />
                   )}
                 </div>
               </div>
             ))}
           </div>
           <div className="flex justify-end mt-3">
-            <button disabled={!canSubmit} onClick={submit} className={`${cardBtnCls(isDark, 'primary')} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.uiWorkflow.submit}</button>
+            <button disabled={!canSubmit} onClick={submit} className={`${WF_BTN_PRIMARY} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.uiWorkflow.submit}</button>
           </div>
         </div>
       );
     };
 
     const GateApprovalCard = ({ card, theme, t }) => {
-      const isDark = theme === 'dark';
       const findings = card.findings || [];
       const locked = !!card.resolved;
       const [rejecting, setRejecting] = useState(false);
@@ -973,39 +974,39 @@ const WidgetCard = ({ title, children, theme }) => {
       if (locked) {
         const approved = card.cardState === 'approved';
         return (
-          <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
-            <div className={`text-[13px] ${approved ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{approved ? t.uiWorkflow.approved : t.uiWorkflow.rejected}</div>
+          <div className="rounded-[16px] border p-4 bg-white dark:bg-[#1E1F20] border-black/10 dark:border-white/10">
+            <div className="text-[14px] font-semibold mb-1 text-[#1F1F1F] dark:text-[#E3E3E3]">🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
+            <div className={`text-[13px] ${approved ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#C5221F] dark:text-[#F28B82]'}`}>{approved ? t.uiWorkflow.approved : t.uiWorkflow.rejected}</div>
           </div>
         );
       }
       return (
-        <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#F9A825]/30' : 'bg-white border-[#F9A825]/30'}`}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
+        <div className="rounded-[16px] border p-4 bg-white dark:bg-[#1E1F20] border-[#F9A825]/30 dark:border-[#F9A825]/30">
+          <div className="text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]">🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
           {findings.length > 0 ? (
             <ul className="space-y-1 mb-3">
               {findings.map((f, i) => (
-                <li key={i} className={`text-[13px] flex gap-1.5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}><span className={isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}>›</span><span className="flex-1">{fText(f)}</span></li>
+                <li key={i} className="text-[13px] flex gap-1.5 text-[#444746] dark:text-[#C4C7C5]"><span className="text-[#757575] dark:text-[#8E8E8E]">›</span><span className="flex-1">{fText(f)}</span></li>
               ))}
             </ul>
           ) : (
-            <div className={`text-[13px] mb-3 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.noReviewNotes}</div>
+            <div className="text-[13px] mb-3 text-[#757575] dark:text-[#8E8E8E]">{t.uiWorkflow.noReviewNotes}</div>
           )}
           {rejecting && (
             <textarea rows="2" value={reason} autoFocus onChange={e => setReason(e.target.value)} placeholder={t.uiWorkflow.rejectPlaceholder}
-              className={`w-full rounded-[10px] p-2 text-[13px] outline-none border mb-2 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
+              className="w-full rounded-[10px] p-2 text-[13px] outline-none border mb-2 bg-white dark:bg-[#131314] border-black/10 dark:border-white/10 text-[#1F1F1F] dark:text-[#E3E3E3]" />
           )}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button className={cardBtnCls(isDark)} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>{t.uiWorkflow.viewOutputs}</button>
+            <button className={WF_BTN} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>{t.uiWorkflow.viewOutputs}</button>
             {rejecting ? (
               <React.Fragment>
-                <button className={cardBtnCls(isDark)} onClick={() => { setRejecting(false); setReason(''); }}>{t.uiWorkflow.cancel}</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>{t.uiWorkflow.confirmReject}</button>
+                <button className={WF_BTN} onClick={() => { setRejecting(false); setReason(''); }}>{t.uiWorkflow.cancel}</button>
+                <button className={WF_BTN_PRIMARY} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>{t.uiWorkflow.confirmReject}</button>
               </React.Fragment>
             ) : (
               <React.Fragment>
-                <button className={cardBtnCls(isDark)} onClick={() => setRejecting(true)}>{t.uiWorkflow.reject}</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>{t.uiWorkflow.gateApprove}</button>
+                <button className={WF_BTN} onClick={() => setRejecting(true)}>{t.uiWorkflow.reject}</button>
+                <button className={WF_BTN_PRIMARY} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>{t.uiWorkflow.gateApprove}</button>
               </React.Fragment>
             )}
           </div>
@@ -1014,7 +1015,6 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     const InteractionArea = ({ cards, sessionId, theme, t }) => {
-      const isDark = theme === 'dark';
       const pending = (cards || []).filter(c => !c.resolved);
       if (pending.length === 0) return null;
       return (
@@ -1028,14 +1028,14 @@ const WidgetCard = ({ title, children, theme }) => {
                 ) : card.kind === 'gate' ? (
                   <GateApprovalCard card={card} theme={theme} t={t} />
                 ) : card.kind === 'system' ? (
-                  <div className={`rounded-[12px] border px-3 py-2 text-[13px] flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] border-white/10 text-[#C4C7C5]' : 'bg-white border-black/10 text-[#444746]'}`}><span>⚙️</span><span className="flex-1">{card.text || ''}</span></div>
+                  <div className="rounded-[12px] border px-3 py-2 text-[13px] flex items-center gap-2 bg-white dark:bg-[#1E1F20] border-black/10 dark:border-white/10 text-[#444746] dark:text-[#C4C7C5]"><span>⚙️</span><span className="flex-1">{card.text || ''}</span></div>
                 ) : card.kind === 'artifact' ? (
-                  <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#34A853]/40' : 'bg-white border-[#34A853]/40'}`}>
-                    <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || t.uiWorkflow.completed}</div>
-                    <div className={`text-[12px] mb-3 break-all ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{card.path}</div>
+                  <div className="rounded-[16px] border p-4 bg-white dark:bg-[#1E1F20] border-[#34A853]/40 dark:border-[#34A853]/40">
+                    <div className="text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]">{card.text || t.uiWorkflow.completed}</div>
+                    <div className="text-[12px] mb-3 break-all text-[#757575] dark:text-[#8E8E8E]">{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button className={cardBtnCls(isDark)} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>{t.uiWorkflow.openFolder}</button>
-                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>{t.uiWorkflow.openProduct}</button>
+                      <button className={WF_BTN} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>{t.uiWorkflow.openFolder}</button>
+                      <button className={WF_BTN_PRIMARY} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>{t.uiWorkflow.openProduct}</button>
                     </div>
                   </div>
                 ) : null}
@@ -1048,7 +1048,6 @@ const WidgetCard = ({ title, children, theme }) => {
 
     // —— 新建任务模态 ——
     const NewTaskModal = ({ theme, onClose, onStarted, workflow, initialBrief = '', t }) => {
-      const isDark = theme === 'dark';
       // [工作流分离 Stage D] 表单形态全由该工作流 workflow.json 的 ui 块决定:
       // ui.scenarioOptions 有值 → 场景下拉;ui.attachments → 附件区。
       const wfUi = (workflow && workflow.ui) || {};
@@ -1091,43 +1090,45 @@ const WidgetCard = ({ title, children, theme }) => {
       const modal = (
         <div data-testid="workflow-new-task-modal" className="fixed inset-0 z-50 flex items-center justify-center p-6">
           <div className="absolute inset-0 bg-black/60" onClick={() => { if (!starting) onClose(); }}></div>
-          <div className={`relative w-[560px] max-w-[92vw] flex flex-col rounded-[16px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
-            <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <span className={`text-[15px] font-semibold flex items-center gap-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{titleText}</span>
-              <button onClick={() => { if (!starting) onClose(); }} disabled={starting} className={`w-8 h-8 rounded-full flex items-center justify-center disabled:opacity-40 ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
+          <div className="relative w-[560px] max-w-[92vw] flex flex-col rounded-[16px] overflow-hidden shadow-2xl bg-white dark:bg-[#1E1F20]">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
+              <span className="text-[15px] font-semibold flex items-center gap-2 text-[#1F1F1F] dark:text-[#E3E3E3]">{titleText}</span>
+              <button onClick={() => { if (!starting) onClose(); }} disabled={starting} className="w-8 h-8 rounded-full flex items-center justify-center disabled:opacity-40 hover:bg-[#F0F4F9] dark:hover:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]">✕</button>
             </div>
             <div className="px-4 py-4 space-y-4">
               {SCENARIOS.length > 0 && (
                 <div>
-                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.scenario}</label>
+                  <label className="block text-[12px] font-semibold mb-1.5 text-[#0B57D0] dark:text-[#A8C7FA]">{t.uiWorkflow.scenario}</label>
                   <select value={scenario} onChange={e => setScenario(e.target.value)} disabled={starting}
                     style={{
                       appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
-                      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='${isDark ? '%23A8C7FA' : '%230B57D0'}' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+                      // native <select> popup ignores Tailwind dark: variant; inline theme
+                      // check keeps the native dropdown bg/text + chevron correct in both themes.
+                      backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='${theme === 'dark' ? '%23A8C7FA' : '%230B57D0'}' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
                       backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px',
-                      color: isDark ? '#E3E3E3' : '#1F1F1F', backgroundColor: isDark ? '#131314' : '#ffffff',
+                      color: theme === 'dark' ? '#E3E3E3' : '#1F1F1F', backgroundColor: theme === 'dark' ? '#131314' : '#ffffff',
                     }}
-                    className={`w-full rounded-[10px] px-3 py-2 text-[13px] outline-none border disabled:opacity-50 ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-                    {SCENARIOS.map(s => <option key={s.value} value={s.value} style={{ backgroundColor: isDark ? '#131314' : '#ffffff', color: isDark ? '#E3E3E3' : '#1F1F1F' }}>{s.label}</option>)}
+                    className="w-full rounded-[10px] px-3 py-2 text-[13px] outline-none border disabled:opacity-50 border-black/10 dark:border-white/10">
+                    {SCENARIOS.map(s => <option key={s.value} value={s.value} style={{ backgroundColor: theme === 'dark' ? '#131314' : '#ffffff', color: theme === 'dark' ? '#E3E3E3' : '#1F1F1F' }}>{s.label}</option>)}
                   </select>
                 </div>
               )}
               <div>
-                <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{wfUi.briefLabel || t.uiWorkflow.briefLabel}</label>
+                <label className="block text-[12px] font-semibold mb-1.5 text-[#0B57D0] dark:text-[#A8C7FA]">{wfUi.briefLabel || t.uiWorkflow.briefLabel}</label>
                 <textarea rows="5" value={briefText} onChange={e => setBriefText(e.target.value)} disabled={starting} placeholder={wfUi.briefPlaceholder || ''}
-                  className={`w-full rounded-[10px] p-2 text-[13px] outline-none border resize-y disabled:opacity-50 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
-                {briefEmpty && <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.briefHint}</div>}
+                  className="w-full rounded-[10px] p-2 text-[13px] outline-none border resize-y disabled:opacity-50 bg-white dark:bg-[#131314] border-black/10 dark:border-white/10 text-[#1F1F1F] dark:text-[#E3E3E3]" />
+                {briefEmpty && <div className="mt-1 text-[12px] text-[#757575] dark:text-[#8E8E8E]">{t.uiWorkflow.briefHint}</div>}
               </div>
               {wfUi.attachments && (!isWeb || can('hostFilePicker')) && (
                 <div>
-                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.attachments}</label>
-                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>
+                  <label className="block text-[12px] font-semibold mb-1.5 text-[#0B57D0] dark:text-[#A8C7FA]">{t.uiWorkflow.attachments}</label>
+                  <button onClick={pickAttachments} disabled={picking || starting} className={`${WF_BTN} disabled:opacity-40`}>
                     {picking ? t.uiWorkflow.picking : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{isWeb ? t.uiWorkflow.pickDesktopFiles : t.uiWorkflow.uploadAttachments}</span>}
                   </button>
                   {files.length > 0 && (
                     <div className="mt-2 space-y-1">
                       {files.map(p => (
-                        <div key={p} className={`flex items-center justify-between text-[12px] rounded px-2 py-1 ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>
+                        <div key={p} className="flex items-center justify-between text-[12px] rounded px-2 py-1 bg-[#F0F4F9] dark:bg-[#131314] text-[#444746] dark:text-[#C4C7C5]">
                           <span className="flex min-w-0 items-center gap-1.5 pr-2">
                             <FileTypeIcon name={baseName(p)} className="h-4 w-4 shrink-0" />
                             <span className="truncate">{baseName(p)}</span>
@@ -1137,14 +1138,14 @@ const WidgetCard = ({ title, children, theme }) => {
                       ))}
                     </div>
                   )}
-                  <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{isWeb ? t.uiWorkflow.attachHintWeb : t.uiWorkflow.attachHint}</div>
+                  <div className="mt-1 text-[12px] text-[#757575] dark:text-[#8E8E8E]">{isWeb ? t.uiWorkflow.attachHintWeb : t.uiWorkflow.attachHint}</div>
                 </div>
               )}
-              {error && <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>⚠️ {error}</div>}
+              {error && <div className="text-[13px] text-[#C5221F] dark:text-[#F28B82]">⚠️ {error}</div>}
             </div>
-            <div className={`flex items-center justify-end gap-2 px-4 py-3 border-t ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <button onClick={onClose} disabled={starting} className={`${cardBtnCls(isDark)} disabled:opacity-40 disabled:cursor-not-allowed`}>{t.uiWorkflow.cancel}</button>
-              <button onClick={start} disabled={starting} className={`${cardBtnCls(isDark, 'primary')} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? t.uiWorkflow.starting : t.uiWorkflow.start}</button>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-black/10 dark:border-white/10">
+              <button onClick={onClose} disabled={starting} className={`${WF_BTN} disabled:opacity-40 disabled:cursor-not-allowed`}>{t.uiWorkflow.cancel}</button>
+              <button onClick={start} disabled={starting} className={`${WF_BTN_PRIMARY} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? t.uiWorkflow.starting : t.uiWorkflow.start}</button>
             </div>
           </div>
         </div>
@@ -1154,22 +1155,17 @@ const WidgetCard = ({ title, children, theme }) => {
 
     // —— 工作流模板卡（未启动时显示）——
     const TemplateCard = ({ theme, onOpen, title, badge, desc, banner, t }) => {
-      const isDark = theme === 'dark';
       return (
         <button
           onClick={onOpen}
           title={title}
-          className={`group relative flex min-h-[360px] w-full flex-col overflow-hidden rounded-[28px] border p-3 text-left backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 ${
-            isDark
-              ? 'border-white/10 bg-white/[0.075] shadow-none hover:border-white/16 hover:bg-white/[0.105]'
-              : 'border-slate-200/70 bg-white/88 shadow-[0_18px_48px_-30px_rgba(15,23,42,0.50)] hover:border-slate-300 hover:bg-white hover:shadow-[0_24px_58px_-34px_rgba(15,23,42,0.60)]'
-          }`}
+          className="group relative flex min-h-[360px] w-full flex-col overflow-hidden rounded-[28px] border p-3 text-left backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 border-slate-200/70 bg-white/88 shadow-[0_18px_48px_-30px_rgba(15,23,42,0.50)] hover:border-slate-300 hover:bg-white hover:shadow-[0_24px_58px_-34px_rgba(15,23,42,0.60)] dark:border-white/10 dark:bg-white/[0.075] dark:shadow-none dark:hover:border-white/16 dark:hover:bg-white/[0.105]"
         >
-          <div className={`relative aspect-[16/7] overflow-hidden rounded-[20px] ${isDark ? 'bg-white/8' : 'bg-slate-100'}`}>
+          <div className="relative aspect-[16/7] overflow-hidden rounded-[20px] bg-slate-100 dark:bg-white/8">
             {banner ? (
               <img src={banner} alt={title} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.025]" />
             ) : (
-              <div className={`h-full w-full ${isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]'}`} />
+              <div className="h-full w-full bg-[#F2F2F7] dark:bg-[#2C2C2E]" />
             )}
             <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/55 to-transparent" />
             {badge && (
@@ -1182,21 +1178,19 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className="flex flex-1 flex-col px-2 pb-2 pt-4">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <h3 className={`truncate text-[21px] font-semibold tracking-tight ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</h3>
-                <p className={`mt-2 line-clamp-3 text-[14px] font-medium leading-5 ${isDark ? 'text-[#8E8E93]' : 'text-[#6E6E73]'}`}>{desc || t.uiWorkflow.templateDesc}</p>
+                <h3 className="truncate text-[21px] font-semibold tracking-tight text-[#1C1C1E] dark:text-[#F2F2F7]">{title}</h3>
+                <p className="mt-2 line-clamp-3 text-[14px] font-medium leading-5 text-[#6E6E73] dark:text-[#8E8E93]">{desc || t.uiWorkflow.templateDesc}</p>
               </div>
-              <span className={`shrink-0 rounded-full px-4 py-1.5 text-[13px] font-bold ${
-                isDark ? 'bg-[#0A84FF] text-white' : 'bg-[#007AFF] text-white'
-              }`}>
+              <span className="shrink-0 rounded-full px-4 py-1.5 text-[13px] font-bold bg-[#007AFF] text-white dark:bg-[#0A84FF] dark:text-white">
                 {t.uiWorkflow.open}
               </span>
             </div>
 
             <div className="mt-auto flex items-center gap-2 pt-5">
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+              <span className="rounded-full px-2.5 py-1 text-[11px] font-semibold bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#C7C7CC]">
                 {t.uiWorkflow.templateBadge}
               </span>
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
+              <span className="rounded-full px-2.5 py-1 text-[11px] font-semibold bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#C7C7CC]">
                 {t.uiWorkflow.expertTeam}
               </span>
             </div>
@@ -1206,7 +1200,6 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     const WorkflowView = ({ bs, theme, t }) => {
-      const isDark = theme === 'dark';
       const wf = (bs && bs.workflow) || {};
       const run = wf.run || { active: false, agents: {}, cards: [], status: 'idle' };
       const [opened, setOpened] = useState(false);
@@ -1269,7 +1262,7 @@ const WidgetCard = ({ title, children, theme }) => {
                     }} />;
                 })}
                 {workflows.length === 0 && (
-                  <p className={`text-[13px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.empty}</p>
+                  <p className="text-[13px] text-[#757575] dark:text-[#8E8E8E]">{t.uiWorkflow.empty}</p>
                 )}
               </div>
             </div>
@@ -1334,24 +1327,24 @@ const WidgetCard = ({ title, children, theme }) => {
         <div className={containerCls}>
           <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 md:px-10 pt-8 pb-4">
             <div>
-              <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || t.uiWorkflow.workflow}</h1>
-              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · {t.uiWorkflow.cardFlow}</p>
+              <h1 className="text-[32px] font-normal tracking-tight text-[#1F1F1F] dark:text-[#E3E3E3]">{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || t.uiWorkflow.workflow}</h1>
+              <p className="text-[13px] mt-1 text-[#757575] dark:text-[#8E8E8E]">{statusText} · {t.uiWorkflow.cardFlow}</p>
             </div>
             <div className="flex items-center gap-2">
               {/* 回奏已完成的 run 常驻奏折入口(自动弹窗只在完成瞬间触发一次,事后/刷新后从这里看) */}
               {memorialRoleId && memorialDone && (
-                <button onClick={() => setMemorialOpen(true)} className={cardBtnCls(isDark)}>{t.uiWorkflow.memorialBtn}</button>
+                <button onClick={() => setMemorialOpen(true)} className={WF_BTN}>{t.uiWorkflow.memorialBtn}</button>
               )}
               {run.status === 'stopped' ? (
-                <button onClick={() => openRestart(restartBrief)} className={cardBtnCls(isDark, 'primary')}>{t.uiWorkflow.editAndRestart}</button>
+                <button onClick={() => openRestart(restartBrief)} className={WF_BTN_PRIMARY}>{t.uiWorkflow.editAndRestart}</button>
               ) : run.status !== 'complete' ? (
                 <button data-testid="workflow-stop-restart" onClick={stopAndRestart} disabled={stopping}
-                  className={`${cardBtnCls(isDark)} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? t.uiWorkflow.stopping : t.uiWorkflow.stopAndEdit}</button>
+                  className={`${WF_BTN} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? t.uiWorkflow.stopping : t.uiWorkflow.stopAndEdit}</button>
               ) : null}
-              <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls(isDark)}>{t.uiWorkflow.backToTemplates}</button>
+              <button onClick={() => { setOpened(false); setExited(true); }} className={WF_BTN}>{t.uiWorkflow.backToTemplates}</button>
               {/* 看板内新建 = 跟当前看板同工作流(开机自动恢复直接进看板时没经过模板卡,
                   必须在这里按 run 反查工作流对象,否则表单回落错) */}
-              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>{t.uiWorkflow.newTask}</button>
+              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={WF_BTN_PRIMARY}>{t.uiWorkflow.newTask}</button>
             </div>
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
@@ -1359,7 +1352,7 @@ const WidgetCard = ({ title, children, theme }) => {
               onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.workflow.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
-            <div className={`shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-10 py-3 border-t ${isDark ? 'border-white/10 bg-[#131314]/60' : 'border-black/10 bg-[#F8FAFC]/60'}`}>
+            <div className="shrink-0 max-h-[42vh] overflow-y-auto custom-scrollbar px-4 sm:px-6 md:px-10 py-3 border-t border-black/10 dark:border-white/10 bg-[#F8FAFC]/60 dark:bg-[#131314]/60">
               <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} t={t} />
             </div>
           )}

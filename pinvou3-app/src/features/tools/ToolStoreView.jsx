@@ -435,39 +435,34 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
     const TsAlert = ({ alert, theme, onDismiss, onNewChat, onCancelLoading, copy }) => {
-      const isDark = theme === 'dark';
       if (!alert.visible && !alert.loading) return null;
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
-            className={`w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 ${
-              isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'
-            }`}
+            className="w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             {alert.loading ? (
               <>
                 <div className="px-6 py-8 text-center">
                   <div className="flex justify-center mb-4">
-                    <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent ${isDark ? 'border-[#0A84FF]' : 'border-[#007AFF]'}`}
+                    <div className={`w-6 h-6 rounded-full border-[2.5px] border-t-transparent border-[#007AFF] dark:border-[#0A84FF]`}
                       style={{ animation: 'tsSpinner .8s linear infinite' }} />
                   </div>
-                  <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  <div className={`text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
                   {alert.subtitle && (
-                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
                   )}
                 </div>
                 {alert.cancelable && (
-                  <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                  <div className={`border-t border-slate-200 dark:border-white/10`}>
                     <button
                       onClick={() => onCancelLoading && onCancelLoading(alert)}
-                      className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${
-                        isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
-                      }`}
+                      className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
                     >
                       {copy.cancel}
                     </button>
@@ -477,36 +472,32 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             ) : (
               <>
                 <div className="px-6 pt-6 pb-5 text-center">
-                  <div className={`text-[17px] font-semibold mb-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  <div className={`text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
                   {alert.subtitle ? (
-                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
                   ) : !alert.isError && (
-                    <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.isInstall ? copy.installHint : copy.removeHint}
                     </div>
                   )}
                 </div>
-                <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                <div className={`border-t border-slate-200 dark:border-white/10`}>
                   <button
                     onClick={onDismiss}
-                    className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${
-                      isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
-                    }`}
+                    className="w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5"
                   >
                     {copy.ok}
                   </button>
                 </div>
                 {!alert.isError && (
-                  <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                  <div className={`border-t border-slate-200 dark:border-white/10`}>
                     <button
                       onClick={onNewChat}
-                      className={`w-full py-3 text-[17px] font-semibold text-center transition-colors ${
-                        isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'
-                      }`}
+                      className={`w-full py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
                     >
                       {copy.newChat}
                     </button>
@@ -521,7 +512,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
     const TsConfigDialog = ({ config, theme, onConfirm, onCancel, copy }) => {
-      const isDark = theme === 'dark';
       if (!config) return null;
       const [values, setValues] = useState({});
       const fields = config.fields || [];
@@ -530,22 +520,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
-            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`}
+            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
-              <div className={`text-[17px] font-semibold mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              <div className={`text-[17px] font-semibold mb-3 text-slate-900 dark:text-white`}>
                 {config.configTitle || copy.configTitle(config.name)}
               </div>
               {config.configDescription && (
-                <div className={`text-[12px] leading-relaxed mb-3 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                <div className={`text-[12px] leading-relaxed mb-3 text-slate-500 dark:text-slate-400`}>
                   {config.configDescription}
                 </div>
               )}
               {config.configDocUrl && (
                 <button
                   onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
-                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                  className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
                 >
                   {config.configDocLabel || copy.configDocDefault} →
                 </button>
@@ -554,7 +544,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {fields.find(f => f.helpUrl) && (
                 <button
                   onClick={() => invokeTauri('open_external_url', { url: fields.find(f => f.helpUrl).helpUrl })}
-                  className={`text-[13px] mb-4 inline-block ${isDark ? 'text-[#0A84FF]' : 'text-[#007AFF]'} hover:underline`}
+                  className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
                 >
                   {copy.configHelpFeishu}
                 </button>
@@ -562,7 +552,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               {/* 所有输入框紧挨着 */}
               {fields.map((field) => (
                 <div key={field.key} className="text-left mb-3">
-                  <label className={`text-[13px] font-medium mb-1.5 block ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                  <label className={`text-[13px] font-medium mb-1.5 block text-slate-600 dark:text-slate-300`}>
                     {field.label}
                   </label>
                   <input
@@ -570,36 +560,32 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     placeholder={field.placeholder || "sk-..."}
                     value={values[field.key] || ''}
                     onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
-                    className={`w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors ${
-                      isDark
-                        ? 'bg-[#1C1C1E] border border-[#3A3A3C] text-white placeholder-slate-500 focus:border-[#0A84FF]'
-                        : 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF]'
-                    }`}
+                    className="w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]"
                   />
                   {field.helpText && (
-                    <div className={`text-[11px] mt-1 leading-snug ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                    <div className={`text-[11px] mt-1 leading-snug text-slate-400 dark:text-slate-500`}>
                       {field.helpText}
                     </div>
                   )}
                 </div>
               ))}
             </div>
-            <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
                 onClick={onCancel}
-                className={`w-full py-3 text-[17px] font-normal text-center transition-colors ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`}
+                className={`w-full py-3 text-[17px] font-normal text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`}
               >
                 {copy.cancel}
               </button>
             </div>
-            <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+            <div className={`border-t border-slate-200 dark:border-white/10`}>
               <button
                 onClick={() => canSubmit && onConfirm(values)}
                 disabled={!canSubmit}
                 className={`w-full py-3 text-[17px] font-semibold text-center transition-colors ${
                   canSubmit
-                    ? (isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100')
-                    : (isDark ? 'text-slate-600' : 'text-slate-300')
+                    ? 'text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5'
+                    : 'text-slate-300 dark:text-slate-600'
                 }`}
               >
                 {config.backendId === 'feishu' || fields.length > 0 ? copy.configConnect : copy.configInstall}
@@ -612,33 +598,31 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // Obsidian 连接前探测引导卡：未安装 → 引导下载；没库 / 库丢失 → 引导建库/重开
     const TsObsidianGuide = ({ guide, theme, onCancel, onDownload, onRetry, allowDownload = true, copy }) => {
-      const isDark = theme === 'dark';
       if (!guide) return null;
       const COPY = copy.obsidianGuide;
       const c = COPY[guide.state] || COPY.not_installed;
       const btn = (label, on, cls) => (
-        <div className={`border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+        <div className={`border-t border-slate-200 dark:border-white/10`}>
           <button onClick={on} className={`w-full py-3 text-center transition-colors ${cls}`}>{label}</button>
         </div>
       );
       return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#2C2C2E]' : 'bg-white/95 backdrop-blur-xl'}`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
+          <div className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
             <div className="px-6 pt-6 pb-4 text-center">
               <div className="text-[34px] mb-2">📖</div>
-              <div className={`text-[17px] font-semibold mb-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>{c.title}</div>
-              <div className={`text-[13px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{!allowDownload && guide.state === 'not_installed' ? COPY.desktopHint : c.body}</div>
+              <div className={`text-[17px] font-semibold mb-2 text-slate-900 dark:text-white`}>{c.title}</div>
+              <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>{!allowDownload && guide.state === 'not_installed' ? COPY.desktopHint : c.body}</div>
             </div>
-            {allowDownload && c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold ${isDark ? 'text-[#0A84FF] active:bg-white/5' : 'text-[#007AFF] active:bg-slate-100'}`)}
-            {btn(c.retry, onRetry, `text-[15px] ${isDark ? 'text-slate-300 active:bg-white/5' : 'text-slate-600 active:bg-slate-100'}`)}
-            {btn(copy.cancel, onCancel, `text-[15px] ${isDark ? 'text-slate-500 active:bg-white/5' : 'text-slate-400 active:bg-slate-100'}`)}
+            {allowDownload && c.primary && btn(c.primary, onDownload, `text-[17px] font-semibold text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5`)}
+            {btn(c.retry, onRetry, `text-[15px] text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-white/5`)}
+            {btn(copy.cancel, onCancel, `text-[15px] text-slate-400 active:bg-slate-100 dark:text-slate-500 dark:active:bg-white/5`)}
           </div>
         </div>
       );
     };
 
     const ToolStoreView = ({ theme, t, onNewChat }) => {
-      const isDark = theme === 'dark';
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
@@ -1619,7 +1603,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       };
 
       return (
-        <div className={`${isDark ? 'dark' : ''} flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900`}>
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900">
           {createPortal(<TsAlert alert={alert} theme={theme} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {createPortal(<TsConfigDialog
             config={externalAuthAvailable ? configDialog : null}
@@ -1812,10 +1796,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <button
                               key={cat.id}
                               onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className="h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors"
-                              style={isActive
-                                ? { background: isDark ? '#fff' : '#3A3A3C', color: isDark ? '#000' : '#fff' }
-                                : { background: isDark ? '#2C2C2E' : '#F2F2F7', color: isDark ? '#fff' : '#000' }}
+                              className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
+                                ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
+                                : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
                             >
                               {cat.label}
                             </button>
