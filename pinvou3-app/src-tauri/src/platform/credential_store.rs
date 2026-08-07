@@ -68,6 +68,7 @@ fn key_lock_for(service: &str, account: &str) -> Arc<Mutex<()>> {
 const SEARCH_API_KEY_SERVICE: &str = "pinvou3-search-api-key";
 const MCP_SECRET_SERVICE: &str = "pinvou3-mcp-secret";
 const IMA_SECRET_SERVICE: &str = "pinvou3-ima-secret";
+const ACP_PROVIDER_KEY_SERVICE: &str = "pinvou3-acp-provider-key";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialReference {
@@ -104,6 +105,16 @@ impl CredentialReference {
         Self {
             service: IMA_SECRET_SERVICE.to_string(),
             account: format!("ima:{secret_name}"),
+            version: 1,
+        }
+    }
+
+    /// ACP Provider（第三方中转）的 API key 引用。`agent` 使用 AgentBackend 的
+    /// `agent_id()` 值（"codex"/"claude"/"kimi"）。
+    pub fn for_acp_provider(agent: &str, provider_id: &str) -> Self {
+        Self {
+            service: ACP_PROVIDER_KEY_SERVICE.to_string(),
+            account: format!("{agent}:{provider_id}"),
             version: 1,
         }
     }

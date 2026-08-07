@@ -27,10 +27,24 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiCodex',
     'uiCodexView',
     'uiCodexWorkspace',
+    'uiAcpProviders',
     'uiArtifacts',
     'uiToolDetails',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
+  }
+  assert.ok(dict[language].uiSettings.providers, `${language}.uiSettings.providers must exist`);
+  for (const key of [
+    'addProvider', 'switch', 'official', 'current', 'export', 'import',
+    'envConflictTitle', 'uninstallTitle', 'sessionProvider', 'faultManage',
+    'thirdPartyWarning', 'deleteTitle', 'secretSet', 'notEnabled', 'restoreOfficial',
+    'login', 'logout', 'loginWaiting', 'openLoginUrl', 'loginCodePlaceholder', 'submitCode', 'logoutRelayDisabled',
+    'cancelInstall', 'installCancelled',
+    'modelSlotsTitle', 'modelSlotsHint', 'modelSlotsRequired',
+    'slot_opus', 'slot_sonnet', 'slot_haiku', 'slot_fable', 'slot_subagent',
+    'contextWindow', 'contextWindowHint', 'contextWindowInvalid',
+  ]) {
+    assert.ok(dict[language].uiAcpProviders[key], `${language}.uiAcpProviders.${key} must exist`);
   }
   assert.ok(dict[language].uiScheduled.createFromTemplate, `${language}.uiScheduled.createFromTemplate must exist`);
   assert.ok(dict[language].uiScheduled.runHistory, `${language}.uiScheduled.runHistory must exist`);
@@ -108,6 +122,20 @@ assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);
 assert.doesNotMatch(workspace, />工作区</);
+const providersSection = source('features/settings/ProvidersSection.jsx');
+assert.match(providersSection, /const copy = t\.uiAcpProviders/);
+assert.doesNotMatch(providersSection, />新增 Provider</);
+assert.doesNotMatch(providersSection, />切换</);
+assert.doesNotMatch(providersSection, />官方登录</);
+const settingsViewProviders = source('features/settings/SettingsView.jsx');
+assert.match(settingsViewProviders, /t\.uiSettings\.providers/);
+assert.match(settingsViewProviders, /renderProviders\(\)/);
+const providerFormModal = source('features/settings/ProviderFormModal.jsx');
+assert.match(providerFormModal, /invokeTauri\(['"]save_acp_provider['"]/);
+assert.doesNotMatch(providerFormModal, /placeholder=\{?['"]输入 API Key/);
+const codexViewProviders = source('features/codex/CodexAcpView.jsx');
+assert.match(codexViewProviders, /set_codex_acp_session_provider/);
+assert.match(codexViewProviders, /t\.uiAcpProviders/);
 const personas = source('features/personas/Personas.jsx');
 assert.match(personas, /label: t\.expertPoolIndividualTab/);
 assert.doesNotMatch(personas, /expertPoolIndividualTab \|\|/);
