@@ -2,8 +2,7 @@
 //!
 //! 把「哪个模式能用什么能力」从散落的 if-else / 编译期常量收敛为**一份档案、
 //! 一个解析器（[`SessionPolicy::resolve`]）、三个生效通道**（skills_dir 组合
-//! 目录 / disallowed_tools / hidden_tools）。设计全程见
-//! `.luzeyang/capability-unified/`（00-README / 02-实施交接 / 03-留档）。
+//! 目录 / disallowed_tools / hidden_tools）。
 //!
 //! v1 语义：
 //!   - **编译内嵌 JSON，不写用户数据**（规避版本迁移；"运行期不变"是 v1
