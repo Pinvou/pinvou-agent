@@ -1593,7 +1593,7 @@ dict.zh.uiPlatformMisc = {
     close: '关闭', goUp: '上一级', loadingPath: '正在读取桌面端目录…', loading: '正在读取…',
     cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
     currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
-    thisComputer: '此电脑', emptyFolder: '此目录中没有可选内容',
+    thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
     loadFailed: err => `读取失败：${err}`, alreadyOpen: '已有文件选择器正在打开',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
@@ -1619,7 +1619,7 @@ dict.en.uiPlatformMisc = {
     close: 'Close', goUp: 'Up one level', loadingPath: 'Reading desktop folder…', loading: 'Loading…',
     cancel: 'Cancel', chooseThisFolder: 'Choose this folder', choose: 'Choose',
     currentFolder: path => `Current folder: ${path}`, selectedCount: n => `${n} selected`,
-    thisComputer: 'This PC', emptyFolder: 'Nothing to select in this folder',
+    thisComputer: 'This PC', home: 'Home', emptyFolder: 'Nothing to select in this folder',
     loadFailed: err => `Failed to read: ${err}`, alreadyOpen: 'A file picker is already open',
   },
   webClientErrors: {
@@ -1643,7 +1643,7 @@ dict.ja.uiPlatformMisc = {
     close: '閉じる', goUp: '上の階層へ', loadingPath: 'デスクトップのフォルダーを読み込み中…', loading: '読み込み中…',
     cancel: 'キャンセル', chooseThisFolder: 'このフォルダーを選択', choose: '選択',
     currentFolder: path => `現在のフォルダー：${path}`, selectedCount: n => `${n} 件選択中`,
-    thisComputer: 'この PC', emptyFolder: 'このフォルダーに選択できる項目はありません',
+    thisComputer: 'この PC', home: 'ホーム', emptyFolder: 'このフォルダーに選択できる項目はありません',
     loadFailed: err => `読み込みに失敗しました：${err}`, alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
   },
   webClientErrors: {

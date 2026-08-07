@@ -35,6 +35,10 @@ const bridge = [
   ...desktopBridgeSources,
 ].join('\n');
 const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
+const hostFilePicker = fs.readFileSync(
+  path.join(root, 'src', 'platform', 'web', 'host-file-picker.js'),
+  'utf8',
+);
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
@@ -128,6 +132,16 @@ assert.match(bootstrap, /SEMANTIC_COMMAND_REQUIREMENTS/);
 assert.match(bootstrap, /supportsCapability\(capability\)/);
 assert.match(bootstrap, /if \(!this\.desktopCapabilitiesReady\) return false/);
 assert.match(bridge, /if \(IS_WEB && typeof PLATFORM\.can === "function"\) return PLATFORM\.can\(name\) === true/);
+assert.match(hostFilePicker, /function rememberRoots\(listing\)/,
+  'the Web host picker must retain the desktop-provided root inventory');
+assert.match(hostFilePicker, /function showRoots\(\)/,
+  'the Web host picker must expose an explicit root view');
+assert.match(hostFilePicker, /rootsButton\.addEventListener\("click", showRoots\)/,
+  'the root view must remain directly reachable from nested folders');
+assert.match(hostFilePicker, /if \(parentPath\) load\(parentPath\);[\s\S]{0,100}else if \(!showingRoots\) showRoots\(\);/,
+  'up from a filesystem root must return to the root inventory');
+assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parentPath/,
+  'filesystem roots must not be mixed into a drive directory listing');
 // HTML5 拖放复用 deviceFileUpload 分块通道:同一能力门控、同一上传/取消/丢弃语义。
 assert.match(webBridge, /canAccept: function \(\) \{ return hasCapability\("deviceFileUpload"\); \}/,
   'browser drop must gate on the negotiated device upload capability');
