@@ -31,6 +31,7 @@ fingerprints=(
   "T3|密封静态 prompt composer           |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
   "T3|instructions 不受 4KB fragment 截断|CodeWhale/crates/tui/src/prompts.rs|fn forkguard_permissions_fragment_preserves_instructions_beyond_default_fragment_cap"
   "T3|skill 发现单一配置根注入           |CodeWhale/crates/tui/src/skills/mod.rs|existing_skill_dirs(Vec::new())"
+  "T3|hidden_tools 按会话注入            |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|pub fn is_pinvou3_hidden_for_session"
   "T3|停用 skill 不进入目录              |CodeWhale/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
   "T3|内部提醒不污染 Working Set         |CodeWhale/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
 

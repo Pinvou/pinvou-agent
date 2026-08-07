@@ -1067,6 +1067,10 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            // pinvou3-fork（能力档案 fork ②）：按会话注入的隐藏工具集。
+            // skill 线不注入（None=回退编译期常量，行为不变）；include 通道由
+            // 能力档案统一 PR 接入。
+            hidden_tools: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1254,6 +1258,8 @@ impl Pinvou3Bridge {
                     Some(n)
                 }
             },
+            // fork ② 字段：本线不注入（None=回退常量，行为不变）。
+            hidden_tools: None,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
