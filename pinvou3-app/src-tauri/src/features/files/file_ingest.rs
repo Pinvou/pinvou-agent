@@ -81,11 +81,25 @@ pub fn system_tools() -> SystemTools {
 
 /// 设置页「依赖体检」一项：一类文件解析能力 + 它所需系统工具是否齐全 + 缺失时的 apt 包。
 /// `apt` 是空格分隔的包名串，可直接拼进 `sudo apt install <apt>`。能力名走前端 i18n（按 key 映射）。
+/// `hint` 为缺省时给用户的手动安装指引（如 macOS 邮件依赖无 Homebrew formula），
+/// 前端优先于 `apt` 显示；`skip_serializing_if` 保证老前端无感知。
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyCheckItem {
     pub key: String,
     pub installed: bool,
     pub apt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// 一键安装进度的实时事件载荷。平台适配器经纯 Rust 回调上报,
+/// 本域层包成此结构后 `app.emit("deps:install_progress", …)`。
+#[derive(Clone, Serialize)]
+pub struct DepInstallProgress {
+    pub package: String,
+    pub current: usize,
+    pub total: usize,
+    pub detail: Option<String>,
 }
 
 /// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
@@ -96,6 +110,7 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         key: key.into(),
         installed,
         apt: apt.into(),
+        hint: None,
     };
     let libreoffice = crate::platform::os::command_exists("soffice")
         || crate::platform::os::command_exists("libreoffice");
@@ -135,11 +150,16 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::platform::os::archive_dependency_packages(),
         ));
     }
-    items.push(item(
-        "email",
-        crate::platform::os::email_tool_exists(),
-        crate::platform::os::email_dependency_packages(),
-    ));
+    // 邮件依赖(msgconvert)来自 Perl 模块 Email::Outlook::Message,无 Homebrew formula,
+    // 无法一键安装。给出手动安装指引(hint),前端优先于 apt 显示,让用户知道怎么装;
+    // email_dependency_packages() 仍返回空串,确保不参与一键安装。
+    let email_hint = crate::platform::os::email_manual_hint().map(str::to_string);
+    items.push(DependencyCheckItem {
+        key: "email".into(),
+        installed: crate::platform::os::email_tool_exists(),
+        apt: crate::platform::os::email_dependency_packages().into(),
+        hint: email_hint,
+    });
     items
 }
 
@@ -178,9 +198,30 @@ fn add_ocr_tessdata_arg(command: &mut Command) {
 
 /// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
 /// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
-pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+/// `app` 用于把平台适配器上报的纯 Rust 进度回调转成 Tauri 事件
+/// `deps:install_progress`,前端据此实时刷新「正在安装 X (n/总数)…」,
+/// 不再全程只有静态「安装中…」(libreoffice cask 长尾尤其像卡死)。
+pub async fn install_dependencies(
+    app: tauri::AppHandle,
+    packages: Vec<String>,
+) -> Result<(), String> {
+    use tauri::Emitter;
     tokio::task::spawn_blocking(move || {
-        crate::features::dependencies::install_dependencies(packages)
+        // AppHandle 是 Clone+Send,克隆一份进阻塞线程(既有先例 dingtalk.rs
+        // spawn_blocking(move || run_connect_flow(&app2)))。
+        let app = app.clone();
+        let report = move |package: &str, current: usize, total: usize, detail: Option<&str>| {
+            let _ = app.emit(
+                "deps:install_progress",
+                DepInstallProgress {
+                    package: package.to_string(),
+                    current,
+                    total,
+                    detail: detail.map(str::to_string),
+                },
+            );
+        };
+        crate::features::dependencies::install_dependencies(packages, Some(&report))
     })
     .await
     .map_err(|e| format!("安装任务失败: {e}"))?

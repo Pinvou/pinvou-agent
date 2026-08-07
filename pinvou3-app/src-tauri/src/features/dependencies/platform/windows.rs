@@ -85,7 +85,10 @@ fn install_failure_message(code: i32, stdout: &[u8], stderr: &[u8]) -> String {
     format!("LibreOffice 安装失败 (exit {code})。请检查 winget 是否可用，或手动安装 LibreOffice。")
 }
 
-pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
+pub fn install_dependencies(
+    packages: Vec<String>,
+    progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
+) -> Result<(), String> {
     if packages.is_empty() {
         return Err("没有需要安装的依赖".into());
     }
@@ -101,6 +104,12 @@ pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
         || crate::platform::os::command_exists("libreoffice")
     {
         return Ok(());
+    }
+
+    // winget 安装由 UAC 弹窗驱动,无逐行输出可流式;执行前发一次粗粒度进度,
+    // 让前端不至于全程只有静态「安装中…」。保持既有行为不变。
+    if let Some(report) = progress {
+        report(LIBREOFFICE_PACKAGE, 1, 1, None);
     }
 
     let script = libreoffice_install_script();
