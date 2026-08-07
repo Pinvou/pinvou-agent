@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 
+use super::super::DependencyCheckPolicy;
 use crate::platform::process::HiddenCommand;
 
 const LIBREOFFICE_PACKAGE: &str = "libreoffice";
@@ -7,6 +8,14 @@ const LIBREOFFICE_WINGET_ID: &str = "TheDocumentFoundation.LibreOffice";
 const INSTALL_CANCELLED_MARKER: &str = "__PINVOU_INSTALL_CANCELLED__";
 const WINGET_MISSING_MARKER: &str = "__PINVOU_WINGET_MISSING__";
 const INSTALL_ERROR_PREFIX: &str = "__PINVOU_INSTALL_ERROR_B64__";
+
+pub(super) fn dependency_check_policy() -> DependencyCheckPolicy {
+    DependencyCheckPolicy {
+        include_voice_runtime: false,
+        include_voice_model: true,
+        include_knowledge_model: true,
+    }
+}
 
 fn libreoffice_install_script() -> String {
     // Keep the script itself ASCII-only. Windows PowerShell 5.1 writes redirected

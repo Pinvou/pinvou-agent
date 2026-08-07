@@ -82,7 +82,7 @@ const expectedProtocolHashes = {
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
   chat: 'c7a67396349fe88ae96b56344d31d96e34d5428201005247478d32012704ceba',
-  dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
+  dependencies: 'f0b307d5c6a37fd257c746e4b8fd070a94dfe50bfad64b2ed45b46af73b52108',
   interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
   knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',
   memory: 'd92cbabf27c277a64b743e7af25b48d8b8b65513e33aeb0f38c906d4b300616b',

@@ -539,17 +539,32 @@ pub async fn install_voice_asr(app: tauri::AppHandle) -> Result<VoiceAsrStatus, 
         return Err(super::platform::asr_install_unavailable_message().to_string());
     }
 
+    let _guard = begin_asr_install(&app)?;
+    super::platform::install_asr_runtime(app.clone()).await?;
+    finish_asr_install(&app)
+}
+
+/// 仅下载并校验当前平台的按需 ASR 模型，不要求打包运行时在开发目录中可见。
+/// 与完整安装入口共享互斥和进度事件，避免两个入口并发写同一个 `.part` 文件。
+pub async fn install_voice_asr_model(app: tauri::AppHandle) -> Result<VoiceAsrStatus, String> {
+    let _guard = begin_asr_install(&app)?;
+    download_current_model(&app).await?;
+    finish_asr_install(&app)
+}
+
+fn begin_asr_install(app: &tauri::AppHandle) -> Result<InstallGuard, String> {
     if ASR_INSTALLING.swap(true, Ordering::SeqCst) {
         return Err("ASR 模型正在下载或安装中".to_string());
     }
     ASR_CANCEL.store(false, Ordering::Release);
-    let _guard = InstallGuard;
     let _ = app.emit(
         "voice_asr:progress",
         serde_json::json!({ "stage": "start" }),
     );
-    super::platform::install_asr_runtime(app.clone()).await?;
+    Ok(InstallGuard)
+}
 
+fn finish_asr_install(app: &tauri::AppHandle) -> Result<VoiceAsrStatus, String> {
     let st = status();
     let _ = app.emit(
         "voice_asr:progress",

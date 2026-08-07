@@ -86,6 +86,7 @@ pub struct DependencyCheckItem {
     pub key: String,
     pub installed: bool,
     pub apt: String,
+    pub install_action: Option<String>,
 }
 
 /// 体检各项可选依赖的安装状态。**实时检测（不走 `system_tools` 的 OnceLock 缓存）**——
@@ -96,6 +97,7 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         key: key.into(),
         installed,
         apt: apt.into(),
+        install_action: None,
     };
     let libreoffice = crate::platform::os::command_exists("soffice")
         || crate::platform::os::command_exists("libreoffice");
@@ -114,11 +116,13 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
             crate::platform::os::pandoc_dependency_packages(),
         ));
     }
-    items.push(item(
-        "voice_asr",
-        crate::features::voice::asr_tool_exists(),
-        crate::features::voice::asr_dependency_packages(),
-    ));
+    if crate::features::dependencies::dependency_check_policy().include_voice_runtime {
+        items.push(item(
+            "voice_asr",
+            crate::features::voice::asr_tool_exists(),
+            crate::features::voice::asr_dependency_packages(),
+        ));
+    }
     items.push(item("office_legacy", libreoffice, "libreoffice"));
     if crate::platform::os::show_ocr_dependency_check() {
         items.push(item(
@@ -2734,6 +2738,7 @@ mod tests {
         let has_pandoc = deps.iter().any(|item| item.key == "office_modern");
         let has_ocr = deps.iter().any(|item| item.key == "ocr");
         let has_archive = deps.iter().any(|item| item.key == "archive");
+        let has_voice_asr = deps.iter().any(|item| item.key == "voice_asr");
         assert_eq!(has_pdf, crate::platform::os::show_pdf_dependency_check());
         assert_eq!(
             has_pandoc,
@@ -2743,6 +2748,10 @@ mod tests {
         assert_eq!(
             has_archive,
             crate::platform::os::show_archive_dependency_check()
+        );
+        assert_eq!(
+            has_voice_asr,
+            crate::features::dependencies::dependency_check_policy().include_voice_runtime
         );
 
         if !crate::platform::os::show_pdf_dependency_check() {

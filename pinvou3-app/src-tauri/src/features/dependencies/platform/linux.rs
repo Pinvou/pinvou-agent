@@ -1,6 +1,15 @@
 use std::process::Command;
 
+use super::super::DependencyCheckPolicy;
 use super::linux_packages::validate_packages;
+
+pub(super) fn dependency_check_policy() -> DependencyCheckPolicy {
+    DependencyCheckPolicy {
+        include_voice_runtime: true,
+        include_voice_model: false,
+        include_knowledge_model: false,
+    }
+}
 
 pub fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
     validate_packages(&packages)?;

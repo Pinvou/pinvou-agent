@@ -1,5 +1,15 @@
 use std::process::Command;
 
+use super::super::DependencyCheckPolicy;
+
+pub(super) fn dependency_check_policy() -> DependencyCheckPolicy {
+    DependencyCheckPolicy {
+        include_voice_runtime: true,
+        include_voice_model: false,
+        include_knowledge_model: false,
+    }
+}
+
 const KNOWN_DEP_PACKAGES: &[&str] = &[
     "poppler",
     "pandoc",
