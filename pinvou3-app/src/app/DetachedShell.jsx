@@ -5,8 +5,9 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { CardPoolView } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
+import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { useBridgeState } from '../hooks/useBridge.js';
-import { emitTauri, isTauriAvailable } from '../platform/tauri/client.js';
+import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { dict, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {
@@ -39,6 +40,11 @@ class DetachedErrorBoundary extends React.Component {
     return { err };
   }
 
+  componentDidCatch(err, info) {
+    console.error('[detached] panel render failed', err && err.stack ? err.stack : err,
+      info && info.componentStack ? info.componentStack : info);
+  }
+
   render() {
     if (this.state.err) {
       const message = String((this.state.err && this.state.err.message) || this.state.err);
@@ -48,10 +54,66 @@ class DetachedErrorBoundary extends React.Component {
   }
 }
 
+function DetachedCodexSessionView({ id, theme, t, bs }) {
+  const [sessions, setSessions] = useState(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = null;
+    const refresh = async () => {
+      try {
+        const next = await invokeTauri('list_codex_acp_sessions');
+        if (!disposed) {
+          setSessions(Array.isArray(next) ? next : []);
+          setLoadFailed(false);
+        }
+      } catch (error) {
+        console.warn('[detached-codex] list sessions failed', error);
+        if (!disposed) setLoadFailed(true);
+      }
+    };
+    refresh();
+    listenTauri('session:deleted', refresh).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [id]);
+
+  if (!id || loadFailed) {
+    return <div className="p-6 text-sm opacity-70">{t.uiMainApp.detachedSessionLoadFailed}</div>;
+  }
+  if (sessions === null) {
+    return <div className="p-6 text-sm opacity-60">…</div>;
+  }
+  if (!sessions.some(session => session && session.id === id)) {
+    return <div className="p-6 text-sm opacity-70">{t.uiMainApp.detachedSessionMissing}</div>;
+  }
+  return (
+    <CodexAcpView
+      theme={theme}
+      t={t}
+      sessions={sessions}
+      activeId={id}
+      onActiveSessionChange={() => {}}
+      onSessionsChange={next => setSessions(Array.isArray(next) ? next : [])}
+      onSwitchHomeMode={() => {}}
+      bs={bs}
+      onGotoTools={() => {}}
+      fixedSession
+    />
+  );
+}
+
 // Reuse the same feature views as the main window. Cross-view navigation is a
 // no-op because a detached window intentionally owns one view only.
 const DETACHED_VIEWS = {
   session: ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
+  'codex-session': ({ id, theme, t, bs }) => <DetachedCodexSessionView id={id} theme={theme} t={t} bs={bs} />,
   workflow: ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
   monitor: ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
   cardpool: ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={() => {}} onAICreate={() => {}} initialMyOnly={false} />,
@@ -85,7 +147,7 @@ export function DetachedShell({ kind, id }) {
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         {bs
-          ? <DetachedErrorBoundary t={t}><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary>
+          ? <DetachedErrorBoundary t={t}><View id={id} theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary>
           : <div className="p-6 text-sm opacity-60">…</div>}
       </div>
     </div>
