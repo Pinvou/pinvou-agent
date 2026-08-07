@@ -161,13 +161,7 @@ export function ProvidersSection({ t, isDark }) {
   // 进入页面即三路并行加载（见下方 effect），切标签页全部读缓存秒开。
   const activeAgentRef = useRef(activeAgent);
   activeAgentRef.current = activeAgent;
-  // 每个 agent 的请求序号：响应落地时只接受「该 agent 最新一次请求」的结果，
-  // 防止慢响应（如安装结束的强制重探测）被后发出的快轮询旧值覆盖——
-  // 否则会出现「装完了仍显示未安装，切走再切回来才好」。
-  const writeSeqRef = useRef({});
   const loadAgent = useCallback(async (agent, recheck = false, quiet = false) => {
-    const seq = (writeSeqRef.current[agent] || 0) + 1;
-    writeSeqRef.current[agent] = seq;
     if (!quiet && agent === activeAgentRef.current) setLoading(true);
     try {
       const [nextView, nextStatus] = await Promise.all([
@@ -176,17 +170,15 @@ export function ProvidersSection({ t, isDark }) {
           ? { agentId: agent, recheck: true }
           : { agentId: agent }),
       ]);
-      if (writeSeqRef.current[agent] !== seq) return;
       PROVIDER_SECTION_CACHE.set(agent, { view: nextView, status: nextStatus });
       if (agent === activeAgentRef.current) {
         setView(nextView);
         setStatus(nextStatus);
       }
     } catch (e) {
-      if (writeSeqRef.current[agent] !== seq) return;
       if (agent === activeAgentRef.current) setError(String(e));
     } finally {
-      if (!quiet && writeSeqRef.current[agent] === seq && agent === activeAgentRef.current) setLoading(false);
+      if (!quiet && agent === activeAgentRef.current) setLoading(false);
     }
   }, []);
   const refresh = useCallback(
@@ -348,12 +340,17 @@ export function ProvidersSection({ t, isDark }) {
   const uninstall = async () => {
     setBusy('uninstall:' + activeAgent);
     try {
-      await invokeTauri('uninstall_acp_agent', {
+      const next = await invokeTauri('uninstall_acp_agent', {
         agent: activeAgent,
         cleanup: uninstallConfirm.cleanup,
       });
       setUninstallConfirm(null);
-      notify(copy.uninstallDone);
+      // 另一渠道仍有安装时后端通过 status.error 告知（「已卸载但仍有另一份」）
+      if (next && next.error) {
+        setError(String(next.error));
+      } else {
+        notify(copy.uninstallDone);
+      }
       await refresh(true);
     } catch (e) {
       setError(String(e));
@@ -778,12 +775,6 @@ export function ProvidersSection({ t, isDark }) {
               <button onClick={() => setDeleteConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
               <button data-testid="acp-provider-delete-confirm" onClick={remove} disabled={Boolean(busy)} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
             </div>
-            {/* 失败原因显示在弹窗内（顶部错误条会被弹窗遮挡） */}
-            {error && (
-              <div className="mt-3 rounded-xl px-3 py-2.5 text-[12px] text-red-500 bg-red-500/[0.08]">
-                {error}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -813,13 +804,6 @@ export function ProvidersSection({ t, isDark }) {
                 {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
               </button>
             </div>
-            {/* 失败原因（如存在运行中会话被拦截）必须显示在弹窗内：
-                分节顶部的错误条会被弹窗挡住，用户看起来就是「点了没反应」 */}
-            {error && (
-              <div className="mt-3 rounded-xl px-3 py-2.5 text-[12px] text-red-500 bg-red-500/[0.08]">
-                {error}
-              </div>
-            )}
           </div>
         </div>
       )}
