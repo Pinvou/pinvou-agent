@@ -232,7 +232,6 @@ impl Pinvou3Bridge {
             execution_root_resolver: None,
             code_session_predicate: None,
         };
-        this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
         //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
         //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
@@ -284,26 +283,6 @@ impl Pinvou3Bridge {
             eprintln!(
                 "[pinvou3-app] cleaned up {removed} legacy disk file(s) \
                  (C-fork P-no-disk: prompt content now Inline in memory)"
-            );
-        }
-    }
-
-    /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
-    /// env (核心:底座 `effective_max_output_tokens()` 只读这个 env)。
-    ///
-    /// 生产 Tauri 启动不走 run-dev.sh (clean env), 没这一步会让底座回到
-    /// 模型表启发式。这里显式写入 pinvou3 的本地 vLLM 输出预算,确保 dev /
-    /// release / headless harness 行为一致。
-    ///
-    /// 已有 env 时不覆盖 (允许 run-dev.sh / L1 harness / 用户 override)。
-    ///
-    /// 单独抽 helper 让测试可以不走 boot() (避免 ensure_dirs / extract_bundle
-    /// 写盘到真实 ~/.pinvou3 + 不需要拿 PINVOU3_HOME ENV_LOCK)。
-    pub fn wire_max_output_tokens_env(&self) {
-        if std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none() {
-            std::env::set_var(
-                "DEEPSEEK_MAX_OUTPUT_TOKENS",
-                self.max_output_tokens().to_string(),
             );
         }
     }
@@ -2580,11 +2559,11 @@ mod tests {
     fn forkguard_compaction_128k_scenarios() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
-        // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
-        // 否则底座默认 API_MAX_OUTPUT_TOKENS=65536 → E 偏小 → T 偏小(fixture 的 wire 用 is_none
-        // 检查,env 被其它测试污染时不覆盖)。生产由 Bridge::boot → wire_max_output_tokens_env 保证。
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        // [根因] derive_compaction_threshold 经底座 context_input_budget_for_route 算
+        // output 预留：本地 vLLM 的 24576 由 route_limits_for_model 的 is_local_vllm
+        // 分支显式携带进 RouteLimits.output_tokens，主导预留计算（min(requested_cap,
+        // route_cap)=24576），不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env。云端模型不再
+        // 被品悟钉死 24576，落底座 64K 兜底。
         // A. 真实 128K 部署:探测拿到 131072
         // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
         let mut a = fixture_bridge();
@@ -2912,41 +2891,6 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
-    }
-
-    /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
-    /// env,让 dev / release / headless harness 对同一个本地 vLLM cap 达成一致。
-    ///
-    /// 走 fixture_bridge() + helper (而非 boot()),避免:
-    ///   - 写真实 ~/.pinvou3 (codex round 5 finding)
-    ///   - 跟 PINVOU3_HOME ENV_LOCK 持有者冲突
-    ///
-    /// 两个语义合并一个测试避免并发 race (Rust env process-global,
-    /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
-    #[test]
-    fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
-        let (_lock, _env) =
-            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // clean env 路径:helper 应 set 默认 24576
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
-        fixture_bridge().wire_max_output_tokens_env();
-        assert_eq!(
-            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("24576"),
-            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=24576, 让底座 \
-             effective_max_output_tokens 走 pinvou3 显式 cap (24K,见 max_output_tokens 注释)"
-        );
-
-        // 已有 env 不覆盖路径:helper 是 no-op
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "32768");
-        fixture_bridge().wire_max_output_tokens_env();
-        assert_eq!(
-            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("32768"),
-            "已有 env 必须保留,不能被 helper 覆盖 (允许 run-dev.sh / L1 / 用户 override)"
-        );
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。
