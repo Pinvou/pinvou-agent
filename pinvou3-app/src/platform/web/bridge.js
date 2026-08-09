@@ -5802,9 +5802,9 @@
         vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
         vllmKvHasData: kvShown != null,
         vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "0 s",
+          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
         vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "0 tok/s",
+          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
         vllmTokTotal: sadj
           ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
         vllmStatsCleared: !!(sadj && sadj.cleared),
