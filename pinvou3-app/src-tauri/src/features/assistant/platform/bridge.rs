@@ -6297,11 +6297,7 @@ mod tests {
             bridge.probed_local_kind = Some(kind);
             assert_eq!(bridge.provider(), "openai", "{kind:?}");
             assert_eq!(bridge.request_reasoning_effort(), None, "{kind:?}");
-            assert_eq!(
-                bridge.build_dt_config().reasoning_effort,
-                None,
-                "{kind:?}"
-            );
+            assert_eq!(bridge.build_dt_config().reasoning_effort, None, "{kind:?}");
         }
     }
 
