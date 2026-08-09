@@ -32,12 +32,13 @@ vm.runInContext(
   `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n` +
   `this.reasoningEffortForModelSwitch = reasoningEffortForModelSwitch;\n` +
   `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n` +
+  `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, catalogImageCapableForModel } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, catalogImageCapableForModel } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -301,7 +302,6 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(gemini), null);
   const custom = { preset: 'openai_compatible', model: 'my-model' };
   assert.strictEqual(reasoningEffortTiersForModel(custom), null);
-<<<<<<< HEAD
   // tiered effort 只认精确 first-party 端点：中国端点 / 兼容网关同型号回落通用档位（fail-closed）
   const moonshotCn = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.cn/v1' };
   assert.deepStrictEqual(tiers(moonshotCn), ['off', 'high']);
@@ -351,6 +351,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(remoteCustom), null);
 });
 
+<<<<<<< HEAD
 test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
   const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const openai = model => ({ preset: 'openai', vendor: 'openai', model });
@@ -404,6 +405,27 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   // z.ai glm-5.2 切换默认 high；中国端点 glm-5.2 无档位 → null
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/paas/v4' }), 'high');
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' }), null);
+});
+
+test('baseUrlUsesLoopback 与 Rust bridge.rs 判定对齐', () => {
+  // 回环：localhost / 127.0.0.0/8 / ::1（含展开形式）
+  assert.strictEqual(baseUrlUsesLoopback('http://127.0.0.1:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://127.255.0.1:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://localhost:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://LOCALHOST:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://[::1]:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLoopback('http://[0:0:0:0:0:0:0:1]:11434/v1'), true);
+  // 去尾点：127.0.0.1. 与 localhost. 仍按回环（对齐 Rust 的 trim_end_matches('.')）
+  assert.strictEqual(baseUrlUsesLoopback('http://127.0.0.1.:11434/v1'), true);
+  // 非回环：0.0.0.0 不是 loopback（Rust IpAddr::is_loopback() 语义）、
+  // IPv4-mapped ::ffff:127.x 不是 ::1/128、公网/局域网/域名均非本地
+  assert.strictEqual(baseUrlUsesLoopback('http://0.0.0.0:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://[::ffff:127.0.0.1]:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://[2001:db8::1]:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('http://192.168.1.10:11434/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback('https://api.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLoopback(''), false);
+  assert.strictEqual(baseUrlUsesLoopback('not-a-url'), false);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {

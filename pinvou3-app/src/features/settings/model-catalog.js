@@ -847,13 +847,17 @@ function vendorReasoningProvider(vendor, model) {
   return undefined; // 未知 vendor → preset 兜底
 }
 
-// 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 / ::1 /
-// 0.0.0.0（去 `[]` 与尾部 `.`）。空地址或解析失败按非本地处理。
+// 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 /
+// ::1（含 `::` 展开形式）。注意 `0.0.0.0` 不是回环地址（Rust
+// `IpAddr::is_loopback()` 对 0.0.0.0 为 false），此处与 Rust 保持一致不视为
+// 本地；IPv6 仅 `::1/128` 是回环，`::ffff:127.x`（IPv4-mapped）同样不是。
+// 空地址或解析失败按非本地处理。
 function baseUrlUsesLoopback(baseUrl) {
   if (!baseUrl) return false;
   try {
     const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
-    if (host.toLowerCase() === 'localhost' || host === '::1' || host === '0.0.0.0') return true;
+    if (host.toLowerCase() === 'localhost') return true;
+    if (host.includes(':')) return isIpv6Loopback(host);
     const octets = host.split('.').map(Number);
     return octets.length === 4
       && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)
@@ -862,6 +866,35 @@ function baseUrlUsesLoopback(baseUrl) {
     return false;
   }
 }
+
+// IPv6 回环判定：把 `::` 展开为完整 8 组十六进制后与 `::1` 的完整形式
+// （0000:0000:0000:0000:0000:0000:0000:0001）比较——与 Rust
+// `IpAddr::is_loopback()`（仅 ::1/128）对齐。展开采用 pad 形式，`::0001`
+// 等带前导零的合法写法同样命中。
+function isIpv6Loopback(host) {
+  const expanded = expandIpv6(host);
+  return expanded === '0000:0000:0000:0000:0000:0000:0000:0001';
+}
+
+// 把 IPv6 地址展开为完整 8 组小写十六进制；`::` 按 RFC 4291 用零组补齐。
+// 解析失败（组数非法/非 IPv6）返回 null。
+function expandIpv6(host) {
+  if (host.includes('::')) {
+    const [left, right] = host.split('::');
+    const l = left ? left.split(':') : [];
+    const r = right ? right.split(':') : [];
+    if (l.length + r.length >= 8) return null;
+    const zeros = new Array(8 - l.length - r.length).fill('0');
+    return [...l, ...zeros, ...r]
+      .map((g) => g.padStart(4, '0').toLowerCase())
+      .join(':');
+  }
+  const groups = host.split(':');
+  if (groups.length !== 8) return null;
+  return groups.map((g) => g.padStart(4, '0').toLowerCase()).join(':');
+}
+
+// 品悟 provider 判定（对齐 bridge.rs `provider()`：vendor 优先 + preset 兜底）。
 function reasoningProviderForModel(model) {
   if (!model) return null;
   // 对齐 Rust provider() 优先级：官方 deepseek base_url 优先（即使 preset 是

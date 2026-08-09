@@ -824,7 +824,10 @@ impl Pinvou3Bridge {
     ///
     /// 本地 OpenAI 兼容端点（loopback 的 LM Studio 等，探测不出服务类型或判定为
     /// LM Studio/通用）保持旧行为不注入档位（None），避免底座 openai wire route
-    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。
+    /// 对 `reasoning_effort` 的空操作与不认识的请求参数引起漂移。注意底座对
+    /// openai 的 `reasoning_effort` 空操作仅对普通模型成立：gpt-5.5/5.6/codex
+    /// 家族会经 `apply_openai_reasoning_effort` 注入档位（本地端点模型名不匹配
+    /// 该家族，此处不注入不受影响）。
     ///
     /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
     /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
@@ -3960,6 +3963,15 @@ mod tests {
 
     #[test]
     fn unknown_cloud_model_does_not_gain_a_speculative_route_limit() {
+        // 锁 DEEPSEEK_* env：本用例读 `model()`（env 优先），若与其他写 env 的
+        // 测试并发会读到临时 DEEPSEEK_MODEL（如 deepseek-ai/DeepSeek-V4-Pro →
+        // 底座推导 1M 窗口），导致 route limits 误判为已知。锁保证串行 + 恢复。
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
