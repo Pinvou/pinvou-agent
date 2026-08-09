@@ -551,11 +551,16 @@ try {
     && codexView.includes('<ComposerToolMenu')
     && codexView.includes('triggerTestId="native-tools"')
     && codexView.includes('scope="code"')
-    && codexView.includes('mountedId={nativeMountedId}'),
-  'the native lane must mount the shared composer controls (work/design style) behind the native-agent gate');
-  assert.ok(codexView.includes('function CodexComposerConfigSelect')
+    && codexView.includes('mountedId={nativeMountedId}')
+    && codexView.includes('data-testid="codex-voice-input"'),
+  'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
+  // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
+  assert.ok(codexView.includes('data-testid="codex-composer-configs"')
+    && codexView.includes('{composerControlsVisible && !isNativeAgent && (')
+    && codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={testId || `codex-config-${id}`}'),
-  'the shared config select must keep its ACP testid contract while allowing native overrides');
+  'the plain lane must keep its self-drawn config select group while the shared config select keeps the ACP testid contract');
   assert.ok(codexView.includes("invoke('get_session_model_id'")
     && codexView.includes("invoke('set_session_model'")
     && codexView.includes("invoke('session_mount_collection'")

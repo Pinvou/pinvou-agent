@@ -2961,6 +2961,7 @@ export function CodexAcpView({
                   </button>
                   <button
                     type="button"
+                    data-testid="codex-voice-input"
                     onClick={handleNativeVoiceClick}
                     disabled={nativeVoiceDisabled}
                     aria-label={nativeVoiceLabel}
