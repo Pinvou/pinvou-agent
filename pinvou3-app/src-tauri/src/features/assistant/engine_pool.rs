@@ -46,7 +46,7 @@ use crate::features::assistant::engine::{
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
-use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::{base_url_uses_loopback, Pinvou3Bridge};
 use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
@@ -985,9 +985,18 @@ impl EnginePool {
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
         bridge.runtime_model_credential = prepared.credential.clone();
+        // 本地 loopback 端点（OpenAI 兼容 preset 指向本机服务）：探测服务类型
+        // （Ollama / vLLM / LM Studio / 通用），让思考控制走对应底座 wire 协议。
+        // 探测失败（服务未启动/超时）判定为通用，保持既有 openai wire route。
+        if bridge.provider() == "openai" && base_url_uses_loopback(&bridge.base_url()) {
+            bridge.probed_local_kind = Some(
+                crate::core::model_endpoint::probe_local_server_kind(&bridge.base_url()).await,
+            );
+        }
         // 本地 vLLM:发请求的 model 名以 vLLM 实际 served name 为准(探测 /v1/models),
         // 免去写死 qwen36_35b_256k 与 --served-model-name 不一致的 model_not_found。
-        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。
+        // 探测失败(vLLM 没起)保持配置值;云端 provider 不探测。OpenAI 兼容端点
+        // 探测出 vLLM 时同样享受 served name 跟随（provider() 已映射为 "vllm"）。
         if bridge.provider() == "vllm" {
             let (served, max_len) =
                 crate::features::monitor::probe_vllm_model_info(&bridge.base_url()).await;

@@ -691,6 +691,9 @@ function selectorSubLabel(m, t) {
 const REASONING_EFFORT_TIERS = {
   // vllm：off/low/medium/high 四档；max 被底座降级为 high，不重复暴露。
   vllm: ['off', 'low', 'medium', 'high'],
+  // 本地 loopback OpenAI 兼容端点：Rust 探测后走 Ollama think 开关或 vLLM 档位。
+  // 四档覆盖 vLLM 语义；Ollama 由底座把 low/medium/high 归一为 think=true（只有开关）。
+  local: ['off', 'low', 'medium', 'high'],
   // deepseek：wire 文档只认 low/high/max（无 medium），底座 apply_reasoning_effort
   // 把 low 保留为更便宜档位、medium 归一为 high，故暴露 off/low/high/max。
   deepseek: ['off', 'low', 'high', 'max'],
@@ -825,6 +828,40 @@ function isExactMinimaxChatBaseUrl(baseUrl) {
     || isExactHttpsRoute(baseUrl, 'api.minimaxi.com', 'v1');
 }
 
+// vendor 在已知列表 → 返回其 provider（可能为 null = 底座无档位）；
+// vendor 未知（如用户给本地服务填了自定义 vendor）→ 返回 undefined，落到 preset 兜底
+// （与 Rust provider() 的 vendor→preset 回退一致）。
+function vendorReasoningProvider(vendor, model) {
+  if (vendor === 'deepseek') return 'deepseek';
+  if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
+  if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+  if (vendor === 'minimax') return 'minimax';
+  if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
+  if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
+  if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
+  if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+  if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+  if (vendor === 'qwen' || vendor === 'tencent' || vendor === 'gemini' || vendor === 'google') {
+    return null; // 底座无档位
+  }
+  return undefined; // 未知 vendor → preset 兜底
+}
+
+// 对齐 Rust bridge.rs `base_url_uses_loopback`：localhost / 127.0.0.0/8 / ::1 /
+// 0.0.0.0（去 `[]` 与尾部 `.`）。空地址或解析失败按非本地处理。
+function baseUrlUsesLoopback(baseUrl) {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    if (host.toLowerCase() === 'localhost' || host === '::1' || host === '0.0.0.0') return true;
+    const octets = host.split('.').map(Number);
+    return octets.length === 4
+      && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)
+      && octets[0] === 127;
+  } catch {
+    return false;
+  }
+}
 function reasoningProviderForModel(model) {
   if (!model) return null;
   // 对齐 Rust provider() 优先级：官方 deepseek base_url 优先（即使 preset 是
@@ -834,16 +871,9 @@ function reasoningProviderForModel(model) {
   const preset = model.preset || '';
   if (preset === 'local_vllm') return 'vllm';
   if (vendor) {
-    if (vendor === 'deepseek') return 'deepseek';
-    if (['kimi', 'moonshot'].includes(vendor)) return 'moonshot';
-    if (['glm', 'zai', 'zhipu'].includes(vendor)) return 'zai';
-    if (vendor === 'minimax') return 'minimax';
-    if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';
-    if (['doubao', 'volcengine'].includes(vendor)) return 'volcengine';
-    if (['anthropic', 'claude'].includes(vendor)) return 'anthropic';
-    if (['xai', 'grok'].includes(vendor)) return null; // 底座空操作，不提供切换
-    if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
-    return null; // qwen / tencent / gemini / google 无档位
+    const provider = vendorReasoningProvider(vendor, model);
+    if (provider !== undefined) return provider;
+    // 未知 vendor：继续走 preset 兜底（与 Rust provider() 的 vendor→preset 回退一致）。
   }
   switch (preset) {
     case 'deepseek': return 'deepseek';
@@ -854,6 +884,11 @@ function reasoningProviderForModel(model) {
     case 'doubao': return 'volcengine';
     case 'anthropic': return 'anthropic';
     case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    case 'openai_compatible':
+      // 本地 loopback 端点：Rust 探测后 Ollama/vLLM 思考控制真正生效
+      // （Ollama→think 开关、vLLM→档位）；LM Studio/通用端点 wire 层空操作。
+      // 远端自定义 OpenAI 兼容端点不提供切换。
+      return baseUrlUsesLoopback(model.base_url || model.baseUrl) ? 'local' : null;
     default: return null;
   }
 }
@@ -910,9 +945,11 @@ function isAlwaysThinkingK3Route(model) {
   return isExactMoonshotK3Route(model, modelName);
 }
 
-// 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。
+// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认 off
+// （防 SSE timeout / 思考 trace 抢占首包），其余 high。
 function defaultReasoningEffortForModel(model) {
-  if (reasoningProviderForModel(model) === 'vllm') return 'off';
+  const provider = reasoningProviderForModel(model);
+  if (provider === 'vllm' || provider === 'local') return 'off';
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
