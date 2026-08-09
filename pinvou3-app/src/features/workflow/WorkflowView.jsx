@@ -894,7 +894,7 @@ const WidgetCard = ({ title, children, theme }) => {
       }
       function setOther(qi, val) {
         const ot = otherText.slice(); ot[qi] = val; setOtherText(ot);
-        const next = answers.slice(); next[qi] = val.trim() ? { id: questions[qi].id, label: '其他', value: val.trim() } : null; setAnswers(next);
+        const next = answers.slice(); next[qi] = val.trim() ? { id: questions[qi].id, kind: 'other', label: t.uiToolRender.other, value: val.trim() } : null; setAnswers(next);
       }
       function submit() { if (locked) return; if (!answers.every(a => a != null)) return; bridge.workflow.submitWorkflowUserInput(card.cardId, card.toolCallId, answers); }
       const canSubmit = answers.length > 0 && answers.every(a => a != null);
@@ -940,7 +940,7 @@ const WidgetCard = ({ title, children, theme }) => {
                     );
                   })}
                   <button onClick={() => toggleOther(qi)}
-                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi] && answers[qi].label === '其他' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
+                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi]?.kind === 'other' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
                     <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.otherOption}</div>
                   </button>
                   {otherOpen[qi] && (
