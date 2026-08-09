@@ -5,12 +5,6 @@ cd "$(dirname "$0")"
 
 OS_NAME="$(uname -s)"
 
-# Linux/macOS 开发环境自动准备与正式包一致的应用隔离 Node + 精简 ACP Bridge。生成物被
-# gitignore；完整性判断统一交给准备脚本，避免新增 Agent 后开发入口仍把旧 Runtime 误判为可用。
-if [ "$OS_NAME" = "Linux" ] || [ "$OS_NAME" = "Darwin" ]; then
-  ./scripts/prepare-codex-bridge-runtime.sh
-fi
-
 # 注:源 workflows/ → bundle 嵌入快照的同步已移入 build.rs(任何 cargo build/打包都同步,
 # 不再只覆盖 dev 启动,改完直接 build 也不漂移)。
 
