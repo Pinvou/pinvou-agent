@@ -723,6 +723,9 @@ impl Pinvou3Bridge {
     /// （本地 vLLM 保持 off 防 SSE timeout；其余默认 high——底座自身默认是 Max，
     /// 品悟统一收口到 high，符合产品默认思考强度）。
     ///
+    /// 本地 OpenAI 兼容端点（loopback 的 LM Studio/Ollama 等）保持旧行为不注入
+    /// 档位（None），避免改造前不存在的 `reasoning_effort` 请求参数引起漂移。
+    ///
     /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
     /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
     /// `thinking: {"type":"enabled"}`，天然满足该要求，无需特判模型名。
@@ -735,6 +738,8 @@ impl Pinvou3Bridge {
         }
         match self.provider().as_str() {
             "vllm" => Some("off".to_string()),
+            // 本地 OpenAI 兼容端点（loopback 服务）不注入，保持旧行为。
+            "openai" if base_url_uses_loopback(&self.base_url()) => None,
             _ => Some("high".to_string()),
         }
     }
@@ -4078,6 +4083,29 @@ mod tests {
         );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    /// 本地 OpenAI 兼容端点（loopback，如 LM Studio/Ollama）保持旧行为：
+    /// 不注入 reasoning_effort（None），避免行为漂移。
+    #[test]
+    fn local_openai_compatible_endpoint_keeps_none_reasoning_effort() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "local-model",
+            "http://127.0.0.1:1234/v1",
+            "",
+        );
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.request_reasoning_effort(), None);
+        assert_eq!(bridge.build_dt_config().reasoning_effort, None);
     }
 
     /// Deepseek preset 应返回正确的默认 URL 和模型。
