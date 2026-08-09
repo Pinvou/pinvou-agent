@@ -312,13 +312,15 @@ async fn probe_vllm_owned(base_url: &str) -> bool {
     let Some(v) = fetch_v1_models(base_url).await else {
         return false;
     };
-    v.get("data").and_then(Value::as_array).is_some_and(|items| {
-        items.iter().any(|item| {
-            item.get("owned_by")
-                .and_then(Value::as_str)
-                .is_some_and(|owned| owned.eq_ignore_ascii_case("vllm"))
+    v.get("data")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("owned_by")
+                    .and_then(Value::as_str)
+                    .is_some_and(|owned| owned.eq_ignore_ascii_case("vllm"))
+            })
         })
-    })
 }
 
 /// Messages API 版本头，与连接测试同一口径。
