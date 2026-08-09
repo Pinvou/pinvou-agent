@@ -15,7 +15,7 @@ code = code.replace(/import\s+['"]\.\/settings-i18n\.js['"];?/g, '');
 // 引用这些标识符,会在 vm 求值时抛 "deepseekIcon is not defined"。被测函数不依赖图标映射。
 code = code.replace(/const\s+BRAND_ICON_BY_(?:PRESET|VENDOR)\s*=\s*\{[\s\S]*?\};?/g, '');
 
-const ctx = { console };
+const ctx = { console, URL };
 vm.createContext(ctx);
 vm.runInContext(
   `${code}\n` +
@@ -256,6 +256,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(gemini), null);
   const custom = { preset: 'openai_compatible', model: 'my-model' };
   assert.strictEqual(reasoningEffortTiersForModel(custom), null);
+<<<<<<< HEAD
   // tiered effort 只认精确 first-party 端点：中国端点 / 兼容网关同型号回落通用档位（fail-closed）
   const moonshotCn = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.cn/v1' };
   assert.deepStrictEqual(tiers(moonshotCn), ['off', 'high']);
@@ -295,6 +296,14 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // xiaomi-mimo：只有 thinking 开关（off/enabled），off/high 两档
   const mimo = { preset: 'mimo', vendor: 'mimo', model: 'mimo-v2.5-pro' };
   assert.deepStrictEqual(tiers(mimo), ['off', 'high']);
+  // 本地 loopback OpenAI 兼容端点：探测后走 Ollama think 开关 / vLLM 档位，提供四档
+  const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
+  assert.deepStrictEqual(tiers(localOllama), ['off', 'low', 'medium', 'high']);
+  const localLocalhost = { preset: 'openai_compatible', model: 'local-model', base_url: 'http://localhost:8000/v1' };
+  assert.deepStrictEqual(tiers(localLocalhost), ['off', 'low', 'medium', 'high']);
+  // 远端自定义 OpenAI 兼容端点不提供切换（无本地思考控制 wire）
+  const remoteCustom = { preset: 'openai_compatible', model: 'my-model', base_url: 'https://api.example.com/v1' };
+  assert.strictEqual(reasoningEffortTiersForModel(remoteCustom), null);
 });
 
 test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
@@ -359,6 +368,9 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
   assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(defaultReasoningEffortForModel(xai), null);
+  // 本地 loopback OpenAI 兼容端点默认关闭思考（与 vllm 一致）
+  const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
+  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'off');
 });
 
 test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {

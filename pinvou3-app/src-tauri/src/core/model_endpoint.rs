@@ -232,6 +232,99 @@ pub fn strip_v1_suffix(url: &str) -> Option<String> {
     )
 }
 
+/// 本地推理服务类型（决定思考控制走哪套 wire 协议）。
+///
+/// 只有前两类有底座现成能力：Ollama 经 `think` 布尔开关（无档位）、vLLM 经
+/// `chat_template_kwargs` 支持 off/low/medium/high 档位；LM Studio 与通用
+/// OpenAI 兼容端点走 openai wire route，底座暂不注入思考控制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalServerKind {
+    /// vLLM：底座经 `chat_template_kwargs.enable_thinking` + `reasoning_effort`
+    /// 支持 off/low/medium/high 档位。
+    Vllm,
+    /// Ollama：底座经 `think` 布尔支持开关（off=think:false，其余 think:true）。
+    Ollama,
+    /// LM Studio：底座 openai wire route 暂不注入思考控制（保持旧行为）。
+    LmStudio,
+    /// 其他通用 OpenAI 兼容服务（探测不到任何特征端点）。
+    Generic,
+}
+
+/// 探测本地推理服务类型。只应在 loopback 端点（`base_url_uses_loopback`）上调用；
+/// 判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio（`/api/v0/models`）
+/// → vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败（服务未启动/超时）返回
+/// `Generic`，调用方保持既有 openai wire route，不因探测失败改变行为。
+pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
+    // Ollama 特征端点 /api/tags 存在且模型列表非空（probe_ollama_models 内部要求）。
+    if probe_ollama_models(base_url).await.is_some() {
+        return LocalServerKind::Ollama;
+    }
+    // LM Studio 原生端点 /api/v0/models 存在且形状认识。注意不能复用
+    // probe_lmstudio_models：它失败时回退 /v1/models，而 /v1/models 是通用端点
+    // （Ollama/通用服务也有），会把非 LM Studio 误判成 LM Studio。
+    if probe_lmstudio_v0_only(base_url).await.is_some() {
+        return LocalServerKind::LmStudio;
+    }
+    // vLLM：/v1/models 响应中模型 `owned_by == "vllm"`（vLLM 标准实现字段）。
+    if probe_vllm_owned(base_url).await {
+        return LocalServerKind::Vllm;
+    }
+    LocalServerKind::Generic
+}
+
+/// 仅探测 LM Studio 独有原生端点 `/api/v0/models`（不回退 `/v1/models`，后者
+/// 不具判别性）。响应形状不认识时返回 `None`，调用方继续探测下一个候选。
+async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("{host}/api/v0/models"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .ok()?;
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    Some(OpenAiModelsProbe {
+        models: parse_lmstudio_v0_models(&v)?,
+    })
+}
+
+/// 探测 vLLM：`/v1/models` 响应中任一模型 `owned_by == "vllm"`（vLLM 标准实现）。
+/// 探测地址与 `probe_vllm_model_info` 同一口径：upstream 带 `/v1` 直接拼 `/models`，
+/// 不带则补 `/v1/models`。
+async fn probe_vllm_owned(base_url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return false;
+    };
+    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/v1/models", base_url.trim_end_matches('/'))
+    };
+    let Ok(resp) = client.get(url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return false;
+    };
+    v.get("data").and_then(Value::as_array).is_some_and(|items| {
+        items.iter().any(|item| {
+            item.get("owned_by")
+                .and_then(Value::as_str)
+                .is_some_and(|owned| owned.eq_ignore_ascii_case("vllm"))
+        })
+    })
+}
+
 /// Messages API 版本头，与连接测试同一口径。
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
