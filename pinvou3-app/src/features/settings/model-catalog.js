@@ -614,7 +614,7 @@ function isOpenaiReasoningFamilyModel(model) {
   return /^gpt-5\.5(\b|-)/.test(lower)
     || /^gpt-5\.6(\b|-)/.test(lower)
     || /^gpt-5-codex(\b|-)/.test(lower)
-    || /^gpt-5\.[12]-codex(\b|-)/.test(lower)
+    || /^gpt-5\.[123]-codex(\b|-)/.test(lower)
     || /^codex-gpt-5/.test(lower)
     || /^chatgpt-gpt-5/.test(lower);
 }

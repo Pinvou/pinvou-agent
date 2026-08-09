@@ -184,12 +184,21 @@ impl SavedModel {
         if let Some(effort) = self.reasoning_effort.as_deref() {
             let valid = matches!(
                 effort.trim().to_ascii_lowercase().as_str(),
-                "off" | "disabled" | "none" | "false"
-                    | "low" | "minimal"
-                    | "medium" | "mid"
+                "off"
+                    | "disabled"
+                    | "none"
+                    | "false"
+                    | "low"
+                    | "minimal"
+                    | "medium"
+                    | "mid"
                     | "high"
-                    | "auto" | "automatic"
-                    | "max" | "maximum" | "xhigh" | "ultracode"
+                    | "auto"
+                    | "automatic"
+                    | "max"
+                    | "maximum"
+                    | "xhigh"
+                    | "ultracode"
             );
             if !valid {
                 self.reasoning_effort = None;
@@ -955,6 +964,72 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    /// reasoning_effort 只接受底座 `ReasoningEffort::from_setting` 认识的档位：
+    /// 非法值置 None（避免被底座静默回退成 Max），合法别名原样保留。
+    #[test]
+    fn normalize_reasoning_effort_rejects_unknown_and_keeps_aliases() {
+        let base = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "m1".into(),
+            base_url: "https://example.invalid/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        let mut invalid = base.clone();
+        invalid.reasoning_effort = Some("turbo".into());
+        invalid.normalize_route_limits();
+        assert_eq!(
+            invalid.reasoning_effort, None,
+            "非法档位应置 None 而非交给底座静默回退 Max"
+        );
+
+        for alias in [
+            "off",
+            "disabled",
+            "none",
+            "false",
+            "low",
+            "minimal",
+            "medium",
+            "mid",
+            "high",
+            "auto",
+            "automatic",
+            "max",
+            "maximum",
+            "xhigh",
+            "ultracode",
+        ] {
+            let mut m = base.clone();
+            m.reasoning_effort = Some(alias.into());
+            m.normalize_route_limits();
+            assert_eq!(
+                m.reasoning_effort.as_deref(),
+                Some(alias),
+                "合法别名 {alias} 应保留"
+            );
+        }
+    }
+
+    /// 旧版 settings.json（无 reasoning_effort 字段）必须反序列化成功且字段为 None。
+    #[test]
+    fn saved_model_missing_reasoning_effort_field_defaults_to_none() {
+        let json = r#"{"id":"m1","name":"m1","preset":"openai_compatible","model":"gpt-5.4-mini","base_url":"https://api.openai.com/v1"}"#;
+        let model: SavedModel = serde_json::from_str(json).expect("旧数据必须能反序列化");
+        assert_eq!(model.reasoning_effort, None);
+    }
 
     #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {

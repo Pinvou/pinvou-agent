@@ -1788,6 +1788,7 @@ impl Pinvou3Bridge {
             auto_approve,
             approval_mode,
             translation_enabled: false,
+
             // v0.8.49 上游新增。Some(空表) = 本轮零工具:底座 filter_tool_catalog_for_gates
             // 直接从发给模型的 schema 里 retain 掉全部工具,模型根本看不到 write_file /
             // present_artifact 等。卡牌制造专家等"纯对话元卡"用它,从工具层杜绝小模型误走
@@ -3935,13 +3936,57 @@ mod tests {
         );
 
         assert_eq!(bridge.provider(), "moonshot");
-        assert_eq!(
-            bridge.request_reasoning_effort().as_deref(),
-            Some("high")
-        );
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
         assert_eq!(
             bridge.build_dt_config().reasoning_effort.as_deref(),
             Some("high")
+        );
+    }
+
+    /// 用户显式设置的 `SavedModel.reasoning_effort` 必须覆盖 provider 默认
+    /// （此处验证 off 覆盖 moonshot 默认 high），且三个注入点保持一致。
+    #[test]
+    fn explicit_reasoning_effort_overrides_provider_default() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Kimi,
+            "moonshot-v1-8k",
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+        );
+        bridge.prefs.advanced.saved_models[0].reasoning_effort = Some("off".to_string());
+
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(
+            bridge.build_dt_config().reasoning_effort.as_deref(),
+            Some("off"),
+            "DtConfig 注入点必须透传显式档位"
+        );
+        assert_eq!(
+            bridge.build_engine_config().reasoning_effort.as_deref(),
+            Some("off"),
+            "EngineConfig 注入点必须透传显式档位"
+        );
+        let op = bridge
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false)
+            .expect("resolve test route");
+        let Op::SendMessage {
+            reasoning_effort, ..
+        } = op
+        else {
+            panic!("期望 SendMessage");
+        };
+        assert_eq!(
+            reasoning_effort.as_deref(),
+            Some("off"),
+            "SendMessage 注入点必须透传显式档位"
         );
     }
 

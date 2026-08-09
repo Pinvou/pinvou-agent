@@ -194,6 +194,16 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
   const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
   assert.deepStrictEqual(tiers(openai56), ['off', 'low', 'medium', 'high', 'max']);
+  // 底座白名单内的 codex 变体（含 gpt-5.3-codex / 5.5 后缀）都应提供切换
+  const openai53 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.3-codex' };
+  assert.deepStrictEqual(tiers(openai53), ['off', 'low', 'medium', 'high', 'max']);
+  const codex55 = { preset: 'openai', vendor: 'openai', model: 'codex-gpt-5.5' };
+  assert.deepStrictEqual(tiers(codex55), ['off', 'low', 'medium', 'high', 'max']);
+  const gpt55Codex = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5-codex-preview' };
+  assert.deepStrictEqual(tiers(gpt55Codex), ['off', 'low', 'medium', 'high', 'max']);
+  // 大小写归一：大写模型名同样识别
+  const openaiUpper = { preset: 'openai', vendor: 'openai', model: 'GPT-5.3-CODEX' };
+  assert.deepStrictEqual(tiers(openaiUpper), ['off', 'low', 'medium', 'high', 'max']);
   // OpenAI 非 reasoning 系（gpt-5.4-mini）与 xai/qwen/gemini/自定义兼容不提供切换
   const openaiMini = { preset: 'openai', vendor: 'openai', model: 'gpt-5.4-mini' };
   assert.strictEqual(reasoningEffortTiersForModel(openaiMini), null);

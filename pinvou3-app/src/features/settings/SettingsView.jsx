@@ -1268,9 +1268,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
-      // 思考深度档位：初始取已保存值，无则按模型默认（vllm→off，其余→high）。
+      // 思考深度档位：初始取已保存值，无则按模型默认（vllm→off，其余→high；
+      // 底座不支持的模型无默认，保持 null = 未显式设置，避免保存时污染 SavedModel）。
       const [reasoningEffort, setReasoningEffort] = useState(
-        initial.reasoning_effort || defaultReasoningEffortForModel(initial) || 'high'
+        initial.reasoning_effort || defaultReasoningEffortForModel(initial) || null
       );
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
@@ -1355,8 +1356,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
-        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high）。
-        setReasoningEffort(defaultReasoningEffortForModel({ preset: p, model: nextModel, vendor: group.vendor || vendor }) || 'high');
+        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
+        // 无档位模型置 null = 未显式设置）。
+        setReasoningEffort(defaultReasoningEffortForModel({ preset: p, model: nextModel, vendor: group.vendor || vendor }) || null);
         if (p !== 'local_vllm') {
           setApiKey('');
           setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -1496,7 +1498,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           id: id, name: saveName, preset: preset,
           context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
           max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
-          reasoning_effort: reasoningEffort || null,
+          // 仅当前表单模型支持档位时保存；手输 model 变为无档位模型时置 null。
+          reasoning_effort: reasoningEffortTiers.length > 0 ? (reasoningEffort || null) : null,
           model: model.trim(), base_url: baseUrl.trim(),
           api_key: nextApiKey, credential_action: nextKeyAction,
           provider_kind: providerKind || null,
