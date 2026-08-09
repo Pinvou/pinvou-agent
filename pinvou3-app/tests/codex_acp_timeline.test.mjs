@@ -538,25 +538,21 @@ try {
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),
     'Codex ordered lists must retain numbering after Tailwind preflight');
 
-  // 原生（品悟）车道底栏四控件契约：仅 isNativeAgent 渲染、与 ACP 配置组同一套
-  // CodexComposerConfigSelect 视觉、直调 per-session 命令、绝不复用 bridge 聊天
-  // active 绑定方法。
+  // 原生（品悟）车道底栏控件契约：仅 isNativeAgent 渲染、与工作/设计页共用同一套
+  // 共享 composer 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
+  // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）、直调 per-session 命令、
+  // 并带与 ChatView 同款的语音输入按钮（bridge.voice 写回 draft）。
   const composerControls = readFileSync(path.join(root, 'src', 'features', 'chat', 'composer-controls.jsx'), 'utf8');
   assert.ok(codexView.includes('data-testid="native-composer-controls"')
     && codexView.includes('{isNativeAgent && (')
-    && codexView.includes('testId="native-mode"')
-    && codexView.includes('testId="native-model"')
-    && codexView.includes('testId="native-kb"')
-    && codexView.includes('triggerVariant="pill"')
+    && codexView.includes('<ComposerModeChip')
+    && codexView.includes('<ComposerModelSelector')
+    && codexView.includes('<ComposerKbSelector')
+    && codexView.includes('<ComposerToolMenu')
     && codexView.includes('triggerTestId="native-tools"')
-    && codexView.includes('label={codexCopy.model}')
-    && codexView.includes('label={codexCopy.permissionMode}')
-    && codexView.includes('label={t.kbMount}'),
-  'the native lane must mount the four composer controls as ACP-style config pills behind the native-agent gate');
-  assert.ok(!codexView.includes('<ComposerModeChip')
-    && !codexView.includes('<ComposerModelSelector')
-    && !codexView.includes('<ComposerKbSelector'),
-  'the code lane must not fall back to chat-style icon triggers for composer controls');
+    && codexView.includes('scope="code"')
+    && codexView.includes('mountedId={nativeMountedId}'),
+  'the native lane must mount the shared composer controls (work/design style) behind the native-agent gate');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
     && codexView.includes('data-testid={testId || `codex-config-${id}`}'),
   'the shared config select must keep its ACP testid contract while allowing native overrides');
