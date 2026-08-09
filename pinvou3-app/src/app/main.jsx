@@ -36,6 +36,7 @@ import {
   tauriCommands,
   tauriEvents,
 } from '../platform/tauri/client.js';
+import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
@@ -106,6 +107,13 @@ function workspaceDisplayName(path) {
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
+        // Linux 的主窗口在配置中隐藏创建。首次 React 提交说明可交互 DOM 已就绪，
+        // 此时再映射 XWayland 窗口，避免冷启动阶段把尚未稳定的输入表面暴露给用户。
+        void revealStartupWindow().then((revealed) => {
+          if (!revealed) return;
+          window.__PINVOU_STARTUP__.mark('react:startup_window_revealed');
+          window.__PINVOU_STARTUP__.flush();
+        });
       }, []);
       useEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_effect');

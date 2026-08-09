@@ -52,11 +52,10 @@ export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://127.0.0.1:
 # ── macOS 提示 ───────────────────────────────────────────────────
 # Mac 不需要 webkit/fcitx/X11 相关 env(那些在 lib.rs RELEASE_ENV_DEFAULTS Linux 段)。
 # 此处无需额外 Mac 专属 export,直接落到 tauri dev 即可。
-# macOS dev 同样套用平台 overlay(原生红绿灯顶栏 titleBarStyle=Overlay),
-# 与打包产物保持一致;build.js 的自动 overlay 只覆盖 build/bundle,dev 在此显式带上。
+# macOS dev 同样套用平台 overlay(原生红绿灯顶栏 titleBarStyle=Overlay)，
+# Linux dev 动态生成隐藏启动 overlay；两者统一通过 build.js 注入，避免配置分叉。
 if [ "$OS_NAME" = "Darwin" ]; then
   echo "✓ macOS dev 模式(跳过 Linux 内网 vLLM/WebKit env)"
-  exec npx tauri dev --config src-tauri/config/platforms/macos/tauri.conf.json "$@"
 fi
 
-exec npx tauri dev "$@"
+exec npm run dev -- "$@"
