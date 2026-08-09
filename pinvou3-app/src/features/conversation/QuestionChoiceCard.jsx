@@ -181,6 +181,14 @@ export function QuestionChoiceCard({
                         const active = selectedValues.includes(option.value);
                         return (
                           <label key={String(option.value)}
+                            onClick={(event) => {
+                              // 选项整行可点：点击文本/描述区域直接选中（WebView 下 label 隐式
+                              // 激活不可靠）；点击圆点本身交给原生 onChange，避免双触发。
+                              if (locked) return;
+                              if (event.target === event.currentTarget.querySelector('input')) return;
+                              event.preventDefault();
+                              choose(question, option.value);
+                            }}
                             className={`rounded-xl border px-3 py-2.5 cursor-pointer transition-colors ${
                               active
                                 ? 'border-blue-500/55 bg-blue-500/[0.08]'
@@ -208,7 +216,15 @@ export function QuestionChoiceCard({
                       })}
                     </div>
                   ) : question.inputType === 'boolean' ? (
-                    <label className="mt-2 flex items-center gap-2 text-[12px]">
+                    <label
+                      className="mt-2 flex items-center gap-2 text-[12px]"
+                      onClick={(event) => {
+                        if (locked) return;
+                        if (event.target === event.currentTarget.querySelector('input')) return;
+                        event.preventDefault();
+                        changeValue(question, !Boolean(selected[question.id]));
+                      }}
+                    >
                       <input
                         type="checkbox"
                         checked={Boolean(selected[question.id])}

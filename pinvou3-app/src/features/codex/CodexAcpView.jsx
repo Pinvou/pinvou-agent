@@ -687,6 +687,7 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
     <QuestionChoiceCard
       title={copy.choiceTitle}
       questions={questions}
+      initialAnswers={item.restoredAnswers || []}
       resolved={!actionable}
       submitting={responding}
       submitLabel={copy.submit}
@@ -2611,7 +2612,7 @@ export function CodexAcpView({
     setResponding(true); setError('');
     try {
       await invoke('submit_user_input', { toolCallId, answers, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'submitted');
+      markNativeInputResolved(toolCallId, 'submitted', answers);
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
@@ -2626,7 +2627,7 @@ export function CodexAcpView({
     finally { setResponding(false); }
   }
 
-  function markNativeInputResolved(toolCallId, cardState) {
+  function markNativeInputResolved(toolCallId, cardState, answers) {
     const lane = getNativeLane(activeId);
     const card = [...lane.items].reverse().find(item => (
       item && item.type === 'user_input' && item.toolCallId === toolCallId && !item.resolved
@@ -2634,6 +2635,10 @@ export function CodexAcpView({
     if (card) {
       card.resolved = true;
       card.cardState = cardState;
+      // 提交后立即记住答案：即使不切会话、仅组件重挂载，历史卡也能恢复选中态。
+      if (cardState === 'submitted' && Array.isArray(answers) && answers.length) {
+        card.restoredAnswers = answers;
+      }
     }
     setNativeLaneTick(tick => tick + 1);
   }

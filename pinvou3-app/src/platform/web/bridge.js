@@ -6765,7 +6765,9 @@
       }).join(" · ");
       pushUserEcho("✓ " + summary, false);
       flushAssistantMessageToHistory();
-      patchItemById(itemId, { resolved: true, cardState: "submitted", submitting: false });
+      // 提交时即存答案：切走视图再切回（ChatView 重挂载但 bridge state 保留）时，
+      // QuestionChoiceCard 用 restoredAnswers 恢复选中态；会话级 rerender 另有解析。
+      patchItemById(itemId, { resolved: true, cardState: "submitted", submitting: false, restoredAnswers: answers });
     } catch (e) {
       patchItemById(itemId, { submitting: false, error: String(e) });
     }
