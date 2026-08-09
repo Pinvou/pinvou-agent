@@ -98,6 +98,51 @@ pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
         })
 }
 
+/// 是否把该 base_url 视为「本地推理服务」：loopback（localhost / 127.0.0.0/8 /
+/// ::1）、RFC1918 私网段（10/8、172.16/12、192.168/16）或 Docker 特主机名
+/// （host.docker.internal 等）。这些端点通常跑在用户自己的机器/内网，探测
+/// 成本低且值得默认关思考；公网 OpenAI 兼容端点不在此列（保持默认 high）。
+/// 与 `base_url_uses_loopback` 的区别：后者仅用于「允许无鉴权」判定（api_key
+/// required），本判定覆盖探测与思考控制范围（局域网 vLLM/Ollama 也默认关思考）。
+pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            let host = host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.');
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            // Docker Desktop 宿主别名：容器内访问宿主机的常见写法。
+            if host.eq_ignore_ascii_case("host.docker.internal")
+                || host.eq_ignore_ascii_case("host.lima.internal")
+                || host.eq_ignore_ascii_case("host.orbstack.internal")
+                || host.ends_with(".docker.internal")
+            {
+                return true;
+            }
+            let Ok(address) = host.parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            if address.is_loopback() {
+                return true;
+            }
+            // RFC1918 私网段：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16。
+            match address {
+                std::net::IpAddr::V4(v4) => {
+                    let octets = v4.octets();
+                    octets[0] == 10
+                        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                        || (octets[0] == 192 && octets[1] == 168)
+                }
+                std::net::IpAddr::V6(_) => false,
+            }
+        })
+}
+
 fn official_deepseek_model_name(model: &str) -> String {
     let model = wire_model_for_provider(ApiProvider::Deepseek, model);
     match model.to_ascii_lowercase().as_str() {
@@ -705,13 +750,13 @@ impl Pinvou3Bridge {
             ModelPreset::Mimo => "xiaomi-mimo".to_string(),
             ModelPreset::Anthropic => "anthropic".to_string(),
             ModelPreset::Xai => "xai".to_string(),
-            // 本地 loopback 端点（用户自定义 OpenAI 兼容地址指向本机服务）：
-            // 按 EnginePool spawn 时探测出的服务类型走对应底座 provider，让思考
+            // 本地端点（用户自定义 OpenAI 兼容地址指向本机/内网服务）：按
+            // EnginePool spawn 时探测出的服务类型走对应底座 provider，让思考
             // 控制真正生效（Ollama → think 开关、vLLM → off/low/medium/high 档位）。
             // LM Studio / 通用 / 尚未探测（None）保持 openai wire route
             // （底座对 openai 的 reasoning_effort 是空操作，不注入思考控制）。
             ModelPreset::OpenaiCompatible => {
-                if base_url_uses_loopback(&self.base_url()) {
+                if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
                         Some(LocalServerKind::Vllm) => return "vllm".to_string(),
@@ -787,8 +832,9 @@ impl Pinvou3Bridge {
         match self.provider().as_str() {
             // 本地模型默认关思考：vLLM 防 SSE timeout；Ollama 防思考 trace 抢占首包。
             "vllm" | "ollama" => Some("off".to_string()),
-            // 本地 OpenAI 兼容端点（loopback 的 LM Studio/通用服务）不注入，保持旧行为。
-            "openai" if base_url_uses_loopback(&self.base_url()) => None,
+            // 本地 OpenAI 兼容端点（loopback/私网的 LM Studio/通用服务）不注入，
+            // 保持旧行为。
+            "openai" if base_url_uses_local_or_private(&self.base_url()) => None,
             _ => Some("high".to_string()),
         }
     }
@@ -3736,6 +3782,46 @@ mod tests {
             "",
         );
         assert!(!lan.is_local_endpoint());
+    }
+
+    #[test]
+    fn local_or_private_detection_covers_loopback_lan_and_docker_hosts() {
+        // loopback（与 base_url_uses_loopback 一致）
+        assert!(base_url_uses_local_or_private("http://localhost:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://127.0.0.42:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://[::1]:8000/v1"));
+        // RFC1918 私网段
+        assert!(base_url_uses_local_or_private("http://10.0.0.5:8000/v1"));
+        assert!(base_url_uses_local_or_private("http://172.16.3.4:8000/v1"));
+        assert!(base_url_uses_local_or_private(
+            "http://172.31.255.254:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://192.168.1.10:8000/v1"
+        ));
+        // 172.32 不在 172.16/12 段内
+        assert!(!base_url_uses_local_or_private("http://172.32.1.1:8000/v1"));
+        // Docker 宿主别名
+        assert!(base_url_uses_local_or_private(
+            "http://host.docker.internal:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://host.lima.internal:8000/v1"
+        ));
+        assert!(base_url_uses_local_or_private(
+            "http://myapp.docker.internal:9000/v1"
+        ));
+        // 公网端点不是本地
+        assert!(!base_url_uses_local_or_private(
+            "https://api.deepseek.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private(
+            "https://gateway.example.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private(
+            "https://192.168.1.10.example.com/v1"
+        ));
+        assert!(!base_url_uses_local_or_private("not a url"));
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:

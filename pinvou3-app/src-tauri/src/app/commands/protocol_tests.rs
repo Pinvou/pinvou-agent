@@ -429,6 +429,7 @@ command_protocol!(
         "submit_feedback",
         "get_effective_model_config",
         "list_models",
+        "probe_local_server_kind",
         "reveal_model_api_key",
         "save_model",
         "delete_model",

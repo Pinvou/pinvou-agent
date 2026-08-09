@@ -33,12 +33,14 @@ vm.runInContext(
   `this.reasoningEffortForModelSwitch = reasoningEffortForModelSwitch;\n` +
   `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n` +
   `this.baseUrlUsesLoopback = baseUrlUsesLoopback;\n` +
+  `this.baseUrlUsesLocalOrPrivate = baseUrlUsesLocalOrPrivate;\n` +
+  `this.localProbeTiersForKind = localProbeTiersForKind;\n` +
   `this.catalogImageCapableForModel = catalogImageCapableForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, catalogImageCapableForModel } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, catalogImageCapableForModel } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -306,7 +308,6 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(remoteCustom), null);
 });
 
-<<<<<<< HEAD
 test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
   const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
   const openai = model => ({ preset: 'openai', vendor: 'openai', model });
@@ -381,6 +382,41 @@ test('baseUrlUsesLoopback 与 Rust bridge.rs 判定对齐', () => {
   assert.strictEqual(baseUrlUsesLoopback('https://api.example.com/v1'), false);
   assert.strictEqual(baseUrlUsesLoopback(''), false);
   assert.strictEqual(baseUrlUsesLoopback('not-a-url'), false);
+});
+
+test('baseUrlUsesLocalOrPrivate 覆盖 loopback/RFC1918/Docker 宿主别名', () => {
+  // loopback（与 baseUrlUsesLoopback 一致）
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://127.0.0.1:11434/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://localhost:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://[::1]:11434/v1'), true);
+  // RFC1918 私网段
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://10.0.0.5:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.16.3.4:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.31.255.254:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://192.168.1.10:11434/v1'), true);
+  // 172.32 不在 172.16/12 段内
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://172.32.1.1:8000/v1'), false);
+  // Docker 宿主别名
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://host.docker.internal:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://host.lima.internal:8000/v1'), true);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('http://myapp.docker.internal:9000/v1'), true);
+  // 公网/域名非本地
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://api.deepseek.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://gateway.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate('https://192.168.1.10.example.com/v1'), false);
+  assert.strictEqual(baseUrlUsesLocalOrPrivate(''), false);
+});
+
+test('localProbeTiersForKind 按探测结果映射真实档位', () => {
+  // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('vllm')), ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('ollama')), ['off', 'high']);
+  // lmstudio/generic 底座空操作 → null（前端显示不支持提示）
+  assert.strictEqual(localProbeTiersForKind('lmstudio'), null);
+  assert.strictEqual(localProbeTiersForKind('generic'), null);
+  // 未探测/未知 → 默认四档（前端探测完成前不误报不支持）
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind(null)), ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual(Array.from(localProbeTiersForKind('unknown')), ['off', 'low', 'medium', 'high']);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {

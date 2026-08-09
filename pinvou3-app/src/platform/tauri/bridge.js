@@ -2093,6 +2093,7 @@
   var testModelConnection = settingsFeature.testModelConnection;
   var getImageInputCapability = settingsFeature.getImageInputCapability;
   var testImageInputCapability = settingsFeature.testImageInputCapability;
+  var probeLocalServerKind = settingsFeature.probeLocalServerKind;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
@@ -2447,6 +2448,7 @@
       testModelConnection: testModelConnection,
       getImageInputCapability: getImageInputCapability,
       testImageInputCapability: testImageInputCapability,
+      probeLocalServerKind: probeLocalServerKind,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
       // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回

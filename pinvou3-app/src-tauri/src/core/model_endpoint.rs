@@ -9,6 +9,15 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+/// 探测结果 TTL 缓存：同一 base_url 的本地服务类型在短时间内不会变化。
+/// 探测最坏 ~12-15s 串行（挂起端点），多会话/多入口（EnginePool spawn、
+/// 连接测试、前端探测）重复探测会放大开销；按 base_url 缓存可合并。
+const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+static PROBE_KIND_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, LocalServerKind)>>,
+> = std::sync::OnceLock::new();
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiModelInfo {
     pub id: String,
@@ -236,11 +245,53 @@ pub enum LocalServerKind {
     Generic,
 }
 
-/// 探测本地推理服务类型。只应在 loopback 端点（`base_url_uses_loopback`）上调用；
-/// 判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio（`/api/v0/models`）
-/// → vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败（服务未启动/超时）返回
-/// `Generic`，调用方保持既有 openai wire route，不因探测失败改变行为。
+/// 探测本地推理服务类型。只应在本地端点（`base_url_uses_local_or_private`）上
+/// 调用；判定顺序按特征端点互斥性排列：Ollama（`/api/tags`）→ LM Studio
+/// （`/api/v0/models`）→ vLLM（`/v1/models` 的 `owned_by`）→ 通用。探测失败
+/// （服务未启动/超时）返回 `Generic`，调用方保持既有 openai wire route，不因
+/// 探测失败改变行为。
+///
+/// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：探测最坏 ~12-15s 串行（挂起端点），
+/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。
 pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
+    let key = base_url.trim_end_matches('/').to_string();
+    if let Some(kind) = probe_kind_cache_get(&key) {
+        return kind;
+    }
+    let kind = probe_local_server_kind_uncached(&key).await;
+    probe_kind_cache_put(&key, kind);
+    kind
+}
+
+fn probe_kind_cache_get(base_url: &str) -> Option<LocalServerKind> {
+    let cache = PROBE_KIND_CACHE.get_or_init(Default::default);
+    let guard = cache.lock().ok()?;
+    let (inserted_at, kind) = guard.get(base_url)?;
+    if inserted_at.elapsed() > PROBE_CACHE_TTL {
+        return None;
+    }
+    Some(*kind)
+}
+
+fn probe_kind_cache_put(base_url: &str, kind: LocalServerKind) {
+    let cache = PROBE_KIND_CACHE.get_or_init(Default::default);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(base_url.to_string(), (std::time::Instant::now(), kind));
+    }
+}
+
+/// 仅测试用：清空探测缓存，避免 TTL 命中污染 mock 调用计数/跨用例状态。
+#[cfg(test)]
+pub(crate) fn clear_probe_kind_cache() {
+    if let Some(cache) = PROBE_KIND_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+}
+
+/// 无缓存的实际探测（TTL 缓存命中时直接返回，见 `probe_local_server_kind`）。
+async fn probe_local_server_kind_uncached(base_url: &str) -> LocalServerKind {
     // Ollama 特征端点 /api/tags 存在且模型列表非空（probe_ollama_models 内部要求）。
     if probe_ollama_models(base_url).await.is_some() {
         return LocalServerKind::Ollama;
@@ -707,5 +758,21 @@ mod tests {
             fetch_v1_models(&format!("{base}/v1/")).await.is_some(),
             "带 /v1/ 尾斜杠同样命中"
         );
+    }
+
+    /// TTL 缓存：同一 base_url 的探测结果缓存 60s，第二次调用不再发请求。
+    /// mock server 每次响应后关闭连接，若缓存失效第二次调用会因服务已关而
+    /// 落到 Generic——缓存命中则保持第一次的 Ollama 判定。
+    #[tokio::test]
+    async fn probe_local_kind_caches_result_per_base_url() {
+        clear_probe_kind_cache();
+        let server =
+            spawn_probe_server(vec![("/api/tags", r#"{"models":[{"name":"qwen3:8b"}]}"#)]).await;
+        let first = probe_local_server_kind(&server.url).await;
+        assert_eq!(first, LocalServerKind::Ollama);
+        // 第二次调用命中缓存，不再访问已关闭的 server。
+        let second = probe_local_server_kind(&server.url).await;
+        assert_eq!(second, LocalServerKind::Ollama);
+        clear_probe_kind_cache();
     }
 }

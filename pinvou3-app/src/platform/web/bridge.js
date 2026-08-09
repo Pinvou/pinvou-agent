@@ -6724,6 +6724,15 @@
   async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
     return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
+  async function probeLocalServerKind(baseUrl) {
+    // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
+    // Rust 侧按 base_url TTL 缓存；探测失败/非本地端点返回 generic。
+    try {
+      return await invoke("probe_local_server_kind", { baseUrl: baseUrl });
+    } catch (_) {
+      return "generic";
+    }
+  }
   async function testSearchProvider(provider, apiKey) {
     return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
   }
@@ -9116,6 +9125,7 @@
     loadSessionModel: loadSessionModel,
     switchModel: switchModel,
     testModelConnection: testModelConnection,
+    probeLocalServerKind: probeLocalServerKind,
     testSearchProvider: testSearchProvider,
     toggleSuperPerm: toggleSuperPerm,
     renderMarkdown: renderMarkdown,
