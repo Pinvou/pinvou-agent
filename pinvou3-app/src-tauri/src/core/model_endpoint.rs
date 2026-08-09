@@ -180,22 +180,8 @@ pub async fn probe_ollama_models(base_url: &str) -> Option<OpenAiModelsProbe> {
 /// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
 /// 旧版本没有该接口时回退 `/v1/models`（loaded 未知）。
 pub async fn probe_lmstudio_models(base_url: &str) -> Option<OpenAiModelsProbe> {
-    let host = strip_v1_suffix(base_url)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-    if let Ok(resp) = client
-        .get(format!("{host}/api/v0/models"))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        if let Ok(v) = resp.json::<serde_json::Value>().await {
-            if let Some(models) = parse_lmstudio_v0_models(&v) {
-                return Some(OpenAiModelsProbe { models });
-            }
-        }
+    if let Some(probe) = probe_lmstudio_v0_only(base_url).await {
+        return Some(probe);
     }
     probe_openai_models(base_url).await
 }
@@ -274,6 +260,9 @@ pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
 
 /// 仅探测 LM Studio 独有原生端点 `/api/v0/models`（不回退 `/v1/models`，后者
 /// 不具判别性）。响应形状不认识时返回 `None`，调用方继续探测下一个候选。
+/// 既是 `probe_lmstudio_models` 的 v0 前置，也是本地服务判别探测的前置：
+/// 判别场景必须用它而非 `probe_lmstudio_models`（后者回退 `/v1/models`，而
+/// `/v1/models` 是通用端点，Ollama/通用服务也有，会把非 LM Studio 误判）。
 async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = reqwest::Client::builder()
@@ -292,15 +281,17 @@ async fn probe_lmstudio_v0_only(base_url: &str) -> Option<OpenAiModelsProbe> {
     })
 }
 
-/// 探测 vLLM：`/v1/models` 响应中任一模型 `owned_by == "vllm"`（vLLM 标准实现）。
-/// 探测地址与 `probe_vllm_model_info` 同一口径：upstream 带 `/v1` 直接拼 `/models`，
-/// 不带则补 `/v1/models`。
-async fn probe_vllm_owned(base_url: &str) -> bool {
+/// 抓取 OpenAI 兼容 `/v1/models` 响应体。探测地址口径与
+/// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
+/// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
+/// 按探测失败处理。共享给 `probe_vllm_owned` 与 monitor 的 vLLM served-name
+/// 探测，避免 `/v1/models` 的 URL 拼装口径在两处漂移。
+pub(crate) async fn fetch_v1_models(base_url: &str) -> Option<serde_json::Value> {
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
     else {
-        return false;
+        return None;
     };
     let url = if base_url.trim_end_matches('/').ends_with("/v1") {
         format!("{}/models", base_url.trim_end_matches('/'))
@@ -308,12 +299,17 @@ async fn probe_vllm_owned(base_url: &str) -> bool {
         format!("{}/v1/models", base_url.trim_end_matches('/'))
     };
     let Ok(resp) = client.get(url).send().await else {
-        return false;
+        return None;
     };
     if !resp.status().is_success() {
-        return false;
+        return None;
     }
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    resp.json::<serde_json::Value>().await.ok()
+}
+
+/// 探测 vLLM：`/v1/models` 响应中任一模型 `owned_by == "vllm"`（vLLM 标准实现）。
+async fn probe_vllm_owned(base_url: &str) -> bool {
+    let Some(v) = fetch_v1_models(base_url).await else {
         return false;
     };
     v.get("data").and_then(Value::as_array).is_some_and(|items| {
@@ -576,5 +572,138 @@ mod tests {
         )
         .is_none());
         assert!(anthropic_messages_text(&serde_json::json!({})).is_none());
+    }
+
+    // —— 本地服务类型探测（本地 HTTP mock，无外部依赖）——
+
+    /// 极简本地 HTTP server：按请求路径前缀返回固定 JSON，未注册路径返回 404。
+    /// 给 probe_local_server_kind / fetch_v1_models 提供真实 HTTP 往返，
+    /// 覆盖探测命中与失败回落路径。
+    struct MockProbeServer {
+        url: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockProbeServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn spawn_probe_server(routes: Vec<(&'static str, &'static str)>) -> MockProbeServer {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    continue;
+                };
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (status, body) = match routes.iter().find(|(p, _)| path.starts_with(p)) {
+                    Some((_, b)) => (200, *b),
+                    None => (404, r#"{"error":"not found"}"#),
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        MockProbeServer {
+            url: format!("http://{addr}/v1"),
+            task,
+        }
+    }
+
+    /// Ollama 特征端点命中：/api/ps 404（容忍，按空集）→ /api/tags 返回模型列表
+    /// → 判定 Ollama。
+    #[tokio::test]
+    async fn probe_local_kind_detects_ollama_via_api_tags() {
+        let server = spawn_probe_server(vec![(
+            "/api/tags",
+            r#"{"models":[{"name":"qwen3:8b"},{"name":"deepseek-r1:14b"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Ollama
+        );
+    }
+
+    /// LM Studio 原生端点命中：/api/tags 404 → /api/v0/models 返回 loaded 模型
+    /// → 判定 LM Studio。
+    #[tokio::test]
+    async fn probe_local_kind_detects_lmstudio_via_v0_models() {
+        let server = spawn_probe_server(vec![(
+            "/api/v0/models",
+            r#"{"data":[{"id":"local-model","state":"loaded"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::LmStudio
+        );
+    }
+
+    /// vLLM 命中：前两个特征端点 404 → /v1/models 中 owned_by == "vllm" → 判定
+    /// vLLM。同时覆盖 fetch_v1_models 对带 /v1 后缀 base_url 的 URL 拼接。
+    #[tokio::test]
+    async fn probe_local_kind_detects_vllm_via_owned_by() {
+        let server = spawn_probe_server(vec![(
+            "/v1/models",
+            r#"{"object":"list","data":[{"id":"qwen3.6-35b","owned_by":"vllm"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Vllm
+        );
+    }
+
+    /// 全失败回落：所有特征端点 404 → Generic（探测失败不改变 wire route）。
+    #[tokio::test]
+    async fn probe_local_kind_falls_back_to_generic_when_all_endpoints_404() {
+        let server = spawn_probe_server(vec![]).await;
+        assert_eq!(
+            probe_local_server_kind(&server.url).await,
+            LocalServerKind::Generic
+        );
+    }
+
+    /// fetch_v1_models 的 URL 拼接：不带 /v1 后缀的 base_url 补 /v1/models；
+    /// 带 /v1（含尾斜杠）直接拼 /models。两种形态都应命中同一 mock 路由。
+    #[tokio::test]
+    async fn fetch_v1_models_joins_url_with_and_without_v1_suffix() {
+        let server = spawn_probe_server(vec![("/v1/models", r#"{"data":[]}"#)]).await;
+        let base = server.url.trim_end_matches("/v1").to_string();
+        assert!(
+            fetch_v1_models(&base).await.is_some(),
+            "无 /v1 后缀应补 /v1/models"
+        );
+        assert!(
+            fetch_v1_models(&server.url).await.is_some(),
+            "带 /v1 后缀应拼 /models"
+        );
+        assert!(
+            fetch_v1_models(&format!("{base}/v1/")).await.is_some(),
+            "带 /v1/ 尾斜杠同样命中"
+        );
     }
 }
