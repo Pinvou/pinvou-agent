@@ -590,7 +590,6 @@ fn ensure_runtime_env() {
     // context_window_for_model 派生 256K 窗口,B2 preflight 才生效)。
     // export DEEPSEEK_MODEL=... 仍可覆盖,这里只改默认。
     set_var_if_unset("DEEPSEEK_MODEL", "qwen36_35b_256k");
-    set_var_if_unset("DEEPSEEK_REASONING_EFFORT", "off");
     // 允许开发者通过 DEEPSEEK_BASE_URL 接入非 loopback 的本地网络 vLLM。
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");

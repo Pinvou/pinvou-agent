@@ -98,7 +98,6 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     //   （env 优先级高于 preset），在「添加模型」多 provider 方案下钉死路由——
     //   切到 kimi/openai/qwen 等仍被当 vllm，且设置页误报「环境变量已锁定 provider」。
     //   provider 现由 active_model.preset 决定（LocalVllm→vllm 默认仍成立）。
-    ("DEEPSEEK_REASONING_EFFORT", "off"),
     ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
     ("DEEPSEEK_FORCE_HTTP1", "1"),
     ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
