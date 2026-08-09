@@ -1549,6 +1549,73 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
   );
 }
 
+async function completedTurnUsesCommittedRevisionAsAuthority() {
+  var harness = createBridgeHarness(null, {
+    // A broken implementation exhausts all fallback retries. Keep that path
+    // deterministic and fast instead of adding more than a second to the test.
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-committed-revision-authority";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "stream presentation",
+  });
+
+  // Native/provider tools may normalize the terminal assistant block before
+  // persistence. The committed revision, rather than byte-identical streamed
+  // presentation, proves which durable snapshot belongs to this turn.
+  durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-after-turn",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
+    }),
+    "the committed revision must allow canonical hydration when streamed presentation differs"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a matching committed revision must not produce a false unsynced warning"
+  );
+
+  [tauriBridge, webBridge].forEach(function (source) {
+    assert.ok(source.includes('remoteCommittedRevision = revision'),
+      "desktop and Web bridges must both retain the committed turn revision");
+    assert.ok(source.includes('savedRevision !== expectedCommittedRevision'),
+      "desktop and Web bridges must both reconcile by committed revision");
+  });
+}
+
 async function remoteAcceptPlanConvergesAcrossClients() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3665,6 +3732,7 @@ Promise.resolve()
   .then(remoteInterruptedTurnKeepsItsDisplayPosition)
   .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
+  .then(completedTurnUsesCommittedRevisionAsAuthority)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

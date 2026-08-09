@@ -804,6 +804,7 @@
       remoteBaselineMessageCount: null,
       remoteBaselineTrusted: false,
       remoteExpectedAssistantKey: "",
+      remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
@@ -1081,6 +1082,7 @@
       buf.remoteBaselineMessageCount = null;
       buf.remoteBaselineTrusted = false;
       buf.remoteExpectedAssistantKey = "";
+      buf.remoteCommittedRevision = "";
       buf.deferredRemoteUserEvent = null;
     }
     buf.stream = {
@@ -1222,7 +1224,7 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
@@ -1232,6 +1234,7 @@
         : Number(meta && meta.message_count);
       if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
       buf.remoteExpectedAssistantKey = "";
+      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
       buf.remoteTerminalSeen = false;
     }
     buf.remoteTurnActive = true;
@@ -1304,10 +1307,17 @@
     if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
     // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
     // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
-    // 已完整显示的流式 assistant 气泡一闪覆盖掉。以终态前的本地工作集作为
-    // authority barrier：消息数不能倒退，且最后一条 assistant 必须已进入快照。
+    // 已完整显示的流式 assistant 气泡一闪覆盖掉。优先用后端已提交 revision
+    // 建立 authority barrier；旧桌面端未提供 revision 时，才回退到消息数与
+    // 最后一条 assistant 的展示身份校验。
     var expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    // The committed revision identifies the canonical terminal transcript.
+    // Streamed/native-tool blocks may be normalized before persistence, so a
+    // presentation-derived message key is only a fallback for older desktops.
+    var expectedCommittedRevision = buf.remoteTerminalSeen
+      ? String(buf.remoteCommittedRevision || "")
       : "";
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
@@ -1315,11 +1325,22 @@
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        // Relay replay may deliver the commit marker immediately after done.
+        // Pick it up during retry rather than staying on the weaker fallback
+        // captured when reconciliation first started.
+        if (!expectedCommittedRevision && buf.remoteTerminalSeen) {
+          expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
+        }
         try {
           var saved = await loadSessionForClient(sid, false);
           if (!saved || !Array.isArray(saved.messages)) continue;
-          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
-          if (expectedAssistantKey) {
+          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          if (expectedCommittedRevision) {
+            if (savedRevision !== expectedCommittedRevision) continue;
+          } else {
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          }
+          if (!expectedCommittedRevision && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
@@ -1406,6 +1427,7 @@
           buf.remoteBaselineMessageCount = null;
           buf.remoteBaselineTrusted = false;
           buf.remoteExpectedAssistantKey = "";
+          buf.remoteCommittedRevision = "";
           buf.deferredRemoteUserEvent = null;
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
@@ -3840,6 +3862,7 @@
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
+      turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
@@ -4081,6 +4104,7 @@
     buffer.localTurnOwned = true;
     buffer.remoteTurnActive = false;
     buffer.remoteTerminalSeen = false;
+    buffer.remoteCommittedRevision = "";
     buffer.busy = true;
     buffer.thinking = {
       active: true,
@@ -4619,7 +4643,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -5089,7 +5116,11 @@
       return;
     }
     var doneBuffer = sid ? getBuffer(sid) : null;
-    if (doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    if (doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed precedes chat:done. Preserve its revision when a
+      // reconnecting client first materializes the turn at the terminal tail.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
@@ -6502,6 +6533,7 @@
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
       planBuffer.remoteTerminalSeen = false;
+      planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     var echoEntry = null;
@@ -6675,6 +6707,7 @@
       editBuffer.localTurnOwned = true;
       editBuffer.remoteTurnActive = false;
       editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
     }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;

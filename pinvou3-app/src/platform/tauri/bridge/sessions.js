@@ -58,6 +58,7 @@
       remoteBaselineMessageCount: null,
       remoteBaselineTrusted: false,
       remoteExpectedAssistantKey: "",
+      remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
@@ -337,6 +338,7 @@
       buf.remoteBaselineMessageCount = null;
       buf.remoteBaselineTrusted = false;
       buf.remoteExpectedAssistantKey = "";
+      buf.remoteCommittedRevision = "";
       buf.deferredRemoteUserEvent = null;
     }
     buf.stream = {

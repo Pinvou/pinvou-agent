@@ -270,7 +270,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -646,7 +649,12 @@
     });
     var doneBuffer = sid ? getBuffer(sid) : null;
     var requiresAuthorityReconcile = !isScheduledRunSession(sid);
-    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed is emitted before chat:done. A client that joins
+      // at the terminal tail may not have seen an earlier turn event, so keep
+      // the already received revision while initializing remote-turn state.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
