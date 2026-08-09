@@ -934,6 +934,13 @@ impl Pinvou3Bridge {
         limits.has_known_limit().then_some(limits)
     }
 
+    /// 当前 active route 的上下文窗口（供 chat:usage 事件携带给前端做
+    /// token 进度条分母）。与 effective_context_window 同源（SavedModel 声明
+    /// vs probe 取小），云端模型不再停留在前端 32K 假分母。
+    pub fn usage_context_window(&self) -> u32 {
+        self.effective_context_window(&self.model())
+    }
+
     /// 底座 emergency 线用的 context window。SavedModel 声明与 probe(vLLM
     /// `/v1/models` 的 `max_model_len`)取较小值；都没有时才按模型名 hint/128K。
     ///
