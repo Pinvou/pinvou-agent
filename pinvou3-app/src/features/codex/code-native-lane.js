@@ -72,17 +72,21 @@ function toolResultText(content) {
 
 /// request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
 /// 按 question.id 匹配，还原成 QuestionChoiceCard 的 answers 数组（顺序对齐 questions，
-/// 未命中的问题占 null，渲染层过滤）。对齐 bridge parseUserAnswers。
+/// 未命中的问题占 null，渲染层过滤）。multi_select 多选保留全部同 id 答案、不塌缩，
+/// 与提交时 markNativeInputResolved 存的全量数组一致。
 function parseNativeUserAnswers(content, questions) {
   let ans;
   try { ans = JSON.parse(toolResultText(content)).answers; } catch { return null; }
   if (!Array.isArray(ans)) return null;
   const byId = {};
-  ans.forEach(a => { if (a && a.id != null) byId[a.id] = a; });
-  return questions.map(q => {
-    const a = byId[q.id];
-    return a ? { id: q.id, label: a.label, value: a.value } : null;
-  });
+  ans.forEach(a => { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+  const out = [];
+  for (const q of questions) {
+    const matches = byId[q.id];
+    if (!matches || !matches.length) { out.push(null); continue; }
+    matches.forEach(a => out.push({ id: q.id, label: a.label, value: a.value }));
+  }
+  return out;
 }
 
 /// accept_plan 的 plan_markdown 拼法（对齐 bridge composePlanMarkdown）：这段文本会进

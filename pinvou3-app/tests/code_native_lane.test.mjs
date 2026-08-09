@@ -192,6 +192,45 @@ try {
   assert.equal(hydratedTool.success, true);
   const hydratedInput = lane4.items.find(item => item.type === 'user_input');
   assert.equal(hydratedInput.resolved, true, '历史 request_user_input 还原为已处理卡');
+
+  // ── hydrate 还原用户已选答案：单选 + 多选（multi_select 不塌缩）────
+  const lane4b = createNativeLane();
+  hydrateNativeLane(lane4b, {
+    messages: [
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use', id: 'c3', name: 'request_user_input',
+          input: { questions: [
+            { id: 'q1', header: '语言', question: '用什么语言？', options: [{ label: 'Python', description: '' }, { label: 'Go', description: '' }], multi_select: false },
+            { id: 'q2', header: '技能', question: '擅长哪些？', options: [{ label: '前端', description: '' }, { label: '后端', description: '' }, { label: '运维', description: '' }], multi_select: true },
+          ] },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result', tool_use_id: 'c3', is_error: false,
+          content: JSON.stringify({ answers: [
+            { id: 'q1', label: 'Python', value: 'Python' },
+            { id: 'q2', label: '前端', value: '前端' },
+            { id: 'q2', label: '运维', value: '运维' },
+          ] }),
+        }],
+      },
+    ],
+  }, []);
+  const restoredInput = lane4b.items.find(item => item.type === 'user_input');
+  assert.equal(restoredInput.resolved, true);
+  assert.deepEqual(
+    restoredInput.restoredAnswers,
+    [
+      { id: 'q1', label: 'Python', value: 'Python' },
+      { id: 'q2', label: '前端', value: '前端' },
+      { id: 'q2', label: '运维', value: '运维' },
+    ],
+    '单选/多选答案按 id 全量还原，multi_select 不塌缩为最后一项',
+  );
   const hydratedReasoning = lane4.items.find(item => item.type === 'reasoning');
   assert.equal(hydratedReasoning.text, '先想目录结构');
   assert.equal(

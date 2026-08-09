@@ -2629,8 +2629,11 @@ export function CodexAcpView({
 
   function markNativeInputResolved(toolCallId, cardState, answers) {
     const lane = getNativeLane(activeId);
+    // 无条件按 type + toolCallId 定位：chat:tool_end（applyNativeChatEvent 同样按
+    // !item.resolved 查找）可能先于 invoke 返回把卡置为 resolved，若这里仍要求
+    // !item.resolved 会因竞态漏写 restoredAnswers，重挂载时历史卡丢失选中态。
     const card = [...lane.items].reverse().find(item => (
-      item && item.type === 'user_input' && item.toolCallId === toolCallId && !item.resolved
+      item && item.type === 'user_input' && item.toolCallId === toolCallId
     ));
     if (card) {
       card.resolved = true;
