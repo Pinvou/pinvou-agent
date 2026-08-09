@@ -142,6 +142,10 @@ pub struct SavedModel {
     /// Pinvou 对该 route 声明的单轮 output 上限；最终仍受进程级请求上限约束。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// 用户选择的思考深度档位（透传底座 reasoning_effort：off/low/medium/high/max）。
+    /// None = 未显式设置，走 provider 默认（vllm→off 防 SSE timeout，其余→high）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub model: String,
     pub base_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +176,23 @@ impl SavedModel {
             }
             if self.max_output_tokens.is_none() {
                 self.max_output_tokens = Some(24_576);
+            }
+        }
+        // reasoning_effort 只接受底座 `ReasoningEffort::from_setting` 认识的档位
+        // （off/low/medium/high/auto/max + 别名），非法值置 None 走 provider 默认，
+        // 避免被底座 `from_setting` 静默回退成 Max。
+        if let Some(effort) = self.reasoning_effort.as_deref() {
+            let valid = matches!(
+                effort.trim().to_ascii_lowercase().as_str(),
+                "off" | "disabled" | "none" | "false"
+                    | "low" | "minimal"
+                    | "medium" | "mid"
+                    | "high"
+                    | "auto" | "automatic"
+                    | "max" | "maximum" | "xhigh" | "ultracode"
+            );
+            if !valid {
+                self.reasoning_effort = None;
             }
         }
     }
@@ -648,6 +669,7 @@ impl UserPrefs {
             preset,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model,
             base_url,
             provider_kind: None,
@@ -977,6 +999,7 @@ mod tests {
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "glm-5-turbo".into(),
             base_url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions/".into(),
             provider_kind: None,
@@ -1012,6 +1035,7 @@ mod tests {
             preset: ModelPreset::Glm,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "glm-5.2".into(),
             base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
             provider_kind: None,
@@ -1052,6 +1076,7 @@ mod tests {
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.chat/v1".into(),
             provider_kind: None,
@@ -1087,6 +1112,7 @@ mod tests {
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.chat".into(),
             provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
@@ -1132,6 +1158,7 @@ mod tests {
             preset: ModelPreset::Kimi,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "kimi-k2.6".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             provider_kind: None,

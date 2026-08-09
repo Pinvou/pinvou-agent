@@ -18,6 +18,7 @@ import {
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
+  reasoningEffortTiersForModel, defaultReasoningEffortForModel,
 } from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -527,6 +528,17 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const busy = busyProp !== undefined ? busyProp : (bs ? bs.busy : false);
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
+      const reasoningEffortTiers = current ? (reasoningEffortTiersForModel(current) || []) : [];
+      const reasoningEffortValue = (current && current.reasoning_effort)
+        || (current ? defaultReasoningEffortForModel(current) : null)
+        || (reasoningEffortTiers.length ? 'high' : null);
+      function setReasoningEffortForCurrent(tier) {
+        if (!current) return;
+        setOpen(false);
+        if (tier === reasoningEffortValue) return;
+        const next = { ...current, reasoning_effort: tier };
+        if (bridge.available) bridge.models.saveModel(next).catch(() => {});
+      }
       if (!savedModels.length) return null;
       function pick(id) {
         setOpen(false);
@@ -582,6 +594,26 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     </>
                   );
                 })()}
+                {current && reasoningEffortTiers.length > 0 && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <div className="px-3 pt-1 pb-1">
+                      <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 mb-1.5">{t.thinkingDepth}</div>
+                      <div className="flex flex-wrap gap-1">
+                        {reasoningEffortTiers.map(tier => (
+                          <button key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
+                            className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
+                              reasoningEffortValue === tier
+                                ? 'bg-[#007AFF] text-white'
+                                : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
+                            }`}>
+                            {t.thinkingDepthTiers[tier] || tier}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
                 {canMultiAgent && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
@@ -1236,6 +1268,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
+      // 思考深度档位：初始取已保存值，无则按模型默认（vllm→off，其余→high）。
+      const [reasoningEffort, setReasoningEffort] = useState(
+        initial.reasoning_effort || defaultReasoningEffortForModel(initial) || 'high'
+      );
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
@@ -1265,6 +1301,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         ? localizeProvider(CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
+      // 当前表单模型可切换的思考深度档位（底座不支持的模型为空 = 不提供切换）。
+      const reasoningEffortTiers = reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || [];
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
@@ -1317,6 +1355,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
+        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high）。
+        setReasoningEffort(defaultReasoningEffortForModel({ preset: p, model: nextModel, vendor: group.vendor || vendor }) || 'high');
         if (p !== 'local_vllm') {
           setApiKey('');
           setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -1456,6 +1496,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           id: id, name: saveName, preset: preset,
           context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
           max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+          reasoning_effort: reasoningEffort || null,
           model: model.trim(), base_url: baseUrl.trim(),
           api_key: nextApiKey, credential_action: nextKeyAction,
           provider_kind: providerKind || null,
@@ -1865,6 +1906,29 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     )}
                   </div>
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                </section>
+              )}
+              {showConfigFields && reasoningEffortTiers.length > 0 && (
+                <section>
+                  <div className={formGroup}>
+                    <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
+                      <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.reasoningEffort}</span>
+                      <div className="ml-auto flex flex-wrap justify-end gap-1">
+                        {reasoningEffortTiers.map(tier => (
+                          <button
+                            key={tier}
+                            type="button"
+                            onClick={() => setReasoningEffort(tier)}
+                            className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
+                              reasoningEffort === tier
+                                ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
+                                : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
+                            }`}
+                          >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </section>
               )}
               {showConfigFields && (

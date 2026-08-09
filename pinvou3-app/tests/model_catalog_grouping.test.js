@@ -26,12 +26,14 @@ vm.runInContext(
   `this.selectorSubLabel = selectorSubLabel;\n` +
   `this.MODEL_CATALOG = MODEL_CATALOG;\n` +
   `this.findCloudProviderForModel = findCloudProviderForModel;\n` +
-  `this.providerLabelForModel = providerLabelForModel;\n`,
+  `this.providerLabelForModel = providerLabelForModel;\n` +
+  `this.reasoningEffortTiersForModel = reasoningEffortTiersForModel;\n` +
+  `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel } = ctx;
+const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -177,3 +179,39 @@ test('同 provider 多个目录内自定义模型主标签仍各不相同', () =
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
+
+// ── 思考深度档位（reasoning effort）──
+test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位', () => {
+  // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，用 Array.from 归一
+  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
+  assert.deepStrictEqual(tiers(deepseek), ['off', 'high', 'max']);
+  const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3' };
+  assert.deepStrictEqual(tiers(moonshot), ['off', 'high']);
+  const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
+  assert.deepStrictEqual(tiers(vllm), ['off', 'low', 'medium', 'high']);
+  const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
+  assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
+  const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
+  assert.deepStrictEqual(tiers(openai56), ['off', 'low', 'medium', 'high', 'max']);
+  // OpenAI 非 reasoning 系（gpt-5.4-mini）与 xai/qwen/gemini/自定义兼容不提供切换
+  const openaiMini = { preset: 'openai', vendor: 'openai', model: 'gpt-5.4-mini' };
+  assert.strictEqual(reasoningEffortTiersForModel(openaiMini), null);
+  const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
+  assert.strictEqual(reasoningEffortTiersForModel(xai), null);
+  const qwen = { preset: 'qwen', vendor: 'qwen', model: 'qwen3.8-max' };
+  assert.strictEqual(reasoningEffortTiersForModel(qwen), null);
+  const gemini = { preset: 'gemini', vendor: 'gemini', model: 'gemini-3.6-flash' };
+  assert.strictEqual(reasoningEffortTiersForModel(gemini), null);
+  const custom = { preset: 'openai_compatible', model: 'my-model' };
+  assert.strictEqual(reasoningEffortTiersForModel(custom), null);
+});
+
+test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {
+  const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
+  assert.strictEqual(defaultReasoningEffortForModel(deepseek), 'high');
+  const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
+  assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
+  const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
+  assert.strictEqual(defaultReasoningEffortForModel(xai), null);
+});

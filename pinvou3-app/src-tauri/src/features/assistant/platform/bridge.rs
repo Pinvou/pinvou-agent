@@ -717,32 +717,25 @@ impl Pinvou3Bridge {
         None
     }
 
-    /// 当前 route 发给模型的思考开关。
+    /// 当前 route 发给模型的思考深度档位（透传底座 `reasoning_effort`）。
     ///
-    /// 字段解析与请求开关是两件事：`reasoning_stream_style` 只决定收到
-    /// `reasoning_content` 后如何分类，不会让服务端开始输出 reasoning。
-    /// Kimi Code 的 `kimi-for-coding` 是 always-thinking 模型，官方接入方式
-    /// 要求 Thinking 保持开启；若省略该参数，工具调用前的计划可能落入普通
-    /// `content`，而 `reasoning_content` 为空。底座会把 `high` 翻译成
-    /// `thinking: {"type":"enabled"}`。未知 OpenAI 兼容端点继续不注入。
-    fn moonshot_model_requires_explicit_thinking(&self) -> bool {
-        matches!(
-            self.model().trim().to_ascii_lowercase().as_str(),
-            "k3" | "k3-256k"
-                | "kimi-k3"
-                | "kimi-k2.7-code"
-                | "kimi-k2.7-code-highspeed"
-                | "kimi-for-coding"
-                | "kimi-for-coding-highspeed"
-                | "kimi-k2.6"
-        )
-    }
-
-    fn request_reasoning_effort(&self) -> Option<&'static str> {
+    /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
+    /// （本地 vLLM 保持 off 防 SSE timeout；其余默认 high——底座自身默认是 Max，
+    /// 品悟统一收口到 high，符合产品默认思考强度）。
+    ///
+    /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
+    /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
+    /// `thinking: {"type":"enabled"}`，天然满足该要求，无需特判模型名。
+    fn request_reasoning_effort(&self) -> Option<String> {
+        if let Some(effort) = self
+            .effective_model()
+            .and_then(|model| model.reasoning_effort.as_deref())
+        {
+            return Some(effort.to_string());
+        }
         match self.provider().as_str() {
-            "vllm" => Some("off"),
-            "moonshot" if self.moonshot_model_requires_explicit_thinking() => Some("high"),
-            _ => None,
+            "vllm" => Some("off".to_string()),
+            _ => Some("high".to_string()),
         }
     }
 
@@ -1262,7 +1255,7 @@ impl Pinvou3Bridge {
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
             // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
             // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
-            reasoning_effort: self.request_reasoning_effort().map(str::to_string),
+            reasoning_effort: self.request_reasoning_effort(),
             // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
             // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
             allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names()),
@@ -1505,9 +1498,8 @@ impl Pinvou3Bridge {
             }
         }
         cfg.default_text_model = Some(model);
-        // 本地 vLLM 必须关 thinking；Kimi Code 必须显式开启，其他远程
-        // provider 保留底座默认。
-        cfg.reasoning_effort = self.request_reasoning_effort().map(str::to_string);
+        // 本地 vLLM 必须关 thinking（防 SSE timeout）；其余默认 high。
+        cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
     }
 
@@ -1785,9 +1777,8 @@ impl Pinvou3Bridge {
             // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
             goal_token_budget: None,
             goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
-            // 本地 vLLM 关 thinking；Kimi Code 显式开启；其他远程 provider
-            // 传 None 让底座沿用各自默认。
-            reasoning_effort: self.request_reasoning_effort().map(str::to_string),
+            // 本地 vLLM 关 thinking（防 SSE timeout）；其余默认 high。
+            reasoning_effort: self.request_reasoning_effort(),
             reasoning_effort_auto: false,
             auto_model: false,
             allow_shell,
@@ -2480,6 +2471,7 @@ mod tests {
             preset,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: model.to_string(),
             base_url: base_url.to_string(),
             provider_kind: None,
@@ -3833,8 +3825,8 @@ mod tests {
             assert_eq!(cfg.api_provider(), expected_api_provider, "{model}");
             assert_eq!(
                 cfg.reasoning_effort.as_deref(),
-                (expected_provider == "moonshot").then_some("high"),
-                "{model} must use the provider-specific request-side thinking policy"
+                Some("high"),
+                "{model} must default to high reasoning effort"
             );
             bridge
                 .resolve_runtime_route_for_model(model)
@@ -3904,8 +3896,8 @@ mod tests {
             assert_eq!(cfg.api_provider(), expected_api_provider, "{model}");
             assert_eq!(
                 cfg.reasoning_effort.as_deref(),
-                (expected_provider == "moonshot").then_some("high"),
-                "{model} must use only its own request-side thinking policy"
+                Some("high"),
+                "{model} must default to high reasoning effort"
             );
             bridge
                 .resolve_runtime_route_for_model(model)
@@ -3926,7 +3918,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_moonshot_model_does_not_receive_vendor_specific_thinking_parameter() {
+    fn moonshot_model_defaults_to_high_reasoning_effort() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -3943,8 +3935,14 @@ mod tests {
         );
 
         assert_eq!(bridge.provider(), "moonshot");
-        assert_eq!(bridge.request_reasoning_effort(), None);
-        assert_eq!(bridge.build_dt_config().reasoning_effort, None);
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            bridge.build_dt_config().reasoning_effort.as_deref(),
+            Some("high")
+        );
     }
 
     /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
@@ -4016,9 +4014,9 @@ mod tests {
         assert_eq!(bridge.api_key(), "saved-key");
     }
 
-    /// DtConfig 在 OpenaiCompatible 模式下不应强制 reasoning_effort=off。
+    /// DtConfig 在 OpenaiCompatible 模式下默认思考深度为 high（不强制 off）。
     #[test]
-    fn remote_provider_keeps_default_reasoning_effort() {
+    fn remote_provider_defaults_to_high_reasoning_effort() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -4034,7 +4032,7 @@ mod tests {
             "",
         );
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort, None);
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
     }
 
     /// Deepseek preset 应返回正确的默认 URL 和模型。
@@ -4082,7 +4080,7 @@ mod tests {
         );
         assert_eq!(cfg.deepseek_base_url(), "https://api.deepseek.com");
         assert_eq!(cfg.default_model(), "deepseek-v4-pro");
-        assert_eq!(cfg.reasoning_effort, None);
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             deepseek_tui::config::wire_model_for_provider(cfg.api_provider(), &bridge.model()),
             "deepseek-v4-pro"
@@ -4119,7 +4117,7 @@ mod tests {
             deepseek_tui::config::ApiProvider::Deepseek
         );
         assert_eq!(cfg.default_model(), "deepseek-v4-pro");
-        assert_eq!(cfg.reasoning_effort, None);
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             deepseek_tui::config::wire_model_for_provider(cfg.api_provider(), &bridge.model()),
             "deepseek-v4-pro"

@@ -585,6 +585,83 @@ function selectorSubLabel(m, t) {
   return provider ? providerLabelForModel(m, t) : presetProviderLabel('openai_compatible', t);
 }
 
+// ── 思考深度（reasoning effort）档位 ─────────────────────────────
+// 每个 provider 只暴露底座 wire 层有实际区别的档位（归一后无区别的档位
+// 不展示，避免用户选到"看起来不同、实际相同"的值）。语义与品悟 Rust 侧
+// provider() 判定对齐（vendor 优先 + preset 兜底）。
+const REASONING_EFFORT_TIERS = {
+  // vllm：off/low/medium/high 四档；max 被底座降级为 high，不重复暴露。
+  vllm: ['off', 'low', 'medium', 'high'],
+  // deepseek / volcengine：low/medium 被底座归一为 high，仅 off/high/max 有区别。
+  deepseek: ['off', 'high', 'max'],
+  volcengine: ['off', 'high', 'max'],
+  // 只有 thinking 开关的 provider：off/high。
+  moonshot: ['off', 'high'],
+  zai: ['off', 'high'],
+  minimax: ['off', 'high'],
+  'xiaomi-mimo': ['off', 'high'],
+  // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
+  anthropic: ['low', 'medium', 'high', 'max'],
+  // openai：仅 gpt-5.x reasoning 系模型底座会注入，off=none。
+  openai: ['off', 'low', 'medium', 'high', 'max'],
+};
+
+// OpenAI 官方 API 里底座 `apply_openai_reasoning_effort` 只对 reasoning 家族
+// 模型注入档位；其余 OpenAI 兼容模型（含 gpt-5.4-mini 等非 reasoning 系）无档位。
+function isOpenaiReasoningFamilyModel(model) {
+  const lower = String((model && model.model) || '').trim().toLowerCase();
+  if (!lower) return false;
+  return /^gpt-5\.5(\b|-)/.test(lower)
+    || /^gpt-5\.6(\b|-)/.test(lower)
+    || /^gpt-5-codex(\b|-)/.test(lower)
+    || /^gpt-5\.[12]-codex(\b|-)/.test(lower)
+    || /^codex-gpt-5/.test(lower)
+    || /^chatgpt-gpt-5/.test(lower);
+}
+
+// 品悟 provider 判定（对齐 bridge.rs `provider()`：vendor 优先 + preset 兜底）。
+function reasoningProviderForModel(model) {
+  if (!model) return null;
+  const vendor = (model.vendor || '').trim().toLowerCase();
+  const preset = model.preset || '';
+  if (preset === 'local_vllm') return 'vllm';
+  if (vendor) {
+    if (vendor === 'deepseek') return 'deepseek';
+    if (vendor === 'kimi' || vendor === 'moonshot') return 'moonshot';
+    if (vendor === 'glm' || vendor === 'zai' || vendor === 'zhipu') return 'zai';
+    if (vendor === 'minimax') return 'minimax';
+    if (vendor === 'mimo' || vendor === 'xiaomi' || vendor === 'xiaomi-mimo') return 'xiaomi-mimo';
+    if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
+    if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
+    if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+    if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    return null; // qwen / tencent / gemini / google 无档位
+  }
+  switch (preset) {
+    case 'deepseek': return 'deepseek';
+    case 'kimi': return 'moonshot';
+    case 'glm': return 'zai';
+    case 'minimax': return 'minimax';
+    case 'mimo': return 'xiaomi-mimo';
+    case 'doubao': return 'volcengine';
+    case 'anthropic': return 'anthropic';
+    case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    default: return null;
+  }
+}
+
+// 该模型可切换的思考深度档位（无则 null = 不提供切换）。
+function reasoningEffortTiersForModel(model) {
+  const provider = reasoningProviderForModel(model);
+  return provider ? (REASONING_EFFORT_TIERS[provider] || null) : null;
+}
+
+// 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。
+function defaultReasoningEffortForModel(model) {
+  if (reasoningProviderForModel(model) === 'vllm') return 'off';
+  return reasoningEffortTiersForModel(model) ? 'high' : null;
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -606,4 +683,6 @@ export {
   localUserNamed,
   selectorMainLabel,
   selectorSubLabel,
+  reasoningEffortTiersForModel,
+  defaultReasoningEffortForModel,
 };
