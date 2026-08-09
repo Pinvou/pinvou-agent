@@ -1148,6 +1148,7 @@ pub fn run() {
             commands::local_llm::decline_local_vllm_setup,
             commands::settings::list_models,
             commands::settings::reveal_model_api_key,
+            commands::settings::probe_local_server_kind,
             commands::settings::save_model,
             commands::settings::delete_model,
             commands::settings::set_active_model,

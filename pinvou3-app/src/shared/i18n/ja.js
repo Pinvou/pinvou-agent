@@ -872,6 +872,7 @@ dictJa.uiSettingsDetail.memoryTopicCleanupRequired = 'メモリは更新され�
 
 Object.assign(dictJa.uiSettingsDetail, {
   reasoningEffort:'思考の深さ', reasoningEffortTiers:{ off:'オフ', low:'低', medium:'中', high:'高', max:'最大' },
+  reasoningProbePending:'サーバータイプを検出中…', reasoningProbeUnsupported:'このエンドポイントは思考深度の調整をサポートしていません',
   saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
   redetect:'再検出', detect:'検出', noRunningLocalModel:'実行中のローカルモデルが見つかりません', modelNotLoadedTag:'未読み込み', modelNotLoadedHint:'メモリ未読み込み。初回使用時に自動でロードされます',
   add:'追加', manualLocalModel:'ローカルモデルを手動追加',

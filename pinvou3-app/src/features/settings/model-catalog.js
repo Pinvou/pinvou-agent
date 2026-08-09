@@ -867,6 +867,35 @@ function baseUrlUsesLoopback(baseUrl) {
   }
 }
 
+// 对齐 Rust bridge.rs `base_url_uses_local_or_private`：loopback / RFC1918 私网
+// （10/8、172.16/12、192.168/16）/ Docker 宿主别名（host.docker.internal 等）。
+// 这些端点通常跑在用户自己的机器/内网，探测成本低且值得默认关思考；公网
+// OpenAI 兼容端点不在此列（保持默认 high）。与 `baseUrlUsesLoopback` 的区别：
+// 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
+function baseUrlUsesLocalOrPrivate(baseUrl) {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    const lower = host.toLowerCase();
+    if (lower === 'localhost') return true;
+    if (lower === 'host.docker.internal'
+      || lower === 'host.lima.internal'
+      || lower === 'host.orbstack.internal'
+      || lower.endsWith('.docker.internal')) return true;
+    if (host.includes(':')) return isIpv6Loopback(host);
+    const octets = host.split('.').map(Number);
+    if (octets.length !== 4 || !octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+      return false;
+    }
+    return octets[0] === 127
+      || octets[0] === 10
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168);
+  } catch {
+    return false;
+  }
+}
+
 // IPv6 回环判定：把 `::` 展开为完整 8 组十六进制后与 `::1` 的完整形式
 // （0000:0000:0000:0000:0000:0000:0000:0001）比较——与 Rust
 // `IpAddr::is_loopback()`（仅 ::1/128）对齐。展开采用 pad 形式，`::0001`
@@ -918,10 +947,11 @@ function reasoningProviderForModel(model) {
     case 'anthropic': return 'anthropic';
     case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
     case 'openai_compatible':
-      // 本地 loopback 端点：Rust 探测后 Ollama/vLLM 思考控制真正生效
-      // （Ollama→think 开关、vLLM→档位）；LM Studio/通用端点 wire 层空操作。
+      // 本地/私网端点（loopback、RFC1918、host.docker.internal 等）：Rust
+      // 探测后 Ollama/vLLM 思考控制真正生效（Ollama→think 开关、vLLM→档位）；
+      // LM Studio/通用端点 wire 层空操作（前端按探测结果另行提示）。
       // 远端自定义 OpenAI 兼容端点不提供切换。
-      return baseUrlUsesLoopback(model.base_url || model.baseUrl) ? 'local' : null;
+      return baseUrlUsesLocalOrPrivate(model.base_url || model.baseUrl) ? 'local' : null;
     default: return null;
   }
 }
@@ -1024,6 +1054,26 @@ function normalizeStoredReasoningEffort(model, stored) {
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }
 
+// 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
+// `probe_local_server_kind` 结果对齐：
+// - vllm → 底座 `chat_template_kwargs` 支持四档
+// - ollama → 底座 `think` 布尔开关：off=think:false，其余档位一律归一 think=true，
+//   只暴露 off/high 避免「看起来不同、实际相同」的误导
+// - lmstudio / generic → 底座 openai wire route 对 reasoning_effort 是空操作，
+//   返回 null（前端显示「该端点不支持思考档位调节」提示，不提供切换）
+// - null（尚未探测/探测失败）→ 返回默认四档，前端在探测完成前不提供误导档位
+function localProbeTiersForKind(kind) {
+  switch (kind) {
+    case 'vllm': return ['off', 'low', 'medium', 'high'];
+    case 'ollama': return ['off', 'high'];
+    case 'lmstudio':
+    case 'generic':
+      return null;
+    default:
+      return ['off', 'low', 'medium', 'high'];
+  }
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -1051,4 +1101,6 @@ export {
   defaultReasoningEffortForModel,
   reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
+  localProbeTiersForKind,
+  baseUrlUsesLocalOrPrivate,
 };

@@ -2064,6 +2064,7 @@
   const testModelConnection = settingsFeature.testModelConnection;
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
+  const probeLocalServerKind = settingsFeature.probeLocalServerKind;
   const testSearchProvider = settingsFeature.testSearchProvider;
 
   const interactionFeature = installBridgeFeature("interaction", {
@@ -2426,6 +2427,7 @@
       testModelConnection,
       getImageInputCapability,
       testImageInputCapability,
+      probeLocalServerKind,
     },
     interaction: { toggleSuperPerm,
       // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回

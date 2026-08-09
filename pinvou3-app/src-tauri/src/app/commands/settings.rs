@@ -261,6 +261,24 @@ pub async fn list_models() -> Result<ModelsView, String> {
     })
 }
 
+/// 探测本地/内网 OpenAI 兼容端点的服务类型（Ollama / vLLM / LM Studio / 通用）。
+/// 结果按 base_url TTL 缓存（`model_endpoint::probe_local_server_kind`），
+/// 前端在模型编辑/选择时按需调用，把探测结果下发到 UI：
+/// - vllm → 显示 off/low/medium/high 档位（底座真实支持）
+/// - ollama → 显示思考开关（off/on，档位被底座归一为 think 布尔）
+/// - lmstudio / generic → 提示「该端点暂不支持思考档位调节」，避免用户
+///   调了个寂寞（底座 openai wire route 对 reasoning_effort 是空操作）。
+#[tauri::command]
+pub async fn probe_local_server_kind(base_url: String) -> Result<String, String> {
+    let kind = crate::core::model_endpoint::probe_local_server_kind(&base_url).await;
+    Ok(match kind {
+        crate::core::model_endpoint::LocalServerKind::Vllm => "vllm".to_string(),
+        crate::core::model_endpoint::LocalServerKind::Ollama => "ollama".to_string(),
+        crate::core::model_endpoint::LocalServerKind::LmStudio => "lmstudio".to_string(),
+        crate::core::model_endpoint::LocalServerKind::Generic => "generic".to_string(),
+    })
+}
+
 /// 用户在编辑模型弹窗里主动点击“显示”时，读取该模型已保存的 API Key。
 /// 环境变量覆盖的凭据不回显，避免给出一个前端并不拥有、保存也不会覆盖的值。
 #[tauri::command]

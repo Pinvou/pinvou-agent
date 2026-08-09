@@ -46,7 +46,7 @@ use crate::features::assistant::engine::{
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
-use crate::features::assistant::platform::bridge::{base_url_uses_loopback, Pinvou3Bridge};
+use crate::features::assistant::platform::bridge::{base_url_uses_local_or_private, Pinvou3Bridge};
 use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
     RuntimeModelProvider, RuntimeModelRequest,
@@ -985,10 +985,10 @@ impl EnginePool {
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
         bridge.runtime_model_credential = prepared.credential.clone();
-        // 本地 loopback 端点（OpenAI 兼容 preset 指向本机服务）：探测服务类型
+        // 本地端点（OpenAI 兼容 preset 指向本机/内网服务）：探测服务类型
         // （Ollama / vLLM / LM Studio / 通用），让思考控制走对应底座 wire 协议。
         // 探测失败（服务未启动/超时）判定为通用，保持既有 openai wire route。
-        if bridge.provider() == "openai" && base_url_uses_loopback(&bridge.base_url()) {
+        if bridge.provider() == "openai" && base_url_uses_local_or_private(&bridge.base_url()) {
             bridge.probed_local_kind = Some(
                 crate::core::model_endpoint::probe_local_server_kind(&bridge.base_url()).await,
             );
