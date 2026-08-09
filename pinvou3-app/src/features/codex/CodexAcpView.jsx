@@ -201,7 +201,12 @@ function CodexComposerConfigSelect({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const selected = choices.find(choice => String(choice.value) === String(value));
-  const selectedLabel = selected && (selected.name || selected.value) || value || unsetLabel;
+  // value 为空串 = "未选中"：优先显示 unsetLabel 占位，避免 choices 里
+  // 充当"卸载动作"的空值选项（value:''）把按钮主文本劫持成动作文案。
+  // 已选中（value 非空）才查 choices 显示对应项名称。
+  const selectedLabel = String(value) === ''
+    ? (unsetLabel || '')
+    : ((selected && (selected.name || selected.value)) || value || unsetLabel);
   const pick = (choiceValue) => {
     setOpen(false);
     if (String(choiceValue) !== String(value)) onChange(choiceValue);
@@ -1355,8 +1360,11 @@ export function CodexAcpView({
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
+  // 空值选项仅在有挂载时作为「移除全部」卸载动作出现；未挂载时不渲染，
+  // 按钮主文本走 unsetLabel（t.kbMount = "知识库"），避免空挂载态误显示「移除全部」。
+  const nativeMounted = nativeMountedId != null;
   const nativeKbChoices = [
-    { value: '', name: t.kbMountRemove },
+    ...(nativeMounted ? [{ value: '', name: t.kbMountRemove }] : []),
     ...nativeKbCollections.map(collection => ({
       value: String(collection.id),
       name: collection.name,
@@ -2943,6 +2951,7 @@ export function CodexAcpView({
                         id="native-kb"
                         testId="native-kb"
                         label={t.kbMount}
+                        unsetLabel={t.kbMount}
                         value={nativeMountedId == null ? '' : String(nativeMountedId)}
                         choices={nativeKbChoices}
                         onChange={value => (
