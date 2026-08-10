@@ -334,7 +334,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             </div>
           ) : (
             <>
-              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成编辑/删除按钮。
+              {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
                 <span className="text-[11px] shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
@@ -346,12 +346,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
                   className="w-6 h-6 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]">
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
                 </button>
-                <button title={t.riRename} onClick={(e) => { e.stopPropagation(); setVal(chat.title); setEditing(true); }}
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><Edit2 size={13} /></button>
-                <button title={t.archiveSession} onClick={(e) => { e.stopPropagation(); onArchive && onArchive(chat.id); }}
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><Archive size={13} /></button>
-                <button title={t.cpDelete} onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#C4C7C5] dark:hover:text-[#F28B82] dark:hover:bg-[#5c2b29]"><Trash2 size={13} /></button>
+
                 <div className="relative">
                   <button title={t.riMore} onClick={toggleMenu}
                     className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><MoreHorizontal size={14} /></button>
