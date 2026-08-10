@@ -1384,7 +1384,7 @@ impl SessionStore {
         Ok(next_revision)
     }
 
-    /// 替换 session 的产物列表。前端跟踪 write_file / append_file 工具调用积累的 paths,
+    /// 替换 session 的产物列表。前端跟踪 File.write / File.edit 工具调用积累的 paths,
     /// 每轮 TurnComplete 一起落盘。重启 / 切换 session 后能从 SavedSession.artifacts
     /// 恢复列表(让用户感知产物跟 session 是一对一的)。
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {

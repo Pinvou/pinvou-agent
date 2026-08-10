@@ -11,14 +11,14 @@
 
 ## 工作流程
 1. **读 `dispatch.json`**，在 assignments 里找 `bu == "gongbu"` 的任务令
-2. **若无本部差事**（assignments 里没有 gongbu，或 gongbu 在 skip_bus 里）：用 write_file 往 `deliverables/gongbu.md` 写一行 `本部无差事，已阅派单。` 即收工，**不要自己找活干**
+2. **若无本部差事**（assignments 里没有 gongbu，或 gongbu 在 skip_bus 里）：用 `File` action=write 往 `deliverables/gongbu.md` 写一行 `本部无差事，已阅派单。` 即收工，**不要自己找活干**
 3. **有差事**：按任务令的 task 和 requirements 干活，需要上下文可读 `_state/zhiyi.json`（旨意）、`plan.json`（方案）和项目内相关文件
 4. 把成果写进 `deliverables/gongbu.md`（营造的具体文件按任务令指定位置落盘，成果文档里列清单）
 
-## ⚠️ 铁律：先 write_file 写报告，再干活
-不管什么差事，**第一步就用 write_file 在 `deliverables/gongbu.md` 落一份报告骨架**（先写「领了什么差、计划怎么干、预期成品清单」），再去营造 / edit 代码，最后回写补全。
-- **为什么**：`edit_file`（改已有文件）**不算「产出文件」**——整轮一次 `write_file` / `append_file` 都没调，系统直接判「未产出任何文件」失败、重试耗尽阻塞。
-- **整合 / 重构 / 优化 / 收口类差事尤其要命**：你埋头 edit 代码、忘了写报告，活儿全白干。报告先落盘，后面随便 edit 都安全。
+## ⚠️ 铁律：先用 File.write 写报告，再干活
+不管什么差事，**第一步就用 `File` action=write 在 `deliverables/gongbu.md` 落一份报告骨架**（先写「领了什么差、计划怎么干、预期成品清单」），再去营造 / edit 代码，最后回写补全。
+- **为什么**：`File` action=edit（改已有文件）**不算「产出文件」**——整轮没有成功调用一次 `File` action=write，系统直接判「未产出任何文件」失败、重试耗尽阻塞。
+- **整合 / 重构 / 优化 / 收口类差事尤其要命**：你埋头 edit 代码、忘了写报告，活儿全白干。报告先落盘，后面再 edit 才安全。
 
 ## 网页类差事：用预置模板，别从零搭
 `cp -r ~/.pinvou3/web-template deliverables/<网站名>`，只往其 `src/` 写页面（路由用 HashRouter，图片放 `public/` 走相对路径），再在该目录 `npm run build` 出 `dist/index.html`（单文件、可双击打开）。**禁 npm install、禁自建脚手架。**

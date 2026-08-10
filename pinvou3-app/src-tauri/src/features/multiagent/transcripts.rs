@@ -23,7 +23,7 @@ pub struct SubagentTranscriptSummary {
     /// 前端据此忽略占位值并继续走任务标题/类型兜底。
     pub session_name: Option<String>,
     pub role: Option<String>,
-    /// 底座执行类型（general/explore/plan/review/implementer/verifier/custom）。
+    /// 底座 canonical Fleet 类型（worker/scout/planner/reviewer/builder/verifier/custom）。
     /// 普通对话通常不传 role/profile，界面靠它避免全部显示成“通用执行者”。
     pub agent_type: Option<String>,
     /// 直接父代理 ID；None 表示由主对话直接派出。用于把多级代理恢复成树，
@@ -240,7 +240,7 @@ pub fn list(
     // transcript 文件。若以 transcript 为主表，排队/刚启动的子智能体在
     // 清单里整段不可见（复核 P1）。
     let mut out: Vec<SubagentTranscriptSummary> = Vec::new();
-    let records = deepseek_tui::tools::subagent::load_persisted_agent_worker_records(workspace)
+    let records = deepseek_tui::tools::subagent::read_persisted_agent_worker_records(workspace)
         .map_err(|err| format!("读取 worker ledger 失败: {err:#}"))?;
     for record in records {
         let agent_id = record.spec.worker_id.clone();
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(listed.len(), 1, "没有 transcript 也必须出现在清单里");
         assert_eq!(listed[0].agent_id, "agent_a");
         assert_eq!(listed[0].session_name.as_deref(), Some("build-report"));
-        assert_eq!(listed[0].agent_type.as_deref(), Some("general"));
+        assert_eq!(listed[0].agent_type.as_deref(), Some("worker"));
         assert_eq!(listed[0].parent_run_id, None);
         assert_eq!(listed[0].spawn_depth, Some(1));
         assert_eq!(listed[0].status.as_deref(), Some("starting"));

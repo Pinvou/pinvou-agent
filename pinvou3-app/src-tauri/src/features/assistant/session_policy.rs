@@ -2,7 +2,7 @@
 //! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
 //! 能力档案统一后，策略对象同时是
 //! **统一解析器**：`resolve()` 按会话模式加载能力档案（capability_profile.rs），
-//! 产出两通道差量（disallowed_tools / hidden_tools）与模式固有属性——if-else
+//! 产出 disallowed_tools 通道差量（exclude / extra_hidden）与模式固有属性——if-else
 //! 只保留在解析器内部，外部消费者统一走 resolve。技能线不做设计期差量（运行时
 //! 双 scope 开关 + 组合目录治理，见 skill_materialization）。
 
@@ -36,7 +36,7 @@ pub struct SessionPolicy {
     mode: SessionMode,
 }
 
-/// 能力档案统一解析结果：一份档案、一个解析器、三个生效通道。
+/// 能力档案统一解析结果：一份档案、一个解析器、生效通道（disallowed_tools）。
 /// 消费者按通道取数，不再各自 if 分流（档案即数据，新增模式=加档案条目）。
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedCapabilities {
@@ -48,9 +48,6 @@ pub struct ResolvedCapabilities {
     pub extra_hidden_tools: &'static [String],
     /// 档案 tools.exclude：基础集上再藏（disallowed_tools 通道，下轮生效）。
     pub tool_exclude: &'static [String],
-    /// 档案 tools.include：从底座隐藏常量放出（EngineConfig.hidden_tools 通道，
-    /// respawn 生效——hidden = 常量 − include）。
-    pub tool_include: &'static [String],
 }
 
 impl SessionPolicy {
@@ -85,7 +82,6 @@ impl SessionPolicy {
             connector_scope: profile.connectors.scope,
             extra_hidden_tools: &profile.tools.extra_hidden,
             tool_exclude: &profile.tools.exclude,
-            tool_include: &profile.tools.include,
         }
     }
 
@@ -168,15 +164,14 @@ mod tests {
         assert!(!policy.uses_code_instructions());
     }
 
-    /// 能力档案统一解析（U-2 档案即数据）：resolve 两通道差量来自档案——
-    /// plain 零差量；code 按档案 include 声明（v1：git 只读工具放出）。
+    /// 能力档案统一解析（U-2 档案即数据）：resolve disallowed_tools 通道差量
+    /// 来自档案——plain 零差量；code 按档案 extra_hidden 声明（v1：产物卡）。
     #[test]
     fn resolve_loads_profile_per_mode() {
         let plain = SessionPolicy::for_mode(SessionMode::Plain).resolve();
         assert_eq!(plain.connector_scope, ConnectorScope::Plain);
         assert!(plain.extra_hidden_tools.is_empty());
         assert!(plain.tool_exclude.is_empty());
-        assert!(plain.tool_include.is_empty(), "plain 不得放出工具");
 
         let code = SessionPolicy::for_mode(SessionMode::Code).resolve();
         assert_eq!(code.connector_scope, ConnectorScope::Code);
@@ -185,20 +180,6 @@ mod tests {
             &["mcp_pinvou3_present_artifact".to_string()]
         );
         assert!(code.tool_exclude.is_empty());
-        // include 与档案一致（本期：git 域 5 个 + 修改/验证/后台取消 3 个）
-        assert_eq!(
-            code.tool_include,
-            &[
-                "git_status".to_string(),
-                "git_diff".to_string(),
-                "git_log".to_string(),
-                "git_show".to_string(),
-                "git_blame".to_string(),
-                "apply_patch".to_string(),
-                "run_verifiers".to_string(),
-                "exec_shell_cancel".to_string(),
-            ]
-        );
     }
 
     /// 同文断言：R-1 审批卡落地后 reminder 对两模式都是真实描述，保持同文；

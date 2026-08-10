@@ -83,7 +83,11 @@ const expectedProtocolHashes = {
   multiAgent: 'b123eece32980d80787ab9cd7315f3566b0943ab366a2358a1ff0cb247b65491',
   orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
   artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
+<<<<<<< HEAD
   chat: '2fa5debc3613bbd8ec3c580857e3f94d9561759aef940eb9dbca77646e6c95c8',
+=======
+  chat: '46b62f2edf2a8746f3f97d4152a7cfdd63b0a94795f77a68dfab329886e0bd19',
+>>>>>>> e2f92d00 (feat(engine): 适配 CodeWhale v0.9.5)
   dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
   interaction: 'dc75ecf05e5b015833c08ffa4e3de4319f657de5ce300b68f873e966236a4898',
   knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',

@@ -831,7 +831,7 @@ async fn plan_mode_write_blocked() {
 /// 问题1 实测:大产物分块 reminder 现在还 load-bearing 吗?
 /// P7 当年加"分块写"是为治 SSE idle timeout(当时 90s);timeout 后来统一到 300s,
 /// 重验"一次写大文件"现在撞不撞。让 AI 写 ≥300 行完整 HTML,看:
-///   - histogram: write_file 一次 vs append_file/edit_file 分块?(AI 遵守 reminder 吗)
+///   - histogram: File.write 一次 vs File.edit 分块?(AI 遵守 reminder 吗)
 ///   - 文件完整落盘没截断?(行数断言)
 ///   - 耗时撞不撞 timeout?(max_duration_s)
 /// 带当前 YOLO_REMINDER 跑;若 AI 一次写也成功不撞 → 分块 reminder 不再 load-bearing。

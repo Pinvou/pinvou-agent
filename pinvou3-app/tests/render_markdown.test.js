@@ -43,7 +43,7 @@ var h1 = render(
   [
     "| Finding | Severity | Status | User Decision |",
     "|---|---|---|---|",
-    "| 两步 append_file 追加的 JS 代码在同一个 <script> 标签内 | CRITICAL | RAISED | 待用户拍 |",
+    "| 两步写入的 JS 代码在同一个 <script> 标签内 | CRITICAL | RAISED | 待用户拍 |",
   ].join("\n"),
 );
 check(

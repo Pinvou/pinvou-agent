@@ -133,8 +133,8 @@ const AcFmtIcon = FileTypeIcon;
           }
           return base;
         }
+        case 'File':
         case 'write_file':
-        case 'append_file':
         case 'edit_file':
           return toolBasename(args.path);
         case 'list_dir':

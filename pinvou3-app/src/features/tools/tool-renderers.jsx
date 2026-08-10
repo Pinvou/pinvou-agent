@@ -519,22 +519,11 @@ const ToolOutput = ({ item, t }) => {
         if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} t={t} />;
         return <ShellTextView cmd={item.args && item.args.command} text={out} />;
       }
-      // edit_file / write_file 走 Rust similar crate 输出 unified diff,走 DiffView。
+      // File.write / File.edit 走 Rust similar crate 输出 unified diff,走 DiffView。
       // 注意:apply_patch 后端返回 JSON(apply_patch.rs::execute 返回 ToolResult::json),
       // looksDiff 永远 false,所以这里不把 apply_patch 加进路由 —— 加了也只是 dead code
       // (PR #195 M2)。若未来后端给 apply_patch 输出 unified diff,再把它加回来。
-      else if (item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
-      else if (item.name === 'append_file') {
-        // append_file 与 write_file 一样由后端输出 unified diff,走 DiffView;
-        // 旧 session 落盘的是 "appended N bytes" 纯文本,保留字节摘要兜底。
-        if (looksDiff(out)) return <DiffView text={out} />;
-        // 旧文件超大时后端输出 "summary\n[diff omitted] ...":不能只显示字节摘要,
-        // 否则 omit 说明被吞掉 —— 与 write_file 一样落到 OutputPre 展示完整原文。
-        if (!/\[diff omitted\]/i.test(out)) {
-          const m = String(out).match(/appended (\d+) bytes[\s\S]*?\((\d+) -> (\d+) bytes\)/i);
-          if (m) return <div className={outBox()}>{t.appendBytes(/^Created/i.test(out), m[1], m[2], m[3])}</div>;
-        }
-      }
+      else if ((item.name === 'File' && ['write', 'edit'].includes(item.args?.action)) || item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
       else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
       return <OutputPre text={out} />;
     };

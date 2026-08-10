@@ -245,15 +245,6 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
-        LOCALE_PREAMBLE_ZH_HANS.to_string(),
-    );
-    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
-        LOCALE_CLOSER_ZH_HANS.to_string(),
-    );
-    let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
-    let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
-    let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
     // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
     // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
     // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
