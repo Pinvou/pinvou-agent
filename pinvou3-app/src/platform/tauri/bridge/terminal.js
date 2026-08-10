@@ -25,7 +25,7 @@
   }
 
   function isShellExecutionTool(name) {
-    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell"].indexOf(name) >= 0;
+    return ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"].indexOf(name) >= 0;
   }
 
   function utf8Length(text) {

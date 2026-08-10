@@ -556,7 +556,7 @@
 
     var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
       p.metadata.status === "Running" && p.metadata.task_id;
-    if (meta && meta.name === "exec_shell" && backgroundTaskId) {
+    if (meta && (meta.name === "exec_shell" || meta.name === "Bash") && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
       delete context.toolMeta[p.id];
       context.currentStreamText = ""; context.currentStreamId = 0;

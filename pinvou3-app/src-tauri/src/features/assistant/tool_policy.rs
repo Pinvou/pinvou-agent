@@ -9,6 +9,10 @@
 /// 规则语义与 CodeWhale `allowed_tools` 一致：名称大小写不敏感，尾部 `*`
 /// 表示前缀匹配。MCP 的具体工具名由已启用连接器动态发现，因此只允许标准
 /// `mcp_` 命名空间；连接器开关仍通过 `disallowed_tools` 施加更窄的拒绝规则。
+///
+/// 进度工具必须是 v0.9.5 canonical 模型可见名 `todo_write`；`work_update` /
+/// `checklist_write` / `update_plan` 是隐藏的 replay 兼容别名（`model_visible()`
+/// 为 false，不会出现在模型目录），写进白名单只是死条目。
 pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "Bash",
     "File",
@@ -17,7 +21,7 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "load_skill",
     "request_user_input",
     "revert_turn",
-    "work_update",
+    "todo_write",
     "workflow",
     "tool_search",
     "image_analyze",

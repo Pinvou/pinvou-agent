@@ -3473,7 +3473,7 @@
   }
 
   function isShellExecutionTool(name) {
-    return name === "exec_shell" || name === "task_shell_start" || name === "shell";
+    return name === "exec_shell" || name === "task_shell_start" || name === "shell" || name === "Bash";
   }
 
   function utf8Length(text) {

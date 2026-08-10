@@ -1001,7 +1001,7 @@ mod tool_allowlist_contract {
             "Web",
             "agent",
             "load_skill",
-            "work_update",
+            "todo_write",
             "tool_search",
             "request_user_input",
             "revert_turn",
@@ -1012,7 +1012,19 @@ mod tool_allowlist_contract {
             assert!(is_pinvou3_allowed(core), "核心工具 {core} 应在白名单");
         }
 
-        for excluded in ["Git", "Run", "tasks", "automation", "github", "rlm"] {
+        for excluded in [
+            "Git",
+            "Run",
+            "tasks",
+            "automation",
+            "github",
+            "rlm",
+            // work_update 是 v0.9.5 隐藏的 replay 别名，模型目录里只有 canonical
+            // `todo_write`；别名写进白名单是死条目，且会让进度工具整体不可见。
+            "work_update",
+            "checklist_write",
+            "update_plan",
+        ] {
             assert!(
                 !is_pinvou3_allowed(excluded),
                 "非 Pinvou 工具家族 {excluded} 不应进入白名单"
