@@ -1,18 +1,14 @@
 import React, {
   useEffect,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
 } from 'react';
 import { createPetActivationState, loadActivePet } from './pet-active.js';
 import { loadImage } from './load-image.js';
-import {
-  buildAnimationSequence,
-  PET_FRAME_H,
-  PET_FRAME_W,
-} from './pet-animation.js';
+import { PET_FRAME_H, PET_FRAME_W } from './pet-animation.js';
+import { PetSprite } from './PetSprite.jsx';
 import {
   createPetCardUiState,
   normalizedPetReply,
@@ -69,7 +65,6 @@ import {
   normalizePetId,
   resolvePet,
 } from './pet-registry.js';
-import { useReducedMotion } from '../../hooks/useReducedMotion.js';
 import { dict, TAG_TO_LANG } from '../../shared/i18n.js';
 import './pet.css';
 
@@ -97,41 +92,6 @@ const STATUS_SYMBOL = {
   review: '✓',
   running: '',
 };
-
-/** Codex v2 player: per-frame timings, three active cycles, then slow idle. */
-function PetSprite({ pet, animation }) {
-  const reducedMotion = useReducedMotion();
-  const sequence = useMemo(
-    () => buildAnimationSequence(animation, { reducedMotion }),
-    [animation, reducedMotion],
-  );
-  const [frameIndex, setFrameIndex] = useState(0);
-
-  useEffect(() => setFrameIndex(0), [sequence]);
-  useEffect(() => {
-    if (reducedMotion || sequence.frames.length <= 1) return undefined;
-    const frame = sequence.frames[frameIndex] || sequence.frames[0];
-    const timer = window.setTimeout(() => {
-      setFrameIndex((current) => (
-        current + 1 < sequence.frames.length ? current + 1 : sequence.loopStartIndex
-      ));
-    }, frame.durationMs);
-    return () => window.clearTimeout(timer);
-  }, [frameIndex, reducedMotion, sequence]);
-
-  const frame = sequence.frames[frameIndex] || sequence.frames[0];
-  return (
-    <div
-      className="pet-sprite"
-      style={{
-        width: PET_FRAME_WIDTH,
-        height: PET_FRAME_HEIGHT,
-        backgroundImage: `url(${pet.sheetUrl})`,
-        backgroundPosition: `-${frame.column * PET_FRAME_WIDTH}px -${frame.row * PET_FRAME_HEIGHT}px`,
-      }}
-    />
-  );
-}
 
 function PetActivityBody({ text, expanded = false }) {
   const source = String(text || '');
@@ -195,6 +155,7 @@ export default function PetWindow({
   const activityCardRectRef = useRef(null);
   const activityHeightRef = useRef(null);
   const openingSessionRef = useRef(null);
+  const openingMainRef = useRef(false);
   const openingScheduledRunRef = useRef(null);
   const scheduledNoticeRef = useRef(null);
   scheduledNoticeRef.current = scheduledNotice;
@@ -272,7 +233,11 @@ export default function PetWindow({
   };
 
   const animation = dragAnimation
-    || (hovered ? 'jumping' : (baseAnimation !== 'idle' ? baseAnimation : (firstAwake ? 'waving' : 'idle')));
+    || (hovered
+      ? (activePet?.id === 'vivi' ? 'hover-special' : 'jumping')
+      : (baseAnimation !== 'idle'
+        ? baseAnimation
+        : (firstAwake && activePet?.id !== 'vivi' ? 'waving' : 'idle')));
   const activePetName = activePet
     ? (t.uiPetSettings.pets[activePet.id]?.name || activePet.name)
     : '';
@@ -616,12 +581,18 @@ export default function PetWindow({
     const core = isTauriAvailable() ? tauriCommands : null;
     if (!core) return;
     const sid = String(sessionId || '').trim();
+    if (!sid && openingMainRef.current) return;
     if (sid && openingSessionRef.current === sid) return;
     if (sid) openingSessionRef.current = sid;
-    core.invoke('open_main_from_pet', { sessionId: sid || null }).catch((error) => {
-      if (openingSessionRef.current === sid) openingSessionRef.current = null;
-      console.error('[pet navigation] failed', error);
-    });
+    else openingMainRef.current = true;
+    core.invoke('open_main_from_pet', { sessionId: sid || null })
+      .catch((error) => {
+        console.error('[pet navigation] failed', error);
+      })
+      .finally(() => {
+        if (sid && openingSessionRef.current === sid) openingSessionRef.current = null;
+        if (!sid) window.setTimeout(() => { openingMainRef.current = false; }, 180);
+      });
   };
 
   const openScheduledNotice = (event) => {
@@ -896,6 +867,9 @@ export default function PetWindow({
   const pressRef = useRef(null);
   const onPointerDown = (event) => {
     if (event.button !== 0) return;
+    setHovered(false);
+    // 不在按下阶段打开主窗口：macOS 会因此切换焦点，透明桌宠可能丢失后续
+    // pointermove，表现为长按后无法拖动。纯点击在 pointerup 确认后再打开。
     // 右键菜单现为窗口内 DOM 浮层,开启时由捕获阶段 pointerdown 监听收起,
     // 无需再对已废弃的原生菜单窗口发 hide IPC。
     measureActivityCard();
@@ -972,6 +946,7 @@ export default function PetWindow({
       if (Math.abs(dx) + Math.abs(dy) > 4) {
         press.moved = true;
         if (drag) drag.didMove = true;
+        setHovered(false);
       }
       motionX = event.screenX - press.lastX;
       motionY = event.screenY - press.lastY;
@@ -992,15 +967,20 @@ export default function PetWindow({
     if (press && press.moved) beginPetPhysics(drag);
   };
 
-  const finishPointer = (cancelled = false) => {
+  const finishPointer = (cancelled = false, event = null) => {
     const press = pressRef.current;
     pressRef.current = null;
+    const character = event?.currentTarget;
+    const rect = character?.getBoundingClientRect?.();
+    const pointerStillInside = !cancelled && rect
+      && event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    setHovered(!!pointerStillInside);
     setDragAnimation(null);
     const drag = dragRef.current;
-    const isClick = !cancelled && press && !press.moved;
     if (cancelled || !press || !press.moved) {
       stopPhysics(drag);
-      if (isClick) openMain(null);
+      if (!cancelled && press && !press.moved) openMain(null);
       return;
     }
     if (drag) Object.assign(drag, releasePetDrag(drag));
@@ -1416,6 +1396,7 @@ export default function PetWindow({
           <div className="pet-stage" style={{ transform: `translateX(-50%) scale(${scale})` }}>
             <div
               className="pet-character"
+              data-pet-id={activePet.id}
               role="button"
               tabIndex={0}
               aria-label={petCopy.drag(activePetName)}
@@ -1424,13 +1405,13 @@ export default function PetWindow({
               onPointerLeave={() => setHovered(false)}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
-              onPointerUp={() => finishPointer(false)}
-              onPointerCancel={() => finishPointer(true)}
+              onPointerUp={(event) => finishPointer(false, event)}
+              onPointerCancel={(event) => finishPointer(true, event)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') openMain(null);
               }}
             >
-              <PetSprite pet={activePet} animation={animation} />
+              <PetSprite key={`${activePet.id}:${animation}`} pet={activePet} animation={animation} />
             </div>
           </div>
         )}

@@ -1,0 +1,10 @@
+{
+  "id": "vivi",
+  "displayName": "Vivi",
+  "description": "蓝衣长发，温柔相伴",
+  "spriteVersionNumber": 1,
+  "spritesheetPath": "spritesheet.webp",
+  "walkSpritesheetPath": "walk-spritesheet.webp",
+  "dragSpritesheetPath": "drag-sit-type.webp",
+  "idleSpecialPath": "idle-special.webp"
+}

@@ -796,6 +796,7 @@ pub fn run() {
             commands::pet::open_detached_window,
             commands::pet::begin_detach_drag,
             commands::pet::set_pet_enabled,
+            commands::pet::set_pet_temporarily_hidden,
             commands::pet::get_pet_scale,
             commands::pet::set_pet_scale,
             commands::pet::set_pet_activity_visible,

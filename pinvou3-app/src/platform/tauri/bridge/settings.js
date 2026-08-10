@@ -46,8 +46,30 @@
     }
     notify();
   }
+  // 桌宠是独立置顶窗口；它唤醒主窗口后必须重新读取 Rust 的权威设置。
+  // 这样即使旧 WebView 曾漏掉 enabled_changed，设置开关也不会长期显示反值。
+  var focusRefreshTimer = 0;
+  window.addEventListener("focus", function () {
+    window.clearTimeout(focusRefreshTimer);
+    focusRefreshTimer = window.setTimeout(function () {
+      loadSettings();
+      loadSelectedPet();
+    }, 0);
+  });
   async function setSelectedPet(id) {
     return await invoke("set_selected_pet", { id: id });
+  }
+  async function setPetEnabled(enabled) {
+    try {
+      await invoke("set_pet_enabled", { enabled: !!enabled });
+      // 不把 UI 是否响应押在异步事件到达时机上；命令成功后立即重读磁盘权威值。
+      await loadSettings();
+      return true;
+    } catch (e) {
+      console.warn("set pet enabled failed", e);
+      await loadSettings();
+      return false;
+    }
   }
   async function loadEffectiveModelConfig(sessionId) {
     var requestedSessionId = arguments.length ? (sessionId || null) : (state.activeSessionId || null);
@@ -267,6 +289,7 @@
       loadSettings: loadSettings,
       loadSelectedPet: loadSelectedPet,
       setSelectedPet: setSelectedPet,
+      setPetEnabled: setPetEnabled,
       loadEffectiveModelConfig: loadEffectiveModelConfig,
       saveSettings: saveSettings,
       saveSettingsAndRestart: saveSettingsAndRestart,

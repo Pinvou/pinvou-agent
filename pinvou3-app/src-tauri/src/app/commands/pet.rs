@@ -9,6 +9,7 @@ async_command_passthrough!(detach_domain, open_detached_window(kind: String, id:
 async_command_passthrough!(detach_domain, begin_detach_drag(kind: String, id: Option<String>, app: AppHandle) -> Result<(), String>);
 
 async_command_passthrough!(pet_domain, set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String>);
+async_command_passthrough!(pet_domain, set_pet_temporarily_hidden(hidden: bool, app: AppHandle) -> Result<(), String>);
 async_command_passthrough!(pet_domain, get_pet_scale() -> Result<f64, String>);
 async_command_passthrough!(pet_domain, set_pet_scale(scale: f64, anchor: Option<String>, alignment: Option<String>, vertical_alignment: Option<String>, anchor_x: Option<f64>, anchor_y: Option<f64>, activity_visible: Option<bool>, activity_height: Option<f64>, persist: Option<bool>, app: AppHandle) -> Result<f64, String>);
 async_command_passthrough!(pet_domain, set_pet_activity_visible(visible: bool, activity_height: Option<f64>, alignment: Option<String>, vertical_alignment: Option<String>, app: AppHandle) -> Result<(), String>);

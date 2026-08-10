@@ -8,9 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub const PET_LABEL: &str = "pet";
+static PET_TEMPORARILY_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 const PET_FRAME_W: f64 = 192.0;
 const PET_FRAME_H: f64 = 208.0;
@@ -522,9 +524,25 @@ pub fn close_with_main(app: &AppHandle) {
 /// 副本，让设置界面与专用命令写入的权威状态保持一致。
 /// 设置页开关和宠物右键"隐藏"都走这一个命令,单一路径。
 pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
+    eprintln!("[pet enabled] request enabled={enabled}");
     let window_existed = app.get_webview_window(PET_LABEL).is_some();
     if enabled {
         create_or_show(&app)?;
+        if PET_TEMPORARILY_HIDDEN.load(Ordering::SeqCst) {
+            if let Some(win) = app.get_webview_window(PET_LABEL) {
+                win.set_ignore_cursor_events(true)
+                    .map_err(|error| format!("make suspended pet click-through failed: {error}"))?;
+                win.hide().map_err(|error| format!("keep suspended pet hidden failed: {error}"))?;
+            }
+        }
+    } else if let Some(win) = app.get_webview_window(PET_LABEL) {
+        // 先完成真实窗口操作，再写权威状态。旧实现忽略 hide() 的 Err 却仍
+        // 广播 enabled=false，会留下“设置显示关闭、桌宠仍挡在桌面”的假状态。
+        win.hide()
+            .map_err(|error| format!("hide pet window failed: {error}"))?;
+        // macOS 的 NSWindow hide 是异步提交；这里立刻读 is_visible() 会读到
+        // 上一帧的 true，把已经接受的关闭操作误判为失败。hide() 返回 Ok 即可，
+        // 状态同步由下面的持久化与 enabled_changed 广播完成。
     }
     let mut was_enabled = false;
     if let Err(error) = crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
@@ -540,18 +558,46 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
                     let _ = win.close();
                 }
             }
+        } else if !enabled && was_enabled {
+            // 关闭窗口成功但落盘失败时恢复显示，确保磁盘、UI 与窗口三方仍一致。
+            if let Some(win) = app.get_webview_window(PET_LABEL) {
+                let _ = win.show();
+            }
         }
         return Err(format!("save pet.enabled failed: {error:?}"));
-    }
-    if !enabled {
-        if let Some(win) = app.get_webview_window(PET_LABEL) {
-            let _ = win.hide();
-        }
     }
     let _ = app.emit(
         "pet:enabled_changed",
         serde_json::json!({ "enabled": enabled }),
     );
+    eprintln!("[pet enabled] applied enabled={enabled}");
+    Ok(())
+}
+
+/// 设置页显示期间临时让桌宠让路，避免透明置顶 WebView 截走设置开关点击。
+/// 这不修改 pet.enabled；离开设置页时仅在用户仍启用桌宠的情况下恢复。
+pub async fn set_pet_temporarily_hidden(hidden: bool, app: AppHandle) -> Result<(), String> {
+    PET_TEMPORARILY_HIDDEN.store(hidden, Ordering::SeqCst);
+    if hidden {
+        if let Some(win) = app.get_webview_window(PET_LABEL) {
+            // macOS 的 hide 异步提交，在真正消失前透明 WebView 仍可能吞掉设置页
+            // 的点击。先开启鼠标穿透，再隐藏，保证开关立即可操作。
+            win.set_ignore_cursor_events(true)
+                .map_err(|error| format!("make pet click-through failed: {error}"))?;
+            win.hide()
+                .map_err(|error| format!("temporarily hide pet window failed: {error}"))?;
+        }
+    } else if crate::platform::prefs::UserPrefs::load().pet.enabled {
+        create_or_show(&app)?;
+        if let Some(win) = app.get_webview_window(PET_LABEL) {
+            win.set_ignore_cursor_events(false)
+                .map_err(|error| format!("restore pet pointer events failed: {error}"))?;
+        }
+    } else if let Some(win) = app.get_webview_window(PET_LABEL) {
+        // 即使处于 disabled，也清掉临时穿透标记，下一次 enable 不继承旧状态。
+        win.set_ignore_cursor_events(false)
+            .map_err(|error| format!("reset disabled pet pointer events failed: {error}"))?;
+    }
     Ok(())
 }
 

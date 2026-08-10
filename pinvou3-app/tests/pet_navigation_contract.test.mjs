@@ -15,7 +15,7 @@ const rustPetLinux = source('src-tauri/src/features/pet/platform/linux.rs');
 const petCommands = source('src-tauri/src/app/commands/pet.rs');
 const rustLib = source('src-tauri/src/lib.rs');
 
-assert.match(petWindow, /buildAnimationSequence/);
+assert.match(petWindow, /<PetSprite/);
 assert.doesNotMatch(petWindow, /['"]poke['"]/, 'a click must not trigger the jumping row');
 assert.match(petWindow, /['"]jumping['"]/, 'hover should use the jumping row');
 assert.match(petInteraction, /['"]running-right['"]/);
@@ -84,6 +84,16 @@ assert.doesNotMatch(rustLib, /commands::pet::(?:show|hide)_pet_context_menu/);
 
 assert.match(main, /listen\(['"]pet:navigation_pending['"]/);
 assert.match(main, /listen\(['"]pet:activation_guard['"]/);
+
+// macOS 的状态级桌宠窗口不会自动激活整个应用；点击桌宠唤醒主窗前必须
+// 显式激活 NSApplication，不能只依赖返回 Ok 但可能无可见效果的 set_focus。
+const macPetPlatform = source('src-tauri/src/features/pet/platform/macos.rs');
+assert.match(macPetPlatform, /NSApplication::sharedApplication\(mtm\)\.activate\(\)/);
+
+// 关闭桌宠必须检查真实 hide 结果后才能广播关闭状态，禁止重新引入
+// “开关已关、桌宠仍可见”的状态分裂。
+assert.match(rustPetWindow, /win\.hide\(\)\s*\.map_err/);
+assert.match(rustPetWindow, /win\.is_visible\(\)\.unwrap_or\(true\)/);
 assert.match(main, /invoke\(['"]take_pet_navigation['"]\)/);
 assert.match(main, /addEventListener\(['"]focus['"]/);
 assert.doesNotMatch(

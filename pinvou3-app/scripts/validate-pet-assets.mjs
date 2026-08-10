@@ -8,7 +8,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const manifestPath = path.join(appRoot, 'src', 'features', 'pet', 'pet-manifest.json');
 const registryPath = path.join(appRoot, 'src', 'features', 'pet', 'pet-registry.js');
 const assetRoot = path.join(appRoot, 'src', 'assets', 'pet');
-const expectedIds = ['lingling', 'langlang', 'ace-taffy'];
+const expectedIds = ['lingling', 'langlang', 'ace-taffy', 'vivi'];
 const atlasRowsByVersion = Object.freeze({ 1: 9, 2: 11 });
 const releaseMode = process.argv.slice(2).includes('--release');
 const errors = [];
@@ -29,7 +29,7 @@ function validateManifest(manifest) {
   check(Array.isArray(manifest), 'manifest must be an array');
   if (!Array.isArray(manifest)) return [];
 
-  check(manifest.length === 3, 'manifest must contain exactly three pets');
+  check(manifest.length === 4, 'manifest must contain exactly four pets');
   const ids = [];
   const requiredKeys = [
     'description',
@@ -186,6 +186,38 @@ async function main() {
         packageManifest.spritesheetPath === 'spritesheet.webp',
         `${id} pet.json spritesheetPath must be spritesheet.webp`,
       );
+      if (id === 'vivi') {
+        check(
+          packageManifest.walkSpritesheetPath === 'walk-spritesheet.webp',
+          'vivi pet.json walkSpritesheetPath must be walk-spritesheet.webp',
+        );
+        const walkAtlasBuffer = await readFile(path.join(assetRoot, id, packageManifest.walkSpritesheetPath));
+        const walkDimensions = webpDimensions(walkAtlasBuffer);
+        check(
+          walkDimensions.width === 1536 && walkDimensions.height === 208,
+          `vivi walk atlas must be 1536x208, got ${walkDimensions.width}x${walkDimensions.height}`,
+        );
+        check(
+          packageManifest.dragSpritesheetPath === 'drag-sit-type.webp',
+          'vivi pet.json dragSpritesheetPath must be drag-sit-type.webp',
+        );
+        const dragAtlasBuffer = await readFile(path.join(assetRoot, id, packageManifest.dragSpritesheetPath));
+        const dragDimensions = webpDimensions(dragAtlasBuffer);
+        check(
+          dragDimensions.width === 1536 && dragDimensions.height === 208,
+          `vivi drag atlas must be 1536x208, got ${dragDimensions.width}x${dragDimensions.height}`,
+        );
+        check(
+          packageManifest.idleSpecialPath === 'idle-special.webp',
+          'vivi pet.json idleSpecialPath must be idle-special.webp',
+        );
+        const idleSpecialBuffer = await readFile(path.join(assetRoot, id, packageManifest.idleSpecialPath));
+        const idleSpecialDimensions = webpDimensions(idleSpecialBuffer);
+        check(
+          idleSpecialDimensions.width === 192 && idleSpecialDimensions.height === 208,
+          `vivi idle special must be 192x208, got ${idleSpecialDimensions.width}x${idleSpecialDimensions.height}`,
+        );
+      }
     } catch (error) {
       errors.push(`${id} pet.json is invalid or missing: ${error.message}`);
     }
@@ -224,7 +256,12 @@ async function main() {
     const actualAtlases = allWebpFiles
       .filter((filePath) => path.basename(filePath) !== 'cover.webp')
       .map((filePath) => path.relative(assetRoot, filePath).replaceAll('\\', '/'));
-    const expectedAtlases = manifestIds.map((id) => `${id}/spritesheet.webp`);
+    const expectedAtlases = [
+      ...manifestIds.map((id) => `${id}/spritesheet.webp`),
+      'vivi/idle-special.webp',
+      'vivi/drag-sit-type.webp',
+      'vivi/walk-spritesheet.webp',
+    ];
     check(
       sameValues(actualAtlases, expectedAtlases),
       `unregistered atlas files found or registered atlases missing: ${actualAtlases.join(', ')}`,

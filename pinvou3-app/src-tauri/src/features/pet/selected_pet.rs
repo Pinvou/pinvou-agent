@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, State};
 
-const BUILTIN_PET_IDS: [&str; 3] = ["lingling", "langlang", "ace-taffy"];
+const BUILTIN_PET_IDS: [&str; 4] = ["lingling", "langlang", "ace-taffy", "vivi"];
 const DEFAULT_PET_ID: &str = "lingling";
 const SELECTED_PET_CHANGED_EVENT: &str = "pet:selected_changed";
 

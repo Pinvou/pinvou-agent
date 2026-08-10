@@ -6,6 +6,10 @@ const vm = require('vm');
 
 const sourcePath = path.join(__dirname, '..', 'src', 'hooks', 'useBridge.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
+const appSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'app', 'main.jsx'),
+  'utf8',
+);
 const bridgeSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'settings.js'),
   'utf8',
@@ -21,21 +25,12 @@ vm.createContext(context);
 vm.runInContext(
   `${source.slice(start, end)}
 this.baseUrlIsLoopback = baseUrlIsLoopback;
-this.isLocalModel = isLocalModel;
-this.shouldShowApiKeyGate = shouldShowApiKeyGate;`,
+this.isLocalModel = isLocalModel;`,
   context,
   { filename: sourcePath },
 );
 
-const { baseUrlIsLoopback, isLocalModel, shouldShowApiKeyGate } = context;
-const state = (credentialState, config = {}) => ({
-  effectiveModelConfig: {
-    preset: 'deepseek',
-    base_url: 'https://api.deepseek.com',
-    credential_state: credentialState,
-    ...config,
-  },
-});
+const { baseUrlIsLoopback, isLocalModel } = context;
 
 assert.strictEqual(baseUrlIsLoopback('http://localhost:8000/v1'), true);
 assert.strictEqual(baseUrlIsLoopback('http://localhost.:8000/v1'), true);
@@ -49,42 +44,8 @@ assert.strictEqual(isLocalModel({ preset: 'local_vllm', base_url: '' }), true);
 assert.strictEqual(isLocalModel({ preset: 'openai_compatible', base_url: 'http://localhost:11434/v1' }), true);
 assert.strictEqual(isLocalModel({ preset: 'openai_compatible', base_url: 'https://api.openai.com/v1' }), false);
 
-assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'chat', true), true);
-assert.strictEqual(shouldShowApiKeyGate(state('unavailable'), 'chat', true), true);
-assert.strictEqual(shouldShowApiKeyGate(state('configured'), 'chat', true), false);
-assert.strictEqual(
-  shouldShowApiKeyGate(state('missing', {
-    credential_mode: 'backend_managed',
-    requires_user_api_key: false,
-  }), 'chat', true),
-  false,
-  'runtime-managed credentials must not open the user API Key gate',
-);
-assert.strictEqual(
-  shouldShowApiKeyGate(state('unavailable', {
-    credential_mode: 'none',
-    requires_user_api_key: false,
-  }), 'chat', true),
-  false,
-  'no-auth models must not open the user API Key gate',
-);
-assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'settings', true), false);
-assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'chat', false), false);
-assert.strictEqual(
-  shouldShowApiKeyGate(state('missing', {
-    preset: 'openai_compatible',
-    base_url: 'http://127.0.0.1:11434/v1',
-  }), 'chat', true),
-  false,
-);
-assert.strictEqual(
-  shouldShowApiKeyGate({
-    ...state('missing'),
-    scheduledRunContext: { id: 'run-1' },
-  }, 'scheduled', true),
-  true,
-);
-assert.strictEqual(shouldShowApiKeyGate(state('missing'), 'scheduled', true), false);
+assert.doesNotMatch(appSource, /apiKeyGateTitle|shouldShowApiKeyGate/,
+  'chat UI must not render the API Key blocking modal');
 
 // 会话切换/热切模型必须把 sessionId 传给后端重新解析真正生效的模型，不能继续沿用全局默认。
 assert.match(

@@ -64,8 +64,23 @@ html.pet-window #root {
 }
 
 .pet-character {
+  position: relative;
   cursor: grab;
   touch-action: none;
+}
+
+/* Vivi 默认以 0.5 倍显示，热区也会随 stage 一起缩放。使用真实的大容器
+   覆盖紧凑窗口，而不是会被窗口边界裁掉的伪元素；精灵仍固定在底部中央。 */
+.pet-character[data-pet-id='vivi'] {
+  width: 288px;
+  height: 288px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.pet-character[data-pet-id='vivi'] > .pet-sprite {
+  flex: 0 0 auto;
 }
 .pet-character:focus {
   outline: 0;
@@ -81,6 +96,12 @@ html.pet-window #root {
   background-repeat: no-repeat;
   image-rendering: -webkit-optimize-contrast;
   pointer-events: none;
+}
+.pet-sprite-special {
+  display: block;
+  width: 192px;
+  height: 208px;
+  object-fit: contain;
 }
 
 /* 图集与默认回退都加载失败时，透明置顶窗口仍必须留下可见、可点击的恢复入口。 */

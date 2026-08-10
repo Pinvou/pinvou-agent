@@ -255,6 +255,7 @@ command_protocol!(
         "open_detached_window",
         "begin_detach_drag",
         "set_pet_enabled",
+        "set_pet_temporarily_hidden",
         "get_pet_scale",
         "set_pet_scale",
         "set_pet_activity_visible",

@@ -8,7 +8,7 @@ import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
-import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
+import { bridge, useBridgeState, activeModelIsLocal } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
@@ -1432,12 +1432,23 @@ function workspaceDisplayName(path) {
         }
       }
 
-      function handleSetPetEnabled(enabled) {
+      async function handleSetPetEnabled(enabled) {
         if (!can('pet') || !bridge.available) return;
-        // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
-        // pet:enabled_changed(bridge 听到后刷新 settings 副本,防旧值回写)。
-        invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
+        const saved = bridge.settings.setPetEnabled
+          ? await bridge.settings.setPetEnabled(!!enabled)
+          : false;
+        if (saved === false) setSettingsToast(t.uiMainApp.petToggleFailed || '桌宠开关操作失败，请重试');
       }
+
+      // 始终把当前页面的精确状态同步给 Rust。不能只在进入 settings 时写 true
+      // 再依赖 effect cleanup 写 false：热重载/页面重载不会可靠执行旧 cleanup，
+      // 会让桌宠永久卡在“临时隐藏”。从 chat 启动也必须主动解除隐藏。
+      useEffect(() => {
+        if (!can('pet') || !isTauriAvailable()) return;
+        invokeTauri('set_pet_temporarily_hidden', {
+          hidden: currentView === 'settings',
+        }).catch(() => {});
+      }, [currentView]);
 
       async function handleSetTaskCompletedNotif(enabled) {
         const nextEnabled = !!enabled;
@@ -2115,30 +2126,6 @@ function workspaceDisplayName(path) {
                     <button onClick={() => setSavedConfirm(null)} className="flex-1 h-11 text-[17px]" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedLater}</button>
                     <div style={{ width:'0.5px', background: activeTheme === 'dark' ? 'rgba(84,84,88,.65)' : 'rgba(60,60,67,.29)' }} />
                     <button onClick={() => { setPoolMyOnly(true); setSavedConfirm(null); setCurrentView('cardpool'); }} className="flex-1 h-11 text-[17px] font-semibold" style={{ color: activeTheme === 'dark' ? '#0A84FF' : '#007AFF' }}>{t.cpSavedView}</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* API Key 拦截遮罩 —— 云端模型未配 key 时只盖住聊天界面,强制先配置。
-                根因:此前前后端都无 key gate,空 key 打云端 → 401 静默无回应。
-                设置页必须保持可操作,否则“去配置”后遮罩仍在,用户反而无法录入 Key。
-                条件:credential_state 为 missing 或 unavailable 且非本地模型。本地 vLLM
-                和 loopback OpenAI-compatible 端点允许无鉴权。unavailable 同样需拦截:macOS 上用户在 Keychain
-                授权弹窗点"拒绝"时 credential_state 变 unavailable(见 prefs.rs:785),
-                此时不盖遮罩用户仍可发消息 → 命中 Keychain 错误,与 missing 同等后果。 */}
-            {shouldShowApiKeyGate(bs, currentView, bridge.available) && (
-              <div className="fixed inset-0 z-[57] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}>
-                <div className="w-full max-w-[400px] rounded-2xl p-6 ts-modal-in"
-                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
-                  <div className="flex items-center gap-2 mb-3">
-                    <PinvouLogo className="h-[22px] w-[22px] select-none" />
-                    <div className="text-[17px] font-semibold">{t.apiKeyGateTitle}</div>
-                  </div>
-                  <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.apiKeyGateDesc}</div>
-                  <div className="flex justify-end">
-                    <button onClick={() => openSettingsSection('model')}
-                      className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
                   </div>
                 </div>
               </div>

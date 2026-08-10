@@ -1080,6 +1080,7 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 
 const viewSrc = path.join(here, '..', 'src', 'features', 'pet', 'PetWindow.jsx');
 const viewCode = readFileSync(viewSrc, 'utf8');
+const mainCode = readFileSync(path.join(here, '..', 'src', 'app', 'main.jsx'), 'utf8');
 assert.match(viewCode, /const DEFAULT_SCALE = 0\.5;/);
 assert.match(
   viewCode,
@@ -1119,6 +1120,16 @@ assert.match(viewCode, /const onCharacterContextMenu = \(event\) => \{/);
 assert.match(viewCode, /setCtxMenu\(\{ x, y \}\)/);
 assert.match(viewCode, /className="pet-context-menu"/);
 assert.match(viewCode, /invoke\('set_pet_enabled',\s*\{\s*enabled:\s*false\s*\}\)/);
+assert.match(
+  mainCode,
+  /set_pet_temporarily_hidden[\s\S]*?hidden:\s*currentView\s*===\s*['"]settings['"]/,
+  'settings must temporarily hide the always-on-top pet so its switch remains clickable',
+);
+assert.match(
+  viewCode,
+  /const onPointerDown = \(event\) => \{[\s\S]*?openMain\(null\)/,
+  'macOS transparent pet windows must wake the main window on pointerdown, before pointerup can be lost',
+);
 assert.match(viewCode, /if \(event\.button !== 0\) return;/);
 assert.doesNotMatch(viewCode, /invoke\('show_pet_context_menu'/);
 assert.doesNotMatch(viewCode, /invoke\('hide_pet_context_menu'/);

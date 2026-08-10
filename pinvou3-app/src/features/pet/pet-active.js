@@ -54,7 +54,31 @@ export async function loadActivePet(requestedId, {
       throw new Error(`Pet atlas loader returned an invalid URL for ${id}`);
     }
     await decodeImage(sheetUrl);
-    return { ...metadata, sheetUrl };
+    let walkSheetUrl = null;
+    if (typeof metadata.walkAtlas === 'function') {
+      walkSheetUrl = await metadata.walkAtlas();
+      if (typeof walkSheetUrl !== 'string' || !walkSheetUrl.trim()) {
+        throw new Error(`Pet walk atlas loader returned an invalid URL for ${id}`);
+      }
+      await decodeImage(walkSheetUrl);
+    }
+    let dragSheetUrl = null;
+    if (typeof metadata.dragAtlas === 'function') {
+      dragSheetUrl = await metadata.dragAtlas();
+      if (typeof dragSheetUrl !== 'string' || !dragSheetUrl.trim()) {
+        throw new Error(`Pet drag atlas loader returned an invalid URL for ${id}`);
+      }
+      await decodeImage(dragSheetUrl);
+    }
+    let idleSpecialUrl = null;
+    if (typeof metadata.idleSpecial === 'function') {
+      idleSpecialUrl = await metadata.idleSpecial();
+      if (typeof idleSpecialUrl !== 'string' || !idleSpecialUrl.trim()) {
+        throw new Error(`Pet idle special loader returned an invalid URL for ${id}`);
+      }
+      await decodeImage(idleSpecialUrl);
+    }
+    return { ...metadata, sheetUrl, walkSheetUrl, dragSheetUrl, idleSpecialUrl };
   };
   const commitIfLatest = (pet) => {
     if (!isLatest()) return state.activePet;

@@ -1877,6 +1877,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
       const [searchPickerOpen, setSearchPickerOpen] = useState(false);
       const [restartDialog, setRestartDialog] = useState(null);
+      const [petEnabledAuthoritative, setPetEnabledAuthoritative] = useState(false);
+      const [petToggleBusy, setPetToggleBusy] = useState(false);
       const modelEnvLocked = (bs && bs.effectiveModelConfig && bs.effectiveModelConfig.env_overrides) || [];
       const [feedbackOpen, setFeedbackOpen] = useState(false);
       const [feedbackDraft, setFeedbackDraft] = useState({ type: 'issue', title: '', description: '', attachments: [] });
@@ -1906,6 +1908,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       useEffect(() => {
         if (initialSection) setActiveSection(initialSection);
       }, [initialSection]);
+      useEffect(() => {
+        if (!canUsePet || isWeb) return undefined;
+        let disposed = false;
+        invokeTauri('get_settings').then(prefs => {
+          if (!disposed) setPetEnabledAuthoritative(!!(prefs && prefs.pet && prefs.pet.enabled));
+        }).catch(error => console.warn('load authoritative pet setting failed', error));
+        return () => { disposed = true; };
+      }, [canUsePet]);
       useEffect(() => {
         if (!feedbackNotice) return;
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
@@ -2202,7 +2212,24 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </div>
         );
       }) : <div className={`px-4 py-4 text-[14px] ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{settingsCopy.noModels}</div>;
-      const petEnabled = !!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled);
+      // 这项不能再读 bs.settings：旧 bridge/HMR 快照曾长期固定为 false，导致
+      // 桌面明明有 Vivi，设置仍显示关闭。设置页直接以 Rust/disk 为权威来源。
+      const petEnabled = petEnabledAuthoritative;
+      const handleAuthoritativePetToggle = async () => {
+        if (petToggleBusy || isWeb) return;
+        setPetToggleBusy(true);
+        try {
+          const prefs = await invokeTauri('get_settings');
+          const nextEnabled = !(prefs && prefs.pet && prefs.pet.enabled);
+          await invokeTauri('set_pet_enabled', { enabled: nextEnabled });
+          const confirmed = await invokeTauri('get_settings');
+          setPetEnabledAuthoritative(!!(confirmed && confirmed.pet && confirmed.pet.enabled));
+        } catch (error) {
+          console.warn('authoritative pet toggle failed', error);
+        } finally {
+          setPetToggleBusy(false);
+        }
+      };
       const selectedPetId = (bs && typeof bs.selectedPet === 'string' && bs.selectedPet) || DEFAULT_PET_ID;
       const handlePetSelect = id => {
         if (!bridge.available || !bridge.settings.setSelectedPet) return Promise.resolve();
@@ -2241,7 +2268,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className="text-[15px] leading-5 font-normal whitespace-nowrap">{t.uiSettings.pet}</div>
                   <div className={`mt-0.5 text-[13px] leading-5 ${isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.petDesc}</div>
                 </div>
-                <IOSSwitch checked={petEnabled} onChange={onPetEnabledChange} />
+                <IOSSwitch checked={petEnabled} onChange={handleAuthoritativePetToggle} />
               </div>
               {petEnabled && (
                 <div className={`px-4 pb-4 border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'}`}>

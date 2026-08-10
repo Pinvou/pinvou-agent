@@ -1799,6 +1799,7 @@
   var loadSettings = settingsFeature.loadSettings;
   var loadSelectedPet = settingsFeature.loadSelectedPet;
   var setSelectedPet = settingsFeature.setSelectedPet;
+  var setPetEnabled = settingsFeature.setPetEnabled;
   var loadEffectiveModelConfig = settingsFeature.loadEffectiveModelConfig;
   var saveSettings = settingsFeature.saveSettings;
   var saveSettingsAndRestart = settingsFeature.saveSettingsAndRestart;
@@ -2104,6 +2105,7 @@
     },
     settings: {
       setSelectedPet: setSelectedPet,
+      setPetEnabled: setPetEnabled,
       saveSettings: saveSettings,
       saveSettingsAndRestart: saveSettingsAndRestart,
       saveSearchSettings: saveSearchSettings,

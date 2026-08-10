@@ -15,7 +15,7 @@ assert.equal(
 const petManifest = JSON.parse(readFileSync(petManifestUrl, "utf8"));
 assert.deepEqual(
   Object.fromEntries(petManifest.map((pet) => [pet.id, pet.spriteVersionNumber])),
-  { lingling: 1, langlang: 2, "ace-taffy": 1 },
+  { lingling: 1, langlang: 2, "ace-taffy": 1, vivi: 1 },
   "the manifest must explicitly distinguish nine-row v1 and eleven-row v2 atlases",
 );
 
@@ -28,7 +28,9 @@ try {
     CODEX_ANIMATIONS,
     CODEX_IDLE_FRAME_DURATIONS_MS,
     buildAnimationSequence,
+    buildPetSpritePlayback,
     buildPreviewSequence,
+    nextViviIdleSpecialDelay,
   } = await import(`${new URL(`file:///${modulePath.replaceAll("\\", "/")}`).href}?t=${Date.now()}`);
 
   assert.deepEqual(CODEX_ANIMATIONS, {
@@ -43,6 +45,45 @@ try {
     review: { row: 8, frames: 6, frameDurationMs: 150, lastFrameDurationMs: 280 },
   });
   assert.deepEqual(CODEX_IDLE_FRAME_DURATIONS_MS, [280, 110, 110, 140, 140, 320]);
+
+  const vivi = { id: 'vivi', sheetUrl: 'idle.webp', walkSheetUrl: 'walk.webp' };
+  const walkRight = buildPetSpritePlayback(vivi, 'running-right');
+  assert.equal(walkRight.sheetUrl, 'walk.webp');
+  assert.equal(walkRight.flipX, true);
+  assert.equal(walkRight.sequence.loopStartIndex, 0);
+  assert.deepEqual(walkRight.sequence.frames.map((frame) => frame.column), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(walkRight.sequence.frames.map((frame) => frame.durationMs), Array(8).fill(130));
+  assert.equal(buildPetSpritePlayback(vivi, 'running-left').flipX, false);
+  const viviWithDragAnimation = { ...vivi, dragSheetUrl: 'drag.webp' };
+  const dragPlayback = buildPetSpritePlayback(viviWithDragAnimation, 'hover-special');
+  assert.equal(dragPlayback.sheetUrl, 'drag.webp');
+  assert.equal(dragPlayback.flipX, false);
+  assert.deepEqual(
+    dragPlayback.sequence.frames.map((frame) => frame.column),
+    [1, 2, 3, 4, 5, 6, 7],
+  );
+  assert.deepEqual(
+    dragPlayback.sequence.frames.map((frame) => frame.durationMs),
+    [260, 300, 420, 320, 260, 170, 170],
+  );
+  assert.equal(buildPetSpritePlayback(vivi, 'idle').sheetUrl, 'idle.webp');
+  assert.deepEqual(
+    buildPetSpritePlayback(vivi, 'idle').sequence.frames,
+    [
+      { row: 0, column: 0, durationMs: 8000 },
+      { row: 0, column: 1, durationMs: 90 },
+      { row: 0, column: 2, durationMs: 100 },
+      { row: 0, column: 1, durationMs: 90 },
+      { row: 0, column: 0, durationMs: 8000 },
+    ],
+  );
+  assert.equal(
+    buildPetSpritePlayback({ id: 'lingling', sheetUrl: 'lingling.webp' }, 'running-right').sheetUrl,
+    'lingling.webp',
+  );
+  assert.equal(nextViviIdleSpecialDelay(() => 0), 20_000);
+  assert.equal(nextViviIdleSpecialDelay(() => 0.5), 30_000);
+  assert.equal(nextViviIdleSpecialDelay(() => 1), 40_000);
 
   const idle = buildAnimationSequence("idle");
   assert.equal(idle.loopStartIndex, 0);

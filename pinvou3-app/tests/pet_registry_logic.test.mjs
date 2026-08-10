@@ -30,7 +30,7 @@ try {
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
 
   assert.equal(DEFAULT_PET_ID, 'lingling');
-  for (const id of ['lingling', 'langlang', 'ace-taffy']) {
+  for (const id of ['lingling', 'langlang', 'ace-taffy', 'vivi']) {
     assert.equal(normalizePetId(id), id);
   }
   for (const invalidId of [undefined, null, '', 'unknown', 'pinwu-lingling', 42, false, {}]) {
@@ -42,7 +42,7 @@ try {
   assert.equal(resolvePet('ace-taffy').name, 'Ace Taffy');
   assert.deepEqual(
     Object.fromEntries(manifest.map((pet) => [pet.id, pet.spriteVersionNumber])),
-    { lingling: 1, langlang: 2, 'ace-taffy': 1 },
+    { lingling: 1, langlang: 2, 'ace-taffy': 1, vivi: 1 },
   );
   assert.equal(resolvePet('missing'), PET_REGISTRY.lingling);
   assert.equal(resolvePet(), PET_REGISTRY.lingling);
@@ -53,14 +53,20 @@ try {
   assert.deepEqual(Object.keys(PET_REGISTRY).sort(), manifestIds);
   assert.deepEqual(
     Object.keys(PET_REGISTRY),
-    ['lingling', 'langlang', 'ace-taffy'],
+    ['lingling', 'langlang', 'ace-taffy', 'vivi'],
     'registry iteration order drives the visible card order',
   );
   for (const id of loaderIds) {
-    assert.deepEqual(Object.keys(PET_LOADERS[id]).sort(), ['atlas', 'cover']);
+    const expectedLoaderKeys = id === 'vivi'
+      ? ['atlas', 'cover', 'dragAtlas', 'idleSpecial', 'walkAtlas']
+      : ['atlas', 'cover'];
+    assert.deepEqual(Object.keys(PET_LOADERS[id]).sort(), expectedLoaderKeys);
     assert.equal(typeof PET_LOADERS[id].cover, 'function');
     assert.equal(typeof PET_LOADERS[id].atlas, 'function');
   }
+  assert.equal(typeof resolvePet('vivi').walkAtlas, 'function');
+  assert.equal(typeof resolvePet('vivi').dragAtlas, 'function');
+  assert.equal(typeof resolvePet('vivi').idleSpecial, 'function');
 
   const hasEagerWebpImport = registrySource
     .split('\n')

@@ -16,7 +16,17 @@ pub(crate) fn apply_pet_window_policy(window: &tauri::WebviewWindow) {
     }
 }
 
-pub(crate) fn prepare_main_focus_raise(_app: &tauri::AppHandle) {}
+pub(crate) fn prepare_main_focus_raise(app: &tauri::AppHandle) {
+    // 桌宠是 NSStatusWindowLevel 的辅助窗，点击它不会可靠地把整个应用激活。
+    // 只对主窗口 set_focus 在 Terminal/Safari 位于前台时会返回 Ok、却没有任何
+    // 可见效果。先在 AppKit 主线程激活进程，再由调用方 show + set_focus。
+    let _ = app.run_on_main_thread(|| {
+        use objc2_app_kit::NSApplication;
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).activate();
+        }
+    });
+}
 
 pub(crate) fn finish_main_focus_raise(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(false);

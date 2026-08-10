@@ -19,6 +19,13 @@ export const PET_LOADERS = Object.freeze({
     cover: () => import('../../assets/pet/ace-taffy/cover.webp').then(assetUrl),
     atlas: () => import('../../assets/pet/ace-taffy/spritesheet.webp').then(assetUrl),
   }),
+  vivi: Object.freeze({
+    cover: () => import('../../assets/pet/vivi/cover.webp').then(assetUrl),
+    atlas: () => import('../../assets/pet/vivi/spritesheet.webp').then(assetUrl),
+    walkAtlas: () => import('../../assets/pet/vivi/walk-spritesheet.webp').then(assetUrl),
+    dragAtlas: () => import('../../assets/pet/vivi/drag-sit-type.webp').then(assetUrl),
+    idleSpecial: () => import('../../assets/pet/vivi/idle-special.webp').then(assetUrl),
+  }),
 });
 
 export const PET_REGISTRY = Object.freeze(Object.fromEntries(
@@ -28,6 +35,9 @@ export const PET_REGISTRY = Object.freeze(Object.fromEntries(
       ...pet,
       cover: PET_LOADERS[pet.id].cover,
       atlas: PET_LOADERS[pet.id].atlas,
+      walkAtlas: PET_LOADERS[pet.id].walkAtlas,
+      dragAtlas: PET_LOADERS[pet.id].dragAtlas,
+      idleSpecial: PET_LOADERS[pet.id].idleSpecial,
     }),
   ]),
 ));

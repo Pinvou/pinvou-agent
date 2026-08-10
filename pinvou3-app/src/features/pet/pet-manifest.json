@@ -22,5 +22,13 @@
     "spriteVersionNumber": 1,
     "themeColor": "#D98FB1",
     "placeholder": false
+  },
+  {
+    "id": "vivi",
+    "name": "Vivi",
+    "description": "蓝衣长发，温柔相伴",
+    "spriteVersionNumber": 1,
+    "themeColor": "#6E91B8",
+    "placeholder": false
   }
 ]

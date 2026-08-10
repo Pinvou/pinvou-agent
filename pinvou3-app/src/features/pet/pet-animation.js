@@ -6,6 +6,11 @@ export const PET_ATLAS_COLS = 8;
 
 export const CODEX_IDLE_FRAME_DURATIONS_MS = Object.freeze([280, 110, 110, 140, 140, 320]);
 const PREVIEW_ACTION_DURATION_SCALE = 1.8;
+const VIVI_WALK_FRAME_COUNT = 8;
+const VIVI_WALK_FRAME_DURATION_MS = 130;
+const VIVI_DRAG_FRAME_DURATIONS_MS = Object.freeze([420, 260, 300, 420, 320, 260, 170, 170]);
+const VIVI_BLINK_INTERVAL_MS = 8_000;
+export const VIVI_IDLE_SPECIAL_DURATION_MS = 2_100;
 
 export const CODEX_ANIMATIONS = Object.freeze({
   idle: Object.freeze({ row: 0, frames: 6, frameDurationMs: 140 }),
@@ -85,4 +90,63 @@ export function buildAnimationSequence(animation, { reducedMotion = false } = {}
     frames: [...repeated, ...slowIdleFrames()],
     loopStartIndex: repeated.length,
   };
+}
+
+export function buildPetSpritePlayback(pet, animation, { reducedMotion = false } = {}) {
+  const walking = pet?.id === 'vivi'
+    && !!pet.walkSheetUrl
+    && (animation === 'running-right' || animation === 'running-left');
+  const hovering = pet?.id === 'vivi'
+    && !!pet.dragSheetUrl
+    && animation === 'hover-special';
+  if (pet?.id === 'vivi' && animation === 'idle') {
+    return {
+      sequence: {
+        frames: reducedMotion
+          ? [{ row: 0, column: 0, durationMs: VIVI_BLINK_INTERVAL_MS }]
+          : [
+            { row: 0, column: 0, durationMs: VIVI_BLINK_INTERVAL_MS },
+            { row: 0, column: 1, durationMs: 90 },
+            { row: 0, column: 2, durationMs: 100 },
+            { row: 0, column: 1, durationMs: 90 },
+            { row: 0, column: 0, durationMs: VIVI_BLINK_INTERVAL_MS },
+          ],
+        loopStartIndex: 0,
+      },
+      sheetUrl: pet.sheetUrl,
+      flipX: false,
+      animateWithReducedMotion: false,
+    };
+  }
+  if (!walking && !hovering) {
+    return {
+      sequence: buildAnimationSequence(animation, { reducedMotion }),
+      sheetUrl: pet?.sheetUrl,
+      flipX: false,
+      animateWithReducedMotion: false,
+    };
+  }
+  return {
+    sequence: {
+      frames: (hovering
+        ? Array.from({ length: VIVI_WALK_FRAME_COUNT - 1 }, (_, index) => index + 1)
+        : Array.from({ length: VIVI_WALK_FRAME_COUNT }, (_, index) => index)
+      ).map((column) => ({
+        row: 0,
+        column,
+        durationMs: hovering
+          ? (VIVI_DRAG_FRAME_DURATIONS_MS[column] || VIVI_WALK_FRAME_DURATION_MS)
+          : VIVI_WALK_FRAME_DURATION_MS,
+      })),
+      loopStartIndex: 0,
+    },
+    sheetUrl: hovering ? pet.dragSheetUrl : pet.walkSheetUrl,
+    flipX: walking && animation === 'running-right',
+    animateWithReducedMotion: true,
+  };
+}
+
+export function nextViviIdleSpecialDelay(random = Math.random) {
+  const unit = Math.min(1, Math.max(0, Number(random()) || 0));
+  return 20_000 + Math.round(unit * 20_000);
 }
