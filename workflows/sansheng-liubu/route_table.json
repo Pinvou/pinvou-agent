@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "_about": "单一路由器（SDN 大脑）消费的全局调度真相源。路由器引擎=不变的一份代码；本表=数据，换 workflow 只换表。设计见 docs/SDAN/06-route-table.md。能力字段（tools/outputs/output_schema/max_steps/prompt_file/reads_static/name/gate）引用 agent_registry.json（唯一能力真像，不重复定义）；拓扑/裁决/回滚/场景（edges/joins/adapters/nodes.hard·soft/rollback_rules/scenarios）由本表自持。workflow.json 已退役删除。",
+  "_about": "单一路由器（SDN 大脑）消费的全局调度真相源。路由器引擎=不变的一份代码；本表=数据，换 workflow 只换表。设计见 docs/SDAN/06-route-table.md。能力字段（tools/outputs/output_schema/max_steps/prompt_file/reads_static/name/gate）引用 agent_registry.json（唯一能力真像，不重复定义）；拓扑/裁决/回滚/场景（edges/joins/adapters/nodes.hard·soft/rollback_rules/scenarios）由本表自持。workflow.json 仍为前端泳道/表单/标题的 UI 数据源（角色/拓扑以本表与 registry 为准），未退役。",
   "_interface_contract": {
-    "_note": "agent↔router 只通过两种信封通信，定义见 router-design.draft.md §3",
+    "_note": "agent↔router 只通过两种信封通信，定义见 docs/SDAN/03-protocol.md",
     "task_envelope": [
       "task_id",
       "to",

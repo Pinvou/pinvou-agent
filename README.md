@@ -132,7 +132,8 @@ The source tree supports **Linux, Windows, and macOS**. The initial macOS target
 git clone --recursive https://github.com/Pinvou/pinvou-agent.git
 cd pinvou-agent/pinvou3-app
 npm ci
-npm run dev
+cd ..
+./pinvou3-app/run-dev.sh
 ```
 
 If you cloned without submodules:

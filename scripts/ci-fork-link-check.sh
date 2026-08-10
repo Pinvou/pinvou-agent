@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI 门:改了 submodule(CodeWhale)的 gitlink,就必须**同 PR**更新 docs/fork-modifications.md。
 #
-# 背景:fork patch 指纹随 patch 走、不拆事后 catch-up PR(见 CLAUDE.md 与 docs/fork-policy.md)。
+# 背景:fork patch 指纹随 patch 走、不拆事后 catch-up PR(见 docs/fork-policy.md)。
 # PR #70 漏掉过这一步(gitlink 焊到新 commit 却没登记 fork-modifications + fork-guard 指纹),
 # 当时靠人工 review 才补上。这个检查把它自动化:从此 gitlink 一动、忘了登记就直接 fail。
 #
@@ -20,7 +20,7 @@ printf '%s\n' "$changed" | grep -qx 'docs/fork-modifications.md'    && fm=yes
 
 if [ "$gl" = yes ] && [ "$fm" = no ]; then
   echo "::error::改了 submodule CodeWhale 的 gitlink,但 docs/fork-modifications.md 未更新。"
-  echo "fork patch 指纹必须随 patch 同 PR(见 CLAUDE.md 与 docs/fork-policy.md)。"
+  echo "fork patch 指纹必须随 patch 同 PR(见 docs/fork-policy.md)。"
   echo "请在本 PR 内补:fork-modifications.md 条目 + scripts/fork-guard.sh 指纹(+ 跑 ./scripts/fork-guard.sh --fast 自查)。"
   exit 1
 fi

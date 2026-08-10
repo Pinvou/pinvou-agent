@@ -81,11 +81,6 @@ pinvou3-app/src-tauri/resources/bge-m3/
 
 # 本地下载的测试浏览器(Chrome for Testing),不提交
 .cache/
-# 旧 Codex ACP 完整运行时（兼容本地历史产物）。
-pinvou3-app/src-tauri/resources/codex-acp/codex-acp
-pinvou3-app/src-tauri/resources/codex-acp/node_modules/
-pinvou3-app/src-tauri/resources/platforms/linux/codex-acp/codex-acp
-pinvou3-app/src-tauri/resources/platforms/linux/codex-acp/node_modules/
 # 新版精简 Bridge 由 prepare-codex-bridge-runtime.sh 按目标架构生成。
 pinvou3-app/src-tauri/resources/codex-bridge/node/
 pinvou3-app/src-tauri/resources/codex-bridge/acp/

@@ -133,7 +133,7 @@ Claude Code 默认让模型改 5 次。但调研一致认为:**弱模型改 2 �
 
 **风险评估**:
 - 改动都是"加法"——对不走 submit_output 的自由文本角色零影响,出问题只影响结构化角色。
-- 超出 CLAUDE.md「fork 改动≤50 行」约束,属于"通用优化"(不是 pinvou3 专用),做完考虑提给底座上游 PR。
+- 超出 fork-policy 的 fork 改动规模软上限（1500 行），属于"通用优化"(不是 pinvou3 专用)，做完考虑提给底座上游 PR。
 - 用 agent1 验证:跑一次 → 看 transcript 里它是否调了 submit_output、打回后是否改对、brief.json 是否由代码落盘且 5 字段齐全 → 质检通过 = 成功。
 
 ---
