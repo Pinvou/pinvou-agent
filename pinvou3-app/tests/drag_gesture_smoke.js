@@ -22,7 +22,7 @@ function injectSource(){return `(function(){
       case 'get_settings': return {theme:'liquid-light',language:'zh-Hans'};
       case 'get_platform_capabilities': return {codexAcpSupported:true,detachWindows:true};
       case 'get_effective_model_config': return {model:'m',base_url:'http://127.0.0.1:8000/v1',api_key_set:false};
-      case 'list_codex_acp_sessions': return [{id:'coding-detach-1',title:'Coding撕离测试',agent_id:'codex',agent_name:'Codex',workspace_kind:'temporary',workspace_path:'',workspace_available:true,updated_at:'2026-08-07T00:00:00Z'}];
+      case 'list_codex_acp_sessions': return [{id:'coding-detach-1',title:'Coding撕离测试',agent_id:'codex',agent_name:'Codex',workspace_kind:'temporary',workspace_path:'',workspace_available:true,updated_at:new Date().toISOString()}];
       case 'list_sessions': case 'list_personas': case 'list_marketplace_tools':
       case 'list_workflows': case 'list_workspace_files': case 'check_dependencies':
       case 'get_session_persona_events': case 'get_session_pinvou_reviews': return [];
