@@ -36,6 +36,7 @@ import {
   tauriCommands,
   tauriEvents,
 } from '../platform/tauri/client.js';
+import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
@@ -106,6 +107,13 @@ function workspaceDisplayName(path) {
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
+        // Linux 的主窗口在配置中隐藏创建。首次 React 提交说明可交互 DOM 已就绪，
+        // 此时再映射 XWayland 窗口，避免冷启动阶段把尚未稳定的输入表面暴露给用户。
+        void revealStartupWindow().then((revealed) => {
+          if (!revealed) return;
+          window.__PINVOU_STARTUP__.mark('react:startup_window_revealed');
+          window.__PINVOU_STARTUP__.flush();
+        });
       }, []);
       useEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_effect');
@@ -156,6 +164,8 @@ function workspaceDisplayName(path) {
       const [codexBusyBySession, setCodexBusyBySession] = useState({});
       // 全局事件监听器按 id 判断是否为代码会话（监听器注册一次，不能闭包旧列表）。
       const codexSessionIdsRef = useRef(new Set());
+      // 进入设置前的页面（openSettingsSection 记录），关闭设置时原路返回。
+      const settingsReturnViewRef = useRef(null);
       useEffect(() => {
         codexSessionIdsRef.current = new Set(codexSessions.map(session => session && session.id));
       }, [codexSessions]);
@@ -899,6 +909,9 @@ function workspaceDisplayName(path) {
       }
 
       function openSettingsSection(section = 'general') {
+        // 记录进入设置前的页面（代码页齿轮等深链入口），关闭设置时原路返回，
+        // 而不是一律回工作页。
+        if (currentView !== 'settings') settingsReturnViewRef.current = currentView;
         setSettingsInitialSection(section);
         return navigateFromScheduledRun('settings');
       }
@@ -1546,32 +1559,36 @@ function workspaceDisplayName(path) {
       // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
       const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
       // 日期分组/平铺两种布局共用的任务项渲染
-      const renderSidebarTaskItem = (chat) => (
-        <RecentItem
-          key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
-          chat={chat}
-          theme={activeTheme}
-          t={t}
-          active={chat.taskKind === 'codex'
-            ? activeCodexId === chat.id && currentView === 'codex'
-            : chat.scheduledRun
-              ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-              : activeChat === chat.id && currentView === 'chat'}
-          personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
-          onSelect={chat.taskKind === 'codex'
-            ? handleSwitchCodexSession
-            : chat.scheduledRun
-              ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
-              : handleSwitchSession}
-          onRename={handleRenameSession}
-          onDelete={handleDeleteSession}
-          onTogglePinned={handleToggleSessionPinned}
-          onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
-          onArchive={handleArchiveSession}
-          dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-          onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-        />
-      );
+      const renderSidebarTaskItem = (chat) => {
+        const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
+        return (
+          <RecentItem
+            key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
+            chat={chat}
+            theme={activeTheme}
+            t={t}
+            active={chat.taskKind === 'codex'
+              ? activeCodexId === chat.id && currentView === 'codex'
+              : chat.scheduledRun
+                ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                : activeChat === chat.id && currentView === 'chat'}
+            personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+            onSelect={chat.taskKind === 'codex'
+              ? handleSwitchCodexSession
+              : chat.scheduledRun
+                ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                : handleSwitchSession}
+            onRename={handleRenameSession}
+            onDelete={handleDeleteSession}
+            onTogglePinned={handleToggleSessionPinned}
+            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+            onArchive={handleArchiveSession}
+            dragKind={detachKind}
+            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
+            onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
+          />
+        );
+      };
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
@@ -2036,7 +2053,7 @@ function workspaceDisplayName(path) {
                   onSidebarDateGroupingChange={handleSetSidebarDateGrouping}
                   updateFocusTick={settingsUpdateFocusTick}
                   initialSection={settingsInitialSection}
-                  onCloseSettings={() => navigateFromScheduledRun('chat')}
+                  onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
               </SettingsErrorBoundary>
             )}
@@ -2054,8 +2071,10 @@ function workspaceDisplayName(path) {
                 onActiveSessionChange={updateActiveCodexSession}
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
+                onOpenSettingsSection={openSettingsSection}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
+                onGotoSettings={() => openSettingsSection('general')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
             )}

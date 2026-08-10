@@ -267,9 +267,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                crate::platform::window_startup::activate_main_window(window);
             }
         }))
         .plugin(
@@ -320,6 +318,7 @@ pub fn run() {
                 )?;
             }
             startup::mark("setup:plugins_ready");
+            crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
@@ -608,6 +607,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
             commands::startup::report_frontend_startup,
+            commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_status,
@@ -689,6 +689,19 @@ pub fn run() {
             commands::codex::respond_codex_acp_permission,
             commands::codex::get_codex_acp_pending_elicitations,
             commands::codex::respond_codex_acp_elicitation,
+            commands::acp_providers::list_acp_providers,
+            commands::acp_providers::save_acp_provider,
+            commands::acp_providers::delete_acp_provider,
+            commands::acp_providers::switch_acp_provider,
+            commands::acp_providers::switch_acp_provider_official,
+            commands::acp_providers::uninstall_acp_agent,
+            commands::acp_providers::cancel_acp_agent_install,
+            commands::acp_providers::logout_acp_agent,
+            commands::acp_providers::get_acp_provider_key,
+            commands::acp_providers::export_acp_providers,
+            commands::acp_providers::import_acp_providers,
+            commands::acp_providers::probe_acp_agent_models,
+            commands::acp_providers::set_codex_acp_session_provider,
             commands::codex::list_codex_acp_sessions,
             commands::codex::create_codex_acp_session,
             commands::codex::list_codex_workspace,

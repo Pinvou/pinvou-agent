@@ -18,6 +18,7 @@ Their original licenses remain in effect.
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
 | Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 | Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
+| cc-switch (provider preset data) | Public preset list (trimmed 2026-08-05) | Base URL / protocol presets in `pinvou3-app/src/features/settings/acp-provider-catalog.js` | MIT | https://github.com/farion1231/cc-switch |
 
 Vendored script attribution:
 

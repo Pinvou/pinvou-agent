@@ -106,7 +106,31 @@ fn parse_version(version: &str) -> Vec<u64> {
 }
 
 pub fn codex_version(path: &Path) -> Option<String> {
-    codex_version_result(path).ok()
+    // npm 安装的快路径：shim 旁边的 node_modules/@openai/codex/package.json
+    // 直接读版本，免去 Node 冷启动（~9s）；布局不符或半成品安装时回退
+    // spawn `codex --version`（慢但权威）。
+    npm_codex_package_version(path).or_else(|| codex_version_result(path).ok())
+}
+
+/// npm shim 布局：`<prefix>/codex(.cmd)` + `<prefix>/node_modules/@openai/codex`。
+/// 返回 package.json 的 version；要求 vendor 平台包目录存在（npm EBUSY 中断
+/// 留下的半成品安装不算已安装）。
+fn npm_codex_package_version(shim_path: &Path) -> Option<String> {
+    let prefix = shim_path.parent()?;
+    let package_dir = prefix.join("node_modules").join("@openai").join("codex");
+    let raw = std::fs::read_to_string(package_dir.join("package.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let version = parsed.get("version")?.as_str()?;
+    if version.trim().is_empty() {
+        return None;
+    }
+    let vendor_scope = package_dir.join("node_modules").join("@openai");
+    let has_vendor = std::fs::read_dir(vendor_scope).ok()?.any(|entry| {
+        entry
+            .ok()
+            .is_some_and(|dir| dir.file_name().to_string_lossy().starts_with("codex-"))
+    });
+    has_vendor.then(|| version.trim().to_string())
 }
 
 fn codex_version_result(path: &Path) -> Result<String> {
@@ -119,14 +143,15 @@ fn codex_version_result(path: &Path) -> Result<String> {
         .spawn()
         .with_context(|| format!("启动 Codex 自检失败: {}", path.display()))?;
     let status = match child
-        .wait_timeout(Duration::from_secs(3))
+        // 15s：Node 版 CLI 冷启动实测 ~9s，3s 会把装好的 codex 误判为不可用
+        .wait_timeout(Duration::from_secs(15))
         .context("等待 Codex 自检进程失败")?
     {
         Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("Codex 自检超过 3 秒");
+            bail!("Codex 自检超过 15 秒");
         }
     };
     let mut stderr = String::new();
@@ -165,6 +190,38 @@ fn parse_codex_version_output(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::features::codex_acp::platform;
+
+    #[test]
+    fn npm_package_version_reads_package_json_and_requires_vendor() {
+        let dir =
+            std::env::temp_dir().join(format!("npm-codex-version-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let package_dir = dir.join("node_modules").join("@openai").join("codex");
+        std::fs::create_dir_all(
+            package_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex-win32-x64"),
+        )
+        .unwrap();
+        std::fs::write(
+            package_dir.join("package.json"),
+            r#"{"name":"@openai/codex","version":"0.146.1"}"#,
+        )
+        .unwrap();
+        let shim = dir.join("codex.cmd");
+        std::fs::write(&shim, "rem shim").unwrap();
+        assert_eq!(
+            npm_codex_package_version(&shim),
+            Some("0.146.1".to_string())
+        );
+        // vendor 平台包缺失（半成品安装）→ None（回退 spawn 路径）
+        std::fs::remove_dir_all(package_dir.join("node_modules")).unwrap();
+        assert_eq!(npm_codex_package_version(&shim), None);
+        // package.json 缺失 → None
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(npm_codex_package_version(&shim), None);
+    }
 
     #[test]
     fn runtime_source_names_are_stable() {

@@ -78,10 +78,10 @@ assert.match(prepareBridge, /Bridge 中仍残留 Claude 平台二进制，拒绝
 // 旧 staging 残留 claude 平台包时必须判为无效并重打包，防止本地复用旧产物
 // 把原生二进制静默打回安装包。
 assert.match(prepareBridge, /旧 staging 可能仍残留 Claude 平台原生二进制/);
-assert.match(
+assert.doesNotMatch(
   runDev,
-  /if \[ "\$OS_NAME" = "Linux" \] \|\| \[ "\$OS_NAME" = "Darwin" \]; then\s+\.\/scripts\/prepare-codex-bridge-runtime\.sh\s+fi/,
-  "dev startup must delegate the complete ACP Bridge readiness check to the preparation script",
+  /prepare-codex-bridge-runtime\.sh/,
+  "run-dev must let the shared Tauri wrapper prepare the ACP Bridge exactly once",
 );
 assert.doesNotMatch(
   runDev,
@@ -121,6 +121,8 @@ assert.doesNotMatch(
 // Kimi 不经过独立 Bridge；CLI 缺失时必须继续进入 installed=false 的安装分支，
 // 不能被前端 !bridge_ready 的错误提示提前截断。
 const kimiStatus = feature.match(
+  // 容忍 Windows checkout（autocrlf）的 CRLF 行尾；LF 环境同样匹配。
+
   /if backend == AgentBackend::KimiAcp \{([\s\S]*?)\r?\n        \}\r?\n\r?\n        let \(agent_id/,
 );
 assert.ok(kimiStatus, "Kimi status branch must remain explicit");

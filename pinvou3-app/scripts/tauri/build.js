@@ -11,6 +11,7 @@ const {
   platformArchitectureConfigPath,
   platformConfigPath,
 } = require("./platform-config.js");
+const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { prepareWebTemplate } = require("./web-template.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
@@ -65,19 +66,25 @@ function prepareTauriArgs(
   const prepared = [...args];
   const commandIndex = tauriCommandIndex(prepared);
   if (commandIndex < 0) {
-    // dev 默认不注入 packaging overlay;但 macOS 的原生红绿灯顶栏定义在平台
-    // overlay 里,dev 也必须带上,否则 npm run dev 与打包产物顶栏不一致
-    // (run-dev.sh 直连 tauri dev 时已显式带同一份 overlay,两条入口行为对齐)。
+    // dev 不注入 packaging overlay。macOS 复用平台 overlay 保持原生顶栏一致；
+    // Linux 只注入 dev overlay，让冷启动窗口等 React 首次提交后再显示，避开
+    // Mutter/XWayland 首次映射期间视觉表面与输入表面短暂错位。
     const devIndex = prepared.indexOf("dev");
-    if (devIndex >= 0 && platform === "darwin") {
+    const devConfig = platform === "darwin"
+      ? platformConfigPath(platform)
+      : platform === "linux"
+        ? linuxStartupWindowConfigSpec()
+        : null;
+    if (devIndex >= 0 && devConfig) {
       // 与 build/bundle 保持相同优先级:自动平台配置在前,调用方显式
       // --config 在后,从而仍可有意覆盖平台默认值。
-      prepared.splice(devIndex + 1, 0, "--config", platformConfigPath(platform));
+      prepared.splice(devIndex + 1, 0, "--config", devConfig);
     }
     return prepared;
   }
 
   const automaticConfigs = [platformConfigPath(platform)];
+  if (platform === "linux") automaticConfigs.push(linuxStartupWindowConfigSpec());
   const architectureConfig = platformArchitectureConfigPath(platform, architecture);
   if (architectureConfig) automaticConfigs.push(architectureConfig);
   const stagedRuntime = stageRuntime({ platform });

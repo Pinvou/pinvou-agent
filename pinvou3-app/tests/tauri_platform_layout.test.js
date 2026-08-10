@@ -5,6 +5,7 @@ const path = require("node:path");
 const appRoot = path.resolve(__dirname, "..");
 const tauriRoot = path.join(appRoot, "src-tauri");
 const repoRoot = path.resolve(appRoot, "..");
+const { linuxStartupWindowConfig } = require("../scripts/tauri/startup-window-config.js");
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(tauriRoot, relativePath), "utf8"));
@@ -53,6 +54,16 @@ assertResourceSourcesExist(linux, "Linux");
 assertResourceSourcesExist(macos, "macOS");
 assertResourceSourcesExist(windows, "Windows");
 
+assert.equal(linux.app, undefined, "Linux packaging config must not duplicate base window fields");
+const linuxStartupMain = { ...linuxStartupWindowConfig().app.windows[0] };
+delete linuxStartupMain.visible;
+linuxStartupMain.url = linuxStartupMain.url.replace("&startupWindow=hidden", "");
+assert.deepEqual(
+  linuxStartupMain,
+  common.app.windows[0],
+  "generated Linux startup config must inherit the complete base main window",
+);
+
 for (const legacyPath of ["resources/bundle", "resources/skill-marketplace", "resources/web-template", "resources/asr"]) {
   assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy resource root must be removed: ${legacyPath}`);
 }
@@ -93,6 +104,12 @@ for (const [name, command] of Object.entries(packageJson.scripts)) {
     `${name} must route Tauri build/bundle through scripts/tauri/build.js`,
   );
 }
+const runDev = fs.readFileSync(path.join(appRoot, "run-dev.sh"), "utf8");
+assert.match(
+  runDev,
+  /exec npm run dev -- "\$@"/,
+  "the direct dev entry must route through the wrapper that generates the startup overlay",
+);
 
 const gitmodules = fs.readFileSync(path.join(repoRoot, ".gitmodules"), "utf8");
 assert.match(

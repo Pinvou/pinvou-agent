@@ -187,14 +187,14 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [menuOpen, setMenuOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
-      const sessionDragKind = onPickUp ? 'session' : null;
+      const sessionDragKind = onPickUp ? dragKind : null;
       const drag = useLongPressDrag(sessionDragKind, onPickUp);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);
@@ -294,6 +294,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {...dragProps}
           onContextMenu={openContextMenu}
           data-testid={chat.testId}
+          data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all

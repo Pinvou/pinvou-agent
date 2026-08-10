@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * 长按起手冒烟：主窗口展开侧边栏 → 在「系统监控」项上 pointer 按住 ~450ms 不动(长按) →
- * 断言以 {kind:'monitor'} 调了 begin_detach_drag(原生鬼影由此接管,头less 无法继续验,属手动验收)。
+ * 长按起手冒烟：主窗口展开侧边栏 → 分别长按「系统监控」和 Coding 会话 →
+ * 断言以对应 kind 调了 begin_detach_drag(原生鬼影由此接管,headless 无法继续验,属手动验收)。
  * 用法：node pinvou3-app/tests/drag_gesture_smoke.js   (PASS→0 / FAIL→1 / 缺依赖→2)
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -20,7 +20,9 @@ function injectSource(){return `(function(){
   function resp(cmd){
     switch(cmd){
       case 'get_settings': return {theme:'liquid-light',language:'zh-Hans'};
+      case 'get_platform_capabilities': return {codexAcpSupported:true,detachWindows:true};
       case 'get_effective_model_config': return {model:'m',base_url:'http://127.0.0.1:8000/v1',api_key_set:false};
+      case 'list_codex_acp_sessions': return [{id:'coding-detach-1',title:'Coding撕离测试',agent_id:'codex',agent_name:'Codex',workspace_kind:'temporary',workspace_path:'',workspace_available:true,updated_at:new Date().toISOString()}];
       case 'list_sessions': case 'list_personas': case 'list_marketplace_tools':
       case 'list_workflows': case 'list_workspace_files': case 'check_dependencies':
       case 'get_session_persona_events': case 'get_session_pinvou_reviews': return [];
@@ -73,6 +75,22 @@ function injectSource(){return `(function(){
     await page.mouse.up();
     if(!calls.some(c=>c.args&&c.args.kind==='monitor')){console.error('FAIL: 长按未以 kind=monitor 调 begin_detach_drag，实际:',JSON.stringify(calls));ok=false;}
   }
+  const codingBox=ok?await page.evaluate(()=>{
+    const row=document.querySelector('[data-drag-kind="codex-session"]');
+    if(!row) return null;
+    const r=row.getBoundingClientRect();
+    return {x:r.x,y:r.y,w:r.width,h:r.height};
+  }):null;
+  if(ok&&!codingBox){console.error('FAIL: 找不到可撕离的 Coding 会话行');ok=false;}
+  else if(codingBox){
+    const sx=codingBox.x+20, sy=codingBox.y+codingBox.h/2;
+    await page.mouse.move(sx,sy);
+    await page.mouse.down();
+    await new Promise(r=>setTimeout(r,480));
+    const calls=await page.evaluate(()=>window.__CALLS__.filter(c=>c.cmd==='begin_detach_drag'));
+    await page.mouse.up();
+    if(!calls.some(c=>c.args&&c.args.kind==='codex-session'&&c.args.id==='coding-detach-1')){console.error('FAIL: Coding 会话长按未携带固定 session id，实际:',JSON.stringify(calls));ok=false;}
+  }
   await browser.close();fs.rmSync(PROFILE,{recursive:true,force:true});
-  if(ok){console.log('PASS: 侧边栏长按起手触发 begin_detach_drag(kind=monitor)');process.exit(0);} process.exit(1);
+  if(ok){console.log('PASS: 系统监控与 Coding 会话长按均触发正确 begin_detach_drag');process.exit(0);} process.exit(1);
 })();
