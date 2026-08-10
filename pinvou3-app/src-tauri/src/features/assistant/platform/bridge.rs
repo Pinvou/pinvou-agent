@@ -1336,9 +1336,8 @@ impl Pinvou3Bridge {
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
         // 能力档案 include 通道（fork ②）：
         // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
-        // 取数统一走 resolve()（与前端 get_profile_tools 同源——单真相源，
-        // 评审 ①b）；仅当 include 非空时注入 Some（空 → None → 底座回退常量，
-        // 与现状逐字节等价，plain 零影响）。
+        // 取数统一走 resolve()（单真相源，评审 ①b）；仅当 include 非空时注入
+        // Some（空 → None → 底座回退常量，与现状逐字节等价，plain 零影响）。
         //
         // ⚠️ 生效语义（U-7，与 disallowed 通道不同）：hidden 集在 **spawn 时
         // 定型**、运行期不变（v1 档案是设计期产物）——档案变更仅 respawn 生效，
