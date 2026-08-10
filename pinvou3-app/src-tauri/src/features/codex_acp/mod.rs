@@ -1687,12 +1687,8 @@ impl AcpPool {
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::CommandExt as _;
-                    // 独立进程组：取消时按组杀，brew 派生进程不孤儿化。
-                    brew_command.process_group(0);
-                }
+                // 独立进程组：取消时按组杀，brew 派生进程不孤儿化。
+                crate::platform::process::std_process_group_leader(&mut brew_command);
                 let mut child = brew_command.spawn().context("启动 Homebrew 失败")?;
                 // 登记 pid 供取消命令杀进程树；guard 在 run_brew 出口注销。
                 let _child_guard =
@@ -5228,12 +5224,9 @@ async fn run_npm_global_upgrade(
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
-    #[cfg(unix)]
-    {
-        // tokio 的 process_group 是 inherent 方法（无需 import）：
-        // 独立进程组，取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
-        command.process_group(0);
-    }
+    // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
+    // （平台细节在 process.rs，本层不含目标平台 cfg。）
+    crate::platform::process::tokio_process_group_leader(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

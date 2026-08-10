@@ -457,13 +457,10 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     backup_once(path)?;
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, content).with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
-    // Unix 上配置含明文 key（kimi/claude 的 CLI 配置）：临时文件先收成 0600
-    // 再 rename，避免默认 umask 0644 让同机其他用户可读（评审中危项）。
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-    }
+    // 配置含明文 key（kimi/claude 的 CLI 配置）：临时文件先收成 0600 再 rename，
+    // 避免默认 umask 0644 让同机其他用户可读（评审中危项）。平台细节在
+    // platform/filesystem.rs，本层不含目标平台 cfg。
+    let _ = crate::platform::filesystem::restrict_secret_permissions(&tmp);
     fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
     Ok(())
 }

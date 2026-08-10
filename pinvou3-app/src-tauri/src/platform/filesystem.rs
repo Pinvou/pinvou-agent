@@ -6,6 +6,22 @@ pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) 
     replace_file_atomically_impl(tmp, target, backup)
 }
 
+/// Unix 上把文件权限收紧为 0600（写入含明文密钥的 CLI 配置时防止同机
+/// 其他用户可读，默认 umask 0644 不够）；Windows 无 POSIX 权限概念，no-op。
+/// best-effort：不支持权限语义的文件系统返回错误，由调用方决定是否忽略。
+pub(crate) fn restrict_secret_permissions(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
     std::fs::rename(target, backup)?;

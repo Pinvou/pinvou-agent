@@ -188,6 +188,34 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
     }
 }
 
+/// Unix 上把（tokio）命令设为独立进程组组长（组长 pid = 子进程 pid）：
+/// 取消安装时按组杀（kill -9 -pgid）能连 curl | bash / npm 派生的子进程
+/// 一起终止，不孤儿化（评审中危项）。Windows no-op（taskkill /T 已杀整树）。
+pub(crate) fn tokio_process_group_leader(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    {
+        // tokio 的 process_group 是 inherent 方法，无需 import。
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+/// `tokio_process_group_leader` 的 std 版本（spawn_blocking 场景，如 Homebrew）。
+pub(crate) fn std_process_group_leader(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
 /// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
 /// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
