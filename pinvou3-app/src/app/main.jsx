@@ -1546,32 +1546,36 @@ function workspaceDisplayName(path) {
       // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
       const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
       // 日期分组/平铺两种布局共用的任务项渲染
-      const renderSidebarTaskItem = (chat) => (
-        <RecentItem
-          key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
-          chat={chat}
-          theme={activeTheme}
-          t={t}
-          active={chat.taskKind === 'codex'
-            ? activeCodexId === chat.id && currentView === 'codex'
-            : chat.scheduledRun
-              ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-              : activeChat === chat.id && currentView === 'chat'}
-          personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
-          onSelect={chat.taskKind === 'codex'
-            ? handleSwitchCodexSession
-            : chat.scheduledRun
-              ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
-              : handleSwitchSession}
-          onRename={handleRenameSession}
-          onDelete={handleDeleteSession}
-          onTogglePinned={handleToggleSessionPinned}
-          onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
-          onArchive={handleArchiveSession}
-          dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-          onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-        />
-      );
+      const renderSidebarTaskItem = (chat) => {
+        const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
+        return (
+          <RecentItem
+            key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
+            chat={chat}
+            theme={activeTheme}
+            t={t}
+            active={chat.taskKind === 'codex'
+              ? activeCodexId === chat.id && currentView === 'codex'
+              : chat.scheduledRun
+                ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                : activeChat === chat.id && currentView === 'chat'}
+            personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+            onSelect={chat.taskKind === 'codex'
+              ? handleSwitchCodexSession
+              : chat.scheduledRun
+                ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                : handleSwitchSession}
+            onRename={handleRenameSession}
+            onDelete={handleDeleteSession}
+            onTogglePinned={handleToggleSessionPinned}
+            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+            onArchive={handleArchiveSession}
+            dragKind={detachKind}
+            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
+            onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
+          />
+        );
+      };
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
