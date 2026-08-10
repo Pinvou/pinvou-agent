@@ -15,6 +15,13 @@ fn should_defer_main_window_activation(startup_ready: bool, is_visible: bool) ->
     !startup_ready && !is_visible
 }
 
+/// 8 秒兜底是否应真正 reveal 主窗口：仅当等待期满后窗口仍不可见。
+/// 调用方需先把 `is_visible()` 的 Err 折叠为"可见"，即"不明确隐藏就视为可见"。
+#[cfg(any(target_os = "linux", test))]
+fn should_fallback_reveal(visible_after_wait: bool) -> bool {
+    !visible_after_wait
+}
+
 #[cfg(target_os = "linux")]
 fn present_linux_main_window(
     window: tauri::WebviewWindow,
@@ -75,6 +82,9 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) {
         let startup_ready = MAIN_WINDOW_STARTUP_READY.load(Ordering::Acquire);
         let is_visible = window.is_visible().unwrap_or(true);
         if should_defer_main_window_activation(startup_ready, is_visible) {
+            // 冷启动未完成且窗口仍隐藏：defer 而非强行 present，避免把尚未稳定的
+            // 输入表面暴露给第二实例用户；前端首次提交或 8 秒兜底会负责显示窗口。
+            // 边界：若前端始终不 reveal，第二实例在兜底前启动将无窗口反馈（仅日志）。
             crate::platform::startup::mark("tauri:single_instance_activation_deferred");
             return;
         }
@@ -116,7 +126,8 @@ pub(crate) fn arm_hidden_main_window_fallback(app: &tauri::AppHandle) {
                 HIDDEN_MAIN_WINDOW_FALLBACK_SECS,
             ))
             .await;
-            if !matches!(window.is_visible(), Ok(false)) {
+            // 等待期内前端已正常 reveal（或 is_visible 出错），兜底不再介入。
+            if !should_fallback_reveal(window.is_visible().unwrap_or(true)) {
                 return;
             }
             match reveal_startup_window(window) {
@@ -137,11 +148,18 @@ pub(crate) fn arm_hidden_main_window_fallback(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_defer_main_window_activation, HIDDEN_MAIN_WINDOW_FALLBACK_SECS};
+    use super::{
+        should_defer_main_window_activation, should_fallback_reveal,
+        HIDDEN_MAIN_WINDOW_FALLBACK_SECS,
+    };
 
     #[test]
-    fn fallback_leaves_time_for_a_cold_frontend_build() {
+    fn fallback_waits_for_a_cold_frontend_build_then_reveals_only_if_still_hidden() {
+        // 等待窗口须给冷前端构建留出时间（常量值本身是契约的一部分）。
         assert_eq!(HIDDEN_MAIN_WINDOW_FALLBACK_SECS, 8);
+        // 仅当等待期满后仍隐藏才 reveal；已可见（前端已正常显示）或状态未知则不介入。
+        assert!(should_fallback_reveal(false));
+        assert!(!should_fallback_reveal(true));
     }
 
     #[test]
@@ -149,5 +167,7 @@ mod tests {
         assert!(should_defer_main_window_activation(false, false));
         assert!(!should_defer_main_window_activation(false, true));
         assert!(!should_defer_main_window_activation(true, false));
+        // 已就绪且窗口可见：第二实例激活直接 present，不 defer。
+        assert!(!should_defer_main_window_activation(true, true));
     }
 }
