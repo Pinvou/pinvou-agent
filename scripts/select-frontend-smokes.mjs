@@ -56,6 +56,7 @@ const FULL_PREFIXES = [
   "scripts/mcp-server-contract-smoke.py",
   "scripts/run-frontend-smokes.mjs",
   "scripts/run-user-journey-tests.sh",
+  "scripts/select-frontend-smokes.mjs",
 ];
 
 function isFrontendRelevant(path) {
@@ -75,7 +76,8 @@ function isFrontendRelevant(path) {
     path === "pinvou3-app/src-tauri/tauri.conf.json" ||
     path === "scripts/run-user-journey-tests.sh" ||
     path === "scripts/run-frontend-smokes.mjs" ||
-    path === "scripts/mcp-server-contract-smoke.py"
+    path === "scripts/mcp-server-contract-smoke.py" ||
+    path === "scripts/select-frontend-smokes.mjs"
   );
 }
 

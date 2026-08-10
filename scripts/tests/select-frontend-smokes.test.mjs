@@ -30,6 +30,13 @@ test("frontend smoke runner changes fail closed to the full browser suite", () =
   );
 });
 
+test("shared smoke manifest changes fail closed to the full browser suite", () => {
+  assert.deepEqual(
+    labels(selectFrontendSmokes(["scripts/select-frontend-smokes.mjs"])),
+    fullLabels,
+  );
+});
+
 test("feature-local changes select core and feature smokes", () => {
   assert.deepEqual(
     labels(

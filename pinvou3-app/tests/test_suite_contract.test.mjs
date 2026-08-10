@@ -95,3 +95,20 @@ test("the full browser suite has unique commands and a portable runner", () => {
   });
   assert.throws(() => commandFor({ kind: "unknown", target: "x" }), /unsupported/u);
 });
+
+test("the full browser suite references existing files and scripts", () => {
+  for (const item of FULL_FRONTEND_SMOKES) {
+    if (item.kind === "node") {
+      assert.ok(
+        fs.existsSync(path.join(appRoot, item.target)),
+        `missing smoke file: ${item.target}`,
+      );
+    } else if (item.kind === "npm") {
+      assert.equal(
+        typeof packageJson.scripts[item.target],
+        "string",
+        `missing npm script: ${item.target}`,
+      );
+    }
+  }
+});
