@@ -358,11 +358,19 @@ impl AcpProvidersStore {
             .and_then(|state| state.official_default_model.clone())
     }
 
-    pub fn set_official_default_model(&self, agent: &str, model: Option<&str>) -> Result<()> {
+    /// 一次持久化设置切换状态（current + official_default_model）：
+    /// 两次独立 persist 中途失败会留下半切换态（复审低危 3）。
+    pub fn set_switch_state(
+        &self,
+        agent: &str,
+        provider_id: Option<&str>,
+        official_default_model: Option<&str>,
+    ) -> Result<()> {
         {
             let mut agents = self.agents.write();
             let state = agents.entry(agent.to_string()).or_default();
-            state.official_default_model = model.map(str::to_string);
+            state.current_provider_id = provider_id.map(str::to_string);
+            state.official_default_model = official_default_model.map(str::to_string);
         }
         self.persist()
     }
@@ -456,11 +464,17 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     }
     backup_once(path)?;
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, content).with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
-    // 配置含明文 key（kimi/claude 的 CLI 配置）：临时文件先收成 0600 再 rename，
-    // 避免默认 umask 0644 让同机其他用户可读（评审中危项）。平台细节在
-    // platform/filesystem.rs，本层不含目标平台 cfg。
-    let _ = crate::platform::filesystem::restrict_secret_permissions(&tmp);
+    // 直接以 0600 创建临时文件（配置含明文 key，kimi/claude 的 CLI 配置），
+    // 避免默认 umask 0644 让同机其他用户可读，也无「先 0644 写、后收紧」的
+    // 暴露窗口（评审中危项 + 复审低危 4）。平台细节在 platform/filesystem.rs，
+    // 本层不含目标平台 cfg。
+    {
+        use std::io::Write as _;
+        let mut file = crate::platform::filesystem::create_secret_file(&tmp)
+            .with_context(|| format!("创建临时文件 {} 失败", tmp.display()))?;
+        file.write_all(content)
+            .with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
+    }
     fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
     Ok(())
 }
@@ -737,12 +751,18 @@ impl ProviderManager {
             writer.apply(&ProviderTarget::from_record(&record, key))?;
             if let Err(error) = self.store.upsert(agent, record.clone()) {
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
-                // 保持「失败 = 什么都没发生」语义。
-                let _ =
-                    writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
-                let _ = writer
-                    .restore_default_model(self.store.official_default_model(agent).as_deref());
-                return Err(error);
+                // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
+                let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
+                if let Err(rollback) =
+                    writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)))
+                {
+                    context = format!("{context}；回滚配置也失败: {rollback:#}");
+                } else if let Err(rollback) = writer
+                    .restore_default_model(self.store.official_default_model(agent).as_deref())
+                {
+                    context = format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+                }
+                return Err(error.context(context));
             }
         } else {
             self.store.upsert(agent, record.clone())?;
@@ -763,7 +783,8 @@ impl ProviderManager {
         if was_current {
             match removed.as_ref() {
                 Some(record) => self.switch_official_after_removal(agent, record)?,
-                None => self.switch_official(agent)?,
+                // 已持锁：调无锁实现，避免重复加锁死锁（parking_lot 非可重入）。
+                None => self.switch_official_locked(agent)?,
             }
         }
         let removed = self.store.remove(agent, provider_id)?;
@@ -801,19 +822,27 @@ impl ProviderManager {
             None => self.store.official_default_model(agent),
         };
         writer.apply(&ProviderTarget::from_record(&record, Some(key)))?;
-        let persisted = self
-            .store
-            .set_official_default_model(agent, official_default_model.as_deref())
-            .and_then(|_| self.store.set_current(agent, Some(provider_id)));
+        // 单次持久化写入切换状态（低危 3：两步 persist 会留下半切换态）。
+        let persisted = self.store.set_switch_state(
+            agent,
+            Some(provider_id),
+            official_default_model.as_deref(),
+        );
         if let Err(error) = persisted {
             // 回滚配置写入，保持「失败 = 什么都没发生」语义；kimi 的 apply 会
-            // 覆盖 default_model，必须一并写回官方值，否则官方登录态断裂
-            // （评审中危项）。
-            let _ = writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
-            let _ = writer.restore_default_model(official_default_model.as_deref());
-            return Err(error.context(
-                "切换 Provider 失败：配置已写入但无法保存切换状态，已回滚配置；请检查磁盘后重试",
-            ));
+            // 覆盖 default_model，必须一并写回官方值，否则官方登录态断裂。
+            // 回滚本身失败时如实附加，不无条件声称已回滚（复审 F3）。
+            let mut context = "切换 Provider 失败：配置已写入但无法保存切换状态，已尝试回滚配置；请检查磁盘后重试".to_string();
+            if let Err(rollback) =
+                writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)))
+            {
+                context = format!("{context}；回滚配置也失败: {rollback:#}");
+            } else if let Err(rollback) =
+                writer.restore_default_model(official_default_model.as_deref())
+            {
+                context = format!("{context}；写回官方 default_model 也失败: {rollback:#}");
+            }
+            return Err(error.context(context));
         }
         Ok(())
     }
@@ -822,6 +851,15 @@ impl ProviderManager {
     /// default_model（Kimi 必需，否则官方登录态会因 default_model 缺失断裂）。
     pub fn switch_official(&self, agent: &str) -> Result<()> {
         validate_agent(agent)?;
+        // 与 switch/save/delete 同锁：防「恢复官方」与并发切换 Provider 交错
+        // 出现「配置已回官方、store.current=B」的分裂态（复审 F2）。
+        let lock = self.switch_lock(agent);
+        let _switch_guard = lock.lock();
+        self.switch_official_locked(agent)
+    }
+
+    /// 无锁内部实现：调用方必须已持 per-agent 切换锁（delete 持锁后调用）。
+    fn switch_official_locked(&self, agent: &str) -> Result<()> {
         let current = self.store.current(agent);
         let reverted = current
             .as_deref()
@@ -967,28 +1005,47 @@ impl ProviderManager {
             } else {
                 None
             };
+            let entry_name = entry.name.trim().to_string();
+            // per-entry 错误收集：任一条目失败不中断整批，最后汇总（复审低危 2）。
             let credential = match &entry.api_key {
-                Some(key) => {
-                    self.credentials.set(&reference, key)?;
-                    Some(reference)
-                }
+                Some(key) => match self.credentials.set(&reference, key) {
+                    Ok(()) => Some(reference.clone()),
+                    Err(error) => {
+                        result
+                            .errors
+                            .push(format!("写入 {entry_name} 密钥失败: {error:#}"));
+                        result.skipped += 1;
+                        continue;
+                    }
+                },
                 None => None,
             };
-            self.store.upsert(
+            match self.store.upsert(
                 agent,
                 ProviderRecord {
                     id,
-                    name: entry.name.trim().to_string(),
+                    name: entry_name.clone(),
                     base_url: trim_base_url(&entry.base_url),
                     model: entry.model,
                     model_slots,
                     context_window: entry.context_window,
                     wire_api: entry.wire_api.unwrap_or_default(),
-                    credential,
+                    credential: credential.clone(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
-            )?;
-            result.imported += 1;
+            ) {
+                Ok(()) => result.imported += 1,
+                Err(error) => {
+                    // store 落盘失败：删除刚写入的孤儿凭据，避免无记录的 keyring 残留
+                    if credential.is_some() {
+                        self.credentials.delete(&reference).ok();
+                    }
+                    result
+                        .errors
+                        .push(format!("保存 {entry_name} 失败: {error:#}"));
+                    result.skipped += 1;
+                }
+            }
         }
         Ok(result)
     }
@@ -1000,6 +1057,9 @@ pub struct ImportResult {
     pub imported: usize,
     pub id_conflicts: usize,
     pub skipped: usize,
+    /// per-entry 错误明细（凭据写入/落盘失败），前端可展示（复审低危 2）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 /// 写入器共享的常量与助手（供各 writer 使用，避免重复定义）。

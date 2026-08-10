@@ -66,13 +66,17 @@ assert.ok(
 
 // ---------------------------------------------------------------- 2. 安全底线
 
-// store JSON 结构不得包含明文 key 字段名
-for (const file of [PROVIDERS_MOD, STORE]) {
-  assert.doesNotMatch(
-    file,
-    /"api_key"\s*:\s*String/,
-    'store 结构不得有明文 api_key 字段'
+// store JSON 结构不得包含明文 key 字段名。旧断言带 JSON 引号（"api_key"）
+// 对 Rust 源码永不命中，是空断言假绿（复审测试建议）——改为检查 Rust 字段
+// 模式，且只锚定持久化结构（ProviderRecord 定义段 + 会话 store 文件；
+// ProviderTarget 含明文 key 是 CLI 配置语义，不在此范围）。
+{
+  const record_def = PROVIDERS_MOD.slice(
+    PROVIDERS_MOD.indexOf('pub struct ProviderRecord'),
+    PROVIDERS_MOD.indexOf('pub struct ProviderRecord') + 800
   );
+  assert.doesNotMatch(record_def, /api_key/, 'ProviderRecord 不得有明文 api_key 字段');
+  assert.doesNotMatch(STORE, /api_key/, '会话 store 不得有明文 api_key 字段');
 }
 assert.ok(
   PROVIDERS_MOD.includes('credential: Option<CredentialReference>'),
@@ -652,12 +656,14 @@ assert.match(
   'kimi 中转激活时必须过滤模型列表（仅保留受管 pv-* 条目）'
 );
 
-// Anthropic 端点仅 Claude 使用：不得以 wireLocked 判定（codex 也锁 wire，
-// 但走 OpenAI 兼容端点，否则会错填 api.deepseek.com/anthropic）
+// Anthropic 端点仅 claude 或 Anthropic 协议预设使用：不得以 wireLocked 判定
+// （codex 也锁 wire，但走 OpenAI 兼容端点，否则会错填 api.deepseek.com/anthropic）。
+// 锚定完整表达式（含 `|| preset.wireApi === 'anthropic'` 子句），避免子串
+// 匹配假绿（复审测试建议）。
 assert.match(
   PROVIDER_FORM,
-  /useAnthropicEndpoint = agent === 'claude'/,
-  'Anthropic 端点判定必须仅限 claude（不得用 wireLocked）'
+  /useAnthropicEndpoint = agent === 'claude' \|\| preset\.wireApi === 'anthropic'/,
+  'Anthropic 端点判定必须仅限 claude 或 Anthropic 协议预设（不得用 wireLocked）'
 );
 
 // codex 记录归一 openai + 徽标如实显示 Responses（不得误标 Anthropic 兼容）

@@ -430,8 +430,9 @@ export function ProvidersSection({ t, isDark }) {
       // 结束态保留展示（不自动收起）：关设置窗口重开仍能看到结果。
       setInstallPhase('done');
     } catch (e) {
-      // 后端把取消写成失败退出；这里按语义收口为「已取消」，不重复报红错。
-      if (String(e).includes('已取消')) {
+      // 后端把取消写成失败退出；这里按结构化标记收口为「已取消」，不重复报
+      // 红错（不依赖中文文案子串，复审低危 5）。
+      if (String(e).includes('install_cancelled')) {
         setInstallPhase('cancelled');
       } else {
         setInstallPhase('failed');
@@ -1022,11 +1023,16 @@ export function ProvidersSection({ t, isDark }) {
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setImportOpen(false)}>
           <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}>
             <h3 className="text-[15px] font-semibold">{copy.import}</h3>
+            {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}
+            <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed">
+              <span className="font-semibold">{copy.importWarningTitle}</span>
+              <span className="opacity-70"> — {copy.importWarningDesc}</span>
+            </div>
             <textarea
               data-testid="acp-provider-import-json"
               value={importJson}
               onChange={event => setImportJson(event.target.value)}
-              placeholder='[{ "name": ..., "baseUrl": ..., "apiKey": ... }]'
+              placeholder='[{ "name": "...", "baseUrl": "...", "apiKey": "..." }]'
               className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
             />
             <div className="mt-4 flex justify-end gap-2">

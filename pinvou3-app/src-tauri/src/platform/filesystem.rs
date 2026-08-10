@@ -6,20 +6,18 @@ pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) 
     replace_file_atomically_impl(tmp, target, backup)
 }
 
-/// Unix 上把文件权限收紧为 0600（写入含明文密钥的 CLI 配置时防止同机
-/// 其他用户可读，默认 umask 0644 不够）；Windows 无 POSIX 权限概念，no-op。
-/// best-effort：不支持权限语义的文件系统返回错误，由调用方决定是否忽略。
-pub(crate) fn restrict_secret_permissions(path: &Path) -> io::Result<()> {
+/// 以 0600 权限创建（或截断）文件：写入含明文密钥的 CLI 配置时**直接**以
+/// 0600 创建，避免「先按默认 umask 0644 写、再收紧」的暴露窗口（复审低危 4）；
+/// Windows 无 POSIX 权限概念，忽略权限位。
+pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    options.open(path)
 }
 
 #[cfg(windows)]

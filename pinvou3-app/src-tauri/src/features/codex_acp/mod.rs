@@ -755,6 +755,10 @@ fn code_native_workspace_info(
     })
 }
 
+/// 安装已取消的结构化错误标记：前端按它收口「已取消」阶段，不依赖中文
+/// 文案子串匹配（复审低危 5）。
+pub(crate) static INSTALL_CANCELLED_MARKER: &str = "install_cancelled:";
+
 #[derive(Clone)]
 pub struct AcpPool {
     app: AppHandle,
@@ -1747,7 +1751,10 @@ impl AcpPool {
             }
             // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
             if install_cancelled.lock().remove(&backend) {
-                bail!("{} 安装已取消", backend.display_name());
+                bail!(
+                    "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+                    backend.display_name()
+                );
             }
             let stderr = String::from_utf8_lossy(&output.stderr);
             let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
@@ -1771,7 +1778,7 @@ impl AcpPool {
                 diagnostics::write(&operation_id, "homebrew:failed", &detail);
                 // 用户主动取消不是错误：不写 status.error，前端以「已取消」阶段
                 // 与通知收口，避免红错区重复显示。
-                if !detail.contains("安装已取消") {
+                if !detail.contains(INSTALL_CANCELLED_MARKER) {
                     self.runtime_errors.set(
                         backend,
                         format!(
@@ -2047,7 +2054,7 @@ impl AcpPool {
                 diagnostics::write(&operation_id, "npm:failed", &detail);
                 // 用户主动取消不是错误：不写 status.error，前端以「已取消」阶段
                 // 与通知收口，避免红错区重复显示。
-                if !detail.contains("安装已取消") {
+                if !detail.contains(INSTALL_CANCELLED_MARKER) {
                     self.runtime_errors.set(backend, detail);
                 }
                 Err(error)
@@ -2166,7 +2173,7 @@ impl AcpPool {
                 diagnostics::write(&operation_id, "script:failed", &detail);
                 // 用户主动取消不是错误：不写 status.error，前端以「已取消」阶段
                 // 与通知收口，避免红错区重复显示。
-                if !detail.contains("安装已取消") {
+                if !detail.contains(INSTALL_CANCELLED_MARKER) {
                     self.runtime_errors.set(backend, detail);
                 }
                 Err(error)
@@ -2604,9 +2611,10 @@ impl AcpPool {
         Ok(status)
     }
 
-    /// 官方登出：运行 CLI 的登出子命令（codex `logout` / claude `auth logout`）。
+    /// 官方登出：运行 CLI 的登出子命令（codex `logout` / claude `auth logout` /
+    /// kimi `provider remove managed:kimi-code`——已实测等效登出，见 lifecycle.rs）。
     /// 不重启会话：中转会话不受影响；官方登录态的会话在下次 spawn 时会按
-    /// 未认证处理。Kimi CLI 没有非交互登出（仅 TUI `/logout`），明确报错。
+    /// 未认证处理。
     pub async fn logout_acp_agent(&self, agent: &str) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         if !backend.is_acp() {
@@ -5184,7 +5192,10 @@ async fn run_official_install_script(
     if !status.success() {
         // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
         if install_cancelled.lock().remove(&backend) {
-            bail!("{} 安装已取消", backend.display_name());
+            bail!(
+                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+                backend.display_name()
+            );
         }
         let stderr_tail = output_tail(&stderr, 4);
         // stderr 无有效内容（空或仅系统噪音如「重试」）时给出可操作提示：
@@ -5287,7 +5298,10 @@ async fn run_npm_global_upgrade(
     if !status.success() {
         // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
         if install_cancelled.lock().remove(&backend) {
-            bail!("{} 安装已取消", backend.display_name());
+            bail!(
+                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+                backend.display_name()
+            );
         }
         bail!(
             "npm 全局升级 {} 退出: {status}；stderr: {}",
@@ -5667,7 +5681,14 @@ mod tests {
 
     #[test]
     fn code_native_workspace_info_returns_temporary_execution_workspace() {
-        let session_store = crate::features::sessions::SessionStore::boot().expect("session store");
+        // 隔离目录，不触碰真实 ~/.pinvou3（评审测试建议）
+        let boot_root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-info-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&boot_root);
+        let session_store = crate::features::sessions::SessionStore::boot_at_test_dir(&boot_root)
+            .expect("session store");
         let record = SessionAgentRecord {
             mode: SessionMode::Code,
             ..SessionAgentRecord::default()
@@ -5684,11 +5705,19 @@ mod tests {
                 .execution
                 .to_string_lossy()
         );
+        let _ = std::fs::remove_dir_all(&boot_root);
     }
 
     #[test]
     fn code_native_workspace_info_project_branch_tracks_directory_availability() {
-        let session_store = crate::features::sessions::SessionStore::boot().expect("session store");
+        // 隔离目录，不触碰真实 ~/.pinvou3（评审测试建议）
+        let boot_root = std::env::temp_dir().join(format!(
+            "pinvou3-code-native-project-store-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&boot_root);
+        let session_store = crate::features::sessions::SessionStore::boot_at_test_dir(&boot_root)
+            .expect("session store");
         let root = std::env::temp_dir().join(format!(
             "pinvou3-code-native-project-info-test-{}",
             std::process::id()
@@ -5723,6 +5752,7 @@ mod tests {
         assert!(
             code_native_workspace_info(&session_store, "code-native-proj-test", &broken).is_err()
         );
+        let _ = std::fs::remove_dir_all(&boot_root);
     }
 
     #[test]

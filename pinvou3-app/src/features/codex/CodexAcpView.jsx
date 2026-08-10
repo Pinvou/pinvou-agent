@@ -1663,15 +1663,21 @@ export function CodexAcpView({
   const codexRelayModel = activeAgentId === 'codex' && relayProviderRecord && relayProviderRecord.model
     ? relayProviderRecord.model
     : null;
+  // Codex 中转激活但 Provider 未配置模型：官方模型全量展示会让用户选中后走
+  // 中转 404（复审低危 1）——列表置空并提示先回设置填写模型。
+  const codexRelayNoModel = activeAgentId === 'codex' && Boolean(relayProviderRecord) && !codexRelayModel;
   const visibleFallbackModels = kimiRelayActive
     ? controls.fallbackModels.filter(model => String(model.id).startsWith('pv-'))
     : codexRelayModel
       ? controls.fallbackModels.filter(model => String(model.id) === codexRelayModel)
-      : controls.fallbackModels;
+      : codexRelayNoModel
+        ? []
+        : controls.fallbackModels;
   const modelConfigChoices = option => {
     const choices = configChoices(option);
     if (kimiRelayActive) return choices.filter(choice => String(choice.value).startsWith('pv-'));
     if (codexRelayModel) return choices.filter(choice => String(choice.value) === codexRelayModel);
+    if (codexRelayNoModel) return [];
     return choices;
   };
   const sessionProviderChoices = [
@@ -3277,6 +3283,9 @@ export function CodexAcpView({
                   )}
                   {composerControlsVisible && !isNativeAgent && (
                     <div data-testid="codex-composer-configs" className="flex flex-wrap items-center gap-2">
+                      {codexRelayNoModel && (
+                        <span className="text-[11px] opacity-60">{codexCopy.relayNoModelHint}</span>
+                      )}
                       {visibleFallbackModels.length > 0 && (
                         <CodexComposerConfigSelect
                           id="model"

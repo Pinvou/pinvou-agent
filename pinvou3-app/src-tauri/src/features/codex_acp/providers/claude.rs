@@ -63,6 +63,10 @@ impl AgentConfigWriter for ClaudeConfigWriter {
         );
         if let Some(key) = target.api_key.as_deref() {
             env_obj.insert(ENV_AUTH_TOKEN.to_string(), json!(key));
+        } else {
+            // api_key 为 None（编辑生效中 Provider 删除 key）时删除受管旧值，
+            // 否则旧 key 残留并继续发给新 base_url（复审 F1 高危）。
+            env_obj.remove(ENV_AUTH_TOKEN);
         }
         // 模型与当前 Provider 绑定：目标未指定模型时清除旧值，避免上一个
         // 受管 Provider 的 ANTHROPIC_MODEL 残留导致请求 404/400。
@@ -237,6 +241,32 @@ mod tests {
         let config: Value =
             serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
         assert!(config.get("env").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_without_key_removes_stale_auth_token() {
+        let dir = tmp_dir();
+        let writer = ClaudeConfigWriter::new(&dir);
+        writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
+        // 编辑生效中 Provider 删除 key（api_key=None）：受管 AUTH_TOKEN 必须
+        // 清除，否则旧 key 残留并继续发给新 base_url（复审 F1 高危）。
+        let mut no_key = target("pv-aaaaaaaaaaaa");
+        no_key.api_key = None;
+        no_key.base_url = "https://api.example.com/v2/anthropic".into();
+        writer.apply(&no_key).unwrap();
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert!(
+            config["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "删除 key 后 AUTH_TOKEN 不应残留"
+        );
+        assert_eq!(
+            config["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.example.com/v2/anthropic"
+        );
+        // effective 同样不报 relay 激活（relay_active 依赖 AUTH_TOKEN 存在）
+        assert!(!writer.effective().unwrap().relay_active);
         let _ = fs::remove_dir_all(&dir);
     }
 

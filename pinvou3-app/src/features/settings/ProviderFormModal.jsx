@@ -1,7 +1,7 @@
 // ACP Provider（第三方中转）新增/编辑弹窗。照 ModelFormModal 范式：
 // 预设填充 + 掩码 key（keep/replace/delete）+ 草稿-保存。
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -133,6 +133,9 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
   const [modelSlots, setModelSlots] = useState(() => ({ ...(initial?.modelSlots || {}) }));
   const [apiKey, setApiKey] = useState('');
   const [keyLoaded, setKeyLoaded] = useState(false);
+  // 用户在密钥框操作过（输入/清空）后，迟到的回填不得覆盖用户输入
+  // （慢速凭据存储下 backfill 晚于用户操作的竞态，复审 F4）。
+  const apiKeyTouchedRef = useRef(false);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -178,7 +181,9 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
     invokeTauri('get_acp_provider_key', { agent, providerId: initial.id })
       .then(key => {
         if (!alive) return;
-        if (key) setApiKey(key);
+        // 仅当字段仍为空且用户未手动操作过才回填：否则「清空=删除」意图
+        // 会被迟到的旧 key 吞成 keep（复审 F4）。
+        if (key && !apiKeyTouchedRef.current) setApiKey(key);
         setKeyLoaded(true);
       })
       // 回填失败**不**置 keyLoaded：保持 false → save 时按「保留」处理，
@@ -468,7 +473,10 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
               type="text"
               style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
               value={apiKey}
-              onChange={event => setApiKey(event.target.value)}
+              onChange={event => {
+                apiKeyTouchedRef.current = true;
+                setApiKey(event.target.value);
+              }}
               placeholder={copy.apiKeyPlaceholder}
               autoComplete="off"
               autoCorrect="off"
