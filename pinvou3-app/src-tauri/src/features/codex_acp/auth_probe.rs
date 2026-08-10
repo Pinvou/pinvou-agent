@@ -202,7 +202,7 @@ fn kimi_authenticated() -> bool {
 
 /// OAuth credentials alone are insufficient: the official Kimi login also
 /// needs to persist a default model that resolves to a usable provider.
-pub(super) fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
+pub(crate) fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
     let Ok(config) = raw.parse::<toml::Value>() else {
         return false;
     };
