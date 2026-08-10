@@ -1676,6 +1676,348 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
   );
 }
 
+async function completedTurnUsesCommittedRevisionAsAuthority() {
+  var harness = createBridgeHarness(null, {
+    // A broken implementation exhausts all fallback retries. Keep that path
+    // deterministic and fast instead of adding more than a second to the test.
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-committed-revision-authority";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "stream presentation",
+  });
+
+  // Native/provider tools may normalize the terminal assistant block before
+  // persistence. The committed revision, rather than byte-identical streamed
+  // presentation, proves which durable snapshot belongs to this turn.
+  durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-after-turn",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
+    }),
+    "the committed revision must allow canonical hydration when streamed presentation differs"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a matching committed revision must not produce a false unsynced warning"
+  );
+
+  [tauriBridge, webBridge].forEach(function (source) {
+    assert.ok(source.includes('remoteCommittedRevision = revision'),
+      "desktop and Web bridges must both retain the committed turn revision");
+    assert.ok(source.includes('savedRevision !== expectedCommittedRevision'),
+      "desktop and Web bridges must both reconcile by committed revision");
+  });
+}
+
+async function completedTurnKeepsWarningWhenRevisionMismatches() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-revision-mismatch-warning";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision mismatch", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-stale",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // 后端提交的 revision 与快照携带的 revision 不一致:持久化快照不属于本轮,
+  // 必须保留同步警告,不得假装收敛。
+  durable = {
+    metadata: { id: sessionId, title: "Revision mismatch", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-different-turn",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  // 负向路径会耗尽 6 次重试:用 setImmediate 加速的轮次等待对账终态。
+  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a mismatched committed revision must keep the unsynced warning"
+  );
+}
+
+async function completedTurnAdoptsLateCommittedRevision() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-late-committed-revision";
+  var durable = {
+    metadata: { id: sessionId, title: "Late committed", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // Relay replay 可能在 chat:done 之后才送达 commit marker:对账重试窗口内
+  // 应拾取迟到的 revision 并收敛,而不是停留在较弱的展示身份回退上。
+  durable = {
+    metadata: { id: sessionId, title: "Late committed", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-after-done",
+  };
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-done",
+  });
+  for (var i = 0; i < 8; i++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
+    }),
+    "a commit marker delivered after done must be adopted during retry"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "adopting the late committed revision must not warn"
+  );
+}
+
+async function completedTurnFallsBackWhenSnapshotLacksRevision() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-snapshot-no-revision";
+  var durable = {
+    metadata: { id: sessionId, title: "No revision", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "final answer" });
+
+  // 旧契约/旧后端快照不含 transcript_revision 字段:即使已收到 committed 事件,
+  // 也不能因「期望非空但快照无字段」而必然失败,应回退到消息身份校验。
+  durable = {
+    metadata: { id: sessionId, title: "No revision", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+    ],
+    artifacts: [],
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("final answer");
+    }),
+    "a snapshot without a revision field must fall back to identity reconciliation"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "the fallback path must not produce a false unsynced warning"
+  );
+}
+
+async function completedTurnAdoptsRevisionBumpDuringRetry() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-revision-bump-during-retry";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision bump", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // 回合 1 提交 revision-after-turn 并完成;但此刻持久化快照仍停在
+  // revision-before-turn(模拟落盘延迟),reconcile 第一次尝试必然失败。
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+
+  // 在回合 1 的 reconcile 重试窗口内,回合 2 已提交并落盘:快照推进到
+  // revision-2,committed 事件也到达。每 attempt 重读 live revision 的修复
+  // 应收敛;若只在期望为空时重读(旧实现),6 次重试会一直拿 revision-after-turn
+  // 比较 revision-2 → 全部失败 → 误报「权威记录暂未同步」。
+  durable = {
+    metadata: { id: sessionId, title: "Revision bump", message_count: 4 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical answer 1" }] },
+      { role: "user", content: [{ type: "text", text: "followup" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical answer 2" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-2",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-2",
+  });
+  for (var bumpTick = 0; bumpTick < 12; bumpTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical answer 2");
+    }),
+    "a revision bump during the retry window must be adopted by the running reconcile"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a revision bump during retry must not produce a false unsynced warning"
+  );
+}
+
+async function editLastTurnBlockedWhileAuthorityReconcilePending() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-blocked-unsynced";
+  var durable = {
+    metadata: { id: sessionId, title: "Edit blocked", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream answer" });
+
+  // 快照 revision 与 committed 不匹配:权威对账必然失败,remoteTurnActive
+  // 保持 true。此时编辑应被拦截(remoteTurnSyncing),而不是清掉 revision
+  // 继续编辑——否则陈旧 committed 事件会在编辑中重武装旧 revision。
+  durable = {
+    metadata: { id: sessionId, title: "Edit blocked", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-stale",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  // 负向路径耗尽 6 次重试:setImmediate 加速的轮次等待对账终态。
+  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+
+  var editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  await bridge.interaction.editLastTurn("edited question");
+  var editCallsAfter = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  assert.strictEqual(
+    editCallsAfter, editCallsBefore,
+    "editing must be blocked while the authority reconcile is still pending"
+  );
+
+  var blockedState = bridge.state.get("chat");
+  assert.ok(
+    blockedState.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("该会话仍在同步另一端完成的回合");
+    }),
+    "a blocked edit must surface the sync-pending notice"
+  );
+}
+
 async function remoteAcceptPlanConvergesAcrossClients() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -3795,6 +4137,12 @@ Promise.resolve()
   .then(remoteInterruptedTurnKeepsItsDisplayPosition)
   .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
+  .then(completedTurnUsesCommittedRevisionAsAuthority)
+  .then(completedTurnKeepsWarningWhenRevisionMismatches)
+  .then(completedTurnAdoptsLateCommittedRevision)
+  .then(completedTurnFallsBackWhenSnapshotLacksRevision)
+  .then(completedTurnAdoptsRevisionBumpDuringRetry)
+  .then(editLastTurnBlockedWhileAuthorityReconcilePending)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)
