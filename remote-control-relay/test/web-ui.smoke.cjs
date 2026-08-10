@@ -515,6 +515,11 @@ async function main() {
     };
     const rowNames = () => Array.from(document.querySelectorAll('.pinvou-host-picker-name'))
       .map(node => node.textContent);
+    // Home 根入口的文案来自 main.jsx 注入的 PinvouHostFilePickerStrings(shared/i18n.js
+    // uiPlatformMisc.hostFilePicker)。断言必须从该对象取值,不得硬编码某语言文案,
+    // 否则会与页面默认语言策略或 picker 内 fallback 文本隐性耦合。
+    const homeLabel = (window.PinvouHostFilePickerStrings || {}).home;
+    if (!homeLabel) throw new Error('host picker strings missing localized home label');
     const pickerPromise = window.PinvouHostFilePicker.open({ multiple: true });
     await waitFor(() => document.querySelector('.pinvou-host-picker-root-button:not(:disabled)'));
     document.querySelector('.pinvou-host-picker-root-button').click();
@@ -530,13 +535,16 @@ async function main() {
     const rootsAfterUp = rowNames();
     document.querySelector('.pinvou-host-picker-actions .pinvou-host-picker-button').click();
     await pickerPromise;
-    return { rootNames, driveNames, rootsAfterUp };
+    return { homeLabel, rootNames, driveNames, rootsAfterUp };
   });
   record('远程文件选择器动态列出盘符，盘根目录上一级返回此电脑',
-    ['用户目录', 'C:', 'D:'].every(name => hostPickerNavigation.rootNames.includes(name))
+    !!hostPickerNavigation.homeLabel
+      && hostPickerNavigation.rootNames.includes(hostPickerNavigation.homeLabel)
+      && ['C:', 'D:'].every(name => hostPickerNavigation.rootNames.includes(name))
       && hostPickerNavigation.driveNames.includes('report.txt')
       && !hostPickerNavigation.driveNames.includes('C:')
-      && ['用户目录', 'C:', 'D:'].every(name => hostPickerNavigation.rootsAfterUp.includes(name)),
+      && hostPickerNavigation.rootsAfterUp.includes(hostPickerNavigation.homeLabel)
+      && ['C:', 'D:'].every(name => hostPickerNavigation.rootsAfterUp.includes(name)),
     JSON.stringify(hostPickerNavigation));
 
   const joinFrames = browserWebSocketFrames.filter(message => message.type === 'web_client_join');
