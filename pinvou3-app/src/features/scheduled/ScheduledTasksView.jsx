@@ -1071,6 +1071,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
               <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
               <div className="flex items-center gap-1.5">
+                <ScheduledSelect value={editor.repeat} options={repeatOptions}
+                  onChange={value => onEdit('repeat', value)}
+                  testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
                 <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
               </div>
             </div>
