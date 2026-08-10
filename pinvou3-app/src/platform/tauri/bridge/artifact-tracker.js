@@ -103,7 +103,7 @@
     if (state.artifacts.length !== before) notify();
   }
   // 自动续卡支撑:这个文件之前是否被 present_artifact 展示过(同 basename)。
-  // 已 present 过 = 用户已确认是成品,后续 write_file/append_file 修改它就自动
+  // 已 present 过 = 用户已确认是成品,后续 File.write/File.edit 修改它就自动
   // 再弹一张成品卡 —— 不靠 agent 第二次主动调(Qwen3.6 迭代后常漏)。信息直接
   // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
   // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
@@ -144,13 +144,26 @@
       }
     } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
   }
-  // write_file / append_file 的 args 里提取产物路径
+  // File.write / File.edit 的 args 里提取产物路径
   function extractArtifactPath(args) {
     if (!args) return null;
     if (typeof args === "string") {
       try { args = JSON.parse(args); } catch (e) { return null; }
     }
     return args.path || args.file_path || args.filename || null;
+  }
+
+  function fileMutationAction(name, args) {
+    if (typeof args === "string") {
+      try { args = JSON.parse(args); } catch (_) { args = null; }
+    }
+    if (String(name || "").toLowerCase() === "file") {
+      var action = String(args && args.action || "").toLowerCase();
+      return action === "write" || action === "edit" ? action : null;
+    }
+    if (name === "write_file") return "write";
+    if (name === "edit_file") return "edit";
+    return null;
   }
 
 
@@ -214,6 +227,7 @@
       findPresentedArtifact: findPresentedArtifact,
       reconcileArtifacts: reconcileArtifacts,
       extractArtifactPath: extractArtifactPath,
+      fileMutationAction: fileMutationAction,
       isPresentArtifactTool: isPresentArtifactTool,
       parseToolResultPayload: parseToolResultPayload,
       artifactPathFromToolOutput: artifactPathFromToolOutput,

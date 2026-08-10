@@ -3752,8 +3752,8 @@ async function presentationReconciliationUsesStableEventIdentity() {
   var writePayload = {
     session_id: sessionId,
     id: "tool-write-snake",
-    name: "write_file",
-    args: { path: "snake-game.html", content: "<!doctype html>" },
+    name: "File",
+    args: { action: "write", path: "snake-game.html", content: "<!doctype html>" },
   };
   harness.emit("chat:tool_start", writePayload);
   harness.emit("chat:tool_start", writePayload);
@@ -3800,7 +3800,7 @@ async function presentationReconciliationUsesStableEventIdentity() {
     messages: [
       { role: "user", content: [{ type: "text", text: "写一个贪吃蛇游戏" }] },
       { role: "assistant", content: [{
-        type: "tool_use", id: writePayload.id, name: "write_file", input: writePayload.args,
+        type: "tool_use", id: writePayload.id, name: "File", input: writePayload.args,
       }] },
       { role: "user", content: [{
         type: "tool_result", tool_use_id: writePayload.id, content: "Wrote snake-game.html",

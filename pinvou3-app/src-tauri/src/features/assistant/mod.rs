@@ -10,4 +10,5 @@ pub mod session_policy;
 pub(crate) mod shell_output;
 pub(crate) mod skill_materialization;
 pub(crate) mod timing;
+pub(crate) mod tool_policy;
 pub(crate) mod turn_shell_tasks;

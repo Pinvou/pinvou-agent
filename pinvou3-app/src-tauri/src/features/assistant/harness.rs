@@ -125,6 +125,8 @@ pub enum HarnessAction {
         role_name: String,
         prompt: String,
         allowed_tools: Vec<String>,
+        /// 角色在 registry/动态差事中声明的具体产物文件。
+        write_files: Vec<PathBuf>,
         max_steps: Option<u32>,
         /// [pinvou3-fork] 结构化产出 schema(registry.output_schema)。`Some` 时
         /// SubAgent 会被强制走 submit_output 提交(见 docs/SDAN/12-structured-output.md)。
@@ -164,6 +166,7 @@ pub struct SubAgentTask {
     pub outputs: Vec<String>,
     pub prompt: String,
     pub allowed_tools: Vec<String>,
+    pub write_files: Vec<PathBuf>,
     pub max_steps: Option<u32>,
     pub output_schema: Option<serde_json::Value>,
     pub expects_file_output: bool,
@@ -2002,6 +2005,44 @@ fn build_output_section(role_id: &str, project: &std::path::Path) -> String {
     build_output_section_from_agent(agent, project)
 }
 
+fn declared_output_files(project: &Path, role_id: &str) -> Vec<PathBuf> {
+    if let Some((bu, seq)) = role_id.split_once('~') {
+        return vec![project.join(format!("deliverables/{bu}_{seq}.md"))];
+    }
+
+    let reg = read_registry_for(&workflow_of_project(project));
+    reg.get("agents")
+        .and_then(|agents| agents.get(role_id))
+        .and_then(|agent| agent.get("outputs"))
+        .and_then(|outputs| outputs.as_array())
+        .map(|outputs| {
+            outputs
+                .iter()
+                .filter_map(|output| output.as_str())
+                .filter(|output| !output.contains('*'))
+                .map(|output| project.join(output))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn task_output_files(project: &Path, base_role: &str, task: &SchedulerTask) -> Vec<PathBuf> {
+    if task.outputs.is_empty() {
+        return vec![project.join(page_output_rel(base_role, task.page))];
+    }
+    task.outputs
+        .iter()
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                project.join(path)
+            }
+        })
+        .collect()
+}
+
 /// 附加段 = 品悟交代句（首次 dispatch）或修复指令（gate/review/用户拒绝重做）。
 fn build_spawn_prompt(
     project: &Path,
@@ -2392,12 +2433,14 @@ pub fn respawn_page(workspace: &Path, base_role: &str, page: u32) -> Option<SubA
         "\n\n## ⚠️重试提醒\n上一次本页未写成(很可能读文件太多或超时)。请【直接】把产物写出来,尽快调 write_file,**不要反复 read_file**。";
     let addendum = format!("{}{}", t.addendum, retry_note);
     let prompt = build_spawn_prompt(&project, &scenario, base_role, &addendum, layout_opt).ok()?;
+    let write_files = task_output_files(&project, base_role, &t);
     Some(SubAgentTask {
         agent_role: t.task_id, // "slide_writer#p07"
         page: t.page,
         outputs: t.outputs,
         prompt,
         allowed_tools,
+        write_files,
         max_steps,
         output_schema,
         expects_file_output,
@@ -2442,12 +2485,19 @@ fn spawn_agent_or_error(
             "agent_registry.json 缺角色 {role_id} 的 tools 白名单，无法 spawn"
         ));
     }
+    let write_files = declared_output_files(project, role_id);
+    if write_files.is_empty() {
+        return HarnessAction::Error(format!(
+            "角色 {role_id} 未声明具体产物文件，无法建立有界写入范围"
+        ));
+    }
     match build_spawn_prompt(project, scenario, role_id, addendum, None) {
         Ok(prompt) => HarnessAction::SpawnAgent {
             role_id: role_id.to_string(),
             role_name: role_id.to_string(),
             prompt,
             allowed_tools,
+            write_files,
             max_steps,
             output_schema,
             expects_file_output,
@@ -2548,6 +2598,7 @@ fn build_batch_action(
             outputs: t.outputs.clone(),
             prompt,
             allowed_tools: allowed_tools.clone(),
+            write_files: task_output_files(project, base_role, t),
             max_steps,
             output_schema: output_schema.clone(),
             expects_file_output,
@@ -3008,6 +3059,15 @@ mod tests {
 
         assert!(section.contains(&project.join("HTML_Deck/slides").display().to_string()));
         assert!(section.contains("*.html"));
+    }
+
+    #[test]
+    fn forkguard_dynamic_workflow_role_claims_only_its_declared_output() {
+        let project = std::env::temp_dir().join("wf-claim-test");
+        assert_eq!(
+            declared_output_files(&project, "bingbu~1"),
+            [project.join("deliverables/bingbu_1.md")]
+        );
     }
 
     fn gf(rollback_scope: &str, rule: &str, violation_type: &str) -> GateFinding {

@@ -91,7 +91,7 @@
     if (!bn) return false;
     for (var i = state.chatItems.length - 1; i >= 0; i--) {
       var it = state.chatItems[i];
-      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
+      if (it.type === "tool" && context.fileMutationAction(it.name, it.args)) {
         var ap = extractArtifactPath(it.args);
         if (ap && basename(ap) === bn) return false;
       }

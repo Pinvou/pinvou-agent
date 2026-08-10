@@ -1,14 +1,14 @@
 //! 会话名册（Roster）装配。
 //!
 //! 名册由底座从会话工作区的 `.codewhale/agents/*.toml` 加载（见
-//! `fleet::roster::FleetRoster::load`），本模块的职责就是把文件摆对：把
+//! `FleetRoster::load`），本模块的职责就是把文件摆对：把
 //! 专家池中可执行的内置卡与用户自创卡装配成专家角色。角色文件只承载身份与人设，不定义
 //! 工具权限；子智能体的运行权限继承父会话 Plan / Yolo。完整人设只在某个 `profile` 真正
 //! 被派中后进入该子智能体提示词；主 agent 每轮只看到按当前任务匹配出的轻量候选名单。
 //! 谁来把这些文件交给底座（构造 EngineConfig）是 assistant 侧的事，本模块不碰引擎配置。
 
 fn roles_dir(workspace: &std::path::Path) -> std::path::PathBuf {
-    workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR)
+    workspace.join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR)
 }
 
 // ── 专家池入册 ────────────────────────────────────────────────────────────
@@ -433,7 +433,7 @@ mod tests {
 
         // 底座名册必须能真实解析这份 TOML——手拼字符串遇到卡片正文里的引号
         // 就会在这里现形。
-        let roster = deepseek_tui::fleet::roster::FleetRoster::load(
+        let roster = deepseek_tui::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
             &workspace,
         );

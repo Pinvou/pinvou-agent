@@ -290,7 +290,10 @@ impl From<ShellJobDetail> for ObservedJob {
         Self {
             task_id: detail.snapshot.id,
             status: detail.snapshot.status,
-            exit_code: detail.snapshot.exit_code,
+            exit_code: detail
+                .snapshot
+                .exit_code
+                .and_then(|code| i32::try_from(code).ok()),
             stdout: detail.stdout,
             stderr: detail.stderr,
             stdout_tail: detail.snapshot.stdout_tail,
