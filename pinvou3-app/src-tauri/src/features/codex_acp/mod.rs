@@ -2322,7 +2322,11 @@ impl AcpPool {
         self.providers.api_key(agent, provider_id)
     }
 
-    pub fn save_acp_provider(
+    /// 保存 Provider。若保存的是**生效中**的 Provider，配置已重写但运行中的
+    /// CLI 进程仍持旧配置（尤其 codex 的 key 在 spawn 时注入）；与 switch/
+    /// delete/official 一致重启该 Agent 会话，否则 UI「生效中」与实际进程
+    /// 不一致（复审 N2）。
+    pub async fn save_acp_provider(
         &self,
         agent: &str,
         provider_id: Option<&str>,
@@ -2335,7 +2339,8 @@ impl AcpPool {
         api_key: Option<String>,
         api_key_action: crate::platform::credential_store::CredentialEditAction,
     ) -> Result<ProviderRecord> {
-        self.providers.save(
+        let backend = AgentBackend::parse(Some(agent))?;
+        let record = self.providers.save(
             agent,
             provider_id,
             name,
@@ -2346,7 +2351,14 @@ impl AcpPool {
             wire_api,
             api_key,
             api_key_action,
-        )
+        )?;
+        // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
+        // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
+        if self.providers.store().current(agent).as_deref() == Some(record.id.as_str()) {
+            self.invalidate_cli_probe();
+            self.restart_agent_sessions(backend).await;
+        }
+        Ok(record)
     }
 
     /// 删除 Provider；若删除的是当前 Provider，自动恢复官方登录并重启 runtime。

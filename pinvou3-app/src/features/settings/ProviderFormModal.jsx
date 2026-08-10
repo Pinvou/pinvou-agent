@@ -257,14 +257,15 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
     setSaving(true);
     setError('');
     // key 语义（密码管理器范式，无选择器）：编辑时字段已回填真实 key——
-    // 清空 = 删除，改动 = 替换，原样 = 重写同值（无效果）。例外：编辑有
-    // key 但回填失败且字段仍为空 → 保留（防止读不到时误删）。
+    // 清空 = 删除，改动 = 替换，原样 = 重写同值（无效果）。例外：
+    // 编辑无已存密钥（hasCredential=false）或回填失败（keyLoaded=false）且
+    // 字段仍为空 → 走 keep（无操作），避免「清空无密钥」触发误导性删除确认。
     const trimmedKey = String(apiKey || '').trim();
     const apiKeyAction = !initial
       ? 'replace'
       : trimmedKey
         ? 'replace'
-        : (initial.hasCredential && !keyLoaded ? 'keep' : 'delete');
+        : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete');
     // 「清空 = 删除」会删掉已保存密钥：二次确认防误触。回填失败时
     // keyLoaded=false 恒走 keep，不会到这里。
     if (apiKeyAction === 'delete' && !window.confirm(copy.deleteKeyConfirm)) {

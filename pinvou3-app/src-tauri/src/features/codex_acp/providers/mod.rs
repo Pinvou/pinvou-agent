@@ -742,10 +742,13 @@ impl ProviderManager {
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
         // 编辑**生效中**的 Provider 必须同步重写 CLI 配置，否则 base_url/模型
-        // 不生效、生效区展示陈旧（评审中危项）。与 switch 同锁防交错。
+        // 不生效、生效区展示陈旧（评审中危项）。与 switch 同锁防交错；current
+        // 判定必须移入锁内（复审 N1）：否则「锁外判定 current==A → 并发 switch
+        // 完成（config=B, current=B）→ 本线程持锁 apply A」会留下「CLI 配置=A、
+        // store.current=B」的分裂态。
+        let lock = self.switch_lock(agent);
+        let _switch_guard = lock.lock();
         if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
-            let lock = self.switch_lock(agent);
-            let _switch_guard = lock.lock();
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;

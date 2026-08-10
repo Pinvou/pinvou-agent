@@ -20,7 +20,7 @@
 // nameKey: i18n 键（`uiAcpProviders` 下），展示名按当前语言查表；`name` 仅作
 // 缺失 key 时的兜底回退，不直接渲染。
 export const ACP_PROVIDER_PRESETS = [
-  { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
+  { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', baseUrlAnthropic: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
   { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
   { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"

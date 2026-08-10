@@ -36,7 +36,7 @@ pub fn list_acp_providers(
 }
 
 #[tauri::command]
-pub fn save_acp_provider(
+pub async fn save_acp_provider(
     agent: String,
     provider_id: Option<String>,
     name: String,
@@ -64,6 +64,7 @@ pub fn save_acp_provider(
             api_key,
             api_key_action,
         )
+        .await
         .map_err(|error| format!("保存 Provider 失败: {error:#}"))
 }
 
