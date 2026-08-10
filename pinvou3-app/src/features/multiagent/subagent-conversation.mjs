@@ -67,7 +67,12 @@ function isTaskInstruction(message, blocks) {
   return textBlocksOf(blocks).length > 0;
 }
 
-function toolItemType(name) {
+function toolItemType(name, input) {
+  // v0.9.5 文件写操作统一走 canonical `File` action=write/edit；read/list 不是写操作。
+  if (name === 'File') {
+    const action = String((input && input.action) || '').toLowerCase();
+    return action === 'write' || action === 'edit' ? 'file_change' : 'tool';
+  }
   if (FILE_CHANGE_TOOLS.has(name)) return 'file_change';
   if (COMMAND_TOOLS.has(name)) return 'command_execution';
   return 'tool';
@@ -134,7 +139,7 @@ export function projectSubagentTranscript({ messages, agent }) {
         });
       } else if (block.type === 'tool_use') {
         const name = String(block.name || '').trim();
-        const type = toolItemType(name);
+        const type = toolItemType(name, block.input);
         const item = {
           id: block.id || `tool-${items.length}`,
           type,

@@ -6682,7 +6682,7 @@
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
-    await sendMessage("请用 update_plan 工具输出完整方案,不要直接调写工具。");
+    await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
     patchItemById(itemId, { resolved: true }); notify();
