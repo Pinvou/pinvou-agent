@@ -39,4 +39,23 @@ for (const [lang, expected] of [['zh', '其他'], ['en', 'Other'], ['ja', 'そ�
   assert.match(block[0], new RegExp(`other:\\s*'${expected}'`), `dict.${lang}.uiToolRender.other must be '${expected}'`);
 }
 
-console.log('OK: Workflow 「其他」答案契约 (kind:other 高亮 + i18n label 三语)');
+// 4. cardBtnCls 必须使用 P3 新签名（单参数 variant），不得残留旧签名
+//    cardBtnCls(isDark, variant) —— 旧调用会把布尔值当 variant，静默丢失 primary 样式
+//    （评审 #168 曾指出 WorkflowView 16 处旧签名调用）。
+assert.doesNotMatch(
+  wf,
+  /cardBtnCls\(\s*isDark/,
+  "cardBtnCls 不得再用旧签名 cardBtnCls(isDark, ...)；应改为 cardBtnCls() / cardBtnCls('primary')",
+);
+assert.match(
+  wf,
+  /cardBtnCls\('primary'\)/,
+  "WorkflowView 主操作（提交/审批/启动/重新开始等）必须用 cardBtnCls('primary') 保持 primary 样式",
+);
+assert.match(
+  wf,
+  /cardBtnCls\(\)/,
+  "WorkflowView 次要操作必须用 cardBtnCls() 保持默认样式",
+);
+
+console.log('OK: Workflow 「其他」答案契约 + cardBtnCls 签名契约 (kind:other 高亮 + i18n label 三语 + P3 签名)');
