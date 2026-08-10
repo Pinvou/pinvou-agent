@@ -18,37 +18,39 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::core::session_mode::SessionMode;
+use crate::features::marketplace::ConnectorScope;
 
 /// 档案文件（编译内嵌；与 bundle 运行时资源无关，纯设计期配置）。
 const PROFILES_JSON: &str = include_str!("../../../resources/common/capability-profiles.json");
 
-/// 工具线档案：base + 差量。
-/// - `base`：继承的基础集（"default" = 底座隐藏常量的补集，即当前全部会话
-///   实际可见集）；
+/// 工具线档案：差量 + 模式固有隐藏。
 /// - `exclude`：在基础集上再藏（走 disallowed_tools 通道，spawn 初值 + 热刷，
-///   下轮生效）；
+///   下轮生效）——"该模式还**不想要**什么"（可变策略，可被用户开关覆盖）；
+/// - `extra_hidden`：模式固有隐藏（并入 disallowed_tools 通道）——"该模式
+///   **不可能有**什么"（模式身份的一部分，恒定不可被用户开关覆盖）；
 /// - `include`：从基础集之外放出（走 EngineConfig.hidden_tools 注入通道，
 ///   fork ②，respawn 生效——hidden 集 = 常量 − include）。
+/// 基础集语义由底座隐藏常量（`PINVOU3_HIDDEN_TOOLS`）承担，不再用 JSON 声明。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ToolsProfile {
-    #[serde(default = "default_base_name")]
-    pub base: String,
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub extra_hidden: Vec<String>,
     #[serde(default)]
     pub include: Vec<String>,
 }
 
-fn default_base_name() -> String {
-    "default".to_string()
-}
-
-/// 连接器线档案：设计期 scope 默认（v1 空——scope 选择仍由
-/// [`SessionPolicy::connector_scope`] 的 mode 映射承担，用户开关覆盖）。
+/// 连接器线档案：该模式的连接器 scope（决定禁用集取哪个 scope）。
+/// 缺省回退 Plain（与 `SessionMode` 缺省一致）。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ConnectorsProfile {
-    #[serde(default)]
-    pub scope_defaults: std::collections::HashMap<String, bool>,
+    #[serde(default = "default_connector_scope")]
+    pub scope: ConnectorScope,
+}
+
+fn default_connector_scope() -> ConnectorScope {
+    ConnectorScope::Plain
 }
 
 /// 单模式能力档案。
@@ -80,10 +82,7 @@ fn profiles() -> &'static Vec<CapabilityProfile> {
 
 /// 该模式的能力档案。缺省回退 plain 档案（与 `SessionPolicy` 缺省 Plain 一致）。
 pub fn profile_for(mode: SessionMode) -> &'static CapabilityProfile {
-    let wanted = match mode {
-        SessionMode::Plain => "plain",
-        SessionMode::Code => "code",
-    };
+    let wanted = mode.as_str();
     profiles()
         .iter()
         .find(|p| p.mode == wanted)

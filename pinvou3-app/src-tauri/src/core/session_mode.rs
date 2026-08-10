@@ -25,4 +25,11 @@ impl SessionMode {
     pub fn is_plain(&self) -> bool {
         matches!(self, Self::Plain)
     }
+    /// 档案条目的模式名（capability-profiles.json 的 `mode` 字段值）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Code => "code",
+        }
+    }
 }
