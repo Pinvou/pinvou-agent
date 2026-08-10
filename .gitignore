@@ -92,6 +92,3 @@ pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/node/
 pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/acp/
 pinvou3-app/src-tauri/resources/platforms/linux/codex-bridge/manifest.json
 pinvou3-app/src-tauri/resources/platforms/linux/.codex-bridge-build.*/
-
-# CodeWhale 工作流运行时数据（本地工具产物，不提交）
-.codewhale/

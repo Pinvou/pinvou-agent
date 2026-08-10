@@ -255,8 +255,10 @@ function workspaceDisplayName(path) {
               setCodexBusyBySession(current => ({ ...current, [sessionId]: true }));
             } else if (p.name === 'request_user_input') {
               setCodexWaitingInputBySession(current => ({ ...current, [sessionId]: false }));
+              // 只有提问收口才刷新会话列表；普通工具 tool_end 不动列表，避免
+              // 工具密集 turn 下每个 chat:tool_end 都触发一次 IPC + 重渲染。
+              refreshCodexSessions().catch(() => {});
             }
-            refreshCodexSessions().catch(() => {});
           }).then(unlisten => {
             if (disposed) unlisten();
             else unlisteners.push(unlisten);
