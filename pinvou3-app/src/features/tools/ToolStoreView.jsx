@@ -679,8 +679,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const isCard = viewMode === 'card';
       const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
       const showFeaturedCollections = isCard && searchQuery === '' && activeCategory === 'all';
-      // 连接器 tab 只显示"需连外部数据"的工具,排除本地类(PPT / 公文 / 文件管理大师——以技能卡呈现)
-      const LOCAL_TOOLS = ['pptx', 'gongwen', 'file-master'];
+      // 连接器 tab 只显示"需连外部数据"的工具,排除本地类(PPT / 公文——以技能卡呈现)
+      const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
       const [feishuConnected, setFeishuConnected] = useState(false);
       // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
