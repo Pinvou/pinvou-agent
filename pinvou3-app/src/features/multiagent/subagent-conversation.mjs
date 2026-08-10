@@ -48,6 +48,7 @@ const COMMAND_TOOLS = new Set([
   'exec_wait',
   'exec_interact',
   'task_shell_start',
+  'Bash',
 ]);
 const OPERATION_TYPES = new Set(['command_execution', 'file_change', 'tool']);
 

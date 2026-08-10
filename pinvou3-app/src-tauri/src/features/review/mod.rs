@@ -248,17 +248,21 @@ fn build_context(messages: &[Message], workspace: &Path) -> String {
     ctx
 }
 
-/// 最后被 write_file/edit_file/present_artifact 碰过的产物 path。**含 edit_file 是修
-/// bug 的关键**：旧逻辑只认 write_file，长 session 用 edit_file 迭代就看不到最新态。
+/// 最后被 write_file/edit_file/File.write/File.edit/present_artifact 碰过的产物 path。
+/// **含 edit 是修 bug 的关键**：旧逻辑只认 write_file，长 session 用 edit_file 迭代
+/// 就看不到最新态；v0.9.5 起写操作统一走 canonical `File` action=write/edit。
 fn last_artifact_path(messages: &[Message]) -> Option<String> {
     let mut last = None;
     for m in messages {
         for b in &m.content {
             if let ContentBlock::ToolUse { name, input, .. } = b {
-                if matches!(
-                    name.as_str(),
-                    "write_file" | "edit_file" | "present_artifact"
-                ) {
+                let is_file_write = (name.as_str() == "File"
+                    && input
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .is_some_and(|action| matches!(action, "write" | "edit")))
+                    || matches!(name.as_str(), "write_file" | "edit_file");
+                if is_file_write || name.as_str() == "present_artifact" {
                     if let Some(p) = input.get("path").and_then(Value::as_str) {
                         last = Some(p.to_string());
                     }

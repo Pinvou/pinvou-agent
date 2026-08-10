@@ -1837,8 +1837,10 @@ fn spawn_event_forwarder(
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
                     let (output, success, metadata) = tool_call_result_parts(result);
                     let background_task_id =
-                        if matches!(name.as_str(), "exec_shell" | "task_shell_start")
-                            && metadata
+                        if matches!(
+                            name.as_str(),
+                            "exec_shell" | "task_shell_start" | "Bash"
+                        ) && metadata
                                 .as_ref()
                                 .and_then(|value| value.get("status"))
                                 .and_then(serde_json::Value::as_str)

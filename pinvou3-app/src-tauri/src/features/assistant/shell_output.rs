@@ -95,7 +95,8 @@ impl ShellOutputMonitor {
     }
 
     pub(crate) fn tool_started(&self, tool_id: &str, name: &str, input: &Value) {
-        if !matches!(name, "exec_shell" | "task_shell_start") {
+        // v0.9.5 的 shell 工具面是 canonical `Bash` 家族；旧名仅旧会话回放出现。
+        if !matches!(name, "exec_shell" | "task_shell_start" | "Bash") {
             return;
         }
         let Some(command) = input.get("command").and_then(Value::as_str) else {

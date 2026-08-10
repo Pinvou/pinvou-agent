@@ -21,6 +21,7 @@ const isShellExecutionTool = name => [
   'task_shell_start',
   'task_shell_wait',
   'shell',
+  'Bash',
 ].includes(name);
 
 // P1-C：专家卡是桌面能力。Web 构建没有 multiAgent bridge（capability 关闭），
@@ -517,8 +518,8 @@ const ToolOutput = ({ item, isDark, t }) => {
         if (w && w.type === 'stock_quote' && !w.error) return <StockQuoteCard data={w} isDark={isDark} t={t} />;
       }
       if (isReceipt(out)) return <ReceiptBlock text={out} isDark={isDark} t={t} />;
-      if (item.name === 'list_dir') { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
-      else if (item.name === 'grep_files') { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} isDark={isDark} t={t} />; }
+      if (item.name === 'list_dir' || (item.name === 'File' && item.args?.action === 'list')) { const v = tryParseJson(out); if (Array.isArray(v)) return <ListDirView items={v} isDark={isDark} t={t} />; }
+      else if (item.name === 'grep_files' || (item.name === 'File' && item.args?.action === 'search_content')) { const v = tryParseJson(out); if (v && Array.isArray(v.matches)) return <GrepView data={v} isDark={isDark} t={t} />; }
       else if (isShellExecutionTool(item.name)) {
         const v = tryParseJson(out);
         if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} isDark={isDark} t={t} />;
