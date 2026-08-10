@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::io::Read;
 use std::io::BufReader;
 use std::process::Command;
 
@@ -136,8 +136,9 @@ fn run_brew(
 /// 必须可跨线程共享调用(`+ Sync`)。
 ///
 /// 除 `\n` 外也按 `\r` 切分:curl 式下载进度(`Downloading … 45%`)用 `\r` 在同一行
-/// 内覆盖刷新、中间不带 `\n`;只按 `\n` 切分会把所有百分比缓冲到该行结束才一次性
-/// 吐出。按 `\r` 切分能让每个百分比快照实时上报。
+/// 内覆盖刷新、中间不带 `\n`。按 chunk 读取并逐字节扫描两个分隔符,每个 `\r` 快照
+/// 一到就立刻回调,无需等行尾 `\n`;只按 `\n`(或先 read_until 再 split)会把所有
+/// 百分比缓冲到该行结束才一次性吐出,回调时机不是实时的。
 fn drain_lines<R: std::io::Read>(
     stream: R,
     progress: Option<&(dyn Fn(&str, usize, usize, Option<&str>) + Sync)>,
@@ -146,29 +147,44 @@ fn drain_lines<R: std::io::Read>(
     total: usize,
 ) -> String {
     let mut buf = String::new();
+    let mut pending: Vec<u8> = Vec::new();
     let mut reader = BufReader::new(stream);
-    let mut raw: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
     loop {
-        raw.clear();
-        let n = match reader.read_until(b'\n', &mut raw) {
+        let n = match reader.read(&mut chunk) {
             Ok(0) => break, // EOF
             Ok(n) => n,
             Err(_) => break, // 管道读取错误不可恢复,停止排空。
         };
-        // read_until 读到 `\n`(含)为止,行内的 `\r` 仍保留;末尾无 `\n` 的最后一段也照常处理。
-        let segment = String::from_utf8_lossy(&raw[..n]);
-        // 按 `\r` 切分:每段是 curl 进度的一个快照,或普通的一行输出。
-        for piece in segment.split('\r') {
-            let line = piece.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(report) = progress {
-                report(package, current, total, Some(line));
+        // 逐字节扫描:遇到 `\r` 或 `\n` 即切分上报当前累积段(跨 chunk 继续累积),
+        // 让 curl 式 `\r` 进度快照在到达时立即回调,而非缓冲到行尾批量 split。
+        for &b in &chunk[..n] {
+            if b == b'\r' || b == b'\n' {
+                let segment = String::from_utf8_lossy(&pending);
+                let line = segment.trim();
+                if !line.is_empty() {
+                    if let Some(report) = progress {
+                        report(package, current, total, Some(line));
+                    }
+                }
+                // 保留分隔符到累积文本(失败时按行汇总 stderr 用),再清空当前段。
+                buf.push_str(&segment);
+                buf.push(b as char);
+                pending.clear();
+            } else {
+                pending.push(b);
             }
         }
-        buf.push_str(&segment);
     }
+    // EOF 前的最后一段(无 `\r`/`\n` 结尾,如进程被 kill)也要上报并保留。
+    let segment = String::from_utf8_lossy(&pending);
+    let line = segment.trim();
+    if !line.is_empty() {
+        if let Some(report) = progress {
+            report(package, current, total, Some(line));
+        }
+    }
+    buf.push_str(&segment);
     buf
 }
 
@@ -318,6 +334,45 @@ mod tests {
                 "Downloading X  45%".to_string(),
                 "Downloading X done".to_string(),
             ]
+        );
+    }
+
+    // 真实管道延迟写入:`\r` 段先到达、`\n` 段 200ms 后才到达。若 drain_lines 等到
+    // 行尾 `\n` 才批量切分,`\r` 段会被缓冲到最终换行才一次性回调(时间差≈0);
+    // 流式实现应在 `\r` 段到达时立即回调,因此两条回调的时间差应显著大于零。
+    #[test]
+    fn drain_lines_reports_cr_segment_before_final_newline() {
+        let calls: Arc<Mutex<Vec<(String, std::time::Instant)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let report = move |_pkg: &str, _cur: usize, _total: usize, detail: Option<&str>| {
+            if let Some(line) = detail {
+                calls_clone
+                    .lock()
+                    .unwrap()
+                    .push((line.to_string(), std::time::Instant::now()));
+            }
+        };
+        let report: &(dyn Fn(&str, usize, usize, Option<&str>) + Sync) = &report;
+        // 用真实子进程模拟 brew 的 curl 进度:stdout 先写 "A\r"(无换行),sleep 后再写 "B\n"。
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf 'A\\r'; sleep 0.2; printf 'B\\n'"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        let pipe = child.stdout.take().expect("take stdout");
+        let _ = drain_lines(pipe, Some(report), "x", 1, 1);
+        child.wait().expect("wait sh");
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].0, "A");
+        assert_eq!(recorded[1].0, "B");
+        // A(\r 段)在 B(\n 段)之前到达;若实现把 \r 缓冲到行尾,二者几乎同时回调。
+        assert!(
+            recorded[1].1.duration_since(recorded[0].1)
+                >= std::time::Duration::from_millis(100),
+            "\\r 进度段应在最终换行前实时回调,而不是缓冲到行尾批量上报"
         );
     }
 

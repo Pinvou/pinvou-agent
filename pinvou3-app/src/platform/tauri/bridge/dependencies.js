@@ -51,22 +51,25 @@
     // 订阅后端进度事件,实时刷新「正在安装 X (n/总数)…」,避免长尾包(libreoffice)
     // 全程只有静态「安装中…」像卡死。监听器注册是异步的,必须等其注册完成后再
     // 触发安装,否则安装开始前发出的第一条进度事件会因监听器未就绪而丢失。
-    // 安装结束/出错均取消订阅并清空进度。
-    var unlisten = await listen("deps:install_progress", function (event) {
-      state.depsInstallProgress = event.payload;
-      notify();
-    });
+    // 监听注册、安装、unlisten 与状态复位统一放在 try/catch/finally 中:
+    // 监听注册失败也必须复位 depsInstalling,否则界面会一直停在「安装中」。
+    var unlisten = null;
     try {
+      unlisten = await listen("deps:install_progress", function (event) {
+        state.depsInstallProgress = event.payload;
+        notify();
+      });
       await invoke("install_dependencies", { packages: pkgs, actions: actions });
     } catch (e) {
       state.depsInstallError = String(e);
+    } finally {
+      // 无论成功失败(含监听注册失败)都取消订阅、清空进度并复位安装中状态。
+      if (typeof unlisten === "function") unlisten();
+      state.depsInstalling = false; state.depsInstallProgress = null; notify();
     }
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
     } catch (_) { /* keep the last successful dependency snapshot */ }
-    // 已 await,unlisten 即 UnlistenFn;无论成功失败都取消订阅并清空进度。
-    if (typeof unlisten === "function") unlisten();
-    state.depsInstalling = false; state.depsInstallProgress = null; notify();
   }
 
     return {
