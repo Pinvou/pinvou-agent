@@ -435,6 +435,17 @@ impl SessionStore {
         Ok(store)
     }
 
+    /// 测试专用：以隔离目录初始化，不触碰真实 `~/.pinvou3` 数据
+    /// （评审测试建议：boot() 直连真实数据目录污染用户环境）。
+    #[cfg(test)]
+    pub(crate) fn boot_at_test_dir(root: &std::path::Path) -> Result<Self> {
+        Self::from_paths(
+            root.join("sessions"),
+            root.join("scheduled-run-profiles.json"),
+            root.join("scheduled"),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn boot_with_scheduled_root(scheduled_root: PathBuf) -> Result<Self> {
         let store = Self::from_paths(

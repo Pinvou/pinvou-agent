@@ -72,7 +72,14 @@ const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
-const DRAFT_CONTROLS_CACHE_KEY = 'pinvou_codex_draft_controls';
+
+// 草稿配置快照缓存已抽到 ./acp-draft-controls.js（供设置页共用，避免与
+// SettingsView 的循环引用）。
+import {
+  consumeAcpModelsProbePending,
+  loadDraftControlsCache,
+  rememberDraftControls,
+} from './acp-draft-controls.js';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
 
@@ -137,41 +144,6 @@ function saveAgentSelection(agentId) {
   } catch {
     // 写不进去仅影响下次打开界面的默认值，本次会话不受影响。
   }
-}
-
-// 草稿态（尚未创建会话）也需要展示模型/权限模式/推理强度等选项：ACP 的配置项是会话级的，
-// 这里缓存每个 agent 最近一次会话上报的配置快照，供新会话草稿预展示和预选。
-function loadDraftControlsCache() {
-  try {
-    const value = JSON.parse(localStorage.getItem(DRAFT_CONTROLS_CACHE_KEY) || '{}');
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-function snapshotSessionControls(info) {
-  if (!info) return null;
-  const snapshot = {
-    models: Array.isArray(info.models) ? info.models : [],
-    current_model_id: info.current_model_id || '',
-    modes: info.modes || null,
-    config_options: Array.isArray(info.config_options) ? info.config_options : [],
-  };
-  if (!snapshot.models.length && !snapshot.modes && !snapshot.config_options.length) return null;
-  return snapshot;
-}
-
-function rememberDraftControls(agentId, info) {
-  const snapshot = snapshotSessionControls(info);
-  if (!agentId || !snapshot) return null;
-  const cache = { ...loadDraftControlsCache(), [agentId]: snapshot };
-  try {
-    localStorage.setItem(DRAFT_CONTROLS_CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    // 缓存写不进去时仅影响下次草稿预展示，本次会话不受影响。
-  }
-  return snapshot;
 }
 
 function configChoices(option) {
@@ -260,7 +232,16 @@ function CodexComposerConfigSelect({
               className="group w-full flex items-center justify-between gap-2.5 rounded-xl px-3 py-2.5 text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
             >
               <span className="min-w-0 truncate">{choice.name || choice.value}</span>
-              {isSelected && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+              <span className="flex shrink-0 items-center gap-1.5">
+                {/* 槽位/别名标签：Claude 的 5 个选项显示名相同（同为槽位映射的
+                    模型名），用别名标签区分，避免「五个一样的模型」 */}
+                {choice.tag && choice.tag !== choice.name && (
+                  <span className="rounded-md bg-black/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-gray-500 group-hover:bg-white/20 group-hover:text-white dark:bg-white/[0.08] dark:text-gray-400">
+                    {choice.tag}
+                  </span>
+                )}
+                {isSelected && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+              </span>
             </button>
           );
         })}
@@ -1116,8 +1097,10 @@ function AgentServiceFailureNotice({
   agentName,
   working,
   onSwitchAccount,
+  onManageProviders,
   onDismiss,
   copy,
+  providerCopy,
 }) {
   if (!failure) return null;
   const recoverWithAccount = ['entitlement', 'quota', 'authentication'].includes(failure.kind);
@@ -1154,6 +1137,17 @@ function AgentServiceFailureNotice({
               {copy.switchAccount}
             </button>
           )}
+          {onManageProviders && providerCopy && (
+            <button
+              type="button"
+              data-testid="acp-failure-manage-providers"
+              onClick={onManageProviders}
+              disabled={working}
+              className="rounded-xl border border-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-600 disabled:opacity-50 dark:text-red-300"
+            >
+              {providerCopy.faultManage}
+            </button>
+          )}
           <button
             type="button"
             onClick={onDismiss}
@@ -1177,6 +1171,7 @@ export function CodexAcpView({
   onActiveSessionChange,
   onSessionsChange,
   onSwitchHomeMode,
+  onOpenSettingsSection,
   bs = null,
   onGotoTools,
   onGotoModelSettings,
@@ -1631,6 +1626,85 @@ export function CodexAcpView({
     return list;
   }
 
+  // 每个 Agent 的 Provider 视图（会话级覆盖下拉与故障引导共用）。
+  const [providersViews, setProvidersViews] = useState({});
+  async function refreshProviders(agentId = activeAgentId) {
+    if (!agentId) return null;
+    try {
+      const next = await invoke('list_acp_providers', { agent: agentId });
+      setProvidersViews(current => ({ ...current, [agentId]: next }));
+      return next;
+    } catch {
+      return null;
+    }
+  }
+  useEffect(() => {
+    if (activeAgentId) refreshProviders(activeAgentId);
+    // activeAgentId 变化时刷新一次即可；切换/回退后由调用方显式刷新。
+  }, [activeAgentId]);
+  const activeProvidersView = providersViews[activeAgentId] || null;
+  // Kimi 中转激活时（会话覆盖 > 全局当前 Provider），模型列表只保留受管
+  // pv-* 条目：writer 按设计保留官方登录的模型表，CLI 会一并上报，全列出
+  // 会让用户误以为还在走官方。
+  const kimiRelayActive = activeAgentId === 'kimi' && Boolean(
+    (sessionControlsInfo && sessionControlsInfo.provider)
+    || (activeProvidersView && activeProvidersView.currentProviderId)
+  );
+  // Codex 中转激活时同理：CLI 的 model/list 会暴露官方内置模型（gpt 系列），
+  // 中转商并不提供它们，用户选中会 404——只保留当前 Provider 的模型
+  // （Codex 的模型选项 id 是模型名，无 pv- 前缀，按名字匹配）。
+  const relayProviderId = (sessionControlsInfo && sessionControlsInfo.provider)
+    || (activeProvidersView && activeProvidersView.currentProviderId)
+    || null;
+  const relayProviderRecord = relayProviderId
+    ? (((activeProvidersView && activeProvidersView.providers) || [])
+        .find(provider => provider.id === relayProviderId)) || null
+    : null;
+  const codexRelayModel = activeAgentId === 'codex' && relayProviderRecord && relayProviderRecord.model
+    ? relayProviderRecord.model
+    : null;
+  // Codex 中转激活但 Provider 未配置模型：官方模型全量展示会让用户选中后走
+  // 中转 404（复审低危 1）——列表置空并提示先回设置填写模型。
+  const codexRelayNoModel = activeAgentId === 'codex' && Boolean(relayProviderRecord) && !codexRelayModel;
+  const visibleFallbackModels = kimiRelayActive
+    ? controls.fallbackModels.filter(model => String(model.id).startsWith('pv-'))
+    : codexRelayModel
+      ? controls.fallbackModels.filter(model => String(model.id) === codexRelayModel)
+      : codexRelayNoModel
+        ? []
+        : controls.fallbackModels;
+  const modelConfigChoices = option => {
+    const choices = configChoices(option);
+    if (kimiRelayActive) return choices.filter(choice => String(choice.value).startsWith('pv-'));
+    if (codexRelayModel) return choices.filter(choice => String(choice.value) === codexRelayModel);
+    if (codexRelayNoModel) return [];
+    return choices;
+  };
+  const sessionProviderChoices = [
+    { value: '__official__', name: (t.uiAcpProviders || {}).sessionOfficial || 'Official' },
+    ...((activeProvidersView && activeProvidersView.providers) || [])
+      .filter(provider => provider.hasCredential)
+      .map(provider => ({ value: provider.id, name: provider.name })),
+  ];
+  const sessionProviderValue = (sessionControlsInfo && sessionControlsInfo.provider) || '__official__';
+  async function changeSessionProvider(value) {
+    const targetId = activeId;
+    if (!targetId) return;
+    setConfigApplying('provider');
+    try {
+      const next = await invoke('set_codex_acp_session_provider', {
+        sessionId: targetId,
+        providerId: value === '__official__' ? null : value,
+      });
+      applySessionInfo(next);
+      refreshProviders(activeAgentId);
+    } catch (err) {
+      showError(err);
+    } finally {
+      setConfigApplying('');
+    }
+  }
+
   async function refreshStatus(agentId = activeAgentId, recheck = false) {
     // recheck=true 强制后端忽略缓存重新探测（「重新检测」按钮）；轮询不传，保持读缓存。
     const next = await invoke('get_acp_agent_status', recheck ? { agentId, recheck: true } : { agentId });
@@ -2019,6 +2093,27 @@ export function CodexAcpView({
     if (!isAcpAuthenticationFailure(latest)) return;
     refreshStatus(activeAgentId).catch(() => {});
   }, [events.length, activeAgentId]);
+
+  // 一次性模型探针：切换/删除 Provider（或恢复官方）后设置页会写探针标记。
+  // 草稿态（!activeId）本来不连接 ACP，这里破例主动连接一次，用新 Provider
+  // 的真实 session/new 上报覆盖 reseed 的占位快照，之后恢复懒加载。标记先清
+  // 再探（一次性、防重入）；失败静默，保留占位快照不影响使用。
+  useEffect(() => {
+    if (activeId || isNativeAgent) return undefined;
+    if (!activeStatus?.installed || !activeStatus?.authenticated) return undefined;
+    if (!consumeAcpModelsProbePending(draftAgentId)) return undefined;
+    let alive = true;
+    invoke('probe_acp_agent_models', { agent: draftAgentId })
+      .then(info => {
+        if (!alive || !info) return;
+        const snapshot = rememberDraftControls(draftAgentId, info);
+        if (snapshot) {
+          setDraftControlsCache(current => ({ ...current, [draftAgentId]: snapshot }));
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [activeId, isNativeAgent, draftAgentId, activeStatus?.installed, activeStatus?.authenticated]);
 
   useEffect(() => {
     if (!activeId) {
@@ -2719,8 +2814,14 @@ export function CodexAcpView({
                     agentName={activeAgentName}
                     working={working || activeRuntimeBusy}
                     onSwitchAccount={switchAccount}
+                    onManageProviders={
+                      onOpenSettingsSection
+                        ? () => onOpenSettingsSection('providers')
+                        : null
+                    }
                     onDismiss={() => setDismissedFailureKey(serviceFailure?.key || '')}
                     copy={codexCopy}
+                    providerCopy={t.uiAcpProviders}
                   />
                 )}
               </>
@@ -2813,6 +2914,11 @@ export function CodexAcpView({
                 codeSupported
                 codeAgent={activeAgentId}
                 onCodeAgentChange={selectDraftAgent}
+                onManageProviders={
+                  onOpenSettingsSection
+                    ? () => onOpenSettingsSection('providers')
+                    : null
+                }
                 isDark={theme === 'dark'}
                 onChange={onSwitchHomeMode}
                 copy={t.uiHomeMode}
@@ -3177,14 +3283,20 @@ export function CodexAcpView({
                   )}
                   {composerControlsVisible && !isNativeAgent && (
                     <div data-testid="codex-composer-configs" className="flex flex-wrap items-center gap-2">
-                      {controls.fallbackModels.length > 0 && (
+                      {codexRelayNoModel && (
+                        <span className="text-[11px] opacity-60">{codexCopy.relayNoModelHint}</span>
+                      )}
+                      {visibleFallbackModels.length > 0 && (
                         <CodexComposerConfigSelect
                           id="model"
                           label={codexCopy.model}
                           value={composerModelValue}
-                          choices={controls.fallbackModels.map(model => ({
+                          choices={visibleFallbackModels.map(model => ({
                             value: model.id,
                             name: model.name || model.id,
+                            // 别名标签仅 Claude 需要（其五个选项显示名同为槽位映射值）；
+                            // kimi/codex 的 id 与 name 语义不同，加标签反而是噪音
+                            tag: activeAgentId === 'claude' ? model.id : undefined,
                           }))}
                           onChange={changeModel}
                           disabled={busy || working || activeRuntimeBusy}
@@ -3212,13 +3324,35 @@ export function CodexAcpView({
                           id={option.id}
                           label={configLabel(option, codexCopy)}
                           value={composerConfigOptionValue(option)}
-                          choices={configChoices(option)}
+                          choices={option.id === 'model'
+                            // 模型走 config 通道时仅 Claude 用别名值作标签（其显示名可能全相同）；
+                            // kimi 中转激活时经 modelConfigChoices 过滤掉官方模型
+                            ? modelConfigChoices(option).map(choice => ({
+                                ...choice,
+                                tag: activeAgentId === 'claude' ? choice.value : undefined,
+                              }))
+                            : configChoices(option)}
                           onChange={value => changeConfig(option.id, value)}
                           disabled={busy || working || activeRuntimeBusy}
                           title={option.description || option.name}
                           unsetLabel={codexCopy.notSet}
                         />
                       ))}
+                      {/* 会话级 Provider 覆盖仅 Codex 生效（spawn 时按会话注入
+                          OPENAI_API_KEY）；Claude/Kimi 的 CLI 配置是进程级的，
+                          无法按会话隔离，不展示该选项避免误导。 */}
+                      {activeAgentId === 'codex' && Boolean(activeId) && sessionProviderChoices.length > 1 && (
+                        <CodexComposerConfigSelect
+                          id="provider"
+                          label={(t.uiAcpProviders || {}).sessionProvider || 'Provider'}
+                          value={sessionProviderValue}
+                          choices={sessionProviderChoices}
+                          onChange={changeSessionProvider}
+                          disabled={busy || working || activeRuntimeBusy || Boolean(configApplying)}
+                          title={(t.uiAcpProviders || {}).sessionProviderDesc || ''}
+                          unsetLabel={(t.uiAcpProviders || {}).sessionOfficial || 'Official'}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
