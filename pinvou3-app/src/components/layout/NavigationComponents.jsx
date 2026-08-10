@@ -3,9 +3,6 @@ import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { can } from '../../shared/platform.js';
-
-const MULTI_AGENT_ENABLED = can('multiAgent');
 
 const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
       const isDark = theme === 'dark';

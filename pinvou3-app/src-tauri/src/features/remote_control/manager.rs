@@ -3135,6 +3135,7 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
 const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "accept_plan",
     "cancel_generation",
+    "cancel_shell_task",
     "cancel_user_input",
     "compact_now",
     "discard_plan",
@@ -4646,8 +4647,9 @@ mod tests {
     }
 
     /// Web 只读封禁表：执行型入口全在表内，查看型不在（只读横幅要取数）。
-    /// `cancel_generation` 与 `cancel_user_input` 同属改变运行中 turn 状态的
-    /// 取消类入口（前者终态整个生成并级联取消子智能体），必须一并封禁。
+    /// `cancel_generation`、`cancel_shell_task` 与 `cancel_user_input` 同属改变
+    /// 运行中 turn 状态的取消类入口（前者终态整个生成并级联取消子智能体，
+    /// 后者可终止委派子智能体正在执行的 shell 任务），必须一并封禁。
     #[test]
     fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
         for command in [
@@ -4658,6 +4660,7 @@ mod tests {
             "exit_plan_to_yolo",
             "submit_user_input",
             "cancel_generation",
+            "cancel_shell_task",
             "cancel_user_input",
             "compact_now",
             "summon_pinvou",
