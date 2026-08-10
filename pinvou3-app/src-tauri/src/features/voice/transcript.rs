@@ -76,13 +76,7 @@ fn join_timed_transcript_segments(segments: &[TimedTranscriptSegment]) -> String
     let mut transcript = String::new();
     let mut previous_had_trailing_whitespace = false;
     for segment in segments {
-        let needs_word_separator = transcript
-            .chars()
-            .next_back()
-            .zip(segment.text.chars().next())
-            .is_some_and(|(left, right)| {
-                left.is_ascii_alphanumeric() && right.is_ascii_alphanumeric()
-            });
+        let needs_word_separator = needs_timed_segment_separator(&transcript, &segment.text);
         if !transcript.is_empty()
             && (previous_had_trailing_whitespace
                 || segment.has_leading_whitespace
@@ -94,6 +88,39 @@ fn join_timed_transcript_segments(segments: &[TimedTranscriptSegment]) -> String
         previous_had_trailing_whitespace = segment.has_trailing_whitespace;
     }
     transcript
+}
+
+fn needs_timed_segment_separator(transcript: &str, next_segment: &str) -> bool {
+    let Some(next) = next_segment.chars().next() else {
+        return false;
+    };
+    if !is_latin_word_char(next) {
+        return false;
+    }
+
+    let mut preceding = transcript.chars().rev();
+    let Some(mut previous) = preceding.next() else {
+        return false;
+    };
+    while matches!(previous, '"' | ')' | ']' | '}') {
+        let Some(before_closer) = preceding.next() else {
+            return false;
+        };
+        previous = before_closer;
+    }
+    is_latin_word_char(previous) || matches!(previous, ',' | '.' | '!' | '?' | ':' | ';')
+}
+
+fn is_latin_word_char(ch: char) -> bool {
+    if ch.is_ascii_alphanumeric() {
+        return true;
+    }
+    ch.is_alphabetic()
+        && (('\u{00C0}'..='\u{024F}').contains(&ch)
+            || ('\u{1E00}'..='\u{1EFF}').contains(&ch)
+            || ('\u{2C60}'..='\u{2C7F}').contains(&ch)
+            || ('\u{A720}'..='\u{A7FF}').contains(&ch)
+            || ('\u{AB30}'..='\u{AB6F}').contains(&ch))
 }
 
 fn parse_protocol_line(line: &str) -> Option<String> {
@@ -322,6 +349,43 @@ mod tests {
         assert_eq!(
             parse_asr_transcript("[0-.5] １２\n[.5-1] ３\n", ""),
             Some("１２３".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] hello,\n[.5-1] world\n", ""),
+            Some("hello, world".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] Hello\n[.5-1] .\n[1-1.5] World\n", ""),
+            Some("Hello. World".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] (Hello\n[.5-1] )\n[1-1.5] World\n", ""),
+            Some("(Hello) World".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] \"Hello\n[.5-1] .\n[1-1.5] \"\n[1.5-2] World\n", ""),
+            Some("\"Hello.\" World".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] can\n[.5-1] 't\n", ""),
+            Some("can't".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] state-\n[.5-1] of-the-art\n", ""),
+            Some("state-of-the-art".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] 你好\n[.5-1] 。\n[1-1.5] 世界\n", ""),
+            Some("你好。世界".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] 你好，\n[.5-1] world\n", ""),
+            Some("你好，world".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] ,\n[.5-1] !\n", ""),
+            None,
+            "a timestamp protocol does not make punctuation-only output usable"
         );
     }
 }

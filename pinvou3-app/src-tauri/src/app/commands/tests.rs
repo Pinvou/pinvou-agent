@@ -914,8 +914,8 @@ fn parses_local_asr_plain_text_output() {
     let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
     assert_eq!(text, "hello from voice");
     assert_eq!(
-        parse_local_asr_text("[0-.5] hello\n[.5-1] world\n", ""),
-        Some("hello world".to_string())
+        parse_local_asr_text("[0-.5] Hello\n[.5-1] .\n[1-1.5] World\n", ""),
+        Some("Hello. World".to_string())
     );
 }
 
