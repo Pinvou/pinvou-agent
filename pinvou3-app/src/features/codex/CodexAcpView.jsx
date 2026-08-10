@@ -32,6 +32,12 @@ import {
   removeLocalUserMessage,
 } from './code-native-lane.js';
 import {
+  CODE_MODE_FALLBACK,
+  nativeModeFallback,
+  needsYoloConfirmation,
+  resolveNativeModeValue,
+} from './code-permission-state.js';
+import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
@@ -719,6 +725,71 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
   );
 }
 
+// 首次切 yolo 的一次性确认卡（全局记忆）：语义 = "该模式下模型将对你的项目目录
+// 全自动读写、可执行 shell，无逐步审批"；确认后全局记住、不再弹（与 VS Code 同款
+// UI 层确认，后端不强制门控）。按钮样式复用方案审批卡的 cardBtnCls。
+function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
+  const isDark = theme === 'dark';
+  const dialogRef = useRef(null);
+  // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
+  // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
+  return (
+    <div data-testid="native-yolo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label={t.modeYoloConfirmCancel}
+        className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
+        disabled={busy}
+        onClick={onCancel}
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="native-yolo-confirm-title"
+        tabIndex={-1}
+        className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
+        }`}>
+        <div id="native-yolo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+          {t.modeYoloConfirmTitle}
+        </div>
+        <div className={`mt-2 text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+          {t.modeYoloConfirmBody}
+        </div>
+        <div className="mt-2 text-[11px] text-gray-400">{t.modeYoloConfirmHint}</div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="native-yolo-confirm-cancel"
+            className={cardBtnCls(isDark)}
+            disabled={busy}
+            onClick={onCancel}
+          >{t.modeYoloConfirmCancel}</button>
+          <button
+            type="button"
+            data-testid="native-yolo-confirm-ok"
+            className={cardBtnCls(isDark, 'primary')}
+            disabled={busy}
+            onClick={onConfirm}
+          >{t.modeYoloConfirmOk}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TurnItem({
   item,
   now,
@@ -1230,10 +1301,17 @@ export function CodexAcpView({
   // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
-  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: 'yolo' });
+  // mode 由后端 get_mode_state 驱动（code 会话首次默认 Plan），不写死初值。
+  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: CODE_MODE_FALLBACK });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
+  // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
+  // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
+  const [codePermPrefs, setCodePermPrefs] = useState(null);
+  // 待确认的 yolo 切换请求（{ draft, chipBusy }）；非 null 时渲染确认卡。
+  const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
+  const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
   // 知识库选择器的集合列表与 embedding 安装态（全局只读查询，不带会话）。
   const [nativeKbCollections, setNativeKbCollections] = useState([]);
   const [nativeKbStatus, setNativeKbStatus] = useState(null); // null=未知；新后端区分已安装与运行时已就绪
@@ -1259,10 +1337,15 @@ export function CodexAcpView({
   const activeConversationTurn = [...visibleTurns]
     .reverse()
     .find(turn => turn.status === 'running') || null;
-  // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示）。
-  const nativeModeValue = activeId && nativeControlsSessionRef.current === activeId
-    ? nativeControls.mode
-    : (activeId ? 'yolo' : (nativeDraftControls.mode || 'yolo'));
+  // 原生车道底栏控件的展示值（归属保护：refresh 返回前按默认/暂存显示；
+  // 默认 = 全局 code_last_mode，从未用过 code 模式 → Plan 只读）。
+  const nativeModeValue = resolveNativeModeValue({
+    activeId,
+    controlsSessionId: nativeControlsSessionRef.current,
+    controlsMode: nativeControls.mode,
+    draftMode: nativeDraftControls.mode,
+    prefs: codePermPrefs,
+  });
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
   const nativeSessionModelId = activeId
@@ -1390,10 +1473,25 @@ export function CodexAcpView({
     setNativeControls({
       modelId: modelId || null,
       mountedId: mountedId ?? null,
-      mode: (modeState && modeState.mode) || 'yolo',
+      // 读取失败兜底走全局默认（首次使用 → Plan 只读），不回退写死 yolo。
+      mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
     });
     nativeControlsSessionRef.current = sessionId;
   }
+
+  /// 拉取全局 code 权限偏好（last_mode / yolo_confirmed）：草稿态默认 mode
+  /// 与 yolo 一次性确认门的事实源。启动、进/出会话与每次切换后刷新。
+  async function refreshCodePermPrefs() {
+    const prefs = await invoke('get_code_permission_prefs').catch(() => null);
+    if (prefs) setCodePermPrefs(prefs);
+    return prefs;
+  }
+
+  // 启动时拉一次全局 code 权限偏好（草稿态默认 mode + yolo 确认门）。
+  useEffect(() => {
+    refreshCodePermPrefs();
+    // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
+  }, []);
 
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
   async function applyNativeDraftControls(sessionId) {
@@ -1407,8 +1505,12 @@ export function CodexAcpView({
       if (staged.mountedId != null) {
         await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
       }
+      // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
+      // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
+      } else if (staged.mode === 'yolo') {
+        await invoke('exit_plan_to_yolo', { sessionId });
       }
       setNativeDraftControls({});
     } catch (err) {
@@ -1455,7 +1557,23 @@ export function CodexAcpView({
 
   /// Plan↔Yolo：对齐聊天页语义——切回 Yolo 时若 turn 在跑先取消
   /// （用代码车道已有的 cancel_generation 显式 sessionId 调用，不经 bridge）。
+  ///
+  /// 首次切 yolo 的一次性确认门（全局记忆，产品已拍板）：未确认先弹卡，
+  /// 【确认】调 confirm_code_yolo 写入全局标志后按原路径切换；【取消】留在
+  /// 当前 mode。确认是 UI 层语义，后端 exit_plan_to_yolo 不强制门控。
   async function switchNativeMode(target, { isPlan, busy: chipBusy } = {}) {
+    if (target === 'yolo' && isPlan) {
+      const prefs = await refreshCodePermPrefs();
+      if (needsYoloConfirmation(prefs)) {
+        setPendingYoloSwitch({ draft: !activeId, chipBusy: Boolean(chipBusy) });
+        return;
+      }
+    }
+    await performNativeModeSwitch(target, { isPlan, chipBusy });
+  }
+
+  /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
+  async function performNativeModeSwitch(target, { isPlan, chipBusy } = {}) {
     if (!activeId) {
       setNativeDraftControls(current => ({ ...current, mode: target }));
       return;
@@ -1469,7 +1587,30 @@ export function CodexAcpView({
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
       }
       await refreshNativeControls(activeId);
+      // 显式切 mode 会更新全局 code_last_mode：刷新草稿态默认展示。
+      refreshCodePermPrefs().catch(() => {});
     } catch (err) { showError(err); }
+  }
+
+  /// 确认卡【确认】：写全局 yolo 确认标志，成功后继续被中断的切换。
+  async function confirmPendingYoloSwitch() {
+    const pending = pendingYoloSwitch;
+    if (!pending || yoloConfirmBusy) return;
+    setYoloConfirmBusy(true);
+    try {
+      const prefs = await invoke('confirm_code_yolo');
+      if (prefs) setCodePermPrefs(prefs);
+      setPendingYoloSwitch(null);
+      if (pending.draft) {
+        setNativeDraftControls(current => ({ ...current, mode: 'yolo' }));
+      } else {
+        await performNativeModeSwitch('yolo', { isPlan: true, chipBusy: pending.chipBusy });
+      }
+    } catch (err) {
+      showError(err);
+    } finally {
+      setYoloConfirmBusy(false);
+    }
   }
 
   async function refreshSessions() {
@@ -2996,6 +3137,16 @@ export function CodexAcpView({
                   </button>
                 )}
               </div>
+              {pendingYoloSwitch && (
+                // 首次切 yolo 的一次性确认卡（全局记忆）；确认后继续切换，取消留在 Plan。
+                <NativeYoloConfirmCard
+                  theme={theme}
+                  t={t}
+                  busy={yoloConfirmBusy}
+                  onConfirm={confirmPendingYoloSwitch}
+                  onCancel={() => setPendingYoloSwitch(null)}
+                />
+              )}
             </div>
           </div>
         </div>
