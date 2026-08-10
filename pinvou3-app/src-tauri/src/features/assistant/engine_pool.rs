@@ -1240,15 +1240,21 @@ impl EnginePool {
             // 该 engine 的后台子智能体（multiagent，ADR-0006）：「停止」按钮是子
             // 智能体唯一的确定性停止入口（卡片上没有取消按钮，自然语言指令只是
             // 建议），只取消宿主轮会留下继续烧钱的后台子智能体。
-            // try_send：cancel_current 是同步闭包（generation 守护要求 get_engine
-            // 与 cancel 之间不可有 await），ops 通道有界且此刻几乎不会满；即使
-            // 发送失败，引擎回收路径 shutdown_cancel_cascade_ops 仍会再发一次
-            // CancelSubAgents，双发无害（幂等）。
+            // CancelSubAgents 改用 spawn + async send：cancel_current 必须同步
+            // （generation 守护要求 get_engine 与 cancel 之间不可有 await），但
+            // try_send 在 ops 通道满（容量 32）时会静默丢弃级联取消——常规停止
+            // 后 engine 不回收，shutdown_cancel_cascade_ops 不会补发，子智能体
+            // 会继续烧钱。同步取消后 spawn 异步 send 恢复保证送达（双发无害，
+            // 回收路径再发 CancelSubAgents 只是幂等 no-op）。
             |engine| {
                 engine.cancel_current();
-                if let Err(e) = engine.handle.try_send(Op::CancelSubAgents) {
-                    eprintln!("[engine_pool] cancel subagents {session_id} failed: {e:?}");
-                }
+                let handle = engine.handle.clone();
+                let sid = session_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = handle.send(Op::CancelSubAgents).await {
+                        eprintln!("[engine_pool] cancel subagents {sid} failed: {e:?}");
+                    }
+                });
             },
             // claim_unsubmitted：未提交 reservation 的认领终态路径（同步认领+发终态）。
             |lifecycle| lifecycle.emit_unsubmitted_interrupted_terminal(app, session_id),
@@ -2255,6 +2261,8 @@ mod scheduled_model_tests {
         let release_main = release.clone();
         let cancel_called = Arc::new(AtomicBool::new(false));
         let probe = cancel_called.clone();
+        let get_engine_calls = Arc::new(AtomicU64::new(0));
+        let probe_calls = get_engine_calls.clone();
 
         let cancel_task = tokio::spawn(async move {
             cancel_turn_with_gates(
@@ -2262,14 +2270,21 @@ mod scheduled_model_tests {
                 &lifecycles,
                 &shell_tasks,
                 sid,
-                // get_engine：通知已进入后挂起（模拟 handle_for 取 entries 锁的
-                // await）；放行后返回「engine 在场」。
+                // get_engine：第一次调用（阶段一）通知已进入后挂起（模拟
+                // handle_for 取 entries 锁的 await），放行后返回「engine 在场」。
+                // 若实现退化（阶段二缺 generation 守护，即 #205 原始 bug），
+                // 阶段二会再次调用 get_engine——此时直接返回「engine 在场」让
+                // cancel_current 探针触发、测试红；若这里仍 park 于 Notify，
+                // 会二次挂起成死锁（CI 表现为超时而非断言失败）。
                 move || {
                     let entered = entered.clone();
                     let release = release.clone();
+                    let calls = probe_calls.clone();
                     async move {
-                        entered.notify_waiters();
-                        release.notified().await;
+                        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            entered.notify_waiters();
+                            release.notified().await;
+                        }
                         Some(())
                     }
                 },
@@ -2328,6 +2343,8 @@ mod scheduled_model_tests {
         let pending_seen_at_cancel = Arc::new(AtomicBool::new(false));
         let probe = pending_seen_at_cancel.clone();
         let probe_lifecycle = lifecycle.clone();
+        let cancel_calls = Arc::new(AtomicU64::new(0));
+        let probe_calls = cancel_calls.clone();
         cancel_turn_with_gates(
             &locks,
             &lifecycles,
@@ -2336,11 +2353,19 @@ mod scheduled_model_tests {
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current 探针：模拟 forwarder 在 TurnStarted 时消费 pending。
-            // 阶段一与阶段二都走这里；只要任一时刻 pending 已 arm 即证明顺序正确。
+            // 阶段一与阶段二都会调用本探针，但只有阶段二才是 reviewer 点 2
+            // 的目标（阶段一自己「先 arm 后 cancel」就能让任一时刻的断言通过，
+            // 掩盖阶段二的顺序颠倒）。因此两次调用都消费 pending（阶段一先
+            // 取走自己 arm 的标记，阶段二重新 arm 后才能再取到），但只把阶段二
+            // 的结果计入断言：若阶段二先 cancel 后 arm，探针取到 None，停止
+            // 请求丢失被确定性捕获。
             move |_engine: ()| {
+                let call = probe_calls.fetch_add(1, Ordering::SeqCst);
                 let epoch = probe_lifecycle.current_turn_generation().unwrap_or(0);
-                if probe_lifecycle.take_pending_cancel(epoch).is_some() {
-                    probe.store(true, Ordering::Release);
+                let took = probe_lifecycle.take_pending_cancel(epoch).is_some();
+                if call == 1 {
+                    // 阶段二：仅此时校验 pending 是否已 arm。
+                    probe.store(took, Ordering::Release);
                 }
             },
             |_lc| false,
