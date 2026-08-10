@@ -178,10 +178,10 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
             .arg(format!("curl -fsSL {unix_url} | bash"));
         // Unix 上把安装进程放进**独立进程组**（组长 pid = 子进程 pid）：取消时
         // 按组杀（kill -9 -pgid）才能真正终止 curl | bash 派生的子进程，否则
-        // 子 shell 孤儿化继续安装（评审中危项）。
+        // 子 shell 孤儿化继续安装（评审中危项）。tokio 的 process_group 是
+        // inherent 方法，无需 import。
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
         command

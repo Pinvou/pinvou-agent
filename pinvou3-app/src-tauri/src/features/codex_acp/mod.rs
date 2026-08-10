@@ -5230,8 +5230,8 @@ async fn run_npm_global_upgrade(
     command.args(&args);
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt as _;
-        // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
+        // tokio 的 process_group 是 inherent 方法（无需 import）：
+        // 独立进程组，取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
         command.process_group(0);
     }
     command

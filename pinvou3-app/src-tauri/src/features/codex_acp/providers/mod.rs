@@ -741,8 +741,10 @@ impl ProviderManager {
             if let Err(error) = self.store.upsert(agent, record.clone()) {
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。
-                let _ = writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
-                let _ = writer.restore_default_model(self.store.official_default_model(agent).as_deref());
+                let _ =
+                    writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
+                let _ = writer
+                    .restore_default_model(self.store.official_default_model(agent).as_deref());
                 return Err(error);
             }
         } else {
