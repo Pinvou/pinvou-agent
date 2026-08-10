@@ -1784,9 +1784,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <div
                   role="note"
                   data-testid="multiagent-desktop-only"
-                  className={`min-h-[48px] px-1 py-3 text-[13px] leading-5 ${
-                    isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'
-                  }`}
+                  className="min-h-[48px] px-1 py-3 text-[13px] leading-5 text-[#5F6368] dark:text-[#9AA0A6]"
                 >
                   {t.multiAgentDesktopOnly}
                 </div>
