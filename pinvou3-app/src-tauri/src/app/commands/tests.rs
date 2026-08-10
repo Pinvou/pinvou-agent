@@ -913,6 +913,10 @@ fn agentic_guide_mentions_collection_and_kb_search() {
 fn parses_local_asr_plain_text_output() {
     let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
     assert_eq!(text, "hello from voice");
+    assert_eq!(
+        parse_local_asr_text("[0-.5] hello\n[.5-1] world\n", ""),
+        Some("hello world".to_string())
+    );
 }
 
 #[test]

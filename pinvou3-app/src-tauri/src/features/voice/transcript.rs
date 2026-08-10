@@ -9,12 +9,11 @@ pub(crate) fn parse_asr_transcript(stdout: &str, stderr: &str) -> Option<String>
 fn parse_asr_stream(stream: &str, allow_plain_text: bool) -> Option<String> {
     let lines = stream
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.trim().is_empty())
         .collect::<Vec<_>>();
 
     for line in lines.iter().rev().copied() {
-        if let Some(text) = parse_protocol_line(line) {
+        if let Some(text) = parse_protocol_line(line.trim()) {
             return Some(text);
         }
     }
@@ -26,12 +25,14 @@ fn parse_asr_stream(stream: &str, allow_plain_text: bool) -> Option<String> {
     let timed_segments = lines
         .iter()
         .filter_map(|line| parse_timed_transcript_line(line))
-        .collect::<String>();
-    if !timed_segments.is_empty() {
+        .collect::<Vec<_>>();
+    let timed_segments = join_timed_transcript_segments(&timed_segments);
+    if has_usable_asr_text(&timed_segments) {
         return Some(timed_segments);
     }
 
     for line in lines.iter().rev().copied() {
+        let line = line.trim();
         let text = clean_asr_text(line);
         if !text.is_empty()
             && !looks_like_log_line(line)
@@ -44,7 +45,14 @@ fn parse_asr_stream(stream: &str, allow_plain_text: bool) -> Option<String> {
     None
 }
 
-fn parse_timed_transcript_line(line: &str) -> Option<String> {
+struct TimedTranscriptSegment {
+    text: String,
+    has_leading_whitespace: bool,
+    has_trailing_whitespace: bool,
+}
+
+fn parse_timed_transcript_line(line: &str) -> Option<TimedTranscriptSegment> {
+    let line = line.trim_start();
     let rest = line.strip_prefix('[')?;
     let end = rest.find(']')?;
     let range = &rest[..end];
@@ -52,9 +60,40 @@ fn parse_timed_transcript_line(line: &str) -> Option<String> {
     if !looks_like_time_value(start.trim()) || !looks_like_time_value(finish.trim()) {
         return None;
     }
-    let text = clean_asr_text(rest[end + 1..].trim());
-    (!text.is_empty() && !looks_like_plain_status(&text) && has_usable_asr_text(&text))
-        .then_some(text)
+    let raw_text = rest[end + 1..]
+        .strip_prefix(char::is_whitespace)
+        .unwrap_or(&rest[end + 1..]);
+    let cleaned = strip_asr_control_markers(raw_text);
+    let text = cleaned.trim().to_string();
+    (!text.is_empty() && !looks_like_plain_status(&text)).then(|| TimedTranscriptSegment {
+        text,
+        has_leading_whitespace: cleaned.starts_with(char::is_whitespace),
+        has_trailing_whitespace: cleaned.ends_with(char::is_whitespace),
+    })
+}
+
+fn join_timed_transcript_segments(segments: &[TimedTranscriptSegment]) -> String {
+    let mut transcript = String::new();
+    let mut previous_had_trailing_whitespace = false;
+    for segment in segments {
+        let needs_word_separator = transcript
+            .chars()
+            .next_back()
+            .zip(segment.text.chars().next())
+            .is_some_and(|(left, right)| {
+                left.is_ascii_alphanumeric() && right.is_ascii_alphanumeric()
+            });
+        if !transcript.is_empty()
+            && (previous_had_trailing_whitespace
+                || segment.has_leading_whitespace
+                || needs_word_separator)
+        {
+            transcript.push(' ');
+        }
+        transcript.push_str(&segment.text);
+        previous_had_trailing_whitespace = segment.has_trailing_whitespace;
+    }
+    transcript
 }
 
 fn parse_protocol_line(line: &str) -> Option<String> {
@@ -187,8 +226,12 @@ fn looks_like_time_value(value: &str) -> bool {
 }
 
 fn clean_asr_text(text: &str) -> String {
+    strip_asr_control_markers(text).trim().to_string()
+}
+
+fn strip_asr_control_markers(text: &str) -> String {
     let mut out = String::new();
-    let mut rest = text.trim();
+    let mut rest = text;
     loop {
         let Some(start) = rest.find("<|") else {
             out.push_str(rest);
@@ -202,7 +245,7 @@ fn clean_asr_text(text: &str) -> String {
         };
         rest = &after_start[end + 2..];
     }
-    out.trim().to_string()
+    out
 }
 
 #[cfg(test)]
@@ -251,6 +294,34 @@ mod tests {
             parse_asr_transcript("[0.00-0.50] <|zh|><|NEUTRAL|>１２\n[0.50-1.00] ３\n", ""),
             Some("１２３".to_string()),
             "SenseVoice timestamped segments are its explicit backend protocol"
+        );
+    }
+
+    #[test]
+    fn joins_timed_segments_without_corrupting_word_boundaries() {
+        assert_eq!(
+            parse_asr_transcript("[0-.5] hello there\n[.5-1] wide world\n", ""),
+            Some("hello there wide world".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] 你好\n[.5-1] ，\n[1-1.5] 世界\n[1.5-2] ！\n", ""),
+            Some("你好，世界！".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] 你好 \n[.5-1] 世界\n", ""),
+            Some("你好 世界".to_string()),
+            "explicit backend whitespace is retained at a CJK segment boundary"
+        );
+        assert_eq!(
+            parse_asr_transcript(
+                "[0-.5] 中文\n[.5-1] Rust\n[1-1.5] 123\n[1.5-2] ，\n[2-2.5] 版本\n",
+                ""
+            ),
+            Some("中文Rust 123，版本".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] １２\n[.5-1] ３\n", ""),
+            Some("１２３".to_string())
         );
     }
 }
