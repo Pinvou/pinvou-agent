@@ -25,12 +25,15 @@ fingerprints=(
   "T2|截断参数修复提示                   |CodeWhale/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
   "T2|工具黑名单结果 golden              |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
   "T2|deferred 激活面 golden             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
+  "T2|会话隐藏集可收窄固定名单           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_hidden_tools_injectable"
+  "T2|会话隐藏集不可扩大固定名单         |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_hidden_tools_cannot_expand_compile_time_blocklist"
+  "T2|tool_search gate 不可注入          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_search_always_gated"
   "T2|disallowed_tools 前缀规则          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
   "T2|Dangerous 命令全模式阻断           |CodeWhale/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
   "T3|项目上下文仅走 inline              |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_pinvou3_uses_only_inline_project_context"
   "T3|密封静态 prompt composer           |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
   "T3|instructions 不受 4KB fragment 截断|CodeWhale/crates/tui/src/prompts.rs|fn forkguard_permissions_fragment_preserves_instructions_beyond_default_fragment_cap"
-  "T3|skill 来源收敛到 bundle            |CodeWhale/crates/tui/src/skills/mod.rs|home.join(\".pinvou3\").join(\"bundle\").join(\"skills\")"
+  "T3|skill 发现仅使用显式注入根         |CodeWhale/crates/tui/src/skills/mod.rs|fn forkguard_skill_discovery_is_single_root_engine_config_skills_dir"
   "T3|停用 skill 不进入目录              |CodeWhale/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
   "T3|内部提醒不污染 Working Set         |CodeWhale/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
 
@@ -69,7 +72,7 @@ fingerprints=(
   "T6|automation reconcile shared API    |CodeWhale/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
 
   "CI|公开 fork 全目标编译门禁           |CodeWhale/.github/workflows/pinvou-fork-ci.yml|cargo check --workspace --all-targets --locked"
-  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r3\""
+  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r4\""
 
   "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|resolve_runtime_route_for_model"
   "APP|部署级 route profile               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn route_limits_for_model("
@@ -79,6 +82,7 @@ fingerprints=(
   "APP|定时任务使用 shared run API        |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
   "APP|敏感目录 hard deny 为 exit 2       |pinvou3-app/src-tauri/resources/common/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
   "APP|静态层 composer 仍由 app 安装      |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|set_static_prompt_composer_override"
+  "APP|会话隐藏集保持固定名单缺省         |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|hidden_tools: None"
   "APP|内置技能写入 bundle 单一来源        |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name"
   "APP|前端终端跨分片解析状态             |pinvou3-app/src/platform/tauri/bridge/terminal.js|function terminalParserState(item, stream)"
   "APP|前端终端跨分片 UI 回归             |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
