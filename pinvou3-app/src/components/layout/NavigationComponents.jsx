@@ -316,6 +316,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             )}
           </span>
           {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
+          {chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-[#F9AB00] opacity-90 animate-pulse" title={t.riAwaitingInput}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
           {chat.unread && (
             <span data-testid="scheduled-run-sidebar-unread" aria-label={t.uiScheduled.unread}
