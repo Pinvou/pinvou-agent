@@ -750,6 +750,7 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
         type="button"
         aria-label={t.modeYoloConfirmCancel}
         className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
+        disabled={busy}
         onClick={onCancel}
       />
       <div

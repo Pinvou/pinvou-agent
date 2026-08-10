@@ -27,7 +27,7 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 | 前端 | code 页 mode 由后端驱动（去三处写死 `'yolo'`）；切 yolo 确认门 + `NativeYoloConfirmCard` |
 | 边界 | 仅品悟原生 code 会话；ACP 与 plain/work 行为逐字节不变 |
 
-7 个文件修改 + 2 个文件新增（约 +550/-33）。
+9 个文件修改 + 3 个文件新增（约 +868/-35）。
 
 ## 三、逐项改动说明
 
@@ -39,6 +39,7 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 - **全局键**（`platform/prefs/mod.rs`）：`UserPrefs` 新增 `code_permission { last_mode, yolo_confirmed }` 域（serde default 兼容旧 settings.json），经 `update_transaction` 字段级事务写盘——已核实所有设置写路径为补丁式，不会被设置页回写冲掉。
 - **新命令**（`app/commands/interaction.rs`）：`get_code_permission_prefs() -> { last_mode, yolo_confirmed }`、`confirm_code_yolo()`。`exit_plan_to_yolo` 不做后端门控（确认是 UI 层语义，与 VS Code 同款）。
 - **任务级切换不记忆**：`accept_plan` 经 `claim_pending_plan` 切 yolo 属任务级动作，不写两层持久化——重启后会话恢复其持久化 mode（刻意语义，批准方案 ≠ 变更权限偏好）。
+- **确认门边界（刻意）**：yolo 一次性确认是 UI 层语义，只挂在 mode chip 的 Plan→Yolo 切换路径（`switchNativeMode`）；`accept_plan`（批准方案卡【就这么干】）同样会把会话切到 Yolo，但**不经确认门**——批准方案本身即用户对执行该方案的显式同意，与 VS Code 首次选 Bypass 弹警告同款取舍。后端 `exit_plan_to_yolo`/`claim_pending_plan` 均不做门控。
 
 ### 前端
 
