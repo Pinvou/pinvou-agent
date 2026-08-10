@@ -78,7 +78,7 @@
     档案算：常量 − 档案 tools.include）。不变式：`tool_search` 的 gate **恒查常量、
     不可注入**（`forkguard_tool_search_always_gated` 守护，防模型用搜索复活被藏工具）；
     `request_user_input` 硬豁免不受注入影响
-    （`forkguard_request_user_input_exempt_from_injected_hidden`）；注入集生效由
+    （`forkguard_hidden_tools_cannot_expand_compile_time_blocklist`）；注入集生效由
     `forkguard_hidden_tools_injectable` 守护。hidden 变化仅 respawn 生效（无热刷
     通道），与 `disallowed_tools` 的热刷语义不同。
   - 内部 `<system-reminder>` 不参与 Working Set 路径提取。
