@@ -5999,6 +5999,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "gtk",
  "include_dir",
  "log",
  "md5",
