@@ -108,6 +108,10 @@ pub fn email_dependency_packages() -> &'static str {
     ""
 }
 
+pub fn email_manual_hint() -> Option<&'static str> {
+    None
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }

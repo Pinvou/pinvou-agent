@@ -1938,6 +1938,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
+      const usesHomebrewDependencyInstaller = !!platformCapabilities.usesHomebrewDependencyInstaller;
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
@@ -2499,10 +2500,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const checking = !!(bs && bs.depsChecking);
         const installing = !!(bs && bs.depsInstalling);
         const installError = bs && bs.depsInstallError;
+        const installProgress = bs && bs.depsInstallProgress;
         const missing = deps.filter(dep => !dep.installed);
         const hasInstallableMissing = missing.some(dep => String(dep.install_action || dep.apt || '').trim());
         const checked = deps.length > 0;
         const busy = checking || installing;
+        // 安装中实时进度文案:优先用后端 deps:install_progress 事件(逐包 + brew 输出行),
+        // 解决一键安装全程只有静态「安装中…」像卡死的问题(尤其 libreoffice cask 长尾)。
+        const progressText = (installing && installProgress)
+          ? `${installProgress.package}（${installProgress.current}/${installProgress.total}）${installProgress.detail ? ' ' + installProgress.detail : ''}`
+          : null;
         return (
           <>
             {showSuperPermissionSettings && (
@@ -2515,11 +2522,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
-                footer={usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote}
+                footer={usesHomebrewDependencyInstaller ? t.depInstallNoteMac : (usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote)}
               >
                 <IOSRow
                   label={checking ? t.depChecking : (!checked ? t.depCheckTitle : (missing.length ? `${missing.length}${t.depMissingSuffix}` : t.depAllOk))}
-                  desc={installing ? t.depInstalling : (installError ? String(installError) : '')}
+                  desc={progressText || (installing ? t.depInstalling : (installError ? String(installError) : ''))}
                 >
                   <button
                     onClick={() => bridge.available && bridge.dependencies.checkDependencies()}
@@ -2528,7 +2535,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   >{checking ? t.depChecking : t.depRecheck}</button>
                 </IOSRow>
                 {missing.map(dep => (
-                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={dep.apt || ''}>
+                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={((dep.hint && (t[`depHint_${dep.hint}`] || dep.hint)) || dep.apt || '').trim()}>
                     <Tag tone="gray">{settingsCopy.missing}</Tag>
                   </IOSRow>
                 ))}
@@ -2538,7 +2545,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       onClick={() => bridge.available && bridge.dependencies.installDependencies()}
                       disabled={!bridge.available || busy}
                       className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-50"
-                    >{installing ? t.depInstalling : t.depInstallBtn}</button>
+                    >{installing ? (progressText || t.depInstalling) : t.depInstallBtn}</button>
                   </IOSRow>
                 )}
               </IOSSection>

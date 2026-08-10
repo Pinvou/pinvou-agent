@@ -9,6 +9,7 @@
     var state = context.state;
     var notify = context.notify;
     var invoke = context.invoke;
+    var listen = context.listen;
     var bt = context.bt;
   // ── 依赖体检 ─────────────────────────────────────────────────────
   // 实时检测各文件解析能力(PDF/Office/OCR/压缩包/邮件)的系统依赖是否齐全,
@@ -46,16 +47,35 @@
       notify();
       return;
     }
-    state.depsInstalling = true; state.depsInstallError = null; notify();
+    state.depsInstalling = true; state.depsInstallError = null; state.depsInstallProgress = null; notify();
+    // 订阅后端进度事件,实时刷新「正在安装 X (n/总数)…」,避免长尾包(libreoffice)
+    // 全程只有静态「安装中…」像卡死。监听器注册是异步的,必须等其注册完成后再
+    // 触发安装,否则安装开始前发出的第一条进度事件会因监听器未就绪而丢失。
+    // 监听注册、安装、unlisten 与状态复位统一放在 try/catch/finally 中:
+    // 监听注册失败也必须复位 depsInstalling,否则界面会一直停在「安装中」。
+    var unlisten = null;
     try {
+      unlisten = await listen("deps:install_progress", function (event) {
+        state.depsInstallProgress = event.payload;
+        notify();
+      });
       await invoke("install_dependencies", { packages: pkgs, actions: actions });
     } catch (e) {
       state.depsInstallError = String(e);
+    } finally {
+      // 反注册尽早做:无论成功失败(含监听注册失败)都取消订阅。
+      if (typeof unlisten === "function") unlisten();
     }
+    // 装完独立重检:重检返回前保持安装锁(depsInstalling 仍为 true)。
+    // 若先解锁再异步重检,界面会基于旧缺失项快照重新启用安装按钮,
+    // 用户再次点击会触发第二个并发安装(Homebrew/winget/模型下载都可能被重复触发)。
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
     } catch (_) { /* keep the last successful dependency snapshot */ }
-    state.depsInstalling = false; notify();
+    finally {
+      // 最终 dependency snapshot 更新完成后再解锁并通知。
+      state.depsInstalling = false; state.depsInstallProgress = null; notify();
+    }
   }
 
     return {
