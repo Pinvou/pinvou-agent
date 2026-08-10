@@ -919,6 +919,19 @@ fn parses_local_asr_plain_text_output() {
 fn parses_local_asr_numeric_only_output() {
     let text = parse_local_asr_text("123\n", "").expect("numeric transcript");
     assert_eq!(text, "123");
+    assert_eq!(
+        parse_local_asr_text("123\n", "100/100%\n12:34:56\n"),
+        Some("123".to_string())
+    );
+    assert_eq!(
+        parse_local_asr_text("１２３\n", ""),
+        Some("１２３".to_string())
+    );
+    assert_eq!(
+        parse_local_asr_text(r#"{"text":"123"}"#, ""),
+        Some("123".to_string())
+    );
+    assert_eq!(parse_local_asr_text("", "100/100%\n100\n12:34:56\n"), None);
     assert!(
         parse_local_asr_text("...\n", "[INFO] loading\n").is_none(),
         "punctuation and log output must not become a transcript"
