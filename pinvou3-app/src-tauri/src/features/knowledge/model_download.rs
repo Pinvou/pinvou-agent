@@ -120,7 +120,7 @@ fn model_directory_is_complete(dir: &Path) -> bool {
 }
 
 /// 当前配置模型是否已部署：显式开发覆盖优先，否则检查应用托管目录。
-fn installed() -> bool {
+pub(crate) fn model_installed() -> bool {
     model_directory_is_complete(&configured_model_dir())
 }
 
@@ -147,7 +147,7 @@ pub struct KbModelStatus {
 }
 
 fn current_status(service: &KnowledgeService) -> KbModelStatus {
-    let installed = installed();
+    let installed = model_installed();
     let ready = service.semantic_ready();
     let loading = MODEL_LOAD.is_loading();
     let error = model_load_error();
@@ -184,7 +184,7 @@ pub async fn kb_model_load_after_first_frame(
     if service.semantic_ready() {
         return Ok(true);
     }
-    if !installed() {
+    if !model_installed() {
         return Ok(false);
     }
 
@@ -220,13 +220,13 @@ pub async fn kb_model_download(
         return Err("模型正在下载中".into());
     }
     let repair = repair.unwrap_or(false);
-    if uses_external_model_dir() && (repair || !installed()) {
+    if uses_external_model_dir() && (repair || !model_installed()) {
         return Err(
             "当前使用 PINVOU3_KB_EMBED_MODEL_DIR 指定的外部模型目录；应用不会覆盖该目录，请修复该目录或移除环境变量后重试"
                 .into(),
         );
     }
-    if installed() && !repair {
+    if model_installed() && !repair {
         if service.semantic_ready() {
             return Ok(current_status(&service));
         }

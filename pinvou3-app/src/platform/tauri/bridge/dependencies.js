@@ -27,7 +27,12 @@
     var missing = deps.filter(function (d) { return !d.installed; });
     if (!missing.length || state.depsInstalling) return;
     var pkgs = [];
+    var actions = [];
     missing.forEach(function (d) {
+      var action = String(d.install_action || "").trim();
+      if (/^[a-z0-9_]+$/i.test(action) && actions.indexOf(action) < 0) {
+        actions.push(action);
+      }
       var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
       if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
         return;
@@ -36,18 +41,20 @@
         if (pkgs.indexOf(p) < 0) pkgs.push(p);
       });
     });
-    if (!pkgs.length) {
+    if (!pkgs.length && !actions.length) {
       state.depsInstallError = bt("depsInstallManual");
       notify();
       return;
     }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
-      await invoke("install_dependencies", { packages: pkgs });
-      state.deps = await invoke("check_dependencies"); // 装完实时重检,缺失项应清空
+      await invoke("install_dependencies", { packages: pkgs, actions: actions });
     } catch (e) {
       state.depsInstallError = String(e);
     }
+    try {
+      state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
+    } catch (_) { /* keep the last successful dependency snapshot */ }
     state.depsInstalling = false; notify();
   }
 
