@@ -2535,7 +2535,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   >{checking ? t.depChecking : t.depRecheck}</button>
                 </IOSRow>
                 {missing.map(dep => (
-                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={(dep.hint || dep.apt || '').trim()}>
+                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={((dep.hint && (t[`depHint_${dep.hint}`] || dep.hint)) || dep.apt || '').trim()}>
                     <Tag tone="gray">{settingsCopy.missing}</Tag>
                   </IOSRow>
                 ))}

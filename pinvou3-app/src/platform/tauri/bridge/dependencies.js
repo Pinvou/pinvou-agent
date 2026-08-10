@@ -63,13 +63,19 @@
     } catch (e) {
       state.depsInstallError = String(e);
     } finally {
-      // 无论成功失败(含监听注册失败)都取消订阅、清空进度并复位安装中状态。
+      // 反注册尽早做:无论成功失败(含监听注册失败)都取消订阅。
       if (typeof unlisten === "function") unlisten();
-      state.depsInstalling = false; state.depsInstallProgress = null; notify();
     }
+    // 装完独立重检:重检返回前保持安装锁(depsInstalling 仍为 true)。
+    // 若先解锁再异步重检,界面会基于旧缺失项快照重新启用安装按钮,
+    // 用户再次点击会触发第二个并发安装(Homebrew/winget/模型下载都可能被重复触发)。
     try {
       state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
     } catch (_) { /* keep the last successful dependency snapshot */ }
+    finally {
+      // 最终 dependency snapshot 更新完成后再解锁并通知。
+      state.depsInstalling = false; state.depsInstallProgress = null; notify();
+    }
   }
 
     return {

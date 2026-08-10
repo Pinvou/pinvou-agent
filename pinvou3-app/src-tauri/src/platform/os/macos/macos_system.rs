@@ -142,10 +142,12 @@ pub fn email_dependency_packages() -> &'static str {
 
 /// macOS 邮件依赖的手动安装指引。msgconvert 来自 Perl 模块 Email::Outlook::Message，
 /// 无 Homebrew formula，且非 root 安装实测会坏（模块不在系统 Perl 的 @INC），
-/// 只能 `sudo cpan` 装到系统 Perl 路径。返回指引让前端在缺失项显示具体命令，
-/// 而非空泛的「无法一键安装」。其他平台返回 None（apt/winget 可装）。
+/// 只能 `sudo cpan` 装到系统 Perl 路径。返回语义化 hint key（非界面文案），
+/// 由前端 i18n 按 `depHint_<key>` 映射当前语言的完整指引（含命令与文档链接）；
+/// 不直接返回中文文案，否则英文/日文界面会看到中文，违反三语文案约束。
+/// 其他平台返回 None（apt/winget 可装）。
 pub fn email_manual_hint() -> Option<&'static str> {
-    Some("需手动安装：在终端执行 `sudo cpan -i Email::Outlook::Message`（Homebrew 无此 formula）。详见 https://metacpan.org/pod/Email::Outlook::Message")
+    Some("email_manual")
 }
 
 /// Mac 无 NVIDIA 驱动。
