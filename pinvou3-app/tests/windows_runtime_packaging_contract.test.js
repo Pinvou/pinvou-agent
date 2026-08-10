@@ -115,6 +115,7 @@ for (const contract of [
   "manifest SHA-256",
   "Test-LfsPointer",
   "Test-ManagedArchiveExpansion",
+  "Test-ManifestStagedFiles",
   "System.IO.Compression.ZipFile",
   "Write-Utf8WithoutBom",
   "Test-StageInventory",
@@ -126,6 +127,9 @@ for (const contract of [
   assert.ok(runtimeScript.includes(contract), `runtime staging must retain ${contract}`);
 }
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
+assert.match(runtimeScript, /schemaVersion -notin @\(1, 2\)/u);
+assert.match(runtimeScript, /manifest\.stagedFiles/u);
+assert.match(runtimeScript, /Windows runtime staged file failed verification/u);
 assert.match(runtimeScript, /vcRedist\.minimumVersion/u);
 assert.match(runtimeScript, /System\.Diagnostics\.FileVersionInfo/u);
 assert.match(runtimeScript, /\$vcActualVersion -lt \$vcMinimumVersion/u);

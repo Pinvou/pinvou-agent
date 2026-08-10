@@ -23,7 +23,7 @@ ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/
 脚本会检查受 LFS 管理的实际文件，只有仍存在 pointer 时才按路径执行 `git lfs pull`，并输出
 `pinvou3-windows-runtime-<commit>` 形式的 Jenkins 缓存键。
 
-校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。
+校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。resolver 兼容 schema 1/2；schema 2 的 `stagedFiles` 会在清理原始 payload 前逐项校验完整 staging。
 
 每次构建都会按 runtime manifest 复核源文件的大小和 SHA-256。staging 内的 `.verified-lock` 绑定 runtime commit、manifest
 SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json` 则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化

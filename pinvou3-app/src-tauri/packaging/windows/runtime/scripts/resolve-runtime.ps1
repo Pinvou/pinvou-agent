@@ -163,8 +163,12 @@ function Read-CompatibleRuntimeManifest {
   param([string]$ManifestPath)
 
   $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  if ([int]$manifest.schemaVersion -ne 1 -or [string]$manifest.target -ne [string]$lock.target) {
+  $schemaVersion = [int]$manifest.schemaVersion
+  if ($schemaVersion -notin @(1, 2) -or [string]$manifest.target -ne [string]$lock.target) {
     throw "Windows runtime submodule manifest schema or target is incompatible."
+  }
+  if ($schemaVersion -eq 2 -and @($manifest.stagedFiles).Count -eq 0) {
+    throw "Windows runtime manifest schema 2 must contain stagedFiles."
   }
   return $manifest
 }
@@ -339,6 +343,35 @@ function Test-ManagedArchiveExpansion {
     $item = Get-Item -LiteralPath $entryPath
     if ([long]$item.Length -ne [long]$entry.bytes -or (Get-Sha256 -Path $entryPath) -ne [string]$entry.sha256) {
       throw "Managed component file failed verification after extraction: $ArchiveManifestPath -> $($entry.path)"
+    }
+  }
+}
+
+function Test-ManifestStagedFiles {
+  param($Manifest, [string]$StageRoot)
+
+  if ([int]$Manifest.schemaVersion -lt 2) {
+    return
+  }
+
+  $entries = @($Manifest.stagedFiles)
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in $entries) {
+    $relativePath = [string]$entry.path
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or -not $seen.Add($relativePath)) {
+      throw "Windows runtime stagedFiles contains an empty or duplicate path: $relativePath"
+    }
+    $entryPath = Join-Path $StageRoot $relativePath.Replace('/', '\')
+    Assert-ChildPath -Root $StageRoot -Path $entryPath
+    if (-not (Test-Path -LiteralPath $entryPath -PathType Leaf)) {
+      throw "Windows runtime staged file is missing: $relativePath"
+    }
+    $item = Get-Item -LiteralPath $entryPath
+    if (
+      [long]$item.Length -ne [long]$entry.bytes -or
+      (Get-Sha256 -Path $entryPath) -ne [string]$entry.sha256
+    ) {
+      throw "Windows runtime staged file failed verification: $relativePath"
     }
   }
 }
@@ -568,6 +601,8 @@ function Stage-Submodule {
       ) {
         throw "Staged VC++ runtime differs from its verified source: $vcStagedPath"
       }
+
+      Test-ManifestStagedFiles -Manifest $Manifest -StageRoot $stageContext.TemporaryRoot
 
       # Component archives have served their only purpose after extraction and
       # verification. Removing them keeps the reusable stage minimal and avoids
