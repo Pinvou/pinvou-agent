@@ -24,3 +24,17 @@ npm test
 ```
 
 浏览器 smoke 测试加载 `dist/`，运行前需先执行 `npm run build:ui`。
+
+## 测试分层
+
+- `npm test`：运行无需浏览器和外部服务的确定性测试，并校验桌宠资源。
+- `npm run test:node`：只运行 Node 测试；`tests/*.test.js` 和
+  `tests/*.test.mjs` 会由 Node 测试运行器自动发现，并以固定 4 并发执行，无需再修改测试清单。
+- `npm run test:browser-smoke`：运行完整浏览器 smoke 集合；本地需提供
+  `CHROME`，并先在 `pinvou3-app/` 和 `remote-control-relay/` 分别执行 `npm ci`。
+  CI 在 Ready PR 中按改动选择 smoke，在 Merge Queue 中运行完整集合。
+- `npm run test:user-journey`：运行跨前端、Relay 和 MCP 的用户旅程检查。
+
+新增确定性测试统一命名为 `*.test.js` 或 `*.test.mjs`。需要浏览器的测试统一命名为
+`*_smoke.js` 或 `*_smoke.mjs`，并登记到 `scripts/select-frontend-smokes.mjs`；平台专属
+runtime smoke 保留独立入口。`test_suite_contract.test.mjs` 会阻止未分类测试被静默遗漏。

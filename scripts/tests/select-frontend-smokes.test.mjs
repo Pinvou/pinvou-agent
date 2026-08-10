@@ -23,6 +23,13 @@ test("test infrastructure changes fail closed to the full browser suite", () => 
   );
 });
 
+test("frontend smoke runner changes fail closed to the full browser suite", () => {
+  assert.deepEqual(
+    labels(selectFrontendSmokes(["scripts/run-frontend-smokes.mjs"])),
+    fullLabels,
+  );
+});
+
 test("feature-local changes select core and feature smokes", () => {
   assert.deepEqual(
     labels(

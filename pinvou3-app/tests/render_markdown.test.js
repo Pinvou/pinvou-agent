@@ -1,11 +1,11 @@
-// Smoke 测试 tauri-bridge.js 的 renderMarkdown 危险标签抹平。
+// 测试 tauri-bridge.js 的 renderMarkdown 危险标签抹平。
 //
 // 起因:Pinvou 表格 cell 里 LLM 写"在同一个 <script> 标签内"会让 marked 透传成真 HTML,
 // 浏览器 HTML 解析器把 <script> 后的内容(包括 | 列分隔和后续 cell)全卷进 script 元素,
 // DOMPurify 再整段剥掉 → 用户看到表格后几个 cell "空掉"。修法:marked.parse 之后用正则
 // 把 script/style/iframe/object/embed/link/meta 标签 escape 成 &lt;...&gt;。
 //
-// 跑法:`node pinvou3-app/tests/render_markdown_smoke.js`(无需 npm test,直接 node)。
+// 跑法:`node --test pinvou3-app/tests/render_markdown.test.js`。
 // 改 renderMarkdown 后跑一次确认 5 个 case 仍 PASS。
 //
 // 注:本测试只验 marked + neutralize 两层(后者拷在这里),不验 DOMPurify。
