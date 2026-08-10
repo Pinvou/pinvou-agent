@@ -1681,13 +1681,19 @@ impl AcpPool {
         let app = self.app.clone();
         let result = tokio::task::spawn_blocking(move || {
             let run_brew = |args: &[&str], command: &str| -> Result<std::process::Output> {
-                let mut child = std::process::Command::new(platform::brew_bin())
+                let mut brew_command = std::process::Command::new(platform::brew_bin());
+                brew_command
                     .args(args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .context("启动 Homebrew 失败")?;
+                    .stderr(Stdio::piped());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt as _;
+                    // 独立进程组：取消时按组杀，brew 派生进程不孤儿化。
+                    brew_command.process_group(0);
+                }
+                let mut child = brew_command.spawn().context("启动 Homebrew 失败")?;
                 // 登记 pid 供取消命令杀进程树；guard 在 run_brew 出口注销。
                 let _child_guard =
                     InstallChildGuard::register(&install_children, backend, Some(child.id()));
@@ -2121,12 +2127,7 @@ impl AcpPool {
             &self.install_cancelled,
         )
         .await;
-        if result.is_ok() {
-            // 升级成功：清理备份，释放磁盘空间。
-            for (_, backup) in &moved_backups {
-                let _ = std::fs::remove_file(backup);
-            }
-        } else if !moved_backups.is_empty() {
+        if result.is_err() && !moved_backups.is_empty() {
             // 脚本失败（含用户取消）：恢复旧文件，避免旧版本丢失。
             for (original, backup) in &moved_backups {
                 if backup.is_file() && !original.exists() {
@@ -2150,8 +2151,19 @@ impl AcpPool {
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "script:complete", "result=success");
-                self.finalize_agent_install(backend, previous_codex_version)
-                    .await
+                // 备份不在这里删：finalize 内部做版本/就绪校验（verify），
+                // **验证通过后才清理** .pre-upgrade 备份，释放磁盘空间。
+                // 假成功（exit 0 但未生效）时保留旧二进制，避免旧 CLI 永久
+                // 丢失（评审中危项：先删后验）。
+                let finalized = self
+                    .finalize_agent_install(backend, previous_codex_version)
+                    .await;
+                if finalized.is_ok() {
+                    for (_, backup) in &moved_backups {
+                        let _ = std::fs::remove_file(backup);
+                    }
+                }
+                finalized
             }
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -5216,6 +5228,12 @@ async fn run_npm_global_upgrade(
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
+        command.process_group(0);
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -181,7 +181,9 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
         if (key) setApiKey(key);
         setKeyLoaded(true);
       })
-      .catch(() => { if (alive) setKeyLoaded(true); });
+      // 回填失败**不**置 keyLoaded：保持 false → save 时按「保留」处理，
+      // 防止读不到已保存密钥时用户看到空字段直接保存即静默删除（评审高危项）。
+      .catch(() => {});
     return () => { alive = false; };
     // eslint 的 exhaustive-deps 本仓未启用；仅挂载/编辑目标变化时拉一次
   }, [agent, initial]);
@@ -258,6 +260,12 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
       : trimmedKey
         ? 'replace'
         : (initial.hasCredential && !keyLoaded ? 'keep' : 'delete');
+    // 「清空 = 删除」会删掉已保存密钥：二次确认防误触。回填失败时
+    // keyLoaded=false 恒走 keep，不会到这里。
+    if (apiKeyAction === 'delete' && !window.confirm(copy.deleteKeyConfirm)) {
+      setSaving(false);
+      return;
+    }
     try {
       const saved = await invokeTauri('save_acp_provider', {
         agent,

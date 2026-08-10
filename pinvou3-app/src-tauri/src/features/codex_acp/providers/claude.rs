@@ -171,8 +171,13 @@ mod tests {
     use super::*;
     use crate::features::codex_acp::providers::ProviderWireApi;
 
+    /// 按测试名区分目录（cargo 并行跑时同 pid 共享目录会互删，见 kimi.rs）。
     fn tmp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("claude-writer-test-{}", std::process::id()));
+        let test = std::thread::current()
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("claude-writer-test-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

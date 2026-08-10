@@ -99,10 +99,15 @@ pub(crate) fn config_relay_effective(raw: &str) -> EffectiveConfig {
     else {
         return EffectiveConfig::default();
     };
+    // 指向不存在表的 model_provider 按「未激活」处理（provider_hint 也置
+    // None，与测试契约一致）：只有真正存在该表才算 relay 配置。
     let relay_active = config
         .get("model_providers")
         .and_then(|providers| providers.get(provider_id))
         .is_some();
+    if !relay_active {
+        return EffectiveConfig::default();
+    }
     // 生效值展示（F4 可见化）：model_provider / model / 该 provider 的 base_url。
     let mut entries = Vec::new();
     entries.push(EffectiveEntry {
@@ -298,8 +303,13 @@ mod tests {
     use super::*;
     use crate::features::codex_acp::providers::ProviderWireApi;
 
+    /// 按测试名区分目录（cargo 并行跑时同 pid 共享目录会互删，见 kimi.rs）。
     fn tmp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("codex-writer-test-{}", std::process::id()));
+        let test = std::thread::current()
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("codex-writer-test-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

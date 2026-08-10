@@ -311,8 +311,14 @@ mod tests {
     use super::*;
     use crate::features::codex_acp::providers::ProviderWireApi;
 
+    /// 用测试线程名（= 测试函数名）区分目录：cargo 并行跑多个测试时
+    /// 同进程不同测试若共用 `{pid}` 目录会互删文件（评审发现 27 failed）。
     fn tmp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kimi-writer-test-{}", std::process::id()));
+        let test = std::thread::current()
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("kimi-writer-test-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -402,9 +408,11 @@ mod tests {
         let dir = tmp_dir();
         let writer = KimiConfigWriter::new(&dir);
         // 模拟官方登录写入的 OAuth provider 表
+        // 表名含点号必须加引号（`[models."kimi-k2.5"]`），否则 TOML 把 `.5`
+        // 解析成 `models.kimi-k2` 的子表，断言取不到 `models["kimi-k2.5"]`。
         fs::write(
             dir.join("config.toml"),
-            "default_model = \"kimi-k2.5\"\n\n[models.kimi-k2.5]\nprovider = \"official-oauth\"\nmodel = \"kimi-k2.5\"\nmax_context_size = 200000\n\n[providers.official-oauth]\ntype = \"anthropic\"\n\n[providers.official-oauth.oauth]\nclient_id = \"x\"\n",
+            "default_model = \"kimi-k2.5\"\n\n[models.\"kimi-k2.5\"]\nprovider = \"official-oauth\"\nmodel = \"kimi-k2.5\"\nmax_context_size = 200000\n\n[providers.official-oauth]\ntype = \"anthropic\"\n\n[providers.official-oauth.oauth]\nclient_id = \"x\"\n",
         )
         .unwrap();
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
@@ -475,10 +483,11 @@ mod tests {
     fn official_default_model_roundtrip() {
         let dir = tmp_dir();
         let writer = KimiConfigWriter::new(&dir);
-        // 模拟官方登录写入的配置
+        // 模拟官方登录写入的配置：官方 OAuth 登录会写 `[…].oauth` 子表，
+        // `kimi_runtime_config_ready` 依赖它（缺失会被判为未就绪）。
         fs::write(
             dir.join("config.toml"),
-            "default_model = \"kimi-code/k3\"\n\n[models.\"kimi-code/k3\"]\nprovider = \"managed:kimi-code\"\nmodel = \"k3\"\nmax_context_size = 1048576\n\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\n",
+            "default_model = \"kimi-code/k3\"\n\n[models.\"kimi-code/k3\"]\nprovider = \"managed:kimi-code\"\nmodel = \"k3\"\nmax_context_size = 1048576\n\n[providers.\"managed:kimi-code\"]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\n\n[providers.\"managed:kimi-code\".oauth]\nclient_id = \"x\"\n",
         )
         .unwrap();
         // 切换前记录官方 default_model

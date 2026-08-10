@@ -457,6 +457,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     backup_once(path)?;
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, content).with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
+    // Unix 上配置含明文 key（kimi/claude 的 CLI 配置）：临时文件先收成 0600
+    // 再 rename，避免默认 umask 0644 让同机其他用户可读（评审中危项）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
     fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
     Ok(())
 }
@@ -474,6 +481,9 @@ pub struct ProviderManager {
     claude_root: PathBuf,
     codex_root: PathBuf,
     kimi_root: PathBuf,
+    /// per-agent 配置切换锁：apply 与 store 持久化之间互斥，防两个 switch 交错
+    /// 导致 CLI 配置与 store.current 分裂（评审中危项）。按 agent 惰性建锁。
+    switch_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>>,
 }
 
 impl ProviderManager {
@@ -485,7 +495,17 @@ impl ProviderManager {
             claude_root: home.join(".claude"),
             codex_root: home.join(".codex"),
             kimi_root: super::kimi_data_root(),
+            switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         })
+    }
+
+    /// 取（必要时创建）per-agent 配置切换锁。
+    fn switch_lock(&self, agent: &str) -> Arc<parking_lot::Mutex<()>> {
+        self.switch_locks
+            .lock()
+            .entry(agent.to_string())
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+            .clone()
     }
 
     fn writer_for(&self, agent: &str) -> Result<Box<dyn AgentConfigWriter>> {
@@ -710,7 +730,24 @@ impl ProviderManager {
                 .map(|record| record.created_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
-        self.store.upsert(agent, record.clone())?;
+        // 编辑**生效中**的 Provider 必须同步重写 CLI 配置，否则 base_url/模型
+        // 不生效、生效区展示陈旧（评审中危项）。与 switch 同锁防交错。
+        if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
+            let lock = self.switch_lock(agent);
+            let _switch_guard = lock.lock();
+            let key = self.api_key(agent, &record.id)?;
+            let writer = self.writer_for(agent)?;
+            writer.apply(&ProviderTarget::from_record(&record, key))?;
+            if let Err(error) = self.store.upsert(agent, record.clone()) {
+                // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
+                // 保持「失败 = 什么都没发生」语义。
+                let _ = writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
+                let _ = writer.restore_default_model(self.store.official_default_model(agent).as_deref());
+                return Err(error);
+            }
+        } else {
+            self.store.upsert(agent, record.clone())?;
+        }
         Ok(record)
     }
 
@@ -719,6 +756,9 @@ impl ProviderManager {
     /// 无法再通过 App 恢复」的状态（M1 delete 路径）。
     pub fn delete(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
         validate_agent(agent)?;
+        // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
+        let lock = self.switch_lock(agent);
+        let _switch_guard = lock.lock();
         let was_current = self.store.current(agent).as_deref() == Some(provider_id);
         let removed = self.store.get(agent, provider_id);
         if was_current {
@@ -742,6 +782,10 @@ impl ProviderManager {
     /// 「UI 显示未切换、实际配置已改」的分裂状态。
     pub fn switch(&self, agent: &str, provider_id: &str) -> Result<()> {
         validate_agent(agent)?;
+        // 全程持 per-agent 锁：apply 与 store 持久化之间互斥，防双 switch
+        // 交错（评审中危项）。
+        let lock = self.switch_lock(agent);
+        let _switch_guard = lock.lock();
         let record = self
             .store
             .get(agent, provider_id)
@@ -763,8 +807,11 @@ impl ProviderManager {
             .set_official_default_model(agent, official_default_model.as_deref())
             .and_then(|_| self.store.set_current(agent, Some(provider_id)));
         if let Err(error) = persisted {
-            // 回滚配置写入，保持「失败 = 什么都没发生」语义
+            // 回滚配置写入，保持「失败 = 什么都没发生」语义；kimi 的 apply 会
+            // 覆盖 default_model，必须一并写回官方值，否则官方登录态断裂
+            // （评审中危项）。
             let _ = writer.revert_to_official(Some(&ProviderTarget::from_record(&record, None)));
+            let _ = writer.restore_default_model(official_default_model.as_deref());
             return Err(error.context(
                 "切换 Provider 失败：配置已写入但无法保存切换状态，已回滚配置；请检查磁盘后重试",
             ));
@@ -866,12 +913,23 @@ impl ProviderManager {
             serde_json::from_str(json).context("导入文件不是有效的 Provider JSON")?;
         let mut result = ImportResult::default();
         for entry in entries {
-            if entry.name.trim().is_empty() || validate_base_url(&entry.base_url).is_err() {
+            // context_window ≤ 0 会写坏 kimi 配置（max_context_size 必须为正，
+            // 评审中危项）；名称/地址非法一并跳过。
+            if entry.name.trim().is_empty()
+                || validate_base_url(&entry.base_url).is_err()
+                || entry.context_window.is_some_and(|window| window <= 0)
+            {
                 result.skipped += 1;
                 continue;
             }
-            // id 冲突（已存在或格式非法）时重新生成并告警。
+            // id 冲突（已存在或格式非法——仅前缀匹配不够，非法字符会写进 TOML
+            // 表名）时重新生成并告警。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
+                && entry.id.len() <= 64
+                && entry
+                    .id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 && self.store.get(agent, &entry.id).is_none()
             {
                 entry.id.clone()
@@ -968,7 +1026,9 @@ mod tests {
 
     #[test]
     fn store_roundtrip_and_atomic() {
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{}", std::process::id()));
+        let current = std::thread::current();
+        let test = current.name().unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let store = tmp_store(&dir);
@@ -1022,8 +1082,9 @@ mod tests {
 
     #[test]
     fn remove_clears_current_candidate() {
-        let dir =
-            std::env::temp_dir().join(format!("acp-providers-test-rm-{}", std::process::id()));
+        let current = std::thread::current();
+        let test = current.name().unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-rm-{test}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let store = tmp_store(&dir);

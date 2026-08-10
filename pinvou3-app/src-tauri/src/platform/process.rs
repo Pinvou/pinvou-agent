@@ -176,12 +176,22 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
         command
             .arg("-c")
             .arg(format!("curl -fsSL {unix_url} | bash"));
+        // Unix 上把安装进程放进**独立进程组**（组长 pid = 子进程 pid）：取消时
+        // 按组杀（kill -9 -pgid）才能真正终止 curl | bash 派生的子进程，否则
+        // 子 shell 孤儿化继续安装（评审中危项）。
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
         command
     }
 }
 
 /// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
-/// 父进程会留下继续运行的子进程）；其他平台 kill -9（尽力而为）。
+/// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
+/// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
+/// 的子进程一起终止，不孤儿化（评审中危项）。
 pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
     let pid_arg = pid.to_string();
     if crate::platform::capabilities::is_windows() {
@@ -189,8 +199,9 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
             .args(["/PID", pid_arg.as_str(), "/T", "/F"])
             .output()
     } else {
+        let group_arg = format!("-{pid_arg}");
         external_command(Path::new("kill"))
-            .args(["-9", pid_arg.as_str()])
+            .args(["-9", group_arg.as_str()])
             .output()
     }
 }
