@@ -22,9 +22,6 @@ const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\
      2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
      方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
 
-/// 原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),隐藏 present_artifact。
-const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";
-
 /// `load_skill` 工具名。不再由本策略恒返回：skill 双 scope 治理（组合目录）落地后，
 /// code 会话按「组合目录是否为空」动态决定隐藏（见 bridge::shape_disallowed_tools）——
 /// 空 → 隐藏（避免"开关开着但没技能"的假状态），非空 → 放行。方向对齐
@@ -43,10 +40,12 @@ pub struct SessionPolicy {
 /// 消费者按通道取数，不再各自 if 分流（档案即数据，新增模式=加档案条目）。
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedCapabilities {
-    /// 连接器禁用集 scope（shape_disallowed_tools 的连接器替换用）。
+    /// 连接器禁用集 scope（shape_disallowed_tools 的连接器替换用；来自档案
+    /// `connectors.scope`）。
     pub connector_scope: ConnectorScope,
-    /// app 侧恒额外隐藏的工具（disallowed_tools 通道；code：产物卡）。
-    pub extra_hidden_tools: &'static [&'static str],
+    /// 模式固有隐藏工具（disallowed_tools 通道；来自档案 `tools.extra_hidden`，
+    /// code：产物卡）。语义上"该模式不可能有"——恒定，不可被用户开关覆盖。
+    pub extra_hidden_tools: &'static [String],
     /// 档案 tools.exclude：基础集上再藏（disallowed_tools 通道，下轮生效）。
     pub tool_exclude: &'static [String],
     /// 档案 tools.include：从底座隐藏常量放出（EngineConfig.hidden_tools 通道，
@@ -77,20 +76,14 @@ impl SessionPolicy {
         profile_for(self.mode)
     }
 
-    /// 统一解析入口：按会话模式加载档案，产出两通道差量 + 模式固有属性。
-    /// **if-else 只保留在解析器内部**；外部消费者（shape_disallowed_tools /
-    /// engine config 构造）一律走本方法取数。
+    /// 统一解析入口：按会话模式加载档案，**纯数据投影**（零 match）——能力数据
+    /// 与能力属性全部来自档案，外部消费者（shape_disallowed_tools / engine config
+    /// 构造）一律走本方法取数。新增模式的能力部分 = 只加档案条目。
     pub fn resolve(&self) -> ResolvedCapabilities {
         let profile = self.profile();
         ResolvedCapabilities {
-            connector_scope: match self.mode {
-                SessionMode::Plain => ConnectorScope::Plain,
-                SessionMode::Code => ConnectorScope::Code,
-            },
-            extra_hidden_tools: match self.mode {
-                SessionMode::Plain => &[],
-                SessionMode::Code => &[PRESENT_ARTIFACT],
-            },
+            connector_scope: profile.connectors.scope,
+            extra_hidden_tools: &profile.tools.extra_hidden,
             tool_exclude: &profile.tools.exclude,
             tool_include: &profile.tools.include,
         }
@@ -101,10 +94,27 @@ impl SessionPolicy {
         self.resolve().connector_scope
     }
 
-    /// 该模式恒额外隐藏的工具（code：产物卡；load_skill 不在此列——其隐藏与否
-    /// 由该会话组合目录是否为空动态决定，见 bridge::shape_disallowed_tools）。
-    pub fn extra_hidden_tools(&self) -> &'static [&'static str] {
+    /// 该模式固有隐藏的工具（来自档案 `tools.extra_hidden`；code：产物卡；
+    /// load_skill 不在此列——其隐藏与否由该会话组合目录是否为空动态决定，
+    /// 见 bridge::shape_disallowed_tools）。
+    pub fn extra_hidden_tools(&self) -> &'static [String] {
         self.resolve().extra_hidden_tools
+    }
+
+    // ── 运行行为语义方法 ──────────────────────────────────────────────
+    // 能力部分走 resolve()（数据）；运行行为（prompt 分层、项目规则注入等本质
+    // 是代码行为）收敛为本组语义方法。**全仓唯一的模式分支点集中在策略对象内**，
+    // 消费点调用语义方法而非裸模式判断——新增模式的运行行为只改这里。
+    // 语义命名表达"为什么"（绑项目目录/用代码层指令），而非"是什么模式"。
+
+    /// 该模式绑定真实项目目录（决定 code_session_project_rules 注入等）。
+    pub fn binds_project(&self) -> bool {
+        matches!(self.mode, SessionMode::Code)
+    }
+
+    /// 该模式使用代码层 instructions（编码执行循环 + 代码场景纪律，无产物卡语义）。
+    pub fn uses_code_instructions(&self) -> bool {
+        matches!(self.mode, SessionMode::Code)
     }
 
     /// Plan 模式 per-turn reminder。两模式同文：R-1 已为 code 页接上方案审批卡，
@@ -139,8 +149,11 @@ mod tests {
         // （bridge::shape_disallowed_tools，V-5 联动）。
         assert_eq!(
             policy.extra_hidden_tools(),
-            &["mcp_pinvou3_present_artifact"]
+            &["mcp_pinvou3_present_artifact".to_string()]
         );
+        // 运行行为语义方法：code = 绑项目目录 + 代码层 instructions
+        assert!(policy.binds_project());
+        assert!(policy.uses_code_instructions());
     }
 
     #[test]
@@ -150,6 +163,9 @@ mod tests {
         assert!(policy.multi_agent_mode_available());
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
+        // 运行行为语义方法：plain 不绑项目目录、不用代码层 instructions
+        assert!(!policy.binds_project());
+        assert!(!policy.uses_code_instructions());
     }
 
     /// 能力档案统一解析（U-2 档案即数据）：resolve 两通道差量来自档案——
@@ -164,7 +180,10 @@ mod tests {
 
         let code = SessionPolicy::for_mode(SessionMode::Code).resolve();
         assert_eq!(code.connector_scope, ConnectorScope::Code);
-        assert_eq!(code.extra_hidden_tools, &["mcp_pinvou3_present_artifact"]);
+        assert_eq!(
+            code.extra_hidden_tools,
+            &["mcp_pinvou3_present_artifact".to_string()]
+        );
         assert!(code.tool_exclude.is_empty());
         // include 与档案一致（04 PR-E：首个 include 只放 git_status，逐个放出）
         assert_eq!(code.tool_include, &["git_status".to_string()]);

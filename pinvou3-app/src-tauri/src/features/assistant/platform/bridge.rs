@@ -332,7 +332,7 @@ impl Pinvou3Bridge {
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
         // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
-        let base = if self.session_policy(session_id).mode().is_code() {
+        let base = if self.session_policy(session_id).uses_code_instructions() {
             let workspace_hint = self
                 .execution_root_resolver
                 .as_ref()
@@ -432,56 +432,56 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果取数。plain 会话
-    /// 原样返回（不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并
-    /// 追加策略隐藏工具。spawn 初值与全局热刷都经此整形。
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
+    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回,
+    /// 与历史"plain 原样返回"逐字节等价;有差量则逐项并入 disallowed。
+    /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
-    /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
-    /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
-    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具:产物卡恒隐藏
-    /// （[`SessionPolicy::extra_hidden_tools`]）;`load_skill` 按**该会话组合目录
-    /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
-    /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
-    /// 检查是磁盘 I/O,策略对象保持纯数据）。
-    ///
-    /// 能力档案（capability_profile）：`tools.exclude` 并入 disallowed 通道
-    /// （两模式各自生效，下轮请求即生效——U-3/T-V5；v1 plain 差量为空，
-    /// 等价不变）。
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
+    /// - 档案 `tools.exclude`：基础集上再藏（所有模式）；
+    /// - 档案 `tools.extra_hidden`：模式固有隐藏（所有模式;code:产物卡）;
+    /// - 档案 `connectors.scope` 非 plain 时:连接器工具改用该 scope 的禁用集
+    ///   ——两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;
+    ///   非连接器禁用(kb_search 等)仍保留;
+    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（V-5 联动,非 plain
+    ///   scope 才检查）——目录为空（无任何启用技能）时隐藏,避免"开关开着但没
+    ///   技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录检查是磁盘 I/O,
+    ///   策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
-        let policy = self.session_policy(session_id);
-        let resolved = policy.resolve();
-        // 档案 tools.exclude：基础集上再藏（设计期声明）。
+        let resolved = self.session_policy(session_id).resolve();
+        // 档案 tools.exclude：基础集上再藏（设计期声明，所有模式）。
         for excluded in resolved.tool_exclude {
             if !tools.iter().any(|tool| tool == excluded) {
                 tools.push(excluded.clone());
             }
         }
-        // plain：连接器/隐藏工具零差异,原样返回（档案 plain 差量为空,与历史
-        // 实现逐字节等价）。
-        if !policy.mode().is_code() {
-            return tools;
-        }
-        // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
-        let plain_connector = crate::features::marketplace::disabled_tool_names();
-        let code_connector =
-            crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
-        tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
-        for blocked in code_connector {
-            if !tools.iter().any(|tool| tool == &blocked) {
-                tools.push(blocked);
-            }
-        }
+        // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
         for hidden in resolved.extra_hidden_tools {
             if !tools.iter().any(|tool| tool == hidden) {
-                tools.push((*hidden).to_string());
+                tools.push(hidden.clone());
             }
         }
-        // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
-        if crate::features::assistant::skill_materialization::session_skills_is_empty(session_id) {
-            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
-            if !tools.iter().any(|tool| tool == load_skill) {
-                tools.push(load_skill.to_string());
+        // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
+        // （scope 来自档案 connectors.scope；plain 差量为空时以下全为空操作，
+        // 与历史"plain 原样返回"逐字节等价）。
+        if resolved.connector_scope != marketplace::ConnectorScope::Plain {
+            let plain_connector = crate::features::marketplace::disabled_tool_names();
+            let scoped_connector =
+                crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
+            tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+            for blocked in scoped_connector {
+                if !tools.iter().any(|tool| tool == &blocked) {
+                    tools.push(blocked);
+                }
+            }
+            // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+            if crate::features::assistant::skill_materialization::session_skills_is_empty(
+                session_id,
+            ) {
+                let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+                if !tools.iter().any(|tool| tool == load_skill) {
+                    tools.push(load_skill.to_string());
+                }
             }
         }
         tools
@@ -569,7 +569,7 @@ impl Pinvou3Bridge {
         else {
             return Vec::new();
         };
-        if !self.session_policy(session_id).mode().is_code() {
+        if !self.session_policy(session_id).binds_project() {
             return Vec::new();
         }
         // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
@@ -1089,10 +1089,6 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
-            // pinvou3-fork（能力档案 fork ②）：按会话注入的隐藏工具集。
-            // skill 线不注入（None=回退编译期常量，行为不变）；include 通道由
-            // 能力档案统一 PR 接入。pinvou3 暂不启用会话裁剪，显式保持底座固定隐藏集。
-            hidden_tools: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1340,8 +1336,9 @@ impl Pinvou3Bridge {
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
         // 能力档案 include 通道（fork ②）：
         // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
-        // 仅当档案 include 非空时注入 Some（空 → None → 底座回退常量，与现状
-        // 逐字节等价，plain 零影响）。
+        // 取数统一走 resolve()（与前端 get_profile_tools 同源——单真相源，
+        // 评审 ①b）；仅当 include 非空时注入 Some（空 → None → 底座回退常量，
+        // 与现状逐字节等价，plain 零影响）。
         //
         // ⚠️ 生效语义（U-7，与 disallowed 通道不同）：hidden 集在 **spawn 时
         // 定型**、运行期不变（v1 档案是设计期产物）——档案变更仅 respawn 生效，
@@ -1349,12 +1346,12 @@ impl Pinvou3Bridge {
         // 两通道在 spawn 时的叠加顺序：disallowed 在 catalog 构建后硬删
         // （filter_tool_catalog_for_gates），hidden 在 catalog 构建时贴 defer
         // 标签——互不重叠，顺序无影响。
-        let profile = self.session_policy(session_id).profile();
-        if !profile.tools.include.is_empty() {
+        let resolved = self.session_policy(session_id).resolve();
+        if !resolved.tool_include.is_empty() {
             cfg.hidden_tools = Some(
                 deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS
                     .iter()
-                    .filter(|name| !profile.tools.include.iter().any(|inc| inc == *name))
+                    .filter(|name| !resolved.tool_include.iter().any(|inc| inc == *name))
                     .map(|name| name.to_string())
                     .collect(),
             );
@@ -3595,7 +3592,7 @@ mod tests {
         }
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                shaped.iter().filter(|tool| tool == hidden).count(),
+                shaped.iter().filter(|tool| *tool == hidden).count(),
                 1,
                 "策略隐藏工具应恰好出现一次: {hidden}"
             );
@@ -3603,7 +3600,7 @@ mod tests {
         let twice = bridge.shape_disallowed_tools("sess-code", shaped);
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                twice.iter().filter(|tool| tool == hidden).count(),
+                twice.iter().filter(|tool| *tool == hidden).count(),
                 1,
                 "整形应幂等(不重复追加): {hidden}"
             );
