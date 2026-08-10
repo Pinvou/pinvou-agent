@@ -44,6 +44,14 @@ const runtimeScript = readApp(
   "scripts",
   "resolve-runtime.ps1",
 );
+const runtimeManifestContract = readApp(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "runtime",
+  "scripts",
+  "runtime-manifest-contract.ps1",
+);
 const onnxRuntimeScript = readApp(
   "src-tauri",
   "packaging",
@@ -115,7 +123,7 @@ for (const contract of [
   "manifest SHA-256",
   "Test-LfsPointer",
   "Test-ManagedArchiveExpansion",
-  "Test-ManifestStagedFiles",
+  "Assert-WindowsRuntimeStagedFilesExact",
   "System.IO.Compression.ZipFile",
   "Write-Utf8WithoutBom",
   "Test-StageInventory",
@@ -129,7 +137,16 @@ for (const contract of [
 assert.match(runtimeScript, /Get-Sha256 -Path \$sourcePath/u);
 assert.match(runtimeScript, /schemaVersion -notin @\(1, 2\)/u);
 assert.match(runtimeScript, /manifest\.stagedFiles/u);
-assert.match(runtimeScript, /Windows runtime staged file failed verification/u);
+assert.match(runtimeScript, /runtime-manifest-contract\.ps1/u);
+assert.match(runtimeManifestContract, /Get-CanonicalWindowsRuntimeManifestPath/u);
+assert.match(runtimeManifestContract, /Dictionary\[string, object\]/u);
+assert.match(runtimeManifestContract, /Windows runtime lifecycle contains an extra file/u);
+assert.match(runtimeManifestContract, /Windows runtime staged file failed verification/u);
+const stagedFilesCheck = runtimeScript.indexOf("Assert-WindowsRuntimeStagedFilesExact");
+const derivedVcStage = runtimeScript.indexOf("Preparing descriptor-owned VC++ runtime component");
+const payloadCleanup = runtimeScript.indexOf("Remove-Item -LiteralPath $stageContext.PayloadRoot");
+assert.ok(stagedFilesCheck >= 0 && stagedFilesCheck < derivedVcStage);
+assert.ok(stagedFilesCheck < payloadCleanup);
 assert.match(runtimeScript, /vcRedist\.minimumVersion/u);
 assert.match(runtimeScript, /System\.Diagnostics\.FileVersionInfo/u);
 assert.match(runtimeScript, /\$vcActualVersion -lt \$vcMinimumVersion/u);

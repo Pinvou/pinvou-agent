@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+. (Join-Path $PSScriptRoot "runtime-manifest-contract.ps1")
 
 $tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $appRoot = (Resolve-Path (Join-Path $tauriRoot "..")).Path
@@ -347,35 +348,6 @@ function Test-ManagedArchiveExpansion {
   }
 }
 
-function Test-ManifestStagedFiles {
-  param($Manifest, [string]$StageRoot)
-
-  if ([int]$Manifest.schemaVersion -lt 2) {
-    return
-  }
-
-  $entries = @($Manifest.stagedFiles)
-  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-  foreach ($entry in $entries) {
-    $relativePath = [string]$entry.path
-    if ([string]::IsNullOrWhiteSpace($relativePath) -or -not $seen.Add($relativePath)) {
-      throw "Windows runtime stagedFiles contains an empty or duplicate path: $relativePath"
-    }
-    $entryPath = Join-Path $StageRoot $relativePath.Replace('/', '\')
-    Assert-ChildPath -Root $StageRoot -Path $entryPath
-    if (-not (Test-Path -LiteralPath $entryPath -PathType Leaf)) {
-      throw "Windows runtime staged file is missing: $relativePath"
-    }
-    $item = Get-Item -LiteralPath $entryPath
-    if (
-      [long]$item.Length -ne [long]$entry.bytes -or
-      (Get-Sha256 -Path $entryPath) -ne [string]$entry.sha256
-    ) {
-      throw "Windows runtime staged file failed verification: $relativePath"
-    }
-  }
-}
-
 function Get-RuntimeDescriptorContent {
   param($Manifest, [string]$StageId)
   $relativeRoot = "target/windows-runtime/$StageId"
@@ -587,6 +559,10 @@ function Stage-Submodule {
       $expandedRoot = $stageContext.ExpandedRoot
       Write-Host ("Expanded all Windows runtime components: {0}" -f $expandedRoot)
 
+      # Schema 2 stagedFiles is the exact lifecycle snapshot after payload copy
+      # and component expansion, before derived files or payload cleanup.
+      Assert-WindowsRuntimeStagedFilesExact -Manifest $Manifest -StageRoot $stageContext.TemporaryRoot
+
       # Resolver 只把 VC++ 组件放入通用 staging；是否供 NSIS 使用由 installer adapter 决定。
       Write-Host "Preparing descriptor-owned VC++ runtime component."
       $vcSourcePath = Join-Path $stageContext.TemporaryRoot "payload\vc_redist\VC_redist.x64.exe"
@@ -601,8 +577,6 @@ function Stage-Submodule {
       ) {
         throw "Staged VC++ runtime differs from its verified source: $vcStagedPath"
       }
-
-      Test-ManifestStagedFiles -Manifest $Manifest -StageRoot $stageContext.TemporaryRoot
 
       # Component archives have served their only purpose after extraction and
       # verification. Removing them keeps the reusable stage minimal and avoids

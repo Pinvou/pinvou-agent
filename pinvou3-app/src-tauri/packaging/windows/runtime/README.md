@@ -12,6 +12,7 @@ Windows 大型运行时存放在独立的公开仓库，不直接提交到主仓
 npm run runtime:windows:init
 npm run runtime:windows:validate
 npm run runtime:windows:stage
+npm run test:windows-runtime-manifest
 ```
 
 Windows 桌面开发先执行一次 `npm run runtime:windows:init:onnx`。该命令初始化固定版本的 runtime checkout，
@@ -23,7 +24,7 @@ ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/
 脚本会检查受 LFS 管理的实际文件，只有仍存在 pointer 时才按路径执行 `git lfs pull`，并输出
 `pinvou3-windows-runtime-<commit>` 形式的 Jenkins 缓存键。
 
-校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。resolver 兼容 schema 1/2；schema 2 的 `stagedFiles` 会在清理原始 payload 前逐项校验完整 staging。
+校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。resolver 兼容 schema 1/2；schema 2 的 `stagedFiles` 精确描述“payload 已复制且组件已展开，但派生文件尚未生成、payload 尚未清理”的生命周期快照，校验会双向拒绝缺失或额外文件。
 
 每次构建都会按 runtime manifest 复核源文件的大小和 SHA-256。staging 内的 `.verified-lock` 绑定 runtime commit、manifest
 SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json` 则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化
