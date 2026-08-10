@@ -964,7 +964,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
       const [disabledSkills, setDisabledSkills] = useState(() => new Set()); // 被关掉的技能 id(按 scope 持久,独立文件)
       const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
-      const [profileTools, setProfileTools] = useState([]); // 能力档案放出的内置工具(只读展示,04 PR-E)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -994,10 +993,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         try {
           const proj = await invokeTauri('get_project_skills_enabled');
           if (isAlive()) setProjectSkillsEnabled(!!proj);
-        } catch (e) { /* ignore */ }
-        try {
-          const profile = await invokeTauri('get_profile_tools', { scope: toolScope });
-          if (isAlive()) setProfileTools(Array.isArray(profile) ? profile : []);
         } catch (e) { /* ignore */ }
         try {
           const fs = await invokeTauri('feishu_skills_state');
@@ -1158,25 +1153,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       && skillRows.filter(row => row.kind === 'skill').every(row => !row.enabled) && (
                       <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
                     )}
-                  </>
-                )}
-                {toolScope === 'code' && profileTools.length > 0 && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <div className="px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0">
-                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{t.composerProfileTools}</span>
-                          <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProfileToolsDesc}</span>
-                        </span>
-                        {statusBadge(String(profileTools.length), 'blue')}
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {profileTools.map(name => (
-                          <span key={name} className="px-2 py-0.5 rounded-md bg-black/[0.04] dark:bg-white/[0.06] text-[11px] font-mono text-gray-600 dark:text-gray-300">{name}</span>
-                        ))}
-                      </div>
-                    </div>
                   </>
                 )}
                 {toolScope === 'code' && (

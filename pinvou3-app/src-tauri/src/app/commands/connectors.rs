@@ -101,26 +101,6 @@ pub async fn get_project_skills_enabled() -> Result<bool, String> {
     Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
 }
 
-/// 能力档案工具放出列表（04 PR-E 前端菜单渲染用）：当前 scope 档案
-/// `tools.include`（从底座隐藏常量放出的工具名）。v1：code = ["git_status"]。
-/// 只读展示（档案是设计期产物，无运行期开关）。
-#[tauri::command]
-pub async fn get_profile_tools(scope: Option<String>) -> Result<Vec<String>, String> {
-    use crate::core::session_mode::SessionMode;
-    use crate::features::marketplace::ConnectorScope;
-    let scope = parse_connector_scope(scope.as_deref())?;
-    let mode = match scope {
-        ConnectorScope::Plain => SessionMode::Plain,
-        ConnectorScope::Code => SessionMode::Code,
-    };
-    Ok(
-        crate::features::assistant::session_policy::SessionPolicy::for_mode(mode)
-            .resolve()
-            .tool_include
-            .to_vec(),
-    )
-}
-
 /// 解析前端传入的 scope:缺省/空 = plain;"plain"/"code" 显式对应两个 scope;
 /// 其余未识别的非空字符串返回错误(前端笔误直接报错,不静默回退 plain)。
 fn parse_connector_scope(
