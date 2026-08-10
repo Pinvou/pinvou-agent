@@ -2550,7 +2550,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </IOSRow>
         </IOSSection>
       );
-      const renderProviders = () => <ProvidersSection t={t} isDark={isDark} />;
+      const renderProviders = () => <ProvidersSection t={t} />;
       const renderContent = () => {
         if (activeSection === 'model') return renderModels();
         if (activeSection === 'search') return renderSearch();

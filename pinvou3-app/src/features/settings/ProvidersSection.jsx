@@ -56,7 +56,7 @@ const PROVIDER_SECTION_CACHE = new Map();
 // 缓存（结束态保留供重开查看，安装结束不再自动收起）。
 const INSTALL_LOG_CACHE = { log: null, phase: null };
 
-export function ProvidersSection({ t, isDark }) {
+export function ProvidersSection({ t }) {
   const copy = t.uiAcpProviders;
   const [activeAgent, setActiveAgent] = useState('codex');
   const [view, setView] = useState(() => (PROVIDER_SECTION_CACHE.get('codex') || {}).view || null);
@@ -533,7 +533,7 @@ export function ProvidersSection({ t, isDark }) {
     Boolean(installPhase) &&
     (installLog ? installLog.agent === activeAgent : busy === 'install:' + activeAgent);
 
-  const cardStyle = `rounded-[20px] p-4 ${isDark ? 'bg-white/[0.05]' : 'bg-[#F0F4F9]'}`;
+  const cardStyle = `rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/[0.05]`;
   const badge = (label, tone) => (
     <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}>{label}</span>
   );
@@ -568,9 +568,7 @@ export function ProvidersSection({ t, isDark }) {
             className={`h-9 px-4 rounded-full text-[12px] font-semibold transition-colors ${
               activeAgent === agent.key
                 ? 'bg-[#007AFF] text-white'
-                : isDark
-                  ? 'bg-white/[0.08] text-[#C7C7CC]'
-                  : 'bg-[#F0F4F9] text-[#5F6368]'
+                : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/[0.08] dark:text-[#C7C7CC]'
             }`}
           >
             {copy[`agent${agent.key[0].toUpperCase()}${agent.key.slice(1)}`]}
@@ -585,14 +583,14 @@ export function ProvidersSection({ t, isDark }) {
           {error && (
             <div
               data-testid="acp-providers-error"
-              className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 shadow-lg backdrop-blur-md ${isDark ? 'bg-[#2A1A1A]/95' : 'bg-[#FEF2F2]/95'}`}
+              className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 shadow-lg backdrop-blur-md bg-[#FEF2F2]/95 dark:bg-[#2A1A1A]/95`}
             >
               {error}
               <button onClick={refresh} className="ml-2 underline">{copy.retry}</button>
             </div>
           )}
           {notice && (
-            <div className={`rounded-xl px-3 py-2.5 text-[12px] shadow-lg backdrop-blur-md ${isDark ? 'bg-[#0F2A1A]/95 text-emerald-300' : 'bg-[#F0FDF4]/95 text-emerald-700'}`}>
+            <div className={`rounded-xl px-3 py-2.5 text-[12px] shadow-lg backdrop-blur-md bg-[#F0FDF4]/95 text-emerald-700 dark:bg-[#0F2A1A]/95 dark:text-emerald-300`}>
               {notice}
             </div>
           )}
@@ -601,7 +599,7 @@ export function ProvidersSection({ t, isDark }) {
 
       {/* env 冲突警告 */}
       {view && view.configUnreadable && (
-        <div data-testid="acp-providers-unreadable-warning" className={`rounded-xl px-3 py-2.5 ${isDark ? 'bg-red-500/[0.1]' : 'bg-red-500/[0.08]'}`}>
+        <div data-testid="acp-providers-unreadable-warning" className={`rounded-xl px-3 py-2.5 bg-red-500/[0.08] dark:bg-red-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-red-600 dark:text-red-300">
             <AlertTriangle size={14} />
             {copy.configUnreadable}
@@ -611,7 +609,7 @@ export function ProvidersSection({ t, isDark }) {
       )}
 
       {view && view.envConflicts && view.envConflicts.length > 0 && (
-        <div data-testid="acp-providers-env-warning" className={`rounded-xl px-3 py-2.5 ${isDark ? 'bg-amber-500/[0.1]' : 'bg-amber-500/[0.12]'}`}>
+        <div data-testid="acp-providers-env-warning" className={`rounded-xl px-3 py-2.5 bg-amber-500/[0.12] dark:bg-amber-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-600 dark:text-amber-300">
             <AlertTriangle size={14} />
             {copy.envConflictTitle}
@@ -638,7 +636,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 外部中转配置（配置文件归因不到当前 Provider）：全局提示而非每卡黄标，
           避免用户误以为有人动过自己的配置 */}
       {view && view.externalActive && (
-        <div className={`rounded-xl px-3 py-2.5 ${isDark ? 'bg-amber-500/[0.1]' : 'bg-amber-500/[0.12]'}`}>
+        <div className={`rounded-xl px-3 py-2.5 bg-amber-500/[0.12] dark:bg-amber-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-600 dark:text-amber-300">
             <AlertTriangle size={14} />
             {copy.external}
@@ -650,7 +648,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 改动 2：生效中配置只读区（F4 可见化）——值来自实际 CLI 配置文件，
           不含任何凭据；官方登录态或配置不可解析时为空不渲染。 */}
       {view && view.effectiveEntries && view.effectiveEntries.length > 0 && (
-        <div data-testid="acp-providers-effective" className={`rounded-[20px] p-4 ${isDark ? 'bg-white/[0.05]' : 'bg-[#F0F4F9]'}`}>
+        <div data-testid="acp-providers-effective" className={`rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/[0.05]`}>
           <div className="text-[13px] font-semibold">{copy.effectiveTitle}</div>
           <div className="mt-2 space-y-1">
             {view.effectiveEntries.map(entry => (
@@ -862,7 +860,7 @@ export function ProvidersSection({ t, isDark }) {
             </div>
             {/* 安装进度：阶段标签 + 实际执行的命令行 + 输出最新一行（等宽截断） */}
             {showInstallLog && (
-              <div data-testid="acp-cli-install-progress" className={`rounded-xl px-3 py-2.5 space-y-1.5 ${isDark ? 'bg-white/[0.05]' : 'bg-black/[0.03]'}`}>
+              <div data-testid="acp-cli-install-progress" className={`rounded-xl px-3 py-2.5 space-y-1.5 bg-black/[0.03] dark:bg-white/[0.05]`}>
                 <div className="flex items-center gap-2 text-[12px] font-semibold">
                   {installPhase === 'checking' || installPhase === 'installing' ? (
                     <RefreshCw size={12} className="animate-spin" />
@@ -889,7 +887,7 @@ export function ProvidersSection({ t, isDark }) {
             )}
             {/* 登录引导：URL + （claude 的）授权码输入，轮询直到完成/失败 */}
             {loginWaiting && status && status.login_in_progress && (
-              <div className={`rounded-xl px-3 py-2.5 space-y-2 ${isDark ? 'bg-white/[0.05]' : 'bg-black/[0.03]'}`}>
+              <div className={`rounded-xl px-3 py-2.5 space-y-2 bg-black/[0.03] dark:bg-white/[0.05]`}>
                 <div className="flex items-center gap-2 text-[12px]">
                   <RefreshCw size={12} className="animate-spin" />
                   <span>{copy.loginWaiting}</span>
@@ -933,7 +931,6 @@ export function ProvidersSection({ t, isDark }) {
         <ProviderFormModal
           agent={activeAgent}
           copy={copy}
-          isDark={isDark}
           initial={editing}
           onClose={() => setFormOpen(false)}
           onSaved={() => refresh()}
@@ -943,7 +940,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 删除确认 */}
       {deleteConfirm && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setDeleteConfirm(null)}>
-          <div onClick={event => event.stopPropagation()} className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={event => event.stopPropagation()} className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[16px] font-semibold">{copy.deleteTitle}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.deleteDesc(deleteConfirm.name)}</p>
             <div className="mt-6 flex justify-end gap-2">
@@ -957,7 +954,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 卸载确认 */}
       {uninstallConfirm && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setUninstallConfirm(null)}>
-          <div onClick={event => event.stopPropagation()} className={`w-[min(420px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={event => event.stopPropagation()} className={`w-[min(420px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[16px] font-semibold">{copy.uninstallTitle.replace('{agent}', copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}</h3>
             <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.uninstallDesc}</p>
             <label className="mt-4 flex items-start gap-2 text-[12px] opacity-80 cursor-pointer">
@@ -986,7 +983,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 导出（含明文 key 警告） */}
       {exportOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setExportOpen(false)}>
-          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <div className="flex items-start gap-2">
               <AlertTriangle size={17} className="mt-0.5 shrink-0 text-amber-500" />
               <div className="min-w-0 flex-1">
@@ -1021,7 +1018,7 @@ export function ProvidersSection({ t, isDark }) {
       {/* 导入 */}
       {importOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setImportOpen(false)}>
-          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}>
+          <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
             <h3 className="text-[15px] font-semibold">{copy.import}</h3>
             {/* 导入同样可能含明文 key：来源信任警示（复审低危 6） */}
             <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed">
