@@ -710,7 +710,7 @@ async fn plan_mode_list_dir() {
 
     run_turn(
         &engine,
-        "我想了解 /tmp 目录里有什么。先用 list_dir 工具列一下,然后用 update_plan \
+        "我想了解 /tmp 目录里有什么。先用 list_dir 工具列一下,然后用 todo_write \
          给我一个简短的整理方案 (3-5 步即可)。",
         AppMode::Plan,
         &expect,
@@ -721,8 +721,8 @@ async fn plan_mode_list_dir() {
 }
 
 /// 常见场景 A:Plan 模式纯规划问答(不碰文件系统)——pinvou3 最高频的 Plan 用法。
-/// 测 AI 在不需要任何工具时能干净地一次 update_plan 出方案,不像探目录那样陷入
-/// 工具往返。judge 看:有没有调 update_plan / 有没有瞎调无关工具 / 方案是否分阶段。
+/// 测 AI 在不需要任何工具时能干净地一次 todo_write 出方案,不像探目录那样陷入
+/// 工具往返。judge 看:有没有调 todo_write / 有没有瞎调无关工具 / 方案是否分阶段。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "L1 真 vLLM 端到端,默认不跑"]
 async fn plan_pure_planning() {
@@ -737,7 +737,7 @@ async fn plan_pure_planning() {
 
     run_turn(
         &engine,
-        "我想用三个月业余时间从零学会做家常菜。先用 update_plan 给我一个分阶段的\
+        "我想用三个月业余时间从零学会做家常菜。先用 todo_write 给我一个分阶段的\
          学习计划(4-6 步,每步一句话即可),不用调别的工具。",
         AppMode::Plan,
         &expect,
@@ -765,7 +765,7 @@ async fn plan_dev_task_plan() {
     run_turn(
         &engine,
         "我想做一个纯前端的待办事项网页(单个 html 文件,含 js)。先别写代码,\
-         用 update_plan 给我开发步骤(4-6 步)。",
+         用 todo_write 给我开发步骤(4-6 步)。",
         AppMode::Plan,
         &expect,
         scenario,
@@ -1091,7 +1091,7 @@ date,product,units,revenue
     // 正确答案: 7 条 / 2026-01 至 2026-04 / Widget C $12600 最高
 }
 
-/// A-4 plan_travel_web: 让 AI 用 web_search + update_plan 出旅行方案。
+/// A-4 plan_travel_web: 让 AI 用 web_search + todo_write 出旅行方案。
 /// 测多步链式 + 联网工具调用。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "L1 真 vLLM 端到端,默认不跑"]
@@ -1108,7 +1108,7 @@ async fn plan_travel_web() {
     run_turn(
         &engine,
         "我下个月想去北京旅游 3 天 (周五出发周日返)。用 web_search 工具查一下\
-         北京当前热门景点和当季注意事项,然后用 update_plan 给我一个 3 天行程方案 \
+         北京当前热门景点和当季注意事项,然后用 todo_write 给我一个 3 天行程方案 \
          (每天 3-4 个 step,含景点 + 交通方式)。",
         AppMode::Yolo,
         &expect,

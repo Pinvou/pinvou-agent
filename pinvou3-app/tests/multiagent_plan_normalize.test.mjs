@@ -1064,6 +1064,30 @@ test('transcript 适配：文件工具归 file_change，终态后不留转圈条
   assert.equal(turn.error, 'boom');
 });
 
+test('transcript 适配：v0.9.5 canonical File write/edit 归 file_change，read 不算', () => {
+  const { turns } = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '写文件' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu-1', name: 'File', input: { action: 'write', path: 'notes/a.md' } },
+          { type: 'tool_use', id: 'tu-2', name: 'File', input: { action: 'read', path: 'notes/a.md' } },
+          { type: 'tool_use', id: 'tu-3', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+    ],
+    agent: { agentId: 'a3', role: 'builder', done: true, failed: false },
+  });
+  const [turn] = turns;
+  const writes = turn.items.filter((item) => item.type === 'file_change');
+  assert.equal(writes.length, 1, '只有 File write 归 file_change，read 不算');
+  assert.equal(writes[0].tool.locations[0].path, 'notes/a.md');
+  const command = turn.items.find((item) => item.type === 'command_execution');
+  assert.equal(command.tool.kind, 'execute');
+  assert.equal(command.tool.name, 'Bash');
+});
+
 test('transcript 适配：坏消息跳过不炸，+N -M 从 unified diff 数出', () => {
   const { turns } = projectSubagentTranscript({
     messages: [null, 'garbage', { role: 'assistant' }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }],
