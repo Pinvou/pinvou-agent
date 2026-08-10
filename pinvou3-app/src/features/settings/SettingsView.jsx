@@ -951,6 +951,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
+      const [disabledSkills, setDisabledSkills] = useState(() => new Set()); // 被关掉的技能 id(按 scope 持久,独立文件)
+      const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -972,6 +974,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         try {
           const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
           if (isAlive()) setDisabled(new Set(dis || []));
+        } catch (e) { /* ignore */ }
+        try {
+          const disSkills = await invokeTauri('get_disabled_skills', { scope: toolScope });
+          if (isAlive()) setDisabledSkills(new Set(disSkills || []));
+        } catch (e) { /* ignore */ }
+        try {
+          const proj = await invokeTauri('get_project_skills_enabled');
+          if (isAlive()) setProjectSkillsEnabled(!!proj);
         } catch (e) { /* ignore */ }
         try {
           const fs = await invokeTauri('feishu_skills_state');
@@ -998,8 +1008,22 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
-      function toggleTool(id) {
+      function toggleTool(id, kind) {
         if (!canMutateToolStore) return;
+        // 技能行走独立双 scope 开关（disabled_skills.json）；工具/服务行走连接器开关。
+        if (kind === 'skill') {
+          // 技能行 row.id 带 `skill:` 命名空间前缀，后端与组合目录物化按裸 id
+          // 匹配——传前缀会导致开关不落盘、视觉不翻转（strip 对齐契约）。
+          const skillId = id.startsWith('skill:') ? id.slice('skill:'.length) : id;
+          const next = new Set(disabledSkills);
+          next.has(skillId) ? next.delete(skillId) : next.add(skillId);
+          setDisabledSkills(next);
+          if (bridge.available) {
+            invokeTauri('set_disabled_skills',
+              { skillIds: Array.from(next), scope: toolScope }).catch(() => {});
+          }
+          return;
+        }
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
@@ -1009,10 +1033,19 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             { connectorIds: Array.from(next), scope: toolScope }).catch(() => {});
         }
       }
+      function toggleProjectSkills() {
+        if (!canMutateToolStore) return;
+        const next = !projectSkillsEnabled;
+        setProjectSkillsEnabled(next);
+        if (bridge.available) {
+          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
+        }
+      }
       const menuState = buildComposerToolMenuState({
         marketplaceTools,
         marketplaceSkills,
         disabledIds: Array.from(disabled),
+        disabledSkillIds: Array.from(disabledSkills),
         activeSkill,
         scope: toolScope,
         serviceStates: [
@@ -1038,7 +1071,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <span className="min-w-0">
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
           </span>
-          <button onClick={() => toggleTool(row.id)} aria-label={row.id} disabled={!canMutateToolStore}
+          <button onClick={() => toggleTool(row.id, row.kind)} aria-label={row.id} disabled={!canMutateToolStore}
             className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
             <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
           </button>
@@ -1050,14 +1083,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
           </span>
           {statusBadge(label, tone)}
-        </div>
-      );
-      // code scope: 技能在代码会话中整体不可用,只读灰显且不可 toggle。
-      const unavailableRow = (row) => (
-        <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium opacity-50">
-          <span className="min-w-0">
-            <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
-          </span>
         </div>
       );
       return (
@@ -1109,14 +1134,34 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
                 ) : (
                   <>
-                    {toolScope === 'code' && (
-                      <div className="px-3 pt-2 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillCodeDisabled}</div>
+                    {localizedSkillRows.map(row => row.switchable
+                      ? switchRow(row)
+                      : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                    {/* 该 scope 全部技能被关：空态提示（组合目录为空 → 模型看不到任何技能） */}
+                    {skillRows.filter(row => row.kind === 'skill').length > 0
+                      && skillRows.filter(row => row.kind === 'skill').every(row => !row.enabled) && (
+                      <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
                     )}
-                    {localizedSkillRows.map(row => row.unavailable
-                      ? unavailableRow(row)
-                      : row.switchable
-                        ? switchRow(row)
-                        : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                  </>
+                )}
+                {toolScope === 'code' && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <div className="px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0">
+                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{t.composerProjectSkills}</span>
+                          <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
+                        </span>
+                        <button onClick={toggleProjectSkills} aria-label="project-skills" disabled={!canMutateToolStore}
+                          className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${projectSkillsEnabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+                          <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${projectSkillsEnabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                        </button>
+                      </div>
+                      {projectSkillsEnabled && (
+                        <div className="mt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
+                      )}
+                    </div>
                   </>
                 )}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />

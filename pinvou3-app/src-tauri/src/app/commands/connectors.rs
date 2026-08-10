@@ -12,6 +12,9 @@ pub async fn set_disabled_connectors(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
+    // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
+    // 重写在线会话组合目录 + 热刷工具白名单。
+    pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
@@ -31,6 +34,71 @@ pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String
     Ok(crate::features::marketplace::load_disabled_connectors_for(
         scope,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// 技能开关（按会话类型 scope 独立持久，skill 双 scope 治理）
+// ---------------------------------------------------------------------------
+
+/// pinvou3 技能开关：写某 scope 被禁用的技能 id 列表（市场 id）。落盘
+/// `~/.pinvou3/disabled_skills.json` → 重写该 scope 在线会话的组合目录（下一轮
+/// prompt 即生效）→ 热刷工具白名单（组合目录空/非空会改变 `load_skill` 的隐藏
+/// 判定）。`scope` = "plain"(缺省)或 "code"。
+#[tauri::command]
+pub async fn set_disabled_skills(
+    skill_ids: Vec<String>,
+    scope: Option<String>,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    let ids = skill_ids.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::skill_scope::save_disabled_skills_for(scope, &ids);
+    })
+    .await
+    .map_err(|e| format!("set_disabled_skills join: {e}"))?;
+    // 事件驱动时机（§2.3.2）：该 scope 在线会话组合目录增量重写，下一轮 prompt 生效。
+    pool.refresh_live_sessions_skills().await;
+    // load_skill 隐藏判定随目录空/非空变化，热刷 disallowed_tools 与 UI 事件。
+    pool.refresh_disallowed_tools().await;
+    let payload = serde_json::json!({});
+    let _ = app.emit("remote_control:tools_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(
+        &app,
+        "remote_control:tools_changed",
+        payload,
+    );
+    Ok(())
+}
+
+/// pinvou3 技能开关：读某 scope 被禁用的技能 id 列表。code scope 未初始化时
+/// 返回全部已安装技能 id（默认全禁，显式开启），前端据此渲染开关状态。
+#[tauri::command]
+pub async fn get_disabled_skills(scope: Option<String>) -> Result<Vec<String>, String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    Ok(crate::features::marketplace::skill_scope::load_disabled_skills_for(scope))
+}
+
+/// 项目级 skills 开关（默认关，§2.4）。开启后绑项目的 code 会话组合目录额外
+/// 包含项目 `.agents/skills` 等目录——项目内文本是 prompt-injection 面，前端
+/// 在开启路径展示注入风险警告。
+#[tauri::command]
+pub async fn set_project_skills_enabled(
+    enabled: bool,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled);
+    // 开关影响 code 会话组合目录：重写在线会话 + 热刷 load_skill 隐藏判定。
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
+    Ok(())
+}
+
+/// 项目级 skills 开关状态（默认关）。
+#[tauri::command]
+pub async fn get_project_skills_enabled() -> Result<bool, String> {
+    Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;"plain"/"code" 显式对应两个 scope;
@@ -95,8 +163,27 @@ async_command_passthrough!(tmeet_domain, set_tmeet_enabled(enabled: bool) -> Res
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(ima_domain, ima_status() -> Result<Value, String>);
-async_command_passthrough!(ima_domain, ima_connect(client_id: String, api_key: String) -> Result<Value, String>);
-async_command_passthrough!(ima_domain, ima_logout() -> Result<Value, String>);
+
+/// ima 连接成功会安装配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录
+/// （skill 双 scope 治理事件驱动时机）。失败时技能未装上，不重写。
+#[tauri::command]
+pub async fn ima_connect(
+    client_id: String,
+    api_key: String,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = ima_domain::ima_connect(client_id, api_key).await?;
+    pool.refresh_live_sessions_skills().await;
+    Ok(result)
+}
+
+/// ima 退出会卸载配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录。
+#[tauri::command]
+pub async fn ima_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
+    let result = ima_domain::ima_logout().await?;
+    pool.refresh_live_sessions_skills().await;
+    Ok(result)
+}
 use super::prelude::*;
 
 #[cfg(test)]

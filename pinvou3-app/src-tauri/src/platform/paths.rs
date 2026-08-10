@@ -336,6 +336,13 @@ pub fn session_workspace_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("workspace")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/skills/` —— 该会话按 scope 物化的技能组合目录
+/// （skill 双 scope 治理：见 `features/assistant/skill_materialization.rs`）。
+/// 会话私有目录随会话删除一起清理，无需单独清理逻辑。
+pub fn session_skills_dir(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("skills")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/instructions.md` —— 每个 session 独立的
 /// Legacy `~/.pinvou3/sessions/<sid>/instructions.md` 路径。
 ///

@@ -5,6 +5,7 @@
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
 pub mod skill_marketplace;
+pub mod skill_scope;
 
 use std::path::PathBuf;
 
@@ -16,18 +17,20 @@ use crate::platform::credential_store::{
 };
 use crate::platform::paths;
 
-/// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
+/// 按会话类型 scope 持久化连接器禁用列表。
 ///
-/// Refreshing live engines is an application orchestration concern and is
-/// deliberately left to the caller, keeping marketplace independent from the
-/// assistant runtime.
+/// Refreshing live engines (组合目录重写 + 工具热刷) is an application
+/// orchestration concern and is deliberately left to the caller, keeping
+/// marketplace independent from the assistant runtime. 连接器禁用影响
+/// companion skills 的可见性:组合目录计算时按 scope 排除被禁用连接器的
+/// companion skills(`skill_materialization::disabled_skill_names_for`),
+/// 因此落盘后需由调用方重写在线会话的组合目录。
 pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         save_disabled_connectors_for(scope, &connector_ids);
-        skill_marketplace::refresh_disabled_skills();
     })
     .await
     .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
@@ -2265,92 +2268,13 @@ mod tests {
         });
     }
 
-    /// 连接器禁用联动技能:禁用声明了 companion_skills 的连接器 → 该技能进底座停用集;
-    /// 开回来 → 移出。守"公文 MCP 关掉 → government-writing 从 ## Skills 隐藏"这条链路。
-    #[test]
-    fn disabling_connector_hides_companion_skill() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "gongwen",
-                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
-            );
-
-            // 禁用公文 MCP → 联动刷新 → 关联技能进底座停用集
-            save_disabled_connectors(&["gongwen".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("government-writing"),
-                "禁用公文 MCP 后关联技能应被停用"
-            );
-
-            // 开回来 → 移出停用集
-            save_disabled_connectors(&[]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("government-writing"),
-                "启用公文 MCP 后关联技能应恢复"
-            );
-        });
-    }
-
-    /// 独立安装的 marketplace skill 没有 companion MCP,但 composer 工具菜单也允许
-    /// 直接开关它;禁用列表里的 skill id 必须能直接进入底座停用集。
-    #[test]
-    fn disabling_direct_skill_id_hides_skill() {
-        with_temp_home(|| {
-            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                .install("visualizer")
-                .unwrap();
-
-            save_disabled_connectors(&["skill:visualizer".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("visualizer"),
-                "禁用独立 namespaced skill id 后该 skill 应被停用"
-            );
-
-            save_disabled_connectors(&[]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("visualizer"),
-                "启用独立 skill id 后该 skill 应恢复"
-            );
-        });
-    }
-
-    /// connector id 和用户上传 skill id 同名时,关闭 connector 不应误停用该 skill;
-    /// 独立 skill 必须通过 `skill:<id>` 命名空间禁用。
-    #[test]
-    fn disabling_connector_id_does_not_hide_same_named_user_skill() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "weather",
-                r#"{"id":"weather","name":"天气","description":"d","version":"1.0.0","icon":"cloud","category":"查询","mcp_tools":["mcp_weather_query"],"command":"python","args":["server.py"]}"#,
-            );
-            let skill_dir = crate::platform::paths::bundle_skills_dir().join("weather");
-            std::fs::create_dir_all(&skill_dir).unwrap();
-            std::fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: weather\ndescription: user weather skill\n---\n# Weather\n",
-            )
-            .unwrap();
-            std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
-
-            save_disabled_connectors(&["weather".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("weather"),
-                "禁用同名 connector 不应误停用用户上传 skill"
-            );
-
-            save_disabled_connectors(&["skill:weather".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("weather"),
-                "禁用 namespaced skill id 才应停用用户上传 skill"
-            );
-        });
-    }
+    /// 连接器禁用联动技能、独立 skill 开关、同名不误伤三个场景的组合目录断言
+    /// 已随 `enabled_skills_for` 移入 `assistant::skill_materialization` 的测试
+    /// （marketplace → assistant 会构成 feature 依赖环，架构守卫拒绝）。
+    /// 覆盖位置：`skill_materialization.rs` tests 中
+    /// `companion_skill_excluded_when_connector_disabled` /
+    /// `enabled_skills_respect_first_wins_and_scope_disabled` /
+    /// `disabling_connector_id_does_not_hide_same_named_user_skill`。
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
