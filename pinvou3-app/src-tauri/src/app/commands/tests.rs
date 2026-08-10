@@ -916,6 +916,16 @@ fn parses_local_asr_plain_text_output() {
 }
 
 #[test]
+fn parses_local_asr_numeric_only_output() {
+    let text = parse_local_asr_text("123\n", "").expect("numeric transcript");
+    assert_eq!(text, "123");
+    assert!(
+        parse_local_asr_text("...\n", "[INFO] loading\n").is_none(),
+        "punctuation and log output must not become a transcript"
+    );
+}
+
+#[test]
 fn explicit_asr_cli_fallback_accepts_all_supported_env_names() {
     assert!(!has_nonempty_asr_cli_config(&[None, None, None]));
     assert!(!has_nonempty_asr_cli_config(&[Some(""), Some(" \t"), None]));

@@ -170,10 +170,9 @@ pub(super) fn parse_local_asr_text(stdout: &str, stderr: &str) -> Option<String>
         {
             continue;
         }
-        if line
-            .chars()
-            .any(|ch| ch.is_alphabetic() || ('\u{4e00}'..='\u{9fff}').contains(&ch))
-        {
+        // A transcript may legitimately contain only digits (for example "123").
+        // Keep rejecting punctuation-only process noise, but do not require a letter.
+        if crate::features::voice::has_usable_asr_text(line) {
             return Some(line.to_string());
         }
     }
