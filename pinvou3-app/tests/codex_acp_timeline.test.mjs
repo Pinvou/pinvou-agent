@@ -554,6 +554,19 @@ try {
     && codexView.includes('mountedId={nativeMountedId}')
     && codexView.includes('data-testid="codex-voice-input"'),
   'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，
+  // 代码页卸载（切模式/视图）前必须取消进行中的录音/转写，否则识别结果可能写回
+  // 已卸载组件（草稿态 null→null 时守卫放行并显示「已完成」但文本丢失）。
+  assert.ok(codexView.includes('nativeVoiceInputRef = useRef(nativeVoiceInput)')
+    && codexView.includes('bridge.voice.cancelVoiceInput()')
+    && codexView.includes("voice.status === 'requesting_permission'"),
+  'the code page must cancel an in-flight voice input before unmount so results cannot be written back to a detached composer');
+  // 语音失败提示条须带 ChatView 同款「去依赖体检」入口（recognition_failed + 本地
+  // ASR 可安装 + onGotoSettings 时渲染 voiceGotoDeps 按钮）。
+  assert.ok(codexView.includes("can('localModelSetup') && can('dependencyInstall')")
+    && codexView.includes('nativeVoiceInput.category === \'recognition_failed\'')
+    && codexView.includes('t.voiceGotoDeps'),
+  'the code page voice notice must offer the dependency-check shortcut on recognition failure like ChatView');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
   assert.ok(codexView.includes('data-testid="codex-composer-configs"')
@@ -593,6 +606,10 @@ try {
     && composerControls.includes('if (onUnmount) { onUnmount(); return; }')
     && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
   'extracted controls must support explicit session-driven props while keeping the bridge fallback');
+  // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发
+  // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
+  assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
+  'ComposerModeChip must early-return when the clicked mode equals the active mode');
 
   console.log('codex_acp_timeline: ok');
 } finally {

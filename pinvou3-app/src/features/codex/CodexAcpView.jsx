@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { can } from '../../shared/platform.js';
 import {
   AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Paperclip, Plus, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
@@ -1179,6 +1180,7 @@ export function CodexAcpView({
   bs = null,
   onGotoTools,
   onGotoModelSettings,
+  onGotoSettings,
   fixedSession = false,
 }) {
   const codexCopy = t.uiCodex;
@@ -1866,6 +1868,7 @@ export function CodexAcpView({
   const nativeVoiceRecording = nativeVoiceInput.status === 'recording';
   const nativeVoiceBusy = nativeVoiceInput.status === 'transcribing';
   const nativeVoiceDisabled = !bridge.available || nativeVoiceBusy;
+  const nativeVoiceCanInstallAsr = can('localModelSetup') && can('dependencyInstall');
   const nativeVoiceLabel = nativeVoiceInput.status === 'recording'
     ? t.voiceStop
     : nativeVoiceInput.status === 'failed'
@@ -1890,6 +1893,24 @@ export function CodexAcpView({
   function handleNativeVoiceClose() {
     if (bridge.available) bridge.voice.clearVoiceInput();
   }
+
+  // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
+  // bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，代码页不物化聊天会话，
+  // 若不取消，转写结果可能写回已卸载组件（草稿态 null→null 时守卫还会放行并
+  // 显示「已完成」，但文本已丢失）。卸载前取消让「录音中切走」变成显式取消。
+  const nativeVoiceInputRef = useRef(nativeVoiceInput);
+  nativeVoiceInputRef.current = nativeVoiceInput;
+  useEffect(() => {
+    return () => {
+      const voice = nativeVoiceInputRef.current;
+      if (voice && (voice.status === 'requesting_permission'
+        || voice.status === 'recording'
+        || voice.status === 'transcribing')
+        && bridge.available) {
+        bridge.voice.cancelVoiceInput();
+      }
+    };
+  }, []);
 
   function handlePaste(event) {
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
@@ -2837,6 +2858,10 @@ export function CodexAcpView({
                       : nativeVoiceInput.message}
                   </span>
                   <div className="flex items-center gap-1 shrink-0">
+                    {nativeVoiceInput.status === 'failed' && nativeVoiceInput.category === 'recognition_failed'
+                      && nativeVoiceCanInstallAsr && onGotoSettings && (
+                      <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${theme === 'dark' ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                    )}
                     {nativeVoiceInput.status === 'failed' && (
                       <button onClick={handleNativeVoiceClick} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
                     )}

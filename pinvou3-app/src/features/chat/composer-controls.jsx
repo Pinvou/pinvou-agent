@@ -204,6 +204,9 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
   const busy = busyProp !== undefined ? busyProp : (bs && bs.busy);
   async function switchTo(target) {
     setOpen(false);
+    // 点击已激活模式：无状态变更，早退避免冗余刷新（代码车道 onSwitch 路径
+    // 会触发一次 refreshNativeControls 3 次 invoke；ChatView bridge 路径同样受益）。
+    if ((target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)) return;
     if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }
     if (!bridge.available) return;
     if (target === 'plan' && !isPlan) {
