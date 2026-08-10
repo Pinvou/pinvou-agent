@@ -11,6 +11,7 @@ import {
 } from '../../components/icons.jsx';
 import {
   commandExecutionDetails,
+  countsAsFailedOperation,
   elapsedMs,
   externalMarkdownUrl,
   fetchToolDetails,
@@ -477,14 +478,26 @@ function GenericToolItem({ item, now, copy }) {
   );
 }
 
+function ToolItem({ item, now, renderToolItem, onOpenExternal, copy }) {
+  const custom = renderToolItem && renderToolItem(item);
+  if (custom !== undefined) return custom;
+  if (item.type === 'command_execution') {
+    return <CommandExecutionItem item={item} now={now} copy={copy} />;
+  }
+  if (isSearchTool(item.tool)) {
+    return <SearchToolItem item={item} now={now} onOpenExternal={onOpenExternal} copy={copy} />;
+  }
+  if (isFetchTool(item.tool)) {
+    return <FetchToolItem item={item} now={now} onOpenExternal={onOpenExternal} copy={copy} />;
+  }
+  return <GenericToolItem item={item} now={now} copy={copy} />;
+}
+
 function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
   const c = conversationCopy(copy);
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failedCount = items.filter(item => terminalStatus(
-    item.status,
-    item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
-  ) === 'failed').length;
+  const failedCount = items.filter(countsAsFailedOperation).length;
   const failed = failedCount > 0;
   const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningItem
@@ -506,17 +519,16 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
       </button>
       {expanded && (
         <div className="ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
-          {items.map(item => {
-            const custom = renderToolItem && renderToolItem(item);
-            if (custom !== undefined) return <React.Fragment key={item.id}>{custom}</React.Fragment>;
-            return item.type === 'command_execution'
-              ? <CommandExecutionItem key={item.id} item={item} now={now} copy={c} />
-              : isSearchTool(item.tool)
-                ? <SearchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
-                : isFetchTool(item.tool)
-                  ? <FetchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
-                : <GenericToolItem key={item.id} item={item} now={now} copy={c} />;
-          })}
+          {items.map(item => (
+            <ToolItem
+              key={item.id}
+              item={item}
+              now={now}
+              renderToolItem={renderToolItem}
+              onOpenExternal={onOpenExternal}
+              copy={c}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -627,6 +639,17 @@ function DefaultItem({
     return (
       <ToolGroup
         group={item}
+        now={now}
+        renderToolItem={renderToolItem}
+        onOpenExternal={onOpenExternal}
+        copy={copy}
+      />
+    );
+  }
+  if (item.type === 'tool' || item.type === 'command_execution' || item.type === 'file_change') {
+    return (
+      <ToolItem
+        item={item}
         now={now}
         renderToolItem={renderToolItem}
         onOpenExternal={onOpenExternal}

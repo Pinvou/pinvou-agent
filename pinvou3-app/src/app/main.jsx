@@ -64,6 +64,11 @@ window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
 let appFirstRenderMarked = false;
 
+const APP_BRIDGE_STATE_DOMAINS = [
+  'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
+  'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
+  'memory', 'remoteControl', 'updater', 'dependencies',
+];
 
 function emitPetEvent(ev, name, payload) {
   if (!ev) return Promise.resolve(false);
@@ -97,7 +102,7 @@ function workspaceDisplayName(path) {
         appFirstRenderMarked = true;
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
-      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor', 'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow', 'memory', 'remoteControl', 'updater', 'dependencies']);
+      const bs = useBridgeState(APP_BRIDGE_STATE_DOMAINS);
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
@@ -2050,8 +2055,8 @@ function workspaceDisplayName(path) {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 bs={bs}
-                onGotoTools={() => navigateFromScheduledRun('toolStore')}
                 onGotoModelSettings={() => openSettingsSection('model')}
+                onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Users, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -477,11 +477,55 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
     // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
     // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact, sessionId: sessionIdProp, sessionModelId: sessionModelIdProp, busy: busyProp, onSwitchModel }) => {
+    const ComposerModelSelector = ({
+      t,
+      bs,
+      onGotoSettings,
+      compact,
+      sessionId: sessionIdProp,
+      sessionModelId: sessionModelIdProp,
+      busy: busyProp,
+      onSwitchModel,
+      multiAgentEnabled: multiAgentEnabledProp,
+      multiAgentAvailable: multiAgentAvailableProp,
+      onToggleMultiAgent,
+    }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canManageModels = can('modelManagement');
       const canSwitchModels = can('sessionModelSwitch');
+      // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
+      // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
+      const canMultiAgent = can('multiAgent') && multiAgentAvailableProp !== false;
+      const multiAgentOn = multiAgentEnabledProp !== undefined
+        ? Boolean(multiAgentEnabledProp)
+        : !!(bs && bs.modeState && bs.modeState.multiAgent);
+      const multiAgentCopy = (t && t.uiMultiAgent) || {};
+      // 防重入（复核点名）：后端事务完成前再点会带着旧状态重复提交，
+      // 其中一次名册推送失败的回滚还会覆盖另一次已开启的状态。切换期间
+      // 禁用按钮；bridge 侧另有 in-flight 丢弃兜底（双入口防线）。
+      const [multiAgentBusy, setMultiAgentBusy] = useState(false);
+      // 揭幕动效只在用户点击开启这一刻播放：会话切换/重启同步出现的
+      // 开启态、弹层关了再开，都不重播揭幕（真机点名），但光晕持续漂移
+      // （真机点名"动画不能停"，挂在常态类上）。触发源是点击处理器而
+      // 不是状态上升沿；点击关闭或弹层关闭时清掉标记，避免误续播。
+      const [multiAgentRevealing, setMultiAgentRevealing] = useState(false);
+      useEffect(() => {
+        if (!open) setMultiAgentRevealing(false);
+      }, [open]);
+      async function toggleMultiAgent() {
+        if (multiAgentBusy || busy) return;
+        if (!onToggleMultiAgent
+          && !(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
+        setMultiAgentRevealing(!multiAgentOn);
+        setMultiAgentBusy(true);
+        try {
+          if (onToggleMultiAgent) await onToggleMultiAgent(!multiAgentOn);
+          else await bridge.interaction.setMultiAgentMode(!multiAgentOn);
+        } finally {
+          setMultiAgentBusy(false);
+        }
+      }
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
       const activeSessionId = sessionIdProp !== undefined ? sessionIdProp : (bs ? bs.activeSessionId : null);
       const activeModelId = bs && bs.activeModelId;
@@ -500,7 +544,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={(current ? selectorMainLabel(current, t) : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
+            className={`relative shrink-0 flex items-center justify-center ${multiAgentOn ? 'text-[#6d28d9] dark:text-[#c4b5fd]' : 'text-gray-700 dark:text-gray-200'} transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -544,6 +588,30 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     </>
                   );
                 })()}
+                {canMultiAgent && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <button type="button" data-testid="multiagent-toggle" onClick={toggleMultiAgent}
+                      disabled={multiAgentBusy || busy}
+                      title={multiAgentCopy.toggleHint || ''}
+                      onAnimationEnd={(event) => {
+                        if (event.animationName === 'pinvou-ultra-reveal') setMultiAgentRevealing(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl ${
+                        multiAgentOn
+                          ? 'pinvou-ultra-row'
+                          : 'text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07]'
+                      } ${multiAgentRevealing ? 'pinvou-ultra-row-reveal' : ''}`}>
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Users size={15} className={`shrink-0 ${multiAgentOn ? 'text-current' : 'text-gray-400'}`} />
+                        <span className={`truncate ${multiAgentOn ? 'font-medium' : ''}`}>{multiAgentCopy.toggleLabel || ''}</span>
+                      </span>
+                      <span aria-hidden="true" className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${multiAgentOn ? 'bg-white/30' : 'bg-black/20 dark:bg-white/25'}`}>
+                        <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${multiAgentOn ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                      </span>
+                    </button>
+                  </>
+                )}
                 {canManageModels && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />

@@ -1,5 +1,5 @@
 import {
-  commandExecutionDetails,
+  countsAsFailedOperation,
   presentConversationItems,
 } from './conversation-model.js';
 const SHELL_TOOLS = new Set([
@@ -219,14 +219,7 @@ export function projectDeepSeekConversation({
       ['command_execution', 'file_change', 'tool'].includes(item.type)
     ));
     turn.operationCount = operations.length;
-    turn.failedOperationCount = operations.filter(item => (
-      item.status === 'failed'
-      || (
-        item.type === 'command_execution'
-        && commandExecutionDetails(item.tool).exitCode != null
-        && commandExecutionDetails(item.tool).exitCode !== 0
-      )
-    )).length;
+    turn.failedOperationCount = operations.filter(countsAsFailedOperation).length;
     turn.waitingPermission = turn.items.some(item => (
       item.type === 'permission'
       && item.legacyItem

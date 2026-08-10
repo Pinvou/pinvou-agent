@@ -115,6 +115,63 @@
       state.activeTurnTimelineId = null;
     }
 
+    function latestTimelineCompletion(events) {
+      var latest = 0;
+      (Array.isArray(events) ? events : []).forEach(function (event) {
+        if (!event || event.event !== "assistant_done") return;
+        var timestamp = Number(event.timestamp || 0);
+        if (Number.isFinite(timestamp)) latest = Math.max(latest, timestamp);
+      });
+      return latest;
+    }
+
+    function authoritativeTimelineMissesKnownCompletion(local, authoritative) {
+      var authoritativeStarts = Object.create(null);
+      var authoritativeCompletions = Object.create(null);
+      (Array.isArray(authoritative) ? authoritative : []).forEach(function (event) {
+        if (!event || !event.turn_id) return;
+        if (event.event === "user_start") authoritativeStarts[event.turn_id] = true;
+        if (event.event === "assistant_done") authoritativeCompletions[event.turn_id] = true;
+      });
+      return (Array.isArray(local) ? local : []).some(function (event) {
+        return event && event.event === "assistant_done" && event.turn_id &&
+          authoritativeStarts[event.turn_id] && !authoritativeCompletions[event.turn_id];
+      });
+    }
+
+    // chat:done 可能来自后台、页面恢复或切换后的会话，本地 buffer 不一定见过
+    // 对应的 turn_started。后端保证先落 timing_events 再发终态；这里重新读取
+    // 权威时间线，避免明明已完成却漏掉状态徽标与耗时。读取失败时保留本地投影。
+    function refreshAuthoritativeTurnTimeline(sessionId) {
+      if (!sessionId) return Promise.resolve(false);
+      return invoke("get_session_timeline", { sessionId: sessionId })
+        .then(function (authoritative) {
+          if (!Array.isArray(authoritative) || authoritative.length === 0) return false;
+          var changed = false;
+          runSyncOnSession(sessionId, function () {
+            // 不允许一次短暂的旧磁盘快照把刚收到的本地终态倒退回“执行中”。
+            // 正常后端已保证先落盘再发事件；这层同时保护旧版本和异常 I/O 时序。
+            if (authoritativeTimelineMissesKnownCompletion(state.turnTimeline, authoritative)) return;
+            var localLatest = latestTimelineCompletion(state.turnTimeline);
+            var authoritativeLatest = latestTimelineCompletion(authoritative);
+            // timing sidecar 是 best-effort；若权威快照明显旧于刚收到的本地终态，
+            // 不用旧数据覆盖当前可见状态。
+            if (localLatest && authoritativeLatest + 5000 < localLatest) return;
+            state.turnTimeline = authoritative;
+            changed = true;
+          });
+          if (changed) notify();
+          return changed;
+        })
+        .catch(function (error) {
+          safeConsoleInfo("[pinvou3][chat-ui] timeline refresh skipped", {
+            sid: sessionId,
+            error: String(error || ""),
+          });
+          return false;
+        });
+    }
+
     function preserveInterruptedAssistantPresentation() {
       var userItemIndex = -1;
       var afterMessageIndex = -1;
@@ -179,6 +236,12 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function isInternalRuntimeUserMessage(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
+  }
+
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
@@ -190,6 +253,7 @@
       return false;
     }
     var content = String(payload.content || "");
+    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
     var operation = String(payload.operation || "append");
     var action = String(payload.action || "");
     var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -226,10 +290,13 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+        state.modeState = {
+          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
+          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
+        };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      if (!snapshotAlreadyCoversTurn) {
+      if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
@@ -722,6 +789,7 @@
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
+    refreshAuthoritativeTurnTimeline(sid);
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
@@ -951,7 +1019,7 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo" };
+    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo", multiAgent: !!readyMode.multi_agent };
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;
@@ -1010,6 +1078,10 @@
   });
 
 
-    return {};
+    return {
+      latestTimelineCompletion: latestTimelineCompletion,
+      authoritativeTimelineMissesKnownCompletion: authoritativeTimelineMissesKnownCompletion,
+      refreshAuthoritativeTurnTimeline: refreshAuthoritativeTurnTimeline,
+    };
   };
 })();

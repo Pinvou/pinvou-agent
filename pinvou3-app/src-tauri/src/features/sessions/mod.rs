@@ -212,6 +212,10 @@ pub struct SessionStore {
     /// 路径上每轮被调，默认值解析只读这块内存（加锁读，不触盘）；写入经
     /// `UserPrefs::update_transaction` 落盘后同步本镜像。
     code_permission: Arc<RwLock<CodePermissionPrefs>>,
+    /// `_multi_agent.json` 的持久化互斥：内存快照与 tmp+rename 必须在同一临界
+    /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的
+    /// 旧快照**会覆盖新快照——重启后部分会话的开关状态消失。
+    multi_agent_flags_io: Arc<Mutex<()>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
@@ -372,9 +376,9 @@ impl SessionStore {
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
         for metadata in sessions {
-            // Scheduled sessions are retained per automation together with
-            // their Run and Task records. This generic chat cleanup must never
-            // delete one side of that three-part history.
+            // Scheduled sessions own additional records outside sessions/.
+            // Generic chat cleanup must not delete only the transcript and
+            // strand the other half of their history.
             if metadata.id.starts_with("sched-") {
                 continue;
             }
@@ -418,6 +422,7 @@ impl SessionStore {
         // state immediately instead of resurrecting it after stale profiles
         // have already been removed.
         store.load_skill_bindings();
+        store.load_multi_agent_flags();
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
@@ -438,6 +443,7 @@ impl SessionStore {
             scheduled_root,
         )?;
         store.load_skill_bindings();
+        store.load_multi_agent_flags();
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
@@ -465,6 +471,7 @@ impl SessionStore {
             scheduled_mutation: Arc::new(Mutex::new(())),
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
+            multi_agent_flags_io: Arc::new(Mutex::new(())),
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -486,6 +493,8 @@ impl SessionStore {
             .context("list_sessions failed")?;
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
+        // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
+        // 会话，其余历史统一进入普通列表。
         out.retain(|metadata| !metadata.id.starts_with("sched-"));
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
@@ -574,7 +583,18 @@ impl SessionStore {
             *active = None;
         }
         drop(active);
-        self.mode_states.write().remove(id);
+        let removed_multi_agent = self
+            .mode_states
+            .write()
+            .remove(id)
+            .is_some_and(|state| state.multi_agent);
+        if removed_multi_agent {
+            if let Err(error) = self.save_multi_agent_flags() {
+                eprintln!(
+                    "[sessions] update _multi_agent.json after delete({id}) failed: {error:#}"
+                );
+            }
+        }
         if self.code_mode_states.write().remove(id).is_some() {
             self.save_code_mode_states();
         }
@@ -1007,14 +1027,30 @@ impl SessionStore {
         }
         let contains = |candidate: &str| ids.iter().any(|id| id == candidate);
 
-        let removed_modes = {
+        let (removed_modes, removed_multi_agent) = {
             let mut modes = self.mode_states.write();
             let before = modes.len();
-            modes.retain(|id, _| !contains(id.as_str()));
-            modes.len() != before
+            let mut removed_multi_agent = false;
+            modes.retain(|id, state| {
+                let keep = !contains(id.as_str());
+                if !keep && state.multi_agent {
+                    removed_multi_agent = true;
+                }
+                keep
+            });
+            (modes.len() != before, removed_multi_agent)
         };
         if removed_modes {
             self.save_skill_bindings();
+        }
+        if removed_multi_agent {
+            // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
+            // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
+            if let Err(error) = self.save_multi_agent_flags() {
+                eprintln!(
+                    "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         let removed_code_modes = {
@@ -1249,10 +1285,19 @@ impl SessionStore {
             None,
         );
         session.metadata.title = "新对话".to_string();
-        self.save(&session)?;
-        // per-session 模型:新建会话继承全局默认(active)模型 id,落盘记住。
+        // per-session 模型：先落 sidecar 再公开 Session JSON，避免写盘失败后
+        // 留下一条看似创建成功、重启却切回其它模型的会话。
         if let Some(mid) = model_id {
             self.set_session_model_id(&id, Some(mid))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
+                }
+            });
         }
         Ok(session)
     }
@@ -1504,6 +1549,113 @@ impl SessionStore {
             self.record_code_last_mode(mode);
         }
         Ok(())
+    }
+
+    /// 多智能体模式开关（ADR-0006）。**必须持久化**：Web 门禁与每轮委派
+    /// 注入都依据它，只驻内存的话重启后开关静默关闭、名册与门禁一起失效。
+    ///
+    /// 落盘失败即整体失败并**回滚内存**：否则界面显示已开启、重启后却静默
+    /// 关闭，Web 门禁也跟着失守。
+    ///
+    /// 「改内存 → 落盘 → 失败回滚」**整个事务**持有 `multi_agent_flags_io`：
+    /// 只锁保存的话，并发翻转同一会话且恰逢落盘失败时，一方的回滚会把另一
+    /// 方已提交的新状态覆盖回旧值（复核点名）。
+    pub fn set_multi_agent(&self, id: &str, enabled: bool) -> Result<()> {
+        let _io = self.multi_agent_flags_io.lock();
+        let previous = {
+            let mut m = self.mode_states.write();
+            let entry = m.entry(id.to_string()).or_default();
+            let previous = entry.multi_agent;
+            entry.multi_agent = enabled;
+            previous
+        };
+        if let Err(error) = self.save_multi_agent_flags_locked() {
+            let mut m = self.mode_states.write();
+            if let Some(entry) = m.get_mut(id) {
+                entry.multi_agent = previous;
+            }
+            return Err(error).context("persist multi-agent flag");
+        }
+        Ok(())
+    }
+
+    /// 开着多智能体开关的会话清单（持久化与专家池变更联动共用）。
+    pub fn multi_agent_session_ids(&self) -> Vec<String> {
+        let m = self.mode_states.read();
+        let mut ids: Vec<String> = m
+            .iter()
+            .filter(|(_, state)| state.multi_agent)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// 把开关清单落到 `sessions/_multi_agent.json`（空清单删文件，避免残留
+    /// 空壳）。写入走 tmp + rename 原子替换：进程恰在写一半退出时不能给下次
+    /// 启动留半个 JSON。**内存快照与写盘在 `multi_agent_flags_io` 同一临界区
+    /// 内完成**：保存因此全序化，最后完成的保存必然持有不早于任何先前保存的
+    /// 快照——并发「开启/删除」不会让旧快照覆盖新快照。
+    pub fn save_multi_agent_flags(&self) -> Result<()> {
+        let _io = self.multi_agent_flags_io.lock();
+        self.save_multi_agent_flags_locked()
+    }
+
+    /// [`save_multi_agent_flags`] 的临界区本体：调用方必须已持有
+    /// `multi_agent_flags_io`（parking_lot Mutex 不可重入）。
+    fn save_multi_agent_flags_locked(&self) -> Result<()> {
+        let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
+        let ids = self.multi_agent_session_ids();
+        if ids.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("remove _multi_agent.json"),
+            };
+        }
+        let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &file)
+            .with_context(|| format!("commit {} -> {}", tmp.display(), file.display()))
+    }
+
+    /// 启动时恢复开关清单（与 `load_skill_bindings` 同点调用）。
+    ///
+    /// 顺带自愈幽灵 id：删除/清理路径的侧车更新失败只记日志（会话本体已删，
+    /// 报错也无从回滚），残留的 id 靠这里对账剔除——会话 JSON 已不存在的
+    /// 条目不恢复，且当场重写清单，不再传染给下一次启动。
+    pub fn load_multi_agent_flags(&self) {
+        let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            return;
+        };
+        let ids: Vec<String> = match serde_json::from_str(&content) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("[sessions] load_multi_agent_flags failed: {e}");
+                return;
+            }
+        };
+        let sessions_dir = self.manager.sessions_dir().to_path_buf();
+        let mut ghosts = false;
+        {
+            let mut m = self.mode_states.write();
+            for id in ids {
+                if sessions_dir.join(format!("{id}.json")).is_file() {
+                    m.entry(id).or_default().multi_agent = true;
+                } else {
+                    ghosts = true;
+                }
+            }
+        }
+        if ghosts {
+            if let Err(error) = self.save_multi_agent_flags() {
+                eprintln!(
+                    "[sessions] rewrite _multi_agent.json after ghost cleanup failed: {error:#}"
+                );
+            }
+        }
     }
 
     /// Register the newest actionable plan only while the session is still in
@@ -2084,31 +2236,51 @@ impl SessionStore {
 
     /// 设/清该 session 的模型 id 并落盘。`None` = 清除(回退全局默认)。
     pub fn set_session_model_id(&self, id: &str, model_id: Option<String>) -> Result<()> {
-        {
-            let mut m = self.session_models.write();
-            match model_id {
-                Some(mid) => {
-                    m.insert(id.to_string(), mid);
-                }
-                None => {
-                    m.remove(id);
-                }
+        let mut models = self.session_models.write();
+        let previous = models.get(id).cloned();
+        match model_id {
+            Some(mid) => {
+                models.insert(id.to_string(), mid);
+            }
+            None => {
+                models.remove(id);
             }
         }
-        self.save_session_models();
+        if let Err(error) = Self::persist_session_models(&models) {
+            match previous {
+                Some(previous) => {
+                    models.insert(id.to_string(), previous);
+                }
+                None => {
+                    models.remove(id);
+                }
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
     /// 持久化 per-session 模型绑定到 `~/.pinvou3/sessions/_session_models.json`。
-    pub fn save_session_models(&self) {
+    fn persist_session_models(models: &HashMap<String, String>) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join("_session_models.json");
-        let m = self.session_models.read();
-        if m.is_empty() {
-            let _ = std::fs::remove_file(&file);
-            return;
+        if models.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| format!("remove {}", file.display())),
+            };
         }
-        if let Ok(json) = serde_json::to_string_pretty(&*m) {
-            let _ = std::fs::write(file, json);
+        let payload =
+            serde_json::to_vec_pretty(models).context("serialize per-session model bindings")?;
+        deepseek_tui::utils::write_atomic(&file, &payload)
+            .with_context(|| format!("persist per-session model bindings to {}", file.display()))
+    }
+
+    /// 尽力持久化由清理流程批量修改的模型绑定；交互式设置使用
+    /// [`Self::set_session_model_id`] 的可失败事务路径。
+    pub fn save_session_models(&self) {
+        if let Err(error) = Self::persist_session_models(&self.session_models.read()) {
+            eprintln!("[sessions] save_session_models failed: {error:#}");
         }
     }
 
@@ -2308,8 +2480,10 @@ impl SessionStore {
     }
 }
 
-/// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
-/// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
+/// 工作流运行宿主会话的 id 前缀。
+///
+/// 与 `sched-` 同源的隔离手法：宿主会话存在持久层并进入对话列表，但仍由
+/// 工作流入口拥有；前缀驱动专用引擎配置、徽标与级联清理。
 pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
@@ -2396,6 +2570,8 @@ fn scheduled_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf>
     Ok(manager.sessions_dir().join(format!("{id}.json")))
 }
 
+/// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
+/// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -3834,6 +4010,139 @@ mod tests {
             .any(|revision| revision == &durable_revision));
     }
 
+    /// 开关持久化的真实行为回归：落盘 → 新 store 恢复 → 删除/清理同步。
+    /// （复核指出旧测试只 grep 源码有没有调用，不覆盖真实重启与清理路径。）
+    #[test]
+    fn multi_agent_flags_survive_restart_and_follow_deletion() {
+        let (store, _guard) = isolated_store();
+        let chat = store
+            .create_new("m".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let id = chat.metadata.id.clone();
+
+        store.set_multi_agent(&id, true).expect("persist flag");
+        let file = paths::sessions_root().join("_multi_agent.json");
+        assert!(file.is_file(), "开关必须落盘");
+        assert!(
+            std::fs::read_to_string(&file).unwrap().contains(&id),
+            "落盘清单必须包含该会话"
+        );
+
+        // "重启"：同一磁盘上重建 store → 开关恢复
+        let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+            .expect("reboot store");
+        assert!(
+            reloaded.mode_state(&id).multi_agent,
+            "重启后开关必须恢复（Web 门禁与每轮注入都依据它）"
+        );
+
+        // 关闭 → 清单收敛为空 → 文件删除（不留空壳）
+        store.set_multi_agent(&id, false).expect("persist off");
+        assert!(!file.exists(), "空清单必须删除 sidecar 文件");
+
+        // 再开 → 删除会话 → 清单同步移除
+        store
+            .set_multi_agent(&id, true)
+            .expect("persist flag again");
+        store.delete(&id).expect("delete session");
+        assert!(
+            !file.exists(),
+            "删除会话必须同步清掉 _multi_agent.json 条目"
+        );
+    }
+
+    /// 删除路径侧车更新失败留下的幽灵 id，必须在下次启动被对账剔除，
+    /// 且清单当场重写（不再传染后续启动）。
+    #[test]
+    fn ghost_ids_are_reconciled_away_on_load() {
+        let (store, _guard) = isolated_store();
+        let chat = store
+            .create_new("m".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let real = chat.metadata.id.clone();
+        store.set_multi_agent(&real, true).expect("persist flag");
+
+        // 伪造一条幽灵记录（会话 JSON 不存在）
+        let file = paths::sessions_root().join("_multi_agent.json");
+        let mut ids: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        ids.push("ghost-session".into());
+        std::fs::write(&file, serde_json::to_string_pretty(&ids).unwrap()).unwrap();
+
+        let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+            .expect("reboot store");
+        assert!(reloaded.mode_state(&real).multi_agent, "真实会话恢复");
+        assert!(
+            !reloaded.mode_state("ghost-session").multi_agent,
+            "幽灵 id 不得恢复开关"
+        );
+        let rewritten = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !rewritten.contains("ghost-session"),
+            "清单必须当场重写剔除幽灵 id: {rewritten}"
+        );
+    }
+
+    /// 并发「开启/关闭」交错后，落盘结果必须收敛到最终内存状态——保存的
+    /// 快照与写盘在同一临界区内，旧快照不可能覆盖新快照。
+    #[test]
+    fn concurrent_flag_saves_converge_to_final_memory_state() {
+        let (store, _guard) = isolated_store();
+        let a = store
+            .create_new("m".into(), None, std::env::temp_dir())
+            .expect("create a")
+            .metadata
+            .id
+            .clone();
+        let b = store
+            .create_new("m".into(), None, std::env::temp_dir())
+            .expect("create b")
+            .metadata
+            .id
+            .clone();
+
+        let threads: Vec<_> = [(a.clone(), true), (b.clone(), true)]
+            .into_iter()
+            .map(|(id, on)| {
+                let store = store.clone();
+                std::thread::spawn(move || store.set_multi_agent(&id, on).expect("persist"))
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("join");
+        }
+
+        let file = paths::sessions_root().join("_multi_agent.json");
+        let listed: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(
+            listed.contains(&a) && listed.contains(&b),
+            "并发保存不得互相丢会话: {listed:?}"
+        );
+    }
+
+    /// 保留策略的自动清理同样要移出开关清单：残留幽灵 id 会在重启后复活
+    /// 开关状态，专家池变更联动还会给它重建工作区。
+    #[test]
+    fn retention_purge_also_updates_multi_agent_flags() {
+        let (store, _guard) = isolated_store();
+        let chat = store
+            .create_new("m".into(), None, std::env::temp_dir())
+            .expect("create chat");
+        let id = chat.metadata.id.clone();
+        store.set_multi_agent(&id, true).expect("persist flag");
+        let file = paths::sessions_root().join("_multi_agent.json");
+        assert!(file.is_file());
+
+        store.purge_session_side_maps(&[id.clone()]);
+
+        assert!(!store.mode_state(&id).multi_agent, "内存状态已清");
+        assert!(
+            !file.exists(),
+            "自动清理后 _multi_agent.json 不得残留幽灵 id"
+        );
+    }
+
     #[test]
     fn delete_removes_session() {
         let (store, _g) = isolated_store();
@@ -4610,5 +4919,36 @@ mod tests {
             state2.mode,
             crate::core::mode_state::SerializableMode::Plan
         ));
+    }
+
+    /// 多智能体对话进入会话列表，标题就是用户诉求。
+    ///
+    /// 这是「工作流运行」术语（docs/multiagent/glossary.md）在存储层的落点：
+    /// 宿主会话是运行的入口与档案，历史、重开、删除全部复用会话列表交互。
+
+    /// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+
+    #[test]
+    fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
+        let (store, _guard) = isolated_store();
+        store
+            .set_session_model_id("wf-model-test", Some("old-model".to_string()))
+            .expect("persist initial model");
+        let sidecar = paths::sessions_root().join("_session_models.json");
+        std::fs::remove_file(&sidecar).expect("remove initial sidecar");
+        std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
+
+        let error = store
+            .set_session_model_id("wf-model-test", Some("new-model".to_string()))
+            .expect_err("an unwritable sidecar must fail the model transaction");
+
+        assert!(error
+            .to_string()
+            .contains("persist per-session model bindings"));
+        assert_eq!(
+            store.session_model_override("wf-model-test").as_deref(),
+            Some("old-model"),
+            "failed persistence must not leave a memory-only model choice"
+        );
     }
 }

@@ -21,14 +21,17 @@ import {
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
 import {
+  captureConversationScrollPosition,
   isFetchTool,
   isNearConversationBottom,
   isSearchTool,
+  restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
+import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import {
@@ -75,6 +78,7 @@ import {
 } from './composer-controls.jsx';
 
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+const MULTI_AGENT_ENABLED = can('multiAgent');
 
 function unifiedConversationUiEnabled() {
   try {
@@ -532,6 +536,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
+      const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
@@ -942,6 +947,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
+      // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
+      // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
+      const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
+        && !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
@@ -969,6 +978,53 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setArtifactsFullscreen(false);
         setArtifactsOpen(false);
       }, []);
+      // 子智能体只读执行记录面板（Codex 式右侧列，ADR-0006）。任何工作会话可开
+      // （裸 agent 在普通工作对话同样可用）；与产物面板互斥，否则窄窗下聊天列被挤没。
+      // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
+      // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
+      const [subagentPanel, setSubagentPanel] = useState(null);
+      useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
+      const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
+        subagentPanelScrollRef.current = captureConversationScrollPosition(
+          scrollRef.current,
+          autoScrollRef.current,
+        );
+      }, []);
+      const closeSubagentPanel = useCallback(() => {
+        rememberScrollBeforeSubagentPanelChange();
+        setSubagentPanel(null);
+      }, [rememberScrollBeforeSubagentPanelChange]);
+      useLayoutEffect(() => {
+        const snapshot = subagentPanelScrollRef.current;
+        if (!snapshot) return;
+        subagentPanelScrollRef.current = null;
+        const el = scrollRef.current;
+        if (!el) return;
+        restoreConversationScrollPosition(el, snapshot);
+        lastScrollTopRef.current = el.scrollTop;
+        if (snapshot.stickToBottom) {
+          autoScrollRef.current = true;
+          setShowScrollBottom(false);
+        }
+      }, [subagentPanel]);
+      useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+        const onOpen = (event) => {
+          const detail = event && event.detail;
+          if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
+          rememberScrollBeforeSubagentPanelChange();
+          setSubagentPanel((current) => ({
+            agentId: (detail && detail.agentId) || null,
+            selectionRequestId: (current?.selectionRequestId || 0) + 1,
+          }));
+          closeArtifactsPanel();
+        };
+        window.addEventListener('pinvou:open-subagent', onOpen);
+        return () => window.removeEventListener('pinvou:open-subagent', onOpen);
+      }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
+      useEffect(() => {
+        if (artifactsVisible) setSubagentPanel(null);
+      }, [artifactsVisible]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
       }, []);
@@ -1004,7 +1060,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
       ));
-      const canSend = !firstTurnPending && (hasDraftText || hasReadyAttachment);
+      const canSend = !isMultiAgentReadOnly
+        && !firstTurnPending
+        && (hasDraftText || hasReadyAttachment);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
@@ -1181,7 +1239,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
-        if (!canSend) return;
+        if (isMultiAgentReadOnly || !canSend) return;
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
@@ -1409,7 +1467,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         sessionId={activeSessionId}
                         theme={theme}
                         t={t}
-                        editable={!busy && item.id === lastUserId}
+                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
                         conversationVariant="unified"
                       />
                     )}
@@ -1436,7 +1494,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     renderToolItem={(item) => item.legacyItem
                       && !isSearchTool(item.tool)
                       && !isFetchTool(item.tool)
-                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
+                      ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} theme={theme} t={t} variant="timeline" />
                       : undefined}
                     onOpenExternal={openChatExternalUrl}
                   />
@@ -1451,7 +1509,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         t={t}
                         onPrefill={(text) => setInputText(text)}
                         onSend={sendChatMessage}
-                        editable={!busy && item.id === lastUserId}
+                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
                         isLatestArtifact={latestArtifactIds.has(item.id)}
                         allowScheduledTaskDraft={isScheduledTaskCreationChat}
@@ -1734,6 +1792,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 className="mb-0.5"
                 copy={t.uiConversation}
               />
+              {isMultiAgentReadOnly ? (
+                <div
+                  role="note"
+                  data-testid="multiagent-desktop-only"
+                  className={`min-h-[48px] px-1 py-3 text-[13px] leading-5 ${
+                    isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'
+                  }`}
+                >
+                  {t.multiAgentDesktopOnly}
+                </div>
+              ) : (
+                <>
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -1796,6 +1866,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   );
                 })()}
               </div>
+                </>
+              )}
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
@@ -1908,6 +1980,16 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onDesignAiSubmit={handleDesignAiSubmit}
               designAiState={designAiState}
               onDesignAiStateChange={updateDesignAiState}
+            />
+          )}
+          {subagentPanel && (
+            <SubagentTranscriptPanel
+              sessionId={activeSessionId}
+              initialAgentId={subagentPanel.agentId}
+              selectionRequestId={subagentPanel.selectionRequestId}
+              t={t}
+              theme={theme}
+              onClose={closeSubagentPanel}
             />
           )}
         </div>
@@ -2526,7 +2608,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       if (item.type === 'tool') {
-        return <ToolCard item={item} theme={theme} t={t} />;
+        return <ToolCard item={item} sessionId={sessionId} theme={theme} t={t} />;
       }
 
       if (item.type === 'persona_equip') {

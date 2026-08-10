@@ -4,6 +4,59 @@ const C1_CSI = String.fromCharCode(0x9b);
 const OSC_SEQUENCE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g');
 const CSI_SEQUENCE = new RegExp(`(?:${ESC}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g');
 const SINGLE_ESCAPE_SEQUENCE = new RegExp(`${ESC}[()][0-2A-Z]`, 'g');
+/**
+ * 底座 `agent` 工具的 spawn 判定（与协调操作区分）。
+ *
+ * schema：`action ∈ {start,status,peek,wait,cancel}`，缺省 start；spawn 必带
+ * 任务正文（prompt/message/objective/items 之一，底座 parse_text_or_items
+ * 同源）。status/wait/cancel 只是对既有子智能体的协调操作，不代表一次新
+ * 委派——把它们也画成专家卡会虚增"派出人数"。
+ * 定义在 conversation 层（自包含，无跨域 import）：折叠豁免与专家卡渲染
+ * 都要用它，而本文件会被单独拷进 Codex ACP 时间线测试沙箱。
+ */
+export function isExpertDelegationCall(name, args) {
+  if (name !== 'agent') return false;
+  const input = args && typeof args === 'object' ? args : {};
+  if (String(input.action || 'start') !== 'start') return false;
+  return Boolean(expertDelegationText(input));
+}
+
+/**
+ * `agent(action=wait)` is the persisted compatibility form; `agents/wait` is
+ * the canonical coordination tool. They have identical presentation semantics.
+ */
+export function isAgentWaitCall(name, args) {
+  const toolName = String(name || '').trim().toLowerCase();
+  if (toolName === 'agents/wait') return true;
+  if (toolName !== 'agent') return false;
+  const input = args && typeof args === 'object' ? args : {};
+  return String(input.action || '').trim().toLowerCase() === 'wait';
+}
+
+/**
+ * 把底座 `parse_text_or_items` 接受的任务正文归一成专家卡可展示的文本。
+ * 保持在 conversation 层，与 spawn 判定共用同一契约，避免出现“能派出、
+ * 卡片却没有任务摘要”的两套解析规则。
+ */
+export function expertDelegationText(args) {
+  const input = args && typeof args === 'object' ? args : {};
+  for (const key of ['prompt', 'message', 'objective']) {
+    if (typeof input[key] === 'string' && input[key].trim()) return input[key].trim();
+  }
+  if (!Array.isArray(input.items)) return '';
+  return input.items.map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    const type = String(item.type || 'text').trim();
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (type === 'text') return text;
+    if (type === 'mention' && item.name && item.path) return `[mention:${item.name}](${item.path})`;
+    if (type === 'skill' && item.name && item.path) return `[skill:${item.name}](${item.path})`;
+    if (type === 'local_image' && item.path) return `[local_image:${item.path}]`;
+    if (type === 'image' && item.image_url) return `[image:${item.image_url}]`;
+    return text || '[input]';
+  }).filter(Boolean).join('\n');
+}
+
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
 const SEARCH_TOOL_NAMES = new Set([
   'web_search',
@@ -24,6 +77,28 @@ export function externalMarkdownUrl(value) {
 export function isNearConversationBottom(element, threshold = 96) {
   if (!element) return true;
   return (element.scrollHeight - element.scrollTop - element.clientHeight) < threshold;
+}
+
+/**
+ * 侧栏开合会改变聊天列宽并触发全文重排。保存距底部距离，布局完成后恢复，
+ * 这样贴底的流式会话仍贴底，浏览历史时也不会因换行增多而跳到更早内容。
+ */
+export function captureConversationScrollPosition(element, stickToBottom = false) {
+  if (!element) return null;
+  return {
+    stickToBottom: Boolean(stickToBottom),
+    bottomGap: Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight),
+  };
+}
+
+export function restoreConversationScrollPosition(element, snapshot) {
+  if (!element || !snapshot) return null;
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  const bottomGap = Math.max(0, Number(snapshot.bottomGap) || 0);
+  element.scrollTop = snapshot.stickToBottom
+    ? maxScrollTop
+    : Math.max(0, maxScrollTop - bottomGap);
+  return element.scrollTop;
 }
 
 /**
@@ -184,6 +259,16 @@ export function presentConversationItems(items) {
   const result = [];
   for (const item of items || []) {
     if (OPERATION_ITEM_TYPES.has(item.type)) {
+      // 专家卡是一等公民：spawn 型 `agent` 调用不折进工具组——历史加载时
+      // 工具组默认折叠，会把整场委派藏没。status/wait 等协调操作照常归组。
+      // legacyItem 仅存在于聊天投影，Codex ACP 的同名外部工具不受影响。
+      if (
+        item.legacyItem && item.tool
+        && isExpertDelegationCall(item.tool.name, item.legacyItem.args)
+      ) {
+        result.push(item);
+        continue;
+      }
       const previous = result[result.length - 1];
       if (previous && previous.type === 'tool_group') {
         previous.items.push(item);
@@ -256,4 +341,18 @@ export function terminalStatus(status, exitCode = null) {
   if (normalized === 'failed' || (exitCode != null && exitCode !== 0)) return 'failed';
   if (['completed', 'done', 'cancelled', 'canceled'].includes(normalized)) return 'completed';
   return 'running';
+}
+
+/**
+ * A wait call reports control-plane health, not the child task outcome. Keep
+ * its raw status for diagnostics, but never roll it into the task failure badge.
+ */
+export function countsAsFailedOperation(item) {
+  const tool = item && item.tool || {};
+  const input = tool.rawInput ?? (item && item.legacyItem && item.legacyItem.args);
+  if (isAgentWaitCall(tool.name, input)) return false;
+  const exitCode = item && item.type === 'command_execution'
+    ? commandExecutionDetails(tool).exitCode
+    : null;
+  return terminalStatus(item && item.status, exitCode) === 'failed';
 }

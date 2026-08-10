@@ -42,6 +42,15 @@ impl SessionPolicy {
         self.mode
     }
 
+    /// Whether Pinvou may expose its opt-in multi-agent mode for this session.
+    ///
+    /// This product capability is Work-only for now. It must never be used to
+    /// disable CodeWhale's ordinary `agent` or `workflow` tools in Code mode;
+    /// those remain part of the base Code session behavior.
+    pub fn multi_agent_mode_available(&self) -> bool {
+        matches!(self.mode, SessionMode::Plain)
+    }
+
     /// 连接器禁用集 scope：plain 用全局 scope，code 用 Code scope。
     pub fn connector_scope(&self) -> ConnectorScope {
         match self.mode {
@@ -82,6 +91,10 @@ mod tests {
     fn code_policy_uses_code_scope_and_hides_artifact() {
         let policy = SessionPolicy::for_mode(SessionMode::Code);
         assert_eq!(policy.mode(), SessionMode::Code);
+        assert!(
+            !policy.multi_agent_mode_available(),
+            "Pinvou 多智能体模式本期仅对 Work 开放"
+        );
         assert_eq!(policy.connector_scope(), ConnectorScope::Code);
         // load_skill 不在恒隐藏列表：其隐藏与否由组合目录空否动态决定
         // （bridge::shape_disallowed_tools，V-5 联动）。
@@ -95,6 +108,7 @@ mod tests {
     fn plain_policy_uses_plain_scope_and_hides_nothing() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
+        assert!(policy.multi_agent_mode_available());
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
     }

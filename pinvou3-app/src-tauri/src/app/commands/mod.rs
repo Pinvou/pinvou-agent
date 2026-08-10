@@ -26,6 +26,7 @@ pub(crate) mod local_llm;
 pub(crate) mod marketplace;
 pub(crate) mod memory;
 pub(crate) mod monitor;
+pub(crate) mod multiagent;
 pub(crate) mod personas;
 pub(crate) mod pet;
 mod prelude;

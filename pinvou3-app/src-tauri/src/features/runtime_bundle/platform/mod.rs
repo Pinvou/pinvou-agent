@@ -86,8 +86,10 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
 /// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
 /// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
+/// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
+/// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.18-",
+    "0.20-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
@@ -304,6 +306,16 @@ pub const DENY_SENSITIVE_PATHS_SH: &str =
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
+/// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
+/// 普通对话不使用。会话上限允许一级代理再派生一层；hook 拦截主会话显式
+/// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
+/// 继承上限与准入/并发额度兜底）；Workflow 的
+/// `source_path` 要求改用 inline script/plan，避免 hook 无法检查文件内参数。
+pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
+    include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
+pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
+    include_str!("../../../../resources/common/bundle/multiagent_depth_guard.ps1");
+
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
 pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
 #[derive(Debug, Clone)]
@@ -315,6 +327,8 @@ pub struct Pinvou3Bundle {
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
+    pub multiagent_depth_guard_sh: PathBuf,
+    pub multiagent_depth_guard_ps1: PathBuf,
     pub shell_env_sh: PathBuf,
 }
 
@@ -328,6 +342,8 @@ impl Pinvou3Bundle {
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
+            multiagent_depth_guard_sh: paths::bundle_root().join("multiagent_depth_guard.sh"),
+            multiagent_depth_guard_ps1: paths::bundle_root().join("multiagent_depth_guard.ps1"),
             shell_env_sh: paths::bundle_root().join("shell_env.sh"),
         }
     }
@@ -459,11 +475,17 @@ impl Pinvou3Bundle {
         // PINVOU 自有 hooks：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
+        std::fs::write(&self.multiagent_depth_guard_sh, MULTIAGENT_DEPTH_GUARD_SH)?;
+        std::fs::write(&self.multiagent_depth_guard_ps1, MULTIAGENT_DEPTH_GUARD_PS1)?;
         std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for script in [&self.deny_sensitive_sh, &self.shell_env_sh] {
+            for script in [
+                &self.deny_sensitive_sh,
+                &self.multiagent_depth_guard_sh,
+                &self.shell_env_sh,
+            ] {
                 let mut perm = std::fs::metadata(script)?.permissions();
                 perm.set_mode(0o755);
                 std::fs::set_permissions(script, perm)?;
@@ -911,6 +933,31 @@ mod tests {
         assert!(!rendered.contains("项目目录"));
     }
 
+    fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(&bundle.multiagent_depth_guard_ps1);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("bash");
+            command.arg(&bundle.multiagent_depth_guard_sh);
+            command
+        };
+        command
+            .env("DEEPSEEK_TOOL_NAME", tool)
+            .env("DEEPSEEK_TOOL_ARGS", args)
+            .output()
+            .expect("run multi-agent depth guard")
+    }
+
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
     /// 借 paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
     /// 不靠唯一 nanos 路径躲 race（仍会读 env var）。
@@ -927,6 +974,8 @@ mod tests {
         assert!(bundle.mcp_json.is_file());
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
+        assert!(bundle.multiagent_depth_guard_sh.is_file());
+        assert!(bundle.multiagent_depth_guard_ps1.is_file());
         assert!(bundle.shell_env_sh.is_file());
         assert!(paths::bundle_version_file().is_file());
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
@@ -999,6 +1048,72 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn multiagent_depth_guard_enforces_two_level_inputs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        bundle.ensure_extracted().unwrap();
+
+        let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
+        assert_eq!(positive.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&positive.stderr).contains("at most two child levels"),
+            "拒绝原因必须能指导模型重试: {positive:?}"
+        );
+
+        let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
+        assert!(
+            inherited.status.success(),
+            "复杂一级委派省略深度参数时应继承会话两层上限: {inherited:?}"
+        );
+
+        let leaf = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":0}"#);
+        assert!(leaf.status.success(), "叶子委派应通过: {leaf:?}");
+
+        let positive_one =
+            run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":1}"#);
+        assert_eq!(
+            positive_one.status.code(),
+            Some(2),
+            "正数覆盖会让嵌套代理逐层扩大上限，必须拒绝"
+        );
+
+        let alias = run_depth_guard(
+            &bundle,
+            "agent",
+            r#"{"prompt":"inspect","max_spawn_depth":2}"#,
+        );
+        assert_eq!(alias.status.code(), Some(2));
+
+        let quoted_example = run_depth_guard(
+            &bundle,
+            "agent",
+            r#"{"prompt":"review this JSON: {\"max_depth\":2}"}"#,
+        );
+        assert!(
+            quoted_example.status.success(),
+            "任务正文里的转义示例不得误伤: {quoted_example:?}"
+        );
+
+        let workflow = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"script":"return task({ description: 'x', maxDepth: 1 });"}"#,
+        );
+        assert_eq!(workflow.status.code(), Some(2));
+
+        let opaque_workflow = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"source_path":"workflows/review.workflow.js"}"#,
+        );
+        assert_eq!(opaque_workflow.status.code(), Some(2));
 
         cleanup(&tmp);
     }

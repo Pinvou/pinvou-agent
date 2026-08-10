@@ -16,7 +16,25 @@
     var ensureSession = context.ensureSession;
     var personaPlaceholderTitles = context.personaPlaceholderTitles;
     var isDefaultChatTitle = context.isDefaultChatTitle;
+    var listen = context.listen;
     var personaPoolCache = [];
+    // 专家卡增删改本体成功、但某些会话的名册联动失败时，后端不再把命令判失败
+    // （否则前端不刷新卡池，用户重试会造重复卡），改发本事件；这里如实提示。
+    // 文案取自统一词典 src/shared/i18n.js（经 window 挂载——本文件是静态
+    // 桥脚本，不能 ES import），不在桥内表重复维护译文。
+    function rosterSyncFailedCopy() {
+      var lang = (state.settings && state.settings.language) || "zh";
+      var shared = root.__PINVOU_SHARED_I18N__;
+      var section = shared && shared[lang] && shared[lang].uiMultiAgent;
+      return (section && section.rosterSyncFailed) || "⚠️ ";
+    }
+    if (listen) {
+      listen("multiagent:roster_sync_failed", function (e) {
+        var detail = (e && e.payload) || {};
+        addSystemItem(rosterSyncFailedCopy() + (detail.error || ""));
+        notify();
+      });
+    }
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
   async function loadPersonas() {

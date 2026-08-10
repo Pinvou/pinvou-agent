@@ -213,8 +213,18 @@ pub(crate) async fn chat_with_reservation(
             );
         }
     }
-    // 取该 session 的 mode。
-    let mode = store.mode_state(&sid).mode;
+    // 取该 session 的 mode 状态（mode + 多智能体开关）。
+    let mode_state = store.mode_state(&sid);
+    // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用提醒组装；每轮
+    // 重申而非首轮一次性教学，关掉开关即保持原消息不变。
+    full = super::multiagent::prepend_delegation_reminder(
+        pool,
+        &sid,
+        mode_state.multi_agent,
+        &raw_message,
+        full,
+    );
+    let mode = mode_state.mode;
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(

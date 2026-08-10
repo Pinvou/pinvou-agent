@@ -99,6 +99,12 @@ pub struct SessionModeState {
     /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
     #[serde(skip)]
     pub mounted_collections_revision: u64,
+    /// 多智能体模式开关（ADR-0006）：模型列表下方的会话级开关。开启后本会话
+    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入并回收引擎，取消
+    /// 仍在后台运行的子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
+    /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
+    #[serde(default)]
+    pub multi_agent: bool,
 }
 
 impl Default for SessionModeState {
@@ -114,6 +120,7 @@ impl Default for SessionModeState {
             mounted_collection: None,
             mounted_collections: Vec::new(),
             mounted_collections_revision: 0,
+            multi_agent: false,
         }
     }
 }
@@ -171,6 +178,7 @@ mod tests {
             mounted_collection: None,
             mounted_collections: Vec::new(),
             mounted_collections_revision: 0,
+            multi_agent: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

@@ -1318,7 +1318,11 @@ export function CodexAcpView({
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
   // mode 由后端 get_mode_state 驱动（code 会话首次默认 Plan），不写死初值。
-  const [nativeControls, setNativeControls] = useState({ modelId: null, mountedId: null, mode: CODE_MODE_FALLBACK });
+  const [nativeControls, setNativeControls] = useState({
+    modelId: null,
+    mountedId: null,
+    mode: CODE_MODE_FALLBACK,
+  });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
