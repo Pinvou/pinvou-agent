@@ -85,6 +85,34 @@ assert.deepEqual(
   { kind: 'released' },
 );
 
+// buttons-released 路径:拖动已发生(dragging=true)时,released 后调用方
+// 应以 suppressCompatibleClick 结束会话,后续兼容 click 必须被消费。
+const releasedDrag = createFloatingVoiceDragSession({
+  pointerId: 9,
+  pointerType: 'mouse',
+  clientX: 10,
+  clientY: 10,
+  offsetX: 2,
+  offsetY: 2,
+});
+assert.equal(moveFloatingVoiceDrag(releasedDrag, { pointerId: 9, clientX: 16, clientY: 16, buttons: 1 }).kind, 'move');
+assert.equal(releasedDrag.dragging, true);
+assert.deepEqual(
+  moveFloatingVoiceDrag(releasedDrag, { pointerId: 9, clientX: 18, clientY: 18, buttons: 0 }),
+  { kind: 'released' },
+);
+assert.deepEqual(
+  finishFloatingVoiceDrag(releasedDrag, 9, { suppressCompatibleClick: true }),
+  { matched: true, wasDragging: true },
+);
+assert.equal(releasedDrag.suppressClick, true, 'dragged buttons-released must suppress the compatibility click');
+assert.equal(
+  consumeFloatingVoiceDragClick(releasedDrag, { detail: 1, pointerId: 9, pointerType: 'mouse' }),
+  true,
+  'the compatibility click after a buttons-released drag must be consumed once',
+);
+assert.equal(consumeFloatingVoiceDragClick(releasedDrag, { detail: 1, pointerId: 9, pointerType: 'mouse' }), false);
+
 const lostPenButton = createFloatingVoiceDragSession({
   pointerId: 10,
   pointerType: 'pen',
@@ -164,5 +192,6 @@ assert.doesNotMatch(chatSource, /active:scale-95/);
 assert.match(chatSource, /}, FLOATING_VOICE_CLICK_SUPPRESSION_MS\);/);
 assert.match(chatSource, /onClick=\{handleFloatingVoiceClick\}/);
 assert.match(chatSource, /data-testid="composer-voice-button"/);
+assert.match(chatSource, /reason === 'pointerup' \|\| reason === 'lostpointercapture' \|\| reason === 'buttons-released'/);
 
 console.log('floating_voice_drag_logic: ok');

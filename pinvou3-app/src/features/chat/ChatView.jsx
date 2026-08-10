@@ -1290,7 +1290,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const drag = voiceDragRef.current;
         const target = drag && drag.target;
         const result = finishFloatingVoiceDrag(drag, pointerId, {
-          suppressCompatibleClick: reason === 'pointerup' || reason === 'lostpointercapture',
+          suppressCompatibleClick: reason === 'pointerup' || reason === 'lostpointercapture' || reason === 'buttons-released',
         });
         if (!result.matched) return false;
 
