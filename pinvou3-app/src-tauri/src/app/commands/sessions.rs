@@ -364,6 +364,17 @@ pub async fn create_session(
     Ok(metadata)
 }
 
+/// Desktop `load_session` response: same shape as `SavedSession` plus the
+/// authoritative transcript revision, mirroring the Web download path
+/// (`WebSavedSession`). The frontend reconciles remote turns by this
+/// committed revision instead of presentation-derived message equality.
+#[derive(Debug, Serialize)]
+pub struct DesktopSavedSession {
+    #[serde(flatten)]
+    session: SavedSession,
+    transcript_revision: String,
+}
+
 /// 加载指定 session 的完整对话（含 messages）。
 /// 前端切换历史时调用 → 用返回的 messages 重渲染对话区。
 #[tauri::command]
@@ -371,7 +382,7 @@ pub async fn load_session(
     id: String,
     set_active: Option<bool>,
     store: State<'_, SessionStore>,
-) -> Result<SavedSession, String> {
+) -> Result<DesktopSavedSession, String> {
     let session = store
         .load(&id)
         .map_err(|e| format!("load_session({id}): {e:?}"))?;
@@ -381,7 +392,12 @@ pub async fn load_session(
     // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
-    Ok(session)
+    let revision = crate::features::sessions::transcript_revision(&session.messages)
+        .map_err(|e| format!("load_session({id}) revision: {e:?}"))?;
+    Ok(DesktopSavedSession {
+        session,
+        transcript_revision: revision,
+    })
 }
 
 /// 删除 session（含 artifacts 目录）。按 SessionKind 分发：定时运行会话联动
