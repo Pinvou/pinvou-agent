@@ -77,6 +77,10 @@ command_protocol!(
     [
         "set_disabled_connectors",
         "get_disabled_connectors",
+        "set_disabled_skills",
+        "get_disabled_skills",
+        "set_project_skills_enabled",
+        "get_project_skills_enabled",
         "refresh_connector_auth_gates",
         "feishu_ensure_cli",
         "feishu_status",
