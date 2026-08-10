@@ -703,3 +703,61 @@ pub(super) fn list_workspace_files_for_session(
     Ok(out)
 }
 use super::prelude::*;
+
+#[cfg(test)]
+mod desktop_saved_session_contract_tests {
+    use super::*;
+    use crate::features::sessions::transcript_revision;
+
+    /// Desktop `load_session` must expose `transcript_revision` at the top
+    /// level (snake_case, flatten with the rest of `SavedSession`), otherwise
+    /// the bridge reconcile falls into the every-turn-misreport path.
+    #[test]
+    fn desktop_load_session_response_contract() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-desktop-session-contract-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &root);
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let session = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session");
+        let revision = transcript_revision(&session.messages).expect("transcript revision");
+
+        let response = DesktopSavedSession {
+            session,
+            transcript_revision: revision.clone(),
+        };
+        let value = serde_json::to_value(&response).expect("serialize DesktopSavedSession");
+
+        // 顶层必须带 snake_case 的 transcript_revision(WebSavedSession 同契约)。
+        assert_eq!(
+            value.get("transcript_revision").and_then(|v| v.as_str()),
+            Some(revision.as_str()),
+            "load_session 响应必须携带 transcript_revision 字段"
+        );
+        // SavedSession 其余字段通过 flatten 保留在顶层,不得嵌套丢失。
+        assert!(
+            value.get("messages").is_some(),
+            "flatten 后 messages 必须仍在顶层"
+        );
+        assert!(
+            value.get("metadata").is_some(),
+            "flatten 后 metadata 必须仍在顶层"
+        );
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

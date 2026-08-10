@@ -1325,10 +1325,12 @@
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
-        // Relay replay may deliver the commit marker immediately after done.
-        // Pick it up during retry rather than staying on the weaker fallback
-        // captured when reconciliation first started.
-        if (!expectedCommittedRevision && buf.remoteTerminalSeen) {
+        // Relay replay may deliver the commit marker immediately after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
           expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
         }
         try {

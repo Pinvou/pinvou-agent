@@ -1102,10 +1102,12 @@
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
-        // A reconnect/replay can deliver the commit marker just after done.
-        // Adopt it on a later attempt instead of finishing on the weaker
-        // presentation-key fallback captured at function entry.
-        if (!expectedCommittedRevision && buf.remoteTerminalSeen) {
+        // A reconnect/replay can deliver the commit marker just after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
           expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
         }
         try {

@@ -330,10 +330,25 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
-    // 编辑=新一轮:清掉上一轮可能残留的 committed revision,避免失败对账
+    var sid = state.activeSessionId;
+    var editBuffer = getBuffer(sid);
+    // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
+    // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
+    if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addSystemItem(bt("remoteTurnSyncing"));
+      notify();
+      return;
+    }
+    // await 期间可能切会话或开始新回合,二次确认(与 web bridge 对齐)。
+    if (state.activeSessionId !== sid || state.busy) return;
+    // 编辑=新一轮:接管本地回合并清零 remote 对账状态,避免失败对账
     // 状态下跨回合串用(与 web bridge 的 editLastTurn 对齐)。
-    var editBuffer = getBuffer(state.activeSessionId);
-    if (editBuffer) editBuffer.remoteCommittedRevision = "";
+    if (editBuffer) {
+      editBuffer.localTurnOwned = true;
+      editBuffer.remoteTurnActive = false;
+      editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
+    }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
