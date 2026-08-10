@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { can } from '../../shared/platform.js';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Plus, Send,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Paperclip, Plus, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
@@ -16,7 +17,6 @@ import {
   runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
-import { can } from '../../shared/platform.js';
 import {
   appendAcpEvent,
   commandExecutionDetails,
@@ -46,8 +46,14 @@ import {
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
 import {
+  ComposerModelSelector,
   ComposerToolMenu,
 } from '../settings/SettingsView.jsx';
+import {
+  COMPOSER_ICON_BUTTON_CLASS,
+  ComposerKbSelector,
+  ComposerModeChip,
+} from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import { isNearConversationBottom } from '../conversation/conversation-model.js';
@@ -55,6 +61,7 @@ import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
+import { bridge } from '../../hooks/useBridge.js';
 import {
   invokeTauri,
   listenTauri,
@@ -1173,6 +1180,7 @@ export function CodexAcpView({
   bs = null,
   onGotoTools,
   onGotoModelSettings,
+  onGotoSettings,
   fixedSession = false,
 }) {
   const codexCopy = t.uiCodex;
@@ -1285,17 +1293,8 @@ export function CodexAcpView({
   }, [sessions]);
 
   // 原生车道才加载知识库集合与 embedding 安装态；embedding 明确未装时选择器禁用。
-  useEffect(() => {
-    if (!isNativeAgent) return undefined;
-    let alive = true;
-    invoke('kb_collection_list')
-      .then(list => { if (alive) setNativeKbCollections(Array.isArray(list) ? list : []); })
-      .catch(() => { if (alive) setNativeKbCollections([]); });
-    invoke('kb_model_status')
-      .then(status => { if (alive) setNativeKbStatus(status || { installed: true }); })
-      .catch(() => { if (alive) setNativeKbStatus({ installed: true }); });
-    return () => { alive = false; };
-  }, [isNativeAgent]);
+  // 集合列表与安装态由 ComposerKbSelector 内部经 bridge.knowledge（kb_collection_list /
+  // kb_model_status，全局只读、不带会话）自行加载，代码页不再重复拉取。
   function getNativeLane(sessionId) {
     let lane = nativeLanesRef.current.get(sessionId);
     if (!lane) {
@@ -1333,17 +1332,9 @@ export function CodexAcpView({
   // 待确认的 yolo 切换请求（{ draft, chipBusy }）；非 null 时渲染确认卡。
   const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
-  // 知识库选择器的集合列表与 embedding 安装态（全局只读查询，不带会话）。
-  const [nativeKbCollections, setNativeKbCollections] = useState([]);
-  const [nativeKbStatus, setNativeKbStatus] = useState(null); // null=未知；新后端区分已安装与运行时已就绪
-  const nativeKbSetup = (bs && bs.kbModelSetup) || {};
-  const nativeKbMissing = nativeKbStatus && nativeKbStatus.installed === false;
-  const nativeKbReadyKnown = nativeKbStatus && typeof nativeKbStatus.ready === 'boolean';
-  const nativeKbNotReady = !nativeKbMissing && (
-    nativeKbSetup.startupLoading === true
-    || (nativeKbReadyKnown && nativeKbStatus.ready === false && nativeKbSetup.startupReady !== true)
-  );
-  const nativeKbBlocked = nativeKbMissing || nativeKbNotReady;
+  // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
+  // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
+  // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
@@ -1372,20 +1363,9 @@ export function CodexAcpView({
   const nativeSessionModelId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.modelId : null)
     : (nativeDraftControls.modelId || null);
-  const nativeModelValue = nativeSessionModelId || (bs && bs.activeModelId) || '';
-  const nativeManageModelsAction = can('modelManagement') && onGotoModelSettings
-    ? { label: t.manageModels, onClick: onGotoModelSettings }
-    : undefined;
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
-  const nativeKbChoices = [
-    { value: '', name: t.kbMountRemove },
-    ...nativeKbCollections.map(collection => ({
-      value: String(collection.id),
-      name: collection.name,
-    })),
-  ];
   const activeAgentName = activeSession?.agent_name
     || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
@@ -1878,6 +1858,59 @@ export function CodexAcpView({
       [attachmentKey]: (current[attachmentKey] || []).filter(path => path !== relativePath),
     }));
   }
+
+  // ── 语音输入（与 ChatView 同款：bridge.voice 一次录音 → 本地 ASR → 写回 draft）。
+  // 代码车道不物化聊天会话，语音状态仍由 bridge 全局管理（bs.voiceInput），写回走代码页 draft。
+  const nativeVoiceInput = (bs && bs.voiceInput) || { status: 'idle' };
+  const nativeVoiceActive = nativeVoiceInput.status === 'requesting_permission'
+    || nativeVoiceInput.status === 'recording'
+    || nativeVoiceInput.status === 'transcribing';
+  const nativeVoiceRecording = nativeVoiceInput.status === 'recording';
+  const nativeVoiceBusy = nativeVoiceInput.status === 'transcribing';
+  const nativeVoiceDisabled = !bridge.available || nativeVoiceBusy;
+  const nativeVoiceCanInstallAsr = can('localModelSetup') && can('dependencyInstall');
+  const nativeVoiceLabel = nativeVoiceInput.status === 'recording'
+    ? t.voiceStop
+    : nativeVoiceInput.status === 'failed'
+      ? t.voiceRetry
+      : nativeVoiceInput.status === 'requesting_permission'
+        ? t.voiceCancel
+        : nativeVoiceInput.status === 'transcribing'
+          ? t.voiceTranscribing
+          : t.voiceStart;
+  function handleNativeVoiceClick() {
+    if (!bridge.available) return;
+    if (nativeVoiceInput.status === 'requesting_permission') {
+      bridge.voice.cancelVoiceInput();
+      return;
+    }
+    if (nativeVoiceBusy) return;
+    bridge.voice.startVoiceInput(draft, (text) => setDraft(prev => bridge.voice.appendVoiceText(prev, text)));
+  }
+  function handleNativeVoiceCancel() {
+    if (bridge.available) bridge.voice.cancelVoiceInput();
+  }
+  function handleNativeVoiceClose() {
+    if (bridge.available) bridge.voice.clearVoiceInput();
+  }
+
+  // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
+  // bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，代码页不物化聊天会话，
+  // 若不取消，转写结果可能写回已卸载组件（草稿态 null→null 时守卫还会放行并
+  // 显示「已完成」，但文本已丢失）。卸载前取消让「录音中切走」变成显式取消。
+  const nativeVoiceInputRef = useRef(nativeVoiceInput);
+  nativeVoiceInputRef.current = nativeVoiceInput;
+  useEffect(() => {
+    return () => {
+      const voice = nativeVoiceInputRef.current;
+      if (voice && (voice.status === 'requesting_permission'
+        || voice.status === 'recording'
+        || voice.status === 'transcribing')
+        && bridge.available) {
+        bridge.voice.cancelVoiceInput();
+      }
+    };
+  }, []);
 
   function handlePaste(event) {
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
@@ -2811,6 +2844,36 @@ export function CodexAcpView({
                 className="mb-2"
                 formatError={value => String(value || '')}
               />
+              {nativeVoiceInput.status !== 'idle' && nativeVoiceInput.message && (
+                <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
+                  nativeVoiceInput.status === 'failed'
+                    ? (theme === 'dark' ? 'bg-[#3A1F1F] text-[#F28B82]' : 'bg-[#FCE8E6] text-[#C5221F]')
+                    : (theme === 'dark' ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]')
+                }`}>
+                  <span className="min-w-0 truncate">
+                    {nativeVoiceInput.status === 'requesting_permission' ? t.voiceRequesting
+                      : nativeVoiceInput.status === 'recording' ? t.voiceRecording
+                      : nativeVoiceInput.status === 'transcribing' ? t.voiceTranscribing
+                      : nativeVoiceInput.status === 'completed' ? t.voiceCompleted
+                      : nativeVoiceInput.message}
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {nativeVoiceInput.status === 'failed' && nativeVoiceInput.category === 'recognition_failed'
+                      && nativeVoiceCanInstallAsr && onGotoSettings && (
+                      <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${theme === 'dark' ? 'bg-white/10 hover:bg-white/20' : 'bg-black/5 hover:bg-black/10'}`}>{t.voiceGotoDeps}</button>
+                    )}
+                    {nativeVoiceInput.status === 'failed' && (
+                      <button onClick={handleNativeVoiceClick} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceRetry}</button>
+                    )}
+                    {nativeVoiceActive && (
+                      <button onClick={handleNativeVoiceCancel} className={`px-2 py-1 rounded-full ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{t.voiceCancel}</button>
+                    )}
+                    {!nativeVoiceActive && (
+                      <button onClick={handleNativeVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${theme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>×</button>
+                    )}
+                  </div>
+                </div>
+              )}
               {workspaceReferences.length > 0 && (
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   {workspaceReferences.map(path => (
@@ -2915,48 +2978,55 @@ export function CodexAcpView({
                   <button
                     type="button"
                     onClick={() => pickAttachments().catch(showError)}
-                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                    className={COMPOSER_ICON_BUTTON_CLASS}
                     title={codexCopy.addAttachment}
                     aria-label={codexCopy.addAttachment}
                   >
-                    <Paperclip size={16} />
+                    <Paperclip size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="codex-voice-input"
+                    onClick={handleNativeVoiceClick}
+                    disabled={nativeVoiceDisabled}
+                    aria-label={nativeVoiceLabel}
+                    title={nativeVoiceLabel}
+                    className={`${
+                      nativeVoiceRecording
+                        ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
+                        : nativeVoiceActive
+                          ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
+                          : COMPOSER_ICON_BUTTON_CLASS
+                    } ${nativeVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
+                    <Mic size={18} />
                   </button>
                   <button type="button" onClick={() => setCommandOpen(value => !value)}
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
                   {isNativeAgent && (
-                    // 原生（品悟）车道的底栏控件：与 ACP 配置组同一套
-                    // CodexComposerConfigSelect 视觉语言；行为（直调 per-session 命令、
-                    // 草稿暂存、busy 禁用、归属保护）不变。Plan 说明：原生车道已接
-                    // plan_snapshot/plan_ready，切 Plan 后方案以审批卡呈现（批准调 accept_plan）。
+                    // 原生（品悟）车道的底栏控件：与工作/设计页共用同一套共享 composer
+                    // 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
+                    // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）；行为（直调
+                    // per-session 命令、草稿暂存、busy 禁用、归属保护）不变。Plan 说明：
+                    // 原生车道已接 plan_snapshot/plan_ready，切 Plan 后方案以审批卡呈现。
                     <div data-testid="native-composer-controls" className="flex min-w-0 flex-wrap items-center gap-2">
-                      <CodexComposerConfigSelect
-                        id="native-mode"
-                        testId="native-mode"
-                        label={codexCopy.permissionMode}
-                        value={nativeModeValue}
-                        choices={[
-                          { value: 'yolo', name: t.modeYolo },
-                          { value: 'plan', name: t.modePlan },
-                        ]}
-                        onChange={target => switchNativeMode(String(target), {
-                          isPlan: nativeModeValue === 'plan',
-                          busy,
-                        })}
-                        title={`${t.modeSwitchTitle} · ${nativeModeValue === 'plan' ? t.modePlan : t.modeYolo}`}
+                      <ComposerModeChip
+                        t={t}
+                        bs={bs}
+                        mode={nativeModeValue}
+                        busy={busy || working}
+                        onSwitch={switchNativeMode}
                       />
                       {nativeModelChoices.length > 0 && (
-                        <CodexComposerConfigSelect
-                          id="native-model"
-                          testId="native-model"
-                          label={codexCopy.model}
-                          value={nativeModelValue}
-                          choices={nativeModelChoices}
-                          onChange={modelId => switchNativeModel(activeId, String(modelId))}
-                          disabled={busy || working}
-                          title={busy || working ? t.modelSwitchBusy : undefined}
-                          footerAction={nativeManageModelsAction}
+                        <ComposerModelSelector
+                          t={t}
+                          bs={bs}
+                          onGotoSettings={onGotoModelSettings}
+                          sessionId={activeId}
+                          sessionModelId={nativeSessionModelId}
+                          busy={busy || working}
+                          onSwitchModel={(sessionId, modelId) => switchNativeModel(sessionId, String(modelId))}
                         />
                       )}
                       <ComposerToolMenu
@@ -2968,17 +3038,12 @@ export function CodexAcpView({
                         triggerTestId="native-tools"
                         scope="code"
                       />
-                      <CodexComposerConfigSelect
-                        id="native-kb"
-                        testId="native-kb"
-                        label={t.kbMount}
-                        value={nativeMountedId == null ? '' : String(nativeMountedId)}
-                        choices={nativeKbChoices}
-                        onChange={value => (
-                          String(value) === '' ? unmountNativeKb() : mountNativeKb(Number(value))
-                        )}
-                        disabled={nativeKbBlocked}
-                        title={nativeKbBlocked ? (nativeKbMissing ? t.kbMountNoModel : t.kbMountNotReady) : t.kbMountTitle}
+                      <ComposerKbSelector
+                        t={t}
+                        bs={bs}
+                        mountedId={nativeMountedId}
+                        onMount={mountNativeKb}
+                        onUnmount={unmountNativeKb}
                       />
                       {activeId && nativeTokensInput > 0 && (
                         // 用量 chip 兼手动压缩入口（compact_now 的后端注释语义即"用户点 token
