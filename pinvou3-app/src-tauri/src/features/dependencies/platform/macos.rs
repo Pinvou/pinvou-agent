@@ -1,5 +1,5 @@
-use std::io::Read;
 use std::io::BufReader;
+use std::io::Read;
 use std::process::Command;
 
 const KNOWN_DEP_PACKAGES: &[&str] = &[
@@ -342,8 +342,7 @@ mod tests {
     // 流式实现应在 `\r` 段到达时立即回调,因此两条回调的时间差应显著大于零。
     #[test]
     fn drain_lines_reports_cr_segment_before_final_newline() {
-        let calls: Arc<Mutex<Vec<(String, std::time::Instant)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let calls: Arc<Mutex<Vec<(String, std::time::Instant)>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_clone = calls.clone();
         let report = move |_pkg: &str, _cur: usize, _total: usize, detail: Option<&str>| {
             if let Some(line) = detail {
@@ -370,8 +369,7 @@ mod tests {
         assert_eq!(recorded[1].0, "B");
         // A(\r 段)在 B(\n 段)之前到达;若实现把 \r 缓冲到行尾,二者几乎同时回调。
         assert!(
-            recorded[1].1.duration_since(recorded[0].1)
-                >= std::time::Duration::from_millis(100),
+            recorded[1].1.duration_since(recorded[0].1) >= std::time::Duration::from_millis(100),
             "\\r 进度段应在最终换行前实时回调,而不是缓冲到行尾批量上报"
         );
     }

@@ -160,6 +160,7 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         key: "email".into(),
         installed: crate::platform::os::email_tool_exists(),
         apt: crate::platform::os::email_dependency_packages().into(),
+        install_action: None,
         hint: email_hint,
     });
     items

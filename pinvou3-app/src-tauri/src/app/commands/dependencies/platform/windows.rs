@@ -16,12 +16,14 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
         installed: voice_asr::status().model,
         apt: String::new(),
         install_action: Some(INSTALL_VOICE_MODEL.into()),
+        hint: None,
     });
     items.push(DependencyCheckItem {
         key: INSTALL_KNOWLEDGE_MODEL.into(),
         installed: model_download::model_installed(),
         apt: String::new(),
         install_action: Some(INSTALL_KNOWLEDGE_MODEL.into()),
+        hint: None,
     });
     items
 }
@@ -75,7 +77,10 @@ pub async fn install_dependencies(
     if !packages.is_empty() {
         tasks.push(InstallTask {
             failure_name: "系统依赖",
-            future: Box::pin(dependency_checks::install_dependencies(app.clone(), packages)),
+            future: Box::pin(dependency_checks::install_dependencies(
+                app.clone(),
+                packages,
+            )),
         });
     }
     if install_voice_model {
