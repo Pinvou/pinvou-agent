@@ -330,6 +330,10 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
+    // 编辑=新一轮:清掉上一轮可能残留的 committed revision,避免失败对账
+    // 状态下跨回合串用(与 web bridge 的 editLastTurn 对齐)。
+    var editBuffer = getBuffer(state.activeSessionId);
+    if (editBuffer) editBuffer.remoteCommittedRevision = "";
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {

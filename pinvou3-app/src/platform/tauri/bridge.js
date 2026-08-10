@@ -1112,12 +1112,15 @@
           var saved = await invoke("load_session", { id: sid, setActive: false });
           if (!saved || !Array.isArray(saved.messages)) continue;
           var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
-          if (expectedCommittedRevision) {
+          // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
+          // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
+          // 无字段」导致对账必然失败(每轮误报)。
+          if (expectedCommittedRevision && savedRevision) {
             if (savedRevision !== expectedCommittedRevision) continue;
           } else {
             if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
           }
-          if (!expectedCommittedRevision && expectedAssistantKey) {
+          if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
