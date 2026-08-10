@@ -209,7 +209,6 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
  * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
  */
 const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
-  const isDark = theme === 'dark';
   const copy = t.uiMultiAgent;
   const args = item.args || {};
   const agentId = extractSubagentId(item.output);
@@ -328,9 +327,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
       <div
         data-testid="expert-agent-card"
         className={`flex w-full items-center rounded-[12px] border px-2 py-1.5 transition-colors ${
-          isDark
-            ? 'border-[#38383A] bg-[#1C1C1E] hover:bg-[#2C2C2E]'
-            : 'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7]'
+          'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7] dark:border-[#38383A] dark:bg-[#1C1C1E] dark:hover:bg-[#2C2C2E]'
         }`}
       >
         <button
@@ -340,7 +337,6 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
         >
           <AppIcon
             card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
-            isDark={isDark}
             cls="h-8 w-8 shrink-0 overflow-hidden rounded-[10px]"
             fb={14}
           />
@@ -348,7 +344,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
             className="min-w-0 max-w-[148px] shrink-0"
             title={subtitle ? `${name} · ${subtitle}` : name}
           >
-            <span className={`block truncate text-[12.5px] font-semibold leading-[15px] ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+            <span className={`block truncate text-[12.5px] font-semibold leading-[15px] text-[#1C1C1E] dark:text-[#E5E5EA]`}>
               {name}
             </span>
             {subtitle && (
@@ -423,7 +419,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
                   data-testid="expert-agent-child-card"
                   onClick={() => openSubagentTranscript(entry.agent_id, sessionId)}
                   className={`flex min-w-0 flex-1 items-center gap-2 rounded-[10px] px-2 py-1.5 text-left ${
-                    isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.035]'
+                    'hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'
                   }`}
                 >
                   <AppIcon
@@ -432,7 +428,6 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
                       name: childPresentation.subtitle || childPresentation.name,
                       dept: childPresentation.identity.personaDept,
                     }}
-                    isDark={isDark}
                     cls="h-7 w-7 shrink-0 overflow-hidden rounded-[9px]"
                     fb={13}
                   />
@@ -442,7 +437,7 @@ const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
                       ? `${childPresentation.name} · ${childPresentation.subtitle}`
                       : childPresentation.name}
                   >
-                    <span className={`block truncate text-[11.5px] font-semibold leading-[14px] ${isDark ? 'text-[#E5E5EA]' : 'text-[#1C1C1E]'}`}>
+                    <span className={`block truncate text-[11.5px] font-semibold leading-[14px] text-[#1C1C1E] dark:text-[#E5E5EA]`}>
                       {childPresentation.name}
                     </span>
                     {childPresentation.subtitle && (
