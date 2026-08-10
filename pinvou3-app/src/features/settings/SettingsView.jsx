@@ -474,64 +474,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    // 聊天输入框上方:当前会话模型 chip + 下拉热切。
-    const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
-      const [open, setOpen] = useState(false);
-      const canManageModels = can('modelManagement');
-      const canSwitchModels = can('sessionModelSwitch');
-      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
-      const activeSessionId = bs ? bs.activeSessionId : null;
-      const activeModelId = bs && bs.activeModelId;
-      const currentSessionModelId = bs && bs.currentSessionModelId;
-      const busy = bs ? bs.busy : false;
-      const effectiveId = currentSessionModelId || activeModelId;
-      const current = savedModels.find(m => m.id === effectiveId);
-      if (!savedModels.length) return null;
-      function pick(id) {
-        setOpen(false);
-        if (id === effectiveId) return;
-        if (bridge.available) bridge.models.switchModel(activeSessionId, id);
-      }
-      return (
-        <div className="relative px-2 mb-2">
-          <button onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
-            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
-            className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
-            <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
-            <span className="max-w-[220px] truncate">{current ? selectorMainLabel(current, t) : t.modelNonePick}</span>
-            <ChevronDown size={13} />
-          </button>
-          {open && canSwitchModels && (
-            <div>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className={`absolute bottom-full left-2 mb-1 z-50 min-w-[240px] max-h-[340px] overflow-y-auto rounded-xl border shadow-lg py-1 ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
-                {savedModels.map(m => (
-                  <button key={m.id} onClick={() => pick(m.id)}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2A2B2D]' : 'hover:bg-[#F0F4F9]'}`}>
-                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${m.id === effectiveId ? 'bg-[#34A853]' : 'bg-transparent'}`}></span>
-                    <span className="flex-1 min-w-0">
-                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{selectorMainLabel(m, t)}</span>
-                      <span className={`block text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{selectorSubLabel(m, t)}</span>
-                    </span>
-                    {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
-                  </button>
-                ))}
-                {canManageModels && (
-                  <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
-                    <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
-                      className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
-                      {t.manageModels}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
+    // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
     // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
     // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
     const ComposerModelSelector = ({ t, bs, onGotoSettings, compact, sessionId: sessionIdProp, sessionModelId: sessionModelIdProp, busy: busyProp, onSwitchModel }) => {
@@ -2888,4 +2831,4 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ModelChip, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };
+export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };

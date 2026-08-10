@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Send,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Paperclip, Plus, Send,
   RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
@@ -16,6 +16,7 @@ import {
   runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { can } from '../../shared/platform.js';
 import {
   appendAcpEvent,
   commandExecutionDetails,
@@ -197,6 +198,7 @@ function CodexComposerConfigSelect({
   title,
   unsetLabel,
   testId,
+  footerAction,
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
@@ -255,6 +257,19 @@ function CodexComposerConfigSelect({
             </button>
           );
         })}
+        {footerAction && (
+          <>
+            <div className="my-1 mx-2 h-px bg-black/5 dark:bg-white/10" />
+            <button
+              type="button"
+              onClick={() => { setOpen(false); footerAction.onClick(); }}
+              className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
+            >
+              <Plus size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+              <span className="min-w-0 truncate">{footerAction.label}</span>
+            </button>
+          </>
+        )}
       </ComposerPopover>
     </div>
   );
@@ -1157,6 +1172,7 @@ export function CodexAcpView({
   onSwitchHomeMode,
   bs = null,
   onGotoTools,
+  onGotoModelSettings,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState([]);
@@ -1352,6 +1368,9 @@ export function CodexAcpView({
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.modelId : null)
     : (nativeDraftControls.modelId || null);
   const nativeModelValue = nativeSessionModelId || (bs && bs.activeModelId) || '';
+  const nativeManageModelsAction = can('modelManagement') && onGotoModelSettings
+    ? { label: t.manageModels, onClick: onGotoModelSettings }
+    : undefined;
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
@@ -2928,6 +2947,7 @@ export function CodexAcpView({
                           onChange={modelId => switchNativeModel(activeId, String(modelId))}
                           disabled={busy || working}
                           title={busy || working ? t.modelSwitchBusy : undefined}
+                          footerAction={nativeManageModelsAction}
                         />
                       )}
                       <ComposerToolMenu
