@@ -1244,7 +1244,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   <div className="mt-5">
                     {modelFailed ? (
                       <div className="flex items-center justify-center gap-3">
-                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold ${isDark ? 'bg-white/10 text-white' : 'bg-[#eceef7] text-[#3f4250]'}`}>{t.kbModelRetryBtn}</button>
+                        <button onClick={() => startModelDownload(false)} className={`px-5 py-2.5 rounded-xl text-[14px] font-bold bg-[#eceef7] text-[#3f4250] dark:bg-white/10 dark:text-white`}>{t.kbModelRetryBtn}</button>
                         <button onClick={() => startModelDownload(true)} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white"
                           style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', boxShadow: '0 6px 16px rgba(108,92,231,.32)' }}>{t.kbModelRepairBtn} →</button>
                       </div>
@@ -1307,7 +1307,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 )}
                 {idx && (idx.running || idx.resumable || idx.failed > 0) && (
-                  <div className={`mb-5 rounded-2xl border p-4 ${isDark ? 'border-white/10 bg-white/[0.04]' : 'border-[#dfe3ee] bg-[#f8f9fd]'}`}>
+                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04]`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={`text-[14px] font-bold ${ink}`}>
@@ -1555,9 +1555,9 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
           {/* 「+ 添加 ▾」下拉菜单：文件 / 文件夹(后端 WalkDir 递归展开目录) */}
           {addMenu && typeof document !== 'undefined' && createPortal(
             <div onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
-              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 ${isDark ? 'bg-[#202124] ring-white/10' : 'bg-white ring-black/10'}`}>
-              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
-              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]') : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
+              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
+              <button data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
+              <button data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
             </div>, document.body)}
         </div>
       );
