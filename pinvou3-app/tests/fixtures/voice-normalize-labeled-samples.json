@@ -1,0 +1,940 @@
+[
+  {
+    "id": "gold_price_chart_001",
+    "type": "easy_confusion",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/gold_price_chart_001.wav",
+    "gold_text": "查一下今日金价，并生成数据分析图表。",
+    "keywords": [
+      "今日金价",
+      "数据分析",
+      "图表"
+    ],
+    "asr_expected_errors": [
+      "进价",
+      "惊吓",
+      "图标"
+    ],
+    "forbidden_additions": [
+      "详细报告",
+      "折线图",
+      "柱状图",
+      "投资建议"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "查一下今日进价，并生成数据分析图标。",
+    "expected_final_text": "查一下今日金价，并生成数据分析图表。",
+    "spoken_text": "查一下今日金价，并生成数据分析图表。"
+  },
+  {
+    "id": "stock_volatility_chart_001",
+    "type": "query_visualization",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/stock_volatility_chart_001.wav",
+    "gold_text": "查一下最近的股票波动，并生成数据分析图表。",
+    "keywords": [
+      "股票波动",
+      "数据分析",
+      "图表"
+    ],
+    "asr_expected_errors": [
+      "只是发了",
+      "图标"
+    ],
+    "forbidden_additions": [
+      "投资建议",
+      "买入",
+      "卖出",
+      "详细报告"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "嗯，查一下最近的股票波动生成数据分析，只是发了一个图表吧。",
+    "expected_final_text": "查一下最近的股票波动，并生成数据分析图表。",
+    "spoken_text": "查一下最近的股票波动，并生成数据分析图表。"
+  },
+  {
+    "id": "weather_short_clear_001",
+    "type": "short_clear",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/weather_short_clear_001.wav",
+    "gold_text": "今天天气怎么样？",
+    "keywords": [
+      "今天",
+      "天气"
+    ],
+    "asr_expected_errors": [],
+    "forbidden_additions": [
+      "穿衣建议",
+      "出行建议",
+      "天气预报详情"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "今天天气怎么样？",
+    "expected_final_text": "今天天气怎么样？",
+    "spoken_text": "今天天气怎么样？"
+  },
+  {
+    "id": "filler_only_001",
+    "type": "filler_only",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/filler_only_001.wav",
+    "gold_text": "",
+    "keywords": [],
+    "asr_expected_errors": [
+      "嗯",
+      "啊",
+      "呃"
+    ],
+    "forbidden_additions": [
+      "请继续",
+      "你想问什么",
+      "嗯"
+    ],
+    "allow_empty_final": true,
+    "asr_text": "嗯。",
+    "expected_final_text": "",
+    "spoken_text": "嗯。"
+  },
+  {
+    "id": "flight_qiongzhou_001",
+    "type": "query",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/flight_qiongzhou_001.wav",
+    "gold_text": "查一下琼州的机票。",
+    "keywords": [
+      "琼州",
+      "机票"
+    ],
+    "asr_expected_errors": [
+      "穷州",
+      "琼洲"
+    ],
+    "forbidden_additions": [
+      "酒店",
+      "旅游攻略",
+      "最低价"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "查一下琼州的机票。",
+    "expected_final_text": "查一下琼州的机票。",
+    "spoken_text": "查一下琼州的机票。"
+  },
+  {
+    "id": "meeting_budget_risk_001",
+    "type": "preserve_intent",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/meeting_budget_risk_001.wav",
+    "gold_text": "帮我整理一下今天会议里提到的预算风险，写到输入框里。",
+    "keywords": [
+      "今天会议",
+      "预算风险",
+      "输入框"
+    ],
+    "asr_expected_errors": [
+      "玉算风险",
+      "预算分析"
+    ],
+    "forbidden_additions": [
+      "发送",
+      "生成报告",
+      "制定方案",
+      "风险矩阵"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "帮我整理一下今天会议里面提到的预算风险，写到输入框里。",
+    "expected_final_text": "帮我整理一下今天会议里提到的预算风险，写到输入框里。",
+    "spoken_text": "帮我整理一下今天会议里提到的预算风险，写到输入框里。"
+  },
+  {
+    "id": "ppt_sales_q3_001",
+    "type": "generation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/ppt_sales_q3_001.wav",
+    "gold_text": "基于第三季度销售数据，生成一页汇总 PPT。",
+    "keywords": [
+      "第三季度",
+      "销售数据",
+      "一页",
+      "PPT"
+    ],
+    "asr_expected_errors": [
+      "销售暑假",
+      "屁屁提",
+      "PPTT"
+    ],
+    "forbidden_additions": [
+      "十页",
+      "详细财务模型",
+      "销售预测"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "基于第三季度销售暑假生成一页汇总屁屁提。",
+    "expected_final_text": "基于第三季度销售数据，生成一页汇总 PPT。",
+    "spoken_text": "基于第三季度销售数据，生成一页汇总 PPT。"
+  },
+  {
+    "id": "webpage_product_intro_001",
+    "type": "generation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/webpage_product_intro_001.wav",
+    "gold_text": "做一个产品介绍网页，突出核心功能和价格。",
+    "keywords": [
+      "产品介绍网页",
+      "核心功能",
+      "价格"
+    ],
+    "asr_expected_errors": [
+      "网页也",
+      "核心公能"
+    ],
+    "forbidden_additions": [
+      "品牌视觉升级",
+      "支付系统",
+      "后台管理"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "做一个产品介绍网页，突出核心公能和价格。",
+    "expected_final_text": "做一个产品介绍网页，突出核心功能和价格。",
+    "spoken_text": "做一个产品介绍网页，突出核心功能和价格。"
+  },
+  {
+    "id": "english_model_name_001",
+    "type": "mixed_language",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/english_model_name_001.wav",
+    "gold_text": "比较一下 GPT-5 和 Claude Sonnet 的代码能力。",
+    "keywords": [
+      "GPT-5",
+      "Claude Sonnet",
+      "代码能力"
+    ],
+    "asr_expected_errors": [
+      "g p t five",
+      "克劳德",
+      "代码嫩力"
+    ],
+    "forbidden_additions": [
+      "价格",
+      "上下文长度",
+      "API 调用示例"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "比较一下 g p t five 和克劳德 sonnet 的代码嫩力。",
+    "expected_final_text": "比较一下 GPT-5 和 Claude Sonnet 的代码能力。",
+    "spoken_text": "比较一下 GPT-5 和 Claude Sonnet 的代码能力。"
+  },
+  {
+    "id": "document_format_001",
+    "type": "formatting",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/document_format_001.wav",
+    "gold_text": "把这段内容整理成表格，列出负责人、截止时间和状态。",
+    "keywords": [
+      "表格",
+      "负责人",
+      "截止时间",
+      "状态"
+    ],
+    "asr_expected_errors": [
+      "截止事件",
+      "负责任"
+    ],
+    "forbidden_additions": [
+      "甘特图",
+      "项目计划",
+      "风险等级"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把这段内容整理成表格，列出负责任、截止事件和状态。",
+    "expected_final_text": "把这段内容整理成表格，列出负责人、截止时间和状态。",
+    "spoken_text": "把这段内容整理成表格，列出负责人、截止时间和状态。"
+  },
+  {
+    "id": "news_search_today_001",
+    "type": "query",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/news_search_today_001.wav",
+    "gold_text": "搜索一下今天的 AI 新闻，按重要性排序。",
+    "keywords": [
+      "今天",
+      "AI 新闻",
+      "重要性排序"
+    ],
+    "asr_expected_errors": [
+      "爱新闻",
+      "重要新排序"
+    ],
+    "forbidden_additions": [
+      "写成日报",
+      "生成图表",
+      "投资建议"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "搜索一下今天的爱新闻，按重要性排序。",
+    "expected_final_text": "搜索一下今天的 AI 新闻，按重要性排序。",
+    "spoken_text": "搜索一下今天的 AI 新闻，按重要性排序。"
+  },
+  {
+    "id": "multi_constraint_report_001",
+    "type": "multi_constraint",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/multi_constraint_report_001.wav",
+    "gold_text": "用中文总结这份报告，控制在三百字以内，并列出三个风险点。",
+    "keywords": [
+      "中文",
+      "三百字以内",
+      "三个风险点"
+    ],
+    "asr_expected_errors": [
+      "三百字一类",
+      "风险电"
+    ],
+    "forbidden_additions": [
+      "英文摘要",
+      "五个风险点",
+      "完整报告"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "用中文总结这份报告，控制在三百字一类，并列出三个风险电。",
+    "expected_final_text": "用中文总结这份报告，控制在三百字以内，并列出三个风险点。",
+    "spoken_text": "用中文总结这份报告，控制在三百字以内，并列出三个风险点。"
+  },
+  {
+    "id": "calendar_meeting_tomorrow_001",
+    "type": "scheduling",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/calendar_meeting_tomorrow_001.wav",
+    "gold_text": "帮我安排明天下午三点和产品团队开会。",
+    "keywords": [
+      "明天下午三点",
+      "产品团队",
+      "开会"
+    ],
+    "asr_expected_errors": [
+      "名天下午三点",
+      "产品田队",
+      "开回"
+    ],
+    "forbidden_additions": [
+      "会议纪要",
+      "一小时",
+      "邀请客户"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "帮我安排名天下午三点和产品田队开回。",
+    "expected_final_text": "帮我安排明天下午三点和产品团队开会。",
+    "spoken_text": "帮我安排明天下午三点和产品团队开会。"
+  },
+  {
+    "id": "budget_table_monthly_001",
+    "type": "formatting",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/budget_table_monthly_001.wav",
+    "gold_text": "把本月预算按部门整理成表格，并标出超支项。",
+    "keywords": [
+      "本月预算",
+      "部门",
+      "表格",
+      "超支项"
+    ],
+    "asr_expected_errors": [
+      "本月玉算",
+      "不门",
+      "表哥",
+      "超时项"
+    ],
+    "forbidden_additions": [
+      "图表",
+      "年度预算",
+      "审批流程"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把本月玉算按不门整理成表哥，并标出超时项。",
+    "expected_final_text": "把本月预算按部门整理成表格，并标出超支项。",
+    "spoken_text": "把本月预算按部门整理成表格，并标出超支项。"
+  },
+  {
+    "id": "weather_weekend_trip_001",
+    "type": "query",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/weather_weekend_trip_001.wav",
+    "gold_text": "查一下这个周末广州适不适合露营。",
+    "keywords": [
+      "这个周末",
+      "广州",
+      "露营"
+    ],
+    "asr_expected_errors": [
+      "广州是",
+      "陆营",
+      "录音"
+    ],
+    "forbidden_additions": [
+      "推荐装备",
+      "详细攻略",
+      "酒店"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "查一下这个周末广州是 不适合陆营。",
+    "expected_final_text": "查一下这个周末广州适不适合露营。",
+    "spoken_text": "查一下这个周末广州适不适合露营。"
+  },
+  {
+    "id": "translate_release_note_001",
+    "type": "translation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/translate_release_note_001.wav",
+    "gold_text": "把这段发布说明翻译成英文，语气保持正式。",
+    "keywords": [
+      "发布说明",
+      "英文",
+      "正式"
+    ],
+    "asr_expected_errors": [
+      "发布生命",
+      "英文语气",
+      "正式"
+    ],
+    "forbidden_additions": [
+      "缩写",
+      "营销风格",
+      "重新写一版"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把这段发布生命翻译成英文，语气保持正式。",
+    "expected_final_text": "把这段发布说明翻译成英文，语气保持正式。",
+    "spoken_text": "把这段发布说明翻译成英文，语气保持正式。"
+  },
+  {
+    "id": "email_reply_customer_001",
+    "type": "email",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/email_reply_customer_001.wav",
+    "gold_text": "帮我写一封回复客户延期交付的邮件，语气诚恳但不要承诺赔偿。",
+    "keywords": [
+      "回复客户",
+      "延期交付",
+      "邮件",
+      "不要承诺赔偿"
+    ],
+    "asr_expected_errors": [
+      "延迟交付",
+      "承诺陪偿",
+      "诚肯"
+    ],
+    "forbidden_additions": [
+      "优惠券",
+      "退款",
+      "法律责任"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "帮我写一封回复客户延迟交付的邮件，语气诚肯但不要承诺陪偿。",
+    "expected_final_text": "帮我写一封回复客户延期交付的邮件，语气诚恳但不要承诺赔偿。",
+    "spoken_text": "帮我写一封回复客户延期交付的邮件，语气诚恳但不要承诺赔偿。"
+  },
+  {
+    "id": "code_login_error_001",
+    "type": "code",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/code_login_error_001.wav",
+    "gold_text": "检查登录接口的 401 错误，看看是不是 token 过期处理有问题。",
+    "keywords": [
+      "登录接口",
+      "401",
+      "token",
+      "过期处理"
+    ],
+    "asr_expected_errors": [
+      "四零一",
+      "talken",
+      "过期处里"
+    ],
+    "forbidden_additions": [
+      "重写登录系统",
+      "OAuth 接入",
+      "数据库迁移"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "检查登录接口的四零一错误，看看是不是 talken 过期处里有问题。",
+    "expected_final_text": "检查登录接口的 401 错误，看看是不是 token 过期处理有问题。",
+    "spoken_text": "检查登录接口的 401 错误，看看是不是 token 过期处理有问题。"
+  },
+  {
+    "id": "pdf_extract_contract_001",
+    "type": "document_extraction",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/pdf_extract_contract_001.wav",
+    "gold_text": "从这个 PDF 里提取合同金额、付款节点和违约条款。",
+    "keywords": [
+      "PDF",
+      "合同金额",
+      "付款节点",
+      "违约条款"
+    ],
+    "asr_expected_errors": [
+      "批地爱福",
+      "合同金鹅",
+      "付款结点",
+      "违约条宽"
+    ],
+    "forbidden_additions": [
+      "法律意见",
+      "风险评级",
+      "重新起草合同"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "从这个批地爱福里提取合同金鹅、付款结点和违约条宽。",
+    "expected_final_text": "从这个 PDF 里提取合同金额、付款节点和违约条款。",
+    "spoken_text": "从这个 PDF 里提取合同金额、付款节点和违约条款。"
+  },
+  {
+    "id": "revenue_chart_region_001",
+    "type": "query_visualization",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/revenue_chart_region_001.wav",
+    "gold_text": "按地区汇总上季度营收，并生成柱状图。",
+    "keywords": [
+      "地区",
+      "上季度营收",
+      "柱状图"
+    ],
+    "asr_expected_errors": [
+      "地去",
+      "上季度营收",
+      "住状图"
+    ],
+    "forbidden_additions": [
+      "预测下季度",
+      "利润率",
+      "饼图"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "按地去汇总上季度营收，并生成住状图。",
+    "expected_final_text": "按地区汇总上季度营收，并生成柱状图。",
+    "spoken_text": "按地区汇总上季度营收，并生成柱状图。"
+  },
+  {
+    "id": "poster_event_launch_001",
+    "type": "generation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/poster_event_launch_001.wav",
+    "gold_text": "做一张新品发布会海报，突出时间、地点和报名二维码。",
+    "keywords": [
+      "新品发布会",
+      "海报",
+      "时间",
+      "地点",
+      "报名二维码"
+    ],
+    "asr_expected_errors": [
+      "新品发布会海宝",
+      "报名二维马",
+      "地垫"
+    ],
+    "forbidden_additions": [
+      "购票链接",
+      "直播间",
+      "抽奖活动"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "做一张新品发布会海宝，突出时间、地垫和报名二维马。",
+    "expected_final_text": "做一张新品发布会海报，突出时间、地点和报名二维码。",
+    "spoken_text": "做一张新品发布会海报，突出时间、地点和报名二维码。"
+  },
+  {
+    "id": "todo_followup_friday_001",
+    "type": "todo",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/todo_followup_friday_001.wav",
+    "gold_text": "周五前提醒我跟进供应商报价。",
+    "keywords": [
+      "周五前",
+      "提醒",
+      "供应商报价"
+    ],
+    "asr_expected_errors": [
+      "周五钱",
+      "供音商",
+      "爆价"
+    ],
+    "forbidden_additions": [
+      "下单",
+      "审批",
+      "合同"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "周五钱提醒我跟进供音商爆价。",
+    "expected_final_text": "周五前提醒我跟进供应商报价。",
+    "spoken_text": "周五前提醒我跟进供应商报价。"
+  },
+  {
+    "id": "meeting_action_items_001",
+    "type": "preserve_intent",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/meeting_action_items_001.wav",
+    "gold_text": "把会议纪要里的待办按负责人和截止时间列出来。",
+    "keywords": [
+      "会议纪要",
+      "待办",
+      "负责人",
+      "截止时间"
+    ],
+    "asr_expected_errors": [
+      "会议记要",
+      "代办",
+      "负责任",
+      "截止事件"
+    ],
+    "forbidden_additions": [
+      "发送给团队",
+      "生成甘特图",
+      "风险等级"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把会议记要里的代办按负责任和截止事件列出来。",
+    "expected_final_text": "把会议纪要里的待办按负责人和截止时间列出来。",
+    "spoken_text": "把会议纪要里的待办按负责人和截止时间列出来。"
+  },
+  {
+    "id": "filler_with_command_001",
+    "type": "filler_cleanup",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/filler_with_command_001.wav",
+    "gold_text": "帮我查一下明天深圳到北京的高铁票。",
+    "keywords": [
+      "明天",
+      "深圳",
+      "北京",
+      "高铁票"
+    ],
+    "asr_expected_errors": [
+      "嗯",
+      "那个",
+      "高贴票"
+    ],
+    "forbidden_additions": [
+      "机票",
+      "酒店",
+      "最低价"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "嗯，那个，帮我查一下明天深圳到北京的高贴票。",
+    "expected_final_text": "帮我查一下明天深圳到北京的高铁票。",
+    "spoken_text": "帮我查一下明天深圳到北京的高铁票。"
+  },
+  {
+    "id": "filler_only_002",
+    "type": "filler_only",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/filler_only_002.wav",
+    "gold_text": "",
+    "keywords": [],
+    "asr_expected_errors": [
+      "那个",
+      "就是",
+      "嗯"
+    ],
+    "forbidden_additions": [
+      "请继续",
+      "帮我",
+      "你想问什么"
+    ],
+    "allow_empty_final": true,
+    "asr_text": "那个，就是，嗯。",
+    "expected_final_text": "",
+    "spoken_text": "那个，就是，嗯。"
+  },
+  {
+    "id": "oil_price_chart_001",
+    "type": "easy_confusion",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/oil_price_chart_001.wav",
+    "gold_text": "查一下今天的原油价格，并画趋势图。",
+    "keywords": [
+      "今天",
+      "原油价格",
+      "趋势图"
+    ],
+    "asr_expected_errors": [
+      "缘由价格",
+      "趋势土",
+      "原有价格"
+    ],
+    "forbidden_additions": [
+      "投资建议",
+      "期货交易",
+      "详细研报"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "查一下今天的缘由价格，并画趋势土。",
+    "expected_final_text": "查一下今天的原油价格，并画趋势图。",
+    "spoken_text": "查一下今天的原油价格，并画趋势图。"
+  },
+  {
+    "id": "model_cost_compare_001",
+    "type": "mixed_language",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/model_cost_compare_001.wav",
+    "gold_text": "比较 GPT-5 mini 和 DeepSeek V3 的调用成本。",
+    "keywords": [
+      "GPT-5 mini",
+      "DeepSeek V3",
+      "调用成本"
+    ],
+    "asr_expected_errors": [
+      "g p t five mini",
+      "deep seek v three",
+      "调用层本"
+    ],
+    "forbidden_additions": [
+      "性能评测",
+      "代码能力",
+      "上下文长度"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "比较 g p t five mini 和 deep seek v three 的调用层本。",
+    "expected_final_text": "比较 GPT-5 mini 和 DeepSeek V3 的调用成本。",
+    "spoken_text": "比较 GPT-5 mini 和 DeepSeek V3 的调用成本。"
+  },
+  {
+    "id": "hotel_table_trip_001",
+    "type": "query",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/hotel_table_trip_001.wav",
+    "gold_text": "整理三亚亲子酒店，按价格、评分和离海边距离做表格。",
+    "keywords": [
+      "三亚",
+      "亲子酒店",
+      "价格",
+      "评分",
+      "离海边距离",
+      "表格"
+    ],
+    "asr_expected_errors": [
+      "亲自酒店",
+      "离海绵距离",
+      "表哥"
+    ],
+    "forbidden_additions": [
+      "预订",
+      "机票",
+      "行程攻略"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "整理三亚亲自酒店，按价格、评分和离海绵距离做表哥。",
+    "expected_final_text": "整理三亚亲子酒店，按价格、评分和离海边距离做表格。",
+    "spoken_text": "整理三亚亲子酒店，按价格、评分和离海边距离做表格。"
+  },
+  {
+    "id": "contract_risk_summary_001",
+    "type": "document_extraction",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/contract_risk_summary_001.wav",
+    "gold_text": "总结这份合同的付款风险和交付风险，各列三条。",
+    "keywords": [
+      "合同",
+      "付款风险",
+      "交付风险",
+      "各列三条"
+    ],
+    "asr_expected_errors": [
+      "合同的副款风险",
+      "交互风险",
+      "各列三跳"
+    ],
+    "forbidden_additions": [
+      "法律意见",
+      "修改合同",
+      "赔偿方案"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "总结这份合同的副款风险和交互风险，各列三跳。",
+    "expected_final_text": "总结这份合同的付款风险和交付风险，各列三条。",
+    "spoken_text": "总结这份合同的付款风险和交付风险，各列三条。"
+  },
+  {
+    "id": "customer_followup_crm_001",
+    "type": "crm",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/customer_followup_crm_001.wav",
+    "gold_text": "把王总标记为重点客户，并记录下周二需要电话跟进。",
+    "keywords": [
+      "王总",
+      "重点客户",
+      "下周二",
+      "电话跟进"
+    ],
+    "asr_expected_errors": [
+      "王种",
+      "重点课户",
+      "电话跟近"
+    ],
+    "forbidden_additions": [
+      "发短信",
+      "创建合同",
+      "报价"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把王种标记为重点课户，并记录下周二需要电话跟近。",
+    "expected_final_text": "把王总标记为重点客户，并记录下周二需要电话跟进。",
+    "spoken_text": "把王总标记为重点客户，并记录下周二需要电话跟进。"
+  },
+  {
+    "id": "translate_japanese_001",
+    "type": "translation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/translate_japanese_001.wav",
+    "gold_text": "把这句话翻译成日语，保留产品名 Pinvou。",
+    "keywords": [
+      "翻译成日语",
+      "产品名",
+      "Pinvou"
+    ],
+    "asr_expected_errors": [
+      "翻译成日语",
+      "pin vo",
+      "保留产品民"
+    ],
+    "forbidden_additions": [
+      "英文",
+      "重新命名",
+      "解释翻译"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "把这句话翻译成日语，保留产品民 pin vo。",
+    "expected_final_text": "把这句话翻译成日语，保留产品名 Pinvou。",
+    "spoken_text": "把这句话翻译成日语，保留产品名 Pinvou。"
+  },
+  {
+    "id": "api_docs_outline_001",
+    "type": "mixed_language",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/api_docs_outline_001.wav",
+    "gold_text": "整理 REST API 文档结构，包含认证、错误码和示例请求。",
+    "keywords": [
+      "REST API",
+      "认证",
+      "错误码",
+      "示例请求"
+    ],
+    "asr_expected_errors": [
+      "rest a p i",
+      "认正",
+      "错误马",
+      "示例情求"
+    ],
+    "forbidden_additions": [
+      "SDK",
+      "部署流程",
+      "性能测试"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "整理 rest a p i 文档结构，包含认正、错误马和示例情求。",
+    "expected_final_text": "整理 REST API 文档结构，包含认证、错误码和示例请求。",
+    "spoken_text": "整理 REST API 文档结构，包含认证、错误码和示例请求。"
+  },
+  {
+    "id": "long_multi_step_ops_001",
+    "type": "multi_constraint",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/long_multi_step_ops_001.wav",
+    "gold_text": "先汇总本周客服投诉，再按产品线分类，最后列出前三个高频问题。",
+    "keywords": [
+      "本周客服投诉",
+      "产品线分类",
+      "前三个高频问题"
+    ],
+    "asr_expected_errors": [
+      "客诉投诉",
+      "产品先分类",
+      "高频问提"
+    ],
+    "forbidden_additions": [
+      "解决方案",
+      "责任人",
+      "下周计划"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "先汇总本周客诉投诉，再按产品先分类，最后列出前三个高频问提。",
+    "expected_final_text": "先汇总本周客服投诉，再按产品线分类，最后列出前三个高频问题。",
+    "spoken_text": "先汇总本周客服投诉，再按产品线分类，最后列出前三个高频问题。"
+  },
+  {
+    "id": "personal_workbench_plan_001",
+    "type": "preserve_intent",
+    "mode": "dictation",
+    "audio": "tests/fixtures/voice-audio-samples/personal_workbench_plan_001.wav",
+    "gold_text": "记录一下我这周重点推进语音输入和模型下载体验。",
+    "keywords": [
+      "这周",
+      "语音输入",
+      "模型下载体验"
+    ],
+    "asr_expected_errors": [
+      "重点推近",
+      "语音输出",
+      "模型下崽体验"
+    ],
+    "forbidden_additions": [
+      "创建任务",
+      "发周报",
+      "生成路线图"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "记录一下我这周重点推近语音输出和模型下崽体验。",
+    "expected_final_text": "记录一下我这周重点推进语音输入和模型下载体验。",
+    "spoken_text": "记录一下我这周重点推进语音输入和模型下载体验。"
+  },
+  {
+    "id": "knowledge_policy_search_001",
+    "type": "query",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/knowledge_policy_search_001.wav",
+    "gold_text": "在知识库里查一下差旅报销标准，重点看住宿上限。",
+    "keywords": [
+      "知识库",
+      "差旅报销标准",
+      "住宿上限"
+    ],
+    "asr_expected_errors": [
+      "知识裤",
+      "差旅报消标准",
+      "住宿上线"
+    ],
+    "forbidden_additions": [
+      "机票政策",
+      "审批流程",
+      "生成表格"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "在知识裤里查一下差旅报消标准，重点看住宿上线。",
+    "expected_final_text": "在知识库里查一下差旅报销标准，重点看住宿上限。",
+    "spoken_text": "在知识库里查一下差旅报销标准，重点看住宿上限。"
+  },
+  {
+    "id": "banner_mid_autumn_001",
+    "type": "generation",
+    "mode": "task",
+    "audio": "tests/fixtures/voice-audio-samples/banner_mid_autumn_001.wav",
+    "gold_text": "生成一张中秋活动 banner，风格要温暖简洁。",
+    "keywords": [
+      "中秋活动",
+      "banner",
+      "温暖简洁"
+    ],
+    "asr_expected_errors": [
+      "中秋活动班纳",
+      "温婉简洁",
+      "banner"
+    ],
+    "forbidden_additions": [
+      "国庆",
+      "优惠券",
+      "复杂插画"
+    ],
+    "allow_empty_final": false,
+    "asr_text": "生成一张中秋活动班纳，风格要温婉简洁。",
+    "expected_final_text": "生成一张中秋活动 banner，风格要温暖简洁。",
+    "spoken_text": "生成一张中秋活动 banner，风格要温暖简洁。"
+  }
+]

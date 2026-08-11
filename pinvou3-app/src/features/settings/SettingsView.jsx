@@ -26,6 +26,11 @@ import {
   buildArtifactPreviewDocument,
 } from '../artifacts/artifact-preview-navigation.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
+import {
+  VOICE_SHORTCUT_SETTINGS_EVENT,
+  setVoiceShortcutEnabled,
+  voiceShortcutEnabled,
+} from '../chat/voice-shortcut-settings.mjs';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -2370,6 +2375,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const versionUpdateRef = useRef(null);
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const memorySettingsVisible = !!(bs && bs.settings && bs.settings.language === 'zh-Hans');
+      const [voiceShortcutsEnabled, setVoiceShortcutsEnabled] = useState(() => voiceShortcutEnabled());
       const feedbackTypes = [
         { key: 'issue', label: t.feedbackIssue },
         { key: 'suggestion', label: t.feedbackSuggestion },
@@ -2396,6 +2402,25 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);
         return () => window.clearTimeout(timer);
       }, [feedbackNotice]);
+      useEffect(() => {
+        function syncVoiceShortcutSetting(event) {
+          if (event && event.detail && typeof event.detail.enabled === 'boolean') {
+            setVoiceShortcutsEnabled(event.detail.enabled);
+            return;
+          }
+          setVoiceShortcutsEnabled(voiceShortcutEnabled());
+        }
+        window.addEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+        window.addEventListener('storage', syncVoiceShortcutSetting);
+        return () => {
+          window.removeEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, syncVoiceShortcutSetting);
+          window.removeEventListener('storage', syncVoiceShortcutSetting);
+        };
+      }, []);
+      function handleVoiceShortcutsEnabledChange(enabled) {
+        setVoiceShortcutsEnabled(!!enabled);
+        setVoiceShortcutEnabled(!!enabled);
+      }
       const resetFeedback = () => {
         setFeedbackDraft({ type: 'issue', title: '', description: '', attachments: [] });
         setFeedbackStatus({ state: 'idle', message: '', receipt: null });
@@ -2742,6 +2767,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             </IOSRow>
           </IOSSection>
           )}
+          <IOSSection title={t.uiSettings.voiceShortcuts}>
+            <IOSRow label={t.uiSettings.voiceShortcutEnable} desc={t.uiSettings.voiceShortcutEnableDesc}>
+              <IOSSwitch checked={voiceShortcutsEnabled} onChange={handleVoiceShortcutsEnabledChange} />
+            </IOSRow>
+          </IOSSection>
           {canUsePet && (
           <section className="mb-6">
             <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.desktopAssistant}</div>

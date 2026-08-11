@@ -35,6 +35,9 @@
   function canInvoke(command) {
     return !IS_WEB || (typeof PLATFORM.canInvoke === "function" && PLATFORM.canInvoke(command) === true);
   }
+  function normalizeVoiceMode(mode) {
+    return mode === "task" ? "task" : "dictation";
+  }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return prefix + "_" + window.crypto.randomUUID();
@@ -419,12 +422,13 @@
       voiceTranscribing: "Recognizing speech…",
       voiceTooShort: "Recording too short. Please try again.",
       voiceWritten: "Voice text inserted into the input box",
+      voiceTaskSent: "Voice task sent",
       voiceNeedDesktopAsr: "Install the speech recognition component on the desktop first, then use the microphone from the browser.",
       voiceRequestingPermission: "Requesting microphone permission…",
       voiceNoMicCapture: "This WebView does not support microphone capture.",
       voiceNoAudioRecording: "This WebView does not support audio recording.",
       voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
-      voiceRecording: "Recording… click again to stop",
+      voiceRecording: "Recording… press again to stop",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -526,12 +530,13 @@
       voiceTranscribing: "音声を認識中…",
       voiceTooShort: "録音が短すぎます。もう一度お試しください。",
       voiceWritten: "音声を入力欄に書き込みました",
+      voiceTaskSent: "音声タスクを送信しました",
       voiceNeedDesktopAsr: "先にデスクトップ側で音声認識コンポーネントをインストールしてから、ブラウザーでマイクを使用してください。",
       voiceRequestingPermission: "マイクの権限を要求中…",
       voiceNoMicCapture: "現在の WebView はマイク入力に対応していません。",
       voiceNoAudioRecording: "現在の WebView は音声録音に対応していません。",
       voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
-      voiceRecording: "録音中です。もう一度クリックすると終了します",
+      voiceRecording: "録音中です。もう一度押すと終了します",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -633,12 +638,13 @@
       voiceTranscribing: "正在识别语音…",
       voiceTooShort: "录音时间过短，请重试。",
       voiceWritten: "语音已写入输入框",
+      voiceTaskSent: "语音任务已发送",
       voiceNeedDesktopAsr: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
       voiceRequestingPermission: "正在请求麦克风权限…",
       voiceNoMicCapture: "当前 WebView 不支持麦克风采集。",
       voiceNoAudioRecording: "当前 WebView 不支持音频录制。",
       voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
-      voiceRecording: "正在录音，再点一次结束",
+      voiceRecording: "正在录音，再按一次结束",
     },
   };
   function bt(key) {
@@ -7939,7 +7945,8 @@
       return;
     }
 
-    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing" });
+    var mode = normalizeVoiceMode(session.mode);
+    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing", mode: mode });
     cleanupVoiceInputSession(session);
 
     try {
@@ -7972,9 +7979,23 @@
         throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
       }
       if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
+        await session.writeback(text, session.draftBeforeStart, {
+          mode: mode,
+          rawText: text,
+          diagnostic: {
+            mode: mode,
+            normalize_strategy: "web_asr_only",
+            raw_text: text,
+            final_text: text,
+            task_send_blocked: false,
+          },
+        });
       }
-      setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
+      setVoiceInputStatus("completed", {
+        message: mode === "task" ? (bt("voiceTaskSent") || bt("voiceWritten")) : bt("voiceWritten"),
+        completedAt: Date.now(),
+        mode: mode,
+      });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
@@ -8049,7 +8070,7 @@
     invoke("kb_model_cancel").catch(function () {});
   }
 
-  async function startVoiceInput(draftText, writeback) {
+  async function startVoiceInput(draftText, writeback, options) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
       return;
@@ -8106,6 +8127,7 @@
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
       writeback: writeback,
+      mode: normalizeVoiceMode(options && options.mode),
       chunks: [],
       sampleRate: 16000,
       startedAt: Date.now(),
@@ -8117,6 +8139,7 @@
       sessionId: session.sessionId,
       startedAt: session.startedAt,
       stage: "permission",
+      mode: session.mode,
     });
     emitVoiceDiagnostic("permission", "info", "requesting microphone permission", "", "");
 
@@ -8159,7 +8182,7 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording", mode: session.mode });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);

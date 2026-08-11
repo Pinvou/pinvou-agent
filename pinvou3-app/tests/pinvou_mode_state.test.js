@@ -4,19 +4,22 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+function stripModuleSyntax(source) {
+  return source
+    .replace(/import[\s\S]+?from ['"][^'"]+['"];\r?\n/g, '')
+    .replace(/\bexport\s+\{[^}]+\};?/g, '')
+    .replace(/\bexport\s+/g, '');
+}
+
 const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'pinvou-mode-state.js');
-const code = fs.readFileSync(logicPath, 'utf8')
-  .replace(/\bexport\s+\{[^}]+\};?/g, '')
-  .replace(/\bexport\s+/g, '');
+const code = stripModuleSyntax(fs.readFileSync(logicPath, 'utf8'));
 const workScenePath = path.join(__dirname, '..', 'src', 'features', 'chat', 'work-scene-routes.js');
 const workSceneCode = fs.readFileSync(workScenePath, 'utf8')
   .replace(/import[\s\S]+?from '\.\/personal-workbench-scene\.js';\r?\n/, '')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 const personalWorkbenchPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'personal-workbench-scene.js');
-const personalWorkbenchCode = fs.readFileSync(personalWorkbenchPath, 'utf8')
-  .replace(/\bexport\s+\{[^}]+\};?/g, '')
-  .replace(/\bexport\s+/g, '');
+const personalWorkbenchCode = stripModuleSyntax(fs.readFileSync(personalWorkbenchPath, 'utf8'));
 
 const ctx = {};
 vm.createContext(ctx);

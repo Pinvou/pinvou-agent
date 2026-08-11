@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, RefreshCw, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -33,6 +33,18 @@ import { ConversationAttachmentBubble } from '../attachments/ConversationAttachm
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import {
+  shouldIgnoreVoiceShortcutEvent,
+  voiceShortcutActionForKeyDown,
+  voiceShortcutActionForKeyUp,
+} from './voice-shortcut-state.mjs';
+import {
+  VOICE_SHORTCUT_SETTINGS_EVENT,
+  setVoiceShortcutEnabled,
+  setVoiceShortcutIntroSeen,
+  voiceShortcutEnabled,
+  voiceShortcutIntroSeen,
+} from './voice-shortcut-settings.mjs';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import {
   assistantItemCopyText,
@@ -79,7 +91,7 @@ import {
   isPersonalWorkbenchTemplateDraftForTemplate,
 } from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
-import { invokeTauri } from '../../platform/tauri/client.js';
+import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
   ComposerKbSelector,
@@ -411,6 +423,135 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
+    const VoiceShortcutIntroModal = ({ isDark, copy, onClose, onToggleShortcut }) => {
+      return createPortal(
+        <div
+          className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="voice-shortcut-intro-title"
+          onMouseDown={onClose}
+        >
+          <div
+            className={`w-full max-w-[980px] overflow-hidden rounded-[32px] shadow-[0_24px_80px_-32px_rgba(0,0,0,0.45)] ${
+              isDark ? 'bg-[#111214] text-[#F1F3F4]' : 'bg-[#F7F9FC] text-[#0F172A]'
+            }`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="relative px-5 pb-5 pt-6 md:px-8 md:pb-7">
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={copy.voiceIntroClose}
+                title={copy.voiceIntroClose}
+                className={`absolute right-4 top-4 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                  isDark ? 'text-[#BDC1C6] hover:bg-white/10' : 'text-[#64748B] hover:bg-black/5'
+                }`}
+              >
+                <X size={18} />
+              </button>
+              <div className="mb-6 pr-10 text-center">
+                <h2 id="voice-shortcut-intro-title" className="text-[24px] font-bold tracking-tight md:text-[30px]">
+                  {copy.voiceIntroTitle}
+                </h2>
+                {copy.voiceIntroSubtitle && (
+                  <p className={`mx-auto mt-2 max-w-[620px] text-[13px] leading-5 md:text-[14px] ${
+                    isDark ? 'text-[#BDC1C6]' : 'text-[#64748B]'
+                  }`}>
+                    {copy.voiceIntroSubtitle}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-5">
+                <div className="flex min-h-[360px] flex-col overflow-hidden rounded-[28px] bg-[linear-gradient(120deg,#E0E0E0_0%,#F8FAFC_52%,#DCDCDC_100%)] shadow-[0_12px_36px_-18px_rgba(0,0,0,0.35)]">
+                  <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
+                    <div>
+                      <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy.voiceIntroShortcutLabel}</div>
+                      <div className="text-[38px] font-extrabold leading-none tracking-tight text-slate-950">Alt</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
+                      <div className="text-[17px] font-bold text-slate-800">{copy.voiceIntroDictationMode}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-1 items-center justify-center px-6 pb-8 pt-3">
+                    <div className="w-full max-w-sm rounded-2xl bg-white/95 p-5 text-slate-700 shadow-[0_18px_36px_-22px_rgba(15,23,42,0.45)]">
+                      <div className="space-y-3">
+                        {copy.voiceIntroDictationSteps.map((step, index) => (
+                          <div key={step} className="flex items-start gap-3">
+                            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[12px] font-bold text-white">
+                              {index + 1}
+                            </span>
+                            <span className="text-[15px] font-semibold leading-6 text-slate-700">{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex min-h-[360px] flex-col overflow-hidden rounded-[28px] bg-[linear-gradient(120deg,#E0F2FE_0%,#FCE7F3_50%,#DBEAFE_100%)] shadow-[0_14px_40px_-18px_rgba(79,70,229,0.55)]">
+                  <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
+                    <div>
+                      <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy.voiceIntroComboLabel}</div>
+                      <div className="flex items-baseline gap-2 leading-none">
+                        <span className="text-[38px] font-extrabold tracking-tight text-slate-950">Alt</span>
+                        <span className="text-[24px] font-bold text-slate-400">+</span>
+                        <span className="text-[38px] font-extrabold tracking-tight text-indigo-600">Space</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
+                      <div className="text-[17px] font-bold text-slate-800">{copy.voiceIntroTaskMode}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-1 items-center justify-center px-6 pb-8 pt-3">
+                    <div className="w-full max-w-md rounded-[24px] bg-white/95 p-6 text-slate-700 shadow-[0_18px_36px_-22px_rgba(79,70,229,0.5)]">
+                      <div className="space-y-3">
+                        {copy.voiceIntroTaskSteps.map((step, index) => (
+                          <div key={step} className="flex items-start gap-3">
+                            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[12px] font-bold text-white">
+                              {index + 1}
+                            </span>
+                            <span className="text-[15px] font-semibold leading-6 text-slate-700">{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-5 rounded-2xl bg-indigo-50/80 px-4 py-3 text-[14px] font-medium leading-6 text-slate-600">
+                        <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold text-indigo-600">
+                          <Sparkles size={14} />
+                          {copy.voiceIntroTaskExampleLabel}
+                        </div>
+                        {copy.voiceIntroTaskExample}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className={`rounded-full px-4 py-2 text-[13px] font-medium ${
+                    isDark ? 'text-[#E8EAED] hover:bg-white/10' : 'text-[#3C4043] hover:bg-black/5'
+                  }`}
+                >
+                  {copy.voiceIntroGotIt}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleShortcut(true)}
+                  className="rounded-full bg-[#0B57D0] px-5 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-[#1967D2]"
+                >
+                  {copy.voiceIntroEnable || copy.voiceIntroStart}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      );
+    };
+
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -535,11 +676,34 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
+      const voiceShortcutPendingRef = useRef(null);
+      const pendingVoiceAfterIntroRef = useRef(null);
+      const voiceAsrPopoverRef = useRef(null);
+      const voiceAsrInstallWasActiveRef = useRef(false);
+      const voiceAsrReadyNoticeTimerRef = useRef(null);
       const floatingVoiceRef = useRef(null);
       const voiceDragRef = useRef(null);
       const voiceDragClickResetRef = useRef(null);
       const [floatingVoicePos, setFloatingVoicePos] = useState(null);
       const [floatingVoicePressed, setFloatingVoicePressed] = useState(false);
+      const [voiceIntroOpen, setVoiceIntroOpen] = useState(false);
+      const [voiceAsrPopoverOpen, setVoiceAsrPopoverOpen] = useState(false);
+      const [voiceAsrReadyNotice, setVoiceAsrReadyNotice] = useState(false);
+      const [voiceIntroSeenState, setVoiceIntroSeenState] = useState(() => voiceShortcutIntroSeen());
+      const [voiceShortcutEnabledState, setVoiceShortcutEnabledState] = useState(() => voiceShortcutEnabled());
+      const voiceShortcutEnabledRef = useRef(voiceShortcutEnabledState);
+      useEffect(() => {
+        voiceShortcutEnabledRef.current = voiceShortcutEnabledState;
+      }, [voiceShortcutEnabledState]);
+      useEffect(() => {
+        function handleVoiceShortcutSettings() {
+          setVoiceShortcutEnabledState(voiceShortcutEnabled());
+        }
+        window.addEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, handleVoiceShortcutSettings);
+        return () => {
+          window.removeEventListener(VOICE_SHORTCUT_SETTINGS_EVENT, handleVoiceShortcutSettings);
+        };
+      }, []);
       useEffect(() => {
         if (!focusComposerTick) return undefined;
         const timer = window.setTimeout(() => {
@@ -1064,9 +1228,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setInputText(restored);
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
-      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing';
+      const voiceMode = voiceInput.mode === 'task' ? 'task' : 'dictation';
+      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing' || voiceInput.status === 'postprocessing';
       const voiceRecording = voiceInput.status === 'recording';
-      const voiceBusy = voiceInput.status === 'transcribing';
+      const voiceBusy = voiceInput.status === 'transcribing' || voiceInput.status === 'postprocessing';
       const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
@@ -1176,6 +1341,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             ? t.voiceCancel
             : voiceInput.status === 'transcribing'
               ? t.voiceTranscribing
+              : voiceInput.status === 'postprocessing'
+                ? (voiceMode === 'task' ? t.voiceTaskPostprocessing : t.voicePostprocessing)
               : t.voiceStart;
       function clampFloatingVoicePos(x, y) {
         const root = chatRootRef.current;
@@ -1195,6 +1362,44 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         ? { left: floatingVoicePos.x + 'px', top: floatingVoicePos.y + 'px' }
         : { left: 'calc(100% - 220px)', top: '50%', transform: 'translateY(-50%)' };
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
+      const voiceAsrBusy = !!(voiceAsrSetup.installing || voiceAsrSetup.cancelling);
+      const voiceAsrCancelling = !!voiceAsrSetup.cancelling;
+      const voiceAsrProgress = voiceAsrSetup.progress || {};
+      const voiceAsrPct = voiceAsrProgress.stage === 'model' && voiceAsrProgress.total
+        ? Math.floor(voiceAsrProgress.downloaded / voiceAsrProgress.total * 100)
+        : null;
+      const voiceAsrBusyLabel = voiceAsrCancelling
+        ? chatCopy.cancelling
+        : chatCopy.downloadingModel(voiceAsrPct != null ? voiceAsrPct + '%' : '...');
+      useEffect(() => () => {
+        if (voiceAsrReadyNoticeTimerRef.current) window.clearTimeout(voiceAsrReadyNoticeTimerRef.current);
+      }, []);
+      useEffect(() => {
+        if (!voiceAsrBusy) setVoiceAsrPopoverOpen(false);
+      }, [voiceAsrBusy]);
+      useEffect(() => {
+        const wasActive = voiceAsrInstallWasActiveRef.current;
+        const ready = !!(voiceAsrSetup.status && voiceAsrSetup.status.ready);
+        const done = voiceAsrProgress.stage === 'done';
+        if (wasActive && !voiceAsrBusy && ready && done) {
+          setVoiceAsrReadyNotice(true);
+          if (voiceAsrReadyNoticeTimerRef.current) window.clearTimeout(voiceAsrReadyNoticeTimerRef.current);
+          voiceAsrReadyNoticeTimerRef.current = window.setTimeout(() => {
+            setVoiceAsrReadyNotice(false);
+            voiceAsrReadyNoticeTimerRef.current = null;
+          }, 3200);
+        }
+        voiceAsrInstallWasActiveRef.current = voiceAsrBusy;
+      }, [voiceAsrBusy, voiceAsrProgress.stage, voiceAsrSetup.status]);
+      useEffect(() => {
+        if (!voiceAsrPopoverOpen) return undefined;
+        function handlePointerDown(event) {
+          if (voiceAsrPopoverRef.current && voiceAsrPopoverRef.current.contains(event.target)) return;
+          setVoiceAsrPopoverOpen(false);
+        }
+        document.addEventListener('mousedown', handlePointerDown, true);
+        return () => document.removeEventListener('mousedown', handlePointerDown, true);
+      }, [voiceAsrPopoverOpen]);
       useEffect(() => {
         const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
         if (justInstalledTool) {
@@ -1401,7 +1606,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         handleVoiceClick();
       }
 
-      function handleVoiceClick() {
+      function applyVoiceResult(recognized, result) {
+        const finalText = String(recognized || '').trim();
+        if (!finalText) return;
+        const resultMode = result && result.mode === 'task' ? 'task' : voiceMode;
+        if (resultMode === 'task') {
+          sendChatMessage(finalText);
+          return;
+        }
+        setInputText(prev => bridge.voice.appendVoiceText(prev, finalText));
+      }
+
+      function handleVoiceTrigger(mode = 'dictation') {
         if (!bridge.available) return;
         if (voiceInput.status === 'requesting_permission') {
           bridge.voice.cancelVoiceInput();
@@ -1409,11 +1625,173 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
         if (voiceBusy) return;
         if (voiceInput.status === 'recording') {
-          bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
+          if (voiceMode !== mode) return;
+          bridge.voice.startVoiceInput(inputText, applyVoiceResult, { mode });
           return;
         }
-        bridge.voice.startVoiceInput(inputText, (text) => setInputText(prev => bridge.voice.appendVoiceText(prev, text)));
+        bridge.voice.startVoiceInput(inputText, applyVoiceResult, { mode });
       }
+
+      function rememberVoiceIntroSeen() {
+        setVoiceIntroSeenState(true);
+        setVoiceShortcutIntroSeen(true);
+      }
+
+      function continuePendingVoiceAfterIntro() {
+        const pending = pendingVoiceAfterIntroRef.current;
+        pendingVoiceAfterIntroRef.current = null;
+        if (!pending) return;
+        handleVoiceTrigger(pending.mode);
+      }
+
+      function handleVoiceIntroClose() {
+        rememberVoiceIntroSeen();
+        setVoiceIntroOpen(false);
+        continuePendingVoiceAfterIntro();
+      }
+
+      function handleVoiceIntroToggleShortcut(enabled) {
+        rememberVoiceIntroSeen();
+        setVoiceShortcutEnabled(enabled);
+        setVoiceShortcutEnabledState(enabled);
+        setVoiceIntroOpen(false);
+        continuePendingVoiceAfterIntro();
+      }
+
+      function handleVoiceClick() {
+        if (!bridge.available) return;
+        if (!voiceIntroSeenState && !voiceShortcutEnabledRef.current) {
+          pendingVoiceAfterIntroRef.current = { mode: 'dictation' };
+          setVoiceIntroOpen(true);
+          return;
+        }
+        handleVoiceTrigger('dictation');
+      }
+
+      useEffect(() => {
+        if (voiceIntroSeenState || voiceShortcutEnabledRef.current) return;
+        if (voiceInput.status !== 'idle' && voiceInput.status !== 'failed') return;
+        pendingVoiceAfterIntroRef.current = null;
+      }, [voiceInput.status, voiceIntroSeenState]);
+
+      useEffect(() => {
+        function setPendingShortcutFlag(flag) {
+          voiceShortcutPendingRef.current = {
+            ...(voiceShortcutPendingRef.current || {}),
+            [flag]: true,
+            startedAt: (voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.startedAt) || Date.now(),
+          };
+        }
+        function clearPendingShortcutFlag(flag) {
+          const current = voiceShortcutPendingRef.current || {};
+          const next = { ...current };
+          delete next[flag];
+          if (next.alt || next.space) {
+            voiceShortcutPendingRef.current = next;
+          } else {
+            voiceShortcutPendingRef.current = null;
+          }
+        }
+        function clearPendingShortcut() {
+          voiceShortcutPendingRef.current = null;
+        }
+        function handleVoiceShortcutKeyDown(event) {
+          if (shouldIgnoreVoiceShortcutEvent(event)) return;
+          if (!voiceShortcutEnabledRef.current && !(event && event.key === 'Escape')) return;
+          if (
+            event
+            && event.code === 'Space'
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.shiftKey
+            && !event.metaKey
+          ) {
+            setPendingShortcutFlag('space');
+            return;
+          }
+          const action = voiceShortcutActionForKeyDown(event, {
+            status: voiceInput.status,
+            mode: voiceMode,
+            pendingSpace: Boolean(voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.space),
+          });
+          if (action.type === 'none') return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (action.type === 'cancel') {
+            clearPendingShortcut();
+            handleVoiceCancel();
+            return;
+          }
+          if (action.type === 'trigger') {
+            clearPendingShortcut();
+            handleVoiceTrigger(action.mode);
+            return;
+          }
+          if (action.type === 'pending_alt') {
+            setPendingShortcutFlag('alt');
+          }
+        }
+        function handleVoiceShortcutKeyUp(event) {
+          if (!voiceShortcutEnabledRef.current) {
+            clearPendingShortcutFlag('space');
+            return;
+          }
+          if (event && event.code === 'Space') {
+            clearPendingShortcutFlag('space');
+          }
+          const action = voiceShortcutActionForKeyUp(event, {
+            status: voiceInput.status,
+            mode: voiceMode,
+            pendingAlt: Boolean(voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.alt),
+          });
+          if (action.type === 'none') return;
+          event.preventDefault();
+          event.stopPropagation();
+          clearPendingShortcut();
+          if (action.type === 'trigger') {
+            handleVoiceTrigger(action.mode);
+          }
+        }
+        window.addEventListener('keydown', handleVoiceShortcutKeyDown, true);
+        window.addEventListener('keyup', handleVoiceShortcutKeyUp, true);
+        return () => {
+          window.removeEventListener('keydown', handleVoiceShortcutKeyDown, true);
+          window.removeEventListener('keyup', handleVoiceShortcutKeyUp, true);
+          clearPendingShortcut();
+        };
+      }, [inputText, voiceInput.status, voiceMode, voiceBusy, bridge.available, sendChatMessage]);
+
+      useEffect(() => {
+        if (!bridge.available || isWeb) return undefined;
+        let disposed = false;
+        const unlisteners = [];
+        function rememberUnlisten(unlisten) {
+          if (disposed) {
+            try { unlisten(); } catch (_) {}
+            return;
+          }
+          unlisteners.push(unlisten);
+        }
+        listenTauri('voice-shortcut:trigger', (event) => {
+          voiceShortcutPendingRef.current = null;
+          if (!voiceShortcutEnabledRef.current) return;
+          const payload = event && Object.prototype.hasOwnProperty.call(event, 'payload')
+            ? event.payload
+            : event;
+          const mode = payload && payload.mode === 'task' ? 'task' : 'dictation';
+          handleVoiceTrigger(mode);
+        }).then(rememberUnlisten).catch(() => {});
+        listenTauri('voice-shortcut:cancel', () => {
+          voiceShortcutPendingRef.current = null;
+          handleVoiceCancel();
+        }).then(rememberUnlisten).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach((unlisten) => {
+            try { unlisten(); } catch (_) {}
+          });
+        };
+      }, [inputText, voiceInput.status, voiceMode, voiceBusy, bridge.available, sendChatMessage]);
 
       function handleFloatingVoicePointerDown(e) {
         if (!tabletVoiceMode) return;
@@ -1689,9 +2067,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
                       <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
-                  ))}
+                ))}
               </div>
             </div>
+          )}
+          {voiceIntroOpen && (
+            <VoiceShortcutIntroModal
+              isDark={theme === 'dark'}
+              copy={t}
+              onClose={handleVoiceIntroClose}
+              onToggleShortcut={handleVoiceIntroToggleShortcut}
+            />
           )}
           {tabletVoiceMode && (
             <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
@@ -1815,6 +2201,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 {imagePrivacyHint}
               </div>
             )}
+            {voiceAsrReadyNotice && (
+              <div className="mb-2 flex justify-end px-2">
+                <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[#34C759]/20 bg-white/90 px-3 py-1.5 text-[12px] font-medium text-[#1B7F3A] shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-[#1C1C1E]/85 dark:text-[#D1FADF]">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-[#34C759]" />
+                  <span className="truncate">{chatCopy.asrReadyNotice}</span>
+                </div>
+              </div>
+            )}
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'
@@ -1824,6 +2218,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 <span className="min-w-0 truncate">
                   {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
                     : voiceInput.status === 'recording' ? t.voiceRecording
+                    : voiceInput.status === 'postprocessing' ? (voiceMode === 'task' ? t.voiceTaskPostprocessing : t.voicePostprocessing)
                     : voiceInput.status === 'transcribing' ? t.voiceTranscribing
                     : voiceInput.status === 'completed' ? t.voiceCompleted
                     : voiceInput.message}
@@ -1833,7 +2228,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${'bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'}`}>{t.voiceGotoDeps}</button>
                   )}
                   {voiceInput.status === 'failed' && (
-                    <button onClick={handleVoiceClick} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
+                    <button onClick={() => handleVoiceTrigger(voiceMode)} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
                   )}
                   {voiceActive && (
                     <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceCancel}</button>
@@ -1969,16 +2364,60 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <ComposerAttachButton t={t} compact={composerCompact} />
-                  <button onClick={handleVoiceClick} disabled={primaryVoiceDisabled} data-testid="composer-voice-button" aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
-                    className={`${
-                      voiceRecording
-                        ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
-                        : voiceActive
-                          ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
-                          : COMPOSER_ICON_BUTTON_CLASS
-                    } ${primaryVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
-                    <Mic size={18} />
-                  </button>
+                  <div ref={voiceAsrPopoverRef} className="relative shrink-0">
+                    {voiceAsrBusy && voiceAsrPopoverOpen && (
+                      <div className="absolute bottom-full left-0 z-[40] mb-2 w-[236px] overflow-hidden rounded-[20px] border border-black/10 bg-white/90 p-3 text-[#1D1D1F] shadow-[0_18px_45px_-18px_rgba(0,0,0,0.45)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#1C1C1E]/90 dark:text-[#F2F2F7]">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-[12px] font-semibold">{voiceAsrBusyLabel}</div>
+                            <div className="mt-0.5 text-[11px] text-[#6E6E73] dark:text-[#A1A1AA]">
+                              {voiceAsrPct != null ? `${voiceAsrPct}%` : chatCopy.asrStages.preparing}
+                            </div>
+                          </div>
+                          <RefreshCw size={17} className="shrink-0 animate-spin text-[#0A84FF]" />
+                        </div>
+                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                          <div
+                            className={`h-full rounded-full bg-[#0A84FF] transition-all ${voiceAsrPct == null ? 'w-1/3 animate-pulse' : ''}`}
+                            style={voiceAsrPct != null ? { width: `${voiceAsrPct}%` } : undefined}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setVoiceAsrPopoverOpen(false);
+                            bridge.voice.cancelVoiceAsrSetup();
+                          }}
+                          disabled={voiceAsrCancelling}
+                          className={`mt-3 w-full rounded-full px-3 py-2 text-[13px] font-semibold transition-colors ${
+                            voiceAsrCancelling
+                              ? 'cursor-wait bg-black/5 text-gray-400 dark:bg-white/10'
+                              : 'bg-[#FFF0EF] text-[#D70015] hover:bg-[#FFE3E1] dark:bg-[#3A1F1F] dark:text-[#FF9F92] dark:hover:bg-[#4A2727]'
+                          }`}
+                        >
+                          {voiceAsrCancelling ? chatCopy.cancelling : chatCopy.cancelDownload}
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      onClick={voiceAsrBusy ? () => setVoiceAsrPopoverOpen(open => !open) : handleVoiceClick}
+                      disabled={primaryVoiceDisabled || voiceAsrCancelling}
+                      data-testid="composer-voice-button"
+                      aria-label={voiceAsrBusy ? voiceAsrBusyLabel : primaryVoiceLabel}
+                      title={voiceAsrBusy ? voiceAsrBusyLabel : primaryVoiceLabel}
+                      className={`${
+                        voiceRecording
+                          ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
+                          : voiceAsrBusy
+                            ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
+                            : voiceActive
+                              ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
+                              : COMPOSER_ICON_BUTTON_CLASS
+                      } ${(primaryVoiceDisabled || voiceAsrCancelling) ? 'opacity-70 cursor-wait' : ''}`}
+                    >
+                      {voiceAsrBusy ? <RefreshCw size={18} className="animate-spin" /> : <Mic size={18} />}
+                    </button>
+                  </div>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />

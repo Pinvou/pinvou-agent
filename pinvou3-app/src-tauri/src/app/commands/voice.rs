@@ -1,4 +1,8 @@
 use super::prelude::*;
+use anyhow::{Context, Result as AnyResult};
+use reqwest::Client;
+use serde_json::{json, Value};
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceTranscriptionRequest {
@@ -9,6 +13,21 @@ pub struct VoiceTranscriptionRequest {
 #[derive(Debug, Serialize)]
 pub struct VoiceTranscriptionResponse {
     pub text: String,
+    pub source: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VoicePostprocessRequest {
+    pub text: String,
+    pub mode: String,
+    pub session_id: Option<String>,
+    pub draft_text: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoicePostprocessResponse {
+    pub text: String,
+    pub mode: String,
     pub source: String,
 }
 
@@ -357,6 +376,246 @@ pub async fn transcribe_voice_audio(
     Ok(VoiceTranscriptionResponse {
         text: asr_output.text,
         source: asr_output.source,
+    })
+}
+
+fn normalize_voice_postprocess_mode(mode: &str) -> &'static str {
+    match mode.trim() {
+        "task" | "rewrite" | "task_rewrite" => "task",
+        _ => "dictation",
+    }
+}
+
+fn voice_postprocess_prompt(mode: &str) -> &'static str {
+    if mode == "task" {
+        r#"你是 Pinvou 的语音 ASR 纠错器，只负责把 ASR 文本纠正为用户原本想说的话。
+
+强规则：
+1. 不回答问题，不执行任务。
+2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
+3. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
+4. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
+5. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是”等口头禅，才输出空字符串。
+6. 优先纠正上下文中明显 ASR 错词：
+   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
+   - 数据分析可视化里的“图标”通常应修为“图表”
+   - “屁屁提/PPTT”通常应修为“PPT”
+   - “销售暑假”通常应修为“销售数据”
+   - “截止事件”通常应修为“截止时间”
+   - “负责任”通常应修为“负责人”
+   - “风险电”通常应修为“风险点”
+   - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
+   - 搜索“爱新闻”通常应修为“AI 新闻”
+7. 去掉口头禅、重复词和误识别语气词。
+8. 只输出最终文本，不解释，不使用 Markdown。
+
+示例：
+ASR 文本：今天天气怎么样？
+最终文本：今天天气怎么样？
+ASR 文本：嗯。
+最终文本：
+ASR 文本：搜索一下今天的爱新闻，按重要性排序。
+最终文本：搜索一下今天的 AI 新闻，按重要性排序。"#
+    } else {
+        r#"你是 Pinvou 的语音 ASR 纠错器，只负责把 ASR 文本纠正为用户原本想说的话。
+
+强规则：
+1. 不回答问题，不执行任务。
+2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
+3. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
+4. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
+5. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是”等口头禅，才输出空字符串。
+6. 优先纠正上下文中明显 ASR 错词：
+   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
+   - 数据分析可视化里的“图标”通常应修为“图表”
+   - “屁屁提/PPTT”通常应修为“PPT”
+   - “销售暑假”通常应修为“销售数据”
+   - “截止事件”通常应修为“截止时间”
+   - “负责任”通常应修为“负责人”
+   - “风险电”通常应修为“风险点”
+   - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
+   - 搜索“爱新闻”通常应修为“AI 新闻”
+7. 去掉口头禅、重复词和误识别语气词。
+8. 只输出最终文本，不解释，不使用 Markdown。
+
+示例：
+ASR 文本：今天天气怎么样？
+最终文本：今天天气怎么样？
+ASR 文本：嗯。
+最终文本：
+ASR 文本：搜索一下今天的爱新闻，按重要性排序。
+最终文本：搜索一下今天的 AI 新闻，按重要性排序。"#
+    }
+}
+
+fn voice_postprocess_timeout(mode: &str, raw_text: &str) -> Duration {
+    if normalize_voice_postprocess_mode(mode) == "task" {
+        return Duration::from_millis(2500);
+    }
+    let compact_len = raw_text
+        .chars()
+        .filter(|ch| {
+            !ch.is_whitespace() && !"。！？!?，,、；;：:\"'“”‘’（）()【】[]….-—".contains(*ch)
+        })
+        .count();
+    if compact_len <= 18 {
+        Duration::from_millis(1500)
+    } else {
+        Duration::from_millis(2000)
+    }
+}
+
+fn voice_postprocess_user_content(raw_text: &str, draft_text: Option<&str>) -> String {
+    let draft = draft_text.unwrap_or("").trim();
+    if draft.is_empty() {
+        format!("ASR 文本：\n{}", raw_text.trim())
+    } else {
+        format!(
+            "当前输入框已有文本：\n{}\n\nASR 文本：\n{}",
+            draft,
+            raw_text.trim()
+        )
+    }
+}
+
+fn sanitize_voice_postprocess_output(text: &str) -> String {
+    text.trim()
+        .trim_matches('\u{feff}')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+async fn voice_postprocess_bridge(
+    session_id: Option<&str>,
+    pool: &EnginePool,
+    store: &SessionStore,
+) -> AnyResult<crate::features::assistant::platform::bridge::Pinvou3Bridge> {
+    if let Some(sid) = session_id.filter(|sid| !sid.trim().is_empty()) {
+        return pool
+            .fresh_bridge_for(sid)
+            .await
+            .context("prepare session model for voice postprocess");
+    }
+    if let Some(sid) = store.active_id() {
+        return pool
+            .fresh_bridge_for(&sid)
+            .await
+            .context("prepare active session model for voice postprocess");
+    }
+    let mut bridge = pool.bridge.clone();
+    bridge.prefs = UserPrefs::load();
+    bridge.session_model = bridge.prefs.active_model().cloned();
+    Ok(bridge)
+}
+
+async fn call_voice_postprocess_model(
+    bridge: &crate::features::assistant::platform::bridge::Pinvou3Bridge,
+    mode: &str,
+    raw_text: &str,
+    draft_text: Option<&str>,
+) -> AnyResult<String> {
+    let client = Client::builder()
+        .timeout(voice_postprocess_timeout(mode, raw_text))
+        .build()
+        .context("build voice postprocess client")?;
+    let base_url = bridge.base_url();
+    let model_name = if bridge.provider() == "vllm" {
+        crate::features::monitor::probe_vllm_model_info(&base_url)
+            .await
+            .0
+            .unwrap_or_else(|| bridge.model())
+    } else {
+        bridge.model()
+    };
+    let system = voice_postprocess_prompt(mode);
+    let user = voice_postprocess_user_content(raw_text, draft_text);
+    let preset = bridge
+        .effective_model_owned()
+        .map(|model| model.preset)
+        .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default());
+
+    if preset == crate::platform::prefs::ModelPreset::Anthropic {
+        let content = crate::core::model_endpoint::post_anthropic_messages(
+            &client,
+            &base_url,
+            &bridge.api_key(),
+            &model_name,
+            system,
+            &user,
+            128,
+        )
+        .await?;
+        return Ok(sanitize_voice_postprocess_output(&content));
+    }
+
+    let body = json!({
+        "model": model_name,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0,
+        "max_tokens": 128,
+        "stream": false
+    });
+    let resp = client
+        .post(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(bridge.api_key())
+        .json(&body)
+        .send()
+        .await
+        .context("post voice postprocess chat/completions")?
+        .error_for_status()
+        .context("voice postprocess chat/completions status")?;
+    let value: Value = resp
+        .json()
+        .await
+        .context("parse voice postprocess response json")?;
+    let content = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Ok(sanitize_voice_postprocess_output(content))
+}
+
+#[tauri::command]
+pub async fn postprocess_voice_text(
+    request: VoicePostprocessRequest,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<VoicePostprocessResponse, String> {
+    let raw_text = request.text.trim();
+    if raw_text.is_empty() {
+        return Ok(VoicePostprocessResponse {
+            text: String::new(),
+            mode: normalize_voice_postprocess_mode(&request.mode).to_string(),
+            source: "empty".to_string(),
+        });
+    }
+    let mode = normalize_voice_postprocess_mode(&request.mode);
+    let bridge = voice_postprocess_bridge(request.session_id.as_deref(), &pool, &store)
+        .await
+        .map_err(|error| format!("prepare voice postprocess model: {error:#}"))?;
+    let text = call_voice_postprocess_model(&bridge, mode, raw_text, request.draft_text.as_deref())
+        .await
+        .map_err(|error| format!("voice postprocess failed: {error:#}"))?;
+    Ok(VoicePostprocessResponse {
+        text: if text.trim().is_empty() {
+            raw_text.to_string()
+        } else {
+            text
+        },
+        mode: mode.to_string(),
+        source: "llm".to_string(),
     })
 }
 
