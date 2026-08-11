@@ -185,8 +185,20 @@ mod tests {
             &["mcp_pinvou3_present_artifact".to_string()]
         );
         assert!(code.tool_exclude.is_empty());
-        // include 与档案一致（04 PR-E：首个 include 只放 git_status，逐个放出）
-        assert_eq!(code.tool_include, &["git_status".to_string()]);
+        // include 与档案一致（本期：git 域 5 个 + 修改/验证/后台取消 3 个）
+        assert_eq!(
+            code.tool_include,
+            &[
+                "git_status".to_string(),
+                "git_diff".to_string(),
+                "git_log".to_string(),
+                "git_show".to_string(),
+                "git_blame".to_string(),
+                "apply_patch".to_string(),
+                "run_verifiers".to_string(),
+                "exec_shell_cancel".to_string(),
+            ]
+        );
     }
 
     /// 同文断言：R-1 审批卡落地后 reminder 对两模式都是真实描述，保持同文；
