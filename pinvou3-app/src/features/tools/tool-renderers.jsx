@@ -208,7 +208,7 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
  * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
  * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
  */
-const ExpertAgentCard = ({ item, theme, t, sessionId: sessionIdProp }) => {
+const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const copy = t.uiMultiAgent;
   const args = item.args || {};
   const agentId = extractSubagentId(item.output);
@@ -539,12 +539,12 @@ const ToolOutput = ({ item, t }) => {
       return <OutputPre text={out} />;
     };
 
-    const ToolCard = ({ item, theme, t, variant = 'legacy', sessionId }) => {
+    const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
       // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
       // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
       // 因此每个实例的 Hook 数量恒定，不触犯 Hook 规则。
       if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
-        return <ExpertAgentCard item={item} theme={theme} t={t} sessionId={sessionId} />;
+        return <ExpertAgentCard item={item} t={t} sessionId={sessionId} />;
       }
       const isTimeline = variant === 'timeline';
       const isRunning = item.state === 'running';

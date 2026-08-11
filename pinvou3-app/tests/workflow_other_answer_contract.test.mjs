@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 // 这是一个源码契约守卫（无需 DOM/bundler）：仅断言关键代码形态成立。
 const root = fileURLToPath(new URL('../', import.meta.url));
 const wf = fs.readFileSync(path.join(root, 'src/features/workflow/WorkflowView.jsx'), 'utf8');
+const codex = fs.readFileSync(path.join(root, 'src/features/codex/CodexAcpView.jsx'), 'utf8');
 const i18n = fs.readFileSync(path.join(root, 'src/shared/i18n.js'), 'utf8');
 
 // 1. 「其他」答案对象必须带稳定字段 kind:'other'，label 走 i18n。
@@ -58,4 +59,28 @@ assert.match(
   "WorkflowView 次要操作必须用 cardBtnCls() 保持默认样式",
 );
 
-console.log('OK: Workflow 「其他」答案契约 + cardBtnCls 签名契约 (kind:other 高亮 + i18n label 三语 + P3 签名)');
+// 5. cardBtnCls/cardBoxCls 的 P3 单参签名必须覆盖全部消费 View。
+//    CodexAcpView 的 NativePlanCard/NativeYoloConfirmCard 曾漏改（旧签名把布尔当
+//    variant/accent，主按钮静默退化为默认样式、卡片边框类丢失——评审 #168 指出）。
+assert.doesNotMatch(
+  codex,
+  /cardBtnCls\(\s*isDark/,
+  "CodexAcpView 不得再用旧签名 cardBtnCls(isDark, ...)；应改为 cardBtnCls() / cardBtnCls('primary')",
+);
+assert.doesNotMatch(
+  codex,
+  /cardBoxCls\(\s*isDark/,
+  "CodexAcpView 不得再用旧签名 cardBoxCls(isDark, ...)；accent 应预拼 dark: 串",
+);
+assert.match(
+  codex,
+  /cardBtnCls\('primary'\)/,
+  "CodexAcpView 主操作（接受方案/确认 yolo）必须用 cardBtnCls('primary') 保持 primary 样式",
+);
+assert.match(
+  codex,
+  /cardBtnCls\(\)/,
+  "CodexAcpView 次要操作必须用 cardBtnCls() 保持默认样式",
+);
+
+console.log('OK: Workflow 「其他」答案契约 + cardBtnCls 签名契约 (kind:other 高亮 + i18n label 三语 + P3 签名全覆盖)');
