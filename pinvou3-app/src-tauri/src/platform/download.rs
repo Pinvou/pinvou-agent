@@ -281,11 +281,11 @@ pub(crate) async fn download_to_part_with_verify(
     .await
     .map_err(|e| format!("下载校验任务异常: {e}"))?;
 
-    // 校验后再查一次取消(rename 是不可逆的最后一步)。
-    if (req.is_cancelled)() {
-        return Err("已取消".to_string());
-    }
-
+    // 成功的 `rename` 就是提交点:阻塞任务内已在 rename **前**查过取消(校验期间取消
+    // 会在提升文件前中止),闭包成功返回即代表 `.part` 已原子提升为正式 `dest`。
+    // 此后再观察到取消**不得**改变返回值——否则会出现「报告已取消但 dest 已存在」
+    // 的返回值与磁盘状态不一致(voice 不登记校验缓存、knowledge 跳过部署,文件却已
+    // 就位)。故这里直接透传闭包结果并解除守卫,不再查取消。
     result?;
     // rename 成功:`.part` 已被消费为 `dest`,解除守卫,避免 Drop 时误删。
     guard.disarm();
@@ -580,6 +580,55 @@ mod tests {
             !dest.exists(),
             "dest must NOT be promoted after verify-stage cancel"
         );
+        handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 第三轮复审 [P1]:`rename` 成功即提交点,提交后观察到取消**不得**改变返回值。
+    /// 用「dest 存在即取消」的谓词精确命中该窗口——下载/校验/rename 前 dest 均不
+    /// 存在(谓词返回 false),rename 原子完成后 dest 出现(谓词变为 true)。修复前
+    /// 闭包返回后的取消检查会命中该谓词,返回 `Err("已取消")` 却留下已安装 `dest`
+    /// (返回值与磁盘状态不一致);修复后 rename 即提交,helper 返回 `Ok`、`dest`
+    /// 就位、`.part` 已被消费。
+    #[tokio::test]
+    async fn cancel_flag_after_rename_is_commit_point() {
+        let dir = scratch_dir("commitpoint");
+        let body = b"hello world".to_vec();
+        let (url, handle) = serve_once(body.clone());
+        let part = dir.join("payload.part");
+        let dest = dir.join("payload");
+        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(&dest);
+
+        // 取消谓词 = dest 是否已存在:rename 前恒为 false,rename 完成后翻转为 true。
+        // 这精确覆盖「闭包内最后一次取消检查之后、提交完成之前」的竞态窗口。
+        let dest_probe = dest.clone();
+        let is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> =
+            Arc::new(move || dest_probe.exists());
+
+        let req = DownloadRequest {
+            url: &url,
+            dest: &dest,
+            part: &part,
+            expected_sha256: HELLO_SHA,
+            max_bytes: 1024,
+            total_hint: 1024,
+            is_cancelled,
+            user_agent: None,
+            on_progress: noop_progress(),
+            on_pre_verify: None,
+        };
+        let result = download_to_part_with_verify(req).await;
+
+        assert!(
+            result.is_ok(),
+            "successful rename is the commit point; cancel observed after it must not \
+             turn the result into Err(\"已取消\") with dest already present: {:?}",
+            result.err()
+        );
+        assert!(dest.exists(), "dest must be in place after commit");
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!part.exists(), "part must be consumed by rename");
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
