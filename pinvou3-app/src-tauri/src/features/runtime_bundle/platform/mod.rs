@@ -245,15 +245,6 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
-        LOCALE_PREAMBLE_ZH_HANS.to_string(),
-    );
-    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
-        LOCALE_CLOSER_ZH_HANS.to_string(),
-    );
-    let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
-    let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
-    let _ = deepseek_tui::prompts::set_authority_recap_override(AUTHORITY_RECAP.to_string());
     // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
     // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
     // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
@@ -927,14 +918,28 @@ mod tests {
         }
     }
 
-    /// 拆分前 instructions.md 原文快照（2026-08，33 行）。
-    /// golden：work 渲染必须与原文逐字节相等——骨架占位行替换的任何手滑
-    /// （换行/空行/节序/分段锚错位）都会让本测试变红。
-    const LEGACY_INSTRUCTIONS_MD: &str = "# pinvou3 运行守则\n\n> 你是 {{PINVOU3_MODEL}},运行在 pinvou3(本地桌面 GUI 助手)中。运行时态(Plan / Yolo 模式、超级权限开关)走每轮 `<system-reminder>`,以那里为准。禁 `read_file` `.pinvou3/bundle/` 下任何文件。\n\n## 底线\n- **真相优先**:不编造工具结果 / 路径 / 数字;声称做完前先验证(跑检查 / 读回关键处)或如实说明为何没验。\n- **权威顺序**:用户当前指令 > 既定规则 > 你的记忆;实时工具输出与文件内容 > 你的记忆,冲突时重读、信工具。\n- 语气平实,少感叹号与最高级。\n\n## 工作环境\n- workspace = `$HOME`,但**这不是项目目录** —— 你是桌面 GUI 助手。产出用**相对路径**写(如 `write_file(\"report.html\", …)`),自动落到本会话专属工作目录;别用 `~` 或绝对路径。\n- **工作目录根 = 用户看到的「产出物」面板**:只有**最终成品**才直接写到根。所有**中间 / 临时文件**(命令行入参、API 响应、分步数据等)一律写到 `tmp/` 子目录(相对路径,如 `tmp/params.json`)—— 子目录里的文件不进产出物列表,免得一堆过程文件污染面板。能用 stdin / 内存不落文件就别落。\n- 用户文件常在 `~/Documents` `~/Desktop` `~/Downloads` `~/桌面` `~/下载` `~/文档`;找文件用 `file_search`,别 `list_dir ~/` 或 `find ~/` 扫整个家目录。\n\n## 工具与事实\n- **只调你工具列表里实际出现的工具**;没出现的就是没有,别编工具名(算术 / 跑脚本用 `exec_shell python3 -c '...'`,git log 用 `exec_shell git log`)。\n- **不知道的当前信息必须调工具、禁止凭记忆编**:算术 / 精确当前时间 / 系统状态 / 库最新版本 / 文件内容与行数。\n- 给客户看的**单文件成品**(html / markdown / 图)写完,立刻调 `mcp_pinvou3_present_artifact`(绝对 `path` + 一眼看懂的 `title`,**title 用{{PINVOU3_TITLE_LANG}}、与你的回复同语种**);迭代重写后再调一次。\n\n## 怎么干\n- **说做就做,别光宣布**:一旦说要用工具做某事(写文件 / 搜索 / 读取 / 展示成品),就在**同一条回复里立刻发出该工具调用**;严禁只回「我来写 / 现在开始 / 让我…」之类就停下、把回合交还用户。前言一两句够了,别长篇铺垫策略。\n- 缺信息当轮就用工具补,别硬编;读多文件 / 多关键词搜索**并行**发起。\n- 遇到**影响结果走向的岔路**(选哪个方案 / 往哪个方向做),主动用 `request_user_input` 给 2-3 个选项让用户拍板,别自己闷头猜;纯执行细节有合理默认就直接做。不复述过程,做完给结果 + 关键决策。\n- 复杂任务(≥5 步)先 `checklist_write` 列清单再做(列完同轮就动手);**及时收手**,信息够答好就交付,别拿到 80% 还抠细节。\n\n## 红线(任何模式、任何请求都不破)\n- **密钥凭证禁读禁写**:`~/.ssh`、含 `id_rsa` / `credentials` / `.env` / `token` 的路径、`/etc/shadow`;被要求时给终端替代方案。\n- 不 `rm -rf` 用户文件 / 目录、不 `git reset --hard` / 批量清理,**除非用户精确点名**那个操作。\n- 写 `/etc` `/usr` `/var` 需超级权限:关闭态禁写,引导用户去【设置 → 系统权限】。\n\n## 输出\nGUI 富文本,代码块 / 列表 / 表格随便用。\n{{PINVOU3_SUDO_INSTRUCTION}}\n";
-
     #[test]
-    fn work_instructions_render_byte_identical_to_legacy() {
-        assert_eq!(instructions_md(), LEGACY_INSTRUCTIONS_MD);
+    fn work_instructions_use_only_canonical_model_visible_tools() {
+        let rendered = instructions_md();
+        for retired in [
+            "read_file",
+            "write_file",
+            "list_dir",
+            "file_search",
+            "exec_shell",
+            "checklist_write",
+        ] {
+            assert!(
+                !rendered.contains(retired),
+                "retired tool leaked: {retired}"
+            );
+        }
+        for canonical in ["File(action=", "Bash(action=", "todo_write"] {
+            assert!(
+                rendered.contains(canonical),
+                "canonical guidance missing: {canonical}"
+            );
+        }
     }
 
     #[test]

@@ -48,6 +48,7 @@ const COMMAND_TOOLS = new Set([
   'exec_wait',
   'exec_interact',
   'task_shell_start',
+  'Bash',
 ]);
 const OPERATION_TYPES = new Set(['command_execution', 'file_change', 'tool']);
 
@@ -66,7 +67,12 @@ function isTaskInstruction(message, blocks) {
   return textBlocksOf(blocks).length > 0;
 }
 
-function toolItemType(name) {
+function toolItemType(name, input) {
+  // v0.9.5 文件写操作统一走 canonical `File`；read/list/search 不是写操作。
+  if (name === 'File') {
+    const action = String((input && input.action) || '').toLowerCase();
+    return ['write', 'edit', 'patch'].includes(action) ? 'file_change' : 'tool';
+  }
   if (FILE_CHANGE_TOOLS.has(name)) return 'file_change';
   if (COMMAND_TOOLS.has(name)) return 'command_execution';
   return 'tool';
@@ -74,8 +80,26 @@ function toolItemType(name) {
 
 function toolLocations(name, input) {
   if (!input || typeof input !== 'object') return [];
-  const path = typeof input.path === 'string' ? input.path.trim() : '';
-  return path ? [{ path }] : [];
+  const paths = [];
+  const add = (value) => {
+    const path = typeof value === 'string' ? value.trim() : '';
+    if (path && path !== '/dev/null' && !paths.includes(path)) paths.push(path);
+  };
+  add(input.path);
+  if (name === 'File' && String(input.action || '').toLowerCase() === 'patch') {
+    for (const entry of [...(Array.isArray(input.replace) ? input.replace : []), ...(Array.isArray(input.changes) ? input.changes : [])]) {
+      add(entry && entry.path);
+    }
+    if (typeof input.patch === 'string') {
+      for (const line of input.patch.split(/\r?\n/)) {
+        const marker = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/);
+        if (marker) add(marker[1]);
+        const unified = line.match(/^\+\+\+\s+(?:b\/)?(.+)$/);
+        if (unified) add(unified[1]);
+      }
+    }
+  }
+  return paths.map((path) => ({ path }));
 }
 
 function turnStatusFromAgent(agent) {
@@ -133,7 +157,7 @@ export function projectSubagentTranscript({ messages, agent }) {
         });
       } else if (block.type === 'tool_use') {
         const name = String(block.name || '').trim();
-        const type = toolItemType(name);
+        const type = toolItemType(name, block.input);
         const item = {
           id: block.id || `tool-${items.length}`,
           type,

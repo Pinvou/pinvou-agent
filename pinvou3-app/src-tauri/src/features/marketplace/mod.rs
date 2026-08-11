@@ -1549,7 +1549,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
         // 路由规则
         if !routing_lines.is_empty() {
-            fragment.push_str("\n### 工具路由(优先用专用工具,不要用 web_search 替代)\n\n");
+            fragment.push_str(
+                "\n### 工具路由(优先用专用工具,不要用 `Web(action=\"search\")` 替代)\n\n",
+            );
             for line in &routing_lines {
                 fragment.push_str(line);
                 fragment.push('\n');

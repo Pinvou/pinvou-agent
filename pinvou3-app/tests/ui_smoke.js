@@ -58,6 +58,7 @@ function injectSource() {
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
     let CODEX_SESSIONS=[{id:'codex-1',agent_id:'codex',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
+    const LONG_CODEX_COMMAND='overflow-marker-'+('x'.repeat(1200));
     let ARCHIVED_SESSIONS=[];
     let MOUNTED_COLLECTIONS=[];
     let MOUNTED_COLLECTIONS_REVISION=0;
@@ -95,6 +96,11 @@ function injectSource() {
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:4,timestamp:'2026-08-04T01:00:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
+          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:10,timestamp:'2026-08-04T01:01:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test streaming overflow'}]}}},
+          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:11,timestamp:'2026-08-04T01:01:01Z',event:{type:'turn_started',data:{status:'running'}}},
+          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:12,timestamp:'2026-08-04T01:01:02Z',event:{type:'agent_thought_chunk',data:{update:{content:{type:'text',text:'reasoning-marker-'+('r'.repeat(1200))}}}}},
+          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:13,timestamp:'2026-08-04T01:01:03Z',event:{type:'plan',data:{update:{entries:[{content:'plan-marker-'+('p'.repeat(1200)),status:'in_progress'}]}}}},
+          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:14,timestamp:'2026-08-04T01:01:04Z',event:{type:'tool_call',data:{update:{toolCallId:'overflow-tool',title:LONG_CODEX_COMMAND,kind:'execute',status:'in_progress',rawInput:{command:LONG_CODEX_COMMAND,cwd:'C:/tmp'}}}}},
         ]);
         case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
         case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
@@ -715,6 +721,150 @@ async function expand(page) {
     codexAssistantCopy.failureFeedback === '复制失败' && codexAssistantCopy.failureTitle === '复制失败' &&
     codexAssistantCopy.sameRow,
     JSON.stringify(codexAssistantCopy));
+
+  const codexStreamingOverflow = await page.evaluate(async () => {
+    const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
+    const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
+    const plan = turn?.querySelector('[data-testid="conversation-plan"]');
+    const controlledState = (toggle) => {
+      const controls = toggle?.getAttribute('aria-controls') || '';
+      return {
+        expanded: toggle?.getAttribute('aria-expanded') || '',
+        controls,
+        detailsPresent: Boolean(controls && document.getElementById(controls)),
+      };
+    };
+    const summaryState = controlledState(summary);
+    const reasoningToggle = turn?.querySelector('[data-testid="conversation-reasoning-toggle"]');
+    const reasoningBefore = controlledState(reasoningToggle);
+    reasoningToggle?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningAfter = controlledState(reasoningToggle);
+    const reasoning = turn?.querySelector('[data-testid="conversation-reasoning-content"]');
+    const commandButton = turn?.querySelector('[data-testid="conversation-compact-item-toggle"]');
+    const commandTitle = commandButton?.querySelector('span.min-w-0.flex-1 > span.truncate');
+    const turnRect = turn?.getBoundingClientRect();
+    const contained = [reasoning, plan, summary, commandButton].every(node => {
+      if (!node || !turnRect) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.left >= turnRect.left - 1 && rect.right <= turnRect.right + 1;
+    });
+    const reasoningRect = reasoning?.getBoundingClientRect();
+    const planRect = plan?.getBoundingClientRect();
+    const summaryRect = summary?.getBoundingClientRect();
+    reasoningToggle?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningCollapsed = controlledState(reasoningToggle);
+    const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
+      && commandButton.scrollWidth <= commandButton.clientWidth + 1);
+    const commandBefore = controlledState(commandButton);
+    commandButton?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const commandAfter = controlledState(commandButton);
+    commandButton?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const commandCollapsed = controlledState(commandButton);
+    return {
+      found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
+      turnIds: [...document.querySelectorAll('[data-conversation-turn]')]
+        .map(node => node.getAttribute('data-conversation-turn')),
+      hasOverflowText: document.body.innerText.includes('Test streaming overflow'),
+      summaryCount: document.querySelectorAll('[data-testid="conversation-tool-group-summary"]').length,
+      summary: summary?.textContent.trim() || '',
+      summaryContainsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
+      contained,
+      ordered: Boolean(reasoningRect && planRect && summaryRect
+        && reasoningRect.bottom <= planRect.top + 1
+        && planRect.bottom <= summaryRect.top + 1),
+      commandClipped,
+      accessibility: {
+        summaryState,
+        reasoningBefore,
+        reasoningAfter,
+        reasoningCollapsed,
+        commandBefore,
+        commandAfter,
+        commandCollapsed,
+      },
+    };
+  });
+  rec('①a-3c Codex 流式超长命令保持在工具卡内',
+    codexStreamingOverflow.found
+      && codexStreamingOverflow.summary === '正在执行 · 执行 Shell 命令 · 1 项'
+      && !codexStreamingOverflow.summaryContainsRawCommand
+      && codexStreamingOverflow.contained
+      && codexStreamingOverflow.ordered
+      && codexStreamingOverflow.commandClipped,
+    JSON.stringify(codexStreamingOverflow));
+  const unifiedA11y = codexStreamingOverflow.accessibility || {};
+  rec('①a-3c-1 统一对话详情向辅助技术同步展开状态',
+    unifiedA11y.summaryState?.expanded === 'true'
+      && unifiedA11y.summaryState?.detailsPresent
+      && unifiedA11y.reasoningBefore?.expanded === 'false'
+      && !unifiedA11y.reasoningBefore?.controls
+      && !unifiedA11y.reasoningBefore?.detailsPresent
+      && unifiedA11y.reasoningAfter?.expanded === 'true'
+      && Boolean(unifiedA11y.reasoningAfter?.controls)
+      && unifiedA11y.reasoningAfter?.detailsPresent
+      && unifiedA11y.reasoningCollapsed?.expanded === 'false'
+      && !unifiedA11y.reasoningCollapsed?.controls
+      && !unifiedA11y.reasoningCollapsed?.detailsPresent
+      && unifiedA11y.commandBefore?.expanded === 'false'
+      && !unifiedA11y.commandBefore?.controls
+      && !unifiedA11y.commandBefore?.detailsPresent
+      && unifiedA11y.commandAfter?.expanded === 'true'
+      && Boolean(unifiedA11y.commandAfter?.controls)
+      && unifiedA11y.commandAfter?.detailsPresent
+      && unifiedA11y.commandCollapsed?.expanded === 'false'
+      && !unifiedA11y.commandCollapsed?.controls
+      && !unifiedA11y.commandCollapsed?.detailsPresent,
+    JSON.stringify(unifiedA11y));
+
+  await page.evaluate(async () => {
+    const events = [
+      {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:15,timestamp:'2026-08-04T01:01:05Z',event:{type:'tool_call_update',data:{update:{toolCallId:'overflow-tool',status:'completed',rawOutput:{formatted_output:'ok',exit_code:0}}}}},
+      {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:16,timestamp:'2026-08-04T01:01:06Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
+    ];
+    for (const payload of events) {
+      for (const handler of (window.__TAURI_EVENT_HANDLERS__['acp:event'] || [])) await handler({ payload });
+    }
+  });
+  await sleep(100);
+  const codexCompletedOverflow = await page.evaluate(async () => {
+    const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
+    const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
+    const turnRect = turn?.getBoundingClientRect();
+    const summaryRect = summary?.getBoundingClientRect();
+    const controls = summary?.getAttribute('aria-controls') || '';
+    const expandedBefore = summary?.getAttribute('aria-expanded') || '';
+    const detailsBefore = Boolean(controls && document.getElementById(controls));
+    summary?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return {
+      summary: summary?.textContent.trim() || '',
+      containsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
+      contained: Boolean(turnRect && summaryRect && summaryRect.left >= turnRect.left - 1 && summaryRect.right <= turnRect.right + 1),
+      controls,
+      expandedBefore,
+      detailsBefore,
+      controlsAfter: summary?.getAttribute('aria-controls') || '',
+      expandedAfter: summary?.getAttribute('aria-expanded') || '',
+      detailsAfter: Boolean(controls && document.getElementById(controls)),
+    };
+  });
+  rec('①a-3d Codex 工具完成后摘要保持稳定',
+    codexCompletedOverflow.summary === '执行步骤 · 1 项'
+      && !codexCompletedOverflow.containsRawCommand
+      && codexCompletedOverflow.contained,
+    JSON.stringify(codexCompletedOverflow));
+  rec('①a-3d-1 统一工具组折叠状态与详情 DOM 一致',
+    codexCompletedOverflow.expandedBefore === 'true'
+      && Boolean(codexCompletedOverflow.controls)
+      && codexCompletedOverflow.detailsBefore
+      && codexCompletedOverflow.expandedAfter === 'false'
+      && !codexCompletedOverflow.controlsAfter
+      && !codexCompletedOverflow.detailsAfter,
+    JSON.stringify(codexCompletedOverflow));
 
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
@@ -1639,6 +1789,98 @@ async function expand(page) {
     return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
   rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+
+  // 旧兼容渲染路径也必须暴露与详情 DOM 一致的展开状态。
+  await page.evaluate(() => localStorage.setItem('pinvou_conversation_ui_v2', 'false'));
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
+  await sleep(1200);
+  await expand(page); await sleep(200);
+  await page.waitForSelector('[data-testid="codex-sidebar-item"]', { timeout: 10000 }).catch(() => {});
+  await page.evaluate(() => document.querySelector('[data-testid="codex-sidebar-item"]')?.click());
+  await sleep(500);
+  const legacyConversationA11y = await page.evaluate(async () => {
+    const state = (toggle) => {
+      const controls = toggle?.getAttribute('aria-controls') || '';
+      return {
+        expanded: toggle?.getAttribute('aria-expanded') || '',
+        controls,
+        detailsPresent: Boolean(controls && document.getElementById(controls)),
+      };
+    };
+    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
+    const reasoningBefore = state(reasoningToggle);
+    reasoningToggle?.click();
+    await settle();
+    const reasoningAfter = state(reasoningToggle);
+    reasoningToggle?.click();
+    await settle();
+    const reasoningCollapsed = state(reasoningToggle);
+
+    const summary = document.querySelector('[data-testid="conversation-tool-group-summary"]');
+    const groupBefore = state(summary);
+    summary?.click();
+    await settle();
+    const groupAfter = state(summary);
+
+    const compactToggle = document.querySelector('[data-testid="conversation-compact-item-toggle"]');
+    const compactBefore = state(compactToggle);
+    compactToggle?.click();
+    await settle();
+    const compactAfter = state(compactToggle);
+    compactToggle?.click();
+    await settle();
+    const compactCollapsed = state(compactToggle);
+    summary?.click();
+    await settle();
+    const groupCollapsed = state(summary);
+    const controls = [reasoningAfter.controls, groupAfter.controls, compactAfter.controls].filter(Boolean);
+    return {
+      found: Boolean(reasoningToggle && summary && compactToggle),
+      reasoningBefore,
+      reasoningAfter,
+      reasoningCollapsed,
+      groupBefore,
+      groupAfter,
+      groupCollapsed,
+      compactBefore,
+      compactAfter,
+      compactCollapsed,
+      uniqueControls: controls.length === 3 && new Set(controls).size === controls.length,
+    };
+  });
+  rec('⑩a 旧兼容对话详情向辅助技术同步展开状态',
+    legacyConversationA11y.found
+      && legacyConversationA11y.uniqueControls
+      && legacyConversationA11y.reasoningBefore.expanded === 'false'
+      && !legacyConversationA11y.reasoningBefore.controls
+      && !legacyConversationA11y.reasoningBefore.detailsPresent
+      && legacyConversationA11y.reasoningAfter.expanded === 'true'
+      && Boolean(legacyConversationA11y.reasoningAfter.controls)
+      && legacyConversationA11y.reasoningAfter.detailsPresent
+      && legacyConversationA11y.reasoningCollapsed.expanded === 'false'
+      && !legacyConversationA11y.reasoningCollapsed.controls
+      && !legacyConversationA11y.reasoningCollapsed.detailsPresent
+      && legacyConversationA11y.groupBefore.expanded === 'false'
+      && !legacyConversationA11y.groupBefore.controls
+      && !legacyConversationA11y.groupBefore.detailsPresent
+      && legacyConversationA11y.groupAfter.expanded === 'true'
+      && Boolean(legacyConversationA11y.groupAfter.controls)
+      && legacyConversationA11y.groupAfter.detailsPresent
+      && legacyConversationA11y.groupCollapsed.expanded === 'false'
+      && !legacyConversationA11y.groupCollapsed.controls
+      && !legacyConversationA11y.groupCollapsed.detailsPresent
+      && legacyConversationA11y.compactBefore.expanded === 'false'
+      && !legacyConversationA11y.compactBefore.controls
+      && !legacyConversationA11y.compactBefore.detailsPresent
+      && legacyConversationA11y.compactAfter.expanded === 'true'
+      && Boolean(legacyConversationA11y.compactAfter.controls)
+      && legacyConversationA11y.compactAfter.detailsPresent
+      && legacyConversationA11y.compactCollapsed.expanded === 'false'
+      && !legacyConversationA11y.compactCollapsed.controls
+      && !legacyConversationA11y.compactCollapsed.detailsPresent,
+    JSON.stringify(legacyConversationA11y));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

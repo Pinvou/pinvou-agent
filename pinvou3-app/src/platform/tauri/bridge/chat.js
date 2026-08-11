@@ -27,7 +27,7 @@
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
-    var extractArtifactPath = context.extractArtifactPath;
+    var extractArtifactPaths = context.extractArtifactPaths;
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
@@ -91,9 +91,9 @@
     if (!bn) return false;
     for (var i = state.chatItems.length - 1; i >= 0; i--) {
       var it = state.chatItems[i];
-      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
-        var ap = extractArtifactPath(it.args);
-        if (ap && basename(ap) === bn) return false;
+      if (it.type === "tool" && context.fileMutationAction(it.name, it.args)) {
+        var changedPaths = extractArtifactPaths(it.args);
+        if (changedPaths.some(function (ap) { return basename(ap) === bn; })) return false;
       }
       if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;

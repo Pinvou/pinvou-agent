@@ -808,7 +808,9 @@
   var untrackArtifact = artifactTrackerFeature.untrackArtifact;
   var findPresentedArtifact = artifactTrackerFeature.findPresentedArtifact;
   var reconcileArtifacts = artifactTrackerFeature.reconcileArtifacts;
+  var extractArtifactPaths = artifactTrackerFeature.extractArtifactPaths;
   var extractArtifactPath = artifactTrackerFeature.extractArtifactPath;
+  var fileMutationAction = artifactTrackerFeature.fileMutationAction;
   var isPresentArtifactTool = artifactTrackerFeature.isPresentArtifactTool;
   var parseToolResultPayload = artifactTrackerFeature.parseToolResultPayload;
   var artifactPathFromToolOutput = artifactTrackerFeature.artifactPathFromToolOutput;
@@ -835,7 +837,8 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
-    extractArtifactPath: extractArtifactPath,
+    extractArtifactPaths: extractArtifactPaths,
+    fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
     autoCreateScheduledTaskDraft: function () { return autoCreateScheduledTaskDraft.apply(null, arguments); },
     get currentStreamText() { return currentStreamText; },
@@ -1534,14 +1537,14 @@
       if (!Array.isArray(dc)) continue;
       for (var dj = 0; dj < dc.length; dj++) {
         var db = dc[dj];
-        if (db.type === "tool_use" && (db.name === "write_file" || db.name === "append_file" || db.name === "edit_file")) {
-          var dap = extractArtifactPath(db.input);
-          if (dap) {
+        var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
+        if (dbMutation) {
+          extractArtifactPaths(db.input).forEach(function (dap) {
             lastDirtyArtifactId[dap] = db.id;
             // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
             // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
-            if (db.name !== "edit_file" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          }
+            if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
+          });
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
           var pres = resultById[db.id];
@@ -1683,14 +1686,14 @@
               }
             }
           }
-          // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
+          // 还原"自动续卡":File.write/File.edit 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if (b.name === "write_file" || b.name === "append_file" || b.name === "edit_file") {
+          if (fileMutationAction(b.name, b.input)) {
             var wres = resultById[b.id];
-            var wap = extractArtifactPath(b.input);
-            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+            extractArtifactPaths(b.input).forEach(function (wap) {
+              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
@@ -1701,7 +1704,7 @@
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
-            }
+            });
           }
         }
       }
@@ -1810,7 +1813,8 @@
     artifactPathFromToolOutput: artifactPathFromToolOutput,
     shouldUseToolOutputAsArtifact: shouldUseToolOutputAsArtifact,
     presentArtifactAbsPath: presentArtifactAbsPath,
-    extractArtifactPath: extractArtifactPath, markTurnDirtyArtifact: markTurnDirtyArtifact,
+    extractArtifactPaths: extractArtifactPaths, fileMutationAction: fileMutationAction,
+    markTurnDirtyArtifact: markTurnDirtyArtifact,
     trackArtifact: trackArtifact, untrackArtifact: untrackArtifact,
     findPresentedArtifact: findPresentedArtifact, isDeliverable: isDeliverable,
     noteArtifactChange: noteArtifactChange,

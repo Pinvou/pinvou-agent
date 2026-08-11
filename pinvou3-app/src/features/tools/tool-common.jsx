@@ -115,6 +115,12 @@ const AcFmtIcon = FileTypeIcon;
       'checklist_update', 'todo_update', 'checklist_add', 'todo_add', 'checklist_list', 'todo_list',
     ]);
 
+    const isQuietTool = (item) => {
+      if (!item) return false;
+      if (QUIET_TOOLS.has(item.name)) return true;
+      return item.name === 'File' && ['read', 'list', 'search_name', 'search_content'].includes(item.args?.action);
+    };
+
     const toolBasename = (p) => {
       if (typeof p !== 'string' || !p) return '';
       const parts = p.replace(/\/+$/, '').split('/');
@@ -128,13 +134,46 @@ const AcFmtIcon = FileTypeIcon;
         case 'read_file': {
           const base = toolBasename(args.path);
           if (args.start_line || args.max_lines) {
-            const s = args.start_line || 1;
-            return base + ' · ' + t.tsLine + ' ' + s + (args.max_lines ? '-' + (s + args.max_lines - 1) : '+');
+            const s = Number(args.start_line) || 1;
+            const max = Number(args.max_lines);
+            return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
           }
           return base;
         }
+        case 'File': {
+          const action = args.action;
+          if (action === 'read') {
+            const base = toolBasename(args.path);
+            if (args.start_line || args.max_lines) {
+              const s = Number(args.start_line) || 1;
+              const max = Number(args.max_lines);
+              return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
+            }
+            return base;
+          }
+          if (action === 'list') return toolBasename(args.path || '.') || '.';
+          if (action === 'search_content') return args.pattern ? '"' + args.pattern + '"' : '';
+          if (action === 'search_name') return args.query ? '"' + args.query + '"' : '';
+          if (action === 'patch') {
+            const paths = [];
+            const add = path => {
+              const base = toolBasename(path);
+              if (base && !paths.includes(base)) paths.push(base);
+            };
+            add(args.path);
+            for (const key of ['replace', 'changes']) {
+              if (Array.isArray(args[key])) args[key].forEach(change => add(change?.path));
+            }
+            String(args.patch || '').split(/\r?\n/).forEach(line => {
+              const match = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/)
+                || line.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/);
+              if (match && match[1] !== '/dev/null') add(match[1]);
+            });
+            return paths.join(', ');
+          }
+          return toolBasename(args.path);
+        }
         case 'write_file':
-        case 'append_file':
         case 'edit_file':
           return toolBasename(args.path);
         case 'list_dir':
@@ -146,6 +185,7 @@ const AcFmtIcon = FileTypeIcon;
         case 'exec_shell':
         case 'task_shell_start':
         case 'shell':
+        case 'Bash':
           return typeof args.command === 'string' ? args.command.replace(/\s+/g, ' ').trim() : '';
         case 'checklist_update':
         case 'todo_update':
@@ -691,4 +731,4 @@ const AcFmtIcon = FileTypeIcon;
 
     // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
 
-export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, localizeTool, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsCategories, tsFeaturedCollections, TsActionBtn };
+export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, localizeTool, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsCategories, tsFeaturedCollections, TsActionBtn };

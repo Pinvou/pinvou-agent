@@ -23,7 +23,7 @@ lark-cli docs +update --api-version v2 --doc "文档URL或token" --command appen
 
 ## 前置条件 — 执行操作前必读
 
-**CRITICAL — 执行对应操作前，MUST 先用 `read_file` 工具读取以下文件，缺一不可：**
+**CRITICAL — 执行对应操作前，MUST 先用 `File(action="read")` 读取以下文件，缺一不可：**
 1. [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md) — 认证、权限处理、全局参数（所有操作通用）
 2. **读取文档（`docs +fetch --api-version v2`）** → 必读 [`lark-doc-fetch.md`](references/lark-doc-fetch.md)（`--scope` / `--detail` 选择、局部读取策略、`<fragment>` / `<excerpt>` 输出结构）
 3. **创建或编辑文档内容** → 必读 [`lark-doc-xml.md`](references/lark-doc-xml.md)（XML 语法规则，仅当用户明确要求 Markdown 时改读 [`lark-doc-md.md`](references/lark-doc-md.md)）；从零创建时加读 [`lark-doc-create-workflow.md`](references/style/lark-doc-create-workflow.md)；编辑已有文档时加读 [`lark-doc-update.md`](references/lark-doc-update.md) 和 [`lark-doc-update-workflow.md`](references/style/lark-doc-update-workflow.md)

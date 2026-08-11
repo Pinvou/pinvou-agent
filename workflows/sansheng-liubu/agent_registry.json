@@ -6,9 +6,7 @@
       "name": "太子",
       "prompt_file": "roles/taizi.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "list_dir",
+        "File",
         "request_user_input"
       ],
       "max_steps": 16,
@@ -53,9 +51,7 @@
       "name": "中书省",
       "prompt_file": "roles/zhongshu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "list_dir"
+        "File"
       ],
       "max_steps": 20,
       "timeout_secs": 600,
@@ -140,9 +136,7 @@
       "name": "门下省",
       "prompt_file": "roles/menxia.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "list_dir"
+        "File"
       ],
       "max_steps": 15,
       "timeout_secs": 600,
@@ -214,9 +208,7 @@
       "name": "尚书省",
       "prompt_file": "roles/shangshu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "list_dir"
+        "File"
       ],
       "max_steps": 15,
       "timeout_secs": 600,
@@ -297,11 +289,7 @@
       "name": "户部",
       "prompt_file": "roles/hubu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files"
+        "File"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -314,11 +302,7 @@
       "name": "礼部",
       "prompt_file": "roles/libu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files"
+        "File"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -331,12 +315,8 @@
       "name": "兵部",
       "prompt_file": "roles/bingbu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files",
-        "web_search"
+        "File",
+        "Web"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -349,14 +329,9 @@
       "name": "刑部",
       "prompt_file": "roles/xingbu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files",
-        "web_search",
-        "exec_shell",
-        "exec_shell_wait"
+        "File",
+        "Web",
+        "Bash"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -369,13 +344,8 @@
       "name": "工部",
       "prompt_file": "roles/gongbu.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files",
-        "exec_shell",
-        "exec_shell_wait"
+        "File",
+        "Bash"
       ],
       "max_steps": 100,
       "timeout_secs": 900,
@@ -388,11 +358,7 @@
       "name": "吏部",
       "prompt_file": "roles/libu_renshi.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep_files"
+        "File"
       ],
       "max_steps": 30,
       "timeout_secs": 900,
@@ -405,9 +371,7 @@
       "name": "回奏",
       "prompt_file": "roles/huizou.md",
       "tools": [
-        "read_file",
-        "write_file",
-        "list_dir"
+        "File"
       ],
       "max_steps": 20,
       "timeout_secs": 600,

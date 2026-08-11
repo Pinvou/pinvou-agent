@@ -275,8 +275,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   隐藏（spawn 初值与 `set_disallowed_all` 热刷两路都经
   `bridge.shape_disallowed_tools`）。
 - **项目级 skills**（P3 兜底）：fork #41 已砍断 workspace 并集扫描，项目技能
-  （`.agents/skills`、`skills`、`.opencode/skills`、`.claude/skills`、
-  `.cursor/skills`、`.codewhale/skills`，按上游优先级）在**策略开关默认关**
+  （`.agents/skills`、`.pinvou/skills`、`skills`、`.opencode/skills`、
+  `.claude/skills`、`.cursor/skills`、`.codewhale/skills`，按上游优先级，
+  `.pinvou/skills` 为 pinvou3 自有约定）在**策略开关默认关**
   下经同一物化通道拷入组合目录；开启路径有注入风险警告（项目内文本是
   prompt-injection 面）。catalogue 显示组合目录路径而非 bundle 内部结构。
 - 详细设计、验收矩阵与遗留见 `docs/skill-scope-governance-改动说明.md`。

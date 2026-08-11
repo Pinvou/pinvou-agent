@@ -44,7 +44,7 @@ struct MonitorState {
 struct ObservedJob {
     task_id: String,
     status: ShellStatus,
-    exit_code: Option<i32>,
+    exit_code: Option<i64>,
     stdout: String,
     stderr: String,
     stdout_tail: String,
@@ -62,7 +62,7 @@ enum MonitorEmission {
         tool_id: String,
         task_id: String,
         status: ShellStatus,
-        exit_code: Option<i32>,
+        exit_code: Option<i64>,
         stdout_tail: String,
         stderr_tail: String,
     },
@@ -95,7 +95,8 @@ impl ShellOutputMonitor {
     }
 
     pub(crate) fn tool_started(&self, tool_id: &str, name: &str, input: &Value) {
-        if !matches!(name, "exec_shell" | "task_shell_start") {
+        // v0.9.5 的 shell 工具面是 canonical `Bash` 家族；旧名仅旧会话回放出现。
+        if !matches!(name, "exec_shell" | "task_shell_start" | "Bash") {
             return;
         }
         let Some(command) = input.get("command").and_then(Value::as_str) else {
@@ -290,6 +291,9 @@ impl From<ShellJobDetail> for ObservedJob {
         Self {
             task_id: detail.snapshot.id,
             status: detail.snapshot.status,
+            // Windows process exit codes are unsigned 32-bit values surfaced by
+            // CodeWhale as i64 (for example 0xC0000005 = 3221225477).  Narrowing
+            // to i32 silently dropped those NTSTATUS values from UI events.
             exit_code: detail.snapshot.exit_code,
             stdout: detail.stdout,
             stderr: detail.stderr,
@@ -381,7 +385,7 @@ fn emit_shell_task_status(
     tool_id: &str,
     task_id: &str,
     status: ShellStatus,
-    exit_code: Option<i32>,
+    exit_code: Option<i64>,
     stdout_tail: &str,
     stderr_tail: &str,
 ) {
@@ -483,6 +487,18 @@ mod tests {
             Some("中".into())
         );
         assert_eq!(appended_stable_delta("中", "中文", true), Some("文".into()));
+    }
+
+    #[test]
+    fn preserves_windows_ntstatus_exit_code() {
+        let mut job = snapshot("job-windows", "crashing.exe", ShellStatus::Failed);
+        job.exit_code = Some(0xC000_0005_u32 as i64);
+        let observed = ObservedJob::from(ShellJobDetail {
+            snapshot: job,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        assert_eq!(observed.exit_code, Some(3_221_225_477));
     }
 
     #[test]

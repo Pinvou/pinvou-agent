@@ -229,6 +229,7 @@ impl EventBridge {
         crate::features::memory::record_turn_tool_complete(
             &self.pinvou_session_id,
             &call.title,
+            &call.raw_input.clone().unwrap_or_else(|| json!({})),
             matches!(call.status, ToolCallStatus::Completed),
         );
     }
