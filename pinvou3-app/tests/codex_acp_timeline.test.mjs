@@ -345,6 +345,18 @@ try {
   assert.ok(codexView.includes(boundedPermissionOptionClass)
     && conversationView.includes(boundedPermissionOptionClass),
   'long ACP permission option labels must wrap inside both unified and legacy permission cards');
+  assert.ok(conversationView.includes('function runningToolLabel(item, copy)')
+    && conversationView.includes("return copy.shellCommand;")
+    && !conversationView.includes('runningItem.tool.name || runningItem.tool.title')
+    && conversationView.includes('data-testid="conversation-tool-group-summary"')
+    && conversationView.includes('min-w-0 flex-1 truncate'),
+  'running tool groups must use bounded semantic labels instead of rendering raw command titles');
+  const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
+  assert.ok(codexView.includes(boundedLongTextClass)
+    && conversationView.includes(boundedLongTextClass)
+    && codexView.includes('max-h-80 max-w-full overflow-auto whitespace-pre')
+    && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
+  'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')

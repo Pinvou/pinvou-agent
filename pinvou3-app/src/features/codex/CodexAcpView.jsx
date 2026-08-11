@@ -304,9 +304,9 @@ function terminalStatus(status, exitCode = null) {
 function TerminalBlock({ label, text }) {
   if (!text) return null;
   return (
-    <div className="mt-3">
+    <div className="mt-3 min-w-0 max-w-full">
       <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <pre className="max-h-80 overflow-auto whitespace-pre rounded-xl bg-[#F4F5F7] dark:bg-black/30 px-3 py-2.5 text-[12px] leading-5 font-mono text-gray-700 dark:text-gray-200">{text}</pre>
+      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre rounded-xl bg-[#F4F5F7] dark:bg-black/30 px-3 py-2.5 text-[12px] leading-5 font-mono text-gray-700 dark:text-gray-200">{text}</pre>
     </div>
   );
 }
@@ -341,7 +341,7 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
       : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
   return (
     <button type="button" onClick={onToggle}
-      className="w-full min-h-10 px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
+      className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
       <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-medium">{title}</span>
@@ -422,7 +422,7 @@ function ToolGroup({ group, now, copy, cv }) {
   ) === 'failed');
   const [open, setOpen] = useState(false);
   return (
-    <div>
+    <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
@@ -430,7 +430,7 @@ function ToolGroup({ group, now, copy, cv }) {
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
+        <div className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
             ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
             : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} />)}
@@ -445,14 +445,14 @@ function ReasoningItem({ item, now, copy }) {
   const [open, setOpen] = useState(false);
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   return (
-    <div>
+    <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
         <span>{running ? copy.thinking : copy.thoughtCompleted} · {duration}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && <div className="ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap">{item.text}</div>}
+      {open && <div data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
     </div>
   );
 }
@@ -461,15 +461,15 @@ function PlanBlock({ plan, copy }) {
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;
   return (
-    <div className="rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
+    <div data-testid="conversation-plan" className="min-w-0 max-w-full rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
       <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{copy.plan}</div>
       <div className="space-y-2">
         {entries.map((entry, index) => (
-          <div key={index} className="flex items-start gap-2 text-[13px]">
+          <div key={index} className="min-w-0 flex items-start gap-2 text-[13px]">
             <span className={`mt-1.5 w-2 h-2 shrink-0 rounded-full ${
               entry.status === 'completed' ? 'bg-emerald-500' : entry.status === 'in_progress' ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'
             }`} />
-            <span className="flex-1">{entry.content}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{entry.content}</span>
           </div>
         ))}
       </div>
@@ -488,7 +488,7 @@ function PermissionCard({ permission, pending, onRespond, responding, agentName,
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{copy.permissionRequest(agentName)}</div>
-          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{tool.title || copy.protectedOperation}</div>
+          <div className="mt-1 min-w-0 max-w-full text-[12px] text-gray-500 dark:text-gray-400 break-words [overflow-wrap:anywhere]">{tool.title || copy.protectedOperation}</div>
           {tool.rawInput && tool.rawInput.command
             ? <TerminalBlock label={copy.command} text={String(tool.rawInput.command)} />
             : <StructuredValue label={copy.operationArguments} value={tool.rawInput} />}
