@@ -138,7 +138,6 @@ pub(super) fn codex_authenticated(codex: &Path) -> bool {
     cli_status_success(codex, &["login", "status"])
 }
 
-
 fn backend_for_acp_state(state: &Value) -> Result<AgentBackend> {
     let package_backend = match state["adapter"]["package"].as_str() {
         Some(CODEX_ACP_PACKAGE) => Some(AgentBackend::CodexAcp),
