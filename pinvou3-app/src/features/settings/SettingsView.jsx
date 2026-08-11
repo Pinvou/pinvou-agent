@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Users, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
@@ -1179,7 +1180,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                   {t.composerManageTools}
                 </button>
           </ComposerPopover>
-          {projectSkillsHelp && (
+          {projectSkillsHelp && createPortal(
             <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
               <div onClick={e => e.stopPropagation()} className="relative w-full max-w-[380px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
                 <div className="flex items-start justify-between gap-3 mb-4">
@@ -1197,7 +1198,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 </div>
                 <div className="mt-3 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
               </div>
-            </div>
+            </div>,
+            document.body
           )}
         </div>
       );
