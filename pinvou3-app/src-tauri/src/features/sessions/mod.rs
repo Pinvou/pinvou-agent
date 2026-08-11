@@ -364,6 +364,48 @@ impl SessionStore {
         Ok(path)
     }
 
+    /// Repair persisted tool histories only at process boot, before any
+    /// session engine can own an in-flight tool call. Runtime reads use the
+    /// snapshot API and must never infer a crash from a dangling `tool_use`.
+    fn recover_interrupted_tool_histories_locked(&self) -> Result<usize> {
+        let sessions = self
+            .manager
+            .list_sessions()
+            .context("list sessions for tool history recovery")?;
+        let mut recovered = 0usize;
+        for metadata in sessions {
+            let recovery = match self.manager.recover_session_for_resume(&metadata.id) {
+                Ok(recovery) => recovery,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] skip tool history recovery for {}: {error}",
+                        metadata.id
+                    );
+                    continue;
+                }
+            };
+            if !recovery.changed {
+                continue;
+            }
+            if let Err(error) = self.save_session_atomic(&recovery.session) {
+                eprintln!(
+                    "[sessions] persist tool history recovery for {} failed: {error:#}",
+                    metadata.id
+                );
+                continue;
+            }
+            recovered = recovered.saturating_add(1);
+            eprintln!(
+                "[sessions] recovered interrupted tool history for {}: repaired={} duplicate={} orphan={}",
+                metadata.id,
+                recovery.repaired_call_count,
+                recovery.duplicate_result_count,
+                recovery.orphan_result_count,
+            );
+        }
+        Ok(recovered)
+    }
+
     /// Keep ordinary and scheduled histories in one directory without letting
     /// one class consume the other's retention budget. The upstream manager's
     /// default cleanup cannot distinguish the two once storage is unified.
@@ -410,8 +452,20 @@ impl SessionStore {
         }
     }
 
-    /// 用 `~/.pinvou3/sessions/` 初始化。如果目录不存在会自动创建。
+    /// Open `~/.pinvou3/sessions/` without inferring that a live tool call
+    /// crashed. This constructor is safe for secondary stores opened while the
+    /// application process is already running.
     pub fn boot() -> Result<Self> {
+        Self::boot_inner(false)
+    }
+
+    /// Open the process-owned session store and recover tool histories left
+    /// incomplete by a previous process, before any Engine is started.
+    pub fn boot_for_process_startup() -> Result<Self> {
+        Self::boot_inner(true)
+    }
+
+    fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
         let store = Self::from_paths(
             paths::sessions_root(),
             paths::scheduled_run_profiles_path(),
@@ -429,6 +483,9 @@ impl SessionStore {
         store.load_code_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
+            if recover_interrupted_tools {
+                store.recover_interrupted_tool_histories_locked()?;
+            }
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
@@ -526,7 +583,7 @@ impl SessionStore {
     /// 加载完整 session（包含所有 messages）。
     pub fn load(&self, id: &str) -> Result<SavedSession> {
         self.manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id})"))
     }
 
@@ -744,7 +801,7 @@ impl SessionStore {
     }
 
     pub fn scheduled_session_exists(&self, id: &str) -> bool {
-        self.scheduled_profile(id).is_some() && self.manager.load_session(id).is_ok()
+        self.scheduled_profile(id).is_some() && self.manager.load_session_snapshot(id).is_ok()
     }
 
     /// Persist authoritative engine state for an existing scheduled-run session.
@@ -770,7 +827,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
         let total_tokens = match state.token_accounting {
             ScheduledTokenAccounting::PreservePersisted => session.metadata.total_tokens,
@@ -820,7 +877,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for engine persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
@@ -856,7 +913,7 @@ impl SessionStore {
         validate_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for admitted display fallback"))?;
         if transcript_revision(&session.messages)? != expected_revision {
             return Ok(session);
@@ -902,7 +959,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for token persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
@@ -1244,7 +1301,7 @@ impl SessionStore {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for title update"))?;
         session.metadata.title = title;
         self.save_session_atomic(&session)?;
@@ -1264,7 +1321,7 @@ impl SessionStore {
         validate_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for activity update"))?;
         session.metadata.updated_at = Utc::now();
         self.save_session_atomic(&session)?;
@@ -1320,7 +1377,7 @@ impl SessionStore {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for transcript update"))?;
         if looks_like_truncating_overwrite(&session.messages, &messages) {
             anyhow::bail!(
@@ -1359,7 +1416,7 @@ impl SessionStore {
         }
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for transcript CAS"))?;
         let current_revision = transcript_revision(&session.messages)?;
         if current_revision != expected_revision {
@@ -1394,7 +1451,7 @@ impl SessionStore {
         }
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for artifact update"))?;
         let session_id = session.metadata.id.clone();
         let now = Utc::now();
@@ -1438,7 +1495,7 @@ impl SessionStore {
         validate_scheduled_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for artifact append"))?;
         if session
             .artifacts
@@ -2666,6 +2723,18 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: text.into(),
                 cache_control: None,
+            }],
+        }
+    }
+
+    fn assistant_tool_use(id: &str) -> Message {
+        Message {
+            role: "assistant".into(),
+            content: vec![ContentBlock::ToolUse {
+                id: id.into(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "printf still-running"}),
+                caller: None,
             }],
         }
     }
@@ -3917,6 +3986,79 @@ mod tests {
             store.load(&session.metadata.id).expect("load").messages,
             messages
         );
+    }
+
+    #[test]
+    fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call() {
+        let (store, _guard) = isolated_store();
+        let session = store
+            .create_new("model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let messages = vec![assistant_tool_use("call-in-flight")];
+        store
+            .update_messages(&session.metadata.id, messages.clone())
+            .expect("persist in-flight call");
+
+        let loaded = store.load(&session.metadata.id).expect("snapshot load");
+
+        assert_eq!(loaded.messages, messages);
+        assert_eq!(loaded.metadata.message_count, 1);
+        assert!(!loaded.messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult { content, .. }
+                        if content.contains("crashed_and_repaired")
+                )
+            })
+        }));
+
+        let secondary = SessionStore::boot().expect("open secondary runtime store");
+        let secondary_loaded = secondary
+            .load(&session.metadata.id)
+            .expect("secondary snapshot load");
+        assert_eq!(secondary_loaded.messages, messages);
+        assert_eq!(secondary_loaded.metadata.message_count, 1);
+    }
+
+    #[test]
+    fn forkguard_boot_repairs_interrupted_tool_call_once() {
+        let (store, _guard) = isolated_store();
+        let session = store
+            .create_new("model".into(), None, std::env::temp_dir())
+            .expect("create");
+        store
+            .update_messages(
+                &session.metadata.id,
+                vec![assistant_tool_use("call-crashed")],
+            )
+            .expect("persist interrupted call");
+
+        let recovered = SessionStore::boot_for_process_startup().expect("recover on boot");
+        let first = recovered
+            .load(&session.metadata.id)
+            .expect("load recovered");
+        assert_eq!(first.messages.len(), 3);
+        assert_eq!(first.metadata.message_count, 3);
+        assert!(first.messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error: Some(true),
+                        ..
+                    } if tool_use_id == "call-crashed"
+                        && content.contains("crashed_and_repaired")
+                )
+            })
+        }));
+
+        let reopened = SessionStore::boot_for_process_startup().expect("recover twice");
+        let second = reopened.load(&session.metadata.id).expect("load twice");
+        assert_eq!(second.messages, first.messages);
+        assert_eq!(second.metadata.message_count, 3);
     }
 
     #[test]

@@ -18,6 +18,7 @@
     var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
     var hasChatItemForTool = context.hasChatItemForTool;
     var addSystemItem = context.addSystemItem;
+    var addAuthoritySyncNotice = context.addAuthoritySyncNotice;
     var timeStr = context.timeStr;
     var flushPendingTextBlock = context.flushPendingTextBlock;
     var flushAssistantMessageToHistory = context.flushAssistantMessageToHistory;
@@ -717,6 +718,9 @@
     });
     var doneBuffer = sid ? getBuffer(sid) : null;
     var requiresAuthorityReconcile = !isScheduledRunSession(sid);
+    var completedLocalTurn = !!(
+      requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned
+    );
     if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed is emitted before chat:done. A client that joins
       // at the terminal tail may not have seen an earlier turn event, so keep
@@ -779,7 +783,7 @@
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
-    if (requiresAuthorityReconcile && doneBuffer) {
+    if (requiresAuthorityReconcile && doneBuffer && !completedLocalTurn) {
       var finalAssistantMessage = null;
       for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
         if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
@@ -796,18 +800,35 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    } else if (completedLocalTurn) {
+      // The desktop owns this turn and Rust has already persisted its terminal
+      // transcript before emitting chat:done. Do not convert a completed local
+      // turn into a remote authority gate: a best-effort readback failure must
+      // never block the user's next local message.
+      doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = false;
+      doneBuffer.remoteTerminalSeen = false;
+      doneBuffer.remoteBaselineMessageCount = null;
+      doneBuffer.remoteBaselineTrusted = false;
+      doneBuffer.remoteExpectedAssistantKey = "";
+      doneBuffer.remoteCommittedRevision = "";
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
     refreshAuthoritativeTurnTimeline(sid);
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = requiresAuthorityReconcile ? await reconcileRemoteTurn(sid) : true;
+      var reconciled = requiresAuthorityReconcile && !completedLocalTurn
+        ? await reconcileRemoteTurn(sid)
+        : true;
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem(bt("desktopDoneSyncPending"));
+          addAuthoritySyncNotice(bt("desktopDoneSyncPending"));
         });
       }
       notify();

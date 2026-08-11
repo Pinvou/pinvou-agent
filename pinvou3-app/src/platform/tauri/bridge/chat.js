@@ -108,6 +108,12 @@
     addChatItem(item);
     notify();
   }
+  function addAuthoritySyncNotice(text) {
+    if (state.chatItems.some(function (item) {
+      return item && item.authoritySyncNotice;
+    })) return;
+    addSystemItem(text, { authoritySyncNotice: true });
+  }
   function compactPruneRollupText(count) {
     return bt("compactDone") + bt("compactAuto") + " " +
       bt("compactPruneMerged") + " ×" + count;
@@ -225,7 +231,9 @@
       turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice && !item.authoritySyncNotice;
+      });
       var uitem = {
         type: "user",
         text: displayText,
@@ -462,7 +470,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem(bt("remoteTurnSyncing"));
+      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
       return;
     }
     if (state.activeSessionId !== sid) return;
@@ -673,6 +681,7 @@
       hasChatItemForTool: hasChatItemForTool,
       isDuplicateArtifactCard: isDuplicateArtifactCard,
       addSystemItem: addSystemItem,
+      addAuthoritySyncNotice: addAuthoritySyncNotice,
       compactPruneRollupText: compactPruneRollupText,
       removeCompactionStartItem: removeCompactionStartItem,
       addOrMergePruneCompaction: addOrMergePruneCompaction,

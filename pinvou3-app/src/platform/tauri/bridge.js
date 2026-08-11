@@ -858,6 +858,7 @@
   var hasChatItemForTool = chatFeature.hasChatItemForTool;
   var isDuplicateArtifactCard = chatFeature.isDuplicateArtifactCard;
   var addSystemItem = chatFeature.addSystemItem;
+  var addAuthoritySyncNotice = chatFeature.addAuthoritySyncNotice;
   var compactPruneRollupText = chatFeature.compactPruneRollupText;
   var removeCompactionStartItem = chatFeature.removeCompactionStartItem;
   var addOrMergePruneCompaction = chatFeature.addOrMergePruneCompaction;
@@ -1790,7 +1791,8 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
-    addChatItem: addChatItem, addSystemItem: addSystemItem, timeStr: timeStr,
+    addChatItem: addChatItem, addSystemItem: addSystemItem,
+    addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,
     toolCallAlreadyFinished: toolCallAlreadyFinished,
     hasChatItemForTool: hasChatItemForTool,
@@ -1903,7 +1905,8 @@
 
   var interactionFeature = installBridgeFeature("interaction", {
     state: state, invoke: invoke, notify: notify, bt: bt,
-    addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr,
+    addSystemItem: addSystemItem, addAuthoritySyncNotice: addAuthoritySyncNotice,
+    addChatItem: addChatItem, timeStr: timeStr,
     runSyncOnSession: runSyncOnSession,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant,

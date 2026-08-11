@@ -18,6 +18,15 @@
 | 守护 | 21 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
+### 当前候选修复（已验证，尚未发布）
+
+- v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
+- 底座候选为 `Pinvou/CodeWhale#11`，commit `da00841ff42d6b6c9edd8c955effe3f5ae0b91df`，基于当前 `pinvou3-clean` 公开 head。
+- T1 新增无修复副作用的 `load_session_snapshot` 与显式 `recover_session_for_resume`。Pinvou 的运行时读改写统一使用前者，仅在应用进程启动、任何 Engine 接管会话前执行后者，并把恢复结果原子落盘。
+- 前端仅对真正的跨端回合保留 revision 对账门禁；本地 `chat:done` 直接释放下一轮发送，落盘读回异常不得阻塞普通本地对话，跨端未收敛提示按会话去重。
+- 候选新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
+- 本节候选改动尚未计入上方公开维护分支 head、drift 或固定标签；已完成自动测试和桌面手工验证，后续再走 CodeWhale 上游贡献与 Pinvou 发布流程。
+
 ### 软上限评估
 
 总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：
@@ -32,17 +41,18 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commit**：`331cb1594688c723d98499d9ca11f05af291b599`
-- **规模**：9 文件，`+272/-27`
-- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`。
+- **公开 commit**：`331cb1594688c723d98499d9ca11f05af291b599`；当前候选为 `da00841ff42d6b6c9edd8c955effe3f5ae0b91df`（`Pinvou/CodeWhale#11`）。
+- **公开规模**：9 文件，`+272/-27`；候选规模见上节，不计入公开 drift。
+- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
   - 提供只读持久化 worker 投影，供 live 宿主结合自身进程纪元判断状态；恢复入口仍按 v0.9.5 原语把孤儿 worker 收敛为 interrupted。
   - 提供 opaque resolved route、显式 route limits 和 embedding host route override。
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
+  - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
 - **边界**：不实现 Pinvou 产品工具策略，不包含三省六部完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、父仓 resolved-route 和 compaction 合约测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`，以及父仓启动恢复、resolved-route 和 compaction 合约测试。
 
 ### T2：工具兼容与命令执行安全
 
