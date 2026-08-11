@@ -2660,6 +2660,64 @@ mod tests {
         );
     }
 
+    /// PR #210 回归：云端模型不再被全局 DEEPSEEK_MAX_OUTPUT_TOKENS 钉死 24576。
+    /// clean env（无该 env）下云端 SavedModel.max_output_tokens 为 None →
+    /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
+    /// 本地 vLLM 的 24576 由 is_local_vllm 分支显式携带（不依赖 env），两者都要锁。
+    /// 同时锁"env 残留也不影响云端"——防止 boot/release 后续重新注入该变量
+    /// 把云端打回 24576（对应 CHANGES_REQUESTED：clean env 云端 effective cap 回归）。
+    #[test]
+    fn forkguard_cloud_route_output_not_pinned_by_global_env() {
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
+        //    时前端存 null）→ route_limits.output_tokens=None → 底座 64K/厂商能力兜底。
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "",
+        );
+        let cloud_limits = cloud.route_limits_for_model("deepseek-v4-pro");
+        let cloud_output = cloud_limits.as_ref().and_then(|l| l.output_tokens);
+        assert_eq!(
+            cloud_output, None,
+            "clean env 下云端 route_limits.output_tokens 必须为 None（不声明，落底座兜底）"
+        );
+
+        // B. 本地 vLLM：is_local_vllm 分支显式携带 24K 预算，不依赖 env → 仍 24576。
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
+        let local_limits = local.route_limits_for_model(&local.model());
+        assert_eq!(
+            local_limits.as_ref().and_then(|l| l.output_tokens),
+            Some(24_576),
+            "本地 vLLM 仍显式携带 24K 预算（不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env）"
+        );
+
+        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）也不影响云端：
+        //    品悟 route_limits 的云端分支不读该 env，只有底座在无 route 声明时才读。
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
+        assert_eq!(
+            cloud_limits_env.as_ref().and_then(|l| l.output_tokens),
+            None,
+            "env 残留 24576 不得把云端 route 打回 24576（品悟不读该 env）"
+        );
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+    }
+
     /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
     /// 本地引擎只要在 SavedModel 声明能力，都必须走同一预算链。
     #[test]

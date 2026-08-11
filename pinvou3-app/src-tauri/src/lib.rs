@@ -1123,3 +1123,27 @@ mod web_template_seed {
         assert!(crate::platform::paths::web_template_dir().ends_with("web-template"));
     }
 }
+
+#[cfg(test)]
+mod release_env_defaults_guard {
+    /// PR #210 守卫：release/boot 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS。
+    /// 该 env 会被底座 effective_max_output_tokens() 优先读取，一旦回归会重新把
+    /// 所有模型（含云端）输出上限钉死 24576——正是本 PR 移除的根因。此守卫在
+    /// CHANGES_REQUESTED 后新增：clean env 云端落底座 64K 兜底的前提，就是
+    /// release 安装包启动路径（.deb 双击等）不再注入该变量。
+    #[test]
+    fn release_env_defaults_must_not_pin_global_output_cap() {
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "DEEPSEEK_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 DEEPSEEK_MAX_OUTPUT_TOKENS（PR #210 移除全局注入）"
+        );
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "PINVOU3_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 PINVOU3_MAX_OUTPUT_TOKENS（品悟侧上限仅经 prefs/route 携带）"
+        );
+    }
+}
