@@ -456,6 +456,10 @@ impl Pinvou3Bridge {
             }
         }
         // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
+        // ⚠️ 顺序约束：先于下方 connector retain——若未来某模式的 extra_hidden
+        // 恰好含 plain scope 连接器工具名，会被 retain 误删；当前 code 档案的
+        // extra_hidden（mcp_pinvou3_present_artifact）与连接器禁用集无交集，无实际
+        // 影响，但新增 extra_hidden 条目时应避开连接器全名（或先做 retain 再追加）。
         for hidden in resolved.extra_hidden_tools {
             if !tools.iter().any(|tool| tool == hidden) {
                 tools.push(hidden.clone());
@@ -475,6 +479,10 @@ impl Pinvou3Bridge {
                 }
             }
             // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+            // ⚠️ 设计耦合：load_skill 空目录检查绑定在「scope 非 plain」分支内——
+            // 新增 scope=plain 但需要该检查的模式会静默漏掉（当前仅 plain/code，
+            // code 恒走此分支，行为正确）。如需解耦，应把 load_skill 检查移出
+            // scope 分支，改由独立差量（如档案 tools.exclude 或独立标志）驱动。
             if crate::features::assistant::skill_materialization::session_skills_is_empty(
                 session_id,
             ) {
@@ -3604,6 +3612,65 @@ mod tests {
                 "整形应幂等(不重复追加): {hidden}"
             );
         }
+    }
+
+    /// 能力档案 include 通道（fork ②）注入：`EngineConfig.hidden_tools` 按会话
+    /// 计算 = 底座隐藏常量 − 档案 tools.include，仅当 include 非空时注入 Some。
+    /// - plain：include 为空 → None（回退底座常量，零影响）；
+    /// - code：include 非空 → Some(常量 − include)，放出的工具（v1：git_status）
+    ///   不在注入集内、其余常量项保留；
+    /// - 前提守护：放出的工具必须真实存在于底座常量（否则 include 静默失效，
+    ///   测试即失败）。
+    #[test]
+    fn engine_config_injects_hidden_tools_per_capability_profile() {
+        use crate::features::assistant::session_policy::SessionPolicy;
+        use deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS;
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-hidden-tools-inject-{}-{:p}",
+            std::process::id(),
+            &std::env::temp_dir()
+        ));
+        let mut bridge = fixture_bridge();
+        let plain = bridge.build_engine_config_for_session_at("sess-plain", root.join("plain"));
+        assert!(
+            plain.hidden_tools.is_none(),
+            "plain 档案 include 为空 → 不注入(回退底座常量): {:?}",
+            plain.hidden_tools
+        );
+
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        let code = bridge.build_engine_config_for_session_at("sess-code", root.join("code"));
+        let resolved = SessionPolicy::for_mode(SessionMode::Code).resolve();
+        assert!(
+            !resolved.tool_include.is_empty(),
+            "code 档案 v1 必须至少放出一个工具"
+        );
+        let injected = code
+            .hidden_tools
+            .expect("code 档案 include 非空 → 必须注入 Some");
+        for name in resolved.tool_include {
+            assert!(
+                PINVOU3_HIDDEN_TOOLS.contains(&name.as_str()),
+                "include 工具必须真实存在于底座隐藏常量(否则放出静默失效): {name}"
+            );
+            assert!(
+                !injected.iter().any(|hidden| hidden == name),
+                "include 放出的工具不应在注入隐藏集内: {name}; 注入集={injected:?}"
+            );
+        }
+        // 其余常量项保留：注入集 = 常量 − include（逐项校验，防多删/漏删）。
+        for constant in PINVOU3_HIDDEN_TOOLS {
+            let included = resolved.tool_include.iter().any(|name| name == constant);
+            assert_eq!(
+                injected.iter().filter(|hidden| *hidden == constant).count(),
+                usize::from(!included),
+                "注入集必须与「常量 − include」一致: {constant}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
