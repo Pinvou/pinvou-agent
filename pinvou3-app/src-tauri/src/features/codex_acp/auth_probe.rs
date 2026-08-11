@@ -153,7 +153,7 @@ impl AcpPool {
 }
 
 fn codex_authenticated(codex: &Path) -> bool {
-    if nonempty_env("OPENAI_API_KEY") || deepseek_tui::oauth::credentials_present() {
+    if nonempty_env("OPENAI_API_KEY") || codex_oauth_credentials_present() {
         return true;
     }
     // 第三方 Provider 的 key 只注入被托管的 Codex 子进程，状态探测进程
@@ -168,6 +168,43 @@ fn codex_authenticated(codex: &Path) -> bool {
         }
     }
     cli_status_success(codex, &["login", "status"])
+}
+
+/// 等价于 CodeWhale 旧版 oauth 模块的登录态探测：识别 OpenAI Codex 官方
+/// OAuth 登录是否已就绪（进程级 token 环境变量，或 auth.json 中的有效
+/// access token）。新版 CodeWhale 将该模块私有化并改为 grant 授权读取，
+/// 这里在应用侧自包含实现，探测语义与旧版一致（仅存在性检查，不刷新）。
+fn codex_oauth_credentials_present() -> bool {
+    if ["OPENAI_CODEX_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN"]
+        .into_iter()
+        .any(nonempty_env)
+    {
+        return true;
+    }
+    let home = crate::platform::os::user_home_dir();
+    let auth_file = std::env::var("OPENAI_CODEX_AUTH_FILE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("CODEX_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("auth.json")
+        });
+    let Ok(raw) = std::fs::read_to_string(auth_file) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    value
+        .get("tokens")
+        .and_then(|tokens| tokens.get("openai"))
+        .and_then(|openai| openai.get("access_token"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|token| !token.trim().is_empty())
 }
 
 fn claude_authenticated(claude: &Path) -> bool {
