@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 
-use crate::core::mode_state::SessionModeState;
+use crate::features::sessions::SessionModeState;
 
 use super::SessionStore;
 

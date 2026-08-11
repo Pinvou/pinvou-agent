@@ -30,7 +30,6 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
-use crate::core::mode_state::{SerializableMode, SessionModeState};
 pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
 use crate::features::assistant::engine_support::{
     apply_scheduled_turn_policy, maybe_notify_task_completed, persist_successful_tool_artifact,
@@ -45,6 +44,7 @@ use crate::features::sessions::{
     transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
     ScheduledTokenAccounting, SessionStore,
 };
+use crate::features::sessions::{SerializableMode, SessionModeState};
 
 /// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
 /// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
@@ -1775,7 +1775,7 @@ mod tool_result_projection_tests {
 #[cfg(test)]
 mod turn_lifecycle_tests {
     use super::{EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnLifecycle};
-    use crate::core::mode_state::SessionModeState;
+    use crate::features::sessions::SessionModeState;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
     use std::sync::Arc;
@@ -2617,8 +2617,8 @@ mod scheduled_turn_tests {
 #[allow(clippy::await_holding_lock)]
 mod live_tests {
     use super::*;
-    use crate::core::mode_state::SerializableMode;
     use crate::features::monitor::SelfMetrics;
+    use crate::features::sessions::SerializableMode;
 
     /// RAII 恢复 env 原值(本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_* env,
     /// 须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时污染)。

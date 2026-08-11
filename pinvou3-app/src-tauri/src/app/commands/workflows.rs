@@ -122,7 +122,7 @@ pub async fn start_skill_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
-    use crate::core::mode_state::ActiveSkillBinding;
+    use crate::features::sessions::ActiveSkillBinding;
     use crate::platform::paths;
     use deepseek_tui::skills::SkillRegistry;
 
@@ -235,7 +235,7 @@ pub async fn start_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<StartWorkflowResult, String> {
-    use crate::core::mode_state::ActiveSkillBinding;
+    use crate::features::sessions::ActiveSkillBinding;
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
