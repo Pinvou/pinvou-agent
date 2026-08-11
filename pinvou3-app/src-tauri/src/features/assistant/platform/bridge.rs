@@ -1778,7 +1778,6 @@ impl Pinvou3Bridge {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
         self.build_send_message_op_with_hooks(
@@ -1787,7 +1786,6 @@ impl Pinvou3Bridge {
             mode,
             persona_reminder,
             restrict_tools,
-            input,
             self.build_hook_executor(),
         )
     }
@@ -1802,7 +1800,6 @@ impl Pinvou3Bridge {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         workspace: &std::path::Path,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
         self.build_send_message_op_with_hooks(
@@ -1811,7 +1808,6 @@ impl Pinvou3Bridge {
             mode,
             persona_reminder,
             restrict_tools,
-            input,
             self.build_multi_agent_hook_executor(workspace),
         )
     }
@@ -1835,7 +1831,6 @@ impl Pinvou3Bridge {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
         hook_executor: Arc<HookExecutor>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
@@ -1877,32 +1872,14 @@ impl Pinvou3Bridge {
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
-        // Native 图片输入(阶段 D):`<system-reminder>` 并进结构化 Text block,
-        // 保证模型在结构化消息里同样收到 per-turn reminder。Text block 与
-        // Op.content 保持逐字节一致——下游 transcript sanitize 以 content 为
-        // 匹配键(engine.rs `send_reserved_turn_op`),不一致会导致持久化时
-        // 引擎注入内容无法替换为 UI 展示文本。
-        let input = input.map(|mut input| {
-            match input.blocks.first_mut() {
-                Some(deepseek_tui::core::ops::UserInputBlock::Text { text }) => {
-                    *text = full_content.clone();
-                }
-                _ => input.blocks.insert(
-                    0,
-                    deepseek_tui::core::ops::UserInputBlock::Text {
-                        text: full_content.clone(),
-                    },
-                ),
-            }
-            input
-        });
         let model = self.model();
         // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
         let (auto_approve, approval_mode) = policy.approval_params();
         Ok(Op::SendMessage {
             content: full_content,
-            // Native 路径携结构化图片块(设计 §9.2);其余路径为 None,底座走纯文本。
-            input,
+            // v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在
+            // content 里,由底座 image_attach 展开为 ImageUrl 块并按其 route
+            // 能力剥离;无需结构化 input 字段。
             mode,
             route: Box::new(self.resolve_runtime_route_for_model(&model)?),
             compaction: Box::new(self.compaction_config_for_model(&model)),
@@ -2871,63 +2848,29 @@ mod tests {
         );
     }
 
-    /// Native(阶段 D):`<system-reminder>` 必须并进结构化 Text block,
-    /// 且 Text block 与 Op.content 逐字节一致(transcript sanitize 的匹配键);
-    /// LocalImage 块原样透传。
+    /// v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在 content,
+    /// reminder 直接拼在 content 前缀;标记由底座 image_attach 展开,bridge 不做
+    /// 结构化处理。此处验证 reminder 前缀拼接与标记行透传。
     #[test]
-    fn build_send_message_op_merges_reminder_into_structured_input() {
-        use deepseek_tui::core::ops::{UserInputBlock, UserMessageInput};
-
+    fn build_send_message_op_preserves_attach_marker_in_content() {
         let bridge = fixture_bridge();
-        let image = UserInputBlock::LocalImage {
-            relative_path: std::path::PathBuf::from("attachments/shot.png"),
-            mime_type: "image/png".to_string(),
-            display_name: "shot.png".to_string(),
-        };
         let op = bridge
             .build_send_message_op(
-                "看看这张图".to_string(),
+                "sess-plain",
+                "看看这张图\n[Attached image: /tmp/shot.png]".to_string(),
                 AppMode::Yolo,
                 None,
                 false,
-                Some(UserMessageInput {
-                    blocks: vec![
-                        UserInputBlock::Text {
-                            text: "看看这张图".to_string(),
-                        },
-                        image.clone(),
-                    ],
-                }),
             )
             .expect("resolve test route");
-        let Op::SendMessage { content, input, .. } = op else {
+        let Op::SendMessage { content, .. } = op else {
             panic!("期望 SendMessage");
         };
         assert!(content.contains("<system-reminder>"));
-        assert!(content.ends_with("看看这张图"));
-        let input = input.expect("Native 路径必须携带结构化 input");
-        assert_eq!(input.blocks.len(), 2, "Text + 一张图");
-        match &input.blocks[0] {
-            UserInputBlock::Text { text } => assert_eq!(
-                text, &content,
-                "reminder 必须并进 Text block 且与 Op.content 一致"
-            ),
-            other => panic!("首块应为 Text,得到 {other:?}"),
-        }
-        assert_eq!(input.blocks[1], image, "LocalImage 块原样透传");
-    }
-
-    /// 无结构化 input(纯文本/Fallback 路径)时 Op.input 保持 None,行为零变化。
-    #[test]
-    fn build_send_message_op_without_input_stays_text_only() {
-        let bridge = fixture_bridge();
-        let op = bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
-            .expect("resolve test route");
-        let Op::SendMessage { input, .. } = op else {
-            panic!("期望 SendMessage");
-        };
-        assert!(input.is_none());
+        assert!(
+            content.contains("[Attached image: /tmp/shot.png]"),
+            "官方标记行必须原样透传,得到:\n{content}"
+        );
     }
 
     #[test]
@@ -3295,7 +3238,7 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("sess-plain", "用户消息".to_string(), mode, None, false, None)
+            .build_send_message_op("sess-plain", "用户消息".to_string(), mode, None, false)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -3326,8 +3269,7 @@ mod tests {
                 AppMode::Yolo,
                 Some(persona.clone()),
                 false,
-                None,
-            )
+                            )
             .expect("resolve test route");
         let content = match op {
             Op::SendMessage { content, .. } => content,
@@ -3339,7 +3281,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -3359,7 +3301,6 @@ mod tests {
                 AppMode::Yolo,
                 None,
                 restrict,
-                None,
             )
             .expect("resolve test route")
         {
@@ -3829,7 +3770,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("sess-plain", "test".into(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "test".into(), AppMode::Yolo, None, false)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -3939,7 +3880,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -3951,7 +3892,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "list dir".into(), AppMode::Plan, None, false, None)
+            .build_send_message_op("sess-plain", "list dir".into(), AppMode::Plan, None, false)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -3972,7 +3913,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false, None)
+            .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false)
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(

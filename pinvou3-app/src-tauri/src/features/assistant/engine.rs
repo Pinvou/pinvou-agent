@@ -520,20 +520,10 @@ impl TurnLifecycle {
             }) else {
                 continue;
             };
-            // Native 图片输入(阶段 D):LocalImage 块是持久化的附件引用(设计 §10.1,
-            // 只存 workspace 相对路径,不含 Base64),不是引擎注入内容——必须随
-            // display message 保留,否则恢复/重建后图片上下文与重试物化丢失(§10.2)。
-            let mut sanitized = rule.display_message.clone();
-            sanitized.content.extend(
-                messages[index]
-                    .content
-                    .iter()
-                    .filter(|block| {
-                        matches!(block, deepseek_tui::models::ContentBlock::LocalImage { .. })
-                    })
-                    .cloned(),
-            );
-            messages[index] = sanitized;
+            // v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行进入
+            // 文本、由底座展开为 ImageUrl 块;display message 与引擎消息的
+            // 文本部分一致(含标记行),图片块归引擎历史管理,无需在此保留。
+            messages[index] = rule.display_message.clone();
             if active_reservation_id == Some(rule.reservation_id) {
                 active_rule_matched = true;
             }
@@ -1132,13 +1122,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op = self.build_interactive_send_message_op(
-            content,
-            mode,
-            persona_reminder,
-            restrict_tools,
-            None,
-        )?;
+        let op = self.build_interactive_send_message_op(content, mode, persona_reminder, restrict_tools)?;
         self.send_turn_op(op).await
     }
 
@@ -1149,15 +1133,8 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         reservation: TurnReservation,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<()> {
-        let op = self.build_interactive_send_message_op(
-            content,
-            mode,
-            persona_reminder,
-            restrict_tools,
-            input,
-        )?;
+        let op = self.build_interactive_send_message_op(content, mode, persona_reminder, restrict_tools)?;
         self.send_reserved_turn_op(op, reservation).await
     }
 
@@ -1167,7 +1144,6 @@ impl AppEngine {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<Op> {
         if self.multi_agent_enabled {
             self.bridge.build_multi_agent_send_message_op(
@@ -1177,7 +1153,6 @@ impl AppEngine {
                 persona_reminder,
                 restrict_tools,
                 &self.workspace,
-                input,
             )
         } else {
             self.bridge.build_send_message_op(
@@ -1186,7 +1161,6 @@ impl AppEngine {
                 mode,
                 persona_reminder,
                 restrict_tools,
-                input,
             )
         }
     }
@@ -1214,8 +1188,6 @@ impl AppEngine {
             profile.execution_mode().to_app_mode(),
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
-            // 定时会话保持纯文本路径(图片走 image_analyze 工具兜底),不携结构化块。
-            None,
         )?;
         let route = self
             .bridge
@@ -3510,7 +3482,7 @@ mod turn_lifecycle_tests {
     /// 必须保留 LocalImage 附件引用块(设计 §10.1/§10.2)——持久化只存引用,
     /// 恢复/重建后靠它重新物化;turn_meta 等其余注入块照旧丢弃。
     #[test]
-    fn sanitize_preserves_local_image_blocks() {
+    fn sanitize_replaces_injected_prompt_with_display_text() {
         let lifecycle = Arc::new(TurnLifecycle::default());
         let mut reservation = lifecycle.reserve().expect("reserve");
         reservation
@@ -3525,16 +3497,7 @@ mod turn_lifecycle_tests {
             )
             .expect("actual prompt");
 
-        let mut engine_message = engine_user("<system-reminder>r</system-reminder>\n\n看看这张图");
-        engine_message.content.insert(
-            1,
-            ContentBlock::LocalImage {
-                relative_path: std::path::PathBuf::from("attachments/shot.png"),
-                mime_type: "image/png".to_string(),
-                display_name: "shot.png".to_string(),
-                byte_size: 7,
-            },
-        );
+        let engine_message = engine_user("<system-reminder>r</system-reminder>\n\n看看这张图");
         let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_message]);
         assert!(matched, "raw prompt must match the registered rule");
         assert_eq!(sanitized.len(), 1);
@@ -3547,15 +3510,9 @@ mod turn_lifecycle_tests {
             }),
             "display text replaces the injected prompt"
         );
-        assert!(
-            matches!(
-                content.get(1),
-                Some(ContentBlock::LocalImage { relative_path, .. })
-                    if relative_path == &std::path::PathBuf::from("attachments/shot.png")
-            ),
-            "LocalImage reference must survive sanitization, got: {content:?}"
-        );
-        assert_eq!(content.len(), 2, "turn_meta block stays dropped");
+        // v0.9.5 官方方案:图片由底座展开为 ImageUrl 块并归引擎历史管理,
+        // display message 不携带图片块(标记行已含在文本中)。
+        assert_eq!(content.len(), 1, "turn_meta block stays dropped");
         drop(reservation);
     }
 
@@ -3763,7 +3720,6 @@ mod scheduled_turn_tests {
         let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
-            input: None,
             mode: AppMode::Yolo,
             route: Box::new(
                 deepseek_tui::route_runtime::resolve_runtime_route(

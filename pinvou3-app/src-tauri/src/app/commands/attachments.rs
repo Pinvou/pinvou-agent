@@ -447,49 +447,6 @@ pub fn build_message_with_attachments(
 // 原生图片输入(设计 §9.1/§9.2,阶段 D)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 单个附件的结构化记录(设计 §9.1)。图片的 `relative_path` 是暂存后的
-/// workspace 相对路径;`mime_type` 为扩展名推断的声明值,发送前由底座
-/// 按真实文件字节复核(魔数不符即拒绝,设计 §11.5)。
-#[derive(Debug, Clone)]
-pub struct AttachmentRecord {
-    pub name: String,
-    pub kind: String,
-    pub mime_type: Option<String>,
-    pub byte_size: u64,
-    pub relative_path: Option<String>,
-}
-
-/// 结构化附件准备结果(设计 §9.1):`display_text` 用于 UI/timeline,
-/// `input_blocks` 只用于 Engine 运行。
-#[derive(Debug, Clone)]
-pub struct PreparedUserMessage {
-    pub display_text: String,
-    pub input_blocks: Vec<deepseek_tui::core::ops::UserInputBlock>,
-    pub attachments: Vec<AttachmentRecord>,
-    pub image_mode: crate::features::assistant::image_capability::ImageInputMode,
-}
-
-impl PreparedUserMessage {
-    /// Text block 内容(命令层在此基础上继续拼 skill/persona/知识库引导)。
-    pub(super) fn text_segment(&self) -> &str {
-        match self.input_blocks.first() {
-            Some(deepseek_tui::core::ops::UserInputBlock::Text { text }) => text,
-            _ => "",
-        }
-    }
-
-    /// 引导文本 prepend 完成后用最终文本刷新 Text block(图片块保持不动)。
-    /// 无 Text block 时在头部插入,保证 reminder/引导文本仍能下发。
-    pub(super) fn replace_text_segment(&mut self, text: String) {
-        match self.input_blocks.first_mut() {
-            Some(deepseek_tui::core::ops::UserInputBlock::Text { text: slot }) => *slot = text,
-            _ => self
-                .input_blocks
-                .insert(0, deepseek_tui::core::ops::UserInputBlock::Text { text }),
-        }
-    }
-}
-
 /// UI/timeline 展示文本:附件名以 📎 拼接(图片/文件同式)。
 /// chat.rs 的 Fallback/无图路径与 Native 路径共用,保持两处不漂移。
 pub(super) fn attachment_display_text(
@@ -511,20 +468,21 @@ pub(super) fn attachment_display_text(
     }
 }
 
-/// Native 路径(设计 §9.2)消息构造:图片暂存后形成 LocalImage 引用块
-/// (保持用户选择顺序),**不注入**"看不到图"硬规则、不引导 image_analyze;
-/// 非图片附件沿用现有 token 预算分流文本段(与 build_message_with_attachments_in_dir
-/// 同规则)。图片段不带 workspace 外绝对路径(设计 §10.1:原始路径不进模型消息)。
-/// 任一图片暂存失败即 Err——不静默降级为纯文本(设计 §10.2)。
+/// Native 路径(v0.9.5 底座官方标记方案)消息构造:图片暂存到 workspace 后
+/// 在消息文本中生成 `[Attached image: <path>]` 标记行,由底座
+/// `image_attach::expand_attachment_blocks` 在构建时展开为
+/// `ContentBlock::ImageUrl`(data URL),并按 route 能力在请求前剥离。
+/// **不注入**"看不到图"硬规则、不引导 image_analyze;非图片附件沿用现有
+/// token 预算分流文本段(与 build_message_with_attachments_in_dir 同规则)。
+/// 标记使用暂存后的绝对路径(引擎以主进程 cwd 读文件,相对路径不可靠),
+/// 不带用户原始路径(设计 §10.1)。任一图片暂存失败即 Err——不静默降级
+/// 为纯文本(设计 §10.2)。
 pub(super) fn prepare_native_user_message_in_dir(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
     attachment_dir: &str,
-) -> Result<PreparedUserMessage, String> {
-    let display_text = attachment_display_text(&text, &attachments);
-    let mut records = Vec::with_capacity(attachments.len());
-    let mut image_blocks = Vec::new();
+) -> Result<String, String> {
     let mut inline_spent: u32 = 0;
     let mut segment = String::new();
     if !text.trim().is_empty() {
@@ -539,7 +497,7 @@ pub(super) fn prepare_native_user_message_in_dir(
     for a in &attachments {
         if a.kind == "image" {
             // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
-            // LocalImage 的 relative_path 只来自暂存结果,不接受前端直给路径(设计 §11)。
+            // 标记路径只来自暂存结果,不接受前端直给路径(设计 §11)。
             let relative =
                 stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
                     .ok_or_else(|| {
@@ -548,25 +506,13 @@ pub(super) fn prepare_native_user_message_in_dir(
                             a.basename
                         )
                     })?;
-            let ext = a.basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-            let mime_type = crate::features::files::file_ingest::image_mime(ext).to_string();
+            let abs = workspace.join(&relative);
             segment.push_str(&format!(
                 "### {} (image, {} bytes)\n",
                 a.basename, a.byte_size
             ));
-            segment.push_str("🖼 图片内容已随本消息原生提供,你可以直接看到。\n\n");
-            image_blocks.push(deepseek_tui::core::ops::UserInputBlock::LocalImage {
-                relative_path: std::path::PathBuf::from(&relative),
-                mime_type: mime_type.clone(),
-                display_name: a.basename.clone(),
-            });
-            records.push(AttachmentRecord {
-                name: a.basename.clone(),
-                kind: a.kind.clone(),
-                mime_type: Some(mime_type),
-                byte_size: a.byte_size,
-                relative_path: Some(relative),
-            });
+            // 官方标记:底座构建消息时按行解析并展开为 ImageUrl 块。
+            segment.push_str(&format!("[Attached image: {}]\n\n", abs.display()));
             continue;
         }
         segment.push_str(&format!(
@@ -603,29 +549,17 @@ pub(super) fn prepare_native_user_message_in_dir(
                     workspace,
                     attachment_dir,
                     attachment_dir != "attachments",
+                    // Native 分支图片/文件都暂存到执行根,落盘根与引擎 cwd 一致,相对引用。
+                    false,
                 );
             }
         } else if let Some(warning) = &a.warning {
             segment.push_str(&format!("⚠️ {warning}\n"));
         }
         segment.push('\n');
-        records.push(AttachmentRecord {
-            name: a.basename.clone(),
-            kind: a.kind.clone(),
-            mime_type: None,
-            byte_size: a.byte_size,
-            relative_path: None,
-        });
     }
     if !attachments.is_empty() {
         segment.push_str("---\n");
     }
-    let mut input_blocks = vec![deepseek_tui::core::ops::UserInputBlock::Text { text: segment }];
-    input_blocks.extend(image_blocks);
-    Ok(PreparedUserMessage {
-        display_text,
-        input_blocks,
-        attachments: records,
-        image_mode: crate::features::assistant::image_capability::ImageInputMode::Native,
-    })
+    Ok(segment)
 }

@@ -161,8 +161,6 @@ pub async fn accept_plan(
             SerializableMode::Yolo.to_app_mode(),
             false,
             reservation,
-            // accept_plan 无附件,走纯文本路径。
-            None,
         )
         .await
     {

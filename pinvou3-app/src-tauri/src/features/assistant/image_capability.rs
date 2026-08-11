@@ -104,23 +104,6 @@ fn builtin_verified_supports_image(model: &str) -> bool {
         .any(|entry| normalized.contains(entry))
 }
 
-/// 底座模型目录查询:条目存在且输入模态含 `image` 时为 true(设计 §6.3 第②级)。
-/// 只用于下 Supported 结论;命中但不含 image 一律返回 false 由调用方继续下落,
-/// 不用目录的否定标记否决(目录对 kimi-k2.7-code、claude-opus-4-8 等标 text-only
-/// 与实际部署可能不符)。
-fn catalog_declares_image_input(model: &str) -> bool {
-    let normalized = model.trim();
-    if normalized.is_empty() {
-        return false;
-    }
-    deepseek_tui::model_catalog::resolved_entry(normalized).is_some_and(|entry| {
-        entry
-            .modalities
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case("image"))
-    })
-}
-
 /// 解析一条 SavedModel 的生效图片输入能力(优先级见模块头注释)。
 pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapability {
     // ① 用户显式覆盖优先于一切自动判断。
@@ -129,10 +112,9 @@ pub fn effective_image_capability(model: &SavedModel) -> EffectiveImageCapabilit
         ImageCapabilityOverride::Disabled => return EffectiveImageCapability::Unsupported,
         ImageCapabilityOverride::Auto => {}
     }
-    // ② 底座模型目录 modalities 含 image。
-    if catalog_declares_image_input(&model.model) {
-        return EffectiveImageCapability::Supported;
-    }
+    // ②(v0.9.5 起移除)底座 model_catalog 不再公开,目录级 modalities 查询
+    // 不可用;模型目录的 image 判定由底座 image_attach::strip_images_when_unsupported
+    // 按 route 能力在请求前执行,父仓不再重复判定。
     // ③ 内置已验证能力表。
     if builtin_verified_supports_image(&model.model) {
         return EffectiveImageCapability::Supported;
@@ -166,8 +148,9 @@ pub fn acp_model_image_capability(
     {
         return effective_image_capability(saved);
     }
-    // wire model 未命中 SavedModel:与普通会话同一规则,先查底座模型目录再落内置表。
-    if catalog_declares_image_input(model_id) || builtin_verified_supports_image(model_id) {
+    // wire model 未命中 SavedModel:与普通会话同一规则,落内置已验证表
+    // (v0.9.5 起底座 model_catalog 不再公开,目录级判定由底座请求前剥离承担)。
+    if builtin_verified_supports_image(model_id) {
         EffectiveImageCapability::Supported
     } else {
         EffectiveImageCapability::Unknown

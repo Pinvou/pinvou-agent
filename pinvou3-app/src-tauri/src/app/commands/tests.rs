@@ -1435,13 +1435,12 @@ fn mk_image_attachment(
     }
 }
 
-/// Native: 文字 + 多图 + 文本附件 → Text block 在前、LocalImage 块按用户
-/// 选择顺序在后;不注入"看不到图"硬规则、不引导 image_analyze;文本附件
-/// markdown 内联行为与 Fallback 路径一致。
+/// Native(v0.9.5 官方标记方案):文字 + 多图 + 文本附件 → 消息文本含图片
+/// `[Attached image: <path>]` 标记行(按用户选择顺序);不注入"看不到图"
+/// 硬规则、不引导 image_analyze;文本附件 markdown 内联行为与 Fallback
+/// 路径一致;标记路径只来自暂存结果(不接受前端直给路径)。
 #[test]
-fn native_image_message_builds_structured_blocks_in_order() {
-    use deepseek_tui::core::ops::UserInputBlock;
-
+fn native_image_message_builds_marker_lines_in_order() {
     let tmp = std::env::temp_dir().join(format!("pinvou3-native-test-{}", std::process::id()));
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
@@ -1451,7 +1450,7 @@ fn native_image_message_builds_structured_blocks_in_order() {
     std::fs::write(&src_b, b"\xff\xd8\xfffake-b").expect("写假 jpg");
     let text_attachment = mk_attachment("text", "notes.txt", 2, 10);
 
-    let prepared = prepare_native_user_message_in_dir(
+    let segment = prepare_native_user_message_in_dir(
         "这几张图和笔记说明了什么？".to_string(),
         vec![
             mk_image_attachment("a.png", &src_a, 15),
@@ -1463,73 +1462,36 @@ fn native_image_message_builds_structured_blocks_in_order() {
     )
     .expect("Native 构造应成功");
 
-    // 块顺序: Text 在前,图片按用户选择顺序在后。
-    assert_eq!(prepared.input_blocks.len(), 3);
-    let text_segment = prepared.text_segment();
-    assert!(text_segment.contains("这几张图和笔记说明了什么？"));
+    assert!(segment.contains("这几张图和笔记说明了什么？"));
     assert!(
-        !text_segment.contains("看不到这张图") && !text_segment.contains("image_analyze"),
-        "Native 不得注入 image_analyze 硬规则提示,得到:\n{text_segment}"
+        !segment.contains("看不到这张图") && !segment.contains("image_analyze"),
+        "Native 不得注入 image_analyze 硬规则提示,得到:\n{segment}"
     );
     assert!(
-        !text_segment.contains(src_a.to_string_lossy().as_ref()),
+        !segment.contains(src_a.to_string_lossy().as_ref()),
         "图片的 workspace 外绝对路径不得进模型消息(设计 §10.1)"
     );
     assert!(
-        text_segment.contains("### a.png (image, 15 bytes)")
-            && text_segment.contains("### b.jpg (image, 11 bytes)"),
+        segment.contains("### a.png (image, 15 bytes)")
+            && segment.contains("### b.jpg (image, 11 bytes)"),
         "附件清单应保留图片条目"
     );
     assert!(
-        text_segment.contains("row-1,value-1"),
+        segment.contains("row-1,value-1"),
         "文本附件 markdown 应照旧内联"
     );
-    match &prepared.input_blocks[1] {
-        UserInputBlock::LocalImage {
-            relative_path,
-            mime_type,
-            display_name,
-        } => {
-            assert_eq!(relative_path, &PathBuf::from("attachments/a.png"));
-            assert_eq!(mime_type, "image/png");
-            assert_eq!(display_name, "a.png");
-        }
-        other => panic!("第 2 块应为 LocalImage,得到 {other:?}"),
-    }
-    match &prepared.input_blocks[2] {
-        UserInputBlock::LocalImage {
-            relative_path,
-            mime_type,
-            ..
-        } => {
-            assert_eq!(relative_path, &PathBuf::from("attachments/b.jpg"));
-            assert_eq!(mime_type, "image/jpeg");
-        }
-        other => panic!("第 3 块应为 LocalImage,得到 {other:?}"),
-    }
-    // 暂存产物真实落盘,relative_path 来自暂存结果(不接受前端直给路径)。
+    // 官方标记行按用户选择顺序出现,路径为暂存后的 workspace 路径。
+    let marker_a = format!("[Attached image: {}]", ws.join("attachments/a.png").display());
+    let marker_b = format!("[Attached image: {}]", ws.join("attachments/b.jpg").display());
+    let marker_a_pos = segment.find(&marker_a).expect("a.png 标记行必须存在");
+    let marker_b_pos = segment.find(&marker_b).expect("b.jpg 标记行必须存在");
+    assert!(
+        marker_a_pos < marker_b_pos,
+        "标记行按用户选择顺序(先 a 后 b):\n{segment}"
+    );
+    // 暂存产物真实落盘,路径来自暂存结果。
     assert!(ws.join("attachments/a.png").exists());
     assert!(ws.join("attachments/b.jpg").exists());
-    // 附件记录: 图片带 relative_path + mime,文本附件不带。
-    assert_eq!(prepared.attachments.len(), 3);
-    assert_eq!(
-        prepared.attachments[0].relative_path.as_deref(),
-        Some("attachments/a.png")
-    );
-    assert_eq!(
-        prepared.attachments[0].mime_type.as_deref(),
-        Some("image/png")
-    );
-    assert_eq!(prepared.attachments[1].relative_path, None);
-    // 展示文本与 Fallback 同式: 📎 文件名。
-    assert_eq!(
-        prepared.display_text,
-        "这几张图和笔记说明了什么？\n\n📎 a.png · notes.txt · b.jpg"
-    );
-    assert_eq!(
-        prepared.image_mode,
-        crate::features::assistant::image_capability::ImageInputMode::Native
-    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -1537,15 +1499,13 @@ fn native_image_message_builds_structured_blocks_in_order() {
 /// Native: 纯图片消息(空文字 + 图片)允许发送,不伪造用户文字(设计 §9.4)。
 #[test]
 fn native_image_message_allows_pure_image() {
-    use deepseek_tui::core::ops::UserInputBlock;
-
     let tmp = std::env::temp_dir().join(format!("pinvou3-native-pure-{}", std::process::id()));
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
     let src = tmp.join("only.png");
     std::fs::write(&src, b"\x89PNG\r\n\x1a\nfake").expect("写假 png");
 
-    let prepared = prepare_native_user_message_in_dir(
+    let segment = prepare_native_user_message_in_dir(
         String::new(),
         vec![mk_image_attachment("only.png", &src, 13)],
         &ws,
@@ -1553,15 +1513,15 @@ fn native_image_message_allows_pure_image() {
     )
     .expect("纯图片消息应允许");
 
-    assert_eq!(prepared.input_blocks.len(), 2);
-    assert!(
-        matches!(&prepared.input_blocks[1], UserInputBlock::LocalImage { .. }),
-        "图片块必须存在"
-    );
-    // Text 段只有附件清单,没有伪造的用户文字。
-    let segment = prepared.text_segment();
+    // 只有附件清单与标记行,没有伪造的用户文字。
     assert!(segment.contains("用户附上了以下文件"));
-    assert_eq!(prepared.display_text, "📎 only.png");
+    assert!(
+        segment.contains(&format!(
+            "[Attached image: {}]",
+            ws.join("attachments/only.png").display()
+        )),
+        "图片标记行必须存在:\n{segment}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -1597,9 +1557,7 @@ fn native_prepare_text_only_and_non_image_regression() {
     let text_only =
         prepare_native_user_message_in_dir("你好".to_string(), Vec::new(), &ws, "attachments")
             .expect("纯文本");
-    assert_eq!(text_only.text_segment(), "你好");
-    assert_eq!(text_only.display_text, "你好");
-    assert_eq!(text_only.input_blocks.len(), 1);
+    assert_eq!(text_only, "你好");
 
     let with_text = prepare_native_user_message_in_dir(
         "查全文".to_string(),
@@ -1614,7 +1572,7 @@ fn native_prepare_text_only_and_non_image_regression() {
         &ws,
     );
     assert_eq!(
-        with_text.text_segment(),
+        with_text,
         legacy,
         "非图片附件路径必须与现有文本拼接结果一致"
     );

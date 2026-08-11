@@ -930,15 +930,12 @@ impl EnginePool {
             mode,
             restrict_tools_for_turn,
             reservation,
-            None,
         )
         .await
     }
 
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
-    ///
-    /// `input`: Native 图片输入的结构化块(设计 §9.2);`None` 走纯文本路径。
     pub(crate) async fn send_reserved_user_message(
         &self,
         session_id: &str,
@@ -947,7 +944,6 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
         mut reservation: TurnReservation,
-        input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<()> {
         let baseline_revision = reservation
             .base_transcript_revision()
@@ -995,7 +991,6 @@ impl EnginePool {
                 persona_reminder,
                 restrict_tools,
                 reservation,
-                input,
             )
             .await
     }

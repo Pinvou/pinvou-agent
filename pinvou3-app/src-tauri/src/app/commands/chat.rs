@@ -190,29 +190,25 @@ pub(crate) async fn chat_with_reservation(
     // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。
     // 两个根由 SessionStore::session_roots 统一解析（与引擎执行根同一来源）。
     let reference_absolute = roots.ledger != roots.execution;
-    // Native: 图片成 LocalImage 引用块,不注入"看不到图"硬规则;其余路径维持
-    // 现有文本拼接(Fallback 含 image_analyze 硬规则提示)。两分支互斥,各自
-    // consume message/attachments。图片暂存到引擎执行根(relative_path 相对引擎
-    // cwd 解析);文本附件引用走账本根,两根不同时引用取绝对路径。
-    let (prepared, mut full) = if has_images && image_mode == ImageInputMode::Native {
-        let prepared = prepare_native_user_message_in_dir(
+    // Native(v0.9.5 官方标记方案):图片暂存后生成 `[Attached image: <path>]`
+    // 标记行,底座构建时展开为 ImageUrl 块,不注入"看不到图"硬规则;其余路径
+    // 维持现有文本拼接(Fallback 含 image_analyze 硬规则提示)。两分支互斥,
+    // 各自 consume message/attachments。图片暂存到引擎执行根;文本附件引用
+    // 走账本根,两根不同时引用取绝对路径。
+    let mut full = if has_images && image_mode == ImageInputMode::Native {
+        prepare_native_user_message_in_dir(
             message,
             attachments,
             &roots.execution,
             &attachment_dir,
-        )?;
-        let segment = prepared.text_segment().to_string();
-        (Some(prepared), segment)
+        )?
     } else {
-        (
-            None,
-            build_message_with_attachments_in_dir(
-                message,
-                attachments,
-                &ledger_root,
-                &attachment_dir,
-                reference_absolute,
-            ),
+        build_message_with_attachments_in_dir(
+            message,
+            attachments,
+            &ledger_root,
+            &attachment_dir,
+            reference_absolute,
         )
     };
     // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
@@ -297,16 +293,6 @@ pub(crate) async fn chat_with_reservation(
         full,
     );
     let mode = mode_state.mode;
-    // Native: skill/persona/知识库引导 prepend 全部完成后,用最终文本刷新
-    // Text block(图片块保持不动),组装结构化 input。bridge 之后还会把
-    // `<system-reminder>` 并进该 Text block 与 Op.content(两者保持一致,
-    // 供 transcript sanitize 匹配)。
-    let input = prepared.map(|mut prepared| {
-        prepared.replace_text_segment(full.clone());
-        deepseek_tui::core::ops::UserMessageInput {
-            blocks: prepared.input_blocks,
-        }
-    });
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
     log::info!(
@@ -323,7 +309,6 @@ pub(crate) async fn chat_with_reservation(
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
             reservation,
-            input,
         )
         .await
     {
