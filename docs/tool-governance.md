@@ -78,7 +78,9 @@ Agent / Yolo 模式注册完整工具面（`with_agent_runtime_surface` + `with_
 
 > 计算方式：注册面 − 底座黑名单 + include 放出 − disallowed（档案 exclude / 连接器禁用 / 模式固有 / 动态）。
 
-### 2.1 work（plain）模式——恒可见 30 个
+### 2.1 work（plain）模式——恒可见 31 个
+
+> 口径说明：清单按 **Yolo 模式**（GUI work 会话默认）统计，即注册面非黑名单全可见；`terminal/*` 随 `allow_shell`（GUI 恒开）注册。`checklist_*`（write/add/update/list）为 legacy 别名，`model_visible()=false` 恒不对模型暴露，故不计入。
 
 | # | 工具 | 类别 | 功能 |
 |---|---|---|---|
@@ -94,24 +96,25 @@ Agent / Yolo 模式注册完整工具面（`with_agent_runtime_surface` + `with_
 | 10 | `wait_for_dev_server` | Web | 轮询本地端口/健康地址等 dev server 就绪（随 WebSearch feature 注册） |
 | 11 | `exec_shell` | Shell | 前台命令（限单行，超时杀进程并提示转后台）（`allow_shell` 时） |
 | 12 | `exec_shell_wait` | Shell | 轮询后台任务增量输出 |
-| 13 | `work_update` | 进度 | 工作进度正式记账（canonical） |
-| 14 | `checklist_write` | 进度 | 清单写入 |
-| 15 | `checklist_add` | 进度 | 清单追加 |
-| 16 | `checklist_update` | 进度 | 清单更新 |
-| 17 | `checklist_list` | 进度 | 清单查看 |
-| 18 | `update_plan` | 计划 | 策略级 PlanArtifact（阶段上下文/路径规划） |
-| 19 | `request_user_input` | 交互 | 回合中气泡提问（硬保留） |
-| 20 | `load_skill` | 技能 | 按 id 加载已安装 skill |
-| 21 | `revert_turn` | 回滚 | 回滚工作区到回合前快照（需审批） |
-| 22 | `image_analyze` | 视觉 | 视觉模型读用户附图 |
-| 23 | `agent` | 子代理 | 创建入口：启动后台子代理，返回 agent_id（上限 20 并发） |
-| 24 | `agents/list` | 子代理 | 列出子代理：id、层级、状态、进度、预算 |
-| 25 | `agents/message` | 子代理 | 给子代理发消息 |
-| 26 | `agents/followup` | 子代理 | 追问/续跑子代理 |
-| 27 | `agents/interrupt` | 子代理 | 中断子代理（含 fail-closed 自中断保护） |
-| 28 | `agents/wait` | 子代理 | 等待子代理完成（默认 5 分钟，可调至 30 分钟） |
-| 29 | `workflow` | 工作流 | 运行工作流脚本（QuickJS） |
-| 30 | `mcp_pinvou3_present_artifact` | 产物 | 产出物卡片（bundle 内置 MCP server，work 恒可见；code 模式经 extra_hidden 恒藏，见 §2.2） |
+| 13 | `terminal/run` | Shell | 持久 PTY 会话前台命令（cd/export/函数跨调用保留）（随 `allow_shell` 注册） |
+| 14 | `terminal/send` | Shell | 向持久会话发送原始输入（含 ETX 中断） |
+| 15 | `terminal/wait` | Shell | 等待前台命令并取缓冲输出 |
+| 16 | `terminal/cancel` | Shell | ETX 中断前台命令（会话保留可复用） |
+| 17 | `terminal/reset` | Shell | 重建会话（丢失运行中工作，保留历史摘要） |
+| 18 | `work_update` | 进度 | 工作进度正式记账（canonical） |
+| 19 | `update_plan` | 计划 | 策略级 PlanArtifact（阶段上下文/路径规划） |
+| 20 | `request_user_input` | 交互 | 回合中气泡提问（硬保留） |
+| 21 | `load_skill` | 技能 | 按 id 加载已安装 skill |
+| 22 | `revert_turn` | 回滚 | 回滚工作区到回合前快照（需审批） |
+| 23 | `image_analyze` | 视觉 | 视觉模型读用户附图 |
+| 24 | `agent` | 子代理 | 创建入口：启动后台子代理，返回 agent_id（上限 20 并发） |
+| 25 | `agents/list` | 子代理 | 列出子代理：id、层级、状态、进度、预算 |
+| 26 | `agents/message` | 子代理 | 给子代理发消息 |
+| 27 | `agents/followup` | 子代理 | 追问/续跑子代理 |
+| 28 | `agents/interrupt` | 子代理 | 中断子代理（含 fail-closed 自中断保护） |
+| 29 | `agents/wait` | 子代理 | 等待子代理完成（默认 5 分钟，可调至 30 分钟） |
+| 30 | `workflow` | 工作流 | 运行工作流脚本（QuickJS） |
+| 31 | `mcp_pinvou3_present_artifact` | 产物 | 产出物卡片（bundle 内置 MCP server，work 恒可见；code 模式经 extra_hidden 恒藏，见 §2.2） |
 
 ### 2.2 code 模式——在 work 基础上
 
@@ -129,7 +132,9 @@ Agent / Yolo 模式注册完整工具面（`with_agent_runtime_surface` + `with_
 | ➖ 动态 | `load_skill` | 组合目录空否 | 该会话组合目录为空（无启用技能）→ 隐藏 |
 | 🔄 替换 | 连接器禁用集 | Code scope | 与 plain 各自持久化，互不影响 |
 
-code 模式恒可见 = 30 − 1 + 8 = **37 个**（−1：`mcp_pinvou3_present_artifact` 经 extra_hidden 恒藏；不含动态/条件项），动态项按会话实际状态取并集。
+code 模式恒可见（Yolo） = 31 − 1 + 8 = **38 个**（−1：`mcp_pinvou3_present_artifact` 经 extra_hidden 恒藏；不含动态/条件项），动态项按会话实际状态取并集。
+
+> ⚠️ **mode 前提（重要）**：上述「8 工具放出」在 **Yolo 模式**下成立（GUI work 会话默认 Yolo；code 会话需用户切 Yolo 后同样成立）。**code 会话默认 Plan（只读）**（`last_mode` 无记录时默认 Plan，`reconcile_code_default_modes` 强制回 Plan）时，Plan 注册面**不含** `apply_patch` / `run_verifiers`（无 `with_patch_tools` / `with_test_runner_tool`），且 `shell_policy=None` 不注册 `exec_shell_cancel`；`git_blame` 虽注册但不在上游 allowlist（`DEFAULT_ACTIVE_NATIVE_TOOLS`），被 defer——即默认 Plan 下 8 个 include 实际仅 `git_status`/`git_diff`/`git_log`/`git_show` 4 个可见。若需默认即全量放出，须在产品层决策（如调整 Plan 注册面 / 上游 allowlist），本文档仅如实记录现状。
 
 ### 2.3 条件性工具（不恒可见，按配置/用户启用状态）
 
