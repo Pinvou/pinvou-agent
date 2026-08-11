@@ -358,7 +358,7 @@ pub fn run() {
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
             // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
             startup::mark("session_store:start");
-            let session_store = match SessionStore::boot_for_process_startup() {
+            let session_store = match SessionStore::boot() {
                 Ok(store) => {
                     store.load_skill_bindings();
                     store.load_session_models();
@@ -388,7 +388,7 @@ pub fn run() {
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
-                SessionStore::boot_for_process_startup().expect("session store boot fallback")
+                SessionStore::boot().expect("session store boot fallback")
             });
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
@@ -666,6 +666,7 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::settings::get_image_input_capability,
             commands::codex::get_codex_acp_status,
             commands::codex::list_acp_agents,
             commands::codex::get_acp_agent_status,
@@ -714,6 +715,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
             commands::voice::reset_microphone_permission,
@@ -1004,7 +1006,6 @@ mod tool_allowlist_contract {
         for core in [
             "Bash",
             "File",
-            "Git",
             "Web",
             "agent",
             "load_skill",
@@ -1020,6 +1021,7 @@ mod tool_allowlist_contract {
         }
 
         for excluded in [
+            "Git",
             "Run",
             "tasks",
             "automation",

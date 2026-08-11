@@ -108,7 +108,7 @@ impl Language {
                 "## Language\n\n\
                  Respond in English by default, and mirror the language of the \
                  user's latest message. Keep code, file paths, tool names \
-                 (e.g. `File`, `Bash`), environment variables, \
+                 (e.g. `read_file`, `exec_shell`), environment variables, \
                  command-line flags, and URLs verbatim — only natural-language \
                  prose follows the language rule.",
             ),
@@ -126,6 +126,21 @@ pub use model::{
     ModelPreset, MODEL_PROVIDER_KIND_CODING_PLAN, MODEL_PROVIDER_KIND_CUSTOM,
     MODEL_PROVIDER_KIND_OFFICIAL_API,
 };
+
+/// 用户对某条 [`SavedModel`] 图片输入能力的显式覆盖(模型设置页「图片输入能力」,
+/// 设计 §6.3/§7.3)。`Auto` = 走能力解析链(模型目录→内置已验证表→Unknown);
+/// `Enabled`/`Disabled` 直接钉死,供本地自定义模型人工确认用。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageCapabilityOverride {
+    /// 自动判断(默认;旧 settings.json 无该字段反序列化即落这里,无感迁移)。
+    #[default]
+    Auto,
+    /// 用户确认该模型支持图片输入。
+    Enabled,
+    /// 用户确认该模型不支持图片输入。
+    Disabled,
+}
 
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
 /// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
@@ -150,6 +165,13 @@ pub struct SavedModel {
     pub vendor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_mode: Option<String>,
+    /// 图片输入能力覆盖(设计 §6.3):Auto 走能力解析链;Enabled/Disabled 强制。
+    #[serde(default)]
+    pub image_capability_override: ImageCapabilityOverride,
+    /// 视觉兜底模型引用(设计 §9.3):指向另一条 SavedModel 的 `id`,复用其
+    /// endpoint 与 `credential_ref`,不保存第二份明文密钥。None = 未配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_model_id: Option<String>,
     #[serde(default, skip_serializing)]
     pub api_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -653,6 +675,8 @@ impl UserPrefs {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key,
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -982,6 +1006,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: Some("full_chat_completions".into()),
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1017,6 +1043,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1057,6 +1085,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1092,6 +1122,8 @@ mod tests {
             provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1137,6 +1169,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1161,6 +1195,40 @@ mod tests {
         assert!(!json.contains("sk-test-secret"));
         assert!(!json.contains("sk-legacy-secret"));
         assert!(!json.contains("custom_api_key"));
+    }
+
+    #[test]
+    fn saved_model_image_fields_default_for_legacy_json() {
+        // 旧 settings.json 没有 image_capability_override / vision_model_id:
+        // serde default 保证无感迁移 → Auto / None(设计 §6.3,阶段 C)。
+        let legacy = r#"{
+            "id": "m1",
+            "name": "DeepSeek 线上",
+            "preset": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com"
+        }"#;
+        let model: SavedModel = serde_json::from_str(legacy).expect("legacy SavedModel json");
+        assert_eq!(
+            model.image_capability_override,
+            ImageCapabilityOverride::Auto
+        );
+        assert!(model.vision_model_id.is_none());
+
+        // 显式值能序列化往返;Auto/None 时字段不写入(保持 settings.json 干净)。
+        let mut overridden = model.clone();
+        overridden.image_capability_override = ImageCapabilityOverride::Enabled;
+        overridden.vision_model_id = Some("vision-1".into());
+        let json = serde_json::to_string(&overridden).unwrap();
+        let back: SavedModel = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.image_capability_override,
+            ImageCapabilityOverride::Enabled
+        );
+        assert_eq!(back.vision_model_id.as_deref(), Some("vision-1"));
+
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(!json.contains("vision_model_id"));
     }
 
     #[test]

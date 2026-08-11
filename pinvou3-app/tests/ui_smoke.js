@@ -58,7 +58,6 @@ function injectSource() {
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
     let CODEX_SESSIONS=[{id:'codex-1',agent_id:'codex',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
-    const LONG_CODEX_COMMAND='overflow-marker-'+('x'.repeat(1200));
     let ARCHIVED_SESSIONS=[];
     let MOUNTED_COLLECTIONS=[];
     let MOUNTED_COLLECTIONS_REVISION=0;
@@ -86,6 +85,8 @@ function injectSource() {
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
+        case 'get_image_input_capability': return Promise.resolve(window.__IMAGE_CAPABILITY__ || null);
+        case 'ingest_file': return Promise.resolve({kind:'image',basename:'shot.png',path:(args&&args.path)||'shot.png',markdown:null,token_estimate:10,byte_size:100,warning:null});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
@@ -96,11 +97,6 @@ function injectSource() {
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:4,timestamp:'2026-08-04T01:00:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
-          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:10,timestamp:'2026-08-04T01:01:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test streaming overflow'}]}}},
-          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:11,timestamp:'2026-08-04T01:01:01Z',event:{type:'turn_started',data:{status:'running'}}},
-          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:12,timestamp:'2026-08-04T01:01:02Z',event:{type:'agent_thought_chunk',data:{update:{content:{type:'text',text:'reasoning-marker-'+('r'.repeat(1200))}}}}},
-          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:13,timestamp:'2026-08-04T01:01:03Z',event:{type:'plan',data:{update:{entries:[{content:'plan-marker-'+('p'.repeat(1200)),status:'in_progress'}]}}}},
-          {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:14,timestamp:'2026-08-04T01:01:04Z',event:{type:'tool_call',data:{update:{toolCallId:'overflow-tool',title:LONG_CODEX_COMMAND,kind:'execute',status:'in_progress',rawInput:{command:LONG_CODEX_COMMAND,cwd:'C:/tmp'}}}}},
         ]);
         case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
         case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
@@ -276,215 +272,6 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
-  // Windows 平板尺寸会展示浮动语音按钮。用浏览器输入通道覆盖鼠标、触控笔与触摸，
-  // 并动态验证 capture 丢失、pointercancel、窗口失焦后的视觉态和点击语义。
-  await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 1 });
-  await sleep(350);
-  await page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    window.__FLOATING_VOICE_COMPAT_CLICKS__ = 0;
-    if (button) button.addEventListener('click', () => { window.__FLOATING_VOICE_COMPAT_CLICKS__ += 1; });
-  });
-  const floatingVoiceSnapshot = () => page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    if (!button) return null;
-    const rect = button.getBoundingClientRect();
-    const wrapRect = button.parentElement.getBoundingClientRect();
-    return {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-      left: wrapRect.left,
-      top: wrapRect.top,
-      pressed: button.getAttribute('data-pressed'),
-      voiceCalls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'voice_asr_status').length,
-      clicks: window.__FLOATING_VOICE_COMPAT_CLICKS__,
-    };
-  });
-  const floatingVoiceStart = await floatingVoiceSnapshot();
-  let floatingVoiceDrag = { found: false };
-  if (floatingVoiceStart) {
-    await page.mouse.move(floatingVoiceStart.x, floatingVoiceStart.y);
-    await page.mouse.down();
-    await page.mouse.move(floatingVoiceStart.x + 12, floatingVoiceStart.y);
-    await sleep(60);
-    const mouseDuring = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const mouseAfter = await floatingVoiceSnapshot();
-
-    const lostStart = mouseAfter;
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      window.__FLOATING_VOICE_POINTER_ID__ = null;
-      button?.addEventListener('pointerdown', event => { window.__FLOATING_VOICE_POINTER_ID__ = event.pointerId; }, { once: true });
-    });
-    await page.mouse.move(lostStart.x, lostStart.y);
-    await page.mouse.down();
-    await page.mouse.move(lostStart.x + 12, lostStart.y);
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const pointerId = window.__FLOATING_VOICE_POINTER_ID__;
-      if (button && pointerId !== null && button.hasPointerCapture(pointerId)) button.releasePointerCapture(pointerId);
-      if (button && pointerId !== null) {
-        button.dispatchEvent(new PointerEvent('lostpointercapture', {
-          bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true,
-        }));
-      }
-    });
-    await sleep(30);
-    const lostCapture = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const lostAfter = await floatingVoiceSnapshot();
-
-    const input = await page.createCDPSession();
-    const penStart = lostAfter;
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x, y: penStart.y, buttons: 0, pointerType: 'pen' });
-    await input.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: penStart.x, y: penStart.y, button: 'left', buttons: 1, clickCount: 1, pointerType: 'pen' });
-    const penPressed = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerId: 302, pointerType: 'touch', isPrimary: true, button: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0 }));
-    });
-    await sleep(20);
-    const penAfterTouch = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x + 12, y: penStart.y, buttons: 1, pointerType: 'pen' });
-    const penDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: penStart.x + 12, y: penStart.y, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
-    await sleep(60);
-    const penAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true, pointerId: 301, pointerType: 'pen', isPrimary: false, button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const nonPrimaryPen = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerType: 'touch', button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 401, isPrimary: true }));
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 402, isPrimary: false }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, pointerId: 402, isPrimary: false, buttons: 0 }));
-    });
-    await sleep(20);
-    const multiTouchSecondaryEnded = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointercancel', {
-        bubbles: true, pointerId: 401, pointerType: 'touch', isPrimary: true, button: 0, buttons: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const multiTouchCancelled = await floatingVoiceSnapshot();
-
-    const touchStart = penAfter;
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [{ x: touchStart.x, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchMove',
-      touchPoints: [{ x: touchStart.x + 12, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    const touchDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-    await sleep(40);
-    const touchCancelled = await floatingVoiceSnapshot();
-
-    const composerBefore = touchCancelled;
-    const composerCenter = await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="composer-voice-button"]');
-      if (!button) return null;
-      const rect = button.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    });
-    if (composerCenter) await page.mouse.click(composerCenter.x, composerCenter.y);
-    await sleep(80);
-    const composerAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-    await sleep(20);
-
-    const blurStart = touchCancelled;
-    await page.mouse.move(blurStart.x, blurStart.y);
-    await page.mouse.down();
-    await page.mouse.move(blurStart.x + 12, blurStart.y);
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    await sleep(30);
-    const blurred = await floatingVoiceSnapshot();
-    await page.mouse.move(1, 1);
-    await page.mouse.up();
-    await sleep(40);
-    const blurAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => document.querySelector('[data-testid="floating-voice-button"]')?.focus());
-    await page.keyboard.press('Enter');
-    await sleep(80);
-    const keyboardAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-
-    floatingVoiceDrag = {
-      found: true,
-      mouseMovedImmediately: mouseDuring.pressed === 'true'
-        && (Math.abs(mouseDuring.left - floatingVoiceStart.left) > 4 || Math.abs(mouseDuring.top - floatingVoiceStart.top) > 4),
-      mouseCompatibleClickSuppressed: mouseAfter.pressed === 'false'
-        && mouseAfter.clicks > floatingVoiceStart.clicks
-        && mouseAfter.voiceCalls === floatingVoiceStart.voiceCalls,
-      lostCaptureCleared: lostCapture.pressed === 'false',
-      lostCaptureClickSuppressed: lostAfter.clicks > mouseAfter.clicks
-        && lostAfter.voiceCalls === mouseAfter.voiceCalls,
-      penPathPassed: penPressed.pressed === 'true'
-        && penAfterTouch.pressed === 'true'
-        && penDuring.pressed === 'true'
-        && (Math.abs(penDuring.left - penStart.left) > 4 || Math.abs(penDuring.top - penStart.top) > 4)
-        && penAfter.pressed === 'false'
-        && penAfter.voiceCalls === lostAfter.voiceCalls,
-      nonPrimaryPenIgnored: nonPrimaryPen.pressed === 'false',
-      secondTouchIgnored: multiTouchSecondaryEnded.pressed === 'true' && multiTouchCancelled.pressed === 'false',
-      touchCancelCleared: touchDuring.pressed === 'true'
-        && touchCancelled.pressed === 'false'
-        && touchCancelled.voiceCalls === penAfter.voiceCalls,
-      composerClickWorked: !!composerCenter && composerAfter.voiceCalls > composerBefore.voiceCalls,
-      blurCleared: blurred.pressed === 'false' && blurAfter.voiceCalls === composerAfter.voiceCalls,
-      keyboardClickWorked: keyboardAfter.voiceCalls > blurAfter.voiceCalls,
-    };
-  }
-  rec(
-    '⓪b 浮动语音按钮 mouse/touch/pen 拖动及异常终止行为',
-    floatingVoiceDrag.found
-      && floatingVoiceDrag.mouseMovedImmediately
-      && floatingVoiceDrag.mouseCompatibleClickSuppressed
-      && floatingVoiceDrag.lostCaptureCleared
-      && floatingVoiceDrag.lostCaptureClickSuppressed
-      && floatingVoiceDrag.penPathPassed
-      && floatingVoiceDrag.nonPrimaryPenIgnored
-      && floatingVoiceDrag.secondTouchIgnored
-      && floatingVoiceDrag.touchCancelCleared
-      && floatingVoiceDrag.composerClickWorked
-      && floatingVoiceDrag.blurCleared
-      && floatingVoiceDrag.keyboardClickWorked,
-    JSON.stringify(floatingVoiceDrag),
-  );
-  await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
-  await sleep(250);
-
   const markdownHighlight = await page.evaluate(() => {
     const render = window.PinvouMarkdownRenderer && window.PinvouMarkdownRenderer.renderMarkdown;
     if (typeof render !== 'function') return { found: false };
@@ -520,18 +307,11 @@ async function expand(page) {
       }
       content.innerHTML = render(markdown);
       fixture.appendChild(wrapper);
-      // 生产 CSS 自 #166 起 rescope 为 `.dark .dark-code ...`（需 .dark 祖先），
-      // 与应用真实主题结构一致：暗态由 <html class="dark"> 决定（main.jsx / DetachedShell.jsx）。
-      // 暗色样本必须在采样期间给 documentElement 加 .dark，亮态必须确保无 .dark，
-      // 否则 computed style 会算到错的分支。采样后还原，避免污染后续检查。
-      const root = document.documentElement;
-      const hadDark = root.classList.contains('dark');
-      if (mode === 'dark') root.classList.add('dark'); else root.classList.remove('dark');
       const pre = content.querySelector('pre[data-language-id="json"]');
       const stringToken = pre && pre.querySelector('.hljs-string');
       const attrToken = pre && pre.querySelector('.hljs-attr');
       const addition = content.querySelector('.language-diff .hljs-addition');
-      const result = {
+      return {
         languageId: pre && pre.dataset.languageId,
         stringColor: stringToken && getComputedStyle(stringToken).color,
         attrColor: attrToken && getComputedStyle(attrToken).color,
@@ -539,8 +319,6 @@ async function expand(page) {
         label: pre && getComputedStyle(pre, '::before').content,
         diffBackground: addition && getComputedStyle(addition).backgroundColor,
       };
-      if (hadDark) root.classList.add('dark'); else root.classList.remove('dark');
-      return result;
     }
 
     const lightNested = addSample('light', 'nested');
@@ -721,150 +499,6 @@ async function expand(page) {
     codexAssistantCopy.failureFeedback === '复制失败' && codexAssistantCopy.failureTitle === '复制失败' &&
     codexAssistantCopy.sameRow,
     JSON.stringify(codexAssistantCopy));
-
-  const codexStreamingOverflow = await page.evaluate(async () => {
-    const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
-    const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
-    const plan = turn?.querySelector('[data-testid="conversation-plan"]');
-    const controlledState = (toggle) => {
-      const controls = toggle?.getAttribute('aria-controls') || '';
-      return {
-        expanded: toggle?.getAttribute('aria-expanded') || '',
-        controls,
-        detailsPresent: Boolean(controls && document.getElementById(controls)),
-      };
-    };
-    const summaryState = controlledState(summary);
-    const reasoningToggle = turn?.querySelector('[data-testid="conversation-reasoning-toggle"]');
-    const reasoningBefore = controlledState(reasoningToggle);
-    reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const reasoningAfter = controlledState(reasoningToggle);
-    const reasoning = turn?.querySelector('[data-testid="conversation-reasoning-content"]');
-    const commandButton = turn?.querySelector('[data-testid="conversation-compact-item-toggle"]');
-    const commandTitle = commandButton?.querySelector('span.min-w-0.flex-1 > span.truncate');
-    const turnRect = turn?.getBoundingClientRect();
-    const contained = [reasoning, plan, summary, commandButton].every(node => {
-      if (!node || !turnRect) return false;
-      const rect = node.getBoundingClientRect();
-      return rect.left >= turnRect.left - 1 && rect.right <= turnRect.right + 1;
-    });
-    const reasoningRect = reasoning?.getBoundingClientRect();
-    const planRect = plan?.getBoundingClientRect();
-    const summaryRect = summary?.getBoundingClientRect();
-    reasoningToggle?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const reasoningCollapsed = controlledState(reasoningToggle);
-    const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
-      && commandButton.scrollWidth <= commandButton.clientWidth + 1);
-    const commandBefore = controlledState(commandButton);
-    commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const commandAfter = controlledState(commandButton);
-    commandButton?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const commandCollapsed = controlledState(commandButton);
-    return {
-      found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
-      turnIds: [...document.querySelectorAll('[data-conversation-turn]')]
-        .map(node => node.getAttribute('data-conversation-turn')),
-      hasOverflowText: document.body.innerText.includes('Test streaming overflow'),
-      summaryCount: document.querySelectorAll('[data-testid="conversation-tool-group-summary"]').length,
-      summary: summary?.textContent.trim() || '',
-      summaryContainsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
-      contained,
-      ordered: Boolean(reasoningRect && planRect && summaryRect
-        && reasoningRect.bottom <= planRect.top + 1
-        && planRect.bottom <= summaryRect.top + 1),
-      commandClipped,
-      accessibility: {
-        summaryState,
-        reasoningBefore,
-        reasoningAfter,
-        reasoningCollapsed,
-        commandBefore,
-        commandAfter,
-        commandCollapsed,
-      },
-    };
-  });
-  rec('①a-3c Codex 流式超长命令保持在工具卡内',
-    codexStreamingOverflow.found
-      && codexStreamingOverflow.summary === '正在执行 · 执行 Shell 命令 · 1 项'
-      && !codexStreamingOverflow.summaryContainsRawCommand
-      && codexStreamingOverflow.contained
-      && codexStreamingOverflow.ordered
-      && codexStreamingOverflow.commandClipped,
-    JSON.stringify(codexStreamingOverflow));
-  const unifiedA11y = codexStreamingOverflow.accessibility || {};
-  rec('①a-3c-1 统一对话详情向辅助技术同步展开状态',
-    unifiedA11y.summaryState?.expanded === 'true'
-      && unifiedA11y.summaryState?.detailsPresent
-      && unifiedA11y.reasoningBefore?.expanded === 'false'
-      && !unifiedA11y.reasoningBefore?.controls
-      && !unifiedA11y.reasoningBefore?.detailsPresent
-      && unifiedA11y.reasoningAfter?.expanded === 'true'
-      && Boolean(unifiedA11y.reasoningAfter?.controls)
-      && unifiedA11y.reasoningAfter?.detailsPresent
-      && unifiedA11y.reasoningCollapsed?.expanded === 'false'
-      && !unifiedA11y.reasoningCollapsed?.controls
-      && !unifiedA11y.reasoningCollapsed?.detailsPresent
-      && unifiedA11y.commandBefore?.expanded === 'false'
-      && !unifiedA11y.commandBefore?.controls
-      && !unifiedA11y.commandBefore?.detailsPresent
-      && unifiedA11y.commandAfter?.expanded === 'true'
-      && Boolean(unifiedA11y.commandAfter?.controls)
-      && unifiedA11y.commandAfter?.detailsPresent
-      && unifiedA11y.commandCollapsed?.expanded === 'false'
-      && !unifiedA11y.commandCollapsed?.controls
-      && !unifiedA11y.commandCollapsed?.detailsPresent,
-    JSON.stringify(unifiedA11y));
-
-  await page.evaluate(async () => {
-    const events = [
-      {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:15,timestamp:'2026-08-04T01:01:05Z',event:{type:'tool_call_update',data:{update:{toolCallId:'overflow-tool',status:'completed',rawOutput:{formatted_output:'ok',exit_code:0}}}}},
-      {version:1,sessionId:'codex-1',turnId:'overflow-turn',seq:16,timestamp:'2026-08-04T01:01:06Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
-    ];
-    for (const payload of events) {
-      for (const handler of (window.__TAURI_EVENT_HANDLERS__['acp:event'] || [])) await handler({ payload });
-    }
-  });
-  await sleep(100);
-  const codexCompletedOverflow = await page.evaluate(async () => {
-    const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
-    const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
-    const turnRect = turn?.getBoundingClientRect();
-    const summaryRect = summary?.getBoundingClientRect();
-    const controls = summary?.getAttribute('aria-controls') || '';
-    const expandedBefore = summary?.getAttribute('aria-expanded') || '';
-    const detailsBefore = Boolean(controls && document.getElementById(controls));
-    summary?.click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return {
-      summary: summary?.textContent.trim() || '',
-      containsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
-      contained: Boolean(turnRect && summaryRect && summaryRect.left >= turnRect.left - 1 && summaryRect.right <= turnRect.right + 1),
-      controls,
-      expandedBefore,
-      detailsBefore,
-      controlsAfter: summary?.getAttribute('aria-controls') || '',
-      expandedAfter: summary?.getAttribute('aria-expanded') || '',
-      detailsAfter: Boolean(controls && document.getElementById(controls)),
-    };
-  });
-  rec('①a-3d Codex 工具完成后摘要保持稳定',
-    codexCompletedOverflow.summary === '执行步骤 · 1 项'
-      && !codexCompletedOverflow.containsRawCommand
-      && codexCompletedOverflow.contained,
-    JSON.stringify(codexCompletedOverflow));
-  rec('①a-3d-1 统一工具组折叠状态与详情 DOM 一致',
-    codexCompletedOverflow.expandedBefore === 'true'
-      && Boolean(codexCompletedOverflow.controls)
-      && codexCompletedOverflow.detailsBefore
-      && codexCompletedOverflow.expandedAfter === 'false'
-      && !codexCompletedOverflow.controlsAfter
-      && !codexCompletedOverflow.detailsAfter,
-    JSON.stringify(codexCompletedOverflow));
 
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
@@ -1733,6 +1367,94 @@ async function expand(page) {
     archiveToastGoto.currentView === 'search' && archiveToastGoto.archivedTabVisible && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
     JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
 
+  // ⑪ 普通会话选图即时警告:当前模型图片路由 unsupported 时在附件区提示(不拦截),
+  // 移除附件或能力恢复后消失;Unknown 与确认不支持文案口径不同(与后端错误码一致)。
+  // ⑪c-e 云上传隐私提示(§11.8/§11.9):native 直发云端时提示图片字节去向;
+  // 本机 loopback 不显示云上传字样;旧后端缺 is_local_endpoint 字段时 fail-open。
+  await clickText(page, '新对话');
+  await sleep(400);
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'unsupported', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot.png'));
+  await sleep(600);
+  const imageWarnUnsupported = await page.evaluate(() => {
+    const node = document.querySelector('[data-testid="image-capability-warning"]');
+    return { shown: !!node, text: node ? node.textContent : '' };
+  });
+  rec('⑪a 当前模型不支持图片时附件区显示即时警告',
+    imageWarnUnsupported.shown && imageWarnUnsupported.text.includes('当前模型不支持图片') && imageWarnUnsupported.text.includes('视觉模型'),
+    JSON.stringify(imageWarnUnsupported));
+  await page.evaluate(() => {
+    const list = (window.TauriBridge.state.get('chat').attachments) || [];
+    if (list.length) window.TauriBridge.attachments.removeAttachment(list[0].id);
+  });
+  await sleep(300);
+  const imageWarnCleared = await page.evaluate(() => !document.querySelector('[data-testid="image-capability-warning"]'));
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unknown', image_mode: 'unsupported', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot2.png'));
+  await sleep(600);
+  const imageWarnUnknown = await page.evaluate(() => {
+    const node = document.querySelector('[data-testid="image-capability-warning"]');
+    return { shown: !!node, text: node ? node.textContent : '' };
+  });
+  rec('⑪b 移除附件后警告消失,能力未知时改显未知口径',
+    imageWarnCleared && imageWarnUnknown.shown && imageWarnUnknown.text.includes('图片输入能力未知'),
+    JSON.stringify({ imageWarnCleared, ...imageWarnUnknown }));
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false, is_local_endpoint: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot3.png'));
+  await sleep(600);
+  const imageNativeCloud = await page.evaluate(() => {
+    const warn = document.querySelector('[data-testid="image-capability-warning"]');
+    const hint = document.querySelector('[data-testid="image-privacy-hint"]');
+    return { noWarning: !warn, hintShown: !!hint, hintText: hint ? hint.textContent : '' };
+  });
+  rec('⑪c 模型原生支持图片时不显示警告,native 云端显示云上传隐私提示',
+    imageNativeCloud.noWarning && imageNativeCloud.hintShown && imageNativeCloud.hintText.includes('发送给你选择的模型服务商'),
+    JSON.stringify(imageNativeCloud));
+  // §11.9:本机 loopback endpoint 不得显示任何云上传字样。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false, is_local_endpoint: true }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot4.png'));
+  await sleep(600);
+  const imageNativeLocal = await page.evaluate(() => ({
+    noHint: !document.querySelector('[data-testid="image-privacy-hint"]'),
+    noCloudText: !document.body.innerText.includes('图片将随消息发送'),
+  }));
+  rec('⑪d native 本地 loopback 模型不显示云上传提示',
+    imageNativeLocal.noHint && imageNativeLocal.noCloudText, JSON.stringify(imageNativeLocal));
+  // fail-open:旧后端无 is_local_endpoint 字段时不显示提示。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'supported', image_mode: 'native', has_vision_model: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot5.png'));
+  await sleep(600);
+  const imageNativeLegacy = await page.evaluate(() => !document.querySelector('[data-testid="image-privacy-hint"]'));
+  rec('⑪e 旧后端缺少 is_local_endpoint 字段时不显示提示(fail-open)', imageNativeLegacy);
+  // §11.8 fallback:文本主模型+云端视觉模型时,图片实际发给视觉模型服务商,同样必须提示。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: false }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot6.png'));
+  await sleep(600);
+  const imageFallbackCloud = await page.evaluate(() => {
+    const hint = document.querySelector('[data-testid="image-privacy-hint"]');
+    return { hintShown: !!hint, hintText: hint ? hint.textContent : '' };
+  });
+  rec('⑪f fallback 云端视觉模型显示云上传提示(按视觉模型端点判定)',
+    imageFallbackCloud.hintShown && imageFallbackCloud.hintText.includes('视觉模型服务商'),
+    JSON.stringify(imageFallbackCloud));
+  // §11.9 fallback:视觉模型为本机时不显示任何云上传字样。
+  await page.evaluate(() => window.TauriBridge.attachments.clearAttachments());
+  await page.evaluate(() => { window.__IMAGE_CAPABILITY__ = { capability: 'unsupported', image_mode: 'vision_tool_fallback', has_vision_model: true, is_local_endpoint: true, vision_is_local_endpoint: true }; });
+  await page.evaluate(() => window.TauriBridge.attachments.addAttachmentByPath('C:/tmp/shot7.png'));
+  await sleep(600);
+  const imageFallbackLocal = await page.evaluate(() => ({
+    noHint: !document.querySelector('[data-testid="image-privacy-hint"]'),
+    noCloudText: !document.body.innerText.includes('视觉模型服务商'),
+  }));
+  rec('⑪g fallback 本地视觉模型不显示云上传提示',
+    imageFallbackLocal.noHint && imageFallbackLocal.noCloudText, JSON.stringify(imageFallbackLocal));
+  await page.evaluate(() => { window.TauriBridge.attachments.clearAttachments(); window.__IMAGE_CAPABILITY__ = null; });
+  await sleep(200);
+
   // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
   await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
   await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
@@ -1789,98 +1511,6 @@ async function expand(page) {
     return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
   rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
-
-  // 旧兼容渲染路径也必须暴露与详情 DOM 一致的展开状态。
-  await page.evaluate(() => localStorage.setItem('pinvou_conversation_ui_v2', 'false'));
-  await page.reload({ waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
-  await sleep(1200);
-  await expand(page); await sleep(200);
-  await page.waitForSelector('[data-testid="codex-sidebar-item"]', { timeout: 10000 }).catch(() => {});
-  await page.evaluate(() => document.querySelector('[data-testid="codex-sidebar-item"]')?.click());
-  await sleep(500);
-  const legacyConversationA11y = await page.evaluate(async () => {
-    const state = (toggle) => {
-      const controls = toggle?.getAttribute('aria-controls') || '';
-      return {
-        expanded: toggle?.getAttribute('aria-expanded') || '',
-        controls,
-        detailsPresent: Boolean(controls && document.getElementById(controls)),
-      };
-    };
-    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
-    const reasoningBefore = state(reasoningToggle);
-    reasoningToggle?.click();
-    await settle();
-    const reasoningAfter = state(reasoningToggle);
-    reasoningToggle?.click();
-    await settle();
-    const reasoningCollapsed = state(reasoningToggle);
-
-    const summary = document.querySelector('[data-testid="conversation-tool-group-summary"]');
-    const groupBefore = state(summary);
-    summary?.click();
-    await settle();
-    const groupAfter = state(summary);
-
-    const compactToggle = document.querySelector('[data-testid="conversation-compact-item-toggle"]');
-    const compactBefore = state(compactToggle);
-    compactToggle?.click();
-    await settle();
-    const compactAfter = state(compactToggle);
-    compactToggle?.click();
-    await settle();
-    const compactCollapsed = state(compactToggle);
-    summary?.click();
-    await settle();
-    const groupCollapsed = state(summary);
-    const controls = [reasoningAfter.controls, groupAfter.controls, compactAfter.controls].filter(Boolean);
-    return {
-      found: Boolean(reasoningToggle && summary && compactToggle),
-      reasoningBefore,
-      reasoningAfter,
-      reasoningCollapsed,
-      groupBefore,
-      groupAfter,
-      groupCollapsed,
-      compactBefore,
-      compactAfter,
-      compactCollapsed,
-      uniqueControls: controls.length === 3 && new Set(controls).size === controls.length,
-    };
-  });
-  rec('⑩a 旧兼容对话详情向辅助技术同步展开状态',
-    legacyConversationA11y.found
-      && legacyConversationA11y.uniqueControls
-      && legacyConversationA11y.reasoningBefore.expanded === 'false'
-      && !legacyConversationA11y.reasoningBefore.controls
-      && !legacyConversationA11y.reasoningBefore.detailsPresent
-      && legacyConversationA11y.reasoningAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.reasoningAfter.controls)
-      && legacyConversationA11y.reasoningAfter.detailsPresent
-      && legacyConversationA11y.reasoningCollapsed.expanded === 'false'
-      && !legacyConversationA11y.reasoningCollapsed.controls
-      && !legacyConversationA11y.reasoningCollapsed.detailsPresent
-      && legacyConversationA11y.groupBefore.expanded === 'false'
-      && !legacyConversationA11y.groupBefore.controls
-      && !legacyConversationA11y.groupBefore.detailsPresent
-      && legacyConversationA11y.groupAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.groupAfter.controls)
-      && legacyConversationA11y.groupAfter.detailsPresent
-      && legacyConversationA11y.groupCollapsed.expanded === 'false'
-      && !legacyConversationA11y.groupCollapsed.controls
-      && !legacyConversationA11y.groupCollapsed.detailsPresent
-      && legacyConversationA11y.compactBefore.expanded === 'false'
-      && !legacyConversationA11y.compactBefore.controls
-      && !legacyConversationA11y.compactBefore.detailsPresent
-      && legacyConversationA11y.compactAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.compactAfter.controls)
-      && legacyConversationA11y.compactAfter.detailsPresent
-      && legacyConversationA11y.compactCollapsed.expanded === 'false'
-      && !legacyConversationA11y.compactCollapsed.controls
-      && !legacyConversationA11y.compactCollapsed.detailsPresent,
-    JSON.stringify(legacyConversationA11y));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

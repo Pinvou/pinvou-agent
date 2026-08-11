@@ -34,6 +34,9 @@ use deepseek_tui::tui::app::AppMode;
 use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::session_mode::SessionMode;
+use crate::features::assistant::image_capability::{
+    effective_image_capability, EffectiveImageCapability,
+};
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
@@ -332,7 +335,7 @@ impl Pinvou3Bridge {
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
         // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
-        let base = if self.session_policy(session_id).uses_code_instructions() {
+        let base = if self.session_policy(session_id).mode().is_code() {
             let workspace_hint = self
                 .execution_root_resolver
                 .as_ref()
@@ -432,63 +435,44 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
-    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回；
-    /// 有差量则逐项并入 disallowed。
-    /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）取数。plain 会话原样返回
+    /// （不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并追加策略
+    /// 隐藏工具。spawn 初值与全局热刷都经此整形。
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
-    /// - 档案 `tools.exclude`：基础集上再藏（所有模式）；
-    /// - 档案 `tools.extra_hidden`：模式固有隐藏（所有模式;code:产物卡）;
-    /// - 档案 `connectors.scope` 非 plain 时:连接器工具改用该 scope 的禁用集
-    ///   ——两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;
-    ///   非连接器禁用(kb_search 等)仍保留;
-    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（V-5 联动,非 plain
-    ///   scope 才检查）——目录为空（无任何启用技能）时隐藏,避免"开关开着但没
-    ///   技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录检查是磁盘 I/O,
-    ///   策略对象保持纯数据）。
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
+    /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
+    /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
+    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具:产物卡恒隐藏
+    /// （[`SessionPolicy::extra_hidden_tools`]）;`load_skill` 按**该会话组合目录
+    /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
+    /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
+    /// 检查是磁盘 I/O,策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
-        let resolved = self.session_policy(session_id).resolve();
-        // 档案 tools.exclude：基础集上再藏（设计期声明，所有模式）。
-        for excluded in resolved.tool_exclude {
-            if !tools.iter().any(|tool| tool == excluded) {
-                tools.push(excluded.clone());
+        let policy = self.session_policy(session_id);
+        // plain：不移除、不追加,原样返回。
+        if !policy.mode().is_code() {
+            return tools;
+        }
+        // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
+        let plain_connector = crate::features::marketplace::disabled_tool_names();
+        let code_connector =
+            crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
+        tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+        for blocked in code_connector {
+            if !tools.iter().any(|tool| tool == &blocked) {
+                tools.push(blocked);
             }
         }
-        // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
-        // ⚠️ 顺序约束：先于下方 connector retain——若未来某模式的 extra_hidden
-        // 恰好含 plain scope 连接器工具名，会被 retain 误删；当前 code 档案的
-        // extra_hidden（mcp_pinvou3_present_artifact）与连接器禁用集无交集，无实际
-        // 影响，但新增 extra_hidden 条目时应避开连接器全名（或先做 retain 再追加）。
-        for hidden in resolved.extra_hidden_tools {
+        for hidden in policy.extra_hidden_tools() {
             if !tools.iter().any(|tool| tool == hidden) {
-                tools.push(hidden.clone());
+                tools.push((*hidden).to_string());
             }
         }
-        // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
-        // （scope 来自档案 connectors.scope；plain 不执行连接器 scope 替换）。
-        if resolved.connector_scope != marketplace::ConnectorScope::Plain {
-            let plain_connector = crate::features::marketplace::disabled_tool_names();
-            let scoped_connector =
-                crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
-            tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
-            for blocked in scoped_connector {
-                if !tools.iter().any(|tool| tool == &blocked) {
-                    tools.push(blocked);
-                }
-            }
-            // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
-            // ⚠️ 设计耦合：load_skill 空目录检查绑定在「scope 非 plain」分支内——
-            // 新增 scope=plain 但需要该检查的模式会静默漏掉（当前仅 plain/code，
-            // code 恒走此分支，行为正确）。如需解耦，应把 load_skill 检查移出
-            // scope 分支，改由独立差量（如档案 tools.exclude 或独立标志）驱动。
-            if crate::features::assistant::skill_materialization::session_skills_is_empty(
-                session_id,
-            ) {
-                let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
-                if !tools.iter().any(|tool| tool == load_skill) {
-                    tools.push(load_skill.to_string());
-                }
+        // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+        if crate::features::assistant::skill_materialization::session_skills_is_empty(session_id) {
+            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+            if !tools.iter().any(|tool| tool == load_skill) {
+                tools.push(load_skill.to_string());
             }
         }
         tools
@@ -576,7 +560,7 @@ impl Pinvou3Bridge {
         else {
             return Vec::new();
         };
-        if !self.session_policy(session_id).binds_project() {
+        if !self.session_policy(session_id).mode().is_code() {
             return Vec::new();
         }
         // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
@@ -846,6 +830,134 @@ impl Pinvou3Bridge {
         }
     }
 
+    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
+    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
+    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
+    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+    fn api_key_for_saved_model(model: &SavedModel) -> String {
+        if let Some(reference) = &model.credential_ref {
+            let store = SystemCredentialStore::new();
+            match store.get(reference) {
+                Ok(Some(key)) if !key.trim().is_empty() => return key,
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!(
+                        "[pinvou3-app] credential read failed for vision model {}: {}",
+                        model.id,
+                        err.user_message()
+                    );
+                }
+            }
+        }
+        if model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url) {
+            return LOCAL_VLLM_API_KEY.to_string();
+        }
+        model.api_key.clone()
+    }
+
+    /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
+    /// 0. **本地多模态引擎运行中** → 直接用本地端点(最高优先级,无需配置视觉模型)。
+    ///    纯文本主模型的图片输入由此获得 VisionToolFallback 路由:image_analyze
+    ///    走本地引擎描述图片,引擎停止后自动回落后续规则。
+    /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
+    ///    id 失效或凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。
+    /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
+    ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
+    ///    `image_analyze`(不 enable `Feature::VisionModel`)。
+    fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
+        if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(self.api_key()),
+                base_url: Some(endpoint),
+            });
+        }
+        let effective = self.effective_model();
+        if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
+            let Some(vision) = self.prefs.model_by_id(vision_id) else {
+                eprintln!(
+                    "[pinvou3-app] vision_model_id {vision_id} not found in saved_models; \
+                     image_analyze disabled"
+                );
+                return None;
+            };
+            let api_key = Self::api_key_for_saved_model(vision);
+            if api_key.trim().is_empty() {
+                eprintln!(
+                    "[pinvou3-app] vision model {} has no usable credential; \
+                     image_analyze disabled",
+                    vision.id
+                );
+                return None;
+            }
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: vision.model.clone(),
+                api_key: Some(api_key),
+                base_url: Some(vision.base_url.clone()),
+            });
+        }
+        if effective.map(effective_image_capability) == Some(EffectiveImageCapability::Supported) {
+            return Some(deepseek_tui::config::VisionModelConfig {
+                model: self.model(),
+                api_key: Some(self.api_key()),
+                base_url: Some(self.base_url()),
+            });
+        }
+        None
+    }
+
+    /// 当前有效模型的图片输入能力(设计 §6.3)。命令层在发送前拒绝时需要据此
+    /// 区分"确认不支持"与"能力未知",给出不同的用户指引。
+    pub fn effective_image_capability(&self) -> EffectiveImageCapability {
+        self.effective_model()
+            .map(effective_image_capability)
+            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
+            .unwrap_or(EffectiveImageCapability::Unknown)
+    }
+
+    /// 兜底视觉模型端点是否本地(§11.8/§11.9):None 表示未配置可用视觉模型。
+    /// fallback 路径的图片字节发给视觉模型而非主模型,隐私提示必须按此口径。
+    pub fn vision_uses_local_endpoint(&self) -> Option<bool> {
+        self.resolve_vision_model_config().map(|config| {
+            config
+                .base_url
+                .as_deref()
+                .is_some_and(base_url_uses_loopback)
+        })
+    }
+
+    /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
+    /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
+    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
+    /// `vision_model_id` 命中的独立视觉模型。
+    pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
+        crate::features::assistant::image_capability::image_input_mode(
+            self.effective_image_capability(),
+            self.resolve_vision_model_config().is_some(),
+        )
+    }
+
+    /// 是否配置了**可用**的独立视觉模型(或 Supported 主模型可自复用)。
+    /// 与 `image_input_mode` 内部的 `has_vision_model` 同一口径
+    /// (`resolve_vision_model_config`),供能力查询命令回传前端展示。
+    pub fn has_vision_model(&self) -> bool {
+        self.resolve_vision_model_config().is_some()
+    }
+
+    /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
+    /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
+    /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
+    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/[::1])。
+    pub fn is_local_endpoint(&self) -> bool {
+        let preset_is_local = match self.effective_model() {
+            Some(model) => model.preset == ModelPreset::LocalVllm,
+            // 无有效模型(配置损坏):按全局 preset 判定。
+            None => self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm,
+        };
+        preset_is_local || base_url_uses_loopback(&self.base_url())
+    }
+
     /// Current search API key from env or encrypted credential store.
     pub fn search_api_key(&self) -> Option<String> {
         let provider = self.prefs.search.provider;
@@ -1031,8 +1143,7 @@ impl Pinvou3Bridge {
             plugin_registry: _,
             instructions: _,
             project_context_pack_enabled: _,
-            // advanced.max_steps 显式配置时覆盖；未配置则复用底座默认值。
-            max_steps: default_max_steps,
+            max_steps: _,
             max_subagents: _,
             snapshots_enabled: _,
             memory_enabled: _,
@@ -1122,6 +1233,14 @@ impl Pinvou3Bridge {
                 .map(|name| (*name).to_string()),
         );
 
+        // 视觉工具(image_analyze)注册两道门(设计 §9.3,阶段 E):
+        //   vision_config 有值 + Feature::VisionModel 开启,缺一不可。
+        // 不再无条件复用主模型:只有「显式 vision_model_id 可解析」或
+        // 「主模型能力确认 Supported」才注册;否则文本模型也会拿到
+        // image_analyze,调用时才发现不支持图片(原 bridge 无条件复用 bug)。
+        let vision_config = self.resolve_vision_model_config();
+        let vision_tool_enabled = vision_config.is_some();
+
         EngineConfig {
             // pinvou3 覆盖
             model: self.model(),
@@ -1134,8 +1253,7 @@ impl Pinvou3Bridge {
             plugin_registry: None,
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            // 主 agent 的默认预算由 CodeWhale 维护；Pinvou 只翻译显式用户配置。
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
             // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
@@ -1149,29 +1267,21 @@ impl Pinvou3Bridge {
             strict_tool_mode: false,
             // pinvou3 中文用户已经是中文语境，不走 /translate 路径
             translation_enabled: false,
-            // 视觉配置跟随主模型端点：本地 vLLM 复用同一端点；
-            // 第三方 provider 也复用（若不支持 vision，底座会优雅失败）。
-            // 本地多模态引擎运行中时，把端点指到本地 llama-server——纯文本主模型
-            // 由此获得 image_analyze 视觉能力。EngineConfig 在会话 spawn 时快照，
-            // 引擎启停后下次会话生效（见 features/llama_engine/mod.rs）。
-            vision_config: Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(
-                    crate::features::llama_engine::vision_endpoint()
-                        .unwrap_or_else(|| self.base_url()),
-                ),
-            }),
+            // 视觉配置由 resolve_vision_model_config 按 §9.3 三规则解析;
+            // None = 不注册 image_analyze(主模型不支持/未知且无可用视觉模型)。
+            vision_config,
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
             // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 开启 VisionModel feature(默认 Experimental 关):配合上面的
-            // vision_config,tool_setup.rs 才会注册 image_analyze 工具给 LLM。
+            // 开启 VisionModel feature(默认 Experimental 关)仅当 vision_config
+            // 解析成功(见上):tool_setup.rs 才会注册 image_analyze 工具给 LLM。
             // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
             features: {
                 let mut f = features;
-                f.enable(deepseek_tui::features::Feature::VisionModel);
+                if vision_tool_enabled {
+                    f.enable(deepseek_tui::features::Feature::VisionModel);
+                }
                 f
             },
             // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
@@ -1777,6 +1887,9 @@ impl Pinvou3Bridge {
         let (auto_approve, approval_mode) = policy.approval_params();
         Ok(Op::SendMessage {
             content: full_content,
+            // v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在
+            // content 里,由底座 image_attach 展开为 ImageUrl 块并按其 route
+            // 能力剥离;无需结构化 input 字段。
             mode,
             route: Box::new(self.resolve_runtime_route_for_model(&model)?),
             compaction: Box::new(self.compaction_config_for_model(&model)),
@@ -2308,7 +2421,7 @@ mod tests {
         let plain = vec!["kb_search".to_string()];
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            [plain.clone(), vec!["Git".to_string()]].concat()
+            plain
         );
 
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
@@ -2337,7 +2450,7 @@ mod tests {
         }
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            [plain.clone(), vec!["Git".to_string()]].concat()
+            plain
         );
     }
 
@@ -2411,9 +2524,9 @@ mod tests {
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // 普通会话保留 plain scope 禁用集，并隐藏代码专用 Git。
+        // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(shaped, [tools, vec!["Git".to_string()]].concat());
+        assert_eq!(shaped, tools);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2484,6 +2597,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -2491,6 +2606,281 @@ mod tests {
             credential_action: None,
         }];
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
+    }
+
+    /// 追加一条视觉兜底模型(测试辅助):plaintext api_key 直给,绕过系统凭据库。
+    fn push_vision_model(bridge: &mut Pinvou3Bridge, id: &str, model: &str, api_key: &str) {
+        bridge.prefs.advanced.saved_models.push(SavedModel {
+            id: id.to_string(),
+            name: model.to_string(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            model: model.to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: api_key.to_string(),
+            credential_ref: None,
+            credential_state: crate::platform::credential_store::CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+    }
+
+    /// §9.3 规则 1:主模型显式设置 vision_model_id → 用该 SavedModel 的
+    /// endpoint + 凭据(不回落主模型,不读第二份明文)。
+    #[test]
+    fn vision_config_prefers_explicit_vision_model_id() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut bridge, "vision-1", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("explicit vision model must resolve");
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.api_key.as_deref(), Some("sk-vision"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+
+        let engine = bridge.build_engine_config();
+        assert!(engine.vision_config.is_some());
+        assert!(engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    #[test]
+    fn vision_endpoint_locality_reflects_vision_model_base_url() {
+        // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(bridge.vision_uses_local_endpoint(), None);
+
+        push_vision_model(&mut bridge, "vision-cloud", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-cloud".to_string());
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(false));
+
+        bridge.prefs.advanced.saved_models[1].base_url = "http://127.0.0.1:8000/v1".to_string();
+        assert_eq!(bridge.vision_uses_local_endpoint(), Some(true));
+    }
+
+    /// §9.3 规则 2:未设置 vision_model_id、主模型能力 Supported →
+    /// 复用主模型作为 workspace 图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    #[test]
+    fn vision_config_reuses_main_model_only_when_supported() {
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]);
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.6-terra",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("supported main model must be reused as vision tool");
+        assert_eq!(config.model, "gpt-5.6-terra");
+        assert_eq!(config.api_key.as_deref(), Some("sk-main"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        assert!(bridge
+            .build_engine_config()
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
+    /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
+    #[test]
+    fn vision_config_absent_for_unknown_or_disabled_main_model() {
+        // Unknown:deepseek-v4-pro 不在内置已验证能力表。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert!(unknown.resolve_vision_model_config().is_none());
+        let engine = unknown.build_engine_config();
+        assert!(engine.vision_config.is_none());
+        assert!(!engine
+            .features
+            .enabled(deepseek_tui::features::Feature::VisionModel));
+
+        // override Disabled:即便主模型命中内置表也不得复用。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        assert!(disabled.resolve_vision_model_config().is_none());
+        assert!(disabled.build_engine_config().vision_config.is_none());
+    }
+
+    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
+    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    #[test]
+    fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
+        // id 指向不存在的模型。
+        let mut ghost = fixture_bridge();
+        set_active_model(
+            &mut ghost,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
+        assert!(ghost.resolve_vision_model_config().is_none());
+
+        // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        let mut no_key = fixture_bridge();
+        set_active_model(
+            &mut no_key,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut no_key, "vision-no-key", "gpt-4o", "");
+        no_key.prefs.advanced.saved_models[0].vision_model_id = Some("vision-no-key".to_string());
+        assert!(no_key.resolve_vision_model_config().is_none());
+    }
+
+    /// §9.2 路由(阶段 D):Supported → Native(无论有无视觉模型);
+    /// Unknown/Unsupported → 有可用视觉模型走 VisionToolFallback,否则 Unsupported。
+    #[test]
+    fn image_input_mode_routes_by_capability_and_vision_model() {
+        use crate::features::assistant::image_capability::ImageInputMode;
+
+        // Supported 主模型:无视觉模型也 Native。
+        let mut native = fixture_bridge();
+        set_active_model(
+            &mut native,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert_eq!(native.image_input_mode(), ImageInputMode::Native);
+
+        // Unknown 主模型、无视觉模型 → Unsupported(发送前拒绝)。
+        let mut unknown = fixture_bridge();
+        set_active_model(
+            &mut unknown,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        assert_eq!(unknown.image_input_mode(), ImageInputMode::Unsupported);
+
+        // Unknown 主模型 + vision_model_id 命中可用视觉模型 → VisionToolFallback。
+        let mut fallback = fixture_bridge();
+        set_active_model(
+            &mut fallback,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut fallback, "vision-1", "gpt-4o", "sk-vision");
+        fallback.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+        assert_eq!(
+            fallback.image_input_mode(),
+            ImageInputMode::VisionToolFallback
+        );
+
+        // override Enabled 的未知本地模型 → Native。
+        let mut forced = fixture_bridge();
+        set_active_model(
+            &mut forced,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        forced.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Enabled;
+        assert_eq!(forced.image_input_mode(), ImageInputMode::Native);
+
+        // override Disabled 即便命中内置表也不 Native;有视觉模型 → Fallback。
+        let mut disabled = fixture_bridge();
+        set_active_model(
+            &mut disabled,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        disabled.prefs.advanced.saved_models[0].image_capability_override =
+            prefs::ImageCapabilityOverride::Disabled;
+        push_vision_model(&mut disabled, "vision-2", "gpt-4o", "sk-vision");
+        disabled.prefs.advanced.saved_models[0].vision_model_id = Some("vision-2".to_string());
+        assert_eq!(
+            disabled.image_input_mode(),
+            ImageInputMode::VisionToolFallback
+        );
+    }
+
+    /// v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在 content,
+    /// reminder 直接拼在 content 前缀;标记由底座 image_attach 展开,bridge 不做
+    /// 结构化处理。此处验证 reminder 前缀拼接与标记行透传。
+    #[test]
+    fn build_send_message_op_preserves_attach_marker_in_content() {
+        let bridge = fixture_bridge();
+        let op = bridge
+            .build_send_message_op(
+                "sess-plain",
+                "看看这张图\n[Attached image: /tmp/shot.png]".to_string(),
+                AppMode::Yolo,
+                None,
+                false,
+            )
+            .expect("resolve test route");
+        let Op::SendMessage { content, .. } = op else {
+            panic!("期望 SendMessage");
+        };
+        assert!(content.contains("<system-reminder>"));
+        assert!(
+            content.contains("[Attached image: /tmp/shot.png]"),
+            "官方标记行必须原样透传,得到:\n{content}"
+        );
     }
 
     #[test]
@@ -2568,6 +2958,66 @@ mod tests {
             "",
         );
         assert!(cloud_compatible.api_key_required());
+    }
+
+    /// §11.8/§11.9:is_local_endpoint 与发送路径同一解析口径——local_vllm preset
+    /// 或有效 base_url host 为 loopback 即本机;云端/局域网地址不得误判为本机。
+    #[test]
+    fn is_local_endpoint_detects_loopback_and_local_vllm_preset() {
+        // local_vllm preset 默认部署(127.0.0.1:8000):本机。
+        let mut local_preset = fixture_bridge();
+        set_active_model(
+            &mut local_preset,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        assert!(local_preset.is_local_endpoint());
+
+        // local_vllm preset 即按本地对待,即使 base_url 被改成非 loopback 地址(规格口径)。
+        let mut local_preset_remote = fixture_bridge();
+        set_active_model(
+            &mut local_preset_remote,
+            ModelPreset::LocalVllm,
+            "qwen36_35b_256k",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(local_preset_remote.is_local_endpoint());
+
+        // 非 local preset 但 base_url 指向 loopback(自定义本机服务):本机。
+        let mut loopback_compatible = fixture_bridge();
+        set_active_model(
+            &mut loopback_compatible,
+            ModelPreset::OpenaiCompatible,
+            "custom-local-model",
+            "http://[::1]:9000/v1",
+            "",
+        );
+        assert!(loopback_compatible.is_local_endpoint());
+
+        // 云端地址:非本机,前端应提示图片发送给服务商。
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::OpenaiCompatible,
+            "gpt-4o",
+            "https://api.openai.com/v1",
+            "sk-main",
+        );
+        assert!(!cloud.is_local_endpoint());
+
+        // 局域网地址不是 loopback(见 api_key_requirement 测试同口径):非本机。
+        let mut lan = fixture_bridge();
+        set_active_model(
+            &mut lan,
+            ModelPreset::OpenaiCompatible,
+            "custom-lan-model",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(!lan.is_local_endpoint());
     }
 
     /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
@@ -2829,7 +3279,7 @@ mod tests {
                 AppMode::Yolo,
                 Some(persona.clone()),
                 false,
-            )
+                            )
             .expect("resolve test route");
         let content = match op {
             Op::SendMessage { content, .. } => content,
@@ -2994,25 +3444,6 @@ mod tests {
             "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
-        );
-    }
-
-    #[test]
-    fn engine_config_reuses_base_max_steps_default_and_respects_override() {
-        let mut bridge = fixture_bridge();
-        let base_default = EngineConfig::default().max_steps;
-
-        assert_eq!(
-            bridge.build_engine_config().max_steps,
-            base_default,
-            "未显式配置时，主 agent 必须复用 CodeWhale 的 max_steps 默认值"
-        );
-
-        bridge.prefs.advanced.max_steps = Some(321);
-        assert_eq!(
-            bridge.build_engine_config().max_steps,
-            321,
-            "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
         );
     }
 
@@ -3580,16 +4011,18 @@ mod tests {
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// D-2 行为断言:整形按策略数据驱动。plain 会话追加代码专用 Git；
-    /// code 会话按策略追加隐藏工具且幂等不重复(连接器 scope 切换
+    /// D-2 行为不变断言:整形按策略数据驱动。plain 会话逐字节原样返回(不移除、
+    /// 不追加);code 会话按策略追加两个隐藏工具且幂等不重复(连接器 scope 切换
     /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
     #[test]
     fn shape_disallowed_tools_follows_session_policy() {
         let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
         let mut bridge = fixture_bridge();
-        // 未注入 predicate → plain:保留原禁用项，并隐藏代码专用 Git。
-        let plain = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(plain, [tools.clone(), vec!["Git".to_string()]].concat());
+        // 未注入 predicate → plain:原样返回。
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", tools.clone()),
+            tools
+        );
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
         }));
@@ -3600,7 +4033,7 @@ mod tests {
         }
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                shaped.iter().filter(|tool| *tool == hidden).count(),
+                shaped.iter().filter(|tool| tool == hidden).count(),
                 1,
                 "策略隐藏工具应恰好出现一次: {hidden}"
             );
@@ -3608,7 +4041,7 @@ mod tests {
         let twice = bridge.shape_disallowed_tools("sess-code", shaped);
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                twice.iter().filter(|tool| *tool == hidden).count(),
+                twice.iter().filter(|tool| tool == hidden).count(),
                 1,
                 "整形应幂等(不重复追加): {hidden}"
             );

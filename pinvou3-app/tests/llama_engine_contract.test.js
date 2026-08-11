@@ -17,13 +17,17 @@ function readRoot(rel) {
   return fs.readFileSync(path.join(ROOT, rel), "utf8");
 }
 
-// 1. bridge.rs 接线：vision_config 必须条件覆盖到本地端点（引擎运行中优先），
+// 1. bridge.rs 接线：resolve_vision_model_config 必须以本地引擎为最高优先级规则
+//    （引擎运行中 → 本地端点；引擎停止 → 回落 vision_model_id / 主模型复用规则），
 //    且不引入 --alias（单模型模式忽略请求体 model 字段）。
 const bridge = read("features/assistant/platform/bridge.rs");
 assert(
-  /llama_engine::vision_endpoint\(\s*\)/.test(bridge) &&
-    /unwrap_or_else\(.+self\.base_url\(\)\)/s.test(bridge),
-  "bridge.rs 必须把 vision_config.base_url 条件覆盖为 llama_engine::vision_endpoint()（引擎运行中优先，否则回退主模型端点）"
+  /fn resolve_vision_model_config[\s\S]*?llama_engine::vision_endpoint\(\)/.test(bridge),
+  "resolve_vision_model_config 必须接入 llama_engine::vision_endpoint()（本地引擎最高优先级）"
+);
+assert(
+  bridge.includes("vision_model_id"),
+  "resolve_vision_model_config 必须保留 vision_model_id 配置规则（native-image-input 集成）"
 );
 assert(!/--alias/.test(bridge), "bridge.rs 不得引入 --alias");
 

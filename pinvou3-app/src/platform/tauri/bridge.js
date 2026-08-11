@@ -817,7 +817,6 @@
   var untrackArtifact = artifactTrackerFeature.untrackArtifact;
   var findPresentedArtifact = artifactTrackerFeature.findPresentedArtifact;
   var reconcileArtifacts = artifactTrackerFeature.reconcileArtifacts;
-  var extractArtifactPaths = artifactTrackerFeature.extractArtifactPaths;
   var extractArtifactPath = artifactTrackerFeature.extractArtifactPath;
   var fileMutationAction = artifactTrackerFeature.fileMutationAction;
   var isPresentArtifactTool = artifactTrackerFeature.isPresentArtifactTool;
@@ -846,7 +845,7 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
-    extractArtifactPaths: extractArtifactPaths,
+    extractArtifactPath: extractArtifactPath,
     fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
     autoCreateScheduledTaskDraft: function () { return autoCreateScheduledTaskDraft.apply(null, arguments); },
@@ -867,7 +866,6 @@
   var hasChatItemForTool = chatFeature.hasChatItemForTool;
   var isDuplicateArtifactCard = chatFeature.isDuplicateArtifactCard;
   var addSystemItem = chatFeature.addSystemItem;
-  var addAuthoritySyncNotice = chatFeature.addAuthoritySyncNotice;
   var compactPruneRollupText = chatFeature.compactPruneRollupText;
   var removeCompactionStartItem = chatFeature.removeCompactionStartItem;
   var addOrMergePruneCompaction = chatFeature.addOrMergePruneCompaction;
@@ -1550,12 +1548,13 @@
         var db = dc[dj];
         var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
         if (dbMutation) {
-          extractArtifactPaths(db.input).forEach(function (dap) {
+          var dap = extractArtifactPath(db.input);
+          if (dap) {
             lastDirtyArtifactId[dap] = db.id;
             // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
             // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
             if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          });
+          }
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
           var pres = resultById[db.id];
@@ -1641,14 +1640,10 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
-              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
-              // tool_result，不能按历史恢复为 submitted。跳过，等
-              // chat:user_input_required 事件渲染可交互的 active 卡。
-              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
-                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
+                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
+                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
               });
             }
             continue;
@@ -1702,9 +1697,9 @@
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
           if (fileMutationAction(b.name, b.input)) {
             var wres = resultById[b.id];
-            extractArtifactPaths(b.input).forEach(function (wap) {
-              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
+            var wap = extractArtifactPath(b.input);
+            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
               var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
@@ -1715,7 +1710,7 @@
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
-            });
+            }
           }
         }
       }
@@ -1801,8 +1796,7 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
-    addChatItem: addChatItem, addSystemItem: addSystemItem,
-    addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
+    addChatItem: addChatItem, addSystemItem: addSystemItem, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,
     toolCallAlreadyFinished: toolCallAlreadyFinished,
     hasChatItemForTool: hasChatItemForTool,
@@ -1825,7 +1819,7 @@
     artifactPathFromToolOutput: artifactPathFromToolOutput,
     shouldUseToolOutputAsArtifact: shouldUseToolOutputAsArtifact,
     presentArtifactAbsPath: presentArtifactAbsPath,
-    extractArtifactPaths: extractArtifactPaths, fileMutationAction: fileMutationAction,
+    extractArtifactPath: extractArtifactPath, fileMutationAction: fileMutationAction,
     markTurnDirtyArtifact: markTurnDirtyArtifact,
     trackArtifact: trackArtifact, untrackArtifact: untrackArtifact,
     findPresentedArtifact: findPresentedArtifact, isDeliverable: isDeliverable,
@@ -1903,6 +1897,7 @@
   var dismissVllmSetup = settingsFeature.dismissVllmSetup;
   var declineVllmSetup = settingsFeature.declineVllmSetup;
   var getEffectiveModelConfig = settingsFeature.getEffectiveModelConfig;
+  var getImageInputCapability = settingsFeature.getImageInputCapability;
   var loadModels = settingsFeature.loadModels;
   var saveModel = settingsFeature.saveModel;
   var revealModelApiKey = settingsFeature.revealModelApiKey;
@@ -1911,12 +1906,12 @@
   var loadSessionModel = settingsFeature.loadSessionModel;
   var switchModel = settingsFeature.switchModel;
   var testModelConnection = settingsFeature.testModelConnection;
+  var testImageInputCapability = settingsFeature.testImageInputCapability;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
     state: state, invoke: invoke, notify: notify, bt: bt,
-    addSystemItem: addSystemItem, addAuthoritySyncNotice: addAuthoritySyncNotice,
-    addChatItem: addChatItem, timeStr: timeStr,
+    addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr,
     runSyncOnSession: runSyncOnSession,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant,
@@ -2052,7 +2047,6 @@
   var runVoiceInputDebugAssertions = voiceFeature.runVoiceInputDebugAssertions;
   var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke });
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
-  var cancelKbModel = knowledgeModelFeature.cancelKbModel;
   var llamaEngineFeature = installBridgeFeature("llama-engine", { state: state, notify: notify, invoke: invoke });
   var llamaEngineRefreshStatus = llamaEngineFeature.refreshStatus;
   var llamaEngineInstallEngine = llamaEngineFeature.installEngine;
@@ -2060,6 +2054,7 @@
   var llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
   var llamaEngineStart = llamaEngineFeature.startEngine;
   var llamaEngineStop = llamaEngineFeature.stopEngine;
+  var cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2258,6 +2253,7 @@
     },
     models: {
       getEffectiveModelConfig: getEffectiveModelConfig,
+      getImageInputCapability: getImageInputCapability,
       loadModels: loadModels,
       saveModel: saveModel,
       revealModelApiKey: revealModelApiKey,
@@ -2266,6 +2262,7 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      testImageInputCapability: testImageInputCapability,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
       // Plan/YOLO
