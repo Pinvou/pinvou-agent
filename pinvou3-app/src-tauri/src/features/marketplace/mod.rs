@@ -406,8 +406,11 @@ pub struct DisabledConnectorsFile {
 }
 
 /// 会话类型 scope;`plain` 是缺省值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// serde 供能力档案 `connectors.scope` 反序列化（kebab-case 与档案 mode 命名一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ConnectorScope {
+    #[default]
     Plain,
     Code,
 }

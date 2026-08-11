@@ -1,0 +1,18 @@
+{
+  "profiles": [
+    {
+      "mode": "plain",
+      "tools": { "exclude": [], "extra_hidden": [], "include": [] },
+      "connectors": { "scope": "plain" }
+    },
+    {
+      "mode": "code",
+      "tools": {
+        "exclude": [],
+        "extra_hidden": ["mcp_pinvou3_present_artifact"],
+        "include": ["git_status"]
+      },
+      "connectors": { "scope": "code" }
+    }
+  ]
+}

@@ -332,7 +332,7 @@ impl Pinvou3Bridge {
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
         // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
-        let base = if self.session_policy(session_id).mode().is_code() {
+        let base = if self.session_policy(session_id).uses_code_instructions() {
             let workspace_hint = self
                 .execution_root_resolver
                 .as_ref()
@@ -432,44 +432,64 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）取数。plain 会话原样返回
-    /// （不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并追加策略
-    /// 隐藏工具。spawn 初值与全局热刷都经此整形。
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
+    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回,
+    /// 与历史"plain 原样返回"逐字节等价;有差量则逐项并入 disallowed。
+    /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
-    /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
-    /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
-    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具:产物卡恒隐藏
-    /// （[`SessionPolicy::extra_hidden_tools`]）;`load_skill` 按**该会话组合目录
-    /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
-    /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
-    /// 检查是磁盘 I/O,策略对象保持纯数据）。
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
+    /// - 档案 `tools.exclude`：基础集上再藏（所有模式）；
+    /// - 档案 `tools.extra_hidden`：模式固有隐藏（所有模式;code:产物卡）;
+    /// - 档案 `connectors.scope` 非 plain 时:连接器工具改用该 scope 的禁用集
+    ///   ——两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;
+    ///   非连接器禁用(kb_search 等)仍保留;
+    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（V-5 联动,非 plain
+    ///   scope 才检查）——目录为空（无任何启用技能）时隐藏,避免"开关开着但没
+    ///   技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录检查是磁盘 I/O,
+    ///   策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
-        let policy = self.session_policy(session_id);
-        // plain：不移除、不追加,原样返回。
-        if !policy.mode().is_code() {
-            return tools;
-        }
-        // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
-        let plain_connector = crate::features::marketplace::disabled_tool_names();
-        let code_connector =
-            crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
-        tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
-        for blocked in code_connector {
-            if !tools.iter().any(|tool| tool == &blocked) {
-                tools.push(blocked);
+        let resolved = self.session_policy(session_id).resolve();
+        // 档案 tools.exclude：基础集上再藏（设计期声明，所有模式）。
+        for excluded in resolved.tool_exclude {
+            if !tools.iter().any(|tool| tool == excluded) {
+                tools.push(excluded.clone());
             }
         }
-        for hidden in policy.extra_hidden_tools() {
+        // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
+        // ⚠️ 顺序约束：先于下方 connector retain——若未来某模式的 extra_hidden
+        // 恰好含 plain scope 连接器工具名，会被 retain 误删；当前 code 档案的
+        // extra_hidden（mcp_pinvou3_present_artifact）与连接器禁用集无交集，无实际
+        // 影响，但新增 extra_hidden 条目时应避开连接器全名（或先做 retain 再追加）。
+        for hidden in resolved.extra_hidden_tools {
             if !tools.iter().any(|tool| tool == hidden) {
-                tools.push((*hidden).to_string());
+                tools.push(hidden.clone());
             }
         }
-        // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
-        if crate::features::assistant::skill_materialization::session_skills_is_empty(session_id) {
-            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
-            if !tools.iter().any(|tool| tool == load_skill) {
-                tools.push(load_skill.to_string());
+        // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
+        // （scope 来自档案 connectors.scope；plain 差量为空时以下全为空操作，
+        // 与历史"plain 原样返回"逐字节等价）。
+        if resolved.connector_scope != marketplace::ConnectorScope::Plain {
+            let plain_connector = crate::features::marketplace::disabled_tool_names();
+            let scoped_connector =
+                crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
+            tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+            for blocked in scoped_connector {
+                if !tools.iter().any(|tool| tool == &blocked) {
+                    tools.push(blocked);
+                }
+            }
+            // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+            // ⚠️ 设计耦合：load_skill 空目录检查绑定在「scope 非 plain」分支内——
+            // 新增 scope=plain 但需要该检查的模式会静默漏掉（当前仅 plain/code，
+            // code 恒走此分支，行为正确）。如需解耦，应把 load_skill 检查移出
+            // scope 分支，改由独立差量（如档案 tools.exclude 或独立标志）驱动。
+            if crate::features::assistant::skill_materialization::session_skills_is_empty(
+                session_id,
+            ) {
+                let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+                if !tools.iter().any(|tool| tool == load_skill) {
+                    tools.push(load_skill.to_string());
+                }
             }
         }
         tools
@@ -557,7 +577,7 @@ impl Pinvou3Bridge {
         else {
             return Vec::new();
         };
-        if !self.session_policy(session_id).mode().is_code() {
+        if !self.session_policy(session_id).binds_project() {
             return Vec::new();
         }
         // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
@@ -1053,6 +1073,9 @@ impl Pinvou3Bridge {
             tools,
             // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
+            // [pinvou3-fork] hidden_tools：能力档案 include 通道按会话注入，
+            // 仅在 build_engine_config_for_session_at 设置（headless 保持 None）。
+            hidden_tools: _,
             hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
@@ -1074,10 +1097,6 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
-            // pinvou3-fork（能力档案 fork ②）：按会话注入的隐藏工具集。
-            // skill 线不注入（None=回退编译期常量，行为不变）；include 通道由
-            // 能力档案统一 PR 接入。pinvou3 暂不启用会话裁剪，显式保持底座固定隐藏集。
-            hidden_tools: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1268,9 +1287,9 @@ impl Pinvou3Bridge {
                     Some(n)
                 }
             },
-            // CodeWhale r4 新增会话隐藏集注入（fork ② 字段）。父仓本次只接入底座
-            // 基线，继续使用编译期 PINVOU3_HIDDEN_TOOLS；能力档案启用另行在 app
-            // 层按会话计算。本线不注入（None=回退常量，行为不变）。
+            // [pinvou3-fork] hidden_tools：headless 单引擎路径不按会话注入
+            // （None = 底座回退常量）；按会话注入在
+            // `build_engine_config_for_session_at`（能力档案 include 通道）。
             hidden_tools: None,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
@@ -1323,6 +1342,27 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // 能力档案 include 通道（fork ②）：
+        // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
+        // 取数统一走 resolve()（单真相源，评审 ①b）；仅当 include 非空时注入
+        // Some（空 → None → 底座回退常量，与现状逐字节等价，plain 零影响）。
+        //
+        // ⚠️ 生效语义（U-7，与 disallowed 通道不同）：hidden 集在 **spawn 时
+        // 定型**、运行期不变（v1 档案是设计期产物）——档案变更仅 respawn 生效，
+        // 无热刷通道（`set_disallowed_all` 只覆盖 disallowed，不覆盖 hidden）。
+        // 两通道在 spawn 时的叠加顺序：disallowed 在 catalog 构建后硬删
+        // （filter_tool_catalog_for_gates），hidden 在 catalog 构建时贴 defer
+        // 标签——互不重叠，顺序无影响。
+        let resolved = self.session_policy(session_id).resolve();
+        if !resolved.tool_include.is_empty() {
+            cfg.hidden_tools = Some(
+                deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS
+                    .iter()
+                    .filter(|name| !resolved.tool_include.iter().any(|inc| inc == *name))
+                    .map(|name| name.to_string())
+                    .collect(),
+            );
+        }
         cfg
     }
 
@@ -3559,7 +3599,7 @@ mod tests {
         }
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                shaped.iter().filter(|tool| tool == hidden).count(),
+                shaped.iter().filter(|tool| *tool == hidden).count(),
                 1,
                 "策略隐藏工具应恰好出现一次: {hidden}"
             );
@@ -3567,11 +3607,70 @@ mod tests {
         let twice = bridge.shape_disallowed_tools("sess-code", shaped);
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                twice.iter().filter(|tool| tool == hidden).count(),
+                twice.iter().filter(|tool| *tool == hidden).count(),
                 1,
                 "整形应幂等(不重复追加): {hidden}"
             );
         }
+    }
+
+    /// 能力档案 include 通道（fork ②）注入：`EngineConfig.hidden_tools` 按会话
+    /// 计算 = 底座隐藏常量 − 档案 tools.include，仅当 include 非空时注入 Some。
+    /// - plain：include 为空 → None（回退底座常量，零影响）；
+    /// - code：include 非空 → Some(常量 − include)，放出的工具（v1：git_status）
+    ///   不在注入集内、其余常量项保留；
+    /// - 前提守护：放出的工具必须真实存在于底座常量（否则 include 静默失效，
+    ///   测试即失败）。
+    #[test]
+    fn engine_config_injects_hidden_tools_per_capability_profile() {
+        use crate::features::assistant::session_policy::SessionPolicy;
+        use deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS;
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-hidden-tools-inject-{}-{:p}",
+            std::process::id(),
+            &std::env::temp_dir()
+        ));
+        let mut bridge = fixture_bridge();
+        let plain = bridge.build_engine_config_for_session_at("sess-plain", root.join("plain"));
+        assert!(
+            plain.hidden_tools.is_none(),
+            "plain 档案 include 为空 → 不注入(回退底座常量): {:?}",
+            plain.hidden_tools
+        );
+
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        let code = bridge.build_engine_config_for_session_at("sess-code", root.join("code"));
+        let resolved = SessionPolicy::for_mode(SessionMode::Code).resolve();
+        assert!(
+            !resolved.tool_include.is_empty(),
+            "code 档案 v1 必须至少放出一个工具"
+        );
+        let injected = code
+            .hidden_tools
+            .expect("code 档案 include 非空 → 必须注入 Some");
+        for name in resolved.tool_include {
+            assert!(
+                PINVOU3_HIDDEN_TOOLS.contains(&name.as_str()),
+                "include 工具必须真实存在于底座隐藏常量(否则放出静默失效): {name}"
+            );
+            assert!(
+                !injected.iter().any(|hidden| hidden == name),
+                "include 放出的工具不应在注入隐藏集内: {name}; 注入集={injected:?}"
+            );
+        }
+        // 其余常量项保留：注入集 = 常量 − include（逐项校验，防多删/漏删）。
+        for constant in PINVOU3_HIDDEN_TOOLS {
+            let included = resolved.tool_include.iter().any(|name| name == constant);
+            assert_eq!(
+                injected.iter().filter(|hidden| *hidden == constant).count(),
+                usize::from(!included),
+                "注入集必须与「常量 − include」一致: {constant}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
