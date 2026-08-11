@@ -136,8 +136,13 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   // 用户在密钥框操作过（输入/清空）后，迟到的回填不得覆盖用户输入
   // （慢速凭据存储下 backfill 晚于用户操作的竞态，复审 F4）。
   const apiKeyTouchedRef = useRef(false);
+  // save 校验通过后暂存模型槽位/上下文窗口 payload：doSave 与自绘确认
+  // 回调（JSX onClick）跨函数共享，不能直接引用 save 内的局部变量。
+  const payloadRef = useRef({ slotPayload: null, contextWindowPayload: null });
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 自绘确认步骤（null = 无）：'emptyKey'（新建空 key）/ 'deleteKey'（编辑删除已存密钥）
+  const [confirmStep, setConfirmStep] = useState(null);
   const [error, setError] = useState('');
   // 预设下拉：'' = 其它（自定义，不应用任何预设）。
   const [presetKey, setPresetKey] = useState('');
@@ -167,11 +172,15 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
 
   useEffect(() => {
     const onKey = event => {
-      if (event.key === 'Escape') onClose();
+      // 二级确认弹窗打开时 Escape 只关确认层，不连带关闭整个表单
+      if (event.key === 'Escape') {
+        if (confirmStep) setConfirmStep(null);
+        else onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, confirmStep]);
 
   // 编辑有 key 的 Provider 时回填真实密钥：输入框 type=password 自然掩码，
   // 点「显示」切 text 变明文（密码管理器范式）。仅编辑时拉取，列表永不回传。
@@ -184,7 +193,10 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
         // 仅当字段仍为空且用户未手动操作过才回填：否则「清空=删除」意图
         // 会被迟到的旧 key 吞成 keep（复审 F4）。
         if (key && !apiKeyTouchedRef.current) setApiKey(key);
-        setKeyLoaded(true);
+        // 仅**非空** key 才视为「已加载」：返回空串（解密失败/存储异常等）时
+        // 保持 keyLoaded=false → save 走 keep（保留旧密钥），防止用户看到
+        // 空字段直接保存把已保存的密钥静默删成 delete（高危项加固）。
+        if (key) setKeyLoaded(true);
       })
       // 回填失败**不**置 keyLoaded：保持 false → save 时按「保留」处理，
       // 防止读不到已保存密钥时用户看到空字段直接保存即静默删除（评审高危项）。
@@ -254,25 +266,40 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       }
       contextWindowPayload = parsed;
     }
-    setSaving(true);
-    setError('');
+    payloadRef.current = { slotPayload, contextWindowPayload };
     // key 语义（密码管理器范式，无选择器）：编辑时字段已回填真实 key——
     // 清空 = 删除，改动 = 替换，原样 = 重写同值（无效果）。例外：
-    // 编辑无已存密钥（hasCredential=false）或回填失败（keyLoaded=false）且
-    // 字段仍为空 → 走 keep（无操作），避免「清空无密钥」触发误导性删除确认。
+    // 编辑回填失败（keyLoaded=false）且字段仍为空 → 走 keep（无操作），
+    // 避免「清空无密钥」触发误导性删除确认。
     const trimmedKey = String(apiKey || '').trim();
+    // 危险/存疑操作走**自绘二级确认弹窗**（Tauri WebView2 下系统
+    // window.confirm 实测不弹；应用内自绘弹窗无此限制）：
+    // - 新建 + 空 key，或编辑**无已存密钥**（hasCredential=false）+ 空 key：
+    //   允许保存（走 keep），提交前确认「切换前需补 key」
+    // - 编辑 + 清空 key（有已存密钥）：= 删除密钥，确认防误触
+    // 回填失败（keyLoaded=false）且有已存密钥时恒走 keep 且不弹确认：
+    // 密钥实际存在，不得提示「未填写」，更不能删。
     const apiKeyAction = !initial
-      ? 'replace'
+      ? (trimmedKey ? 'replace' : 'keep')
       : trimmedKey
         ? 'replace'
         : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete');
-    // 「清空 = 删除」会删掉已保存密钥：二次确认防误触。回填失败时
-    // keyLoaded=false 恒走 keep，不会到这里。
-    if (apiKeyAction === 'delete' && !window.confirm(copy.deleteKeyConfirm)) {
-      setSaving(false);
+    if (!trimmedKey && (!initial || !initial.hasCredential)) {
+      setConfirmStep('emptyKey');
       return;
     }
+    if (apiKeyAction === 'delete') {
+      setConfirmStep('deleteKey');
+      return;
+    }
+    await doSave(apiKeyAction, trimmedKey);
+  };
+
+  const doSave = async (apiKeyAction, trimmedKey) => {
+    setSaving(true);
+    setError('');
     try {
+      const { slotPayload, contextWindowPayload } = payloadRef.current;
       const saved = await invokeTauri('save_acp_provider', {
         agent,
         providerId: initial?.id || null,
@@ -497,6 +524,51 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
         <div className={`rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/[0.1] text-amber-800 dark:bg-amber-500/[0.08] dark:text-amber-200/80`}>
           {copy.thirdPartyWarning}
         </div>
+
+        {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹，应用内
+            自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
+            z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
+        {confirmStep && (
+          <div
+            data-testid="acp-provider-form-confirm"
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+            onClick={event => {
+              event.stopPropagation();
+              setConfirmStep(null);
+            }}
+          >
+            <div
+              onClick={event => event.stopPropagation()}
+              className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}
+            >
+              <p className="text-[13px] leading-relaxed opacity-85">
+                {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
+              </p>
+              <div className="mt-6 flex justify-end gap-2">
+                <button
+                  onClick={() => setConfirmStep(null)}
+                  disabled={saving}
+                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                >
+                  {copy.cancel}
+                </button>
+                <button
+                  data-testid="acp-provider-form-confirm-ok"
+                  onClick={() => {
+                    const action = confirmStep === 'emptyKey' ? 'keep' : 'delete';
+                    const key = String(apiKey || '').trim();
+                    setConfirmStep(null);
+                    doSave(action, key);
+                  }}
+                  disabled={saving}
+                  className={`h-9 px-4 rounded-full text-white text-[13px] font-semibold disabled:opacity-50 ${confirmStep === 'emptyKey' ? 'bg-[#007AFF]' : 'bg-red-500'}`}
+                >
+                  {confirmStep === 'emptyKey' ? copy.save : copy.deleteConfirm}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
