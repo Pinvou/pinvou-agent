@@ -303,7 +303,10 @@ export function applyNativeChatEvent(lane, name, payload) {
       lane.thinking = lane.busy
         ? { active: true, startedAt: lane.thinking?.startedAt || Date.now(), phase: 'thinking', toolName: null }
         : null;
-      if (meta && meta.name === 'request_user_input') {
+      // remount 恢复的 active 卡（pending → chat:user_input_required）没有经过
+      // tool_start，toolMeta 缺失；后端 tool_end payload 自带 name，用它兜底判断，
+      // 避免超时/收口时落入普通工具分支导致卡片不收口。
+      if ((meta?.name || p.name) === 'request_user_input') {
         const card = [...lane.items].reverse().find(item => (
           item && item.type === 'user_input' && item.toolCallId === p.id && !item.resolved
         ));

@@ -174,6 +174,37 @@ try {
   assert.equal(pendingCard.resolved, false);
   assert.equal(pendingCard.cardState, 'active');
 
+  // ── remount 恢复的 active 卡超时/收口：tool_end 用 payload.name 兜底 ──
+  // 恢复路径（pending → chat:user_input_required）没经过 tool_start，toolMeta
+  // 缺失；tool_end 处理器若只看 toolMeta 会落入普通工具分支、卡片不收口。
+  // 回归：300s 超时（success=false）后卡片进入 cancelled 终态。
+  applyNativeChatEvent(lane4b, 'chat:tool_end', {
+    session_id: 's4b',
+    id: 'c9',
+    name: 'request_user_input',
+    success: false,
+    output: '',
+  });
+  assert.equal(pendingCard.resolved, true, 'toolMeta 缺失时靠 payload.name 识别 request_user_input 收口');
+  assert.equal(pendingCard.cardState, 'cancelled', '超时收口为 cancelled 终态');
+  // 正常提交（success=true）同理进入 submitted 终态。
+  const lane4c = createNativeLane();
+  applyNativeChatEvent(lane4c, 'chat:user_input_required', {
+    session_id: 's4c',
+    id: 'c10',
+    questions: [{ id: 'q', header: 'H', question: '选？', options: [{ label: 'A' }] }],
+  });
+  const pendingCard2 = lane4c.items.find(item => item.type === 'user_input');
+  applyNativeChatEvent(lane4c, 'chat:tool_end', {
+    session_id: 's4c',
+    id: 'c10',
+    name: 'request_user_input',
+    success: true,
+    output: 'A',
+  });
+  assert.equal(pendingCard2.resolved, true);
+  assert.equal(pendingCard2.cardState, 'submitted', '提交收口为 submitted 终态');
+
   // ── 远端用户消息（遥控端发送）：去重本地乐观气泡 ────────────────
   const lane5 = createNativeLane();
   appendLocalUserMessage(lane5, '本地一句\n📎 a.png');
