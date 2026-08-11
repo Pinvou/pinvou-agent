@@ -5,6 +5,7 @@ import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
+      const unreadAria = t?.uiScheduled?.navUnreadAria || label || 'Unread';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -18,7 +19,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           title={!isSidebarOpen ? label : ""}
           style={dragging ? { opacity: 0.4 } : undefined}
           className={`group border-0 text-left flex items-center cursor-pointer text-[15px] font-medium transition-all overflow-hidden select-none
-          ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-2 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
+          ${isSidebarOpen ? 'px-4 py-2 max-sm:px-3 max-sm:py-1 rounded-full w-full' : 'w-10 h-10 justify-center rounded-full mx-auto shrink-0'}
           ${active
             ? 'bg-[#D3E3FD] text-[#041E49] dark:bg-[#A8C7FA]'
             : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}
@@ -26,7 +27,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? 'text-[#0B57D0] dark:text-[#041E49]' : ''}`}>
             {icon}
             {unread && (
-              <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.navUnreadAria}
+              <span data-testid="scheduled-nav-unread" aria-label={unreadAria}
                 className={"absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2 bg-[#0B57D0] " + (active ? 'border-[#D3E3FD] dark:border-[#A8C7FA]' : 'border-[#F0F4F9] dark:border-[#1E1F20]')} />
             )}
           </div>

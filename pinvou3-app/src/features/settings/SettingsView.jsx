@@ -90,6 +90,65 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       </div>
     );
 
+    const CollaborationSettingsCard = ({ bs }) => {
+      const collaboration = (bs && bs.collaboration) || {};
+      const config = collaboration.config || {};
+      const configState = collaboration.configState || {};
+      const identity = configState.identity || null;
+      const project = configState.project || null;
+      const peers = Array.isArray(collaboration.peers) ? collaboration.peers : [];
+      const rowBg = 'bg-white border-[#E0E3E7] dark:bg-[#131314] dark:border-[#333537]';
+      const muted = 'text-[#5F6368] dark:text-[#9AA0A6]';
+      const value = v => String(v || '').trim() || '未配置';
+      const capabilities = Array.isArray(identity?.capabilities) ? identity.capabilities : [];
+      return (
+        <SCard title="Pinvou 协作">
+          <div className="space-y-4">
+            <div className={`rounded-xl border px-4 py-3 ${rowBg}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[14px] font-medium">{configState.projectConfigured ? (collaboration.connected ? '已连接' : '等待连接') : (configState.identityRegistered ? '未加入项目组' : '未创建身份')}</div>
+                  <div className={`mt-1 text-[12px] ${muted}`}>{collaboration.reason || '配置入口在工作台（Beta）的“开始协作”。已注册成员会出现在聊天输入框的 @ 列表里。'}</div>
+                </div>
+                <span className={`shrink-0 rounded-full px-3 py-1 text-[12px] font-semibold ${collaboration.connected ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'}`}>
+                  {collaboration.connected ? '在线' : '未在线'}
+                </span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className={`rounded-xl border px-4 py-3 ${rowBg}`}>
+                <div className={`text-[12px] ${muted}`}>我的名字</div>
+                <div className="mt-1 truncate text-[14px] font-medium">{value(identity?.name || config.displayName)}</div>
+              </div>
+              <div className={`rounded-xl border px-4 py-3 ${rowBg}`}>
+                <div className={`text-[12px] ${muted}`}>项目组</div>
+                <div className="mt-1 truncate text-[14px] font-medium">{value(project?.projectName || config.projectId)}</div>
+              </div>
+              <div className={`rounded-xl border px-4 py-3 md:col-span-2 ${rowBg}`}>
+                <div className={`text-[12px] ${muted}`}>Relay</div>
+                <div className="mt-1 truncate text-[14px] font-medium">{value(project?.relayWsUrl || config.relayWsUrl)}</div>
+              </div>
+            </div>
+            <div className={`flex flex-wrap gap-2 text-[12px] leading-relaxed ${muted}`}>
+              {capabilities.length > 0
+                ? capabilities.map(capability => (
+                  <span key={capability} className={`rounded-full px-3 py-1 bg-white text-[#1F1F1F] dark:bg-white/10 dark:text-[#E3E3E3]`}>{capability}</span>
+                ))
+                : <span>还未填写能力。打开工作台（Beta）创建或更新身份。</span>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {peers.slice(0, 6).map(peer => (
+                <span key={peer.peerId || peer.peer_id || peer.displayName || peer.display_name} className={`rounded-full px-3 py-1 text-[12px] bg-[#F0F4F9] text-[#1F1F1F] dark:bg-white/10 dark:text-[#E3E3E3]`}>
+                  {peer.displayName || peer.display_name || peer.peerId || peer.peer_id} · {peer.status || '未知'}
+                </span>
+              ))}
+              {peers.length === 0 && <span className={`text-[12px] ${muted}`}>暂无已注册成员</span>}
+            </div>
+          </div>
+        </SCard>
+      );
+    };
+
     const MemorySettingsCard = ({ bs, memoryEnabled, onMemoryEnabledChange, t }) => {
       const copy = t.uiSettingsView;
       const detailCopy = t.uiSettingsDetail;
@@ -2298,6 +2357,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             </IOSRow>
           </IOSSection>
           )}
+          <CollaborationSettingsCard bs={bs} />
           {canUsePet && (
           <section className="mb-6">
             <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.desktopAssistant}</div>

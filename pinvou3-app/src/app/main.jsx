@@ -9,6 +9,7 @@ import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
+import { getCurrent as getDeepLinkCurrent, onOpenUrl as onDeepLinkOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
@@ -23,6 +24,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
+import { CollaborationView } from '../features/collaboration/CollaborationView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
@@ -40,6 +42,20 @@ import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+
+function extractCollaborationInviteDeepLink(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'pinvou:') return '';
+    const path = url.pathname.replace(/^\/+/, '');
+    const isJoin = url.hostname === 'join' || path === 'join';
+    const token = url.searchParams.get('token') || '';
+    if (!isJoin || !token.trim()) return '';
+    return `pinvou://join?token=${token.trim()}`;
+  } catch (_) {
+    return '';
+  }
+}
 
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
 // 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
@@ -68,7 +84,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'collaboration',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -97,6 +113,173 @@ function workspaceDisplayName(path) {
   const parts = String(path || '').split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || String(path || '');
 }
+
+function parsePinvouCapabilities(value) {
+  return String(value || '')
+    .split(/[,，、\n]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+const DEFAULT_PINVOU_CAPABILITIES = [
+  '写代码',
+  '设计 UI',
+  '整理文档',
+  '查资料',
+  '数据分析',
+  '测试验收',
+  '项目推进',
+  '客户沟通',
+];
+
+function buildPinvouEmployeeDescription(name, capabilities) {
+  const displayName = String(name || '').trim() || '我';
+  const unique = (Array.isArray(capabilities) ? capabilities : [])
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item, index, all) => all.indexOf(item) === index)
+    .slice(0, 6);
+  if (!unique.length) {
+    return `${displayName} 适合处理需要本人确认、补充背景信息或推进落地的协作任务。`;
+  }
+  const joined = unique.join('、');
+  return `${displayName} 适合处理${joined}相关任务；当任务需要${joined}时，可以优先委托给 ${displayName}。`;
+}
+
+function hasPendingCollaborationTasks(bs) {
+  const collaboration = bs && bs.collaboration;
+  if (!collaboration) return false;
+  const incoming = Array.isArray(collaboration.incomingTasks) ? collaboration.incomingTasks : [];
+  const local = Array.isArray(collaboration.localTasks) ? collaboration.localTasks : [];
+  return incoming.length > 0 || local.some(task => task && task.status !== 'completed');
+}
+
+    const PinvouRegistrationGate = ({ theme, collaboration, open, onClose }) => {
+      const isDark = theme === 'dark';
+      const configState = collaboration?.configState || {};
+      const [form, setForm] = useState({ name: '', capabilities: '' });
+      const [selectedCapabilities, setSelectedCapabilities] = useState([]);
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const collaborationBridge = bridge.collaboration || {};
+
+      if (!open || (configState.identityRegistered && configState.projectConfigured)) return null;
+
+      const capabilities = [...selectedCapabilities, ...parsePinvouCapabilities(form.capabilities)]
+        .filter((item, index, all) => item && all.indexOf(item) === index)
+        .slice(0, 12);
+      const generatedDescription = buildPinvouEmployeeDescription(form.name, capabilities);
+
+      const submit = async event => {
+        event.preventDefault();
+        const name = form.name.trim();
+        if (!name || busy || !bridge.available || !collaborationBridge.collaborationStart) return;
+        setBusy(true);
+        setError('');
+        try {
+          await collaborationBridge.collaborationStart({
+            name,
+            capabilities,
+            description: generatedDescription,
+          });
+          if (onClose) onClose();
+        } catch (err) {
+          setError(String(err && err.message ? err.message : err).slice(0, 240));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-6" style={{ background: isDark ? 'rgba(19,19,20,.94)' : 'rgba(246,248,251,.94)' }}>
+          <form onSubmit={submit} className={`relative w-full max-w-[680px] rounded-[28px] border p-6 shadow-2xl ${isDark ? 'border-white/10 bg-[#1C1C1E] text-white' : 'border-slate-200 bg-white text-slate-950'}`}>
+            <button
+              type="button"
+              aria-label="关闭"
+              onClick={onClose}
+              disabled={busy}
+              className={`absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-full transition-colors ${isDark ? 'bg-white/10 text-[#C7C7CC] hover:bg-white/15' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+            >
+              <X size={16} />
+            </button>
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white">
+                <Briefcase size={24} />
+              </div>
+              <div>
+                <h2 className="text-[22px] font-bold tracking-tight">注册你的 Pinvou</h2>
+                <p className={`mt-1 text-[13px] leading-relaxed ${isDark ? 'text-[#C7C7CC]' : 'text-slate-500'}`}>
+                  每个 Pinvou 都是一个员工身份。选几项常做的工作，完成后才能进入工作台。
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-5">
+              <label className="block">
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>你的名字</span>
+                <input
+                  value={form.name}
+                  onChange={event => setForm(previous => ({ ...previous, name: event.target.value }))}
+                  placeholder="例如：徐雅婧"
+                  className={`h-12 w-full rounded-2xl border px-4 text-[15px] outline-none transition-colors ${isDark ? 'border-white/10 bg-black/20 text-white placeholder:text-[#636366] focus:border-blue-500' : 'border-slate-200 bg-slate-50 text-slate-950 placeholder:text-slate-400 focus:border-blue-500'}`}
+                />
+              </label>
+
+              <div>
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>常做的工作</span>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {DEFAULT_PINVOU_CAPABILITIES.map(capability => {
+                    const active = selectedCapabilities.includes(capability);
+                    return (
+                      <button
+                        key={capability}
+                        type="button"
+                        onClick={() => setSelectedCapabilities(previous => (
+                          previous.includes(capability)
+                            ? previous.filter(item => item !== capability)
+                            : [...previous, capability]
+                        ))}
+                        className={`rounded-2xl border px-3 py-3 text-[13px] font-semibold transition-all ${active ? 'border-blue-500 bg-blue-600 text-white shadow-lg shadow-blue-500/20' : isDark ? 'border-white/10 bg-black/20 text-[#E5E5EA] hover:border-white/20' : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300'}`}
+                      >
+                        {capability}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <label className="block">
+                <span className={`mb-2 block text-[13px] font-semibold ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>补充能力</span>
+                <input
+                  value={form.capabilities}
+                  onChange={event => setForm(previous => ({ ...previous, capabilities: event.target.value }))}
+                  placeholder="例如：合同审核，供应链，短视频脚本"
+                  className={`h-12 w-full rounded-2xl border px-4 text-[15px] outline-none transition-colors ${isDark ? 'border-white/10 bg-black/20 text-white placeholder:text-[#636366] focus:border-blue-500' : 'border-slate-200 bg-slate-50 text-slate-950 placeholder:text-slate-400 focus:border-blue-500'}`}
+                />
+              </label>
+
+              <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'border-white/10 bg-black/20' : 'border-slate-200 bg-slate-50'}`}>
+                <div className={`mb-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-slate-500'}`}>自动生成的员工描述</div>
+                <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#E5E5EA]' : 'text-slate-700'}`}>{generatedDescription}</div>
+              </div>
+            </div>
+
+            {error && <div className="mt-4 rounded-2xl bg-red-500/10 px-4 py-3 text-[13px] text-red-500">{error}</div>}
+
+            <button
+              type="submit"
+              disabled={busy || !form.name.trim() || !bridge.available || !collaborationBridge.collaborationStart}
+              className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-[15px] font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <CheckCircle2 size={18} />
+              {busy ? '注册中...' : '完成注册'}
+            </button>
+          </form>
+        </div>
+      );
+    };
+
 
     const App = () => {
       if (!appFirstRenderMarked) {
@@ -148,6 +331,7 @@ function workspaceDisplayName(path) {
       }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
+      const [pendingCollaborationInvite, setPendingCollaborationInvite] = useState(null);
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
@@ -274,6 +458,32 @@ function workspaceDisplayName(path) {
       activeChatRef.current = activeChat;
       const currentViewRef = useRef(currentView);
       currentViewRef.current = currentView;
+      useEffect(() => {
+        if (!isTauriAvailable()) return undefined;
+        let disposed = false;
+        let unlisten = null;
+        const handleDeepLinkUrls = (urls) => {
+          const list = Array.isArray(urls) ? urls : [urls];
+          const inviteUrl = list.map(extractCollaborationInviteDeepLink).find(Boolean);
+          if (!inviteUrl || disposed) return;
+          setPendingCollaborationInvite({ url: inviteUrl, nonce: Date.now() });
+          setCurrentView('collaboration');
+          closeMobileSidebar();
+        };
+        getDeepLinkCurrent()
+          .then(handleDeepLinkUrls)
+          .catch(error => console.warn('[deep-link] get current failed', error));
+        onDeepLinkOpenUrl(handleDeepLinkUrls)
+          .then(fn => {
+            if (disposed) fn();
+            else unlisten = fn;
+          })
+          .catch(error => console.warn('[deep-link] listen failed', error));
+        return () => {
+          disposed = true;
+          if (unlisten) unlisten();
+        };
+      }, []);
       useEffect(() => {
         if (!isTauriAvailable()) return undefined;
         const guard = createPetActivationGuard();
@@ -437,6 +647,7 @@ function workspaceDisplayName(path) {
       const [personaEditor, setPersonaEditor] = useState(null); // 聊天里"存入卡牌池"草稿 → App 级编辑器
       const [savedConfirm, setSavedConfirm] = useState(null); // 存入成功 → iOS 确认窗 {name}
       const [poolMyOnly, setPoolMyOnly] = useState(false); // 跳卡池时是否直接落「我的卡牌」筛选(从确认窗"去查看"进来=true)
+      const [pinvouRegistrationOpen, setPinvouRegistrationOpen] = useState(false);
       const [webAccessOpen, setWebAccessOpen] = useState(false);
       const [settingsUpdateFocusTick, setSettingsUpdateFocusTick] = useState(0);
       const [settingsInitialSection, setSettingsInitialSection] = useState('general');
@@ -1004,6 +1215,8 @@ function workspaceDisplayName(path) {
           savePinvouModeState({ mode: 'work' });
           if (bridge.available) bridge.sessions.createNewSession();
           setCurrentView('chat');
+        } else if (mode === 'collaboration') {
+          setCurrentView('collaboration');
         }
         closeMobileSidebar();
       }
@@ -1029,6 +1242,53 @@ function workspaceDisplayName(path) {
       async function handleSearchSelect(id) {
         await handleSwitchSession(id);
         setSearchOverlayOpen(false);
+      }
+
+      async function handleOpenCollaborationSession(payload) {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated || !payload) return;
+        const collaborationBridge = bridge.collaboration || {};
+        if (bridge.available && collaborationBridge.openCollaborationMockSession) {
+          try {
+            const opened = await collaborationBridge.openCollaborationMockSession(payload);
+            const sid = opened && (opened.sessionId || opened.session_id);
+            if (sid) setActiveChat(sid);
+          } catch (error) {
+            console.warn('[collaboration mock session] open failed', error);
+          }
+        }
+      }
+
+      async function handleOpenCollaborationTask(task) {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated || !task) return;
+        const collaborationBridge = bridge.collaboration || {};
+        if (bridge.available && collaborationBridge.openCollaborationTaskSession) {
+          try {
+            const opened = await collaborationBridge.openCollaborationTaskSession(task);
+            const sid = opened && (opened.sessionId || opened.session_id);
+            if (sid) setActiveChat(sid);
+          } catch (error) {
+            console.warn('[collaboration task session] open failed', error);
+          }
+        }
+      }
+
+      async function handleCreateCollaborationTaskGuide(memberName) {
+        const navigated = await navigateFromScheduledRun('chat');
+        if (!navigated) return;
+        if (bridge.available && bridge.sessions && bridge.sessions.createNewSession) {
+          try {
+            await bridge.sessions.createNewSession();
+          } catch (error) {
+            console.warn('[collaboration] create guide session failed', error);
+          }
+        }
+        setCurrentView('chat');
+        const target = String(memberName || '').trim();
+        setChatPrefill(target ? `@${target} ` : '@');
+        setPetFocusComposerTick(value => value + 1);
+        closeMobileSidebar();
       }
 
       function handleSwitchCodexSession(id) {
@@ -1576,12 +1836,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, collaboration: '工作台（Beta）', monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'collaboration', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1632,6 +1892,12 @@ function workspaceDisplayName(path) {
           } : undefined}>
 
           <WebConnectionStatus theme={activeTheme} t={t} />
+          <PinvouRegistrationGate
+            theme={activeTheme}
+            collaboration={bs?.collaboration}
+            open={pinvouRegistrationOpen}
+            onClose={() => setPinvouRegistrationOpen(false)}
+          />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
           {dragAvatar && (
@@ -1823,6 +2089,14 @@ function workspaceDisplayName(path) {
                 isSidebarOpen={isSidebarOpen}
                 onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
+              />
+              <NavItem
+                icon={<Briefcase size={18} />} label="工作台（Beta）"
+                active={currentView === 'collaboration'}
+                unread={hasPendingCollaborationTasks(bs)}
+                theme={activeTheme}
+                isSidebarOpen={isSidebarOpen}
+                onClick={() => navigateFromScheduledRun('collaboration')}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
@@ -2086,6 +2360,19 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
+            {currentView === 'collaboration' && (
+              <CollaborationView
+                theme={activeTheme}
+                bs={bs}
+                onOpenChat={handleOpenCollaborationSession}
+                onOpenTask={handleOpenCollaborationTask}
+                onCreateTaskGuide={handleCreateCollaborationTaskGuide}
+                onStartCollaboration={() => setPinvouRegistrationOpen(true)}
+                onOpenAbilityPool={() => navigateFromScheduledRun('toolStore')}
+                pendingInvite={pendingCollaborationInvite}
+                onPendingInviteConsumed={() => setPendingCollaborationInvite(null)}
+              />
+            )}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
@@ -2307,13 +2594,17 @@ function workspaceDisplayName(path) {
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
               { key: 'search', label: t.searchChats, icon: <Search size={18} />,
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
-              ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
-                active: currentView === 'scheduled', dot: scheduledUnread,
-                onClick: () => mobileNavigate('scheduled') }] : []),
-              { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
-                active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
+                ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
+                  active: currentView === 'scheduled', dot: scheduledUnread,
+                  onClick: () => mobileNavigate('scheduled') }] : []),
+                { key: 'outputs', label: t.outputs, icon: <Package size={18} />,
+                  active: currentView === 'outputs', onClick: () => mobileNavigate('outputs') },
               { key: 'knowledge', label: t.knowledge, icon: <BookOpen size={18} />,
                 active: currentView === 'knowledge', onClick: () => mobileNavigate('knowledge') },
+              { key: 'collaboration', label: '工作台（Beta）', icon: <Briefcase size={18} />,
+                active: currentView === 'collaboration',
+                dot: hasPendingCollaborationTasks(bs),
+                onClick: () => mobileNavigate('collaboration') },
               { key: 'toolStore', label: t.toolStore, icon: <Puzzle size={18} />,
                 active: currentView === 'toolStore', onClick: () => mobileNavigate('toolStore') },
               { key: 'settings', label: t.settings, icon: <Settings size={18} />,
