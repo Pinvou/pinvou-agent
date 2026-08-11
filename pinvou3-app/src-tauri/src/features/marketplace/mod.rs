@@ -1445,7 +1445,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 repair_errors.push(format!("工具 '{tool_id}' 需要重新安装: {error}"));
             }
         }
-        self.prune_from_committed_state()?;
+        // repair/downgrade 的持久状态已提交后，未引用缓存的物理清理属于可重试维护任务。
+        // Windows 上孤儿进程、杀毒或索引器可能短暂占用 .pyd，不能因此阻断全部助手启动。
+        if let Err(error) = self.prune_from_committed_state() {
+            eprintln!("[marketplace] prune Python dependencies after repair failed: {error}");
+        }
         Ok(repair_errors)
     }
 
@@ -3262,6 +3266,35 @@ mod tests {
             assert_eq!(reopened.installed_ids(), vec!["old-tool".to_string()]);
             assert_eq!(read_mcp_json(), old_mcp);
             assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_repair_does_not_fail_when_unused_environment_cleanup_is_blocked() {
+        with_temp_home(|| {
+            let unused_environment = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("python-envs")
+                .join("f".repeat(64));
+            let other_unused_environment =
+                unused_environment.parent().unwrap().join("e".repeat(64));
+            std::fs::create_dir_all(&unused_environment).unwrap();
+            std::fs::create_dir_all(&other_unused_environment).unwrap();
+            python_dependencies::fail_next_prune_removal_for_test(unused_environment.clone());
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(unused_environment.is_dir(), "清理失败不应破坏启动修复状态");
+            assert!(
+                !other_unused_environment.exists(),
+                "单个目录清理失败不应阻止其它未引用缓存回收"
+            );
+
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(
+                !unused_environment.exists(),
+                "后续启动应重新尝试并完成未引用环境清理"
+            );
         });
     }
 

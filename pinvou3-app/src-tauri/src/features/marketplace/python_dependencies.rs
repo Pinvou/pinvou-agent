@@ -23,10 +23,19 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static FAIL_NEXT_DOWNLOAD: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static FAIL_NEXT_PRUNE_REMOVAL: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[cfg(test)]
 pub(crate) fn fail_next_download_for_test() {
     FAIL_NEXT_DOWNLOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_prune_removal_for_test(path: PathBuf) {
+    *FAIL_NEXT_PRUNE_REMOVAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,6 +89,9 @@ pub(super) fn ensure_installed(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let environment_key = environment_key(target)?;
     let environment_root = environments_root();
+    if let Err(error) = cleanup_stale_install_artifacts(&environment_root, &wheel_cache_root()) {
+        eprintln!("[marketplace] recover stale Python dependency artifacts failed: {error}");
+    }
     let destination = environment_root.join(&environment_key);
     let site_packages = destination.join("site-packages");
 
@@ -155,16 +167,22 @@ pub(super) fn prune_unused(active_locks: &[PythonDependencyLock]) -> Result<(), 
     }
 
     let environment_root = environments_root();
+    let cache_root = wheel_cache_root();
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = cleanup_stale_install_artifacts(&environment_root, &cache_root) {
+        cleanup_errors.push(error);
+    }
     if let Ok(entries) = fs::read_dir(&environment_root) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.path().is_dir() && is_sha256(&name) && !environment_keys.contains(&name) {
-                safe_remove_dir(&entry.path(), &environment_root)?;
+                if let Err(error) = remove_prunable_dir(&entry.path(), &environment_root) {
+                    cleanup_errors.push(error);
+                }
             }
         }
     }
 
-    let cache_root = wheel_cache_root();
     if let Ok(entries) = fs::read_dir(&cache_root) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -175,12 +193,17 @@ pub(super) fn prune_unused(active_locks: &[PythonDependencyLock]) -> Result<(), 
                 && is_sha256(stem)
                 && !wheel_hashes.contains(stem)
             {
-                fs::remove_file(&path)
-                    .map_err(|e| format!("清理未使用的 Python wheel 失败: {e}"))?;
+                if let Err(error) = remove_prunable_file(&path) {
+                    cleanup_errors.push(error);
+                }
             }
         }
     }
-    Ok(())
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("; "))
+    }
 }
 
 fn validate_lock(lock: &PythonDependencyLock) -> Result<(), String> {
@@ -359,20 +382,40 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
     }
 
+    let mut reader = response.take(MAX_WHEEL_BYTES + 1);
+    persist_wheel_download(&mut reader, destination, wheel)
+}
+
+fn persist_wheel_download<R: Read>(
+    reader: &mut R,
+    destination: &Path,
+    wheel: &PythonWheel,
+) -> Result<(), String> {
+    persist_wheel_download_with_sync(reader, destination, wheel, File::sync_all)
+}
+
+fn persist_wheel_download_with_sync<R, S>(
+    reader: &mut R,
+    destination: &Path,
+    wheel: &PythonWheel,
+    sync: S,
+) -> Result<(), String>
+where
+    R: Read,
+    S: FnOnce(&File) -> io::Result<()>,
+{
     let partial = destination.with_extension(format!("part-{}", std::process::id()));
     let _ = fs::remove_file(&partial);
-    let mut reader = response.take(MAX_WHEEL_BYTES + 1);
+    let mut cleanup = PartialFileCleanup::new(partial.clone());
     let mut file = File::create(&partial).map_err(|e| format!("创建 wheel 暂存文件失败: {e}"))?;
-    let copied = io::copy(&mut reader, &mut file).map_err(|e| format!("保存 wheel 失败: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("同步 wheel 暂存文件失败: {e}"))?;
+    let copied = io::copy(reader, &mut file).map_err(|e| format!("保存 wheel 失败: {e}"))?;
+    sync(&file).map_err(|e| format!("同步 wheel 暂存文件失败: {e}"))?;
+    drop(file);
     if copied > MAX_WHEEL_BYTES {
-        let _ = fs::remove_file(&partial);
         return Err(format!("Python 依赖 {} 超过 64 MiB 安全上限", wheel.name));
     }
     let actual = sha256_file(&partial).map_err(|e| format!("读取 wheel 失败: {e}"))?;
     if actual != wheel.sha256 {
-        let _ = fs::remove_file(&partial);
         return Err(format!(
             "Python 依赖 {} 校验失败（expected {}, got {}）",
             wheel.name, wheel.sha256, actual
@@ -381,7 +424,9 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
     if destination.exists() {
         fs::remove_file(destination).map_err(|e| format!("替换 wheel 缓存失败: {e}"))?;
     }
-    fs::rename(&partial, destination).map_err(|e| format!("保存 wheel 缓存失败: {e}"))
+    fs::rename(&partial, destination).map_err(|e| format!("保存 wheel 缓存失败: {e}"))?;
+    cleanup.disarm();
+    Ok(())
 }
 
 fn extract_wheel(
@@ -518,6 +563,103 @@ fn safe_remove_dir(path: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn cleanup_stale_install_artifacts(
+    environment_root: &Path,
+    cache_root: &Path,
+) -> Result<(), String> {
+    let mut cleanup_errors = Vec::new();
+    if let Ok(entries) = fs::read_dir(environment_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if is_directory && is_staging_environment_name(&name) {
+                if let Err(error) = remove_prunable_dir(&entry.path(), environment_root) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(cache_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+            if is_file && is_partial_wheel_name(&name) {
+                if let Err(error) = remove_prunable_file(&entry.path()) {
+                    cleanup_errors.push(error);
+                }
+            }
+        }
+    }
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("; "))
+    }
+}
+
+fn is_staging_environment_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(".installing-") else {
+        return false;
+    };
+    let Some((process_id, unique_id)) = suffix.split_once('-') else {
+        return false;
+    };
+    !process_id.is_empty()
+        && process_id.bytes().all(|byte| byte.is_ascii_digit())
+        && !unique_id.is_empty()
+        && unique_id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_partial_wheel_name(name: &str) -> bool {
+    let Some((hash, process_id)) = name.split_once(".part-") else {
+        return false;
+    };
+    is_sha256(hash)
+        && !process_id.is_empty()
+        && process_id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn remove_prunable_dir(path: &Path, root: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let mut fail_path = FAIL_NEXT_PRUNE_REMOVAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fail_path.as_deref() == Some(path) {
+            *fail_path = None;
+            return Err("测试注入：清理 Python 依赖目录失败".to_string());
+        }
+    }
+    safe_remove_dir(path, root)
+}
+
+fn remove_prunable_file(path: &Path) -> Result<(), String> {
+    fs::remove_file(path).map_err(|e| format!("清理未使用的 Python wheel 失败: {e}"))
+}
+
+struct PartialFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PartialFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
@@ -551,6 +693,35 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use zip::write::SimpleFileOptions;
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected copy failure"))
+        }
+    }
+
+    fn with_temp_home<F: FnOnce()>(test: F) {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os("PINVOU3_HOME");
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-cleanup-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("PINVOU3_HOME", &root);
+        test();
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn sample_lock() -> PythonDependencyLock {
         PythonDependencyLock {
@@ -653,6 +824,95 @@ mod tests {
         let tail = utf8_tail(&value, 4096);
         assert!(tail.ends_with("结尾"));
         assert!(tail.len() <= 4096);
+    }
+
+    #[test]
+    fn prune_recovers_strictly_named_staging_and_partial_artifacts_only() {
+        with_temp_home(|| {
+            let mut active_lock = sample_lock();
+            active_lock.targets[0].platform = crate::platform::paths::connector_platform_dir(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            )
+            .unwrap()
+            .to_string();
+            let active_key = environment_key(&active_lock.targets[0]).unwrap();
+            let environment_root = environments_root();
+            let cache_root = wheel_cache_root();
+            fs::create_dir_all(environment_root.join(&active_key)).unwrap();
+            fs::create_dir_all(environment_root.join(".installing-123-456")).unwrap();
+            fs::create_dir_all(environment_root.join(".installing-current")).unwrap();
+            fs::create_dir_all(environment_root.join("notes")).unwrap();
+            fs::create_dir_all(environment_root.join("b".repeat(64))).unwrap();
+            fs::create_dir_all(&cache_root).unwrap();
+            fs::write(
+                cache_root.join(format!("{}.whl", "a".repeat(64))),
+                b"active",
+            )
+            .unwrap();
+            fs::write(
+                cache_root.join(format!("{}.part-789", "c".repeat(64))),
+                b"partial",
+            )
+            .unwrap();
+            fs::write(
+                cache_root.join(format!("{}.part-worker", "d".repeat(64))),
+                b"unrelated",
+            )
+            .unwrap();
+            fs::write(cache_root.join("README.txt"), b"user file").unwrap();
+
+            prune_unused(&[active_lock]).unwrap();
+
+            assert!(environment_root.join(&active_key).is_dir());
+            assert!(!environment_root.join(".installing-123-456").exists());
+            assert!(environment_root.join(".installing-current").is_dir());
+            assert!(environment_root.join("notes").is_dir());
+            assert!(!environment_root.join("b".repeat(64)).exists());
+            assert!(cache_root.join(format!("{}.whl", "a".repeat(64))).is_file());
+            assert!(!cache_root
+                .join(format!("{}.part-789", "c".repeat(64)))
+                .exists());
+            assert!(cache_root
+                .join(format!("{}.part-worker", "d".repeat(64)))
+                .is_file());
+            assert!(cache_root.join("README.txt").is_file());
+        });
+    }
+
+    #[test]
+    fn partial_file_guard_cleans_copy_and_sync_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-partial-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = b"wheel fixture";
+        let hash = crate::platform::encoding::hex_lower(&Sha256::digest(bytes));
+        let destination = root.join(format!("{hash}.whl"));
+        let partial = destination.with_extension(format!("part-{}", std::process::id()));
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.sha256 = hash;
+
+        assert!(persist_wheel_download(&mut FailingReader, &destination, &wheel).is_err());
+        assert!(!partial.exists());
+        assert!(!destination.exists());
+
+        assert!(persist_wheel_download_with_sync(
+            &mut Cursor::new(bytes),
+            &destination,
+            &wheel,
+            |_| Err(io::Error::other("injected sync failure")),
+        )
+        .is_err());
+        assert!(!partial.exists());
+        assert!(!destination.exists());
+
+        persist_wheel_download(&mut Cursor::new(bytes), &destination, &wheel).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert!(!partial.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

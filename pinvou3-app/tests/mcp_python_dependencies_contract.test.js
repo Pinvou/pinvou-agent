@@ -123,6 +123,29 @@ assert.match(marketplace, /"-S"\.to_string\(\)/, 'managed runner must disable au
 assert.match(marketplace, /MARKETPLACE_TRANSACTION_LOCK/, 'marketplace state mutations need one lock domain');
 assert.match(marketplace, /state-transaction\.json/, 'cross-file updates need restart recovery');
 assert.match(marketplace, /prune_from_committed_state/, 'environment pruning must use committed liveness');
+assert.match(
+  marketplace,
+  /prune Python dependencies after repair failed/,
+  'restart repair must not fail when only unused-cache cleanup is blocked',
+);
+
+const pythonDependencies = read('src-tauri/src/features/marketplace/python_dependencies.rs');
+assert.match(pythonDependencies, /PartialFileCleanup/, 'partial wheel writes need RAII cleanup');
+assert.match(
+  pythonDependencies,
+  /cleanup_stale_install_artifacts/,
+  'restart and prune must recover stale install artifacts',
+);
+assert.match(
+  pythonDependencies,
+  /is_staging_environment_name/,
+  'staging cleanup needs a strict name contract',
+);
+assert.match(
+  pythonDependencies,
+  /is_partial_wheel_name/,
+  'partial wheel cleanup needs a strict name contract',
+);
 
 const pathsSource = read('src-tauri/src/platform/paths.rs');
 assert.match(pathsSource, /managed_python_command/, 'locked dependencies need a dedicated Python resolver');
