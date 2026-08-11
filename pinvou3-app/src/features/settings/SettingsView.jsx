@@ -2100,6 +2100,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [llamaModel, setLlamaModel] = useState('qwen3vl-2b-q3k-s');
       const [llamaDevice, setLlamaDevice] = useState('gpu');
       const [showLlamaLogs, setShowLlamaLogs] = useState(false);
+      // 本地引擎视觉兜底开关：默认开（prefs.advanced.llamaEngineVisionFallback !== false）
+      const [llamaVisionFallback, setLlamaVisionFallback] = useState(
+        (bs && bs.settings && bs.settings.advanced && bs.settings.advanced.llama_engine_vision_fallback) !== false
+      );
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
         if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
@@ -2859,6 +2863,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                     {(st.stderrTail || []).join('\n')}
                   </pre>
                 )}
+                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+                  <IOSRow label={settingsCopy.llamaEngine.visionFallbackLabel} desc={settingsCopy.llamaEngine.visionFallbackDesc}>
+                    <IOSSwitch
+                      checked={llamaVisionFallback}
+                      onChange={async (v) => {
+                        setLlamaVisionFallback(v);
+                        try {
+                          if (bridge.available && bridge.settings && bridge.settings.saveSettings) {
+                            const current = (bs && bs.settings && bs.settings.advanced) || {};
+                            await bridge.settings.saveSettings({
+                              advanced: Object.assign({}, current, { llama_engine_vision_fallback: v }),
+                            });
+                          }
+                        } catch (_) {}
+                      }} />
+                  </IOSRow>
+                </div>
                 <div className="px-4 py-3 text-[12px] leading-[17px] text-[#9AA0A6] dark:text-[#636366]">
                   {settingsCopy.llamaEngine.privacyNote} {settingsCopy.llamaEngine.newSessionHint}
                 </div>

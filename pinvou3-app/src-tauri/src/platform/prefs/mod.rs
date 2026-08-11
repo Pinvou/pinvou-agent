@@ -435,6 +435,9 @@ impl SearchPrefs {
 #[serde(default)]
 pub struct AdvancedPrefs {
     pub allow_shell: Option<bool>,
+    /// 本地多模态引擎是否作为 image_analyze 视觉兜底（默认 true；
+    /// false 时引擎运行也不接管视觉端点，走 vision_model_id/主模型复用规则）。
+    pub llama_engine_vision_fallback: Option<bool>,
     pub model_preset: Option<ModelPreset>,
     pub max_output_tokens: Option<u32>,
     pub max_subagents: Option<usize>,

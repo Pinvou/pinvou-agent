@@ -10,6 +10,20 @@ Object.assign(dict.zh.uiSettingsDetail, {
   connectionMessages:{ ok:'连接成功，服务可用', auth_invalid:'API Key 无效，请检查后重新填写', auth_forbidden:'当前 API Key 没有访问权限', rate_limited:'请求过于频繁或额度不足，请稍后再试', endpoint_not_found:'接口地址不可用', method_not_allowed:'接口不支持测试请求', http_error:'连接失败，请检查配置后重试', unknown:'连接失败，请稍后重试' },
   catalogSections:{ coding_plan:'Coding Plan', official_api:'官方 API', custom:'自定义兼容接口' },
   providerCatalog:{},
+  imageCapability:'图片输入能力', imageCapabilityAuto:'自动判断', imageCapabilityEnabled:'支持图片', imageCapabilityDisabled:'不支持图片',
+  visionModel:'视觉模型', visionModelNone:'无', visionModelDesc:'当前模型不能看图时，用该模型分析图片',
+  imagePrivacyDesc:'使用云端模型时，图片会发送给你选择的模型服务商；本地模型图片不离开本机。',
+  imageCapabilityTest:'测试图片能力', imageCapabilityTestHint:'发送一张纯色测试图，验证当前模型能否识图',
+  imageCapabilityTestSupported:'支持图片', imageCapabilityTestUnsupported:'不支持图片输入',
+  imageCapabilityTestError:'测试失败，请先确认连接与 API Key 可用',
+  imageCapabilityTestReply:summary=>`模型回复：${summary}`,
+  imageCapabilityTestEnableHint:'可在上方将图片输入能力设为“支持图片”',
+});
+Object.assign(dict.zh.uiAttachments, {
+  imageUnsupported:'当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。',
+  imageUnknown:'当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”；也可以配置视觉模型。',
+  imageCloudUpload:'图片将随消息发送给你选择的模型服务商',
+  imageCloudUploadVision:'图片将发送给你配置的视觉模型服务商进行分析',
 });
 Object.assign(dict.en.uiSettingsDetail, {
   saving:'Saving', localDetectionTargets:'Detect vLLM, Ollama, and LM Studio',
@@ -43,6 +57,20 @@ Object.assign(dict.en.uiSettingsDetail, {
     xai:{title:'xAI Grok',configTitle:'xAI Grok',desc:'Official xAI API'},
     openai_compatible:{title:'OpenAI Compatible',desc:'Custom OpenAI-compatible endpoint'},
   },
+  imageCapability:'Image input', imageCapabilityAuto:'Auto', imageCapabilityEnabled:'Supports images', imageCapabilityDisabled:'No image support',
+  visionModel:'Vision model', visionModelNone:'None', visionModelDesc:'Used to analyze images when the current model cannot see them',
+  imagePrivacyDesc:'With cloud models, images are sent to the model provider you selected; with local models, images never leave this device.',
+  imageCapabilityTest:'Test image input', imageCapabilityTestHint:'Send a solid-color test image to check whether the model can see images',
+  imageCapabilityTestSupported:'Supports images', imageCapabilityTestUnsupported:'No image support',
+  imageCapabilityTestError:'Test failed. Check the connection and API Key first',
+  imageCapabilityTestReply:summary=>`Model reply: ${summary}`,
+  imageCapabilityTestEnableHint:'You can set image input to “Supports images” above',
+});
+Object.assign(dict.en.uiAttachments, {
+  imageUnsupported:'The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.',
+  imageUnknown:'Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.',
+  imageCloudUpload:'Images will be sent to the model provider you selected along with your message.',
+  imageCloudUploadVision:'Images will be sent to the vision model provider you configured for analysis.',
 });
 Object.assign(dict.ja.uiSettingsDetail, {
   saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
@@ -76,6 +104,20 @@ Object.assign(dict.ja.uiSettingsDetail, {
     xai:{title:'xAI Grok',configTitle:'xAI Grok',desc:'xAI 公式 API'},
     openai_compatible:{title:'OpenAI Compatible',desc:'カスタム OpenAI 互換エンドポイント'},
   },
+  imageCapability:'画像入力', imageCapabilityAuto:'自動判定', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応',
+  visionModel:'ビジョンモデル', visionModelNone:'なし', visionModelDesc:'現在のモデルが画像を扱えない場合、このモデルで画像を解析します',
+  imagePrivacyDesc:'クラウドモデルを使用する場合、画像は選択したモデルプロバイダーに送信されます。ローカルモデルの画像はこの端末から出ません。',
+  imageCapabilityTest:'画像テスト', imageCapabilityTestHint:'単色のテスト画像を送信して、モデルが画像を認識できるか確認します',
+  imageCapabilityTestSupported:'画像対応', imageCapabilityTestUnsupported:'画像非対応',
+  imageCapabilityTestError:'テストに失敗しました。接続と API Key を先に確認してください',
+  imageCapabilityTestReply:summary=>`モデルの回答：${summary}`,
+  imageCapabilityTestEnableHint:'上の画像入力を「画像対応」に設定できます',
+});
+Object.assign(dict.ja.uiAttachments, {
+  imageUnsupported:'現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。',
+  imageUnknown:'現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。',
+  imageCloudUpload:'画像はメッセージとともに、選択したモデルプロバイダーに送信されます。',
+  imageCloudUploadVision:'画像は、構成したビジョンモデルのプロバイダーに分析のため送信されます。',
 });
 Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'Default model for the local service',
@@ -145,7 +187,6 @@ dict.ja.uiSettingsDetail.customModelTitles = {
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
 };
 
-// 本地多模态引擎（llama-server）区块文案：三语齐平。
 dict.zh.uiSettingsDetail.llamaEngine = {
   title: '本地多模态引擎',
   desc: '一键下载开源视觉模型（Qwen3-VL），图片分析完全在本机运行，不上传云端；运行中的对话模型可用 image_analyze 工具读取图片。',
@@ -161,7 +202,10 @@ dict.zh.uiSettingsDetail.llamaEngine = {
   viewLogs: '查看日志',
   privacyNote: '仅监听本机 127.0.0.1，模型与图片数据不离开电脑。',
   newSessionHint: '引擎启动后，新开的对话才能使用本地视觉能力。',
+  visionFallbackLabel: '自动作为图片识别兜底',
+  visionFallbackDesc: '开启后，纯文本模型收到图片时自动用本地引擎描述（无需配置视觉模型）；关闭则按既有视觉模型配置处理。',
 };
+
 dict.en.uiSettingsDetail.llamaEngine = {
   title: 'Local Multimodal Engine',
   desc: 'One-click download of an open-source vision model (Qwen3-VL). Image analysis runs entirely on this machine — nothing is uploaded. Text-only chat models gain image reading through the image_analyze tool.',
@@ -177,7 +221,10 @@ dict.en.uiSettingsDetail.llamaEngine = {
   viewLogs: 'View logs',
   privacyNote: 'Listens on 127.0.0.1 only. Models and images never leave your computer.',
   newSessionHint: 'After starting the engine, new conversations can use the local vision capability.',
+  visionFallbackLabel: 'Auto fallback for image analysis',
+  visionFallbackDesc: 'When enabled, images sent to a text-only model are described by the local engine automatically (no vision model config needed). Disable to keep the existing vision model rules.',
 };
+
 dict.ja.uiSettingsDetail.llamaEngine = {
   title: 'ローカルマルチモーダルエンジン',
   desc: 'オープンソースのビジョンモデル（Qwen3-VL）をワンクリックでダウンロード。画像分析はすべてローカルで実行され、クラウドへは送信されません。テキストのみのチャットモデルは image_analyze ツールで画像を読み取れます。',
@@ -193,4 +240,6 @@ dict.ja.uiSettingsDetail.llamaEngine = {
   viewLogs: 'ログを表示',
   privacyNote: '127.0.0.1 のみで待ち受け。モデルと画像は端末から離れません。',
   newSessionHint: 'エンジン起動後、新しい会話でローカルのビジョン機能が使えます。',
+  visionFallbackLabel: '画像分析の自動フォールバック',
+  visionFallbackDesc: '有効時、テキストのみのモデルに画像を送るとローカルエンジンが自動的に説明します（ビジョンモデルの設定不要）。無効時は既存のビジョンモデル設定に従います。',
 };

@@ -866,12 +866,19 @@ impl Pinvou3Bridge {
     /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
     ///    `image_analyze`(不 enable `Feature::VisionModel`)。
     fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
-        if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
-            return Some(deepseek_tui::config::VisionModelConfig {
-                model: self.model(),
-                api_key: Some(self.api_key()),
-                base_url: Some(endpoint),
-            });
+        let llama_fallback_enabled = self
+            .prefs
+            .advanced
+            .llama_engine_vision_fallback
+            .unwrap_or(true);
+        if llama_fallback_enabled {
+            if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
+                return Some(deepseek_tui::config::VisionModelConfig {
+                    model: self.model(),
+                    api_key: Some(self.api_key()),
+                    base_url: Some(endpoint),
+                });
+            }
         }
         let effective = self.effective_model();
         if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {

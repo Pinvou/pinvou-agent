@@ -29,6 +29,10 @@ assert(
   bridge.includes("vision_model_id"),
   "resolve_vision_model_config 必须保留 vision_model_id 配置规则（native-image-input 集成）"
 );
+assert(
+  bridge.includes("llama_engine_vision_fallback"),
+  "resolve_vision_model_config 必须支持 llama_engine_vision_fallback 开关（用户可关闭本地引擎视觉兜底）"
+);
 assert(!/--alias/.test(bridge), "bridge.rs 不得引入 --alias");
 
 // 2. 命令注册：6 条 llama_engine_* 命令齐全，且 #[tauri::command] 只在 app/commands/ 宿主。
