@@ -1627,10 +1627,14 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
+              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
+              // tool_result，不能按历史恢复为 submitted。跳过，等
+              // chat:user_input_required 事件渲染可交互的 active 卡。
+              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
-                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
+                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
+                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
               });
             }
             continue;

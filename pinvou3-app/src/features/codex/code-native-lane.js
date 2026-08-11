@@ -303,7 +303,10 @@ export function applyNativeChatEvent(lane, name, payload) {
       lane.thinking = lane.busy
         ? { active: true, startedAt: lane.thinking?.startedAt || Date.now(), phase: 'thinking', toolName: null }
         : null;
-      if (meta && meta.name === 'request_user_input') {
+      // remount 恢复的 active 卡（pending → chat:user_input_required）没有经过
+      // tool_start，toolMeta 缺失；后端 tool_end payload 自带 name，用它兜底判断，
+      // 避免超时/收口时落入普通工具分支导致卡片不收口。
+      if ((meta?.name || p.name) === 'request_user_input') {
         const card = [...lane.items].reverse().find(item => (
           item && item.type === 'user_input' && item.toolCallId === p.id && !item.resolved
         ));
@@ -337,7 +340,18 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:user_input_required': {
       const questions = Array.isArray(p.questions) ? p.questions : [];
       if (!p.id || !questions.length) return false;
-      if (lane.items.some(item => item && item.type === 'user_input' && item.toolCallId === p.id)) return false;
+      const existing = lane.items.find(item => (
+        item && item.type === 'user_input' && item.toolCallId === p.id
+      ));
+      if (existing) {
+        // 同 id 卡片已存在：未解决 → 无需重复；已 resolved（历史快照误标为
+        // submitted 的进行中提问）→ 重置为 active，让用户仍能选择。
+        if (!existing.resolved) return false;
+        existing.resolved = false;
+        existing.cardState = 'active';
+        existing.questions = questions;
+        return true;
+      }
       lane.items.push({
         id: nextId(lane),
         type: 'user_input',
@@ -554,13 +568,18 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
           const questions = (block.input && block.input.questions) || [];
           if (Array.isArray(questions) && questions.length) {
             const result = resultById[block.id];
+            // 磁盘快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：
+            // 此时 tool_use 还没有对应 tool_result。若按历史恢复，result 缺失会
+            // 落入 submitted 误标，且挡住 get_pending_user_inputs 恢复的 active 卡
+            // （幂等去重按 toolCallId 命中）。此处跳过，交给 pending 恢复为可交互卡。
+            if (!result) continue;
             lane.items.push({
               id: nextId(lane),
               type: 'user_input',
               toolCallId: block.id,
               questions,
               resolved: true,
-              cardState: result && result.is_error ? 'cancelled' : 'submitted',
+              cardState: result.is_error ? 'cancelled' : 'submitted',
               time: '',
             });
           }

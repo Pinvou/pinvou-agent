@@ -642,7 +642,7 @@ const dict = {
         cpDescLabel: '简介',
         cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
         cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
-        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riAwaitingInput: '等待你的选择',
         // —— 聊天链路/全局 chrome ——
         appTitle: 'PINVOU 智能助手（内测版）', winMin: '最小化', winMax: '最大化', winClose: '关闭',
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
@@ -993,7 +993,7 @@ const dict = {
         cpDescLabel: 'Description',
         cpEquipBubbleNote: "Full capability profile injected — the AI will handle following tasks with this expert's methodology.",
         cpTargetMarkTitle: 'Equip target · experts picked in the card pool are injected into this chat',
-        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin',
+        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riAwaitingInput: 'Awaiting your input',
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
@@ -1343,7 +1343,7 @@ const dict = {
         cpDescLabel: '説明',
         cpEquipBubbleNote: '能力プロファイルを注入しました。AI はこのエキスパートの方法論でタスクを担当します。',
         cpTargetMarkTitle: '装備先 · カードプールで選んだエキスパートがこの会話に注入されます',
-        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除',
+        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riAwaitingInput: 'あなたの入力を待っています',
         // —— チャット/グローバル chrome ——
         appTitle: 'PINVOU アシスタント', winMin: '最小化', winMax: '最大化', winClose: '閉じる',
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',

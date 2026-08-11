@@ -85,6 +85,11 @@ try {
   applyNativeChatEvent(lane2, 'chat:tool_end', { session_id: 's2', id: 'call-9', success: true, output: '' });
   assert.equal(card.resolved, true);
   assert.equal(card.cardState, 'submitted');
+  // 已收口（resolved）的卡片再收到同 id 事件（历史快照误标后 pending 恢复）→
+  // 重置为 active，让用户仍能选择（对应「切回显示已提交无法选择」的修复）。
+  applyNativeChatEvent(lane2, 'chat:user_input_required', { session_id: 's2', id: 'call-9', questions: [{ id: 'q1' }] });
+  assert.equal(card.resolved, false, '误标/历史快照卡片被 pending 恢复重置为 active');
+  assert.equal(card.cardState, 'active');
 
   // ── 发送失败回滚 ────────────────────────────────────────────────
   const lane3 = createNativeLane();
@@ -142,6 +147,63 @@ try {
   assert.equal(lane4.busy, true);
   hydrateNativeLane(lane4, { messages: [] }, []);
   assert.equal(lane4.busy, true, '已有 live turn 时 hydration 不得清 busy');
+
+  // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
+  // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时
+  // tool_use 尚无对应 tool_result，不能按历史恢复为 submitted（会误标并挡住
+  // pending 恢复的 active 卡）——应跳过，由 chat:user_input_required 恢复。
+  const lane4b = createNativeLane();
+  hydrateNativeLane(lane4b, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '继续跑' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c9', name: 'request_user_input', input: { questions: [{ id: 'q', header: 'H' }] } }],
+      },
+    ],
+  }, []);
+  assert.equal(lane4b.items.some(item => item.type === 'user_input'), false, '无 tool_result 的挂起提问不按历史恢复');
+  // 随后 pending 恢复（get_pending_user_inputs → chat:user_input_required）出 active 卡。
+  applyNativeChatEvent(lane4b, 'chat:user_input_required', {
+    session_id: 's4b',
+    id: 'c9',
+    questions: [{ id: 'q', header: 'H', question: '选？', options: [{ label: 'A' }] }],
+  });
+  const pendingCard = lane4b.items.find(item => item.type === 'user_input');
+  assert.equal(!!pendingCard, true);
+  assert.equal(pendingCard.resolved, false);
+  assert.equal(pendingCard.cardState, 'active');
+
+  // ── remount 恢复的 active 卡超时/收口：tool_end 用 payload.name 兜底 ──
+  // 恢复路径（pending → chat:user_input_required）没经过 tool_start，toolMeta
+  // 缺失；tool_end 处理器若只看 toolMeta 会落入普通工具分支、卡片不收口。
+  // 回归：300s 超时（success=false）后卡片进入 cancelled 终态。
+  applyNativeChatEvent(lane4b, 'chat:tool_end', {
+    session_id: 's4b',
+    id: 'c9',
+    name: 'request_user_input',
+    success: false,
+    output: '',
+  });
+  assert.equal(pendingCard.resolved, true, 'toolMeta 缺失时靠 payload.name 识别 request_user_input 收口');
+  assert.equal(pendingCard.cardState, 'cancelled', '超时收口为 cancelled 终态');
+  // 正常提交（success=true）同理进入 submitted 终态。
+  const lane4c = createNativeLane();
+  applyNativeChatEvent(lane4c, 'chat:user_input_required', {
+    session_id: 's4c',
+    id: 'c10',
+    questions: [{ id: 'q', header: 'H', question: '选？', options: [{ label: 'A' }] }],
+  });
+  const pendingCard2 = lane4c.items.find(item => item.type === 'user_input');
+  applyNativeChatEvent(lane4c, 'chat:tool_end', {
+    session_id: 's4c',
+    id: 'c10',
+    name: 'request_user_input',
+    success: true,
+    output: 'A',
+  });
+  assert.equal(pendingCard2.resolved, true);
+  assert.equal(pendingCard2.cardState, 'submitted', '提交收口为 submitted 终态');
 
   // ── 远端用户消息（遥控端发送）：去重本地乐观气泡 ────────────────
   const lane5 = createNativeLane();

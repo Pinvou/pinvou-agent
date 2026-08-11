@@ -315,7 +315,9 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
               <span className="block truncate text-[12px] leading-4 text-[#8A8F94] dark:text-[#9AA0A6]">{chat.subtitle}</span>
             )}
           </span>
-          {chat.working && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
+          {/* 等待选择时模型不在生成：橙点替代灰点，避免两个徽标叠加 */}
+          {chat.working && !chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
+          {chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-[#F9AB00] opacity-90 animate-pulse" title={t.riAwaitingInput}></span>}
           {chat.skill && <span className="text-[11px] shrink-0 opacity-70 mr-1" title={chat.skill}>🧭</span>}
           {chat.unread && (
             <span data-testid="scheduled-run-sidebar-unread" aria-label={t.uiScheduled.unread}

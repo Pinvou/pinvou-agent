@@ -162,6 +162,9 @@ function workspaceDisplayName(path) {
         }
       });
       const [codexBusyBySession, setCodexBusyBySession] = useState({});
+      // 代码会话等待用户输入（request_user_input 挂起）的会话集合：侧边栏用
+      // 「等待你的选择」橙色点提示，与 running 灰点区分——后台会话提问不再无感知。
+      const [codexWaitingInputBySession, setCodexWaitingInputBySession] = useState({});
       // 全局事件监听器按 id 判断是否为代码会话（监听器注册一次，不能闭包旧列表）。
       const codexSessionIdsRef = useRef(new Set());
       // 进入设置前的页面（openSettingsSection 记录），关闭设置时原路返回。
@@ -230,7 +233,32 @@ function workspaceDisplayName(path) {
             const sessionId = message && message.payload && message.payload.session_id;
             if (!sessionId || !codexSessionIdsRef.current.has(sessionId)) return;
             setCodexBusyBySession(current => ({ ...current, [sessionId]: eventName === 'chat:turn_started' }));
+            if (eventName === 'chat:done') {
+              setCodexWaitingInputBySession(current => ({ ...current, [sessionId]: false }));
+            }
             refreshCodexSessions().catch(() => {});
+          }).then(unlisten => {
+            if (disposed) unlisten();
+            else unlisteners.push(unlisten);
+          }).catch(() => {});
+        });
+        // 后台会话提问（request_user_input 挂起）时点亮「等待你的选择」提示，
+        // 收口（提交/取消/超时→tool_end）后熄灭；turn 结束由上面 chat:done 兜底。
+        ['chat:user_input_required', 'chat:tool_end'].forEach(eventName => {
+          tauriEvents.listen(eventName, (message) => {
+            if (disposed) return;
+            const p = message && message.payload || {};
+            const sessionId = p.session_id;
+            if (!sessionId || !codexSessionIdsRef.current.has(sessionId)) return;
+            if (eventName === 'chat:user_input_required') {
+              setCodexWaitingInputBySession(current => ({ ...current, [sessionId]: true }));
+              setCodexBusyBySession(current => ({ ...current, [sessionId]: true }));
+            } else if (p.name === 'request_user_input') {
+              setCodexWaitingInputBySession(current => ({ ...current, [sessionId]: false }));
+              // 只有提问收口才刷新会话列表；普通工具 tool_end 不动列表，避免
+              // 工具密集 turn 下每个 chat:tool_end 都触发一次 IPC + 重渲染。
+              refreshCodexSessions().catch(() => {});
+            }
           }).then(unlisten => {
             if (disposed) unlisten();
             else unlisteners.push(unlisten);
@@ -689,6 +717,7 @@ function workspaceDisplayName(path) {
         pinned: !!session.pinned,
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
+        waitingInput: !!codexWaitingInputBySession[session.id],
         taskKind: 'codex',
         leadingIcon: <AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]" title={session.agent_name || t.acpAgent} />,
         testId: 'codex-sidebar-item',
