@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: five long-lived Pinvou topics in six commits.
+# CodeWhale v0.9.5 clean re-fork guard: seven published commits across five themes.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-EXPECTED_HEAD="d1010aa3bbaf76780e29df4434fd1e03a95b2ca6"
-EXPECTED_COMMITS=6
+EXPECTED_HEAD="2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd"
+EXPECTED_COMMITS=7
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,12 +17,12 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 基线与五主题六提交拓扑 ──"
+bold "── 第 0 层：v0.9.5 基线与五主题公开拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记基线 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向公开基线 $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记基线为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
   fail=1
 fi
 
@@ -35,9 +35,9 @@ fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上五个长期主题共 $EXPECTED_COMMITS 个线性 commit"
+  green "  ✓ v0.9.5 之上 7 个公开提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开登记为 $EXPECTED_COMMITS"
   fail=1
 fi
 
@@ -51,6 +51,8 @@ fingerprints=(
   "T1|只读 worker 不触发重启回收回归      |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_readonly_worker_projection_preserves_live_status"
   "T1|宿主显式 route limits               |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
   "T1|embedding route wire alias 回归      |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_embedding_route_limits_preserve_wire_alias"
+  "T1|运行时会话快照不推断工具崩溃        |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_runtime_session_snapshot_preserves_in_flight_tool_call"
+  "T1|显式重启恢复可观测且幂等            |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -89,6 +91,9 @@ fingerprints=(
   "APP|定时任务复用 shared run API          |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
   "APP|多智能体面板只读 live worker         |pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs|read_persisted_agent_worker_records(workspace)"
   "APP|静态 prompt composer 由 app 安装     |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|set_static_prompt_composer_override"
+  "APP|运行时会话读取不修复在途工具调用      |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call"
+  "APP|进程启动显式恢复中断工具调用且幂等    |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
+  "APP|仅进程启动入口触发工具历史恢复        |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
 )
 
 for fp in "${fingerprints[@]}"; do

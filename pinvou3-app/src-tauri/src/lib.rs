@@ -358,7 +358,7 @@ pub fn run() {
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
             // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
             startup::mark("session_store:start");
-            let session_store = match SessionStore::boot() {
+            let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
                     store.load_skill_bindings();
                     store.load_session_models();
@@ -388,7 +388,7 @@ pub fn run() {
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
-                SessionStore::boot().expect("session store boot fallback")
+                SessionStore::boot_for_process_startup().expect("session store boot fallback")
             });
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。

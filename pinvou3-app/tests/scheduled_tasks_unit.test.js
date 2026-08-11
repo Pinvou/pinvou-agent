@@ -600,6 +600,7 @@ function tick() {
 
 function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
+  var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
   var listeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
@@ -663,6 +664,20 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls.push({ cmd: cmd, args: args || null });
     try {
       if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+      if (cmd === "web_access_load_session_chunk") {
+        var saved = handlers.load_session
+          ? handlers.load_session({ id: args.id })
+          : defaultInvoke("load_session", { id: args.id });
+        var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+        var offset = Number(args.offset || 0);
+        return Promise.resolve({
+          download_id: "test-download-" + args.id,
+          offset: offset,
+          total: encoded.length,
+          data_base64: encoded.subarray(offset).toString("base64"),
+          eof: true,
+        });
+      }
       return Promise.resolve(defaultInvoke(cmd, args || {}));
     } catch (error) {
       return Promise.reject(error);
@@ -688,7 +703,19 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     },
     addEventListener: function () {},
     localStorage: storage,
+    location: { search: "" },
+    atob: function (value) { return Buffer.from(String(value), "base64").toString("binary"); },
+    btoa: function (value) { return Buffer.from(String(value), "binary").toString("base64"); },
   };
+  if (bridgeKind === "web") {
+    window.PinvouPlatform = {
+      kind: "web",
+      isWeb: true,
+      capabilities: {},
+      can: function () { return false; },
+      canInvoke: function () { return false; },
+    };
+  }
   window.window = window;
   window.document = document;
   var context = {
@@ -701,11 +728,31 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     setInterval: function () { return 0; },
     clearInterval: function () {},
     structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
+    TextDecoder: TextDecoder,
+    Uint8Array: Uint8Array,
   };
-  vm.runInNewContext(tauriBridge, context, { filename: "tauri-bridge.js" });
+  vm.runInNewContext(
+    bridgeKind === "web" ? webBridge : tauriBridge,
+    context,
+    { filename: bridgeKind + "-bridge.js" }
+  );
+
+  var rawBridge = window.TauriBridge;
+  var bridge = bridgeKind === "web" ? {
+    sessions: {
+      switchToSession: function (id) { return rawBridge.switchToSession(id); },
+    },
+    chat: {
+      sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
+    },
+    state: {
+      get: function () { return rawBridge.getState(); },
+    },
+  } : rawBridge;
 
   return {
-    bridge: window.TauriBridge,
+    bridge: bridge,
+    bridgeKind: bridgeKind,
     handlers: handlers,
     calls: calls,
     storageData: storageData,
@@ -1625,13 +1672,14 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
   var bridge = harness.bridge;
   var sessionId = "chat-created-authority-barrier";
   var authorityLoads = 0;
-  harness.handlers.create_session = function () {
-    return { id: sessionId, title: "New chat", transcript_revision: "empty" };
-  };
-  harness.handlers.list_sessions = function () {
-    return [{ id: sessionId, title: "New chat", message_count: 2 }];
-  };
+  var remoteTurnStarted = false;
   harness.handlers.load_session = function () {
+    if (!remoteTurnStarted) {
+      return {
+        metadata: { id: sessionId, title: "New chat", message_count: 0 },
+        messages: [], artifacts: [], transcript_revision: "empty",
+      };
+    }
     authorityLoads += 1;
     if (authorityLoads === 1) {
       return {
@@ -1652,9 +1700,14 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
     };
   };
 
-  await bridge.sessions.createNewSession();
-  await bridge.chat.sendMessage("question");
+  await bridge.sessions.switchToSession(sessionId);
+  remoteTurnStarted = true;
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   harness.emit("chat:delta", { session_id: sessionId, text: "final answer" });
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "turn-final",
+  });
   harness.emit("chat:done", { session_id: sessionId });
   await tick();
   await tick();
@@ -1676,6 +1729,67 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
   );
 }
 
+async function localCompletedTurnNeverBlocksTheNextMessage() {
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      setTimeout: function (callback) { return setImmediate(callback); },
+    });
+    var bridge = harness.bridge;
+    var sessionId = "chat-local-terminal-nonblocking-" + bridgeKind;
+    var durable = {
+      metadata: { id: sessionId, title: "Local nonblocking", message_count: 0 },
+      messages: [],
+      artifacts: [],
+      transcript_revision: "revision-before-local-turn",
+    };
+    harness.handlers.load_session = function () {
+      return JSON.parse(JSON.stringify(durable));
+    };
+
+    await bridge.sessions.switchToSession(sessionId);
+    await bridge.chat.sendMessage("first local question");
+    await harness.emit("chat:delta", {
+      session_id: sessionId,
+      text: "first local answer",
+    });
+
+    // Even if a readback would still expose an older revision, chat:done for a
+    // locally owned turn must release the input immediately. Rust emits the
+    // committed marker only after persisting the terminal transcript; the UI
+    // must not reclassify that local completion as a remote synchronization gate.
+    await harness.emit("chat:transcript_committed", {
+      session_id: sessionId,
+      transcript_revision: "revision-after-local-turn",
+    });
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+
+    var afterDone = bridge.state.get("chat");
+    assert.strictEqual(afterDone.busy, false,
+      bridgeKind + " completed local turn must release busy immediately");
+    assert.ok(
+      !afterDone.chatItems.some(function (item) { return item && item.authoritySyncNotice; }),
+      bridgeKind + " completed local turn must not surface an authority-sync warning"
+    );
+
+    await bridge.chat.sendMessage("second local question");
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    assert.strictEqual(
+      harness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      2,
+      bridgeKind + " stale readback must not prevent the next local message from reaching the engine"
+    );
+  }
+
+  [tauriBridge, webBridge].forEach(function (source) {
+    assert.ok(source.includes("completedLocalTurn"),
+      "desktop and Web bridges must distinguish local completion from remote reconciliation");
+    assert.ok(source.includes("authoritySyncNotice"),
+      "desktop and Web bridges must deduplicate authority-sync notices");
+  });
+}
+
 async function completedTurnUsesCommittedRevisionAsAuthority() {
   var harness = createBridgeHarness(null, {
     // A broken implementation exhausts all fallback retries. Keep that path
@@ -1695,7 +1809,7 @@ async function completedTurnUsesCommittedRevisionAsAuthority() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", {
     session_id: sessionId,
     text: "stream presentation",
@@ -1760,7 +1874,7 @@ async function completedTurnKeepsWarningWhenRevisionMismatches() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
 
   // 后端提交的 revision 与快照携带的 revision 不一致:持久化快照不属于本轮,
@@ -1807,7 +1921,7 @@ async function completedTurnAdoptsLateCommittedRevision() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
 
   // Relay replay 可能在 chat:done 之后才送达 commit marker:对账重试窗口内
@@ -1860,7 +1974,7 @@ async function completedTurnFallsBackWhenSnapshotLacksRevision() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", { session_id: sessionId, text: "final answer" });
 
   // 旧契约/旧后端快照不含 transcript_revision 字段:即使已收到 committed 事件,
@@ -1913,7 +2027,7 @@ async function completedTurnAdoptsRevisionBumpDuringRetry() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
 
   // 回合 1 提交 revision-after-turn 并完成;但此刻持久化快照仍停在
@@ -1978,7 +2092,7 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
   };
 
   await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:user_message", { session_id: sessionId, content: "question" });
   await harness.emit("chat:delta", { session_id: sessionId, text: "stream answer" });
 
   // 快照 revision 与 committed 不匹配:权威对账必然失败,remoteTurnActive
@@ -2003,6 +2117,7 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
 
   var editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
   await bridge.interaction.editLastTurn("edited question");
+  await bridge.interaction.editLastTurn("edited question again");
   var editCallsAfter = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
   assert.strictEqual(
     editCallsAfter, editCallsBefore,
@@ -2010,11 +2125,12 @@ async function editLastTurnBlockedWhileAuthorityReconcilePending() {
   );
 
   var blockedState = bridge.state.get("chat");
-  assert.ok(
-    blockedState.chatItems.some(function (item) {
-      return item.type === "system" && String(item.text || "").includes("该会话仍在同步另一端完成的回合");
-    }),
-    "a blocked edit must surface the sync-pending notice"
+  assert.strictEqual(
+    blockedState.chatItems.filter(function (item) {
+      return item && item.authoritySyncNotice;
+    }).length,
+    1,
+    "repeated blocked actions must keep a single sync-pending notice"
   );
 }
 
@@ -4136,6 +4252,7 @@ Promise.resolve()
   .then(interruptedTurnRetainsDisplayOnlyPartial)
   .then(remoteInterruptedTurnKeepsItsDisplayPosition)
   .then(interruptedTurnWithoutUserItemDropsPartial)
+  .then(localCompletedTurnNeverBlocksTheNextMessage)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
   .then(completedTurnUsesCommittedRevisionAsAuthority)
   .then(completedTurnKeepsWarningWhenRevisionMismatches)

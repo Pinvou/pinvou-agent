@@ -8,6 +8,7 @@
     var notify = context.notify;
     var bt = context.bt;
     var addSystemItem = context.addSystemItem;
+    var addAuthoritySyncNotice = context.addAuthoritySyncNotice;
     var addChatItem = context.addChatItem;
     var timeStr = context.timeStr;
     var runSyncOnSession = context.runSyncOnSession;
@@ -87,6 +88,9 @@
   // 时它是 no-op 直通,sid !== active 时它 swap-load-fn-save 回 sid 的 buffer。
   function runOnSession(sid, fn) { runSyncOnSession(sid || state.activeSessionId, fn); }
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
+  function addAuthoritySyncNoticeFor(sid, text) {
+    runOnSession(sid, function () { addAuthoritySyncNotice(text); });
+  }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
 
 
@@ -122,7 +126,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, bt("remoteTurnSyncing"));
+      addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -335,7 +339,7 @@
     // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
     // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem(bt("remoteTurnSyncing"));
+      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
       notify();
       return;
     }

@@ -2313,6 +2313,12 @@
     addChatItem(item);
     notify();
   }
+  function addAuthoritySyncNotice(text) {
+    if (state.chatItems.some(function (item) {
+      return item && item.authoritySyncNotice;
+    })) return;
+    addSystemItem(text, { authoritySyncNotice: true });
+  }
   function compactPruneRollupText(count) {
     return bt("compactDone") + bt("compactAuto") + " " +
       bt("compactPruneMerged") + " ×" + count;
@@ -3912,7 +3918,9 @@
       turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice && !item.authoritySyncNotice;
+      });
       var uitem = {
         type: "user",
         text: displayText,
@@ -4387,7 +4395,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -5173,6 +5181,9 @@
       return;
     }
     var doneBuffer = sid ? getBuffer(sid) : null;
+    var completedLocalTurn = !!(
+      doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid)
+    );
     if (doneBuffer && !doneBuffer.localTurnOwned) {
       // transcript_committed precedes chat:done. Preserve its revision when a
       // reconnecting client first materializes the turn at the terminal tail.
@@ -5241,7 +5252,7 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
-    if (doneBuffer) {
+    if (doneBuffer && !completedLocalTurn) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
       var finalAssistantMessage = null;
@@ -5260,17 +5271,31 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    } else if (completedLocalTurn) {
+      // A local turn is already authoritative in this desktop process. Saved
+      // transcript verification remains best-effort and must not lock the next
+      // local message behind a cross-client synchronization state.
+      doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = false;
+      doneBuffer.remoteTerminalSeen = false;
+      doneBuffer.remoteBaselineMessageCount = null;
+      doneBuffer.remoteBaselineTrusted = false;
+      doneBuffer.remoteExpectedAssistantKey = "";
+      doneBuffer.remoteCommittedRevision = "";
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = await reconcileRemoteTurn(sid);
+      var reconciled = completedLocalTurn ? true : await reconcileRemoteTurn(sid);
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem(bt("remoteDoneUnsynced"));
+          addAuthoritySyncNotice(bt("remoteDoneUnsynced"));
         });
       }
       notify();
@@ -6581,7 +6606,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, bt("turnSyncRetry"));
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -6743,7 +6768,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       notify();
       return;
     }

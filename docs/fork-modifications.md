@@ -4,19 +4,28 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-11 · v0.9.5 r4 公开基线）
+## 0. 当前状态（2026-08-11 · v0.9.5 r5 公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
-| 依赖修复 | `Pinvou/CodeWhale#9` 已合并；合并后维护分支 head 为 `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r4` 均指向公开维护分支 head；`r1`/`r2`/`r3` 保留为不可变历史标签 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`Pinvou/CodeWhale#11` 已合并；当前维护分支 head 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r5` 均指向公开维护分支 head；`r1`/`r2`/`r3`/`r4` 保留为不可变历史标签 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、6 个线性提交 |
-| drift | `45 files changed, +1991/-265`；净增约 1726 行 |
-| 守护 | 21 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、7 个线性提交 |
+| drift | `48 files changed, +2177/-269`；净增约 1908 行 |
+| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+
+### 本次会话修复（已验证并发布）
+
+- v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
+- 底座修复已通过 `Pinvou/CodeWhale#11` 合入，公开 commit 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`。
+- T1 新增无修复副作用的 `load_session_snapshot` 与显式 `recover_session_for_resume`。Pinvou 的运行时读改写统一使用前者，仅在应用进程启动、任何 Engine 接管会话前执行后者，并把恢复结果原子落盘。
+- 前端仅对真正的跨端回合保留 revision 对账门禁；本地 `chat:done` 直接释放下一轮发送，落盘读回异常不得阻塞普通本地对话，跨端未收敛提示按会话去重。
+- 本次新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和 Tauri/Web 前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
+- 本节改动已计入上方公开维护分支 head、drift 和固定标签 `pinvou-v0.9.5-r5`；CodeWhale required checks 与父仓自动测试均已通过。
 
 ### 软上限评估
 
@@ -32,17 +41,18 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commit**：`331cb1594688c723d98499d9ca11f05af291b599`
-- **规模**：9 文件，`+272/-27`
-- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`。
+- **公开 commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）。
+- **公开规模**：10 文件，`+394/-31`；仓库级 CI 恢复不计入 T1 主题规模。
+- **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
   - 提供只读持久化 worker 投影，供 live 宿主结合自身进程纪元判断状态；恢复入口仍按 v0.9.5 原语把孤儿 worker 收敛为 interrupted。
   - 提供 opaque resolved route、显式 route limits 和 embedding host route override。
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
+  - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
 - **边界**：不实现 Pinvou 产品工具策略，不包含三省六部完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、父仓 resolved-route 和 compaction 合约测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`，以及父仓启动恢复、resolved-route 和 compaction 合约测试。
 
 ### T2：工具兼容与命令执行安全
 
@@ -138,7 +148,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-21 passed / 0 failed
+23 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -149,7 +159,7 @@ cargo check --locked
 cargo test --locked --lib -- --test-threads=1
 1077 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
-CodeWhale 21 passed；pinvou3-app 16 passed
+CodeWhale 23 passed；pinvou3-app 18 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui
