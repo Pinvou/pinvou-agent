@@ -2,7 +2,7 @@
 //! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
 //! 能力档案统一后，策略对象同时是
 //! **统一解析器**：`resolve()` 按会话模式加载能力档案（capability_profile.rs），
-//! 产出两通道差量（disallowed_tools / hidden_tools）与模式固有属性——if-else
+//! 产出 disallowed_tools 通道差量（exclude / extra_hidden）与模式固有属性——if-else
 //! 只保留在解析器内部，外部消费者统一走 resolve。技能线不做设计期差量（运行时
 //! 双 scope 开关 + 组合目录治理，见 skill_materialization）。
 
@@ -16,11 +16,15 @@ use deepseek_tui::tui::approval::ApprovalMode;
 ///
 /// 两模式同文:R-1 已为 code 页接上方案审批卡(plan_snapshot/plan_ready → accept_plan),
 /// "方案卡片由系统自动展示"对 work/code 均为真实描述,无需按模式分化。
+///
+/// v0.9.5 起模型可见的进度工具只有 canonical `todo_write`(explanation/items 形式的
+/// `update_plan` 与 `checklist_write` 均为隐藏 replay 别名,不进模型目录);决策卡由
+/// engine 监听 todo_write 结果触发,方案步骤写进 todos.content,status 用 pending。
 const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
-     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
+     1. 想清楚后 → 调 `todo_write` 工具输出方案步骤(content 写清每一步,\
+     status 用 pending;系统会在你调 todo_write 后自动展示方案卡片)。\n\
      2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
+     方案卡片由系统在你调 todo_write 后自动展示,你写引导是死锁。";
 
 /// `load_skill` 工具名。不再由本策略恒返回：skill 双 scope 治理（组合目录）落地后，
 /// code 会话按「组合目录是否为空」动态决定隐藏（见 bridge::shape_disallowed_tools）——
@@ -36,7 +40,7 @@ pub struct SessionPolicy {
     mode: SessionMode,
 }
 
-/// 能力档案统一解析结果：一份档案、一个解析器、三个生效通道。
+/// 能力档案统一解析结果：一份档案、一个解析器、生效通道（disallowed_tools）。
 /// 消费者按通道取数，不再各自 if 分流（档案即数据，新增模式=加档案条目）。
 #[derive(Debug, Clone, Copy)]
 pub struct ResolvedCapabilities {
@@ -48,9 +52,6 @@ pub struct ResolvedCapabilities {
     pub extra_hidden_tools: &'static [String],
     /// 档案 tools.exclude：基础集上再藏（disallowed_tools 通道，下轮生效）。
     pub tool_exclude: &'static [String],
-    /// 档案 tools.include：从底座隐藏常量放出（EngineConfig.hidden_tools 通道，
-    /// respawn 生效——hidden = 常量 − include）。
-    pub tool_include: &'static [String],
 }
 
 impl SessionPolicy {
@@ -85,7 +86,6 @@ impl SessionPolicy {
             connector_scope: profile.connectors.scope,
             extra_hidden_tools: &profile.tools.extra_hidden,
             tool_exclude: &profile.tools.exclude,
-            tool_include: &profile.tools.include,
         }
     }
 
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_policy_uses_plain_scope_and_hides_nothing() {
+    fn plain_policy_uses_plain_scope_and_hides_git() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
         assert!(policy.multi_agent_mode_available());
@@ -168,15 +168,14 @@ mod tests {
         assert!(!policy.uses_code_instructions());
     }
 
-    /// 能力档案统一解析（U-2 档案即数据）：resolve 两通道差量来自档案——
-    /// plain 零差量；code 按档案 include 声明（v1：git 只读工具放出）。
+    /// 能力档案统一解析（U-2 档案即数据）：resolve disallowed_tools 通道差量
+    /// 来自档案——plain 隐藏代码专用 Git；code 按档案 extra_hidden 声明（v1：产物卡）。
     #[test]
     fn resolve_loads_profile_per_mode() {
         let plain = SessionPolicy::for_mode(SessionMode::Plain).resolve();
         assert_eq!(plain.connector_scope, ConnectorScope::Plain);
         assert!(plain.extra_hidden_tools.is_empty());
-        assert!(plain.tool_exclude.is_empty());
-        assert!(plain.tool_include.is_empty(), "plain 不得放出工具");
+        assert_eq!(plain.tool_exclude, &["Git".to_string()]);
 
         let code = SessionPolicy::for_mode(SessionMode::Code).resolve();
         assert_eq!(code.connector_scope, ConnectorScope::Code);
@@ -185,20 +184,6 @@ mod tests {
             &["mcp_pinvou3_present_artifact".to_string()]
         );
         assert!(code.tool_exclude.is_empty());
-        // include 与档案一致（本期：git 域 5 个 + 修改/验证/后台取消 3 个）
-        assert_eq!(
-            code.tool_include,
-            &[
-                "git_status".to_string(),
-                "git_diff".to_string(),
-                "git_log".to_string(),
-                "git_show".to_string(),
-                "git_blame".to_string(),
-                "apply_patch".to_string(),
-                "run_verifiers".to_string(),
-                "exec_shell_cancel".to_string(),
-            ]
-        );
     }
 
     /// 同文断言：R-1 审批卡落地后 reminder 对两模式都是真实描述，保持同文；

@@ -1,71 +1,43 @@
-# CodeWhale Fork Inventory
+# CodeWhale Fork Modification Register
 
-> This is the public English summary of Pinvou Agent's CodeWhale delta.
-> The detailed Chinese inventory and [`fork-policy.md`](fork-policy.md) remain the maintainer source of truth.
+> Updated: 2026-08-11. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
 
 ## Current baseline
 
 | Item | Value |
 |---|---|
-| Upstream | `Hmbown/CodeWhale` tag `v0.9.0`, commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| Public release | `Pinvou/CodeWhale` tag `pinvou-v0.9.0-r4` |
-| Pinned commit | `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Maintenance branch | `pinvou3-clean` |
-| Organization | 6 long-lived product themes, 11 follow-up behavior/maintenance commits, and 3 public baseline/security commits |
-| Diff from upstream tag | 4,839 insertions, 616 deletions, 58 files |
+| Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
+| Dependency fix | `Pinvou/CodeWhale#9` is merged; the resulting maintenance head is `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
+| Public status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r4` both resolve to the public maintenance head; `r1`, `r2`, and `r3` remain immutable historical tags |
+| Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
+| Drift | 45 files, `+1991/-265` |
+| Organization | Five long-lived topics in six linear commits replayed from `v0.9.5` |
 
-The delta exceeds the 1,500-line soft limit and has therefore received a mandatory boundary review. The retained code owns behavior that cannot be reconstructed safely in the desktop wrapper: task persistence, workflow completion, prompt-source sealing, and engine-level safety. Shell rendering and platform-specific desktop behavior remain in the parent repository and do not add fork drift.
+## Topics
 
-## Long-lived themes
+1. **Host embedding and routing boundary** — `331cb1594688c723d98499d9ca11f05af291b599`. Exposes only the library modules, narrow root-level Fleet roster API, read-only live-worker projection, and opaque resolved-route interfaces required by the host; the full `fleet` module remains private and recovery semantics stay unchanged.
+2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`. Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, and fail-closed multiline command safety while reusing upstream `allowed_tools`.
+3. **Embedded context and Skill sources** — `5a9f52941b83452c1e8b76c2d679bac315edcf70`. Seals ambient project authority, scans only the explicit Skill root, filters disabled Skills, preserves up to 100 KiB only for the Permissions fragment, and excludes internal reminders from Working Set extraction.
+4. **Automation and runtime lifecycle** — `fc84f7d3e5dca0e3db404d43e218597764129f9b`. Preserves stable conversation/thread identity, v4 task compatibility, anchored schedules, no-backfill/no-overlap behavior, and terminal-only cleanup.
+5. **Three Departments and Six Ministries orchestration, completion gate, and structured-output safety** — `3782a78d4e11d1fb65042cf9c82231b9d644c20a` plus `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`. Adds the role/tool/step/output contract, bounded write claims, explicit host-selected output roots, traversal and symlink-escape rejection, safe structured persistence, file-completion gate, cancellation, and authoritative terminal result needed by that workflow.
 
-### T1 — Host library facade
+Pinvou's product tool allowlist, connector state, UI, workspace selection, bundle instructions, session Skill materialization, and presentation remain in `pinvou3-app`.
 
-Exposes the upstream bin-first crate as a library for the desktop host. It exports existing engine modules and does not reimplement them.
+## v0.9.5 migration notes
 
-### T2 — Tool surface and execution safety
-
-Defines the Pinvou tool surface, write-size limits, truncated-argument guidance, wildcard tool restrictions, and fail-closed handling for dangerous commands and required approvals. Session-scoped `hidden_tools` may release entries from the fixed Pinvou hidden list but cannot hide tools outside it; the `tool_search` gate remains fixed. `append_file` emits a bounded inline unified diff with byte-summary, oversized-file, and non-UTF-8 fallbacks. Result-oriented golden and safety tests protect the behavior.
-
-### T3 — Sealed prompts and one context source
-
-Lets the app own the static prompt composer, accepts only explicitly injected project instructions, and discovers Skills only from the explicit `EngineConfig.skills_dir` root. The current app injects the Pinvou runtime bundle and filters disabled Skills; CodeWhale no longer adds an implicit bundle fallback. Internal reminders stay out of the working set.
-
-### T4 — Scheduled execution and history lifecycle
-
-Keeps a stable conversation identity for each automation, persists run links, anchors hourly schedules, skips offline misfires, prevents overlapping runs, and deletes only terminal task history and its artifacts.
-
-### T5 — Host orchestration and workflow completion
-
-Adds host-provided tools and hard allowlists across execution modes, structured subagent outputs, safe declared file persistence, authoritative completion/failure envelopes, reliable nested-agent lineage and exactly-once terminal mailbox delivery, bulk cancellation, and cancellable OAuth login. `ChildSpawned` is published when ownership is accepted, while the single `Started` event remains tied to actual execution after the launch gate.
-
-### T6 — Host routing and shared automation APIs
-
-Exposes an opaque runtime route receipt, explicit route limits, and shared reconciliation APIs so the host can use one consistent routing and automation model without duplicating engine internals.
-
-## Public baseline maintenance
-
-The three public baseline/security commits add:
-
-- a full-history Gitleaks workflow and two exact allowlist entries for public upstream test fixtures;
-- `PINVOU_FORK.md` and the README fork notice;
-- removal of one internal project-name comment without changing behavior.
-
-They do not introduce a seventh product theme. The `cb93e0f44` follow-up extends T2 with `append_file` inline diffs; the four commits ending at `9a31dcdfa` extend T5 with reliable Agent mailbox lifecycle handling. The three commits ending at `03e9e1027` update the existing T2/T3 boundaries with bounded session tool visibility and a single explicit Skill root.
+- The parent passes through the new `EngineConfig.subagent_state_root` field.
+- The removed legacy `hidden_tools` field is not restored; session-level hiding already uses dynamic `disallowed_tools` shaping.
+- The upstream 40 KiB WorldState cap is retained globally. Only `FragmentId::Permissions` uses the existing 100 KiB instruction limit.
+- The parent lockfile reflects the v0.9.5 workspace-crate split without adding a new direct Pinvou dependency.
 
 ## Verification
 
-The released CodeWhale baseline passed:
+- CodeWhale format and locked library check pass.
+- All 21 CodeWhale `forkguard_*` tests pass.
+- Parent locked Rust check and desktop binary link pass.
+- Parent library tests pass: 1077 passed, 0 failed, and 12 environment-dependent tests ignored.
+- Parent fork guard, architecture guard, npm tests, UI lint, desktop UI build, and web UI build pass.
+- Full product results are recorded in `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`.
 
-- full-history Gitleaks across 5,448 commits with zero reported leaks;
-- `cargo check --workspace --all-targets --locked`;
-- `forkguard_` regression tests;
-- formatting, DCO, required gate, and CodeQL checks.
-
-The parent repository additionally verifies that:
-
-- `.gitmodules` uses `https://github.com/Pinvou/CodeWhale.git`;
-- no floating submodule branch is configured;
-- the gitlink commit is publicly reachable;
-- `pinvou-v0.9.0-r4^{}` equals the pinned gitlink.
-
-For any future gitlink or fork-behavior change, update this inventory, the Chinese source-of-truth inventory, fingerprints, and result-oriented tests in the same PR.
+Any fork-distinct change must update this register, guard fingerprints, and a result-oriented behavior test, then pass `./scripts/fork-guard.sh --fast`.

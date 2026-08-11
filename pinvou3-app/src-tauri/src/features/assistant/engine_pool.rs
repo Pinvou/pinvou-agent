@@ -1233,7 +1233,7 @@ impl EnginePool {
             return Ok(());
         };
         let workspace = self.bridge.session_workspace(session_id);
-        let roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+        let roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
             &workspace,
         ));

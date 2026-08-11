@@ -36,7 +36,7 @@
 > **示例**："帮我导出最近一个月的签到记录" → 含"导出" → 走报表脚本
 > "查一下张三的签到记录" → 不含导出关键词 → 走查询命令
 
-- **导出签到报表** → **必须先 `read_file` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行（报表类型为"签到报表"）**，对应脚本 `attendance_report_checkin.py`
+- **导出签到报表** → **必须先用 `File(action="read")` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行（报表类型为"签到报表"）**，对应脚本 `attendance_report_checkin.py`
   - **严禁**绕过 `attendance-report.md` 直接调用脚本
   - **严禁**自己手动分段调用 `dws attendance checkin records` 来拼数据，必须用脚本
 - **查询签到记录**（无需导出，仅查看） → `dws attendance checkin records`（数据源为 MCP 工具 `get_checkin_record`）
@@ -198,7 +198,7 @@ Flags:
 
 ### 获取排班记录
 
-**禁止直接调用 `dws attendance schedule get`。必须先 `read_file` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班查询导出工作流」执行。**
+**禁止直接调用 `dws attendance schedule get`。必须先用 `File(action="read")` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班查询导出工作流」执行。**
 
 - 任何"查询排班"、"查看排班"、"XX考勤组的排班"、"X月份的排班"场景，**一律走 attendance-schedule.md 工作流**，由脚本 `attendance_schedule_export.py` 统一处理
 - 脚本自动处理：分批查询（超 20 人自动分批）、userId→姓名转换、classId→班次名称转换、排班表格式 Excel 输出
@@ -1036,11 +1036,11 @@ Flags:
 用户说"指定用户打卡结果/考勤结果/迟到早退/缺卡异常" → `check result`
 用户说"指定用户打卡流水/打卡详情/打卡时间地点/打卡记录详情" → `check record`
 用户说"审批单/请假记录/加班记录/出差记录/补卡记录" → `approve list`
-用户说"查询排班记录/获取排班详情/查看排班/排班表/导出排班/导出排班表/排班导出/XX考勤组的排班" → **必须先 `read_file` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班查询导出工作流」执行**。
+用户说"查询排班记录/获取排班详情/查看排班/排班表/导出排班/导出排班表/排班导出/XX考勤组的排班" → **必须先用 `File(action="read")` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班查询导出工作流」执行**。
   - **优先级**：只要用户句中含"排班"二字且意图是查看/导出，就走本条，不要走 `attendance-report.md`。"导出排班表" ≠ "导出考勤报表"
   - **严禁**绕过 `attendance-schedule.md` 直接调用 `dws attendance schedule get` 命令
   - 脚本自动处理：分批查询（超 20 人自动分批）、userId→姓名转换、classId→班次名称转换、排班表格式 Excel 输出
-用户说"排班/导入排班/安排排班/设置排班/安排班次/调班/换班/排休" → **必须先 `read_file` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班导入工作流」执行**。
+用户说"排班/导入排班/安排排班/设置排班/安排班次/调班/换班/排休" → **必须先用 `File(action="read")` 读取 [attendance-schedule.md](./attendance-schedule.md) 后按其中的「排班导入工作流」执行**。
   - **严禁**绕过 `attendance-schedule.md` 直接调用 `dws attendance schedule import` 命令
   - **严禁**仅凭命令 `--help` 或本文件中的命令参考自行组装排班命令
   - 该文档定义了：考勤组类型校验（必须为 TURN）、班次校验（必须属于该考勤组）、排班回显确认、错误处理等约束，缺一不可
@@ -1064,7 +1064,7 @@ Flags:
 用户说"更新个人规则设置/保存打卡提醒/修改极速打卡/关闭缺卡提醒/开启打卡结果通知/设置个人考勤统计通知/设置团队考勤统计通知" → `selfsetting save`
 用户说"考勤字段/考勤列" → `report columns`
 用户说"考勤数据/查询考勤报表数据" → `report query-data`（单次查询场景，非导出）
-  **导出考勤/导出报表/生成考勤报表/出勤汇总导出/考勤明细导出/迟到早退统计导出/全员考勤数据导出/月度考勤报表/考勤表格/考勤 Excel** → **必须先 `read_file` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行**。
+  **导出考勤/导出报表/生成考勤报表/出勤汇总导出/考勤明细导出/迟到早退统计导出/全员考勤数据导出/月度考勤报表/考勤表格/考勤 Excel** → **必须先用 `File(action="read")` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行**。
   - **排除**：如果用户说的是"导出**排班**表"/"导出**排班**"/"**排班**导出"，这属于**排班查询导出**，应路由到 [attendance-schedule.md](./attendance-schedule.md)，而非本条。判断标准：句中含"排班"二字 → 走排班；不含"排班"或明确说"考勤报表/考勤数据/出勤统计" → 走报表。
   - **严禁**绕过 `attendance-report.md` 直接调用 `python scripts/attendance_report_*.py` 任何脚本
   - **严禁**仅凭脚本 `--help` 或本文件"自动化脚本"表格里的脚本路径就推断参数自行组装命令
@@ -1073,7 +1073,7 @@ Flags:
 用户说"假期数据/年假/病假/请假记录" → `report query-leave`
 用户说"假期/我的假期/假期规则" → `vacation types`
 用户说"病假余额/年假余额/事假剩余假期"等查询指定假期规则的余额 → `vacation balance`
-用户说"导出假期余额/假期余额列表/所有假期规则余额/假期余额 Excel/年假病假调休余额导出"等全部假期规则余额的查询 → **必须先 `read_file` 读取 [attendance-vacation.md](./attendance-vacation.md) 后按其中工作流执行**
+用户说"导出假期余额/假期余额列表/所有假期规则余额/假期余额 Excel/年假病假调休余额导出"等全部假期规则余额的查询 → **必须先用 `File(action="read")` 读取 [attendance-vacation.md](./attendance-vacation.md) 后按其中工作流执行**
 用户说"假期变更/假期记录/请假扣减" → `vacation records`
 用户说"更新假期规则/修改假期类型/编辑假期规则" → `vacation update-type --leave-code <LEAVE_CODE>`
 用户说"设置假期余额/调整假期额度/更新假期余额" → 先调用 `vacation balance` 获取当前余额，计算修改后的值，再调用 `vacation save-balance`

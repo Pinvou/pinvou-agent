@@ -396,6 +396,8 @@ pub async fn kick_workflow(
             role_name,
             prompt,
             allowed_tools,
+            write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -417,8 +419,10 @@ pub async fn kick_workflow(
                 prompt,
                 role_id,
                 allowed_tools,
+                write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             engine
@@ -455,8 +459,10 @@ pub async fn kick_workflow(
                     prompt: t.prompt,
                     role_id: t.agent_role,
                     allowed_tools: t.allowed_tools,
+                    write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 engine
@@ -527,6 +533,8 @@ pub async fn retry_workflow_role(
             role_name,
             prompt,
             allowed_tools,
+            write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -548,8 +556,10 @@ pub async fn retry_workflow_role(
                 prompt,
                 role_id,
                 allowed_tools,
+                write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             engine
@@ -586,8 +596,10 @@ pub async fn retry_workflow_role(
                     prompt: t.prompt,
                     role_id: t.agent_role,
                     allowed_tools: t.allowed_tools,
+                    write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 engine

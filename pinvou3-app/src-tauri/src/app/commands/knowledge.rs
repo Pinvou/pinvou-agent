@@ -14,7 +14,7 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
          内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
          只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
-         DOCX/PPTX 等来源调用 `read_file` 或用 shell 全量展开。与本地资料无关的闲聊/常识\
+         DOCX/PPTX 等来源调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。与本地资料无关的闲聊/常识\
          问题不必检索,正常回答即可。\n\
          </system-reminder>"
     )

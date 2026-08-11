@@ -2,24 +2,14 @@
   "profiles": [
     {
       "mode": "plain",
-      "tools": { "exclude": [], "extra_hidden": [], "include": [] },
+      "tools": { "exclude": ["Git"], "extra_hidden": [] },
       "connectors": { "scope": "plain" }
     },
     {
       "mode": "code",
       "tools": {
         "exclude": [],
-        "extra_hidden": ["mcp_pinvou3_present_artifact"],
-        "include": [
-          "git_status",
-          "git_diff",
-          "git_log",
-          "git_show",
-          "git_blame",
-          "apply_patch",
-          "run_verifiers",
-          "exec_shell_cancel"
-        ]
+        "extra_hidden": ["mcp_pinvou3_present_artifact"]
       },
       "connectors": { "scope": "code" }
     }

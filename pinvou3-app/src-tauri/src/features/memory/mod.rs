@@ -593,7 +593,7 @@ fn json_field_string(input: &Value, key: &str, max_chars: usize) -> String {
 
 fn summarize_tool_start(name: &str, input: &Value) -> String {
     let name = clean_text(name, 80);
-    if is_delivery_tool_name(&name) {
+    if is_delivery_tool(&name, input) {
         let path = json_field_string(input, "path", 220);
         let file_path = json_field_string(input, "file_path", 220);
         let filename = json_field_string(input, "filename", 220);
@@ -621,14 +621,14 @@ fn summarize_tool_start(name: &str, input: &Value) -> String {
     clean_text(&format!("tool_start name={name} input={input}"), 600)
 }
 
-pub fn record_turn_tool_complete(session_id: &str, name: &str, success: bool) {
+pub fn record_turn_tool_complete(session_id: &str, name: &str, input: &Value, success: bool) {
     let session_id = clean_id(session_id);
     if session_id.is_empty() {
         return;
     }
     let mut store = turn_capture_store().lock();
     let capture = store.entry(session_id).or_default();
-    if success && is_delivery_tool_name(name) {
+    if success && is_delivery_tool(name, input) {
         capture.delivery_complete = true;
     }
     let summary = clean_text(
@@ -644,11 +644,15 @@ pub fn record_turn_tool_complete(session_id: &str, name: &str, success: bool) {
     }
 }
 
-fn is_delivery_tool_name(name: &str) -> bool {
+fn is_delivery_tool(name: &str, input: &Value) -> bool {
     let name = name.trim();
     name == "write_file"
-        || name == "append_file"
         || name == "edit_file"
+        || (name.eq_ignore_ascii_case("File")
+            && input
+                .get("action")
+                .and_then(Value::as_str)
+                .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
         || name == "present_artifact"
         || name.ends_with("present_artifact")
 }
@@ -4667,6 +4671,10 @@ mod tests {
 
     #[test]
     fn delivery_tool_summary_keeps_artifact_path_after_long_content() {
+        assert!(is_delivery_tool(
+            "File",
+            &json!({"action": "patch", "path": "italy_travel_guide.md"})
+        ));
         let summary = summarize_tool_start(
             "write_file",
             &json!({

@@ -248,19 +248,68 @@ fn build_context(messages: &[Message], workspace: &Path) -> String {
     ctx
 }
 
-/// 最后被 write_file/edit_file/present_artifact 碰过的产物 path。**含 edit_file 是修
-/// bug 的关键**：旧逻辑只认 write_file，长 session 用 edit_file 迭代就看不到最新态。
+fn artifact_paths_from_input(input: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut push = |path: &str| {
+        let path = path.trim();
+        if !path.is_empty() && !paths.iter().any(|existing| existing == path) {
+            paths.push(path.to_string());
+        }
+    };
+    for key in ["path", "file_path", "filename"] {
+        if let Some(path) = input.get(key).and_then(Value::as_str) {
+            push(path);
+        }
+    }
+    for key in ["replace", "changes"] {
+        for change in input
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for path_key in ["path", "file_path", "filename"] {
+                if let Some(path) = change.get(path_key).and_then(Value::as_str) {
+                    push(path);
+                }
+            }
+        }
+    }
+    if let Some(patch) = input.get("patch").and_then(Value::as_str) {
+        for line in patch.lines() {
+            if let Some(path) = ["*** Add File:", "*** Update File:", "*** Delete File:"]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+            {
+                push(path);
+            } else if let Some(path) = line.strip_prefix("+++ ") {
+                let path = path.strip_prefix("b/").unwrap_or(path);
+                if path != "/dev/null" {
+                    push(path);
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// 最后被 write_file/edit_file/File.write/File.edit/File.patch/present_artifact 碰过的产物 path。
+/// **含 edit 是修 bug 的关键**：旧逻辑只认 write_file，长 session 用 edit_file 迭代
+/// 就看不到最新态；v0.9.5 起写操作统一走 canonical `File` action=write/edit。
 fn last_artifact_path(messages: &[Message]) -> Option<String> {
     let mut last = None;
     for m in messages {
         for b in &m.content {
             if let ContentBlock::ToolUse { name, input, .. } = b {
-                if matches!(
-                    name.as_str(),
-                    "write_file" | "edit_file" | "present_artifact"
-                ) {
-                    if let Some(p) = input.get("path").and_then(Value::as_str) {
-                        last = Some(p.to_string());
+                let is_file_write = (name.as_str() == "File"
+                    && input
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
+                    || matches!(name.as_str(), "write_file" | "edit_file" | "apply_patch");
+                if is_file_write || name.as_str() == "present_artifact" {
+                    if let Some(path) = artifact_paths_from_input(input).into_iter().last() {
+                        last = Some(path);
                     }
                 }
             }
@@ -672,8 +721,16 @@ fn tool_name_map(messages: &[Message]) -> HashMap<&str, &str> {
     let mut map = HashMap::new();
     for m in messages {
         for b in &m.content {
-            if let ContentBlock::ToolUse { id, name, .. } = b {
-                map.insert(id.as_str(), name.as_str());
+            if let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = b
+            {
+                let semantic = match (name.as_str(), input.get("action").and_then(Value::as_str)) {
+                    ("Web", Some("search")) => "web_search",
+                    ("Web", Some("fetch")) => "fetch_url",
+                    _ => name.as_str(),
+                };
+                map.insert(id.as_str(), semantic);
             }
         }
     }
@@ -709,7 +766,7 @@ fn full_transcript(messages: &[Message]) -> String {
 }
 
 /// 确定性投影（§4.2，超长降级用）：Boss 原话全留 / request_user_input 决策 /
-/// web_search 事实截断；丢 checklist、thinking、tool 细节。**产物不在这里**——由
+/// Web(action=search) 事实截断；丢 checklist、thinking、tool 细节。**产物不在这里**——由
 /// build_context 读 workspace 文件真实内容（修 edit_file bug，§10.10）。
 fn project(messages: &[Message]) -> String {
     let names = tool_name_map(messages);
@@ -1131,6 +1188,17 @@ mod tests {
     }
 
     #[test]
+    fn project_keeps_canonical_web_search_facts() {
+        let messages = vec![
+            user_text("核对当前报价"),
+            assistant_tool("w1", "Web", json!({"action": "search", "query": "报价"})),
+            tool_result("w1", "当前报价：100 元"),
+        ];
+        let projected = project(&messages);
+        assert!(projected.contains("当前报价：100 元"), "{projected}");
+    }
+
+    #[test]
     fn last_artifact_path_picks_latest_including_edit_file() {
         let messages = vec![
             assistant_tool(
@@ -1151,6 +1219,22 @@ mod tests {
         ];
         // 修 bug 关键：edit_file 也算产物，取最后一次的 path（旧逻辑只认 write_file 会漏）
         assert_eq!(last_artifact_path(&messages), Some("plan.md".to_string()));
+    }
+
+    #[test]
+    fn last_artifact_path_picks_last_file_from_canonical_patch() {
+        let messages = vec![assistant_tool(
+            "p1",
+            "File",
+            json!({
+                "action": "patch",
+                "patch": "*** Begin Patch\n*** Update File: plan.md\n@@\n-old\n+new\n*** Add File: appendix.md\n+extra\n*** End Patch"
+            }),
+        )];
+        assert_eq!(
+            last_artifact_path(&messages),
+            Some("appendix.md".to_string())
+        );
     }
 
     #[test]

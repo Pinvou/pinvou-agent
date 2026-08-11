@@ -75,6 +75,19 @@ function evalIsDeliverable(snippet, label) {
     isScheduledRunSession: () => false,
   });
   checkAll(feature.isDeliverable, "tauri artifact-tracker.js");
+  assert.strictEqual(feature.fileMutationAction("File", { action: "write" }), "write");
+  assert.strictEqual(feature.fileMutationAction("File", { action: "edit" }), "edit");
+  assert.strictEqual(feature.fileMutationAction("File", { action: "patch" }), "patch");
+  assert.strictEqual(feature.fileMutationAction("File", { action: "read" }), null);
+  assert.deepStrictEqual(
+    Array.from(feature.extractArtifactPaths({
+      action: "patch",
+      changes: [{ path: "report.md" }],
+      patch: "*** Update File: report.md\n*** Add File: appendix.md\n+++ b/summary.md",
+    })),
+    ["report.md", "appendix.md", "summary.md"],
+    "File.patch 必须追踪全部去重后的产物路径",
+  );
 }
 
 // 2) web 侧 bridge.js:isDeliverable 是闭包内部函数,抽取 DELIVERABLE_EXTS..isDeliverable
@@ -112,7 +125,7 @@ function evalIsDeliverable(snippet, label) {
 // 4) 回放(rerender)兜底补首卡门控:两侧 bridge 的预扫只在 isDeliverable 通过时
 //    记 writtenArtifacts → tmp/ 文件切 session 重放后不再冒出成品卡
 {
-  const GATE = 'if (db.name !== "edit_file" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
+  const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
   for (const rel of [
     path.join("src", "platform", "web", "bridge.js"),
     path.join("src", "platform", "tauri", "bridge.js"),

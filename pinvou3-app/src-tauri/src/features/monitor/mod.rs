@@ -1236,7 +1236,7 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
             (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
             (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
-            // Kimi：k3 是 1M，k2.x / for-coding 系 256K
+            // Kimi：直连平台 kimi-k3 是 1M；Coding Plan 裸 k3 默认按 256K 安全值
             (ModelPreset::Kimi, "kimi-k3", 1_048_576),
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
             (ModelPreset::Kimi, "kimi-k2.7-code-highspeed", 262_144),
@@ -1249,7 +1249,7 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
                 262_144,
             ),
             (ModelPreset::OpenaiCompatible, "k3-256k", 256_000),
-            (ModelPreset::OpenaiCompatible, "k3", 1_048_576),
+            (ModelPreset::OpenaiCompatible, "k3", 262_144),
             // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
