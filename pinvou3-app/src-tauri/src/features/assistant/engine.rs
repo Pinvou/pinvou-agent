@@ -850,8 +850,27 @@ impl TurnLifecycle {
     /// [`claim_terminal_transition`]: Self::claim_terminal_transition
     /// [`claim_reclaimed_transition`]: Self::claim_reclaimed_transition
     pub(crate) fn claim_unsubmitted_terminal(&self) -> bool {
+        self.claim_unsubmitted_terminal_impl(None)
+    }
+
+    /// 带目标 epoch 的原子认领：在 lifecycle state 锁内**同时**校验
+    /// `turn_epoch == target` 并认领，二者之间不存在可插入轮次切换的窗口。
+    ///
+    /// 供 cancel 阶段二使用（`reserve_turn` 不取 `turn_lock`，generation 检查
+    /// 与认领若分离，另一 worker 可在检查通过后结束旧轮并 reserve 新轮，
+    /// 无 epoch 校验的认领会把新轮 reservation 误认领为 Interrupted）：
+    /// epoch 不匹配时返回 `false` 且不产生任何副作用，调用方必须整体 no-op。
+    pub(crate) fn claim_unsubmitted_terminal_for_epoch(&self, target: u64) -> bool {
+        self.claim_unsubmitted_terminal_impl(Some(target))
+    }
+
+    fn claim_unsubmitted_terminal_impl(&self, expected_epoch: Option<u64>) -> bool {
         let _emission = self.emission.lock();
         let mut state = self.state.lock();
+        if expected_epoch.is_some_and(|epoch| state.turn_epoch != epoch) {
+            // 轮次已切换（目标轮已结束、新轮已 reserve）：不得认领新轮。
+            return false;
+        }
         if !state.active || state.submitted || state.terminal_emitted {
             return false;
         }
@@ -889,6 +908,23 @@ impl TurnLifecycle {
         true
     }
 
+    /// 带目标 epoch 的未提交认领 + 补发 `chat:done`：认领在 state 锁内与
+    /// `turn_epoch == target` 校验原子完成，目标轮已结束（新轮已 reserve）时
+    /// 返回 `false` 且无副作用，避免把新轮 reservation 误认领为 Interrupted。
+    pub(crate) fn emit_unsubmitted_interrupted_terminal_for_epoch(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        target: u64,
+    ) -> bool {
+        if !self.claim_unsubmitted_terminal_for_epoch(target) {
+            return false;
+        }
+        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        self.finish_terminal_emission();
+        true
+    }
+
     /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
     ///
     /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
@@ -912,13 +948,29 @@ impl TurnLifecycle {
     /// 再 cancel 保证：即使 TurnStarted 在两步之间抵达转发器并消费了标记，
     /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
     ///
+    /// **返回值**：`false` 表示 `state.turn_epoch != epoch`——generation 复查
+    /// 通过之后、arm 之前另一 worker 已结束目标轮并启动新轮（`reserve_turn`
+    /// 不取 `turn_lock`，可在 cancel 的同步段中间完成切换）。调用方**必须**
+    /// 在收到 `false` 时跳过 `cancel_current` 及其级联副作用，否则取消会命中
+    /// 新轮已 `reset_cancel_token` 的活跃 token，造成跨轮误取消。
+    ///
+    /// 其余条件不满足（未 submitted / 已 started / 非 active）时仍返回 `true`：
+    /// 这些情况 epoch 匹配、仍是目标轮，`cancel_current` 命中目标轮 token
+    /// （已 started 直接命中活跃 token；未 submitted 时 engine 尚无该轮 token，
+    /// 取消是幂等 no-op），调用方可以安全继续。
+    ///
     /// [`current_turn_generation`]: Self::current_turn_generation
     /// [`take_pending_cancel`]: Self::take_pending_cancel
-    pub(crate) fn arm_pending_cancel(&self, epoch: u64) {
+    pub(crate) fn arm_pending_cancel(&self, epoch: u64) -> bool {
         let mut state = self.state.lock();
-        if state.submitted && state.turn_id.is_none() && state.active && state.turn_epoch == epoch {
+        if state.turn_epoch != epoch {
+            // 轮次已切换（目标轮已结束、新轮已 reserve）：调用方必须跳过取消。
+            return false;
+        }
+        if state.submitted && state.turn_id.is_none() && state.active {
             state.pending_cancel = Some(epoch);
         }
+        true
     }
 
     /// 原子取出并清除 `pending_cancel` 标记。
@@ -3431,8 +3483,13 @@ mod turn_lifecycle_tests {
             .expect("turn2 active epoch");
         assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
 
-        // 用发起时快照 target arm：turn_epoch 已是 epoch2 != target → 拒绝。
-        lifecycle.arm_pending_cancel(target);
+        // 用发起时快照 target arm：turn_epoch 已是 epoch2 != target → 拒绝并
+        // 返回 false（reviewer 点 6：调用方据返回值跳过 cancel_current，否则
+        // 取消会命中新轮已 reset_cancel_token 的活跃 token）。
+        assert!(
+            !lifecycle.arm_pending_cancel(target),
+            "arm with the stale target snapshot must report epoch mismatch"
+        );
         assert!(
             lifecycle.take_pending_cancel(epoch2).is_none(),
             "arm with the stale target snapshot must not bind pending to the new turn"
@@ -3440,6 +3497,94 @@ mod turn_lifecycle_tests {
 
         // 防 Drop 副作用。
         reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_reports_epoch_mismatch_and_arms_current() {
+        // reviewer 点 6 的原子边界：arm 在 state 锁内校验 turn_epoch == epoch。
+        // 轮次已切换 → 返回 false 且不置 pending（调用方必须跳过取消副作用）；
+        // epoch 匹配 → 返回 true 并正常 arm（submitted 未 started 时置 pending）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：on_submitted 激活（active+submitted+epoch=1，turn_id=None）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+
+        // 轮次切换：turn1 终态 → turn2 reserve + 提交（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // stale target：拒绝 + pending 不落到新轮。
+        assert!(!lifecycle.arm_pending_cancel(target));
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "rejected arm must not set pending on the new turn"
+        );
+
+        // 当前 epoch：接受 + pending 置位（turn2 仍 submitted 未 started）。
+        assert!(lifecycle.arm_pending_cancel(epoch2));
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_some(),
+            "accepted arm must set pending for the current turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_for_epoch_rejects_stale_target() {
+        // reviewer 点 7 的原子边界：未提交认领必须在 state 锁内与
+        // turn_epoch == target 同时校验。generation 检查与认领分离时，
+        // reserve_turn（不取 turn_lock）可在两者之间完成切轮，无 epoch 校验
+        // 的认领会把新轮 reservation 误认领为 Interrupted、清掉新轮 busy。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：reserve 未提交（epoch=1），cancel 阶段二走认领路径。
+        let reservation1 = lifecycle.reserve().expect("turn1 reserve");
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+        assert_eq!(target, 1);
+
+        // 模拟「generation 检查通过后、认领前」另一 worker 切轮：
+        // turn1 终态（未提交认领路径）→ turn2 reserve（epoch=2，未提交）。
+        assert!(lifecycle.finish_unsubmitted_once());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        assert_eq!(
+            lifecycle.current_turn_generation(),
+            Some(target + 1),
+            "turn2 must bump the epoch past target"
+        );
+
+        // stale target 认领被拒：返回 false 且无副作用，turn2 完好。
+        assert!(
+            !lifecycle.claim_unsubmitted_terminal_for_epoch(target),
+            "claim with a stale target must no-op"
+        );
+        assert!(
+            reservation2.ensure_active().is_ok(),
+            "new turn unsubmitted reservation must survive a stale claim"
+        );
+
+        // 当前 epoch 认领成功：原子校验通过后正常认领，turn2 被失效。
+        assert!(lifecycle.claim_unsubmitted_terminal_for_epoch(target + 1));
+        assert!(
+            reservation2.ensure_active().is_err(),
+            "claimed reservation must be invalidated"
+        );
+        lifecycle.finish_terminal_emission();
+
+        // 防 Drop 副作用：turn1/turn2 均已认领终态（reservation 幂等）。
+        drop(reservation1);
+        drop(reservation2);
     }
 
     #[test]

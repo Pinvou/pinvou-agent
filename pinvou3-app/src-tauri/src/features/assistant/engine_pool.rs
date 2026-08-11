@@ -231,8 +231,15 @@ fn generation_matches(target: Option<u64>, current: Option<u64>) -> bool {
 /// `take_pending_cancel` 并重放 cancel（随后的 cancel 只是幂等 no-op）。
 ///
 /// `get_engine` 返回在场 engine 句柄（`None` 表示无 engine，走未提交认领
-/// 终态）。`claim_unsubmitted` 在「未提交 reservation」时认领 Interrupted
-/// 终态并补发 `chat:done`，返回是否认领。
+/// 终态）。`claim_unsubmitted` 接收目标 epoch，在「未提交 reservation」时于
+/// lifecycle state 锁内与 `turn_epoch == target` 原子校验后认领 Interrupted
+/// 终态并补发 `chat:done`，返回是否认领；epoch 不匹配（轮次已切换）必须
+/// no-op，不得认领新轮（reviewer 点 7）。
+///
+/// `arm_pending_cancel` 返回 `false` 表示 generation 复查通过后、arm 前轮次
+/// 已切换（`reserve_turn` 不取 `turn_lock`，可在 cancel 同步段中间完成切换）。
+/// 此时必须跳过 `cancel_current` / `cascade_cancel`，否则取消会命中新轮已
+/// `reset_cancel_token` 的活跃 token（reviewer 点 6）。
 ///
 /// `cancel_current` 同步取消 engine 的当前 token（幂等，阶段一、二都执行；
 /// 实现方可顺带 try_send 级联取消，尽力而为）。`cascade_cancel` 异步发送
@@ -257,7 +264,7 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     X: FnMut(&G),
     F: FnMut(&G) -> FFut,
     FFut: Future<Output = ()>,
-    C: Fn(&Arc<TurnLifecycle>) -> bool,
+    C: Fn(&Arc<TurnLifecycle>, u64) -> bool,
 {
     // 阶段一：无锁先触发 cancel_token——仅在仍是发起时刻那一轮时才取消，
     // 否则会误命中随后已 reset_cancel_token 的新轮活跃 token。
@@ -285,11 +292,17 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                     // 用发起时快照 target（而非此刻重读的 current）arm：
                     // 复查与 arm 之间另一 worker 可能结束旧轮并启动新轮，
                     // 重读 current 会把 pending 绑定到新轮（reviewer 点 3）。
-                    // arm_pending_cancel 内部校验 turn_epoch == epoch，
-                    // 轮次已切换时 target 恒不匹配 → 拒绝 arm。
-                    lifecycle.arm_pending_cancel(target.unwrap_or(0));
+                    // arm_pending_cancel 在 state 锁内校验 turn_epoch == target，
+                    // 返回 false = 复查通过后轮次已切换（新轮已 reserve 并可能
+                    // reset_cancel_token）：必须跳过 cancel 及其级联副作用，
+                    // 否则取消会命中新轮活跃 token（reviewer 点 6）。
+                    if lifecycle.arm_pending_cancel(target.unwrap_or(0)) {
+                        cancel_current(&engine);
+                    }
+                    // 被拒：不 cancel，阶段二持锁复查 generation 会整体 no-op。
+                } else {
+                    cancel_current(&engine);
                 }
-                cancel_current(&engine);
             }
         }
     }
@@ -311,7 +324,13 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
 
     // generation 匹配，目标轮仍是发起时刻那一轮：清理它的 shell 任务。
     let shell_cancellation = turn_shell_tasks.request_cancel(session_id);
-    let claimed_unsubmitted = lifecycle.as_ref().is_some_and(|lc| claim_unsubmitted(lc));
+    // claim_unsubmitted 在 lifecycle state 锁内与 target epoch 原子校验并认领：
+    // 本行与上方 generation 复查之间另一 worker 可能已结束旧轮并 reserve 新轮
+    // （reserve_turn 不取 turn_lock），epoch 不匹配时认领必须 no-op，不得把
+    // 新轮 reservation 误认领为 Interrupted（reviewer 点 7）。
+    let claimed_unsubmitted = lifecycle
+        .as_ref()
+        .is_some_and(|lc| claim_unsubmitted(lc, target.unwrap_or(0)));
     if !claimed_unsubmitted {
         // 持锁后复查 engine：阶段一可能因 send 正在 spawn 而拿不到。
         // 幂等：阶段一已取消则再 cancel 是 no-op；阶段一未取消则这里补 cancel。
@@ -328,13 +347,22 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                     // TurnStarted 后 take_pending_cancel 时再次校验 epoch，
                     // 跨轮 stale pending 被丢弃。重读 current 会把 pending
                     // 绑定到复查后启动的新轮（reviewer 点 3，与阶段一同理）。
-                    lifecycle.arm_pending_cancel(target.unwrap_or(0));
+                    // arm 返回 false = 复查通过后轮次已切换：跳过 cancel 及
+                    // 级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
+                    if lifecycle.arm_pending_cancel(target.unwrap_or(0)) {
+                        cancel_current(&engine);
+                        // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
+                        // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
+                        // FIFO 保证 engine 先取消旧轮子智能体、后启动新轮。
+                        cascade_cancel(&engine).await;
+                    }
+                    // 被拒：轮次已切换，不得取消新轮 engine / 子智能体。
+                } else {
+                    cancel_current(&engine);
+                    // lifecycle 缺失（无活跃轮）时 cascade 无意义：级联取消
+                    // CancelSubAgents 针对的是 engine 当前子智能体，空闲 engine
+                    // 上没有活跃子智能体，不发也无损（保持原行为）。
                 }
-                cancel_current(&engine);
-                // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
-                // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
-                // FIFO 保证 engine 先取消旧轮子智能体、后启动新轮。
-                cascade_cancel(&engine).await;
             }
         }
     }
@@ -1283,7 +1311,11 @@ impl EnginePool {
                 }
             },
             // claim_unsubmitted：未提交 reservation 的认领终态路径（同步认领+发终态）。
-            |lifecycle| lifecycle.emit_unsubmitted_interrupted_terminal(app, session_id),
+            // 携带 target epoch：认领与 turn_epoch 校验在 state 锁内原子完成，
+            // 复查后已切轮（新轮已 reserve）时认领 no-op，不误杀新轮。
+            |lifecycle, target| {
+                lifecycle.emit_unsubmitted_interrupted_terminal_for_epoch(app, session_id, target)
+            },
         )
         .await
     }
@@ -2137,7 +2169,7 @@ mod scheduled_model_tests {
                     async {}
                 },
                 // claim_unsubmitted 不应被调用（turn1 已 submitted）。
-                |_lc| false,
+                |_lc, _target| false,
             )
             .await
         });
@@ -2211,7 +2243,7 @@ mod scheduled_model_tests {
                 probe_cascade.store(true, Ordering::Release);
                 async {}
             },
-            |_lc| false,
+            |_lc, _target| false,
         )
         .await;
 
@@ -2255,7 +2287,7 @@ mod scheduled_model_tests {
                 |_engine: &()| {},
                 // cascade_cancel：engine 不在场，阶段二不调用。
                 |_engine: &()| async {},
-                move |lc| {
+                move |lc, _target| {
                     probe.store(true, Ordering::Release);
                     // 复用真实的未提交认领路径以观察副作用。
                     lc.claim_unsubmitted_terminal()
@@ -2281,6 +2313,60 @@ mod scheduled_model_tests {
         assert!(
             reservation2.ensure_active().is_ok(),
             "new turn unsubmitted reservation must survive a stale cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_claim_with_epoch_guard_rejects_new_turn() {
+        // reviewer 点 7 的集成验证：阶段二 generation 检查通过后、认领前轮次
+        // 切换时（reserve_turn 不取 turn_lock），claim_unsubmitted 必须与发起时
+        // 快照 target 在 state 锁内原子校验——epoch 不匹配则 no-op，不得把新轮
+        // reservation 认领为 Interrupted。这里在 claim 闭包内模拟「检查后切轮」
+        // （真实场景由另一 worker 完成），验证 for_epoch 拒绝 stale target 且
+        // 新轮 reservation 保持有效。
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-claim-epoch-guard";
+
+        let lifecycle = lifecycles.for_session(sid);
+        // turn1：reserve 未提交（epoch=1），engine 不在场 → cancel 走 claim 分支。
+        let _reservation1 = lifecycle.reserve().expect("turn1 reserve");
+
+        let new_turn_intact = Arc::new(AtomicBool::new(false));
+        let probe = new_turn_intact.clone();
+        cancel_turn_with_gates(
+            &locks,
+            &lifecycles,
+            &shell_tasks,
+            sid,
+            // engine 不在场 → get_engine 返回 None → 不 cancel，走 claim_unsubmitted。
+            || async { None::<()> },
+            // cancel_current：engine 不在场，不应被调用。
+            |_engine: &()| {},
+            // cascade_cancel：engine 不在场，阶段二不调用。
+            |_engine: &()| async {},
+            // claim 闭包：模拟「generation 检查通过后、认领前」切轮，再用发起
+            // 时快照 target 认领——必须被拒（epoch 不匹配），新轮完好。
+            move |lc, target| {
+                assert!(lc.finish_unsubmitted_once(), "turn1 terminal");
+                let new_reservation = lc.reserve().expect("turn2 reserve");
+                let claimed = lc.claim_unsubmitted_terminal_for_epoch(target);
+                probe.store(
+                    !claimed && new_reservation.ensure_active().is_ok(),
+                    Ordering::Release,
+                );
+                // 闭包结束时 new_reservation drop：未 submitted → on_reservation_failed
+                // 回滚 turn2 的 active 状态。此时 claim 已被拒、阶段二后续不再
+                // 触碰 lifecycle（engine 不在场），回滚幂等无害。
+                claimed
+            },
+        )
+        .await;
+
+        assert!(
+            new_turn_intact.load(Ordering::Acquire),
+            "stale claim must reject the new turn and leave its reservation intact"
         );
     }
 
@@ -2354,7 +2440,7 @@ mod scheduled_model_tests {
                 },
                 // cascade_cancel：generation 不匹配，不应被调用。
                 |_engine: &()| async {},
-                |_lc| false,
+                |_lc, _target| false,
             )
             .await
         });
@@ -2433,7 +2519,7 @@ mod scheduled_model_tests {
             },
             // cascade_cancel：正常取消路径，阶段二会调用；此处 no-op 探针。
             |_engine: &()| async {},
-            |_lc| false,
+            |_lc, _target| false,
         )
         .await;
 
