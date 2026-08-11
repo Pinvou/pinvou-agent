@@ -233,18 +233,30 @@ fn generation_matches(target: Option<u64>, current: Option<u64>) -> bool {
 /// `get_engine` 返回在场 engine 句柄（`None` 表示无 engine，走未提交认领
 /// 终态）。`claim_unsubmitted` 在「未提交 reservation」时认领 Interrupted
 /// 终态并补发 `chat:done`，返回是否认领。
-async fn cancel_turn_with_gates<G, E, EFut, X, C>(
+///
+/// `cancel_current` 同步取消 engine 的当前 token（幂等，阶段一、二都执行；
+/// 实现方可顺带 try_send 级联取消，尽力而为）。`cascade_cancel` 异步发送
+/// 级联取消（CancelSubAgents），**只在阶段二持 `turn_lock` 时 await 调用**：
+/// 保证级联取消在释放 turn gate 前完成入队——下一轮 `SendMessage` 必须等
+/// 同一把 `turn_lock`（`send_reserved_user_message`），因此级联取消必先于
+/// 新轮消息入队，FIFO 保证 engine 先取消旧轮子智能体、后启动新轮，迟到的
+/// 级联取消不会误杀新轮刚启动的子智能体（reviewer 点 4：spawn 异步发送
+/// 失去相对下一轮 SendMessage 的入队顺序保证）。
+async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     turn_locks: &SessionTurnLocks,
     turn_lifecycles: &SessionTurnLifecycles,
     turn_shell_tasks: &SessionTurnShellTasks,
     session_id: &str,
     mut get_engine: E,
     mut cancel_current: X,
+    mut cascade_cancel: F,
     claim_unsubmitted: C,
 ) where
     E: FnMut() -> EFut,
     EFut: Future<Output = Option<G>>,
-    X: FnMut(G),
+    X: FnMut(&G),
+    F: FnMut(&G) -> FFut,
+    FFut: Future<Output = ()>,
     C: Fn(&Arc<TurnLifecycle>) -> bool,
 {
     // 阶段一：无锁先触发 cancel_token——仅在仍是发起时刻那一轮时才取消，
@@ -270,10 +282,14 @@ async fn cancel_turn_with_gates<G, E, EFut, X, C>(
                 // 先 arm 再 cancel：TurnStarted 在两步之间抵达转发器时，
                 // forwarder 能 take 到 pending 并重放 cancel，停止请求不丢失。
                 if let Some(lifecycle) = turn_lifecycles.get(session_id) {
-                    let epoch = lifecycle.current_turn_generation().unwrap_or(0);
-                    lifecycle.arm_pending_cancel(epoch);
+                    // 用发起时快照 target（而非此刻重读的 current）arm：
+                    // 复查与 arm 之间另一 worker 可能结束旧轮并启动新轮，
+                    // 重读 current 会把 pending 绑定到新轮（reviewer 点 3）。
+                    // arm_pending_cancel 内部校验 turn_epoch == epoch，
+                    // 轮次已切换时 target 恒不匹配 → 拒绝 arm。
+                    lifecycle.arm_pending_cancel(target.unwrap_or(0));
                 }
-                cancel_current(engine);
+                cancel_current(&engine);
             }
         }
     }
@@ -308,13 +324,17 @@ async fn cancel_turn_with_gates<G, E, EFut, X, C>(
                     .and_then(|lc| lc.current_turn_generation()),
             ) {
                 if let Some(lifecycle) = lifecycle.as_ref() {
-                    // arm 到当前 epoch（已校验仍是 target 轮），转发器在
+                    // arm 用发起时快照 target（已校验仍是 target 轮），转发器在
                     // TurnStarted 后 take_pending_cancel 时再次校验 epoch，
-                    // 跨轮 stale pending 被丢弃。
-                    let epoch = lifecycle.current_turn_generation().unwrap_or(0);
-                    lifecycle.arm_pending_cancel(epoch);
+                    // 跨轮 stale pending 被丢弃。重读 current 会把 pending
+                    // 绑定到复查后启动的新轮（reviewer 点 3，与阶段一同理）。
+                    lifecycle.arm_pending_cancel(target.unwrap_or(0));
                 }
-                cancel_current(engine);
+                cancel_current(&engine);
+                // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
+                // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
+                // FIFO 保证 engine 先取消旧轮子智能体、后启动新轮。
+                cascade_cancel(&engine).await;
             }
         }
     }
@@ -1236,25 +1256,31 @@ impl EnginePool {
             // handle_for 只瞬时取 entries 锁（与 send 内部瞬时取 entries 锁不冲突），
             // 不等 turn_lock——阶段一无锁先触发，turn_loop 的 biased select 立即跳出。
             || async move { self.handle_for(session_id).await },
-            // cancel_current：对在场 engine 触发同步取消（幂等），并级联取消
-            // 该 engine 的后台子智能体（multiagent，ADR-0006）：「停止」按钮是子
-            // 智能体唯一的确定性停止入口（卡片上没有取消按钮，自然语言指令只是
-            // 建议），只取消宿主轮会留下继续烧钱的后台子智能体。
-            // CancelSubAgents 改用 spawn + async send：cancel_current 必须同步
-            // （generation 守护要求 get_engine 与 cancel 之间不可有 await），但
-            // try_send 在 ops 通道满（容量 32）时会静默丢弃级联取消——常规停止
-            // 后 engine 不回收，shutdown_cancel_cascade_ops 不会补发，子智能体
-            // 会继续烧钱。同步取消后 spawn 异步 send 恢复保证送达（双发无害，
-            // 回收路径再发 CancelSubAgents 只是幂等 no-op）。
+            // cancel_current：对在场 engine 触发同步取消（幂等），并尽力
+            // try_send 级联取消该 engine 的后台子智能体（multiagent，
+            // ADR-0006）：「停止」按钮是子智能体唯一的确定性停止入口（卡片上
+            // 没有取消按钮，自然语言指令只是建议），只取消宿主轮会留下继续
+            // 烧钱的后台子智能体。try_send 不阻塞、通道有空位时立即入队
+            // （早于下一轮 SendMessage）；通道满（容量 32）时放弃，由阶段二
+            // cascade_cancel 持锁 await 补发保证送达。
             |engine| {
                 engine.cancel_current();
+                let _ = engine.handle.try_send(Op::CancelSubAgents);
+            },
+            // cascade_cancel：阶段二持 turn_lock 时 await 发送级联取消，保证在
+            // 释放 turn gate 前完成入队——下一轮 SendMessage 必须等同一把
+            // turn_lock（send_reserved_user_message），因此级联取消必先于新轮
+            // 消息入队，engine 先取消旧轮子智能体、后启动新轮，不会误杀新轮
+            // 刚启动的子智能体（reviewer 点 4）。双发无害：与阶段一 try_send
+            // 及回收路径的 CancelSubAgents 都是幂等 no-op。
+            |engine| {
                 let handle = engine.handle.clone();
                 let sid = session_id.to_string();
-                tokio::spawn(async move {
+                async move {
                     if let Err(e) = handle.send(Op::CancelSubAgents).await {
                         eprintln!("[engine_pool] cancel subagents {sid} failed: {e:?}");
                     }
-                });
+                }
             },
             // claim_unsubmitted：未提交 reservation 的认领终态路径（同步认领+发终态）。
             |lifecycle| lifecycle.emit_unsubmitted_interrupted_terminal(app, session_id),
@@ -2081,6 +2107,11 @@ mod scheduled_model_tests {
         let phase_one_count = Arc::new(AtomicU64::new(0));
         let probe2 = phase_two_cancel_called.clone();
         let probe1 = phase_one_count.clone();
+        // cascade 探针：阶段二 early-return（新轮已 reserve）时级联取消
+        // 不得执行——此时 CancelSubAgents 若发出会误杀新轮刚启动的子智能体
+        // （reviewer 点 4）。
+        let cascade_called = Arc::new(AtomicBool::new(false));
+        let probe_cascade = cascade_called.clone();
         // C2：阶段一无锁快照 target=Some(1) → 匹配 → get_engine 返回在场 engine
         //     → 校验 epoch 仍匹配 → arm + cancel_current（probe1++）；
         //     阶段二持锁（被 blocker 阻塞），恢复后比对 current ≠ target → early return。
@@ -2094,11 +2125,16 @@ mod scheduled_model_tests {
                 || async { Some(()) },
                 // cancel_current：阶段一与阶段二复查都走这里：用计数区分。
                 // 阶段一（turn1）probe1 0→1；阶段二若误执行 probe2 置位。
-                move |_engine| {
+                move |_engine: &()| {
                     let prev = probe1.fetch_add(1, Ordering::AcqRel);
                     if prev >= 1 {
                         probe2.store(true, Ordering::Release);
                     }
+                },
+                // cascade_cancel：阶段二 early-return，不应被调用。
+                move |_engine: &()| {
+                    probe_cascade.store(true, Ordering::Release);
+                    async {}
                 },
                 // claim_unsubmitted 不应被调用（turn1 已 submitted）。
                 |_lc| false,
@@ -2129,6 +2165,10 @@ mod scheduled_model_tests {
             "phase two must not cancel the engine of a turn that started after the cancel was issued"
         );
         assert!(
+            !cascade_called.load(Ordering::Acquire),
+            "a stale cancel must not cascade-cancel subagents of a turn that started after the cancel was issued"
+        );
+        assert!(
             reservation2.ensure_active().is_ok(),
             "new turn reservation must remain valid after a stale cancel's phase two recovered"
         );
@@ -2151,6 +2191,9 @@ mod scheduled_model_tests {
 
         let cancel_called = Arc::new(AtomicBool::new(false));
         let probe = cancel_called.clone();
+        // cascade 探针：正常取消路径（fresh cancel）必须执行级联取消。
+        let cascade_called = Arc::new(AtomicBool::new(false));
+        let probe_cascade = cascade_called.clone();
         cancel_turn_with_gates(
             &locks,
             &lifecycles,
@@ -2159,8 +2202,14 @@ mod scheduled_model_tests {
             // get_engine：engine 在场。
             || async { Some(()) },
             // cancel_current：记录触发。
-            move |_engine| {
+            move |_engine: &()| {
                 probe.store(true, Ordering::Release);
+            },
+            // cascade_cancel：fresh cancel 在阶段二 generation 匹配后必须被
+            // 调用（在 turn gate 内 await 完成入队，reviewer 点 4）。
+            move |_engine: &()| {
+                probe_cascade.store(true, Ordering::Release);
+                async {}
             },
             |_lc| false,
         )
@@ -2170,6 +2219,10 @@ mod scheduled_model_tests {
         assert!(
             cancel_called.load(Ordering::Acquire),
             "a fresh cancel on the current turn must still cancel its engine"
+        );
+        assert!(
+            cascade_called.load(Ordering::Acquire),
+            "a fresh cancel on the current turn must also cascade-cancel its subagents inside the turn gate"
         );
     }
 
@@ -2199,7 +2252,9 @@ mod scheduled_model_tests {
                 // engine 不在场 → get_engine 返回 None → 不取消，走 claim_unsubmitted 分支。
                 || async { None::<()> },
                 // cancel_current：engine 不在场时不应被调用。
-                |_engine: ()| {},
+                |_engine: &()| {},
+                // cascade_cancel：engine 不在场，阶段二不调用。
+                |_engine: &()| async {},
                 move |lc| {
                     probe.store(true, Ordering::Release);
                     // 复用真实的未提交认领路径以观察副作用。
@@ -2282,16 +2337,23 @@ mod scheduled_model_tests {
                     let calls = probe_calls.clone();
                     async move {
                         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                            entered.notify_waiters();
+                            // notify_one 会为未来的 waiter 保留 permit：即使
+                            // spawned task 先执行到这里而主线程尚未注册
+                            // notified().await，信号也不丢失（reviewer 点 5：
+                            // notify_waiters 不为后注册的 waiter 保留通知，
+                            // 会永久等待）。
+                            entered.notify_one();
                             release.notified().await;
                         }
                         Some(())
                     }
                 },
                 // cancel_current：不应被调用（阶段一 await 后 epoch 不匹配）。
-                move |_engine: ()| {
+                move |_engine: &()| {
                     probe.store(true, Ordering::Release);
                 },
+                // cascade_cancel：generation 不匹配，不应被调用。
+                |_engine: &()| async {},
                 |_lc| false,
             )
             .await
@@ -2305,7 +2367,8 @@ mod scheduled_model_tests {
 
         // 放行 get_engine：阶段一 await 后重新校验 epoch → target=Some(1) ≠ current=Some(2)
         // → 不 cancel；阶段二同样 early-return。
-        release_main.notify_waiters();
+        // notify_one 与 entered 侧同理：为已注册/未来 waiter 都保留 permit。
+        release_main.notify_one();
         cancel_task.await.expect("cancel task joins");
 
         assert!(
@@ -2359,7 +2422,7 @@ mod scheduled_model_tests {
             // 取走自己 arm 的标记，阶段二重新 arm 后才能再取到），但只把阶段二
             // 的结果计入断言：若阶段二先 cancel 后 arm，探针取到 None，停止
             // 请求丢失被确定性捕获。
-            move |_engine: ()| {
+            move |_engine: &()| {
                 let call = probe_calls.fetch_add(1, Ordering::SeqCst);
                 let epoch = probe_lifecycle.current_turn_generation().unwrap_or(0);
                 let took = probe_lifecycle.take_pending_cancel(epoch).is_some();
@@ -2368,6 +2431,8 @@ mod scheduled_model_tests {
                     probe.store(took, Ordering::Release);
                 }
             },
+            // cascade_cancel：正常取消路径，阶段二会调用；此处 no-op 探针。
+            |_engine: &()| async {},
             |_lc| false,
         )
         .await;

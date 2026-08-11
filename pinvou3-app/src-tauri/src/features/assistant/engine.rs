@@ -3403,6 +3403,46 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
+    fn arm_pending_cancel_uses_target_snapshot_not_reread_current() {
+        // reviewer 点 3 的确定性回归：cancel 在 generation 复查通过后 arm
+        // pending 时，必须使用发起时快照 target，而不是此刻重读的当前 epoch。
+        // 若重读 current：复查通过后、arm 前另一 worker 结束旧轮并启动新轮，
+        // 读到的是新轮 epoch，arm_pending_cancel(新epoch) 会把 pending 绑定到
+        // 新轮（新轮恰好处于 submitted 未 started 时），后面的 cancel_current
+        // 命中新 token → 原始跨轮误取消窗口仍未关闭。
+        //
+        // 这里直接编排「复查通过后轮次切换」：turn1 处于 submitted 未 started
+        // （arm 前置满足），快照 target=epoch1；切换 turn2 并提交后，用 target
+        // arm 必须被拒绝（turn_epoch 已 != target），pending 不落到新轮。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：on_submitted 激活（active+submitted+epoch=1，turn_id=None）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+
+        // 复查通过后、arm 前轮次切换：turn1 终态 → turn2 reserve + 提交。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // 用发起时快照 target arm：turn_epoch 已是 epoch2 != target → 拒绝。
+        lifecycle.arm_pending_cancel(target);
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "arm with the stale target snapshot must not bind pending to the new turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
     fn pending_cancel_does_not_leak_across_turns() {
         // 防跨轮污染：上一轮 arm 但未被消费的标记不能影响下一轮。
         // reserve() 必须清除 stale pending_cancel。
