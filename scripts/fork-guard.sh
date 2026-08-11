@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline
+# plus r8(#15) and one output-cap backport commit (upstream #5461, see
+# docs/fork-modifications.md).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+# PUBLISHED_HEAD = r8 公开不可变标签(pinvou-v0.9.5-r8);EXPECTED_HEAD = r8 之上
+# 的 #5461 后向移植(CodeWhale PR #21),待维护者合并+发布 r9 标签后与标签对齐。
+PUBLISHED_HEAD="d127aed113529dc93754d044b9f352e9746f6b83"
+EXPECTED_HEAD="2645c6c6302a8e2a47954834df7f7ab951cc377f"
+EXPECTED_COMMITS=11
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,26 +22,26 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r7 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r8 公开基线 + 输出上限后向移植拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的四主题公开基线 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记的公开基线+移植提交 $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记基线为 $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null \
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
-  green "  ✓ 公开基线继承官方 v0.9.5 并与 r7 维护 head 一致"
+  green "  ✓ 基线继承官方 v0.9.5 与 r8 公开维护 head(pinvou-v0.9.5-r8)"
 else
-  red "  ✗ 基线未同时继承官方 v0.9.5 与 r7 公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ 基线未同时继承官方 v0.9.5 与 r8 公开维护 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开维护提交"
+  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开维护提交(含 r8 与 #5461 后向移植)"
 else
   red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开基线登记为 $EXPECTED_COMMITS"
   fail=1

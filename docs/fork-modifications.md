@@ -4,19 +4,19 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-23 · v0.9.5 r8 公开基线 + 上游 #5461 后向移植）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
-| 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `d127aed11`（`pinvou-v0.9.5-r8`） |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13`、`#15` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r8`。上游 #5461 后向移植（CodeWhale PR #21，承父仓 PR #216）待维护者合并并发布 `pinvou-v0.9.5-r9` |
+| 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r8` 指向 `d127aed113529dc93754d044b9f352e9746f6b83`；父仓 gitlink 指向 `2645c6c63`（= r8 + #5461 后向移植）。`verify-public-submodule.sh` 按 `pinvou-v0.9.5-r9` 校验——r9 标签发布前该脚本按设计失败（gitlink 不接受浮动分支/PR ref），r9 发布后标签、分支与 gitlink 对齐同一 commit |
+| 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624`；`r1`—`r8` 保持不可变 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题（专用编排主题由 PR #13 整体撤销）+ 1 个上游 #5461 后向移植 commit |
+| drift | r8 基线叠加后向移植后 `49 files changed, +3303/-476`；净增 2827 行（r8 `#15` 本身 +1449 行,系维护者已发布的公开基线） |
 | 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、r8 `turn_tool_security` 字段透传 |
 
 ### PR #302 父仓 gitlink 同步
 
@@ -40,6 +40,27 @@
 - 保留宿主取消所有运行中子智能体的窄操作，以及通用完成事件的 `failed` 终态；桌面停止/回收仍不会遗留后台子任务。
 - 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
 - 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
+
+### 输出上限修复：上游 #5461 后向移植（父仓 PR #216）
+
+> **2026-08-23 更新（重写方案）**：CodeWhale PR #8（`ApiProvider::Openai`
+> 白名单）已被 CodeWhale 维护者关闭：该问题由维护者按更窄语义上游化——
+> Issue [Hmbown/CodeWhale#5460](https://github.com/Hmbown/CodeWhale/issues/5460)、
+> PR [Hmbown/CodeWhale#5461](https://github.com/Hmbown/CodeWhale/pull/5461)
+> （2026-08-17 已合并，commit `d03260ec`）。上游语义：**路由显式声明
+> `output_tokens` 时，该具体事实取代未登记模型的 8192 保守猜测**；无路由
+> 事实仍 fail-closed，已登记模型上限与调用方请求上限继续生效，路由事实
+> 不可抬高任何上限。
+>
+> 本 fork 不再保留白名单 drift，改为在 r8 之上后向移植上游 `d03260ec` 的
+> `route_budget.rs` 净变更（CodeWhale PR #21，commit `2645c6c63`，diff 与
+> 上游逐行一致，仅行号偏移；CHANGELOG 按 fork 惯例不登记）。配套的
+> operator-owned 判定留在 app 侧 `route_limits_for_model`：用户自定义
+> openai-compatible 端点（`OpenAI 兼容` 预设或 `provider_kind=custom`）按
+> 底座窗口启发式声明 `output_tokens` 路由事实（≥500K→65536 / 否则
+> min(window/2, 65536) / 无窗口事实→64000），官方端点与未登记云端模型
+> 不声明、保持底座 fail-closed。守护测试
+> `forkguard_cloud_models_defer_output_cap_to_base` 四断言锁定该语义。
 
 ### 软上限评估
 

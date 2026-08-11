@@ -1066,8 +1066,10 @@ impl Pinvou3Bridge {
     /// 为一个具体 wire model 生成宿主已知的 route facts：
     /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
     /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
-    /// output_tokens：本地 vLLM 显式携带 Pinvou 24K 预算（防 SSE timeout 既有约束），
-    /// 云端模型不声明（SavedModel.max_output_tokens 默认 None）→ 底座按 64K/厂商能力兜底。
+    /// output_tokens：本地 vLLM 显式携带 Pinvou 24K 预算（防 SSE timeout 既有约束）；
+    /// 用户自定义 openai-compatible 端点(operator-owned)未登记模型按底座窗口启发式
+    /// 声明（见函数体内注释）；其余云端模型不声明（SavedModel.max_output_tokens 默认
+    /// None）→ 底座按厂商能力/保守兜底。
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -1080,9 +1082,35 @@ impl Pinvou3Bridge {
             (None, None) => inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
         };
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
+        // 用户自定义的 openai-compatible 端点（`OpenAI 兼容` 预设或 provider_kind=
+        // custom）视为 operator-owned：端点由用户配置，输出上限由 operator 负责。
+        // 底座(上游 #5461 语义)对未登记模型 fail-closed 到 8192 保守猜测，仅在路由
+        // 显式声明 output_tokens 时用该具体事实取代——宿主作为 operator 的代理，把
+        // 底座窗口启发式（≥500K→64K / 否则 window/2 / 无窗口事实→128K 兜底的一半）
+        // 声明为路由事实。声明值恒等于底座 requested_cap：已登记模型(Documented)语义
+        // 不变，未登记模型从 8192 恢复到与已登记模型一致的窗口启发式（128K 窗口→
+        // 64000），小窗口仍按 window/2 钳制不过发。
+        // 这是能力声明而非 Pinvou 单轮预算，不进程级 max_output_tokens()(24K) 夹持
+        // ——与云端已登记模型不夹持同理；用户可用 SavedModel.max_output_tokens
+        // 显式收紧（configured_output 优先且受进程预算夹持）。
+        let is_operator_owned_endpoint = saved.is_some_and(|saved| {
+            saved.preset == ModelPreset::OpenaiCompatible
+                || saved.provider_kind.as_deref() == Some("custom")
+        });
         let output_tokens = configured_output
-            .or_else(|| is_local_vllm.then(|| self.max_output_tokens()))
             .map(|tokens| tokens.min(self.max_output_tokens()))
+            .or_else(|| is_local_vllm.then(|| self.max_output_tokens()))
+            .or_else(|| {
+                is_operator_owned_endpoint.then(|| {
+                    context_tokens.map_or(64_000, |window| {
+                        if window >= 500_000 {
+                            65_536
+                        } else {
+                            (window / 2).min(65_536)
+                        }
+                    })
+                })
+            })
             .map(|tokens| {
                 context_tokens.map_or(tokens, |context| {
                     tokens.min(context.saturating_sub(1_024).max(1))
@@ -1258,6 +1286,9 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            // r8(#15) 上游新增 per-turn 嵌入评测工具安全策略;pinvou3 不用嵌入评测
+            // 逐轮收紧,保留 default None(引擎级默认与全部 legacy 行为)。
+            turn_tool_security,
             max_tool_calls,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -1459,6 +1490,8 @@ impl Pinvou3Bridge {
                 }
             },
             max_tool_calls,
+            // r8(#15) 上游新增,透传 default None:pinvou3 不用嵌入评测逐轮安全收紧。
+            turn_tool_security,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -2124,6 +2157,8 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
+            // r8(#15) 上游新增 per-turn 工具安全策略;None 保留引擎级默认与 legacy 行为。
+            turn_tool_security: None,
         })
     }
 }
@@ -3601,7 +3636,14 @@ mod tests {
             "",
         );
 
-        assert_eq!(bridge.route_limits_for_model(&bridge.model()), None);
+        // 上下文窗口无事实时绝不投机捏造 context_tokens；输出上限按
+        // operator-owned 语义声明窗口启发式(128K 兜底的一半 = 64000),
+        // 供底座 #5461 新臂取代未登记 8192 保守猜测(见 route_limits_for_model)。
+        let limits = bridge
+            .route_limits_for_model(&bridge.model())
+            .expect("operator-owned route declares the output heuristic");
+        assert_eq!(limits.context_tokens, None);
+        assert_eq!(limits.output_tokens, Some(64_000));
         assert_eq!(bridge.effective_context_window(&bridge.model()), 128_000);
     }
 
@@ -4028,8 +4070,107 @@ mod tests {
             })
         );
         assert_eq!(
-            config.compaction.token_threshold, 56_570,
-            "未知远端 OpenAI-compatible alias 应沿用底座 8K 保守输出预留"
+            config.compaction.token_threshold, 45_648,
+            "未知远端 OpenAI-compatible alias 应走底座窗口启发式：声明 output 24576 生效（E=131072-24576-1024），不再被 8K 保守兜底压死"
+        );
+    }
+
+    /// 输出上限语义守护（承 PR #210/#216，底座语义=上游 #5461）：
+    /// 云端已登记模型不声明 output_tokens（Documented 兜底）；用户自定义
+    /// openai-compatible 端点(operator-owned)未登记模型按窗口启发式显式声明，
+    /// 取代底座 8192 保守猜测；官方端点未登记模型不声明（fail-closed）。
+    #[test]
+    fn forkguard_cloud_models_defer_output_cap_to_base() {
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        // A. 云端已登记模型(deepseek-v4-pro)：声明窗口,不声明输出上限
+        let mut a = fixture_bridge();
+        set_active_model(
+            &mut a,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com/",
+            "k",
+        );
+        let limits_a = a
+            .route_limits_for_model(&a.model())
+            .expect("cloud route limits");
+        assert_eq!(
+            limits_a.output_tokens, None,
+            "云端已登记模型不得声明 output_tokens"
+        );
+
+        // B. 用户自定义端点未登记模型：按底座窗口启发式声明路由事实。
+        // 无窗口事实 → 底座 fallback 窗口 128K 的一半 = 64000(与底座
+        // effective_max_output_tokens 的 requested_cap 恒等)。
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiCompatible,
+            "totally-unregistered-cloud-model",
+            "https://example.com/v1",
+            "k",
+        );
+        let limits_b = b
+            .route_limits_for_model(&b.model())
+            .expect("operator-owned route limits");
+        assert_eq!(
+            limits_b.context_tokens, None,
+            "未登记模型无窗口事实,不得捏造 context"
+        );
+        assert_eq!(
+            limits_b.output_tokens,
+            Some(64_000),
+            "operator-owned 未登记模型按窗口启发式声明 output 路由事实"
+        );
+
+        // C. 底座新臂守护(#5461)：显式 output 路由事实取代未登记 8192 保守猜测。
+        // requested_cap=64000(128K 窗口启发式),route_cap=64000 → E=128000-64000-1024
+        // = 62976。若底座缺 #5461(route 事实被 8192 猜测压死),E=118784,此处即失败。
+        let provider = b.build_dt_config().api_provider();
+        let budget = deepseek_tui::core::engine::context_input_budget_for_route(
+            provider,
+            &b.model(),
+            b.route_limits_for_model(&b.model()),
+            0,
+        )
+        .expect("unregistered cloud route must yield a budget");
+        assert_eq!(
+            budget, 62_976,
+            "operator-owned 未登记模型输出兜底窗口启发式,ceiling=128000-64000-1024"
+        );
+
+        // D. 官方端点未登记模型：品悟不声明 output → 底座 fail-closed 8192
+        // (上游维护者的保守边界:官方端点未登记不因宿主放开)。
+        let mut d = fixture_bridge();
+        set_active_model(
+            &mut d,
+            ModelPreset::Openai,
+            "totally-unregistered-cloud-model",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        let limits_d = d.route_limits_for_model(&d.model());
+        assert!(
+            limits_d
+                .as_ref()
+                .is_none_or(|limits| limits.output_tokens.is_none()),
+            "官方端点未登记模型不得声明 output_tokens(fail-closed 交给底座)"
+        );
+        let provider_d = d.build_dt_config().api_provider();
+        let budget_d = deepseek_tui::core::engine::context_input_budget_for_route(
+            provider_d,
+            &d.model(),
+            None,
+            0,
+        )
+        .expect("official unregistered route must yield a budget");
+        assert_eq!(
+            budget_d, 118_784,
+            "官方端点未登记模型保持底座 8192 保守猜测:128000-8192-1024"
         );
     }
 
