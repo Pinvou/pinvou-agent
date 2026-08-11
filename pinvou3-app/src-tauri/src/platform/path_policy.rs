@@ -51,7 +51,7 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
     for blocked in BLOCKED_COMPONENTS {
         if canonical
             .components()
-            .any(|component| component.as_os_str() == std::ffi::OsStr::new(blocked))
+            .any(|component| crate::platform::os::path_component_eq(component.as_os_str(), blocked))
         {
             return Err(format!(
                 "path {} crosses sensitive component {}",
@@ -122,5 +122,34 @@ mod tests {
         assert!(validate_user_path(path)
             .unwrap_err()
             .contains("sensitive component"));
+    }
+
+    /// 全黑名单逐项命中：组件比较须经平台感知 `path_component_eq`（Wave 3
+    /// 委托后逐字节比较会让 Windows 大写变体绕过）。从常量读取黑名单构造
+    /// 路径，避免测试代码内嵌敏感文件名字面量。
+    #[test]
+    fn rejects_all_blocked_components() {
+        for blocked in BLOCKED_COMPONENTS {
+            let path = std::env::temp_dir().join(blocked).join("x.txt");
+            let r = check_sensitive_components(&path);
+            assert!(r.is_err(), "{blocked} 组件应被拦");
+        }
+    }
+
+    /// 大小写变体语义跟随平台：Windows 文件系统大小写不敏感，黑名单大写
+    /// 写法同样必须命中；Unix 大小写敏感，大写变体是不同文件，不拦属正确
+    /// 语义。此用例同时锁住「比较经由平台感知 helper」这一修复点。
+    #[test]
+    fn case_variant_semantics_follow_platform() {
+        for blocked in BLOCKED_COMPONENTS {
+            let upper = blocked.to_uppercase();
+            let path = std::env::temp_dir().join(&upper).join("x.txt");
+            let r = check_sensitive_components(&path);
+            if cfg!(windows) {
+                assert!(r.is_err(), "Windows 上 {upper} 应被拦");
+            } else {
+                assert!(r.is_ok(), "Unix 上 {upper} 是不同文件，不应拦");
+            }
+        }
     }
 }
