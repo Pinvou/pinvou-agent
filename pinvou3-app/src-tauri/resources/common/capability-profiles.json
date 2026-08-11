@@ -10,7 +10,16 @@
       "tools": {
         "exclude": [],
         "extra_hidden": ["mcp_pinvou3_present_artifact"],
-        "include": ["git_status"]
+        "include": [
+          "git_status",
+          "git_diff",
+          "git_log",
+          "git_show",
+          "git_blame",
+          "apply_patch",
+          "run_verifiers",
+          "exec_shell_cancel"
+        ]
       },
       "connectors": { "scope": "code" }
     }
