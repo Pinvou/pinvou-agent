@@ -119,6 +119,26 @@ fn same_workspace(left: &Path, right: &Path) -> bool {
             .is_some_and(|(left, right)| left == right)
 }
 
+pub(super) fn codex_authenticated(codex: &Path) -> bool {
+    if nonempty_env("OPENAI_API_KEY") {
+        return true;
+    }
+    // 第三方 Provider（中转）激活时，注入的 key 只存在于被 spawn 的 Codex 子进程
+    // env 中，探测进程看不到；config.toml 有指向存在的表且 env_key 非空的
+    // model_provider 即视为已认证，避免在 relay 场景误报需要登录。
+    if let Ok(raw) = std::fs::read_to_string(
+        crate::platform::os::user_home_dir()
+            .join(".codex")
+            .join("config.toml"),
+    ) {
+        if providers::codex_config_relay_env_key_present(&raw) {
+            return true;
+        }
+    }
+    cli_status_success(codex, &["login", "status"])
+}
+
+
 fn backend_for_acp_state(state: &Value) -> Result<AgentBackend> {
     let package_backend = match state["adapter"]["package"].as_str() {
         Some(CODEX_ACP_PACKAGE) => Some(AgentBackend::CodexAcp),
