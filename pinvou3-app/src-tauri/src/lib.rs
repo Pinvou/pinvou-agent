@@ -1131,8 +1131,15 @@ mod release_env_defaults_guard {
     /// 所有模型（含云端）输出上限钉死 24576——正是本 PR 移除的根因。此守卫在
     /// CHANGES_REQUESTED 后新增：clean env 云端落底座 64K 兜底的前提，就是
     /// release 安装包启动路径（.deb 双击等）不再注入该变量。
+    ///
+    /// 两层检查（评审修正 2026-08-11）：
+    /// 1. 常量表本身不含这两个 key（防常量里重新出现）；
+    /// 2. 走**实际注入路径** `ensure_release_env`（boot/release 唯一 env 注入函数，
+    ///    无写盘副作用）后断言进程 env 仍无这两个 key——即使未来有人在注入函数里
+    ///    绕过常量表直接 set_var，这里也能抓到。
     #[test]
     fn release_env_defaults_must_not_pin_global_output_cap() {
+        // 第一层：常量表
         assert!(
             !super::RELEASE_ENV_DEFAULTS
                 .iter()
@@ -1144,6 +1151,20 @@ mod release_env_defaults_guard {
                 .iter()
                 .any(|(k, _)| *k == "PINVOU3_MAX_OUTPUT_TOKENS"),
             "RELEASE_ENV_DEFAULTS 不得包含 PINVOU3_MAX_OUTPUT_TOKENS（品悟侧上限仅经 prefs/route 携带）"
+        );
+
+        // 第二层：实际注入路径（ensure_release_env 是 boot/release 唯一 env 注入函数）。
+        // 先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        super::ensure_release_env();
+        assert!(
+            std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端）"
+        );
+        assert!(
+            std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
         );
     }
 }

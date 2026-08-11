@@ -2664,8 +2664,13 @@ mod tests {
     /// clean env（无该 env）下云端 SavedModel.max_output_tokens 为 None →
     /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
     /// 本地 vLLM 的 24576 由 is_local_vllm 分支显式携带（不依赖 env），两者都要锁。
-    /// 同时锁"env 残留也不影响云端"——防止 boot/release 后续重新注入该变量
-    /// 把云端打回 24576（对应 CHANGES_REQUESTED：clean env 云端 effective cap 回归）。
+    ///
+    /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
+    /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
+    /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
+    /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`）。
+    /// C 段只锁"中间层不被 env 污染"这一层事实，D 段沿底座公开预算链验证 env
+    /// 确实生效（对应 CHANGES_REQUESTED：补沿最终预算/请求构造链的回归）。
     #[test]
     fn forkguard_cloud_route_output_not_pinned_by_global_env() {
         let (_lock, _env) =
@@ -2706,14 +2711,54 @@ mod tests {
             "本地 vLLM 仍显式携带 24K 预算（不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env）"
         );
 
-        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）也不影响云端：
-        //    品悟 route_limits 的云端分支不读该 env，只有底座在无 route 声明时才读。
+        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
+        //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
+        //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
         std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
         let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
         assert_eq!(
             cloud_limits_env.as_ref().and_then(|l| l.output_tokens),
             None,
-            "env 残留 24576 不得把云端 route 打回 24576（品悟不读该 env）"
+            "品悟中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
+        );
+
+        // D. 沿底座公开预算链（context_input_budget_for_route，品悟 derive_compaction_threshold
+        //    同款 API）验证：env 残留 24576 会把底座 output reservation 从 clean env 的 64K
+        //    压回 24K → 可用输入预算随之变大。证明"残留 env 不影响云端"不成立——真正防线是
+        //    release/boot 不再注入（lib.rs release_env_defaults_guard）。用显式 256K RouteLimits
+        //    （<500K 窗口才走 effective_max_output_tokens_for_route，≥500K 走 TURN 分支不读 env），
+        //    deepseek-v4-pro 的 provider max_output=384K 不会钳制 64K/24K 中的任一个。
+        let route_limits_256k = codewhale_config::route::RouteLimits {
+            context_tokens: Some(256_000),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        // 先回到 clean env 基准（C 段末尾已 set 24576）。
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        let budget_clean = deepseek_tui::core::engine::context_input_budget_for_route(
+            deepseek_tui::config::ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(route_limits_256k),
+            0,
+        )
+        .expect("显式 256K route 必须能算出输入预算");
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        let budget_env = deepseek_tui::core::engine::context_input_budget_for_route(
+            deepseek_tui::config::ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(route_limits_256k),
+            0,
+        )
+        .expect("显式 256K route 必须能算出输入预算");
+        assert!(
+            budget_env > budget_clean,
+            "env 残留 24576 使底座 output reservation 变小（64K→24K），输入预算必须变大：\
+             clean={budget_clean} env={budget_env}"
+        );
+        assert_eq!(
+            budget_env - budget_clean,
+            65_536 - 24_576,
+            "reservation 差应恰为底座 64K 兜底 − 本地 24K（clamp/headroom 两侧相同）"
         );
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
     }
