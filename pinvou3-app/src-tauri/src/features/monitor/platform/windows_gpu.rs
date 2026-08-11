@@ -7,7 +7,12 @@ use super::super::GpuSnapshot;
 pub fn gpu_snapshot() -> Option<GpuSnapshot> {
     let script = r#"
 $cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
-$gpuName = (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Microsoft Basic Display|Remote Display|Virtual|VMware|VirtualBox|QXL|Indirect' } | Select-Object -First 1 -ExpandProperty Name)
+# 优先选真实 PCI 物理适配器（PNPDeviceID 以 PCI\ 开头）——IDD 虚拟/远程显示驱动
+# （OrayIddDriver、GameViewer 等）是 ROOT\ 枚举，名称黑名单覆盖不全，只能靠 PNPDeviceID 区分；
+# 若无 PCI 显卡（纯 headless / 虚拟机），回退到名称黑名单过滤。
+$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -like 'PCI\*' -and $_.Name -notmatch 'Microsoft Basic Display|Remote Display|Virtual|VMware|VirtualBox|QXL|Indirect' } | Select-Object -First 1
+if (-not $gpu) { $gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Microsoft Basic Display|Remote Display|Virtual|VMware|VirtualBox|QXL|Indirect' } | Select-Object -First 1 }
+$gpuName = if ($gpu) { $gpu.Name } else { $null }
 $cpu = $null
 try { $cpu = (Get-Counter '\Processor Information(_Total)\% Processor Utility').CounterSamples[0].CookedValue } catch {}
 $gpu = $null
@@ -48,17 +53,15 @@ try {
 /// 解析 PowerShell 输出的 JSON 并构造 GPU 快照。
 /// 独立成纯函数便于在任何平台做单元测试（PowerShell 脚本本身只能在 Windows 跑）。
 fn parse_gpu_json(value: &Value) -> Option<GpuSnapshot> {
-    let cpu_name = value
-        .get("cpuName")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
     let gpu_name = value
         .get("gpuName")
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    if cpu_name.is_empty() && gpu_name.is_empty() {
+    // 没有真实 GPU（探测不到任何显示适配器）时返回 None，交给前端已有的
+    // `snap.cpu` fallback（"本机处理器"卡片）接管；不能用 CPU 名构造 GPU 快照，
+    // 否则前端因 `snap.gpu` 非空而置 gpuAvailable=true，仍把 CPU 显示在 GPU 卡片上。
+    if gpu_name.is_empty() {
         return None;
     }
     let cpu_pct = value
@@ -80,12 +83,9 @@ fn parse_gpu_json(value: &Value) -> Option<GpuSnapshot> {
         .map(|number| number.round().clamp(0.0, 120.0) as u32);
 
     Some(GpuSnapshot {
-        // GPU 名称优先；仅当探测不到任何真实 GPU（如纯 headless/无显示适配器）时才退回 CPU 名。
-        name: if gpu_name.is_empty() {
-            cpu_name.to_string()
-        } else {
-            gpu_name.to_string()
-        },
+        // GPU 名称必须来自真实显示适配器；探测不到时外层已返回 None，
+        // 不再退回 CPU 名（避免前端把 CPU 当 GPU 渲染）。
+        name: gpu_name.to_string(),
         vram_used_mib: 0,
         vram_total_mib: 0,
         utilization_pct: gpu_pct,
@@ -128,10 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_cpu_name_when_no_gpu_found() {
-        let snapshot = parse_gpu_json(&sample("AMD Ryzen 9 7950X", ""))
-            .expect("snapshot should parse with cpu fallback");
-        assert_eq!(snapshot.name, "AMD Ryzen 9 7950X");
+    fn returns_none_when_no_gpu_name() {
+        // 没有真实 GPU 时绝不能退回 CPU 名：前端因 snap.gpu 非空置 gpuAvailable=true，
+        // 会把 CPU 型号继续显示在 GPU 卡片上。应返回 None，让已有 snap.cpu fallback 接管。
+        assert!(parse_gpu_json(&sample("AMD Ryzen 9 7950X", "")).is_none());
     }
 
     #[test]
