@@ -224,11 +224,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           })}
           {footerAction && (
             <>
-              <div className={`my-1 mx-2 h-px ${isDark ? 'bg-[#3A3B3E]' : 'bg-[#DFE1E5]'}`} />
+              <div className={`my-1 mx-2 h-px bg-[#DFE1E5] dark:bg-[#3A3B3E]`} />
               <button type="button"
                 onClick={() => { closeMenu(); footerAction.onClick(); }}
-                className={`flex w-full min-h-9 items-center gap-3 rounded-[8px] px-3 py-2 text-left text-[14px] transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#202124] hover:bg-[#F1F3F4]'}`}>
-                <Plus size={15} className={`shrink-0 ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`} />
+                className={`flex w-full min-h-9 items-center gap-3 rounded-[8px] px-3 py-2 text-left text-[14px] transition-colors text-[#202124] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}>
+                <Plus size={15} className={`shrink-0 text-[#5F6368] dark:text-[#9AA0A6]`} />
                 <span className="min-w-0 flex-1 truncate">{footerAction.label}</span>
               </button>
             </>

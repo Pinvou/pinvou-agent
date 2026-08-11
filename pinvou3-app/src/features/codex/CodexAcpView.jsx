@@ -695,13 +695,13 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
   const active = item.cardState === 'active' && !item.resolved && !!item.planId;
   const statusText = copy[NATIVE_PLAN_STATUS_COPY[item.statusKey]] || '';
   return (
-    <div className={cardBoxCls(isDark, isDark ? 'border-[#A8C7FA]/30' : 'border-[#0B57D0]/20')}>
+    <div className={cardBoxCls('border-[#0B57D0]/20 dark:border-[#A8C7FA]/30')}>
       <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
       {(!item.plan && !item.todos)
         ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planEmpty}</div>
         : <>
-            <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" isDark={isDark} />
-            <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" isDark={isDark} />
+            <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" />
+            <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" />
           </>}
       <div className={`h-px my-3 ${isDark ? 'bg-white/10' : 'bg-black/10'}`}></div>
       {active ? (
@@ -710,14 +710,14 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
           <button
             type="button"
             data-testid="native-plan-accept"
-            className={cardBtnCls(isDark, 'primary')}
+            className={cardBtnCls('primary')}
             disabled={busy || !modePlan}
             onClick={() => onAccept(item)}
           >{t.planGo}</button>
           <button
             type="button"
             data-testid="native-plan-discard"
-            className={cardBtnCls(isDark)}
+            className={cardBtnCls()}
             onClick={() => onDiscard(item)}
           >{t.planDrop}</button>
         </div>
@@ -776,14 +776,14 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
           <button
             type="button"
             data-testid="native-yolo-confirm-cancel"
-            className={cardBtnCls(isDark)}
+            className={cardBtnCls()}
             disabled={busy}
             onClick={onCancel}
           >{t.modeYoloConfirmCancel}</button>
           <button
             type="button"
             data-testid="native-yolo-confirm-ok"
-            className={cardBtnCls(isDark, 'primary')}
+            className={cardBtnCls('primary')}
             disabled={busy}
             onClick={onConfirm}
           >{t.modeYoloConfirmOk}</button>

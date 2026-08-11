@@ -34,7 +34,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
     // 头像加载失败时按部门降级到本地图标
     const DEPT_ICON = { engineering: Terminal, design: Palette, product: AppWindow, marketing: TrendingUp, finance: Briefcase, sales: TrendingUp, testing: Cpu, 'project-management': Briefcase, 'paid-media': Radio, support: User, academic: Award, 'game-development': Cpu, 'spatial-computing': Globe, 'supply-chain': Briefcase, hr: User, legal: Award, specialized: Feather, tool: Cpu };
     // App Store 风头像块:本地头像图,失败降级图标(绝不显示文字)
-    const AppIcon = ({ card, isDark, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => {
+    const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => {
       const [err, setErr] = useState(false);
       const Fallback = DEPT_ICON[(card && card.dept)] || User;
       return (
@@ -70,7 +70,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                 className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none bg-[#fff] dark:bg-[#2C2C2E] border border-[rgba(0,0,0,.1)] dark:border-[#48484a]"
                 style={{ color:'#8E8E93', boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
               <div className="flex flex-col items-center text-center gap-2">
-                <AppIcon card={persona} isDark={isDark} cls="w-12 h-12 rounded-[14px]" fb={22} />
+                <AppIcon card={persona} cls="w-12 h-12 rounded-[14px]" fb={22} />
                 <div className="w-full min-w-0">
                   <div className="text-[13px] font-semibold leading-tight truncate text-[#000] dark:text-[#fff]">{cd.name}</div>
                   <div className="text-[11px] mt-0.5 truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, persona.dept)}</div>
@@ -83,7 +83,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
     };
 
     // 双击卡片打开的详情 modal —— FLIP 转场 + 拉取并展示完整人设正文(body)。
-    const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, isDark, t }) => {
+    const PersonaDetailModal = ({ card, originRect, equipped, onClose, onEquip, t }) => {
       const panelRef = useRef(null);
       const [body, setBody] = useState(null); // null=loading
       useEffect(() => {
@@ -112,7 +112,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
             className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
             {/* 顶部:头像 + 名称/部门 + 关闭 */}
             <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0 bg-[#fff] dark:bg-[#000]">
-              <AppIcon card={card} isDark={isDark} />
+              <AppIcon card={card} />
               <div className="min-w-0 flex-1">
                 <h2 className="text-[20px] font-semibold truncate text-[#000] dark:text-[#fff]">{cd.name}</h2>
                 <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
@@ -139,7 +139,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
     };
 
     // 自创卡编辑器:新建 / 编辑 / ③ 草稿预填都复用它。initial.source==='user' 且有 id → 编辑(update),否则新建(create)。
-    const PersonaEditorModal = ({ initial, onClose, onSaved, onDeleted, isDark, t }) => {
+    const PersonaEditorModal = ({ initial, onClose, onSaved, onDeleted, t }) => {
       const init = initial || {};
       const isEdit = !!(init.id && init.source === 'user');
       const [confirmDel, setConfirmDel] = useState(false);
@@ -423,7 +423,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                           <div key={c.id} onClick={(e) => openDetail(c, e)} onContextMenu={(e) => openCtx(c, e)}
                             className="group py-4 flex flex-col gap-2.5 border-b cursor-pointer border-b-[rgba(198,198,200,.5)] dark:border-b-[#38383A]">
                             <div className="flex items-center gap-4">
-                              <AppIcon card={c} isDark={isDark} />
+                              <AppIcon card={c} />
                               <div className="flex-1 min-w-0">
                                 <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5 text-[#000] dark:text-[#fff]">{cd.name}</h2>
                                 <p className="text-[13px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
@@ -473,13 +473,13 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
 
           {detail ? createPortal((
             <PersonaDetailModal card={detail.card} originRect={detail.rect} equipped={active && active.id===detail.card.id}
-              isDark={isDark} t={t} onClose={()=>setDetail(null)}
+              t={t} onClose={()=>setDetail(null)}
               onEquip={(card)=>{ equip(card); }} />
           ), document.body) : null}
 
           {/* 自创卡编辑器(新建/编辑) —— portal 到 body,蒙层盖住侧边栏 */}
           {editor ? createPortal((
-            <PersonaEditorModal initial={editor.initial} isDark={isDark} t={t}
+            <PersonaEditorModal initial={editor.initial} t={t}
               onClose={()=>setEditor(null)}
               onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name))}
               onDeleted={(card)=>setToast(t.cpToastDeleted(card.name))} />

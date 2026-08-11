@@ -103,7 +103,7 @@ const describeSelectedElement = (element, L) => {
   };
 };
 
-const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onApplyChange, onClearChanges, docked = false }) => {
+const DesignInspectorPanel = ({ t, selectedElement, changes = [], onApplyChange, onClearChanges, docked = false }) => {
   const L = t.uiArtifacts;
   const style = (selectedElement && selectedElement.computedStyle) || {};
   const [textDraft, setTextDraft] = useState('');
