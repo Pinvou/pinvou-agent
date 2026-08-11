@@ -134,8 +134,9 @@ const AcFmtIcon = FileTypeIcon;
         case 'read_file': {
           const base = toolBasename(args.path);
           if (args.start_line || args.max_lines) {
-            const s = args.start_line || 1;
-            return base + ' · ' + t.tsLine + ' ' + s + (args.max_lines ? '-' + (s + args.max_lines - 1) : '+');
+            const s = Number(args.start_line) || 1;
+            const max = Number(args.max_lines);
+            return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
           }
           return base;
         }
@@ -144,8 +145,9 @@ const AcFmtIcon = FileTypeIcon;
           if (action === 'read') {
             const base = toolBasename(args.path);
             if (args.start_line || args.max_lines) {
-              const s = args.start_line || 1;
-              return base + ' · ' + t.tsLine + ' ' + s + (args.max_lines ? '-' + (s + args.max_lines - 1) : '+');
+              const s = Number(args.start_line) || 1;
+              const max = Number(args.max_lines);
+              return base + ' · ' + t.tsLine + ' ' + s + (max ? '-' + (s + max - 1) : '+');
             }
             return base;
           }
