@@ -17,5 +17,38 @@
     "| 公文写作 | `mcp_gongwen_make_gongwen` 把公文字段渲染成 GB/T 9704 合规 .docx（出件前自带校验）→ 再 `present_artifact` 上卡 |"
   ],
   "pip_dependencies": ["python-docx"],
+  "python_dependencies": {
+    "schema_version": 1,
+    "targets": [
+      {
+        "platform": "windows-x64",
+        "python": "3.13",
+        "imports": ["docx", "lxml"],
+        "wheels": [
+          {
+            "name": "python-docx",
+            "version": "1.2.0",
+            "filename": "python_docx-1.2.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl",
+            "sha256": "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "filename": "lxml-6.1.1-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/e6/99/f4ffb024f238eec2131aaa09f3278fb6129cf892741bf68e1fc1afb8c100/lxml-6.1.1-cp313-cp313-win_amd64.whl",
+            "sha256": "a10bd2fd62e8ce916ececb342f348f190724a098c1faa056fdfb2a22ad5e8660"
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.15.0",
+            "filename": "typing_extensions-4.15.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl",
+            "sha256": "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
+          }
+        ]
+      }
+    ]
+  },
   "companion_skills": ["government-writing"]
 }

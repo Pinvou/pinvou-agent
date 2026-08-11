@@ -130,6 +130,10 @@ fn bundled_connector_runtime_paths_for(
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
+/// 本地 Python MCP 的统一启动引导器。它先加载工具对应的隔离依赖目录，再执行 server.py。
+pub fn bundle_mcp_python_runner() -> PathBuf {
+    bundle_mcp_servers_dir().join("python_dependency_runner.py")
+}
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }

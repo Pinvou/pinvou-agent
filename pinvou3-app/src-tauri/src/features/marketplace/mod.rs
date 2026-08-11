@@ -4,6 +4,7 @@
 //! 安装状态持久化在 `~/.pinvou3/marketplace/installed.json`。
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
+mod python_dependencies;
 pub mod skill_marketplace;
 pub mod skill_scope;
 
@@ -68,6 +69,10 @@ pub struct ToolManifest {
     pub tool_table_entries: Vec<String>,
     #[serde(default)]
     pub pip_dependencies: Vec<String>,
+    /// 按目标平台锁定的 Python wheel。命中时安装到用户目录中的隔离环境；
+    /// 未命中时仅非 Windows 平台保留 `pip_dependencies` 的旧兼容路径。
+    #[serde(default)]
+    pub(crate) python_dependencies: Option<python_dependencies::PythonDependencyLock>,
     #[serde(default)]
     pub servers: Vec<RemoteServer>,
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
@@ -713,12 +718,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
-        // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
-        self.pip_install_deps(&manifest)?;
+        // 先装 Python 依赖；命中平台锁时下载并校验 wheel 后安装到用户目录隔离环境，
+        // 失败就不注册，让用户可重试。未提供平台锁的旧 manifest 继续走兼容路径。
+        let python_environment = self.install_python_deps(&manifest)?;
 
         // 先写 mcp.json(含 resolve_secret_placeholder,缺密钥会失败);成功后才落
         // installed.json —— 避免「installed 已写、mcp 没注册」的半安装状态。
-        self.add_to_mcp_json(&manifest, user_config)?;
+        self.add_to_mcp_json(&manifest, user_config, python_environment.as_ref())?;
 
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
@@ -842,19 +848,41 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(result)
     }
 
-    /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
-    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）。
-    /// ① 先预检依赖是否已可用（系统已装/此前装过）→ 命中即跳过，不跑 pip；
-    /// ② 否则按序兜底：`--user` → `--user --break-system-packages`（PEP 668）→ `--break-system-packages`，任一成功即 Ok。
-    /// 零依赖工具（pip_dependencies 为空）直接返回 Ok，不影响 weather/obsidian 等。
+    /// 优先使用 manifest 的平台 wheel 锁安装隔离依赖；没有当前平台目标时，
+    /// 非 Windows 平台保留旧 `pip_dependencies` 兼容路径。
+    fn install_python_deps(
+        &self,
+        manifest: &ToolManifest,
+    ) -> Result<Option<python_dependencies::InstalledPythonEnvironment>, String> {
+        if let Some(lock) = &manifest.python_dependencies {
+            if let Some(environment) =
+                python_dependencies::ensure_installed(lock, &paths::python_command())?
+            {
+                return Ok(Some(environment));
+            }
+            if crate::platform::capabilities::is_windows() {
+                return Err(format!(
+                    "工具 '{}' 没有适用于当前 Windows 平台的 Python 依赖锁",
+                    manifest.id
+                ));
+            }
+        }
+
+        self.pip_install_deps(manifest)?;
+        Ok(None)
+    }
+
     fn pip_install_deps(&self, manifest: &ToolManifest) -> Result<(), String> {
         if manifest.pip_dependencies.is_empty() {
             return Ok(());
         }
-        // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
-        // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
+        // Windows 内置 Python 没有 pip，也不能假定依赖随主安装包预装。所有非零依赖的
+        // Windows MCP 必须提供可校验的平台 wheel 锁，禁止再静默跳过。
         if crate::platform::capabilities::is_windows() {
-            return Ok(());
+            return Err(format!(
+                "工具 '{}' 缺少 Windows Python 依赖锁，无法安全安装",
+                manifest.id
+            ));
         }
         let python_cmd = "python3";
         let deps = &manifest.pip_dependencies;
@@ -1109,6 +1137,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 更新 mcp.json
         self.remove_from_mcp_json(tool_id)?;
 
+        // 依赖环境与 wheel 缓存按仍安装的 MCP 做引用清理。清理失败不回滚已完成的卸载，
+        // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
+        let mut active = Vec::new();
+        for installed_id in &installed {
+            if let Some(manifest) = self.load_manifest(installed_id) {
+                if let Some(lock) = manifest.python_dependencies {
+                    active.push(lock);
+                }
+            }
+        }
+        if let Err(error) = python_dependencies::prune_unused(&active) {
+            eprintln!("[marketplace] prune Python dependencies failed: {error}");
+        }
+
         Ok(())
     }
 
@@ -1267,6 +1309,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         manifest: &ToolManifest,
         user_config: &std::collections::HashMap<String, String>,
+        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
     ) -> Result<(), String> {
         let mcp_path = paths::mcp_config_path();
         let mut mcp: serde_json::Value = if mcp_path.is_file() {
@@ -1382,7 +1425,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         } else {
             // ── 本地工具：command/args/env ──
             let server_dir = self.servers_dir.join(&manifest.id);
-            let args: Vec<String> = manifest
+            let mut args: Vec<String> = manifest
                 .args
                 .iter()
                 .map(|a| {
@@ -1393,6 +1436,35 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     }
                 })
                 .collect();
+
+            if let Some(environment) = python_environment {
+                if manifest.command != "python" && manifest.command != "python3" {
+                    return Err(format!(
+                        "工具 '{}' 声明了 Python 依赖，但 command 不是 Python",
+                        manifest.id
+                    ));
+                }
+                let Some(server_script) = args.first().cloned() else {
+                    return Err(format!("工具 '{}' 缺少 Python server 参数", manifest.id));
+                };
+                if !std::path::Path::new(&server_script).is_file() {
+                    return Err(format!(
+                        "工具 '{}' 的 Python server 不存在: {}",
+                        manifest.id, server_script
+                    ));
+                }
+                let runner = paths::bundle_mcp_python_runner();
+                if !runner.is_file() {
+                    return Err("Python MCP 依赖启动器缺失，请重启应用后重试".to_string());
+                }
+                let mut wrapped_args = vec![
+                    runner.to_string_lossy().into_owned(),
+                    environment.site_packages.to_string_lossy().into_owned(),
+                    server_script,
+                ];
+                wrapped_args.extend(args.into_iter().skip(1));
+                args = wrapped_args;
+            }
 
             let mut env = manifest
                 .env

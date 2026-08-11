@@ -16,5 +16,52 @@
   "tool_table_entries": [
     "| PPT 生成 | `mcp_pptx_make_pptx` 产可编辑 .pptx（9 主题按内容自动选、真图表、带封面缩略图）→ 再 `present_artifact` 上卡 |"
   ],
-  "pip_dependencies": ["python-pptx"]
+  "pip_dependencies": ["python-pptx"],
+  "python_dependencies": {
+    "schema_version": 1,
+    "targets": [
+      {
+        "platform": "windows-x64",
+        "python": "3.13",
+        "imports": ["pptx", "lxml", "PIL", "xlsxwriter"],
+        "wheels": [
+          {
+            "name": "python-pptx",
+            "version": "1.0.2",
+            "filename": "python_pptx-1.0.2-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl",
+            "sha256": "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "filename": "lxml-6.1.1-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/e6/99/f4ffb024f238eec2131aaa09f3278fb6129cf892741bf68e1fc1afb8c100/lxml-6.1.1-cp313-cp313-win_amd64.whl",
+            "sha256": "a10bd2fd62e8ce916ececb342f348f190724a098c1faa056fdfb2a22ad5e8660"
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.15.0",
+            "filename": "typing_extensions-4.15.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl",
+            "sha256": "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
+          },
+          {
+            "name": "Pillow",
+            "version": "11.3.0",
+            "filename": "pillow-11.3.0-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/23/85/397c73524e0cd212067e0c969aa245b01d50183439550d24d9f55781b776/pillow-11.3.0-cp313-cp313-win_amd64.whl",
+            "sha256": "0bce5c4fd0921f99d2e858dc4d4d64193407e1b99478bc5cacecba2311abde51"
+          },
+          {
+            "name": "XlsxWriter",
+            "version": "3.2.5",
+            "filename": "xlsxwriter-3.2.5-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/fa/34/a22e6664211f0c8879521328000bdcae9bf6dbafa94a923e531f6d5b3f73/xlsxwriter-3.2.5-py3-none-any.whl",
+            "sha256": "4f4824234e1eaf9d95df9a8fe974585ff91d0f5e3d3f12ace5b71e443c1c6abd"
+          }
+        ]
+      }
+    ]
+  }
 }

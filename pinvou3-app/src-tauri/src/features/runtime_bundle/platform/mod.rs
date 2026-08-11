@@ -267,6 +267,8 @@ pub fn install_prompt_overrides() {
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
+pub const MCP_PYTHON_DEPENDENCY_RUNNER_PY: &str =
+    include_str!("../../../../resources/common/bundle/mcp-servers/python_dependency_runner.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
 const WEATHER_SERVER_PY: &str =
@@ -808,6 +810,10 @@ impl Pinvou3Bundle {
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
         std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        std::fs::write(
+            paths::bundle_mcp_python_runner(),
+            MCP_PYTHON_DEPENDENCY_RUNNER_PY,
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -982,6 +988,10 @@ mod tests {
         assert!(
             paths::bundle_present_artifact_server().is_file(),
             "present_artifact server 脚本应被解包"
+        );
+        assert!(
+            paths::bundle_mcp_python_runner().is_file(),
+            "Python MCP 依赖启动器应被解包"
         );
         let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
         assert!(
