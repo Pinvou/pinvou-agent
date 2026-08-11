@@ -1606,11 +1606,11 @@ fn llm_recent_work_accepts_delivery_completion_status() {
 
 #[test]
 fn delivery_tool_summary_keeps_artifact_path_after_long_content() {
-        assert!(is_delivery_tool(
-            "File",
-            &json!({"action": "patch", "path": "italy_travel_guide.md"})
-        ));
-        let summary = summarize_tool_start(
+    assert!(is_delivery_tool(
+        "File",
+        &json!({"action": "patch", "path": "italy_travel_guide.md"})
+    ));
+    let summary = summarize_tool_start(
         "write_file",
         &json!({
             "content": "正文".repeat(2000),
