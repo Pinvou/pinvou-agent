@@ -236,9 +236,13 @@ fn generation_matches(target: Option<u64>, current: Option<u64>) -> bool {
 /// 终态并补发 `chat:done`，返回是否认领；epoch 不匹配（轮次已切换）必须
 /// no-op，不得认领新轮（reviewer 点 7）。
 ///
-/// `arm_pending_cancel` 返回 `false` 表示 generation 复查通过后、arm 前轮次
-/// 已切换（`reserve_turn` 不取 `turn_lock`，可在 cancel 同步段中间完成切换）。
-/// 此时必须跳过 `cancel_current` / `cascade_cancel`，否则取消会命中新轮已
+/// `arm_pending_cancel_and_cancel` 把「epoch 校验 + arm + 同步取消」合并为
+/// 同一 lifecycle state 锁临界区内的原子操作：`cancel_current` 持锁执行，
+/// `reserve_turn` 需要同一把 state 锁，无法在「校验/arm」与「取消」之间
+/// 插入轮次切换（reviewer 点 8——单独 arm 时锁已释放，到 cancel 之间的
+/// 同步调用段仍可被多线程 runtime 抢占）。返回 `false` 表示 generation 复查
+/// 通过后、arm 前轮次已切换（新轮已 reserve），此时取消闭包不执行，必须
+/// 跳过 `cancel_current` / `cascade_cancel`，否则会命中新轮已
 /// `reset_cancel_token` 的活跃 token（reviewer 点 6）。
 ///
 /// `cancel_current` 同步取消 engine 的当前 token（幂等，阶段一、二都执行；
@@ -286,20 +290,17 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                     .get(session_id)
                     .and_then(|lc| lc.current_turn_generation()),
             ) {
-                // 先 arm 再 cancel：TurnStarted 在两步之间抵达转发器时，
-                // forwarder 能 take 到 pending 并重放 cancel，停止请求不丢失。
+                // 先 arm 再 cancel，且二者在同一 state 锁临界区内原子完成：
+                // arm_pending_cancel_and_cancel 持锁校验 turn_epoch == target、
+                // 设置 pending（条件满足时）、并执行 cancel_current——reserve_turn
+                // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入轮次
+                // 切换，旧 cancel 不会命中新轮已 reset_cancel_token 的活跃 token
+                // （reviewer 点 8）。epoch 不匹配时返回 false 且不执行取消闭包，
+                // 阶段二持锁复查 generation 会整体 no-op（reviewer 点 6）。
                 if let Some(lifecycle) = turn_lifecycles.get(session_id) {
-                    // 用发起时快照 target（而非此刻重读的 current）arm：
-                    // 复查与 arm 之间另一 worker 可能结束旧轮并启动新轮，
-                    // 重读 current 会把 pending 绑定到新轮（reviewer 点 3）。
-                    // arm_pending_cancel 在 state 锁内校验 turn_epoch == target，
-                    // 返回 false = 复查通过后轮次已切换（新轮已 reserve 并可能
-                    // reset_cancel_token）：必须跳过 cancel 及其级联副作用，
-                    // 否则取消会命中新轮活跃 token（reviewer 点 6）。
-                    if lifecycle.arm_pending_cancel(target.unwrap_or(0)) {
-                        cancel_current(&engine);
-                    }
-                    // 被拒：不 cancel，阶段二持锁复查 generation 会整体 no-op。
+                    lifecycle.arm_pending_cancel_and_cancel(target.unwrap_or(0), || {
+                        cancel_current(&engine)
+                    });
                 } else {
                     cancel_current(&engine);
                 }
@@ -345,12 +346,16 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                 if let Some(lifecycle) = lifecycle.as_ref() {
                     // arm 用发起时快照 target（已校验仍是 target 轮），转发器在
                     // TurnStarted 后 take_pending_cancel 时再次校验 epoch，
-                    // 跨轮 stale pending 被丢弃。重读 current 会把 pending
-                    // 绑定到复查后启动的新轮（reviewer 点 3，与阶段一同理）。
-                    // arm 返回 false = 复查通过后轮次已切换：跳过 cancel 及
-                    // 级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
-                    if lifecycle.arm_pending_cancel(target.unwrap_or(0)) {
-                        cancel_current(&engine);
+                    // 跨轮 stale pending 被丢弃。arm + cancel_current 在 state
+                    // 锁内原子完成（与阶段一同理，reviewer 点 8）：reserve_turn
+                    // 需要同一把 state 锁，无法在「校验/arm」与「取消」之间插入
+                    // 轮次切换。返回 false = 复查通过后轮次已切换：跳过 cancel
+                    // 及级联副作用，避免命中新轮活跃 token（reviewer 点 6）。
+                    let armed = lifecycle
+                        .arm_pending_cancel_and_cancel(target.unwrap_or(0), || {
+                            cancel_current(&engine)
+                        });
+                    if armed {
                         // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
                         // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
                         // FIFO 保证 engine 先取消旧轮子智能体、后启动新轮。
@@ -2475,10 +2480,11 @@ mod scheduled_model_tests {
         //   forwarder 因尚未 arm 不补 cancel → 此处再 arm 时 `turn_id` 已存在
         //   被拒 → 停止请求丢失。
         //
-        // 这里让 get_engine 在场、turn 处于「submitted 未 started」，并在
-        // cancel_current 探针里消费 pending_cancel：若实现先 arm 后 cancel，
-        // 探针能取到 Some(epoch)（模拟 forwarder 在 TurnStarted 时补 cancel）；
-        // 若实现先 cancel 后 arm，探针取到 None，停止请求丢失可被确定性捕获。
+        // 原子化后（reviewer 点 8）arm 与 cancel_current 在同一个 state 锁
+        // 临界区内完成，顺序由 `arm_pending_cancel_and_cancel` 内部保证，
+        // TurnStarted 无法插入两步之间（forwarder 消费 pending 也需同一把锁）。
+        // 这里验证送达性不变量：cancel 执行后 pending 仍可被 forwarder 消费
+        // （take 得到 Some）——即「先 arm 后 cancel」的效果保持。
         let locks = SessionTurnLocks::default();
         let lifecycles = SessionTurnLifecycles::default();
         let shell_tasks = SessionTurnShellTasks::default();
@@ -2489,9 +2495,6 @@ mod scheduled_model_tests {
         // epoch=1）——arm_pending_cancel 的前置条件满足。
         assert!(lifecycle.on_submitted());
 
-        let pending_seen_at_cancel = Arc::new(AtomicBool::new(false));
-        let probe = pending_seen_at_cancel.clone();
-        let probe_lifecycle = lifecycle.clone();
         let cancel_calls = Arc::new(AtomicU64::new(0));
         let probe_calls = cancel_calls.clone();
         cancel_turn_with_gates(
@@ -2501,21 +2504,11 @@ mod scheduled_model_tests {
             sid,
             // get_engine：engine 在场。
             || async { Some(()) },
-            // cancel_current 探针：模拟 forwarder 在 TurnStarted 时消费 pending。
-            // 阶段一与阶段二都会调用本探针，但只有阶段二才是 reviewer 点 2
-            // 的目标（阶段一自己「先 arm 后 cancel」就能让任一时刻的断言通过，
-            // 掩盖阶段二的顺序颠倒）。因此两次调用都消费 pending（阶段一先
-            // 取走自己 arm 的标记，阶段二重新 arm 后才能再取到），但只把阶段二
-            // 的结果计入断言：若阶段二先 cancel 后 arm，探针取到 None，停止
-            // 请求丢失被确定性捕获。
+            // cancel_current 探针：仅计数。cancel 在 state 锁内执行，探针不能
+            // 再取 lifecycle 锁（std Mutex 非重入，会死锁），改为在调用结束后
+            // 验证 pending 仍可被 forwarder 消费。
             move |_engine: &()| {
-                let call = probe_calls.fetch_add(1, Ordering::SeqCst);
-                let epoch = probe_lifecycle.current_turn_generation().unwrap_or(0);
-                let took = probe_lifecycle.take_pending_cancel(epoch).is_some();
-                if call == 1 {
-                    // 阶段二：仅此时校验 pending 是否已 arm。
-                    probe.store(took, Ordering::Release);
-                }
+                probe_calls.fetch_add(1, Ordering::SeqCst);
             },
             // cascade_cancel：正常取消路径，阶段二会调用；此处 no-op 探针。
             |_engine: &()| async {},
@@ -2523,9 +2516,17 @@ mod scheduled_model_tests {
         )
         .await;
 
+        // 阶段一、阶段二各 cancel 一次（engine 在场、epoch 匹配）。
         assert!(
-            pending_seen_at_cancel.load(Ordering::Acquire),
-            "pending_cancel must be armed before cancel_current so a TurnStarted between them can be replayed"
+            cancel_calls.load(Ordering::Acquire) >= 1,
+            "cancel_current must run on the originating turn"
+        );
+        // arm 先于 cancel：cancel 执行后 pending 仍可被 forwarder 消费
+        // （模拟 TurnStarted 到达时 take 并重放）。
+        let epoch = lifecycle.current_turn_generation().unwrap_or(0);
+        assert!(
+            lifecycle.take_pending_cancel(epoch).is_some(),
+            "pending_cancel must be armed before cancel_current so a TurnStarted can be replayed"
         );
     }
 }

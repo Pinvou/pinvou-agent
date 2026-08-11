@@ -973,6 +973,46 @@ impl TurnLifecycle {
         true
     }
 
+    /// 在 lifecycle state 锁内原子完成「epoch 校验 + arm pending + 同步取消」。
+    ///
+    /// 与 [`arm_pending_cancel`] 的区别：`cancel` 闭包在**同一临界区内**持锁
+    /// 执行。单独 arm 时锁在校验后即释放，调用方随后才执行 `cancel_current`，
+    /// 两条同步调用之间没有 `.await` 也不构成原子性保证——多线程 runtime/OS
+    /// 可以在任意指令边界切换线程。若另一 worker 在该窗口内完成「旧轮终态
+    /// 收口 + 新轮 reserve/send + `reset_cancel_token`」，恢复后的旧 cancel 会
+    /// 命中新轮活跃 token（reviewer 点 8）。把取消闭包移入同一临界区后，
+    /// `reserve_turn`（取同一把 state 锁）无法插入「校验/arm」与「取消」之间，
+    /// 跨轮窗口闭合。
+    ///
+    /// 锁序：本方法持 lifecycle state 锁调用 `cancel` 闭包，闭包内
+    /// `engine.cancel_current()` 取 engine 的 cancel_token 锁（与 state 锁无
+    /// 反向依赖，forwarder 消费 pending 也是先 state 后 token），无死锁。
+    /// `cancel` 必须同步、不 panic（panic 会使 Mutex 中毒），且不得再次获取
+    /// 本 lifecycle 的 state 锁。
+    ///
+    /// 其余语义与 [`arm_pending_cancel`] 一致：epoch 匹配则设置 pending（条件
+    /// 满足时）并执行 `cancel` 后返回 `true`；epoch 不匹配返回 `false` 且
+    /// **不执行** `cancel`，调用方必须整体 no-op。
+    ///
+    /// [`arm_pending_cancel`]: Self::arm_pending_cancel
+    pub(crate) fn arm_pending_cancel_and_cancel<F>(&self, epoch: u64, cancel: F) -> bool
+    where
+        F: FnOnce(),
+    {
+        let mut state = self.state.lock();
+        if state.turn_epoch != epoch {
+            // 轮次已切换（目标轮已结束、新轮已 reserve）：不 arm、不取消。
+            return false;
+        }
+        if state.submitted && state.turn_id.is_none() && state.active {
+            state.pending_cancel = Some(epoch);
+        }
+        // 持锁执行同步取消：reserve_turn 需要同一把 state 锁，无法在
+        // 「校验/arm」与「取消」之间插入轮次切换，旧 cancel 不可能命中新轮。
+        cancel();
+        true
+    }
+
     /// 原子取出并清除 `pending_cancel` 标记。
     ///
     /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
@@ -3237,6 +3277,7 @@ mod turn_lifecycle_tests {
     use crate::core::mode_state::SessionModeState;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     fn message(role: &str, text: &str) -> Message {
@@ -3533,6 +3574,108 @@ mod turn_lifecycle_tests {
         assert!(
             lifecycle.take_pending_cancel(epoch2).is_some(),
             "accepted arm must set pending for the current turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_holds_state_lock_through_cancel() {
+        // reviewer 点 8 的确定性回归：epoch 校验/arm 与取消副作用必须在同一
+        // lifecycle state 锁临界区内原子完成。若 arm 后释放锁、再单独执行
+        // cancel_current，两条同步调用之间没有 await 也不构成原子性保证——
+        // 另一 worker 可在该窗口内收口旧轮、reserve/发送新轮并
+        // reset_cancel_token，恢复后旧 cancel 命中新轮活跃 token。
+        //
+        // 编排：cancel 闭包（持锁）进入后阻塞，期间另一线程尝试 reserve——
+        // 必须被 state 锁挡住；放行 cancel 后 reserve 才得以完成。若实现把
+        // cancel 放在锁外，reserve 会在 cancel 完成前成功，断言失败。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        // turn1：on_submitted 激活（active+submitted+epoch=1），cancel 目标轮。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle.current_turn_generation().expect("turn1 epoch");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        // cancel 线程：arm_pending_cancel_and_cancel 持锁执行 cancel 闭包，
+        // 闭包通知「已进入临界区」后阻塞，模拟取消副作用执行中。
+        let lc_for_cancel = lifecycle.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            let ok = lc_for_cancel.arm_pending_cancel_and_cancel(target, || {
+                entered_tx.send(()).expect("entered");
+                release_rx.recv().expect("release");
+            });
+            assert!(ok, "epoch must match when the cancel side effect runs");
+        });
+
+        // 等 cancel 进入临界区（已持 state 锁）。
+        entered_rx.recv().expect("cancel entered");
+
+        // 另一 worker 尝试 reserve 新轮：应被 state 锁阻塞，直到 cancel 完成。
+        let (reserve_done_tx, reserve_done_rx) = std::sync::mpsc::channel::<()>();
+        let lc_for_reserve = lifecycle.clone();
+        let reserve_thread = std::thread::spawn(move || {
+            let _ = lc_for_reserve.reserve();
+            reserve_done_tx.send(()).expect("reserve done");
+        });
+
+        // 确定性断言：cancel 持锁期间 reserve 不能完成。
+        assert!(
+            reserve_done_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "reserve must be blocked while the cancel side effect holds the state lock"
+        );
+
+        // 放行 cancel → reserve 随后完成。
+        release_tx.send(()).expect("release cancel");
+        cancel_thread.join().expect("cancel thread joins");
+        reserve_thread.join().expect("reserve thread joins");
+        assert!(
+            reserve_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok(),
+            "reserve must complete after the cancel side effect releases the state lock"
+        );
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_skips_cancel_on_stale_epoch() {
+        // reviewer 点 6 + 8：epoch 不匹配（轮次已切换）时，cancel 闭包不得
+        // 执行——stale 的取消不能落到新轮已 reset_cancel_token 的活跃 token 上。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        // turn1：on_submitted 激活（epoch=1）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle.current_turn_generation().expect("turn1 epoch");
+
+        // 轮次切换：turn1 终态 → turn2 reserve + 提交（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // 用发起时快照 target 组合 arm+cancel：epoch 不匹配 → 返回 false 且
+        // cancel 闭包不执行（若误执行，探针会置位）。
+        let cancel_ran = Arc::new(AtomicBool::new(false));
+        let probe = cancel_ran.clone();
+        assert!(
+            !lifecycle.arm_pending_cancel_and_cancel(target, move || {
+                probe.store(true, Ordering::Release);
+            }),
+            "stale epoch must be rejected and the cancel closure skipped"
+        );
+        assert!(
+            !cancel_ran.load(Ordering::Acquire),
+            "cancel closure must not run when the epoch no longer matches"
+        );
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "stale cancel must not bind pending to the new turn"
         );
 
         // 防 Drop 副作用。
