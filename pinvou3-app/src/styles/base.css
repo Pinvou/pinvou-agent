@@ -10,14 +10,23 @@
     input[type="password"]::-ms-clear {
       display: none;
     }
-    /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
+    /* 应用自身负责滚动：各视图自带滚动容器，文档本身不可滚动。
+       macOS 触摸板滑动到滚动边界继续划时会产生 rubber-band，把整个
+       WebView 内容（除原生红绿灯）拖出空白；overscroll-behavior 阻断
+       滚动链传播到 document。桌面与 Web 通用，移动紧凑视口在此基础上
+       额外钉死宽高并固定 body（见下方 compact-web-viewport 规则）。 */
+    html,
+    html body,
+    html #root {
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    /* 移动 Web 的紧凑视口：宽度/高度钉死视口，禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
     html.compact-web-viewport,
     html.compact-web-viewport body,
     html.compact-web-viewport #root {
       width: 100%;
       height: 100%;
-      overflow: hidden;
-      overscroll-behavior: none;
     }
     html.compact-web-viewport body {
       position: fixed;
