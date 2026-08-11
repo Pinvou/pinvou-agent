@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// 安装进度事件名(前端 composer 用它刷新「正在安装 X…」)。
+const INSTALL_PROGRESS_EVENT: &str = "acp:install-progress";
+
 pub(super) fn managed_runtime_dir() -> PathBuf {
     crate::platform::paths::pinvou3_home()
         .join("runtimes")
@@ -226,7 +229,7 @@ pub(super) fn command_version_output(executable: &Path) -> Option<String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     let mut child = command.spawn().ok()?;
-    match child.wait_timeout(Duration::from_secs(3)) {
+    match child.wait_timeout(Duration::from_secs(15)) {
         Ok(Some(status)) if status.success() => {}
         Ok(Some(_)) => return None,
         Ok(None) | Err(_) => {
@@ -517,15 +520,16 @@ pub(super) fn official_script_supported(backend: AgentBackend) -> bool {
 /// 执行官方安装脚本（unix: `curl -fsSL <url> | bash`，Windows: `irm <url> | iex`），
 /// 10 分钟超时，输出尾部写入诊断日志。
 pub(super) async fn run_official_install_script(
+    app: &AppHandle,
     backend: AgentBackend,
     operation_id: &str,
+    install_children: &Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
+    install_cancelled: &Arc<parking_lot::Mutex<HashSet<AgentBackend>>>,
 ) -> Result<()> {
-    let (unix_url, windows_url) = match backend {
-        AgentBackend::CodexAcp => (CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS),
-        AgentBackend::ClaudeAcp => (CLAUDE_INSTALL_SCRIPT_UNIX, CLAUDE_INSTALL_SCRIPT_WINDOWS),
-        AgentBackend::KimiAcp => (KIMI_INSTALL_SCRIPT_UNIX, KIMI_INSTALL_SCRIPT_WINDOWS),
-        _ => bail!("{} 不支持官方脚本安装", backend.display_name()),
-    };
+    let (unix_url, windows_url) = official_script_urls(backend);
+    if unix_url.is_empty() {
+        bail!("{} 不支持官方脚本安装", backend.display_name());
+    }
     let mut command = crate::platform::process::install_script_command(unix_url, windows_url);
     if backend == AgentBackend::CodexAcp {
         // OpenAI 官方脚本默认安装 latest；非交互模式避免桌面应用后台等待 PATH 冲突确认。
@@ -538,10 +542,30 @@ pub(super) async fn run_official_install_script(
     let mut child = command
         .spawn()
         .with_context(|| format!("启动 {} 安装脚本失败", backend.display_name()))?;
+    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
+    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
+    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    if install_cancelled.lock().contains(&backend) {
+        let _ = child.kill().await;
+    }
+    let command_line = if crate::platform::capabilities::is_windows() {
+        format!("irm {windows_url} | iex")
+    } else {
+        format!("curl -fsSL {unix_url} | bash")
+    };
+    emit_install_progress(app, backend, "command", &command_line);
     let stdout = child.stdout.take().context("读取安装脚本标准输出失败")?;
     let stderr = child.stderr.take().context("读取安装脚本错误输出失败")?;
-    let stdout_reader = tokio::spawn(read_pipe_to_string(stdout));
-    let stderr_reader = tokio::spawn(read_pipe_to_string(stderr));
+    let stdout_app = app.clone();
+    let stderr_app = app.clone();
+    let stdout_reader =
+        tokio::spawn(
+            async move { stream_install_lines(&stdout_app, backend, "stdout", stdout).await },
+        );
+    let stderr_reader =
+        tokio::spawn(
+            async move { stream_install_lines(&stderr_app, backend, "stderr", stderr).await },
+        );
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
         Ok(result) => result.context("等待安装脚本进程失败")?,
@@ -571,10 +595,31 @@ pub(super) async fn run_official_install_script(
         ),
     );
     if !status.success() {
+        // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
+        if install_cancelled.lock().remove(&backend) {
+            bail!(
+                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+                backend.display_name()
+            );
+        }
+        let stderr_tail = output_tail(&stderr, 4);
+        // stderr 无有效内容（空或仅系统噪音如「重试」）时给出可操作提示：
+        // 官方脚本依赖 releases.openai.com / GitHub，下载失败多为网络原因。
+        // 手动安装指引按 Agent 各自包名/脚本生成（不能一律指向 codex）。
+        let hint = if stderr_tail.trim().is_empty() || stderr_tail.trim().chars().count() < 8 {
+            let npm_pkg = npm_package(backend).unwrap_or("");
+            let (unix_url, windows_url) = official_script_urls(backend);
+            &format!(
+                "；请检查网络连接后重试。也可手动安装：npm install -g {npm_pkg}，或运行官方安装脚本（macOS/Linux: curl -fsSL {unix_url} | sh；Windows: irm {windows_url} | iex）"
+            )
+        } else {
+            ""
+        };
         bail!(
-            "{} 安装脚本退出: {status}；stderr: {}",
+            "{} 安装脚本退出: {status}；stderr: {}{}",
             backend.display_name(),
-            output_tail(&stderr, 4)
+            stderr_tail,
+            hint
         );
     }
     Ok(())
@@ -582,23 +627,49 @@ pub(super) async fn run_official_install_script(
 /// 执行 `npm install -g <pkg>@latest` 全局升级（Windows 上 npm.cmd 经 cmd 启动），
 /// 10 分钟超时，输出尾部写入诊断日志。
 pub(super) async fn run_npm_global_upgrade(
+    app: &AppHandle,
     backend: AgentBackend,
     operation_id: &str,
+    install_children: &Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
+    install_cancelled: &Arc<parking_lot::Mutex<HashSet<AgentBackend>>>,
 ) -> Result<()> {
     let args = npm_upgrade_args(backend)
         .with_context(|| format!("{} 不支持 npm 全局升级", backend.display_name()))?;
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
+    // 独立进程组：取消时按组杀，npm 派生的 postinstall 脚本不孤儿化。
+    // （平台细节在 process.rs，本层不含目标平台 cfg。）
+    crate::platform::process::tokio_process_group_leader(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().context("启动 npm 全局升级失败")?;
+    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
+    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
+    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    if install_cancelled.lock().contains(&backend) {
+        let _ = child.kill().await;
+    }
+    emit_install_progress(
+        app,
+        backend,
+        "command",
+        &format!("npm install -g {}", npm_package(backend).unwrap_or("")),
+    );
     let stdout = child.stdout.take().context("读取 npm 标准输出失败")?;
     let stderr = child.stderr.take().context("读取 npm 错误输出失败")?;
-    let stdout_reader = tokio::spawn(read_pipe_to_string(stdout));
-    let stderr_reader = tokio::spawn(read_pipe_to_string(stderr));
+    let stdout_app = app.clone();
+    let stderr_app = app.clone();
+    let stdout_reader =
+        tokio::spawn(
+            async move { stream_install_lines(&stdout_app, backend, "stdout", stdout).await },
+        );
+    let stderr_reader =
+        tokio::spawn(
+            async move { stream_install_lines(&stderr_app, backend, "stderr", stderr).await },
+        );
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
         Ok(result) => result.context("等待 npm 全局升级进程失败")?,
@@ -628,6 +699,13 @@ pub(super) async fn run_npm_global_upgrade(
         ),
     );
     if !status.success() {
+        // 进程被用户取消（taskkill/kill）会以失败状态走到这里：改写为已取消语义。
+        if install_cancelled.lock().remove(&backend) {
+            bail!(
+                "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+                backend.display_name()
+            );
+        }
         bail!(
             "npm 全局升级 {} 退出: {status}；stderr: {}",
             backend.display_name(),
@@ -669,21 +747,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn managed_path_is_versioned() {
+    pub(super) fn managed_path_is_versioned() {
         let path = managed_adapter_path().to_string_lossy().into_owned();
         assert!(path.contains(CODEX_ACP_VERSION));
         assert!(path.contains("codex-acp"));
     }
 
     #[test]
-    fn node_version_parser_requires_a_major() {
+    pub(super) fn node_version_parser_requires_a_major() {
         assert_eq!(node_major_version("20.18.1"), Some(20));
         assert_eq!(node_major_version("v20.18.1"), None);
         assert_eq!(node_major_version("unknown"), None);
     }
 
     #[test]
-    fn claude_native_runtime_is_explicit_for_supported_platforms() {
+    pub(super) fn claude_native_runtime_is_explicit_for_supported_platforms() {
         assert_eq!(
             claude_native_runtime("macos", "aarch64", false),
             Some(("claude-agent-sdk-darwin-arm64".to_string(), "claude"))
@@ -705,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_adapter_file_is_not_treated_as_installed() {
+    pub(super) fn empty_adapter_file_is_not_treated_as_installed() {
         let root =
             std::env::temp_dir().join(format!("pinvou3-codex-adapter-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -719,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn status_serializes_install_contract_fields() {
+    pub(super) fn status_serializes_install_contract_fields() {
         let status = CodexAcpStatus {
             agent_id: "codex",
             agent_name: "Codex",
@@ -751,6 +829,8 @@ mod tests {
             login_input_required: false,
             installing: false,
             error: None,
+            install_command: None,
+            install_latest_line: None,
             setup_hint: None,
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
@@ -789,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn install_source_follows_path_of_cli_in_use() {
+    pub(super) fn install_source_follows_path_of_cli_in_use() {
         // 多份并存时以「正在使用的这份」的路径为准，避免升级打到另一份：
         // 路径命中 brew 前缀且 brew 确认已装 → brew；npm 全局根同理。
         assert_eq!(
@@ -819,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_global_path_matches_platform_layout() {
+    pub(super) fn npm_global_path_matches_platform_layout() {
         let root = Path::new("/home/user/.nvm/versions/node/v22.0.0");
         assert!(path_in_npm_global(
             &root.join("bin").join("claude"),
@@ -854,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn install_action_follows_detected_install_source() {
+    pub(super) fn install_action_follows_detected_install_source() {
         // brew 来源一律 brew_upgrade（三 Agent 相同）。
         for backend in [
             AgentBackend::CodexAcp,
@@ -871,12 +951,26 @@ mod tests {
                 "npm_upgrade"
             );
         }
-        // 三 Agent 的 script、未知来源和 npm 不可用场景都回到官方脚本。
+        // 官方脚本优先（原设计）：script/未知来源/首次安装（None）即使 npm
+        // 可用也走官方脚本；npm 仅作为 npm 来源的升级通道；npm 不可用或脚本
+        // 不支持时依次回退脚本/手动。
         for backend in [
             AgentBackend::CodexAcp,
             AgentBackend::ClaudeAcp,
             AgentBackend::KimiAcp,
         ] {
+            assert_eq!(
+                install_action_for(backend, Some("script"), true, true),
+                "official_script"
+            );
+            assert_eq!(
+                install_action_for(backend, None, true, true),
+                "official_script"
+            );
+            assert_eq!(
+                install_action_for(backend, Some("npm"), true, true),
+                "npm_upgrade"
+            );
             assert_eq!(
                 install_action_for(backend, Some("script"), false, true),
                 "official_script"
@@ -894,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn install_action_override_accepts_only_known_actions() {
+    pub(super) fn install_action_override_accepts_only_known_actions() {
         for action in [
             "none",
             "brew_upgrade",
@@ -911,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn installing_state_is_isolated_per_agent() {
+    pub(super) fn installing_state_is_isolated_per_agent() {
         let installing_agents = Arc::new(parking_lot::RwLock::new(HashSet::new()));
         let claude = AgentInstallGuard::try_start(&installing_agents, AgentBackend::ClaudeAcp)
             .expect("Claude install should start");
@@ -936,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_errors_are_isolated_per_agent() {
+    pub(super) fn runtime_errors_are_isolated_per_agent() {
         let errors = AgentRuntimeErrors::default();
         errors.set(AgentBackend::ClaudeAcp, "Claude install failed".to_string());
         assert_eq!(
@@ -956,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_cli_candidates_cover_native_and_npm_shims() {
+    pub(super) fn windows_cli_candidates_cover_native_and_npm_shims() {
         assert_eq!(
             agent_cli_names(AgentBackend::CodexAcp, true),
             &["codex.cmd", "codex.exe"]
@@ -973,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_codex_upgrade_gate_requires_an_actual_version_change() {
+    pub(super) fn dynamic_codex_upgrade_gate_requires_an_actual_version_change() {
         assert!(!codex_version_changed(Some("0.146.0"), Some("0.146.0")));
         assert!(codex_version_changed(Some("0.146.0"), Some("0.147.0")));
         assert!(!codex_version_changed(Some("0.146.0"), None));
@@ -981,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn brew_install_args_cover_all_agents() {
+    pub(super) fn brew_install_args_cover_all_agents() {
         // codex：已装 brew cask 走 upgrade，未装走 install。
         assert_eq!(
             brew_install_args(AgentBackend::CodexAcp, true),
@@ -1013,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_upgrade_args_target_latest_global_package() {
+    pub(super) fn npm_upgrade_args_target_latest_global_package() {
         assert_eq!(
             npm_upgrade_args(AgentBackend::CodexAcp),
             Some(vec![
@@ -1042,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn path_install_source_recognizes_official_script_dirs() {
+    pub(super) fn path_install_source_recognizes_official_script_dirs() {
         let home = crate::platform::os::user_home_dir();
         assert_eq!(
             path_install_source(AgentBackend::CodexAcp, &home.join(".local/bin/codex")),
@@ -1077,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_kimi_version_gates_enforce_minimums() {
+    pub(super) fn claude_and_kimi_version_gates_enforce_minimums() {
         assert!(claude_version_supported("2.1.163 (Claude Code)"));
         assert!(claude_version_supported("2.0.0 (Claude Code)"));
         assert!(!claude_version_supported("1.9.9 (Claude Code)"));
@@ -1090,4 +1184,234 @@ mod tests {
         assert!(!kimi_version_supported("0.31"));
         assert!(!kimi_version_supported("native"));
     }
+}
+
+pub(super) fn clear_install_progress(app: &AppHandle, backend: AgentBackend) {
+    if let Some(store) = app.try_state::<InstallProgressStore>() {
+        store.0.write().remove(&backend);
+    }
+}
+
+pub(super) fn emit_install_progress(
+    app: &AppHandle,
+    backend: AgentBackend,
+    kind: &str,
+    value: &str,
+) {
+    if value.trim().is_empty() {
+        return;
+    }
+    if let Some(store) = app.try_state::<InstallProgressStore>() {
+        let mut guard = store.0.write();
+        let entry = guard
+            .entry(backend)
+            .or_insert_with(InstallProgressInfo::default);
+        match kind {
+            "command" => entry.command = value.to_string(),
+            _ => entry.latest_line = Some(value.to_string()),
+        }
+    }
+    let _ = app.emit(
+        INSTALL_PROGRESS_EVENT,
+        json!({
+            "agent": backend.agent_id().unwrap_or("unknown"),
+            "kind": kind,
+            "value": value,
+        }),
+    );
+}
+
+pub(super) fn fill_install_progress(
+    app: &AppHandle,
+    backend: AgentBackend,
+    status: &mut CodexAcpStatus,
+) {
+    if let Some(store) = app.try_state::<InstallProgressStore>() {
+        let guard = store.0.read();
+        if let Some(info) = guard.get(&backend) {
+            status.install_command = (!info.command.is_empty()).then(|| info.command.clone());
+            status.install_latest_line = info.latest_line.clone();
+        }
+    }
+}
+
+pub(super) fn kill_install_process_tree(pid: u32) {
+    if let Err(error) = crate::platform::process::kill_process_tree(pid) {
+        eprintln!("[pinvou3-app] failed to kill install process tree {pid}: {error:#}");
+    }
+}
+
+pub(super) fn move_official_binaries_aside(
+    backend: AgentBackend,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut moved = Vec::new();
+    for original in providers::lifecycle::official_script_paths(backend) {
+        if !original.is_file() {
+            continue;
+        }
+        let backup = original.with_extension("pre-upgrade");
+        if backup.exists() {
+            // 上一次升级中断可能留下备份：先清掉，避免 rename 失败。
+            let _ = std::fs::remove_file(&backup);
+        }
+        std::fs::rename(&original, &backup).with_context(|| {
+            format!(
+                "升级前备份 {} 失败（文件可能被占用）。请关闭占用 {} 的进程后重试",
+                original.display(),
+                backend.display_name()
+            )
+        })?;
+        moved.push((original, backup));
+    }
+    Ok(moved)
+}
+
+pub(super) fn official_script_urls(backend: AgentBackend) -> (&'static str, &'static str) {
+    match backend {
+        AgentBackend::CodexAcp => (CODEX_INSTALL_SCRIPT_UNIX, CODEX_INSTALL_SCRIPT_WINDOWS),
+        AgentBackend::ClaudeAcp => (CLAUDE_INSTALL_SCRIPT_UNIX, CLAUDE_INSTALL_SCRIPT_WINDOWS),
+        AgentBackend::KimiAcp => (KIMI_INSTALL_SCRIPT_UNIX, KIMI_INSTALL_SCRIPT_WINDOWS),
+        AgentBackend::Deepseek => ("", ""),
+    }
+}
+
+pub(super) async fn script_url_reachable(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
+        .user_agent(concat!("Pinvou-Agent/", env!("CARGO_PKG_VERSION")))
+        .build()
+    else {
+        return false;
+    };
+    client.head(url).send().await.is_ok()
+}
+
+pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -> bool {
+    if !target.exists() {
+        return false;
+    }
+    let is_working_file = target
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    !is_working_file || !resolved_ok.is_some_and(|path| path == target)
+}
+
+pub(super) fn stale_official_target_detects_broken_residual() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-acp-stale-target-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let target = root.join("claude");
+    std::fs::write(&target, "not a real binary").unwrap();
+    // 探测没解析到任何路径 → 坏残留。
+    assert!(stale_official_target(&target, None));
+    // 探测解析到另一份拷贝 → 该路径文件仍是不可用残留。
+    assert!(stale_official_target(
+        &target,
+        Some(Path::new("/elsewhere/claude"))
+    ));
+    // 探测解析到同一路径（版本可用）→ 正常安装，不拦截。
+    assert!(!stale_official_target(&target, Some(&target)));
+    // 0 字节半成品（下载中断）→ 坏残留。
+    let empty = root.join("kimi");
+    std::fs::write(&empty, "").unwrap();
+    assert!(stale_official_target(&empty, None));
+    // 目录占据文件路径（脚本失败遗留）→ 挡住脚本写入，坏残留。
+    let dir = root.join("codex");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(stale_official_target(&dir, None));
+    // 目标不存在 → 全新安装，不拦截。
+    assert!(!stale_official_target(&root.join("absent"), None));
+
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
+    app: &AppHandle,
+    backend: AgentBackend,
+    kind: &'static str,
+    reader: R,
+) -> String {
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    let mut output = String::new();
+    let mut pending: Option<String> = None;
+    let mut last_emit = Instant::now();
+    let mut last_data = Instant::now();
+    loop {
+        line.clear();
+        match tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut line)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(_)) => {
+                let trimmed = line.trim_end().to_string();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                last_data = Instant::now();
+                output.push_str(&trimmed);
+                output.push('\n');
+                pending = Some(truncate_install_line(&trimmed));
+                if last_emit.elapsed() >= Duration::from_millis(80) {
+                    if let Some(pending_line) = pending.take() {
+                        emit_install_progress(app, backend, kind, &pending_line);
+                    }
+                    last_emit = Instant::now();
+                }
+            }
+            Ok(Err(_)) => break,
+            // 500ms 无数据：继续等，但累计空闲超过 30s（孙进程持管道）则结束。
+            Err(_) if last_data.elapsed() >= IDLE_TIMEOUT => break,
+            Err(_) => {}
+        }
+    }
+    if let Some(pending_line) = pending.take() {
+        emit_install_progress(app, backend, kind, &pending_line);
+    }
+    output
+}
+
+pub(super) fn stream_std_lines<R: std::io::Read + Send + 'static>(
+    reader: R,
+    kind: &'static str,
+    tx: std::sync::mpsc::Sender<String>,
+    app: AppHandle,
+    backend: AgentBackend,
+) {
+    let mut reader = std::io::BufReader::new(reader);
+    let mut line = String::new();
+    let mut pending: Option<String> = None;
+    let mut last_emit = Instant::now();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim_end().to_string();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let _ = tx.send(trimmed.clone());
+                pending = Some(truncate_install_line(&trimmed));
+                if last_emit.elapsed() >= Duration::from_millis(80) {
+                    if let Some(pending_line) = pending.take() {
+                        emit_install_progress(&app, backend, kind, &pending_line);
+                    }
+                    last_emit = Instant::now();
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if let Some(pending_line) = pending.take() {
+        emit_install_progress(&app, backend, kind, &pending_line);
+    }
+}
+
+pub(super) fn truncate_install_line(line: &str) -> String {
+    line.chars().take(500).collect()
 }

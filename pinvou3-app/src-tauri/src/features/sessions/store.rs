@@ -23,16 +23,15 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::platform::paths;
 
-use super::scheduled::{
-    ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
-};
+use super::mode_state::SerializableMode;
+use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
-use super::validators::{
-    generate_session_id, persisted_system_prompt, validate_scheduled_session_id,
-    validate_session_id,
-};
+use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
+use super::CodeSessionPredicate;
+use crate::platform::prefs::UserPrefs;
+use std::collections::HashSet;
+
 use super::{session_roots_for, ExecutionRootResolver, SessionKind, SessionRoots, SessionStore};
-use crate::core::mode_state::{MountedCollection, MountedCollectionsSnapshot};
 
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
@@ -91,8 +90,34 @@ impl SessionStore {
         Ok(store)
     }
 
-    fn from_paths(
+    pub(crate) fn from_paths(
         sessions_dir: PathBuf,
+        scheduled_profiles_path: PathBuf,
+        scheduled_root: PathBuf,
+    ) -> Result<Self> {
+        let manager = SessionManager::new(sessions_dir.clone())
+            .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
+        let store = Self {
+            manager: Arc::new(manager),
+            scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
+            scheduled_profiles_path: Arc::new(scheduled_profiles_path),
+            scheduled_root: Arc::new(scheduled_root),
+            scheduled_mutation: Arc::new(Mutex::new(())),
+            active: Arc::new(RwLock::new(None)),
+            mode_states: Arc::new(RwLock::new(HashMap::new())),
+            multi_agent_flags_io: Arc::new(Mutex::new(())),
+            session_models: Arc::new(RwLock::new(HashMap::new())),
+            pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
+            hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
+            execution_root_resolver: Arc::new(RwLock::new(None)),
+            code_session_predicate: Arc::new(RwLock::new(None)),
+            code_mode_states: Arc::new(RwLock::new(HashMap::new())),
+            code_permission: Arc::new(RwLock::new(UserPrefs::load().code_permission)),
+        };
+        store.load_scheduled_profiles()?;
+        store.reconcile_scheduled_profiles_locked()?;
+        Ok(store)
+    }
 
     pub fn list(&self) -> Result<Vec<SessionMetadata>> {
         let mut out = self
@@ -216,7 +241,7 @@ impl SessionStore {
         self.reconcile_code_default_modes();
     }
 
-    fn reconcile_code_default_modes(&self) {
+    pub(crate) fn reconcile_code_default_modes(&self) {
         // 有显式 per-session 记录的 code 会话：交给 load_session_mode_states 覆盖，
         // 不在此处理。
         let persisted: HashSet<String> = self.session_mode_states.read().keys().cloned().collect();
@@ -285,6 +310,37 @@ impl SessionStore {
 
     pub fn create_new(
         &self,
+        model: String,
+        model_id: Option<String>,
+        workspace: PathBuf,
+    ) -> Result<SavedSession> {
+        let id = generate_session_id();
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &model,
+            &workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = "新对话".to_string();
+        // per-session 模型：先落 sidecar 再公开 Session JSON，避免写盘失败后
+        // 留下一条看似创建成功、重启却切回其它模型的会话。
+        if let Some(mid) = model_id {
+            self.set_session_model_id(&id, Some(mid))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        Ok(session)
+    }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
@@ -308,6 +364,37 @@ impl SessionStore {
 
     pub fn compare_and_swap_messages(
         &self,
+        id: &str,
+        expected_revision: &str,
+        messages: Vec<Message>,
+    ) -> Result<String> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace messages for scheduled-run session '{id}'");
+        }
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
+        let current_revision = transcript_revision(&session.messages)?;
+        if current_revision != expected_revision {
+            bail!("session_revision_conflict: 会话内容已在远程控制编辑期间发生变化");
+        }
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
+
+        let next_revision = transcript_revision(&messages)?;
+        session.metadata.message_count = messages.len();
+        session.metadata.updated_at = Utc::now();
+        session.messages = messages;
+        self.persist_then_reconcile(&session, "transcript CAS")?;
+        Ok(next_revision)
+    }
 
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
@@ -354,7 +441,67 @@ impl SessionStore {
 
     pub fn persist_chat_engine_state(
         &self,
+        id: &str,
+        state: ChatEngineState,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is a scheduled-run session");
+        }
+        validate_session_id(id)?;
+
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load chat session {id} for engine persistence"))?;
+        session.metadata.updated_at = Utc::now();
+        session.metadata.message_count = state.messages.len();
+        session.metadata.model = state.model;
+        session.metadata.workspace = state.workspace;
+        session.messages = state.messages;
+        session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
+
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist chat engine state for {id}"),
+            "committed engine state save",
+        )?;
+        Ok(session)
+    }
 
     pub(crate) fn persist_admitted_chat_display(
         &self,
+        id: &str,
+        expected_revision: &str,
+        display_message: Message,
+        edit_last: bool,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        validate_session_id(id)?;
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load chat session {id} for admitted display fallback"))?;
+        if transcript_revision(&session.messages)? != expected_revision {
+            return Ok(session);
+        }
+        if edit_last {
+            if let Some(index) = session
+                .messages
+                .iter()
+                .rposition(|message| message.role == "user")
+            {
+                session.messages.truncate(index);
+            }
+        }
+        session.messages.push(display_message);
+        session.metadata.message_count = session.messages.len();
+        session.metadata.updated_at = Utc::now();
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist admitted chat display for {id}"),
+            "admitted display save",
+        )?;
+        Ok(session)
+    }
 }

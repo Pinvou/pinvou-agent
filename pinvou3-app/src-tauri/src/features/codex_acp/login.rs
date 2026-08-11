@@ -186,6 +186,18 @@ pub(super) fn codex_authenticated(codex: &Path) -> bool {
     if nonempty_env("OPENAI_API_KEY") {
         return true;
     }
+    // 第三方 Provider（中转）激活时，注入的 key 只存在于被 spawn 的 Codex 子进程
+    // env 中，探测进程看不到；config.toml 有指向存在的表且 env_key 非空的
+    // model_provider 即视为已认证，避免在 relay 场景误报需要登录。
+    if let Ok(raw) = std::fs::read_to_string(
+        crate::platform::os::user_home_dir()
+            .join(".codex")
+            .join("config.toml"),
+    ) {
+        if providers::codex_config_relay_env_key_present(&raw) {
+            return true;
+        }
+    }
     cli_status_success(codex, &["login", "status"])
 }
 pub(super) fn claude_authenticated(claude: &Path) -> bool {
@@ -214,7 +226,8 @@ pub(super) fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
     let Ok(mut child) = command.spawn() else {
         return false;
     };
-    match child.wait_timeout(Duration::from_secs(3)) {
+    // 15s：Node 版 CLI（npm 安装的 codex）冷启动实测 ~9s，3s 会误判
+    match child.wait_timeout(Duration::from_secs(15)) {
         Ok(Some(status)) => status.success(),
         Ok(None) | Err(_) => {
             let _ = child.kill();
@@ -229,7 +242,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_only_allowed_agent_authorization_urls() {
+    pub(super) fn extracts_only_allowed_agent_authorization_urls() {
         assert_eq!(
             extract_agent_login_url(
                 AgentBackend::CodexAcp,
@@ -267,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_kimi_device_code_without_accepting_arbitrary_text() {
+    pub(super) fn extracts_kimi_device_code_without_accepting_arbitrary_text() {
         let url = "https://www.kimi.com/code/authorize_device?user_code=MO3M-6JFK";
         assert_eq!(
             extract_device_code("Opening browser", Some(url)),
@@ -277,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn captures_safe_kimi_login_failure_without_urls_or_credentials() {
+    pub(super) fn captures_safe_kimi_login_failure_without_urls_or_credentials() {
         assert_eq!(
             kimi_login_failure_detail(
                 "",

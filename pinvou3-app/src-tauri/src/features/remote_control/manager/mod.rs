@@ -85,6 +85,47 @@ const MAX_RPC_IN_FLIGHT: usize = 32;
 /// in-flight 槽位，避免 `too_many_in_flight_requests` 永久拒绝后续请求。
 const RPC_IN_FLIGHT_TTL: Duration = Duration::from_secs(300);
 const MAX_RPC_COMMAND_BYTES: usize = 128;
+/// 新形态多智能体会话（普通 id + 开关标志）在 Web 上是只读的（ADR-0006，
+/// 桌面专属）：查看/列表照常放行（只读横幅要能取数），一切会触发新一轮
+/// 模型执行或改变运行中 turn 状态的入口统一拦截——此前只拦了输入框，
+/// 编辑重发/计划裁决/取消审批/停止生成都能绕过（复核 P1）。桌面端不经本
+/// 漏斗，不受影响。
+const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
+    "accept_plan",
+    "cancel_generation",
+    "cancel_shell_task",
+    "cancel_user_input",
+    "compact_now",
+    "discard_plan",
+    "edit_last_turn",
+    "exit_plan_to_yolo",
+    "submit_user_input",
+    "summon_pinvou",
+    "web_access_chat",
+];
+
+fn validate_multi_agent_session_web_scope(
+    app: &AppHandle,
+    command: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
+        return Ok(());
+    }
+    let is_multi_agent = {
+        use tauri::Manager as _;
+        app.state::<crate::features::sessions::SessionStore>()
+            .mode_state(session_id)
+            .multi_agent
+    };
+    if is_multi_agent {
+        return Err(format!(
+            "{command} is not available for desktop-only multi-agent Sessions over Web"
+        ));
+    }
+    Ok(())
+}
+
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RPC_LEDGER_VERSION: u8 = 1;

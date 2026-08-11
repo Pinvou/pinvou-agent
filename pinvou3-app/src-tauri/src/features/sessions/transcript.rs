@@ -17,7 +17,6 @@ use sha2::{Digest, Sha256};
 /// Session or discovering an artifact must not invalidate a browser transcript
 /// edit that was based on the same messages.
 
-impl SessionStore {
 pub fn transcript_revision(messages: &[Message]) -> Result<String> {
     let encoded = serde_json::to_vec(messages).context("serialize transcript for revision")?;
     Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
@@ -25,7 +24,7 @@ pub fn transcript_revision(messages: &[Message]) -> Result<String> {
     )))
 }
 
-fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -> bool {
+pub(crate) fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -> bool {
     if incoming.len() >= existing.len() || existing.len() <= 2 {
         return false;
     }
@@ -39,5 +38,4 @@ fn looks_like_truncating_overwrite(existing: &[Message], incoming: &[Message]) -
         }
     }
     false
-}
 }

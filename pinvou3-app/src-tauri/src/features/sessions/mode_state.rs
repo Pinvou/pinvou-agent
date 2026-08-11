@@ -1,4 +1,11 @@
-//! Per-session runtime mode state machine.
+//! Per-session runtime mode state machine + 类型定义。
+//!
+//! `SessionModeState` / `ActiveSkillBinding` / `SerializableMode` 的**类型定义**
+//! 原先在 `core/mode_state.rs`，但它们是 session 域聚合（persona/review/workflow/
+//! knowledge 四特性字段），违反 `core/README.md` 的"feature 内部类型不入 core"准则。
+//! Wave 3 将类型定义迁回此文件（行为 impl 一直在此），并由 `features::sessions`
+//! 正式 re-export，消费方一律从 `crate::features::sessions::{...}` 导入，
+//! 不再经过 `core` 垫片（避免形成 `core → features` 反向依赖）。
 //!
 //! These methods drive the in-memory `mode_states` map (mode, pinvou_review,
 //! pending Plan ticket + claim-in-flight, active skill binding, persona,
@@ -7,7 +14,10 @@
 //! restart, while skill bindings and model selections are persisted in their
 //! own sidecars (see [`super::sidecars`]).
 
-use anyhow::{bail, Result};
+use deepseek_tui::tui::app::AppMode;
+use serde::{Deserialize, Serialize};
+
+use anyhow::{bail, Context, Result};
 
 use crate::core::mode_state::{
     ActiveSkillBinding, ModeDefaultsView, ModeLane, SerializableMode, SessionModeState,
@@ -15,6 +25,204 @@ use crate::core::mode_state::{
 
 use super::injections::{PendingPlanClaim, PendingTurnInjections};
 use super::SessionStore;
+use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
+use std::collections::HashMap;
+use std::io::ErrorKind;
+
+// ── 类型定义（session 域聚合，由 sessions 正式 re-export） ──
+
+/// Per-session 绑定的 skill。在 session 上点工作流卡片"启用"时,
+/// `commands::start_skill_session` 先查找已有绑定同名 skill 的 session，
+/// 找到则切回去（恢复工作流），找不到才 create_new()。
+///
+/// 持久化：`SessionStore::save_skill_bindings()` 把所有绑定写到
+/// `~/.pinvou3/sessions/_skill_bindings.json`，启动时 `load_skill_bindings()` 恢复。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSkillBinding {
+    pub name: String,
+    #[serde(skip)]
+    pub pending_instruction: Option<String>,
+    /// 前端渲染 chips 用的 phases 列表(JSON 透传)。
+    #[serde(default)]
+    /// (底座 v0.8.57 删除 PhaseDef;字段保留作前端/持久化兼容,恒为空)
+    pub phases: Vec<serde_json::Value>,
+    /// 该 session 绑定的工作流项目目录（所有工作流 session 都填充）。
+    /// 当前是 `{workspace}/ppt-<ts>-<scenario>/`(历史前缀)，含 `_state/workflow_progress.json`。
+    /// 持久化在 `_skill_bindings.json` 里跟随 binding 一起恢复，重启 app 后 harness
+    /// 能继续找到对应项目。
+    #[serde(default)]
+    pub project_dir: Option<String>,
+}
+
+/// A knowledge collection mounted into a session with an enabled flag, so the
+/// UI can toggle a mount on/off without losing its position in the ordered
+/// list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MountedCollection {
+    pub collection_id: i64,
+    pub enabled: bool,
+}
+
+/// Revisioned snapshot of every mounted collection for one session. The
+/// revision bumps on any mutation so the Tauri boundary can publish a single
+/// revisioned event that lets concurrent clients reconcile out-of-order
+/// updates.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MountedCollectionsSnapshot {
+    pub revision: u64,
+    pub collections: Vec<MountedCollection>,
+}
+
+/// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
+/// `set_plan_mode_next` / `accept_plan` 等命令修改。
+///
+/// **品悟 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
+/// - Plan + 开 = plan 出炉 EXIT GATE + 任务收口 final review
+/// - Plan + 关 = 现状行为
+/// - YOLO + 开 = 只触发 final review(YOLO 无 plan 期)
+/// - YOLO + 关 = 现状行为
+///
+/// careful hook 跨所有组合默认开启(由 CodeWhale shell.rs 强制 BLOCKED Dangerous 实现,
+/// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
+///
+/// **active_skill** 是工作流 phase 可视化 MVP1 加的 per-session 绑定字段:
+/// 用户在工作流页点"启用" → start_skill_session 命令 create_new + 写这里 →
+/// 切到该 session 时 chips strip 自动显示绑定 skill 的 phases。
+///
+/// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
+/// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionModeState {
+    /// Side B 卡片池:当前加持的专家卡 id(远端 persona 体系)。
+    #[serde(default)]
+    pub active_persona: Option<String>,
+    /// Side B:待一次性注入的人设 body。
+    #[serde(default, skip)]
+    pub pending_persona_body: Option<String>,
+    /// 当前激活 mode。`build_send_message_op` 用这个值。
+    pub mode: SerializableMode,
+    /// 当前可操作方案的服务端 ticket。新 plan_ready 会替换旧 ticket；
+    /// accept/discard 必须 compare-and-consume，防多端旧卡重复执行。
+    #[serde(default)]
+    pub pending_plan_id: Option<String>,
+    /// accept 已原子 claim、但 Engine mailbox 尚未确认的 ticket。
+    /// 仅用于进程内失败回滚，不暴露给前端。
+    #[serde(skip)]
+    pub(crate) plan_claim_in_flight: Option<String>,
+    /// 品悟 review 质量护栏开关。默认 false(保持现状)。
+    /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
+    #[serde(default)]
+    pub pinvou_review_enabled: bool,
+    /// 该 session 绑定的工作流 skill。`None` = 普通对话。
+    #[serde(default)]
+    pub active_skill: Option<ActiveSkillBinding>,
+    /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
+    /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
+    /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
+    /// 不落盘——重启 app 后回到未挂载。
+    #[serde(default)]
+    pub mounted_collection: Option<i64>,
+    /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
+    #[serde(default)]
+    pub mounted_collections: Vec<MountedCollection>,
+    /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
+    #[serde(skip)]
+    pub mounted_collections_revision: u64,
+    /// 多智能体模式开关（ADR-0006）：模型列表下方的会话级开关。开启后本会话
+    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入并回收引擎，取消
+    /// 仍在后台运行的子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
+    /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
+    #[serde(default)]
+    pub multi_agent: bool,
+}
+
+impl Default for SessionModeState {
+    fn default() -> Self {
+        Self {
+            mode: SerializableMode::Yolo,
+            pending_plan_id: None,
+            plan_claim_in_flight: None,
+            pinvou_review_enabled: false,
+            active_skill: None,
+            active_persona: None,
+            pending_persona_body: None,
+            mounted_collection: None,
+            mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
+            multi_agent: false,
+        }
+    }
+}
+
+/// `AppMode` 不是 Serialize，pinvou3 这层用一个序列化友好的镜像 enum，
+/// 跟前端 / settings.json 流通用，发给 engine 时 `to_app_mode()` 转回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerializableMode {
+    Plan,
+    Yolo,
+}
+
+impl SerializableMode {
+    pub fn to_app_mode(self) -> AppMode {
+        match self {
+            Self::Plan => AppMode::Plan,
+            Self::Yolo => AppMode::Yolo,
+        }
+    }
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_yolo() {
+        let s = SessionModeState::default();
+        assert_eq!(s.mode, SerializableMode::Yolo);
+    }
+
+    #[test]
+    fn mode_round_trips_to_app_mode() {
+        assert!(matches!(
+            SerializableMode::Plan.to_app_mode(),
+            AppMode::Plan
+        ));
+        assert!(matches!(
+            SerializableMode::Yolo.to_app_mode(),
+            AppMode::Yolo
+        ));
+    }
+
+    #[test]
+    fn serializes_to_snake_case() {
+        let s = SessionModeState {
+            mode: SerializableMode::Plan,
+            pending_plan_id: Some("plan-1".to_string()),
+            plan_claim_in_flight: None,
+            pinvou_review_enabled: false,
+            active_skill: None,
+            active_persona: None,
+            pending_persona_body: None,
+            mounted_collection: None,
+            mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
+            multi_agent: false,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"mode\":\"plan\""));
+        assert!(json.contains("\"pending_plan_id\":\"plan-1\""));
+        assert!(!json.contains("plan_claim_in_flight"));
+    }
+
+    #[test]
+    fn pinvou_review_default_off() {
+        let s = SessionModeState::default();
+        assert!(!s.pinvou_review_enabled);
+    }
+}
+
+// ── SessionStore 行为 impl ──
 
 impl SessionStore {
     pub fn mode_state(&self, id: &str) -> SessionModeState {
@@ -28,7 +236,7 @@ impl SessionStore {
             })
     }
 
-    fn is_code_session(&self, id: &str) -> bool {
+    pub(crate) fn is_code_session(&self, id: &str) -> bool {
         self.code_session_predicate
             .read()
             .as_ref()
@@ -39,7 +247,7 @@ impl SessionStore {
     /// （None = 用户从未用过 code 模式 → Plan 只读首启）；plain 会话缺省 Yolo
     /// （work/design lane 的全局默认由前端在会话物化时应用，后端不区分这两个
     /// lane，见 `set_mode_default`）。
-    fn resolved_default_mode(&self, id: &str) -> SerializableMode {
+    pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) {
             self.code_permission
                 .read()
@@ -50,8 +258,18 @@ impl SessionStore {
         }
     }
 
-    fn mode_state_entry<'m>(
+    pub(crate) fn mode_state_entry<'m>(
         states: &'m mut HashMap<String, SessionModeState>,
+        id: &str,
+        default_mode: SerializableMode,
+    ) -> &'m mut SessionModeState {
+        states
+            .entry(id.to_string())
+            .or_insert_with(|| SessionModeState {
+                mode: default_mode,
+                ..SessionModeState::default()
+            })
+    }
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
     /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
@@ -111,7 +329,7 @@ impl SessionStore {
         self.save_multi_agent_flags_locked()
     }
 
-    fn save_multi_agent_flags_locked(&self) -> Result<()> {
+    pub(crate) fn save_multi_agent_flags_locked(&self) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
         let ids = self.multi_agent_session_ids();
         if ids.is_empty() {
@@ -163,6 +381,18 @@ impl SessionStore {
 
     pub(crate) fn register_pending_plan(
         &self,
+        id: &str,
+        plan_id: String,
+    ) -> Option<SessionModeState> {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        if entry.mode != SerializableMode::Plan || entry.plan_claim_in_flight.is_some() {
+            return None;
+        }
+        entry.pending_plan_id = Some(plan_id);
+        Some(entry.clone())
+    }
 
     pub(crate) fn claim_pending_plan(&self, id: &str, plan_id: &str) -> Result<PendingPlanClaim> {
         let accepted_state = {
@@ -189,7 +419,7 @@ impl SessionStore {
         })
     }
 
-    fn finish_pending_plan_claim(&self, id: &str, plan_id: &str) {
+    pub(crate) fn finish_pending_plan_claim(&self, id: &str, plan_id: &str) {
         let mut states = self.mode_states.write();
         let Some(entry) = states.get_mut(id) else {
             return;
@@ -199,7 +429,7 @@ impl SessionStore {
         }
     }
 
-    fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
+    pub(crate) fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
         let entry = Self::mode_state_entry(&mut states, id, default_mode);
@@ -290,8 +520,32 @@ impl SessionStore {
         }
     }
 
-    fn restore_pending_turn_injections(
+    pub(crate) fn restore_pending_turn_injections(
         &self,
+        id: &str,
+        skill: Option<(String, String)>,
+        persona: Option<(Option<String>, String)>,
+    ) {
+        if skill.is_none() && persona.is_none() {
+            return;
+        }
+        let mut states = self.mode_states.write();
+        let Some(state) = states.get_mut(id) else {
+            return;
+        };
+        if let Some((skill_name, instruction)) = skill {
+            if let Some(binding) = state.active_skill.as_mut() {
+                if binding.name == skill_name && binding.pending_instruction.is_none() {
+                    binding.pending_instruction = Some(instruction);
+                }
+            }
+        }
+        if let Some((persona_id, body)) = persona {
+            if state.active_persona == persona_id && state.pending_persona_body.is_none() {
+                state.pending_persona_body = Some(body);
+            }
+        }
+    }
 
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
@@ -321,7 +575,7 @@ impl SessionStore {
         if let Some(entry) = self.mode_states.write().get_mut(id) {
             entry.active_skill = None;
         }
-        self.save_skill_bindings();
+        super::sidecars::save_skill_bindings(&self.mode_states);
     }
 
     pub fn find_session_with_skill(&self, skill_name: &str) -> Option<String> {
@@ -348,21 +602,152 @@ impl SessionStore {
 
     pub fn set_mounted_collections(
         &self,
+        id: &str,
+        collections: Vec<MountedCollection>,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |_| collections)
+    }
 
     pub fn add_mounted_collection(
         &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = true;
+            } else {
+                collections.push(MountedCollection {
+                    collection_id,
+                    enabled: true,
+                });
+            }
+            collections
+        })
+    }
 
     pub fn set_mounted_collection_enabled(
         &self,
+        id: &str,
+        collection_id: i64,
+        enabled: bool,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            if let Some(collection) = collections
+                .iter_mut()
+                .find(|collection| collection.collection_id == collection_id)
+            {
+                collection.enabled = enabled;
+            }
+            collections
+        })
+    }
 
     pub fn remove_mounted_collection(
         &self,
+        id: &str,
+        collection_id: i64,
+    ) -> MountedCollectionsSnapshot {
+        self.update_mounted_collections(id, |mut collections| {
+            collections.retain(|collection| collection.collection_id != collection_id);
+            collections
+        })
+    }
 
     pub fn remove_mounted_collection_from_all(
         &self,
+        collection_id: i64,
+    ) -> Vec<(String, MountedCollectionsSnapshot)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let mut collections = if state.mounted_collections.is_empty() {
+                state
+                    .mounted_collection
+                    .map(|mounted_id| MountedCollection {
+                        collection_id: mounted_id,
+                        enabled: true,
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                state.mounted_collections.clone()
+            };
+            let previous_len = collections.len();
+            collections.retain(|collection| collection.collection_id != collection_id);
+            if collections.len() == previous_len {
+                continue;
+            }
 
-    fn update_mounted_collections<F>(&self, id: &str, update: F) -> MountedCollectionsSnapshot
+            state.mounted_collection = collections
+                .iter()
+                .find(|collection| collection.enabled)
+                .map(|collection| collection.collection_id);
+            state.mounted_collections = collections.clone();
+            state.mounted_collections_revision =
+                state.mounted_collections_revision.wrapping_add(1).max(1);
+            changed.push((
+                session_id.clone(),
+                MountedCollectionsSnapshot {
+                    revision: state.mounted_collections_revision,
+                    collections,
+                },
+            ));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    pub(crate) fn update_mounted_collections<F>(
+        &self,
+        id: &str,
+        update: F,
+    ) -> MountedCollectionsSnapshot
     where
+        F: FnOnce(Vec<MountedCollection>) -> Vec<MountedCollection>,
+    {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let current = if state.mounted_collections.is_empty() {
+            state
+                .mounted_collection
+                .map(|collection_id| MountedCollection {
+                    collection_id,
+                    enabled: true,
+                })
+                .into_iter()
+                .collect()
+        } else {
+            state.mounted_collections.clone()
+        };
+        let mut normalized = Vec::new();
+        for collection in update(current) {
+            if collection.collection_id <= 0
+                || normalized.iter().any(|mounted: &MountedCollection| {
+                    mounted.collection_id == collection.collection_id
+                })
+            {
+                continue;
+            }
+            normalized.push(collection);
+        }
+        let legacy = normalized
+            .iter()
+            .find(|collection| collection.enabled)
+            .map(|collection| collection.collection_id);
+        state.mounted_collection = legacy;
+        state.mounted_collections = normalized.clone();
+        state.mounted_collections_revision =
+            state.mounted_collections_revision.wrapping_add(1).max(1);
+        MountedCollectionsSnapshot {
+            revision: state.mounted_collections_revision,
+            collections: normalized,
+        }
+    }
 
     pub fn mounted_collections(&self, id: &str) -> Vec<MountedCollection> {
         self.mounted_collections_snapshot(id).collections

@@ -136,16 +136,6 @@ pub fn check_dependencies() -> Vec<DependencyCheckItem> {
     items
 }
 
-/// 体检卡「一键安装」：委托 OS 调度层安装缺失依赖。
-/// Linux 由 OS 层保留包名白名单和 pkexec/apt 行为；其他系统清晰降级。
-pub async fn install_dependencies(packages: Vec<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        crate::features::dependencies::install_dependencies(packages)
-    })
-    .await
-    .map_err(|e| format!("安装任务失败: {e}"))?
-}
-
 // ============== 外部命令构建（各 ingest 子模块共用）==============
 
 pub(super) fn pdf_tool_command(command: &str) -> Command {

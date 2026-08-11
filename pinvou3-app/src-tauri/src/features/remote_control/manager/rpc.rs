@@ -406,6 +406,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         // Omitting this one deliberately means "create a fresh workflow
         // Session"; it never consults the desktop active pointer.
         "start_workflow" => Optional("sessionId"),
+        "get_effective_model_config" | "start_workflow" => Optional("sessionId"),
         _ => return None,
     };
     Some(scope)
@@ -437,6 +438,7 @@ pub(super) fn validate_web_rpc_scope(
     };
     crate::features::sessions::validate_session_id(session_id)
         .map_err(|error| format!("远程控制会话 ID 无效：{error:#}"))?;
+    super::validate_multi_agent_session_web_scope(app, command, session_id)?;
     if (command == "web_access_load_session_chunk"
         && args
             .get("downloadId")

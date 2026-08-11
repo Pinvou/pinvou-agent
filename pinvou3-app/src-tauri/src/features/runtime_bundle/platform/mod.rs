@@ -10,6 +10,9 @@ use include_dir::{include_dir, Dir};
 
 use crate::platform::paths;
 
+mod extraction;
+pub use extraction::Pinvou3Bundle;
+
 /// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
 static SANSHENG_LIUBU_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/workflow/sansheng-liubu");

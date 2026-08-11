@@ -15,13 +15,15 @@
 //! Mode / pinvou_review / plan-phase remain in-memory only by design.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 
 use chrono::Utc;
 use parking_lot::RwLock;
 
-use crate::core::mode_state::SessionModeState;
+use super::SessionModeState;
 
 use super::SessionStore;
+use anyhow::{Context, Result};
 
 const SKILL_BINDINGS_FILE: &str = "_skill_bindings.json";
 const SESSION_MODELS_FILE: &str = "_session_models.json";
@@ -29,6 +31,58 @@ const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
 const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
 
 /// 持久化所有 skill binding 到磁盘。
+pub(crate) fn save_skill_bindings(mode_states: &RwLock<HashMap<String, SessionModeState>>) {
+    let bindings_file = crate::platform::paths::sessions_root().join(SKILL_BINDINGS_FILE);
+    let m = mode_states.read();
+    let bindings: HashMap<String, &super::ActiveSkillBinding> = m
+        .iter()
+        .filter_map(|(id, state)| state.active_skill.as_ref().map(|s| (id.clone(), s)))
+        .collect();
+    if bindings.is_empty() {
+        let _ = std::fs::remove_file(&bindings_file);
+        return;
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&bindings) {
+        let _ = std::fs::write(bindings_file, json);
+    }
+}
+
+/// 从磁盘恢复 skill bindings（启动时调用）。
+pub(crate) fn load_skill_bindings(mode_states: &RwLock<HashMap<String, SessionModeState>>) {
+    let bindings_file = crate::platform::paths::sessions_root().join(SKILL_BINDINGS_FILE);
+    if !bindings_file.exists() {
+        return;
+    }
+    let content = match std::fs::read_to_string(&bindings_file) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let bindings: HashMap<String, super::ActiveSkillBinding> = match serde_json::from_str(&content)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[sessions] load_skill_bindings failed: {e}");
+            return;
+        }
+    };
+    let mut m = mode_states.write();
+    for (id, binding) in bindings {
+        let entry = m.entry(id).or_default();
+        entry.active_skill = Some(binding);
+    }
+}
+
+impl SessionStore {
+    /// 持久化所有 skill binding 到磁盘(方法版,包装自由函数)。
+    pub fn save_skill_bindings(&self) {
+        super::sidecars::save_skill_bindings(&self.mode_states);
+    }
+
+    /// 从磁盘恢复 skill bindings(方法版,包装自由函数)。
+    pub fn load_skill_bindings(&self) {
+        super::sidecars::load_skill_bindings(&self.mode_states);
+    }
+}
 
 impl SessionStore {
     pub fn session_model_id(&self, id: &str) -> Option<String> {
@@ -67,7 +121,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn persist_session_models(models: &HashMap<String, String>) -> Result<()> {
+    pub(crate) fn persist_session_models(models: &HashMap<String, String>) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join("_session_models.json");
         if models.is_empty() {
             return match std::fs::remove_file(&file) {
@@ -275,51 +329,6 @@ impl SessionStore {
             }
             Ok(_) => eprintln!("[sessions] load_hidden_sessions failed: invalid shape"),
             Err(e) => eprintln!("[sessions] load_hidden_sessions failed: {e}"),
-        }
-    }
-
-    pub fn save_skill_bindings(&self) {
-        let bindings_file = crate::platform::paths::sessions_root().join("_skill_bindings.json");
-        let m = self.mode_states.read();
-        let bindings: std::collections::HashMap<
-            String,
-            &crate::core::mode_state::ActiveSkillBinding,
-        > = m
-            .iter()
-            .filter_map(|(id, state)| state.active_skill.as_ref().map(|s| (id.clone(), s)))
-            .collect();
-        if bindings.is_empty() {
-            let _ = std::fs::remove_file(&bindings_file);
-            return;
-        }
-        if let Ok(json) = serde_json::to_string_pretty(&bindings) {
-            let _ = std::fs::write(bindings_file, json);
-        }
-    }
-
-    pub fn load_skill_bindings(&self) {
-        let bindings_file = crate::platform::paths::sessions_root().join("_skill_bindings.json");
-        if !bindings_file.exists() {
-            return;
-        }
-        let content = match std::fs::read_to_string(&bindings_file) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let bindings: std::collections::HashMap<
-            String,
-            crate::core::mode_state::ActiveSkillBinding,
-        > = match serde_json::from_str(&content) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[sessions] load_skill_bindings failed: {e}");
-                return;
-            }
-        };
-        let mut m = self.mode_states.write();
-        for (id, binding) in bindings {
-            let entry = m.entry(id).or_default();
-            entry.active_skill = Some(binding);
         }
     }
 }

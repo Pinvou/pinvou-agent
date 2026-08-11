@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kimi_credentials_require_tokens_and_nonzero_expiry() {
+    pub(super) fn kimi_credentials_require_tokens_and_nonzero_expiry() {
         assert!(kimi_credentials_valid(
             r#"{"access_token":"access","refresh_token":"refresh","expires_at":1}"#
         ));
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_runtime_config_requires_resolvable_default_model() {
+    pub(super) fn kimi_runtime_config_requires_resolvable_default_model() {
         let ready = r#"
 default_model = "kimi-code/kimi-k2"
 
@@ -319,7 +319,7 @@ max_context_size = 262144
     }
 
     #[test]
-    fn parses_kimi_provider_failure_from_session_log() {
+    pub(super) fn parses_kimi_provider_failure_from_session_log() {
         let log = concat!(
             "2026-07-27T08:18:51Z INFO llm request\n",
             "2026-07-27T08:18:51Z WARN acp: turn ended with failed reason  ",
@@ -334,7 +334,7 @@ max_context_size = 262144
     }
 
     #[test]
-    fn maps_kimi_auth_and_quota_failures_to_actionable_messages() {
+    pub(super) fn maps_kimi_auth_and_quota_failures_to_actionable_messages() {
         assert_eq!(
             format_kimi_provider_error(
                 "model.not_configured",
@@ -353,7 +353,7 @@ max_context_size = 262144
     }
 
     #[test]
-    fn resolves_only_kimi_session_logs_under_the_data_root() {
+    pub(super) fn resolves_only_kimi_session_logs_under_the_data_root() {
         let root = Path::new("/tmp/kimi-home");
         let index = concat!(
             "{\"sessionId\":\"session-safe\",\"sessionDir\":\"/tmp/kimi-home/sessions/wd_project/session-safe\"}\n",
@@ -372,7 +372,7 @@ max_context_size = 262144
     }
 
     #[test]
-    fn detects_server_request_for_newer_codex_runtime() {
+    pub(super) fn detects_server_request_for_newer_codex_runtime() {
         assert!(codex_upgrade_required(
             "The 'gpt-5.6-sol' model requires a newer version of Codex."
         ));

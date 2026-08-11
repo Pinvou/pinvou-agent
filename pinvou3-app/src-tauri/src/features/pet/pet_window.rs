@@ -14,10 +14,11 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 // 这里复用其计算并保持本文件的 pub 面不变。
 use super::geometry::{
     character_anchor_position, character_local_top_left, clamp_scale_to_character_work_area,
-    default_scale, edge_anchor, legacy_frame_position_to_client, pet_window_effective_size,
-    resized_position, scale_resize_required, ScaleAnchor,
+    default_scale, legacy_frame_position_to_client, pet_window_effective_size,
+    scale_resize_required,
 };
 pub use super::geometry::{clamp_scale, point_on_any_monitor, PetVerticalAlignment, PET_LABEL};
+pub(crate) use super::geometry::{edge_anchor, resized_position, ScaleAnchor};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetNavigationRequest {

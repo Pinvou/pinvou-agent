@@ -182,4 +182,3 @@ pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) 
         },
     }
 }
-

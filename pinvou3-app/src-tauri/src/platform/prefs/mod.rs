@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::core::mode_state::SerializableMode;
+use crate::features::sessions::SerializableMode;
 use crate::platform::credential_store::{
     CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
     CredentialStore, SystemCredentialStore,

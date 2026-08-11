@@ -18,16 +18,25 @@ use std::io::ErrorKind;
 
 use anyhow::{Context, Result};
 
+use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
 use super::scheduled::{ScheduledProfileRegistry, SCHEDULED_PROFILE_SCHEMA_VERSION};
 use super::store::MAX_SESSIONS_PER_KIND;
+use super::validators::validate_session_id;
 use super::validators::{
     chat_session_file, scheduled_session_file, validate_scheduled_session_id,
     validate_scheduled_task_id, validate_scheduled_workspace_path,
 };
+use super::validators::{generate_session_id, persisted_system_prompt};
 use super::SessionStore;
+use anyhow::bail;
+use chrono::Utc;
+use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
+use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
+use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
+use std::path::PathBuf;
 
 impl SessionStore {
-    fn save_session_atomic(&self, session: &SavedSession) -> Result<PathBuf> {
+    pub(crate) fn save_session_atomic(&self, session: &SavedSession) -> Result<PathBuf> {
         validate_session_id(&session.metadata.id)?;
         let path = self
             .manager
@@ -39,7 +48,7 @@ impl SessionStore {
         Ok(path)
     }
 
-    fn enforce_session_retention_locked(&self) -> Result<()> {
+    pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
             .manager
             .list_sessions()
@@ -82,13 +91,34 @@ impl SessionStore {
         }
     }
 
-    fn persist_then_reconcile(
+    pub(crate) fn persist_then_reconcile(
         &self,
+        session: &SavedSession,
+        event: &'static str,
+    ) -> Result<PathBuf> {
+        let path = self.save_session_atomic(session)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        }
+        Ok(path)
+    }
 
-    fn persist_then_reconcile_with(
+    pub(crate) fn persist_then_reconcile_with(
         &self,
+        session: &SavedSession,
+        save_context: impl FnOnce() -> String,
+        event: &'static str,
+    ) -> Result<PathBuf> {
+        let path = self
+            .save_session_atomic(session)
+            .with_context(save_context)?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        }
+        Ok(path)
+    }
 
-    fn reconcile_retention(&self, event: &'static str) {
+    pub(crate) fn reconcile_retention(&self, event: &'static str) {
         if let Err(error) = self.enforce_session_retention_locked() {
             eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
         }
@@ -99,7 +129,7 @@ impl SessionStore {
         self.reconcile_scheduled_profiles_locked()
     }
 
-    fn reconcile_scheduled_profiles_locked(&self) -> Result<()> {
+    pub(crate) fn reconcile_scheduled_profiles_locked(&self) -> Result<()> {
         let stale_ids: Vec<String> = self
             .scheduled_profiles
             .read()
@@ -131,7 +161,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn purge_session_side_maps(&self, ids: &[String]) {
+    pub(crate) fn purge_session_side_maps(&self, ids: &[String]) {
         if ids.is_empty() {
             return;
         }
@@ -211,7 +241,7 @@ impl SessionStore {
         }
     }
 
-    fn purge_all_scheduled_side_maps(&self) {
+    pub(crate) fn purge_all_scheduled_side_maps(&self) {
         let live_ids = self
             .scheduled_profiles
             .read()
@@ -254,7 +284,7 @@ impl SessionStore {
         self.purge_session_side_maps(&ids);
     }
 
-    fn is_scheduled_session(&self, id: &str) -> Result<bool> {
+    pub(crate) fn is_scheduled_session(&self, id: &str) -> Result<bool> {
         if self.scheduled_profiles.read().contains_key(id) {
             return Ok(true);
         }
@@ -264,7 +294,7 @@ impl SessionStore {
         Ok(scheduled_session_file(&self.manager, id)?.exists())
     }
 
-    fn load_scheduled_profiles(&self) -> Result<()> {
+    pub(crate) fn load_scheduled_profiles(&self) -> Result<()> {
         if !self.scheduled_profiles_path.exists() {
             return Ok(());
         }
@@ -299,7 +329,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn save_scheduled_profiles(&self) -> Result<()> {
+    pub(crate) fn save_scheduled_profiles(&self) -> Result<()> {
         if let Some(parent) = self.scheduled_profiles_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create scheduled profile dir {}", parent.display()))?;
@@ -319,7 +349,7 @@ impl SessionStore {
             })
     }
 
-    fn remove_scheduled_runtime_dir(&self, id: &str) -> Result<()> {
+    pub(crate) fn remove_scheduled_runtime_dir(&self, id: &str) -> Result<()> {
         validate_scheduled_session_id(id)?;
         if !self.scheduled_profiles.read().contains_key(id)
             && chat_session_file(&self.manager, id)?.exists()
@@ -335,7 +365,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn scheduled_workspace_for_task(&self, task_id: &str) -> Result<PathBuf> {
+    pub(crate) fn scheduled_workspace_for_task(&self, task_id: &str) -> Result<PathBuf> {
         validate_scheduled_task_id(task_id)?;
         Ok(self.scheduled_root.join(task_id).join("workspace"))
     }
@@ -372,9 +402,74 @@ impl SessionStore {
 
     pub fn persist_scheduled_engine_state(
         &self,
+        id: &str,
+        state: ScheduledEngineState,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        let profile = self
+            .scheduled_profiles
+            .read()
+            .get(id)
+            .cloned()
+            .with_context(|| format!("Session '{id}' is not a scheduled-run session"))?;
+        validate_scheduled_session_id(id)?;
+
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
+        let total_tokens = match state.token_accounting {
+            ScheduledTokenAccounting::PreservePersisted => session.metadata.total_tokens,
+            ScheduledTokenAccounting::EngineCumulative {
+                base_total_tokens,
+                engine_total_tokens,
+            } => base_total_tokens.saturating_add(engine_total_tokens),
+        };
+        let mode_label = state.mode.as_label();
+
+        session.metadata.updated_at = Utc::now();
+        session.metadata.message_count = state.messages.len();
+        session.metadata.total_tokens = total_tokens;
+        session.metadata.model = state.model;
+        session.metadata.workspace = profile.workspace;
+        session.metadata.mode = Some(mode_label.to_string());
+        session.messages = state.messages;
+        session.system_prompt = persisted_system_prompt(state.system_prompt.as_ref());
+
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist scheduled engine state for {id}"),
+            "committed engine state save",
+        )?;
+        Ok(session)
+    }
 
     pub fn persist_scheduled_token_total(
         &self,
+        id: &str,
+        base_total_tokens: u64,
+        engine_total_tokens: u64,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if !self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is not a scheduled-run session");
+        }
+        validate_scheduled_session_id(id)?;
+
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load scheduled session {id} for token persistence"))?;
+        session.metadata.updated_at = Utc::now();
+        session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
+
+        self.persist_then_reconcile_with(
+            &session,
+            || format!("persist scheduled token total for {id}"),
+            "committed token save",
+        )?;
+        Ok(session)
+    }
 
     pub fn create_scheduled_run(&self, mut profile: ScheduledRunProfile) -> Result<SavedSession> {
         if profile.task_id.trim().is_empty() {

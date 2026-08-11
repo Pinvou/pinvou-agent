@@ -29,6 +29,8 @@ use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::paths;
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
+use serde::{Deserialize, Serialize};
+
 pub use types::{
     ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, McpSecretMigrationResult,
     RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader, ToolManifest,

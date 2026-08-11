@@ -14,7 +14,6 @@ use deepseek_tui::session_manager::SessionManager;
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 
-impl SessionStore {
 pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
@@ -26,7 +25,7 @@ pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_scheduled_session_id(id: &str) -> Result<()> {
+pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
     validate_session_id(id)?;
     if !id.starts_with("sched-") {
         bail!("Scheduled session id must start with 'sched-': {id}");
@@ -34,7 +33,7 @@ fn validate_scheduled_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_scheduled_task_id(id: &str) -> Result<()> {
+pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
@@ -45,7 +44,7 @@ fn validate_scheduled_task_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -> Result<()> {
+pub(crate) fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -> Result<()> {
     if !workspace.is_absolute() {
         bail!(
             "Scheduled profile workspace must be absolute: {}",
@@ -77,7 +76,7 @@ fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -> Result<()
     Ok(())
 }
 
-fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {
+pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {
     match system_prompt {
         Some(SystemPrompt::Text(text)) => Some(text.clone()),
         Some(SystemPrompt::Blocks(blocks)) => Some(
@@ -91,17 +90,17 @@ fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<Strin
     }
 }
 
-fn chat_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
+pub(crate) fn chat_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
     validate_session_id(id)?;
     Ok(manager.sessions_dir().join(format!("{id}.json")))
 }
 
-fn scheduled_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
+pub(crate) fn scheduled_session_file(manager: &SessionManager, id: &str) -> Result<PathBuf> {
     validate_scheduled_session_id(id)?;
     Ok(manager.sessions_dir().join(format!("{id}.json")))
 }
 
-fn generate_session_id() -> String {
+pub(crate) fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -115,5 +114,4 @@ fn generate_session_id() -> String {
         n /= 36;
     }
     buf
-}
 }

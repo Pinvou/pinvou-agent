@@ -27,7 +27,7 @@ use super::*;
 /// 判据(plan_ready / M2 / M3)也全部基于本 `session_id`,不再读全局 `store.active_id()`
 /// (并发下 active 会变,读全局会把判据算到错误 session 上)。返回 forwarder 的
 /// `JoinHandle`,EnginePool 回收 session 时 `abort()` 它。
-fn spawn_event_forwarder(
+pub(crate) fn spawn_event_forwarder(
     app: AppHandle,
     handle: EngineHandle,
     store: SessionStore,
