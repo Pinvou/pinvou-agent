@@ -403,9 +403,8 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "web_access_load_session_chunk"
         | "web_access_save_session_messages_chunk" => Required("id"),
 
-        // Omitting this one deliberately means "create a fresh workflow
-        // Session"; it never consults the desktop active pointer.
-        "start_workflow" => Optional("sessionId"),
+        // Omitting these deliberately uses the global/default behavior without
+        // consulting the desktop active pointer.
         "get_effective_model_config" | "start_workflow" => Optional("sessionId"),
         _ => return None,
     };
