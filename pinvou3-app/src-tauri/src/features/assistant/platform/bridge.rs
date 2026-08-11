@@ -1134,7 +1134,9 @@ impl Pinvou3Bridge {
             skills_dir: self.bundle.skills_dir.clone(),
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
+            // 主 agent 每轮步数上限：默认对齐 subagent 的 MAX_SUBAGENT_STEPS=2000，
+            // 避免 100 步提前截断长任务（与多智能体模式的显式预算一致）。
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(2000),
             // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
