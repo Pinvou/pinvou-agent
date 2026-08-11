@@ -956,6 +956,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
       const [disabledSkills, setDisabledSkills] = useState(() => new Set()); // 被关掉的技能 id(按 scope 持久,独立文件)
       const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
+      const [projectSkillsHelp, setProjectSkillsHelp] = useState(false); // 项目技能帮助弹窗(功能说明+扫描目录)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -1153,7 +1154,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     <div className="px-3 py-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="min-w-0">
-                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{t.composerProjectSkills}</span>
+                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">
+                            {t.composerProjectSkills}
+                            <button onClick={() => setProjectSkillsHelp(true)} aria-label={t.composerProjectSkillsHelpTitle}
+                              className="inline-flex items-center justify-center w-[15px] h-[15px] ml-1 rounded-full text-[10px] font-semibold leading-none text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 align-middle">?</button>
+                          </span>
                           <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
                         </span>
                         <button onClick={toggleProjectSkills} aria-label="project-skills" disabled={!canMutateToolStore}
@@ -1174,6 +1179,26 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                   {t.composerManageTools}
                 </button>
           </ComposerPopover>
+          {projectSkillsHelp && (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
+              <div onClick={e => e.stopPropagation()} className="relative w-full max-w-[380px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="text-[16px] font-semibold">{t.composerProjectSkillsHelpTitle}</div>
+                  <button onClick={() => setProjectSkillsHelp(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
+                </div>
+                <div className="text-[12px] leading-relaxed text-[#5F6368] dark:text-[#AEB4BC]">{t.composerProjectSkillsHelpBody}</div>
+                <div className="mt-3 text-[12px] font-medium">{t.composerProjectSkillsHelpDirsLabel}</div>
+                <div className="mt-1.5 rounded-[14px] border p-3 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/[0.035]">
+                  {String(t.composerProjectSkillsHelpDirs).split('\n').map((dir, i) => (
+                    <div key={dir} className="flex items-center gap-2 text-[11px] font-mono text-gray-600 dark:text-gray-300 py-0.5">
+                      <span className="text-[10px] text-gray-400 dark:text-gray-500">{i + 1}</span>{dir}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
+              </div>
+            </div>
+          )}
         </div>
       );
     };
