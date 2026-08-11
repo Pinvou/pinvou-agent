@@ -478,7 +478,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       const modelIcon = monitorModelIcon(vllmModel);
       const tokenPair = monitorTokenPair(clearOverride ? clearOverride.tokTotal : vllmTokTotal);
       const ctxNum = typeof vllmMaxLen === 'number' ? vllmMaxLen : parseFloat(String(vllmMaxLen || '').replace(/[^\d.]/g, ''));
-      const ctxValue = Number.isFinite(ctxNum) ? Math.round(ctxNum / 1024) : String(vllmMaxLen || '—');
+      const ctxValue = Number.isFinite(ctxNum) ? Math.round(ctxNum / 1000) : String(vllmMaxLen || '—');
       const ctxUnit = Number.isFinite(ctxNum) ? 'K' : '';
       const queueText = String(vllmQueue || '—').replace(/\s+/g, '');
       const ttftText = String(clearOverride ? clearOverride.ttft : vllmTtft).replace(/\s*s$/i, '');
