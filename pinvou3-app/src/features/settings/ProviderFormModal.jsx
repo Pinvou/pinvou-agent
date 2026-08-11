@@ -539,7 +539,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           >
             <div
               onClick={event => event.stopPropagation()}
-              className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 ${isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'}`}
+              className="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
             >
               <p className="text-[13px] leading-relaxed opacity-85">
                 {confirmStep === 'emptyKey' ? copy.apiKeyEmptyConfirm : copy.deleteKeyConfirm}
