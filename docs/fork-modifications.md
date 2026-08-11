@@ -4,28 +4,28 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-11 · v0.9.5 r4 公开基线）
+## 0. 当前状态（2026-08-11 · v0.9.5 r5 公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
-| 依赖修复 | `Pinvou/CodeWhale#9` 已合并；合并后维护分支 head 为 `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r4` 均指向公开维护分支 head；`r1`/`r2`/`r3` 保留为不可变历史标签 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`Pinvou/CodeWhale#11` 已合并；当前维护分支 head 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r5` 均指向公开维护分支 head；`r1`/`r2`/`r3`/`r4` 保留为不可变历史标签 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、6 个线性提交 |
-| drift | `45 files changed, +1991/-265`；净增约 1726 行 |
-| 守护 | 21 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、7 个线性提交 |
+| drift | `48 files changed, +2177/-269`；净增约 1908 行 |
+| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
-### 当前候选修复（已验证，尚未发布）
+### 本次会话修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
-- 底座候选为 `Pinvou/CodeWhale#11`，commit `da00841ff42d6b6c9edd8c955effe3f5ae0b91df`，基于当前 `pinvou3-clean` 公开 head。
+- 底座修复已通过 `Pinvou/CodeWhale#11` 合入，公开 commit 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`。
 - T1 新增无修复副作用的 `load_session_snapshot` 与显式 `recover_session_for_resume`。Pinvou 的运行时读改写统一使用前者，仅在应用进程启动、任何 Engine 接管会话前执行后者，并把恢复结果原子落盘。
 - 前端仅对真正的跨端回合保留 revision 对账门禁；本地 `chat:done` 直接释放下一轮发送，落盘读回异常不得阻塞普通本地对话，跨端未收敛提示按会话去重。
-- 候选新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
-- 本节候选改动尚未计入上方公开维护分支 head、drift 或固定标签；已完成自动测试和桌面手工验证，后续再走 CodeWhale 上游贡献与 Pinvou 发布流程。
+- 本次新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和 Tauri/Web 前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
+- 本节改动已计入上方公开维护分支 head、drift 和固定标签 `pinvou-v0.9.5-r5`；CodeWhale required checks 与父仓自动测试均已通过。
 
 ### 软上限评估
 
@@ -41,8 +41,8 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **公开 commit**：`331cb1594688c723d98499d9ca11f05af291b599`；当前候选为 `da00841ff42d6b6c9edd8c955effe3f5ae0b91df`（`Pinvou/CodeWhale#11`）。
-- **公开规模**：9 文件，`+272/-27`；候选规模见上节，不计入公开 drift。
+- **公开 commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）。
+- **公开规模**：10 文件，`+394/-31`；仓库级 CI 恢复不计入 T1 主题规模。
 - **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
@@ -148,7 +148,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-21 passed / 0 failed
+23 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -159,7 +159,7 @@ cargo check --locked
 cargo test --locked --lib -- --test-threads=1
 1077 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
-CodeWhale 21 passed；pinvou3-app 16 passed
+CodeWhale 23 passed；pinvou3-app 18 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui

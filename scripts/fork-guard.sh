@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: six published commits plus one T1 candidate.
+# CodeWhale v0.9.5 clean re-fork guard: seven published commits across five themes.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-EXPECTED_HEAD="da00841ff42d6b6c9edd8c955effe3f5ae0b91df"
+EXPECTED_HEAD="2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd"
 EXPECTED_COMMITS=7
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
@@ -17,12 +17,12 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 基线与五主题候选拓扑 ──"
+bold "── 第 0 层：v0.9.5 基线与五主题公开拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记候选 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向公开基线 $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记候选为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
   fail=1
 fi
 
@@ -35,9 +35,9 @@ fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 6 个公开提交 + 1 个 T1 候选"
+  green "  ✓ v0.9.5 之上 7 个公开提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，候选登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开登记为 $EXPECTED_COMMITS"
   fail=1
 fi
 
