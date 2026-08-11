@@ -1134,11 +1134,68 @@ mod release_env_defaults_guard {
     ///
     /// 两层检查（评审修正 2026-08-11）：
     /// 1. 常量表本身不含这两个 key（防常量里重新出现）；
-    /// 2. 走**实际注入路径** `ensure_release_env`（boot/release 唯一 env 注入函数，
-    ///    无写盘副作用）后断言进程 env 仍无这两个 key——即使未来有人在注入函数里
-    ///    绕过常量表直接 set_var，这里也能抓到。
+    /// 2. 走**实际注入路径** `ensure_release_env`（run() 启动路径的 release env
+    ///    注入函数，无写盘副作用）后断言进程 env 仍无这两个 key——即使未来有人在
+    ///    注入函数里绕过常量表直接 set_var，这里也能抓到。
+    ///
+    /// 第三轮评审修正 2026-08-11：本测试此前直接删进程级 env 且不还原，未借 crate
+    /// 级唯一 ENV_LOCK（会与 bridge.rs 等 env 写测试并发竞态），也不还原
+    /// ensure_release_env 写入的 RELEASE_ENV_DEFAULTS / PATH / 平台 UI env（串行 CI
+    /// 下造成后续测试顺序依赖）。现改为：先取 ENV_LOCK 再全量快照 env，退出（含
+    /// panic）时按快照完整还原。bridge boot 侧的 env 注入源头由 bridge.rs
+    /// `forkguard_boot_env_must_not_pin_global_output_cap` 单独守卫（boot 不直接
+    /// 进单测：会 mutate PINVOU3_HOME 写盘 + 全量解包 bundle，见
+    /// `engine_config_workspace_follows_bridge_field` 注释）。
+    ///
+    /// 进程 env 全量快照：ensure_release_env 会 set RELEASE_ENV_DEFAULTS、重写 PATH、
+    /// Linux 上还会 set GDK_BACKEND 等 UI env——只有全量快照才能完整还原，且不随
+    /// 各常量表增删漂移。
+    struct EnvSnapshot(std::collections::HashMap<String, Option<String>>);
+
+    impl EnvSnapshot {
+        fn take() -> Self {
+            let mut map = std::collections::HashMap::new();
+            for (k, v) in std::env::vars() {
+                map.insert(k, Some(v));
+            }
+            // 显式记录"当前不存在"的 key，还原时统一按快照恢复原状（set / remove）。
+            for key in ["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"] {
+                map.entry(key.to_string()).or_insert(None);
+            }
+            Self(map)
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
+            // UI env 等）——全部移除，回到快照状态，杜绝后续测试的顺序依赖。
+            let keep: std::collections::HashSet<&String> = self.0.keys().collect();
+            let stale: Vec<String> = std::env::vars()
+                .map(|(k, _)| k)
+                .filter(|k| !keep.contains(k))
+                .collect();
+            for k in stale {
+                std::env::remove_var(&k);
+            }
+        }
+    }
+
     #[test]
     fn release_env_defaults_must_not_pin_global_output_cap() {
+        // crate 级唯一 env 锁：与所有 env 写测试串行（同 bridge.rs locked_env 约定），
+        // 避免与 DEEPSEEK_* / PINVOU3_HOME 写测试并发竞态。
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
         // 第一层：常量表
         assert!(
             !super::RELEASE_ENV_DEFAULTS
@@ -1153,8 +1210,8 @@ mod release_env_defaults_guard {
             "RELEASE_ENV_DEFAULTS 不得包含 PINVOU3_MAX_OUTPUT_TOKENS（品悟侧上限仅经 prefs/route 携带）"
         );
 
-        // 第二层：实际注入路径（ensure_release_env 是 boot/release 唯一 env 注入函数）。
-        // 先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
+        // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
+        // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
         super::ensure_release_env();
@@ -1166,5 +1223,6 @@ mod release_env_defaults_guard {
             std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
             "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
         );
+        // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
     }
 }

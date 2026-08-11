@@ -185,10 +185,21 @@ impl Pinvou3Bridge {
     /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
     /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
     ///
-    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set 到公共 MCP 产物目录。
-    /// PPT / 公文等 MCP server 是 stdio 子进程，不能可靠感知当前 GUI session；
-    /// 因此二进制办公产物固定落到 `sessions/default/artifacts/`，具体归属由带
-    /// `session_id` 的工具事件和前端持久化决定。
+    /// boot 路径的 env 注入唯一收口（PR #210 守卫目标）：只写会话产物目录
+    /// `PINVOU3_SESSION_ARTIFACTS`。PPT / 公文等 MCP server 是 stdio 子进程，
+    /// 不能可靠感知当前 GUI session，故二进制办公产物固定落到
+    /// `sessions/default/artifacts/`，具体归属由带 `session_id` 的工具事件和前端
+    /// 持久化决定。
+    ///
+    /// ⚠️ 不得在这里（或 boot 其它位置）注入 `DEEPSEEK_MAX_OUTPUT_TOKENS` /
+    /// `PINVOU3_MAX_OUTPUT_TOKENS`：底座 `effective_max_output_tokens()` 优先读
+    /// 前者，一旦回归会把所有模型（含云端）输出上限重新钉死 24576——正是本 PR
+    /// 移除的根因。lib.rs `release_env_defaults_guard` 守 run() 的 release env 注入，
+    /// 本函数 + `forkguard_boot_env_must_not_pin_global_output_cap` 守 boot 注入源头。
+    fn wire_boot_env(artifacts_dir: &std::path::Path) {
+        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", artifacts_dir);
+    }
+
     pub fn boot() -> Result<Self> {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
@@ -221,7 +232,7 @@ impl Pinvou3Bridge {
             prefs.save().ok();
         }
         let artifacts = paths::default_session_artifacts_dir();
-        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &artifacts);
+        Self::wire_boot_env(&artifacts);
         let this = Self {
             prefs,
             bundle,
@@ -2668,7 +2679,8 @@ mod tests {
     /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
     /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
     /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
-    /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`）。
+    /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`
+    /// 与下方 `forkguard_boot_env_must_not_pin_global_output_cap`）。
     /// C 段只锁"中间层不被 env 污染"这一层事实，D 段沿底座公开预算链验证 env
     /// 确实生效（对应 CHANGES_REQUESTED：补沿最终预算/请求构造链的回归）。
     #[test]
@@ -2761,6 +2773,43 @@ mod tests {
             "reservation 差应恰为底座 64K 兜底 − 本地 24K（clamp/headroom 两侧相同）"
         );
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+    }
+
+    /// PR #210 守卫（第三轮评审修正 2026-08-11）：bridge boot 的 env 注入源头
+    /// （`wire_boot_env`）不得重新注入输出上限 env。lib.rs `release_env_defaults_guard`
+    /// 只覆盖 run() 的 release env 注入路径；若未来有人在 boot 路径直接 set_var
+    /// `DEEPSEEK_MAX_OUTPUT_TOKENS`，那边的守卫抓不到——故把 boot 的 env 写入收口到
+    /// `wire_boot_env` 单一源头，这里锁死该源头。
+    ///
+    /// 不直接跑 `Pinvou3Bridge::boot()`：boot 会 mutate PINVOU3_HOME（写盘到隔离 home
+    /// + 全量解包 bundle），成本高且与既有单测约定冲突（见
+    /// `engine_config_workspace_follows_bridge_field` 注释）。
+    #[test]
+    fn forkguard_boot_env_must_not_pin_global_output_cap() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+            "PINVOU3_SESSION_ARTIFACTS",
+        ]);
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        let artifacts = std::env::temp_dir().join("pinvou3-boot-env-guard-artifacts");
+        super::Pinvou3Bridge::wire_boot_env(&artifacts);
+
+        assert_eq!(
+            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
+            Ok(artifacts.to_str().expect("artifacts 目录路径必须是 UTF-8")),
+            "boot 注入源头仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
+        );
+        assert!(
+            std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
+            "boot 注入源头（wire_boot_env）不得注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端输出上限）"
+        );
+        assert!(
+            std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
+            "boot 注入源头（wire_boot_env）不得注入 PINVOU3_MAX_OUTPUT_TOKENS"
+        );
     }
 
     /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
