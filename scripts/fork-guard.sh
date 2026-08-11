@@ -6,7 +6,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-EXPECTED_HEAD="1da1bccd59001bc35d1accd9bb6a3f26093c36bf"
+EXPECTED_HEAD="d1010aa3bbaf76780e29df4434fd1e03a95b2ca6"
 EXPECTED_COMMITS=6
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
@@ -20,16 +20,16 @@ fail=0
 bold "── 第 0 层：v0.9.5 基线与五主题六提交拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记候选 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记基线 $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记候选为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记基线为 $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ 候选继承官方 v0.9.5 基线"
+  green "  ✓ 维护基线继承官方 v0.9.5"
 else
-  red "  ✗ 候选不继承官方 v0.9.5 commit $EXPECTED_UPSTREAM"
+  red "  ✗ 维护基线不继承官方 v0.9.5 commit $EXPECTED_UPSTREAM"
   fail=1
 fi
 

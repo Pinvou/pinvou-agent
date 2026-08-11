@@ -4,14 +4,14 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-11 · v0.9.5 PR 候选）
+## 0. 当前状态（2026-08-11 · v0.9.5 r4 公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `3782a78d4e11d1fb65042cf9c82231b9d644c20a` |
-| 依赖 PR 候选 | `Pinvou/CodeWhale#9`，分支 `fix/pr231-t5-path-safety`，head `1da1bccd59001bc35d1accd9bb6a3f26093c36bf`；维护分支和标签尚未切换 |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r3` 均指向公开维护分支 head；`r1`/`r2` 保留为父仓最新主线兼容补齐过程中的不可变候选 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
+| 依赖修复 | `Pinvou/CodeWhale#9` 已合并；合并后维护分支 head 为 `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6` |
+| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r4` 均指向公开维护分支 head；`r1`/`r2`/`r3` 保留为不可变历史标签 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、6 个线性提交 |
 | drift | `45 files changed, +1991/-265`；净增约 1726 行 |
@@ -88,7 +88,7 @@
 
 ### T5：三省六部编排、完成闸与结构化产出安全
 
-- **commits**：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`、`1da1bccd59001bc35d1accd9bb6a3f26093c36bf`
+- **commits**：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`、`d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`
 - **规模**：16 文件，`+912/-45`
 - **核心文件**：`core/{engine,events,ops}.rs`、`tools/subagent/{mod,tests}.rs`、`runtime_threads.rs` 及 SubAgent TUI 事件适配。
 - **内容**：
@@ -147,7 +147,7 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 cargo fmt --all -- --check
 cargo check --locked
 cargo test --locked --lib -- --test-threads=1
-1076 passed / 0 failed / 12 ignored
+1077 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
 CodeWhale 21 passed；pinvou3-app 16 passed
 python3 scripts/architecture-guard.py
@@ -158,10 +158,10 @@ npm run build:web
 cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；候选未推送前，公开标签一致性验证应保持未执行状态，不得以修改脚本方式绕过。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；公开标签一致性由 `scripts/verify-public-submodule.sh` 校验，不得以修改脚本方式绕过。
 
 ## 5. 后续修改规则
 
 - 修改任一主题时，同步更新本文、`scripts/fork-guard.sh` 和对应 `forkguard_*` 行为测试。
 - 通用修复从 upstream main 建净分支贡献；不得把整个 Pinvou 主题直接提交上游。
-- 发布后把本节候选状态更新为远端维护分支、不可变标签和实际 commit，并验证父仓 gitlink 一致。
+- 发布后把本节状态更新为远端维护分支、不可变标签和实际 commit，并验证父仓 gitlink 一致。

@@ -1,7 +1,7 @@
 # CodeWhale 0.9.0 → 0.9.5 底座升级报告
 
-> 日期：2026-08-10
-> 状态：CodeWhale 重建和父仓编译适配已完成，公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r3` 已发布；`r1`/`r2` 保留为父仓最新主线兼容补齐过程中的不可变候选。
+> 日期：2026-08-11
+> 状态：CodeWhale 重建、结构化产出安全加固和父仓编译适配已完成，公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r4` 已发布；`r1`/`r2`/`r3` 保留为不可变历史标签。
 
 ## 1. 结论
 
@@ -100,13 +100,13 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 | T2 工具兼容与命令执行安全 | `595adce47` | extra tools、动态禁用、File 上限、多行危险命令 fail-closed |
 | T3 嵌入上下文与技能来源 | `5a9f52941` | static composer 密封、Skill 单根/disabled、Permissions 100 KiB 窄例外、Working Set 隔离 |
 | T4 定时任务与运行生命周期 | `fc84f7d3e` | model/conversation、历史 schema、thread/turn、misfire/no-overlap、终态清理 |
-| T5 三省六部编排与完成闸 | `3782a78d4` | role/tool/steps、产物级 write claim、schema/file 产出、取消、权威失败终态 |
+| T5 三省六部编排与完成闸 | `3782a78d4` + `d1010aa3b` | role/tool/steps、产物级 write claim、显式项目根、schema/file 安全产出、取消、权威失败终态 |
 
 主题边界、文件与指纹详见 `docs/fork-modifications.md`。
 
 ## 5. Pinvou 父仓兼容迁移
 
-- submodule 指向本地 v0.9.5 五主题候选。
+- submodule 指向公开 v0.9.5 r4 五主题基线。
 - `Cargo.lock` 对齐 v0.9.5 workspace crate 和依赖图。
 - `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，显式透传新增 `subagent_state_root`。
 - 会话工具隐藏继续走 `shape_disallowed_tools`，产品语义不变。
@@ -120,14 +120,14 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo check -p codewhale-tui --lib --locked`：通过。
-- `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`：18 passed / 0 failed。
+- `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`：21 passed / 0 failed。
 
 ### Pinvou 父仓
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo check --locked`：通过。
-- `cargo test --locked --lib -- --test-threads=1`：1026 passed / 0 failed / 12 ignored；ignored 项依赖真实模型、外部工具或专用 fixture。
-- `./scripts/fork-guard.sh`：CodeWhale 18 passed；pinvou3-app 16 passed。
+- `cargo test --locked --lib -- --test-threads=1`：1077 passed / 0 failed / 12 ignored；ignored 项依赖真实模型、外部工具或专用 fixture。
+- `./scripts/fork-guard.sh`：CodeWhale 21 passed；pinvou3-app 16 passed。
 - `cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri`：实际桌面二进制链接通过。
 - `python3 scripts/architecture-guard.py`：通过，无新增架构债务。
 - `npm test`、`npm run lint:ui`、`npm run build:ui`、`npm run build:web`：全部通过；仅有既有非 module script 和大 chunk warning。
@@ -152,7 +152,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 ## 9. 当前交付状态
 
 - CodeWhale 分支：`Pinvou/CodeWhale:pinvou3-clean`
-- CodeWhale HEAD：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`
+- CodeWhale HEAD：`d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`
 - 父仓分支：`upgrade/codewhale-v0.9.5`
-- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r3` 已发布；`r1`/`r2` 保留为不可变候选，旧 v0.9.0 分支已双重备份
+- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r4` 已发布；`r1`/`r2`/`r3` 保留为不可变历史标签，旧 v0.9.0 分支已双重备份
 - 下一步：通过父仓升级 PR 合入 gitlink、适配代码和维护登记。

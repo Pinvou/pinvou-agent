@@ -1,14 +1,14 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-08-10. Public maintenance baseline: upstream `v0.9.5` plus five Pinvou themes.
+> Updated: 2026-08-11. Public maintenance baseline: upstream `v0.9.5` plus five Pinvou themes.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md).
 
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`.
-- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `3782a78d4e11d1fb65042cf9c82231b9d644c20a`.
+- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`.
 - The pre-upgrade head `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` remains available as tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`.
-- The branch and immutable tag `pinvou-v0.9.5-r3` are publicly reachable and resolve to the same commit as the parent gitlink. `r1` and `r2` remain immutable compatibility candidates.
+- The branch and immutable tag `pinvou-v0.9.5-r4` are publicly reachable and resolve to the same commit as the parent gitlink. `r1`, `r2`, and `r3` remain immutable historical tags.
 - Keep exactly five long-lived topics:
 
   1. Host embedding and routing boundary
