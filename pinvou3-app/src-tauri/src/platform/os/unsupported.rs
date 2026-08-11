@@ -180,7 +180,25 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 }
 
 // Unix 通用 helper 从 posix.rs 继承（Wave 3 去重，与 linux_path.rs 一致）。
+// `posix` 模块仅在 `#[cfg(unix)]` 编译，故这里必须守卫：macOS（unix）走
+// re-export；其余非 unix 兜底平台走本地等价实现，避免 E0432 未解析模块。
+#[cfg(unix)]
 pub use super::posix::{path_component_eq, platform_compat_path, python_command};
+
+#[cfg(not(unix))]
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    component == OsStr::new(expected)
+}
+
+#[cfg(not(unix))]
+pub fn platform_compat_path(value: &str) -> PathBuf {
+    PathBuf::from(value)
+}
+
+#[cfg(not(unix))]
+pub fn python_command() -> String {
+    "python3".to_string()
+}
 
 pub fn connector_cli_command(_cli_bin: &str, program: &str) -> Command {
     Command::new(program)
