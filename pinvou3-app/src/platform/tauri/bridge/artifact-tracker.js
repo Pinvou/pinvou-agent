@@ -144,13 +144,39 @@
       }
     } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
   }
-  // File.write / File.edit 的 args 里提取产物路径
-  function extractArtifactPath(args) {
-    if (!args) return null;
+  function pushArtifactPath(paths, path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    path = path.trim();
+    if (paths.indexOf(path) < 0) paths.push(path);
+  }
+  function extractPatchHeaderPaths(patch, paths) {
+    String(patch || "").split(/\r?\n/).forEach(function (line) {
+      var custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
+      if (custom) { pushArtifactPath(paths, custom[1]); return; }
+      var unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
+      if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
+    });
+  }
+  // File.write / File.edit / File.patch 的 args 里提取全部产物路径。
+  function extractArtifactPaths(args) {
+    if (!args) return [];
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (e) { return null; }
+      try { args = JSON.parse(args); } catch (e) { return []; }
     }
-    return args.path || args.file_path || args.filename || null;
+    var paths = [];
+    pushArtifactPath(paths, args.path || args.file_path || args.filename);
+    [args.replace, args.changes].forEach(function (changes) {
+      if (!Array.isArray(changes)) return;
+      changes.forEach(function (change) {
+        if (!change || typeof change !== "object") return;
+        pushArtifactPath(paths, change.path || change.file_path || change.filename);
+      });
+    });
+    extractPatchHeaderPaths(args.patch, paths);
+    return paths;
+  }
+  function extractArtifactPath(args) {
+    return extractArtifactPaths(args)[0] || null;
   }
 
   function fileMutationAction(name, args) {
@@ -159,7 +185,7 @@
     }
     if (String(name || "").toLowerCase() === "file") {
       var action = String(args && args.action || "").toLowerCase();
-      return action === "write" || action === "edit" ? action : null;
+      return action === "write" || action === "edit" || action === "patch" ? action : null;
     }
     if (name === "write_file") return "write";
     if (name === "edit_file") return "edit";
@@ -226,6 +252,7 @@
       untrackArtifact: untrackArtifact,
       findPresentedArtifact: findPresentedArtifact,
       reconcileArtifacts: reconcileArtifacts,
+      extractArtifactPaths: extractArtifactPaths,
       extractArtifactPath: extractArtifactPath,
       fileMutationAction: fileMutationAction,
       isPresentArtifactTool: isPresentArtifactTool,

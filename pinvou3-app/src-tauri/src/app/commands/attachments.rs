@@ -315,8 +315,8 @@ fn push_large_attachment_section(
          完整内容已是纯文本,共 {} 行,路径: `{}`\n\
          预览(仅开头几行):\n```\n{}```\n\
          需要完整内容时:\n\
-         - 统计/筛选/聚合(尤其表格数据):优先用 exec_shell 写 awk 或 python 一次算出结果,不要逐页通读\n\
-         - 通读/定位:用 read_file 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
+         - 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 写 awk 或 python 一次算出结果,不要逐页通读\n\
+         - 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
         a.token_estimate, total_lines, read_path, preview
     ));
 }
@@ -403,8 +403,8 @@ pub(super) fn build_message_with_attachments_in_dir(
             if fits {
                 inline_spent = inline_spent.saturating_add(a.token_estimate);
                 out.push_str(
-                    "**以下代码块是文件完整内容,可直接使用,不需要再调 read_file / \
-                     file_search 重新读取。**如需保存修改版本,用 write_file 写到 \
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
+                     `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
                      PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
                 );
                 out.push_str("```\n");

@@ -397,6 +397,7 @@ pub async fn kick_workflow(
             prompt,
             allowed_tools,
             write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -421,6 +422,7 @@ pub async fn kick_workflow(
                 write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             engine
@@ -460,6 +462,7 @@ pub async fn kick_workflow(
                     write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 engine
@@ -531,6 +534,7 @@ pub async fn retry_workflow_role(
             prompt,
             allowed_tools,
             write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -555,6 +559,7 @@ pub async fn retry_workflow_role(
                 write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             engine
@@ -594,6 +599,7 @@ pub async fn retry_workflow_role(
                     write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 engine

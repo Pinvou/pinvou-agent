@@ -1,6 +1,6 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-10. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
+> Updated: 2026-08-11. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
 
 ## Current baseline
 
@@ -8,10 +8,11 @@
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `3782a78d4e11d1fb65042cf9c82231b9d644c20a` |
-| Public status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r3` both resolve to the current head; `r1` and `r2` remain immutable compatibility candidates |
+| Dependency PR candidate | `Pinvou/CodeWhale#9`, branch `fix/pr231-t5-path-safety`, at `1da1bccd59001bc35d1accd9bb6a3f26093c36bf`; the maintenance branch and tags have not moved |
+| Public status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r3` both resolve to the public maintenance head; `r1` and `r2` remain immutable compatibility candidates |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | 45 files, `+1743/-263` |
-| Organization | Five linear topic commits replayed from `v0.9.5` |
+| Drift | 45 files, `+1991/-265` |
+| Organization | Five long-lived topics in six linear commits replayed from `v0.9.5` |
 
 ## Topics
 
@@ -19,7 +20,7 @@
 2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`. Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, and fail-closed multiline command safety while reusing upstream `allowed_tools`.
 3. **Embedded context and Skill sources** — `5a9f52941b83452c1e8b76c2d679bac315edcf70`. Seals ambient project authority, scans only the explicit Skill root, filters disabled Skills, preserves up to 100 KiB only for the Permissions fragment, and excludes internal reminders from Working Set extraction.
 4. **Automation and runtime lifecycle** — `fc84f7d3e5dca0e3db404d43e218597764129f9b`. Preserves stable conversation/thread identity, v4 task compatibility, anchored schedules, no-backfill/no-overlap behavior, and terminal-only cleanup.
-5. **Three Departments and Six Ministries orchestration and completion gate** — `3782a78d4e11d1fb65042cf9c82231b9d644c20a`. Adds only the role/tool/step/output contract, bounded write claims for declared output files, safe structured persistence, file-completion gate, cancellation, and authoritative terminal result needed by that workflow.
+5. **Three Departments and Six Ministries orchestration, completion gate, and structured-output safety** — `3782a78d4e11d1fb65042cf9c82231b9d644c20a` plus local candidate `1da1bccd59001bc35d1accd9bb6a3f26093c36bf`. Adds the role/tool/step/output contract, bounded write claims, explicit host-selected output roots, traversal and symlink-escape rejection, safe structured persistence, file-completion gate, cancellation, and authoritative terminal result needed by that workflow.
 
 Pinvou's product tool allowlist, connector state, UI, workspace selection, bundle instructions, session Skill materialization, and presentation remain in `pinvou3-app`.
 
@@ -33,9 +34,9 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 ## Verification
 
 - CodeWhale format and locked library check pass.
-- All 18 CodeWhale `forkguard_*` tests pass.
+- All 21 CodeWhale `forkguard_*` tests pass.
 - Parent locked Rust check and desktop binary link pass.
-- Parent library tests pass: 1026 passed, 0 failed, and 12 environment-dependent tests ignored.
+- Parent library tests pass: 1076 passed, 0 failed, and 12 environment-dependent tests ignored.
 - Parent fork guard, architecture guard, npm tests, UI lint, desktop UI build, and web UI build pass.
 - Full product results are recorded in `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`.
 

@@ -101,8 +101,8 @@ mod tests {
         assert_eq!(plain.mode, "plain");
         let code = profile_for(SessionMode::Code);
         assert_eq!(code.mode, "code");
-        // v1 差量语义：exclude 空（无设计期再藏），extra_hidden 只含模式固有隐藏
-        assert!(plain.tools.exclude.is_empty());
+        // Git 是代码会话的结构化能力；普通工作会话保持原有工具面。
+        assert_eq!(plain.tools.exclude, ["Git"]);
         assert!(code.tools.exclude.is_empty());
         for name in &code.tools.extra_hidden {
             assert!(

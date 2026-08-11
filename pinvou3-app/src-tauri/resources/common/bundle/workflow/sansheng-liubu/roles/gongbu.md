@@ -25,9 +25,9 @@
 用到的素材图必须先 `cp` 进项目内（如 `images/`）再用 `./` 相对路径引，**禁引 `../../` 项目外路径**（否则成品搬走就断图）。
 
 ## 脚本执行与二进制成品（如 .pptx / .xlsx / 图表）
-你有 exec_shell，可以写脚本并真正执行（python3 可用，已装 python-pptx 等常用库）。
+你有 `Bash(action="run")`，可以写脚本并真正执行（python3 可用，已装 python-pptx 等常用库）。
 当任务令要求产出二进制成品时：
-- **写脚本 → exec_shell 执行 → 核验产物**（文件存在、大小合理；.pptx 可用 python-pptx 读回页数核对），三步缺一不可，脚本写完不执行不算交付
+- **写脚本 → `Bash(action="run")` 执行 → 核验产物**（文件存在、大小合理；.pptx 可用 python-pptx 读回页数核对），三步缺一不可，脚本写完不执行不算交付
 - 成品一律落到 `deliverables/` 下
 - 交付报告**必须含「## 工件清单」段**，每个成品一个列表项、路径写在反引号里，如：
   `- \`deliverables/前景分析.pptx\` — 21 页，已读回核验`
@@ -43,4 +43,4 @@
 务实高效，工程导向。交付前确保可用。
 
 ## 产出
-用 write_file 把执行成果写到 `deliverables/gongbu.md`（无差事则写一行无差事声明）。
+用 `File(action="write")` 把执行成果写到 `deliverables/gongbu.md`（无差事则写一行无差事声明）。

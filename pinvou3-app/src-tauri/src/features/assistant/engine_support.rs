@@ -53,40 +53,84 @@ pub(super) fn persist_successful_tool_artifact(
     if store.scheduled_profile(session_id).is_none() {
         return Ok(None);
     }
-    let output_path = artifact_path_from_tool_output(output);
-    let input_path = if is_file_artifact_tool(tool_name, tool_input) {
-        artifact_path_from_value(tool_input)
-    } else {
-        None
-    };
-    let Some(raw_path) = output_path.or(input_path) else {
+    let mut raw_paths = artifact_paths_from_tool_output(output);
+    if is_file_artifact_tool(tool_name, tool_input) {
+        raw_paths.extend(artifact_paths_from_value(tool_input));
+    }
+    raw_paths.sort();
+    raw_paths.dedup();
+    if raw_paths.is_empty() {
         return Ok(None);
+    }
+    let patch_tool = is_patch_artifact_tool(tool_name, tool_input);
+    let mut persisted = Vec::new();
+    for raw_path in raw_paths {
+        let resolved =
+            crate::platform::path_policy::resolve_artifact_path_in_workspace(&raw_path, workspace);
+        // PatchResult.touched_files also reports deletions. They are successful
+        // mutations, but no file remains to append to the scheduled artifact list.
+        if patch_tool && !Path::new(&resolved).exists() {
+            continue;
+        }
+        let path = crate::platform::path_policy::validate_user_path(&resolved)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        if !path.is_file() {
+            anyhow::bail!("tool artifact is not an existing file: {}", path.display());
+        }
+        store.append_scheduled_artifact_path(session_id, path.clone())?;
+        persisted.push(path);
+    }
+    Ok(persisted.into_iter().next())
+}
+
+fn is_patch_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
+    (name.eq_ignore_ascii_case("File")
+        && input.get("action").and_then(serde_json::Value::as_str) == Some("patch"))
+        || name == "apply_patch"
+        || name.ends_with("_apply_patch")
+}
+
+fn push_artifact_path(paths: &mut Vec<String>, path: &str) {
+    let path = path.trim();
+    if !path.is_empty() && !paths.iter().any(|existing| existing == path) {
+        paths.push(path.to_string());
+    }
+}
+
+fn artifact_paths_from_patch(patch: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        if let Some(path) = ["*** Add File:", "*** Update File:", "*** Delete File:"]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+        {
+            push_artifact_path(&mut paths, path);
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            let path = path.strip_prefix("b/").unwrap_or(path);
+            if path != "/dev/null" {
+                push_artifact_path(&mut paths, path);
+            }
+        }
+    }
+    paths
+}
+
+fn artifact_paths_from_changes(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(artifact_paths_from_value)
+        .collect()
+}
+
+fn artifact_paths_from_tool_output(output: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+        return Vec::new();
     };
-    let resolved =
-        crate::platform::path_policy::resolve_artifact_path_in_workspace(&raw_path, workspace);
-    let path = crate::platform::path_policy::validate_user_path(&resolved)
-        .map_err(|error| anyhow::anyhow!(error))?;
-    if !path.is_file() {
-        anyhow::bail!("tool artifact is not an existing file: {}", path.display());
-    }
-    store.append_scheduled_artifact_path(session_id, path.clone())?;
-    Ok(Some(path))
-}
-
-fn is_file_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
-    if name.eq_ignore_ascii_case("File") {
-        return input
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|action| matches!(action, "write" | "edit"));
-    }
-    ["write_file", "edit_file"]
-        .iter()
-        .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
-}
-
-fn artifact_path_from_tool_output(output: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(output).ok()?;
     let payload = value
         .get("content")
         .and_then(serde_json::Value::as_array)
@@ -95,16 +139,45 @@ fn artifact_path_from_tool_output(output: &str) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
         .unwrap_or(value);
-    artifact_path_from_value(&payload)
+    artifact_paths_from_value(&payload)
 }
 
-fn artifact_path_from_value(value: &serde_json::Value) -> Option<String> {
-    ["abs_path", "path", "file_path", "local_path", "filename"]
-        .iter()
-        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
+fn artifact_paths_from_value(value: &serde_json::Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    for key in ["abs_path", "path", "file_path", "local_path", "filename"] {
+        if let Some(path) = value.get(key).and_then(serde_json::Value::as_str) {
+            push_artifact_path(&mut paths, path);
+        }
+    }
+    if let Some(touched) = value
+        .get("touched_files")
+        .and_then(serde_json::Value::as_array)
+    {
+        for path in touched.iter().filter_map(serde_json::Value::as_str) {
+            push_artifact_path(&mut paths, path);
+        }
+    }
+    paths.extend(artifact_paths_from_changes(value, "replace"));
+    paths.extend(artifact_paths_from_changes(value, "changes"));
+    if let Some(patch) = value.get("patch").and_then(serde_json::Value::as_str) {
+        paths.extend(artifact_paths_from_patch(patch));
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn is_file_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
+    if name.eq_ignore_ascii_case("File") {
+        return input
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| matches!(action, "write" | "edit" | "patch"));
+    } else {
+        ["write_file", "edit_file", "apply_patch"]
+            .iter()
+            .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
+    }
 }
 
 /// Lifecycle signal emitted by the single authoritative engine event consumer.

@@ -2298,8 +2298,7 @@
     for (var i = state.chatItems.length - 1; i >= 0; i--) {
       var it = state.chatItems[i];
       if (it.type === "tool" && fileMutationAction(it.name, it.args)) {
-        var ap = extractArtifactPath(it.args);
-        if (ap && basename(ap) === bn) return false;
+        if (extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) return false;
       }
       if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;
@@ -3271,13 +3270,12 @@
         var db = dc[dj];
         var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
         if (dbMutation) {
-          var dap = extractArtifactPath(db.input);
-          if (dap) {
+          extractArtifactPaths(db.input).forEach(function (dap) {
             lastDirtyArtifactId[dap] = db.id;
             // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
             // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
             if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          }
+          });
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
           var pres = resultById[db.id];
@@ -3427,9 +3425,9 @@
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
           if (fileMutationAction(b.name, b.input)) {
             var wres = resultById[b.id];
-            var wap = extractArtifactPath(b.input);
-            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+            extractArtifactPaths(b.input).forEach(function (wap) {
+              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
@@ -3440,7 +3438,7 @@
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
-            }
+            });
           }
         }
       }
@@ -3809,13 +3807,34 @@
       }
     } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
   }
-  // File.write / File.edit 的 args 里提取产物路径
-  function extractArtifactPath(args) {
-    if (!args) return null;
+  function pushArtifactPath(paths, path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    path = path.trim();
+    if (paths.indexOf(path) < 0) paths.push(path);
+  }
+  function extractArtifactPaths(args) {
+    if (!args) return [];
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (e) { return null; }
+      try { args = JSON.parse(args); } catch (e) { return []; }
     }
-    return args.path || args.file_path || args.filename || null;
+    var paths = [];
+    pushArtifactPath(paths, args.path || args.file_path || args.filename);
+    [args.replace, args.changes].forEach(function (changes) {
+      if (!Array.isArray(changes)) return;
+      changes.forEach(function (change) {
+        if (change && typeof change === "object") pushArtifactPath(paths, change.path || change.file_path || change.filename);
+      });
+    });
+    String(args.patch || "").split(/\r?\n/).forEach(function (line) {
+      var custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
+      if (custom) { pushArtifactPath(paths, custom[1]); return; }
+      var unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
+      if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
+    });
+    return paths;
+  }
+  function extractArtifactPath(args) {
+    return extractArtifactPaths(args)[0] || null;
   }
 
   function fileMutationAction(name, args) {
@@ -3824,7 +3843,7 @@
     }
     if (String(name || "").toLowerCase() === "file") {
       var action = String(args && args.action || "").toLowerCase();
-      return action === "write" || action === "edit" ? action : null;
+      return action === "write" || action === "edit" || action === "patch" ? action : null;
     }
     if (name === "write_file") return "write";
     if (name === "edit_file") return "edit";
@@ -5104,13 +5123,12 @@
       }
     }
 
-    // File.write/File.edit 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
     var mutationAction = meta && fileMutationAction(meta.name, meta.args);
     if (p.success && mutationAction) {
-      var ap = extractArtifactPath(meta.args);
-      if (ap) {
+      extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
         if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
@@ -5122,7 +5140,7 @@
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
-      }
+      });
     }
 
     // 兜底：Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡，给两条出路

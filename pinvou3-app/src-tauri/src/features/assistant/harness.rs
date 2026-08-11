@@ -127,6 +127,8 @@ pub enum HarnessAction {
         allowed_tools: Vec<String>,
         /// 角色在 registry/动态差事中声明的具体产物文件。
         write_files: Vec<PathBuf>,
+        /// 本次调度已绑定的项目根目录；结构化输出不得再从 workspace 猜测。
+        project_dir: PathBuf,
         max_steps: Option<u32>,
         /// [pinvou3-fork] 结构化产出 schema(registry.output_schema)。`Some` 时
         /// SubAgent 会被强制走 submit_output 提交(见 docs/SDAN/12-structured-output.md)。
@@ -167,6 +169,7 @@ pub struct SubAgentTask {
     pub prompt: String,
     pub allowed_tools: Vec<String>,
     pub write_files: Vec<PathBuf>,
+    pub project_dir: PathBuf,
     pub max_steps: Option<u32>,
     pub output_schema: Option<serde_json::Value>,
     pub expects_file_output: bool,
@@ -1835,7 +1838,7 @@ fn read_role_registry_tools(
 /// Step C 的 SubAgent prompt：[PRIORITY OVERRIDE] + 文件铁律 + registry role prompt + 附加段。
 /// [资源模块·§0 寻址原则] 构造 Task 信封的 `[STATIC]` 段:按角色 reads_static 从
 /// static_assets.json 筛出它能读的静态资产,给出**地址**(绝对路径)+ inline:summary 的
-/// 附一段摘要。语义=Router 报文带地址,SubAgent 凭地址 read_file(见 docs/SDAN/08a)。
+/// 附一段摘要。语义=Router 报文带地址,SubAgent 凭地址调用 File.read(见 docs/SDAN/08a)。
 /// 读不到 static_assets.json / 角色无 reads_static → 返回空串(不影响)。
 ///
 /// [per_page] `page_layout=Some("L01")` 时把 reads 裁到【该页必需的最小集】:只留
@@ -1869,7 +1872,7 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
     let no_read_keys: std::collections::HashSet<&str> = if let Some(layout) = page_layout {
         let want_tpl = format!("tpl_{layout}"); // "tpl_L01"
         reads.retain(|k| k == "base_css" || k == "image_slot_protocol" || k == &want_tpl);
-        // base_css 只用于 @import 路径引用，明示别 read_file 它（避免 10KB 进上下文）。
+        // base_css 只用于 @import 路径引用，明示别 File.read 它（避免 10KB 进上下文）。
         ["base_css"].into_iter().collect()
     } else {
         std::collections::HashSet::new()
@@ -1899,11 +1902,11 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
             continue;
         };
         let abs = wf.join(rel);
-        // [per_page] 标记为"勿读"的资产(如 base_css)：只给 @import 路径，明示别 read_file，
+        // [per_page] 标记为"勿读"的资产(如 base_css)：只给 @import 路径，明示别 File.read，
         // 防止大文件进 step2 上下文。
         if no_read_keys.contains(key.as_str()) {
             lines.push(format!(
-                "- `{key}`(**只在 HTML 里 `@import` 引用此路径，切勿 read_file 读它的内容**): {}",
+                "- `{key}`(**只在 HTML 里 `@import` 引用此路径，切勿用 `File(action=\"read\")` 读它的内容**): {}",
                 abs.display()
             ));
             continue;
@@ -1915,7 +1918,7 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
                 .map(|c| c.chars().take(1200).collect::<String>())
                 .unwrap_or_default();
             lines.push(format!(
-                "- `{key}`(只读规范): {}\n  摘要(完整版 read_file 上面路径):\n  {}",
+                "- `{key}`(只读规范): {}\n  摘要(完整版用 `File(action=\"read\")` 读取上面路径):\n  {}",
                 abs.display(),
                 summary.replace('\n', "\n  ")
             ));
@@ -1927,7 +1930,7 @@ fn build_static_section(role_id: &str, page_layout: Option<&str>) -> String {
         return String::new();
     }
     format!(
-        "\n\n## [STATIC] 可读静态资源(只读,用 read_file 读,别想着生成它们)\n\n{}\n",
+        "\n\n## [STATIC] 可读静态资源(只读,用 `File(action=\"read\")` 读,别想着生成它们)\n\n{}\n",
         lines.join("\n")
     )
 }
@@ -1957,7 +1960,7 @@ fn render_output_section(outputs: Vec<String>, project: &Path) -> String {
         return String::new();
     }
     format!(
-        "\n\n## [产物地址] 你必须用 write_file 把产物写到以下绝对路径(只写这里,别写别处;不写文件 = 任务未完成)\n\n{}\n",
+        "\n\n## [产物地址] 你必须用 `File(action=\"write\")` 把产物写到以下绝对路径(只写这里,别写别处;不写文件 = 任务未完成)\n\n{}\n",
         lines.join("\n")
     )
 }
@@ -2430,7 +2433,7 @@ pub fn respawn_page(workspace: &Path, base_role: &str, page: u32) -> Option<SubA
     };
     // 重试提示(生图角色的专型提示随 legacy-ppt-workflow 工具 2026-06-11 存档下线,只剩通用版)
     let retry_note =
-        "\n\n## ⚠️重试提醒\n上一次本页未写成(很可能读文件太多或超时)。请【直接】把产物写出来,尽快调 write_file,**不要反复 read_file**。";
+        "\n\n## ⚠️重试提醒\n上一次本页未写成(很可能读文件太多或超时)。请【直接】把产物写出来,尽快调 `File(action=\"write\")`,**不要反复调 `File(action=\"read\")`**。";
     let addendum = format!("{}{}", t.addendum, retry_note);
     let prompt = build_spawn_prompt(&project, &scenario, base_role, &addendum, layout_opt).ok()?;
     let write_files = task_output_files(&project, base_role, &t);
@@ -2441,6 +2444,7 @@ pub fn respawn_page(workspace: &Path, base_role: &str, page: u32) -> Option<SubA
         prompt,
         allowed_tools,
         write_files,
+        project_dir: project,
         max_steps,
         output_schema,
         expects_file_output,
@@ -2498,6 +2502,7 @@ fn spawn_agent_or_error(
             prompt,
             allowed_tools,
             write_files,
+            project_dir: project.to_path_buf(),
             max_steps,
             output_schema,
             expects_file_output,
@@ -2599,6 +2604,7 @@ fn build_batch_action(
             prompt,
             allowed_tools: allowed_tools.clone(),
             write_files: task_output_files(project, base_role, t),
+            project_dir: project.to_path_buf(),
             max_steps,
             output_schema: output_schema.clone(),
             expects_file_output,

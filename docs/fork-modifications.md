@@ -4,25 +4,26 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-10 · v0.9.5 公开维护分支）
+## 0. 当前状态（2026-08-11 · v0.9.5 PR 候选）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `3782a78d4e11d1fb65042cf9c82231b9d644c20a` |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r3` 均指向当前 head；`r1`/`r2` 保留为父仓最新主线兼容补齐过程中的不可变候选 |
+| 依赖 PR 候选 | `Pinvou/CodeWhale#9`，分支 `fix/pr231-t5-path-safety`，head `1da1bccd59001bc35d1accd9bb6a3f26093c36bf`；维护分支和标签尚未切换 |
+| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r3` 均指向公开维护分支 head；`r1`/`r2` 保留为父仓最新主线兼容补齐过程中的不可变候选 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个线性长期主题 |
-| drift | `45 files changed, +1743/-263`；净增约 1480 行 |
-| 守护 | 18 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、6 个线性提交 |
+| drift | `45 files changed, +1991/-265`；净增约 1726 行 |
+| 守护 | 21 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
 ### 软上限评估
 
-总变更行略超 1500 行软线，但净增量仍在软线内。主要保留量：
+总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：
 
 - T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
-- T5 `+664/-43`：三省六部角色派发、结构化/文件产出验证、取消和真实终态必须位于 SubAgent 生命周期内。
+- T5 `+912/-45`：三省六部角色派发、结构化/文件产出验证、显式项目根、路径逃逸阻断、取消和真实终态必须位于 SubAgent 生命周期内。
 - T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
 
 本轮不为压数字复制底座状态机到 app。后续减量顺序：T1 通用 embedding route API、T2 通用命令安全、T4 通用 Automation 生命周期；T3/T5 的 Pinvou 产品语义继续留 fork。
@@ -85,20 +86,21 @@
 - **边界**：app 负责展示、通知和业务工作区；底座负责调度与耐久运行事实。
 - **守护**：`forkguard_scheduler_skips_offline_misfires_without_backfill`、`forkguard_scheduler_does_not_overlap_active_automation_run`、`forkguard_conversation_key_and_created_thread_survive_worker_boundary`、`forkguard_accepts_pinvou_v4_tasks_but_rejects_unknown_newer_schema`。
 
-### T5：三省六部编排与完成闸
+### T5：三省六部编排、完成闸与结构化产出安全
 
-- **commit**：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`
-- **规模**：16 文件，`+664/-43`
+- **commits**：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`、`1da1bccd59001bc35d1accd9bb6a3f26093c36bf`
+- **规模**：16 文件，`+912/-45`
 - **核心文件**：`core/{engine,events,ops}.rs`、`tools/subagent/{mod,tests}.rs`、`runtime_threads.rs` 及 SubAgent TUI 事件适配。
 - **内容**：
   - 只为三省六部角色派发补充 role、显式工具范围、最大步数、output schema 和文件产出要求。
   - 将角色登记的具体产物文件在启动时注册为 v0.9.5 有界 write claim；拒绝工作区外路径，不放宽为整个工作区写权限。
   - `Custom` 角色的旧 action allowlist 映射到 v0.9.5 canonical action 工具面，不依赖 `load_skill` 才能运行。
   - 合成结构化提交入口，递归校验有限 JSON schema，只允许声明的安全相对路径落盘。
+  - 结构化产出必须使用宿主显式选择的工作区内项目根，并与精确写入声明逐项匹配；拒绝路径穿越、符号链接组件和信任模式下的链接逃逸。
   - 文件产出型角色在真实文件未落盘时不能完成；失败信封保留最后工具错误供宿主展示。
   - 批量取消 live SubAgent，并通过携带 role/failed/result 的 `AgentComplete` 收敛真实终态。
 - **边界**：不包含通用宿主配置、工具注入、路由、Automation、OAuth 或普通 Fleet 产品功能。
-- **守护**：`forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill`、`forkguard_structured_output_validates_nested_required_fields`、`forkguard_structured_output_persists_only_declared_safe_paths`、`forkguard_host_write_files_become_bounded_claims`，以及父仓三省六部协议测试。
+- **守护**：`forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill`、`forkguard_structured_output_validates_nested_required_fields`、`forkguard_structured_output_persists_only_declared_safe_paths`、`forkguard_structured_output_rejects_symlink_components`、`forkguard_structured_output_root_is_explicit_and_claim_bounded`、`forkguard_host_write_claim_rejects_symlink_even_in_trust_mode`、`forkguard_host_write_files_become_bounded_claims`，以及父仓三省六部协议测试。
 
 ## 2. 父仓能力与 fork 的分界
 
@@ -136,7 +138,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-18 passed / 0 failed
+21 passed / 0 failed
 ```
 
 父仓当前已通过：
@@ -145,9 +147,9 @@ cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
 cargo fmt --all -- --check
 cargo check --locked
 cargo test --locked --lib -- --test-threads=1
-1026 passed / 0 failed / 12 ignored
+1076 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
-CodeWhale 18 passed；pinvou3-app 16 passed
+CodeWhale 21 passed；pinvou3-app 16 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui

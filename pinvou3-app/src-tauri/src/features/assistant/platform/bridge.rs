@@ -433,8 +433,8 @@ impl Pinvou3Bridge {
     }
 
     /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
-    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回,
-    /// 与历史"plain 原样返回"逐字节等价;有差量则逐项并入 disallowed。
+    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回；
+    /// 有差量则逐项并入 disallowed。
     /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
     ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
@@ -466,8 +466,7 @@ impl Pinvou3Bridge {
             }
         }
         // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
-        // （scope 来自档案 connectors.scope；plain 差量为空时以下全为空操作，
-        // 与历史"plain 原样返回"逐字节等价）。
+        // （scope 来自档案 connectors.scope；plain 不执行连接器 scope 替换）。
         if resolved.connector_scope != marketplace::ConnectorScope::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
             let scoped_connector =
@@ -2303,7 +2302,7 @@ mod tests {
         let plain = vec!["kb_search".to_string()];
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            plain
+            [plain.clone(), vec!["Git".to_string()]].concat()
         );
 
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
@@ -2332,7 +2331,7 @@ mod tests {
         }
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            plain
+            [plain.clone(), vec!["Git".to_string()]].concat()
         );
     }
 
@@ -2406,9 +2405,9 @@ mod tests {
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
+        // 普通会话保留 plain scope 禁用集，并隐藏代码专用 Git。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(shaped, tools);
+        assert_eq!(shaped, [tools, vec!["Git".to_string()]].concat());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3575,18 +3574,16 @@ mod tests {
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// D-2 行为不变断言:整形按策略数据驱动。plain 会话逐字节原样返回(不移除、
-    /// 不追加);code 会话按策略追加两个隐藏工具且幂等不重复(连接器 scope 切换
+    /// D-2 行为断言:整形按策略数据驱动。plain 会话追加代码专用 Git；
+    /// code 会话按策略追加隐藏工具且幂等不重复(连接器 scope 切换
     /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
     #[test]
     fn shape_disallowed_tools_follows_session_policy() {
         let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
         let mut bridge = fixture_bridge();
-        // 未注入 predicate → plain:原样返回。
-        assert_eq!(
-            bridge.shape_disallowed_tools("sess-plain", tools.clone()),
-            tools
-        );
+        // 未注入 predicate → plain:保留原禁用项，并隐藏代码专用 Git。
+        let plain = bridge.shape_disallowed_tools("sess-plain", tools.clone());
+        assert_eq!(plain, [tools.clone(), vec!["Git".to_string()]].concat());
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
         }));

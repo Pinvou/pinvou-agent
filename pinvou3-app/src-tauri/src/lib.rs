@@ -998,6 +998,7 @@ mod tool_allowlist_contract {
         for core in [
             "Bash",
             "File",
+            "Git",
             "Web",
             "agent",
             "load_skill",
@@ -1013,7 +1014,6 @@ mod tool_allowlist_contract {
         }
 
         for excluded in [
-            "Git",
             "Run",
             "tasks",
             "automation",

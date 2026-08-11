@@ -652,7 +652,7 @@ fn is_delivery_tool(name: &str, input: &Value) -> bool {
             && input
                 .get("action")
                 .and_then(Value::as_str)
-                .is_some_and(|action| matches!(action, "write" | "edit")))
+                .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
         || name == "present_artifact"
         || name.ends_with("present_artifact")
 }
@@ -4671,6 +4671,10 @@ mod tests {
 
     #[test]
     fn delivery_tool_summary_keeps_artifact_path_after_long_content() {
+        assert!(is_delivery_tool(
+            "File",
+            &json!({"action": "patch", "path": "italy_travel_guide.md"})
+        ));
         let summary = summarize_tool_start(
             "write_file",
             &json!({

@@ -12,7 +12,7 @@ import {
 } from '../multiagent/subagent-conversation.mjs';
 import { AppIcon } from '../personas/Personas.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, QUIET_TOOLS, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
+import { AcShieldCheck, AcSparkles, ArtifactCard, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, outBox, parseReceipt, toolBasename, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
   'exec_shell',
@@ -520,10 +520,20 @@ const ToolOutput = ({ item, t }) => {
         if (v && (v.stdout != null || v.exit_code != null || v.status)) return <ShellView data={v} t={t} />;
         return <ShellTextView cmd={item.args && item.args.command} text={out} />;
       }
-      // File.write / File.edit 走 Rust similar crate 输出 unified diff,走 DiffView。
-      // 注意:apply_patch 后端返回 JSON(apply_patch.rs::execute 返回 ToolResult::json),
-      // looksDiff 永远 false,所以这里不把 apply_patch 加进路由 —— 加了也只是 dead code
-      // (PR #195 M2)。若未来后端给 apply_patch 输出 unified diff,再把它加回来。
+      // File.write / File.edit 走 unified diff；File.patch 返回结构化 PatchResult。
+      else if (item.name === 'File' && item.args?.action === 'patch') {
+        const result = tryParseJson(out);
+        if (result && typeof result === 'object') {
+          const files = Array.isArray(result.touched_files) ? result.touched_files : [];
+          return <div className="space-y-1 text-xs">
+            {result.message ? <div>{String(result.message)}</div> : null}
+            {files.map(path => <div key={path} className="font-mono break-all">{path}</div>)}
+            {(result.files_applied != null || result.hunks_applied != null) ? <div className="text-[#757575] dark:text-[#8E8E8E]">
+              files {result.files_applied ?? files.length} · hunks {result.hunks_applied ?? 0}
+            </div> : null}
+          </div>;
+        }
+      }
       else if ((item.name === 'File' && ['write', 'edit'].includes(item.args?.action)) || item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
       else if (TODO_TOOLS.indexOf(item.name) >= 0) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
       return <OutputPre text={out} />;
@@ -554,7 +564,7 @@ const ToolOutput = ({ item, t }) => {
       const displayExpanded = hasLiveShellOutput || expanded;
       const isDone = item.state === 'done';
       const isFailed = item.state === 'failed';
-      const quiet = QUIET_TOOLS.has(item.name);
+      const quiet = isQuietTool(item);
       const summary = toolSummary(item.name, item.args, t);
 
       // 状态色:按 isRunning/isDone/isFailed 三态,各自给出 light base + dark: token。

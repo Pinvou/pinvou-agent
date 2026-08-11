@@ -115,15 +115,26 @@ function searchToolName(tool) {
   return String(tool && (tool.name || tool.title) || '').trim().toLowerCase();
 }
 
+function canonicalToolAction(tool) {
+  const input = tool && tool.rawInput && typeof tool.rawInput === 'object'
+    ? tool.rawInput
+    : tool && tool.args && typeof tool.args === 'object'
+      ? tool.args
+      : {};
+  return String(input.action || '').trim().toLowerCase();
+}
+
 export function isSearchTool(tool) {
   const name = searchToolName(tool);
   return String(tool && tool.kind || '').toLowerCase() === 'search'
+    || (name === 'web' && canonicalToolAction(tool) === 'search')
     || SEARCH_TOOL_NAMES.has(name);
 }
 
 export function isFetchTool(tool) {
   const name = searchToolName(tool);
   return String(tool && tool.kind || '').toLowerCase() === 'fetch'
+    || (name === 'web' && canonicalToolAction(tool) === 'fetch')
     || FETCH_TOOL_NAMES.has(name);
 }
 
@@ -141,7 +152,7 @@ function searchSourceLabel(name, rawOutput) {
   const source = sourceMatch && sourceMatch[1] ? sourceMatch[1].trim() : '';
   if (source) return source.toLowerCase() === 'bing' ? 'Bing' : source;
   if (name === 'mcp_iwencai_news_search') return '同花顺新闻';
-  if (name === 'web_search') return '网页搜索';
+  if (name === 'web_search' || name === 'web') return '网页搜索';
   return '搜索';
 }
 

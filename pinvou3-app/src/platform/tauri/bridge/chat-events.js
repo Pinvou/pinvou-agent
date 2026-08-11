@@ -42,7 +42,7 @@
     var artifactPathFromToolOutput = context.artifactPathFromToolOutput;
     var shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
     var presentArtifactAbsPath = context.presentArtifactAbsPath;
-    var extractArtifactPath = context.extractArtifactPath;
+    var extractArtifactPaths = context.extractArtifactPaths;
     var fileMutationAction = context.fileMutationAction;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
@@ -658,13 +658,12 @@
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
 
-    // File.write/File.edit 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit 多次,实时续会刷出一堆卡;且 edit
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
     var mutationAction = meta && fileMutationAction(meta.name, meta.args);
     if (p.success && mutationAction) {
-      var ap = extractArtifactPath(meta.args);
-      if (ap) {
+      extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
         if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
@@ -676,7 +675,7 @@
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
-      }
+      });
     }
 
     // 兜底：Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡，给两条出路

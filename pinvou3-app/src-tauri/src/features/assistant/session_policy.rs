@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_policy_uses_plain_scope_and_hides_nothing() {
+    fn plain_policy_uses_plain_scope_and_hides_git() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
         assert!(policy.multi_agent_mode_available());
@@ -169,13 +169,13 @@ mod tests {
     }
 
     /// 能力档案统一解析（U-2 档案即数据）：resolve disallowed_tools 通道差量
-    /// 来自档案——plain 零差量；code 按档案 extra_hidden 声明（v1：产物卡）。
+    /// 来自档案——plain 隐藏代码专用 Git；code 按档案 extra_hidden 声明（v1：产物卡）。
     #[test]
     fn resolve_loads_profile_per_mode() {
         let plain = SessionPolicy::for_mode(SessionMode::Plain).resolve();
         assert_eq!(plain.connector_scope, ConnectorScope::Plain);
         assert!(plain.extra_hidden_tools.is_empty());
-        assert!(plain.tool_exclude.is_empty());
+        assert_eq!(plain.tool_exclude, &["Git".to_string()]);
 
         let code = SessionPolicy::for_mode(SessionMode::Code).resolve();
         assert_eq!(code.connector_scope, ConnectorScope::Code);

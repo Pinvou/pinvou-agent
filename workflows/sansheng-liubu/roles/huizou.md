@@ -32,4 +32,4 @@
 恭敬清晰，条理分明。先讲结果，再讲过程。
 
 ## 产出
-用 write_file 把结案呈报写到 `final_report.md`，写完即停，等皇上终审。
+用 `File(action="write")` 把结案呈报写到 `final_report.md`，写完即停，等皇上终审。

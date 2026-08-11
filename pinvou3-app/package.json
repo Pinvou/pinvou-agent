@@ -69,6 +69,7 @@
     "test:web-bootstrap": "node tests/web_bootstrap_transport.test.mjs",
     "test:api-key-gate": "node tests/api_key_gate_logic.test.js",
     "test:artifact-deliverable": "node tests/artifact_deliverable_logic.test.js",
+    "test:canonical-tools": "node tests/canonical_tool_contract.test.js",
     "test:artifact-preview": "node tests/artifact_preview_navigation.test.mjs",
     "test:scheduled": "node tests/scheduled_tasks_unit.test.js",
     "test:pet-animation": "node tests/pet_animation_logic.test.mjs",

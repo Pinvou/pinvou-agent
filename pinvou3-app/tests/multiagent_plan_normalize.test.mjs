@@ -1064,7 +1064,7 @@ test('transcript 适配：文件工具归 file_change，终态后不留转圈条
   assert.equal(turn.error, 'boom');
 });
 
-test('transcript 适配：v0.9.5 canonical File write/edit 归 file_change，read 不算', () => {
+test('transcript 适配：v0.9.5 canonical File write/edit/patch 归 file_change，read 不算', () => {
   const { turns } = projectSubagentTranscript({
     messages: [
       { role: 'user', content: [{ type: 'text', text: '写文件' }] },
@@ -1074,6 +1074,12 @@ test('transcript 适配：v0.9.5 canonical File write/edit 归 file_change，rea
           { type: 'tool_use', id: 'tu-1', name: 'File', input: { action: 'write', path: 'notes/a.md' } },
           { type: 'tool_use', id: 'tu-2', name: 'File', input: { action: 'read', path: 'notes/a.md' } },
           { type: 'tool_use', id: 'tu-3', name: 'Bash', input: { command: 'ls' } },
+          {
+            type: 'tool_use', id: 'tu-4', name: 'File', input: {
+              action: 'patch',
+              patch: '*** Update File: notes/a.md\n*** Add File: notes/b.md',
+            },
+          },
         ],
       },
     ],
@@ -1081,8 +1087,12 @@ test('transcript 适配：v0.9.5 canonical File write/edit 归 file_change，rea
   });
   const [turn] = turns;
   const writes = turn.items.filter((item) => item.type === 'file_change');
-  assert.equal(writes.length, 1, '只有 File write 归 file_change，read 不算');
+  assert.equal(writes.length, 2, 'File write/patch 归 file_change，read 不算');
   assert.equal(writes[0].tool.locations[0].path, 'notes/a.md');
+  assert.deepEqual(
+    writes[1].tool.locations.map(location => location.path),
+    ['notes/a.md', 'notes/b.md'],
+  );
   const command = turn.items.find((item) => item.type === 'command_execution');
   assert.equal(command.tool.kind, 'execute');
   assert.equal(command.tool.name, 'Bash');

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: five long-lived Pinvou topics.
+# CodeWhale v0.9.5 clean re-fork guard: five long-lived Pinvou topics in six commits.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-EXPECTED_HEAD="3782a78d4e11d1fb65042cf9c82231b9d644c20a"
-EXPECTED_TOPICS=5
+EXPECTED_HEAD="1da1bccd59001bc35d1accd9bb6a3f26093c36bf"
+EXPECTED_COMMITS=6
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -17,7 +17,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 基线与五主题拓扑 ──"
+bold "── 第 0 层：v0.9.5 基线与五主题六提交拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记候选 $EXPECTED_HEAD"
@@ -33,11 +33,11 @@ else
   fail=1
 fi
 
-topic_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$topic_count" == "$EXPECTED_TOPICS" ]]; then
-  green "  ✓ v0.9.5 之上恰有 $EXPECTED_TOPICS 个长期主题 commit"
+commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
+if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
+  green "  ✓ v0.9.5 之上五个长期主题共 $EXPECTED_COMMITS 个线性 commit"
 else
-  red "  ✗ v0.9.5 之上有 ${topic_count:-<unreadable>} 个 commit，登记为 $EXPECTED_TOPICS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，登记为 $EXPECTED_COMMITS"
   fail=1
 fi
 
@@ -76,6 +76,9 @@ fingerprints=(
   "T5|旧 action allowlist 映射 canonical  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill"
   "T5|结构化 schema 递归校验              |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_validates_nested_required_fields"
   "T5|结构化产出只写声明安全路径          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
+  "T5|结构化产出根由宿主显式绑定          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_output_root_is_explicit_and_claim_bounded"
+  "T5|结构化产出拒绝符号链接组件          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_rejects_symlink_components"
+  "T5|信任模式仍拒绝写入链接逃逸          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_write_claim_rejects_symlink_even_in_trust_mode"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("

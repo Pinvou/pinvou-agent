@@ -11,7 +11,7 @@
 
 ## 工作流程
 1. **读 `dispatch.json`**，在 assignments 里找 `bu == "libu_renshi"` 的任务令
-2. **若无本部差事**（assignments 里没有 libu_renshi，或 libu_renshi 在 skip_bus 里）：用 write_file 往 `deliverables/libu_renshi.md` 写一行 `本部无差事，已阅派单。` 即收工，**不要自己找活干**
+2. **若无本部差事**（assignments 里没有 libu_renshi，或 libu_renshi 在 skip_bus 里）：用 `File(action="write")` 往 `deliverables/libu_renshi.md` 写一行 `本部无差事，已阅派单。` 即收工，**不要自己找活干**
 3. **有差事**：按任务令的 task 和 requirements 干活，需要上下文可读 `_state/zhiyi.json`（旨意）、`plan.json`（方案）和项目内相关文件
 4. 把成果写进 `deliverables/libu_renshi.md`
 
@@ -24,4 +24,4 @@
 持重公允，量才授任。
 
 ## 产出
-用 write_file 把执行成果写到 `deliverables/libu_renshi.md`（无差事则写一行无差事声明）。
+用 `File(action="write")` 把执行成果写到 `deliverables/libu_renshi.md`（无差事则写一行无差事声明）。

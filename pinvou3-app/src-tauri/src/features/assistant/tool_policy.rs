@@ -16,6 +16,7 @@
 pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "Bash",
     "File",
+    "Git",
     "Web",
     "agent",
     "load_skill",

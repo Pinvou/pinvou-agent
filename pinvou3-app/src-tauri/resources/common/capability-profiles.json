@@ -2,7 +2,7 @@
   "profiles": [
     {
       "mode": "plain",
-      "tools": { "exclude": [], "extra_hidden": [] },
+      "tools": { "exclude": ["Git"], "extra_hidden": [] },
       "connectors": { "scope": "plain" }
     },
     {

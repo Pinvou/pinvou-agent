@@ -1516,6 +1516,7 @@ pub(crate) async fn apply_harness_action(
             prompt,
             allowed_tools,
             write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -1544,6 +1545,7 @@ pub(crate) async fn apply_harness_action(
                 write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             if let Err(e) = handle.send(op).await {
@@ -1587,6 +1589,7 @@ pub(crate) async fn apply_harness_action(
                     write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 if let Err(e) = handle.send(op).await {
@@ -2384,6 +2387,7 @@ fn spawn_event_forwarder(
                                                 write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
+                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
@@ -2455,6 +2459,7 @@ fn spawn_event_forwarder(
                                                 write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
+                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
@@ -3893,6 +3898,25 @@ mod scheduled_turn_tests {
             std::fs::canonicalize(&report).expect("canonical report")
         );
 
+        let appendix = workspace.join("appendix.md");
+        std::fs::write(&appendix, "patched appendix").expect("patched artifact file");
+        persist_successful_tool_artifact(
+            &store,
+            &scheduled.metadata.id,
+            &workspace,
+            "File",
+            &serde_json::json!({
+                "action": "patch",
+                "patch": "*** Begin Patch\n*** Update File: report.md\n*** Add File: appendix.md\n*** Delete File: deleted.md\n*** End Patch"
+            }),
+            &serde_json::json!({
+                "files_applied": 2,
+                "touched_files": ["report.md", "appendix.md", "deleted.md"]
+            })
+            .to_string(),
+        )
+        .expect("persist canonical patch artifacts");
+
         drop(store);
         let reopened = crate::features::sessions::SessionStore::boot().expect("reopen store");
         let paths: Vec<_> = reopened
@@ -3902,7 +3926,13 @@ mod scheduled_turn_tests {
             .into_iter()
             .map(|artifact| artifact.storage_path)
             .collect();
-        assert_eq!(paths, vec![persisted]);
+        assert_eq!(
+            paths,
+            vec![
+                persisted,
+                std::fs::canonicalize(&appendix).expect("canonical appendix")
+            ]
+        );
 
         match previous {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),
