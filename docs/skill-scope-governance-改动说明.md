@@ -74,7 +74,7 @@ skill 能力的按会话隔离此前有三条结构性缺陷（方案 §0 的 P1
 ### S-7：项目级 skills（P3 兜底）
 
 - 验证结论：fork #41 确认砍断 workspace 并集扫描（`skills_directories_with_home_and_mode` 完全忽略 workspace），且 `skills_scan_codewhale_only` 旗标对收窄后两 mode 行为一致——无 config 可恢复 → 走方案 §2.4 兜底：**项目技能经同一物化通道拷入组合目录**。
-- 来源与优先级：`.agents/skills` > `skills` > `.opencode/skills` > `.claude/skills` > `.cursor/skills` > `.codewhale/skills`（底座上游 #432 顺序），排在用户/市场来源之前（workspace 目录优先语义）。
+- 来源与优先级：`.agents/skills` > `.pinvou/skills` > `skills` > `.opencode/skills` > `.claude/skills` > `.cursor/skills` > `.codewhale/skills`（底座上游 #432 顺序，`.pinvou/skills` 为 pinvou3 自有约定插在 `.agents/skills` 之后），排在用户/市场来源之前（workspace 目录优先语义）。
 - **策略开关默认关**（`project_skills_enabled`，持久于 disabled_skills.json）：项目内文本是 prompt-injection 面，开启路径有警告文案。仅 code scope 生效；plain 不受影响。
 - 物化路径：`enabled_skills_for(scope, project_workspace)`——EnginePool spawn/事件重写/发送自愈三时机都从 `session_roots(session_id).execution` 取项目根传入（绑项目 code 会话 = 项目目录）。
 
