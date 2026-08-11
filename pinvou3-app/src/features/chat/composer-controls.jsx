@@ -194,7 +194,7 @@ const ComposerKbSelector = ({
 };
 
 // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
-// (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
+// (底座 ReadOnly+只读工具集),调 todo_write 出方案卡决策。切换逻辑搬自旧 ModeHeader。
 const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSwitch }) => {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
