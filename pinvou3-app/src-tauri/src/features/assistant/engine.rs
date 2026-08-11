@@ -417,6 +417,15 @@ impl TurnLifecycle {
         }
     }
 
+    /// 当前活动轮是否已提交（`SendMessage` 已入队 / `TurnStarted` 已抵达）。
+    /// 供 cancel 阶段二在 generation mismatch（新轮已 reserve）时判断新轮是否
+    /// 已经真正开始：仅 reserve 未 send 时，engine 里仍是旧轮遗留的子代理，
+    /// 补发级联取消（CancelSubAgents）不会误杀新轮刚启动的子代理（reviewer 点 9）。
+    pub(crate) fn is_current_turn_submitted(&self) -> bool {
+        let state = self.state.lock();
+        state.active && state.submitted
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();

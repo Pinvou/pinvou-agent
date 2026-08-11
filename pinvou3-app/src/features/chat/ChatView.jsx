@@ -576,9 +576,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeSessionId = bs ? bs.activeSessionId : null;
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
-      // 双击会发第二个并发取消请求。cancelling 在 invoke 完成前禁用按钮,
-      // 配合后端 turn generation 守护,消除跨轮误取消窗口。
-      const [cancelling, setCancelling] = useState(false);
+      // 双击会发第二个并发取消请求。cancellingSessionId 在 invoke 完成前禁用
+      // **当前 session** 的按钮（按 session 记录而非全局布尔：ChatView 在切换
+      // active session 时不 remount，全局 single-flight 会阻断新会话的停止，
+      // 直到旧会话的 invoke 返回；绑定到 session 后取消 A 期间切到 B 仍可取消
+      // B，配合后端 turn generation 守护,消除跨轮误取消窗口）。
+      const [cancellingSessionId, setCancellingSessionId] = useState(null);
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
@@ -1287,13 +1290,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       async function handleCancel() {
-        // single-flight:已在取消中则忽略后续点击，避免并发 cancel_generation。
-        if (!bridge.available || cancelling) return;
-        setCancelling(true);
+        // single-flight:同一 session 已在取消中则忽略后续点击，避免并发
+        // cancel_generation。按 session 记录（而非全局布尔）——取消会话 A
+        // 期间切到仍在运行的会话 B，B 的停止按钮不因 A 的 invoke 未返回而
+        // 被禁用，B 的取消请求不被丢弃。
+        if (!bridge.available || cancellingSessionId === activeSessionId) return;
+        const cancellingSid = activeSessionId;
+        setCancellingSessionId(cancellingSid);
         try {
           await bridge.chat.cancelGeneration();
         } finally {
-          setCancelling(false);
+          // 只清当前 session 自己的取消标记；若期间已切到别的会话并开始了
+          // 新的取消（cancellingSessionId 已变），不要误清对方的标记。
+          setCancellingSessionId(prev => (prev === cancellingSid ? null : prev));
         }
       }
 
@@ -1924,7 +1933,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </button>
                 )}
                 {busy ? (
-                  <button onClick={handleCancel} disabled={cancelling}
+                  <button onClick={handleCancel} disabled={cancellingSessionId === activeSessionId}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
