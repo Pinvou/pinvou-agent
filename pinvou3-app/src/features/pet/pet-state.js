@@ -265,7 +265,8 @@ export function markSessionViewed(state, sid, { completed = false } = {}) {
 
 /**
  * 对齐一次带序号的权威活动快照(调用方需已滤掉定时任务会话)。
- * 旧快照直接丢弃；working:false 立即清除 running，不依赖宽限期或第二次快照。
+ * 旧快照直接丢弃；working:false 的 running 卡先进入宽限期待删标记，
+ * 事件流(chat:done / chat:delta 等)到达即取消，宽限期后仍无事件才真正删除。
  */
 export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
   if (!Array.isArray(sessions)) return false;
