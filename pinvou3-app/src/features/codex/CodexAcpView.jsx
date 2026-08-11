@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { can } from '../../shared/platform.js';
@@ -333,7 +333,7 @@ function StructuredValue({ label, value }) {
   );
 }
 
-function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
+function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
     : status === 'running'
@@ -341,6 +341,9 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
       : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
   return (
     <button type="button" onClick={onToggle}
+      data-testid="conversation-compact-item-toggle"
+      aria-expanded={controlsId ? Boolean(open) : undefined}
+      aria-controls={controlsId || undefined}
       className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
       <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       <span className="min-w-0 flex-1">
@@ -357,6 +360,7 @@ function CommandExecutionItem({ item, now, copy }) {
   const details = commandExecutionDetails(item.tool);
   const state = terminalStatus(item.status, details.exitCode);
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const countHint = details.commandCount > 1 ? ` · ${copy.segments(details.commandCount)}` : '';
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const outcome = state === 'running'
@@ -367,9 +371,10 @@ function CommandExecutionItem({ item, now, copy }) {
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={details.summary}
-        meta={`${outcome}${countHint}`} status={state} open={open} onToggle={() => setOpen(value => !value)} />
+        meta={`${outcome}${countHint}`} status={state} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <TerminalBlock label={copy.command} text={details.command} />
           {details.cwd && (
             <div className="mt-2 text-[10px] text-gray-400">
@@ -387,15 +392,17 @@ function GenericToolItem({ item, now, copy, cv }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
         meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
-        status={state} open={open} onToggle={() => setOpen(value => !value)} />
+        status={state} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {tool.locations && tool.locations.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {tool.locations.map((location, index) => (
@@ -421,16 +428,21 @@ function ToolGroup({ group, now, copy, cv }) {
     item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
   ) === 'failed');
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const hasDetails = items.length > 0;
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
+        data-testid="conversation-tool-group-summary"
+        aria-expanded={hasDetails ? Boolean(open) : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
         <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
+      {open && hasDetails && (
+        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
             ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
             : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} />)}
@@ -443,16 +455,21 @@ function ToolGroup({ group, now, copy, cv }) {
 function ReasoningItem({ item, now, copy }) {
   const running = item.status === 'in_progress';
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const hasDetails = Boolean(item.text);
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
+        data-testid="conversation-reasoning-toggle"
+        aria-expanded={hasDetails ? Boolean(open) : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
         <span>{running ? copy.thinking : copy.thoughtCompleted} · {duration}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && <div data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
+      {open && hasDetails && <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{item.text}</div>}
     </div>
   );
 }
@@ -896,7 +913,7 @@ function Turn({
               <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
             )}
             {(turn.completedAt || turn.error) && <>
-              <StatusBadge status={turn.status} />
+              <StatusBadge status={turn.status} copy={copy} />
               <span className="text-[11px] text-gray-400">{duration}</span>
               {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}

@@ -508,13 +508,22 @@ async function expand(page) {
     const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
     const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
     const plan = turn?.querySelector('[data-testid="conversation-plan"]');
-    const reasoningToggle = [...(turn?.querySelectorAll('button') || [])]
-      .find(node => node.textContent.includes('思考完成'));
+    const controlledState = (toggle) => {
+      const controls = toggle?.getAttribute('aria-controls') || '';
+      return {
+        expanded: toggle?.getAttribute('aria-expanded') || '',
+        controls,
+        detailsPresent: Boolean(controls && document.getElementById(controls)),
+      };
+    };
+    const summaryState = controlledState(summary);
+    const reasoningToggle = turn?.querySelector('[data-testid="conversation-reasoning-toggle"]');
+    const reasoningBefore = controlledState(reasoningToggle);
     reasoningToggle?.click();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningAfter = controlledState(reasoningToggle);
     const reasoning = turn?.querySelector('[data-testid="conversation-reasoning-content"]');
-    const commandButton = [...(turn?.querySelectorAll('button') || [])]
-      .find(node => node !== summary && node.textContent.includes('overflow-marker-'));
+    const commandButton = turn?.querySelector('[data-testid="conversation-compact-item-toggle"]');
     const commandTitle = commandButton?.querySelector('span.min-w-0.flex-1 > span.truncate');
     const turnRect = turn?.getBoundingClientRect();
     const contained = [reasoning, plan, summary, commandButton].every(node => {
@@ -525,6 +534,12 @@ async function expand(page) {
     const reasoningRect = reasoning?.getBoundingClientRect();
     const planRect = plan?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
+    const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
+      && commandButton.scrollWidth <= commandButton.clientWidth + 1);
+    const commandBefore = controlledState(commandButton);
+    commandButton?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const commandAfter = controlledState(commandButton);
     return {
       found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
       turnIds: [...document.querySelectorAll('[data-conversation-turn]')]
@@ -537,8 +552,8 @@ async function expand(page) {
       ordered: Boolean(reasoningRect && planRect && summaryRect
         && reasoningRect.bottom <= planRect.top + 1
         && planRect.bottom <= summaryRect.top + 1),
-      commandClipped: Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
-        && commandButton.scrollWidth <= commandButton.clientWidth + 1),
+      commandClipped,
+      accessibility: { summaryState, reasoningBefore, reasoningAfter, commandBefore, commandAfter },
     };
   });
   rec('①a-3c Codex 流式超长命令保持在工具卡内',
@@ -549,6 +564,19 @@ async function expand(page) {
       && codexStreamingOverflow.ordered
       && codexStreamingOverflow.commandClipped,
     JSON.stringify(codexStreamingOverflow));
+  const unifiedA11y = codexStreamingOverflow.accessibility || {};
+  rec('①a-3c-1 统一对话详情向辅助技术同步展开状态',
+    unifiedA11y.summaryState?.expanded === 'true'
+      && unifiedA11y.summaryState?.detailsPresent
+      && unifiedA11y.reasoningBefore?.expanded === 'false'
+      && !unifiedA11y.reasoningBefore?.detailsPresent
+      && unifiedA11y.reasoningAfter?.expanded === 'true'
+      && unifiedA11y.reasoningAfter?.detailsPresent
+      && unifiedA11y.commandBefore?.expanded === 'false'
+      && !unifiedA11y.commandBefore?.detailsPresent
+      && unifiedA11y.commandAfter?.expanded === 'true'
+      && unifiedA11y.commandAfter?.detailsPresent,
+    JSON.stringify(unifiedA11y));
 
   await page.evaluate(async () => {
     const events = [
@@ -560,21 +588,37 @@ async function expand(page) {
     }
   });
   await sleep(100);
-  const codexCompletedOverflow = await page.evaluate(() => {
+  const codexCompletedOverflow = await page.evaluate(async () => {
     const turn = document.querySelector('[data-conversation-turn="overflow-turn"]');
     const summary = turn?.querySelector('[data-testid="conversation-tool-group-summary"]');
     const turnRect = turn?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
+    const controls = summary?.getAttribute('aria-controls') || '';
+    const expandedBefore = summary?.getAttribute('aria-expanded') || '';
+    const detailsBefore = Boolean(controls && document.getElementById(controls));
+    summary?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return {
       summary: summary?.textContent.trim() || '',
       containsRawCommand: Boolean(summary?.textContent.includes('overflow-marker-')),
       contained: Boolean(turnRect && summaryRect && summaryRect.left >= turnRect.left - 1 && summaryRect.right <= turnRect.right + 1),
+      controls,
+      expandedBefore,
+      detailsBefore,
+      expandedAfter: summary?.getAttribute('aria-expanded') || '',
+      detailsAfter: Boolean(controls && document.getElementById(controls)),
     };
   });
   rec('①a-3d Codex 工具完成后摘要保持稳定',
     codexCompletedOverflow.summary === '执行步骤 · 1 项'
       && !codexCompletedOverflow.containsRawCommand
       && codexCompletedOverflow.contained,
+    JSON.stringify(codexCompletedOverflow));
+  rec('①a-3d-1 统一工具组折叠状态与详情 DOM 一致',
+    codexCompletedOverflow.expandedBefore === 'true'
+      && codexCompletedOverflow.detailsBefore
+      && codexCompletedOverflow.expandedAfter === 'false'
+      && !codexCompletedOverflow.detailsAfter,
     JSON.stringify(codexCompletedOverflow));
 
   await clickText(page, '查看全部'); await sleep(400);
@@ -1500,6 +1544,71 @@ async function expand(page) {
     return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
   rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
+
+  // 旧兼容渲染路径也必须暴露与详情 DOM 一致的展开状态。
+  await page.evaluate(() => localStorage.setItem('pinvou_conversation_ui_v2', 'false'));
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
+  await sleep(1200);
+  await expand(page); await sleep(200);
+  await page.waitForSelector('[data-testid="codex-sidebar-item"]', { timeout: 10000 }).catch(() => {});
+  await page.evaluate(() => document.querySelector('[data-testid="codex-sidebar-item"]')?.click());
+  await sleep(500);
+  const legacyConversationA11y = await page.evaluate(async () => {
+    const state = (toggle) => {
+      const controls = toggle?.getAttribute('aria-controls') || '';
+      return {
+        expanded: toggle?.getAttribute('aria-expanded') || '',
+        controls,
+        detailsPresent: Boolean(controls && document.getElementById(controls)),
+      };
+    };
+    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
+    const reasoningBefore = state(reasoningToggle);
+    reasoningToggle?.click();
+    await settle();
+    const reasoningAfter = state(reasoningToggle);
+
+    const summary = document.querySelector('[data-testid="conversation-tool-group-summary"]');
+    const groupBefore = state(summary);
+    summary?.click();
+    await settle();
+    const groupAfter = state(summary);
+
+    const compactToggle = document.querySelector('[data-testid="conversation-compact-item-toggle"]');
+    const compactBefore = state(compactToggle);
+    compactToggle?.click();
+    await settle();
+    const compactAfter = state(compactToggle);
+    const controls = [reasoningAfter.controls, groupAfter.controls, compactAfter.controls].filter(Boolean);
+    return {
+      found: Boolean(reasoningToggle && summary && compactToggle),
+      reasoningBefore,
+      reasoningAfter,
+      groupBefore,
+      groupAfter,
+      compactBefore,
+      compactAfter,
+      uniqueControls: controls.length === 3 && new Set(controls).size === controls.length,
+    };
+  });
+  rec('⑩a 旧兼容对话详情向辅助技术同步展开状态',
+    legacyConversationA11y.found
+      && legacyConversationA11y.uniqueControls
+      && legacyConversationA11y.reasoningBefore.expanded === 'false'
+      && !legacyConversationA11y.reasoningBefore.detailsPresent
+      && legacyConversationA11y.reasoningAfter.expanded === 'true'
+      && legacyConversationA11y.reasoningAfter.detailsPresent
+      && legacyConversationA11y.groupBefore.expanded === 'false'
+      && !legacyConversationA11y.groupBefore.detailsPresent
+      && legacyConversationA11y.groupAfter.expanded === 'true'
+      && legacyConversationA11y.groupAfter.detailsPresent
+      && legacyConversationA11y.compactBefore.expanded === 'false'
+      && !legacyConversationA11y.compactBefore.detailsPresent
+      && legacyConversationA11y.compactAfter.expanded === 'true'
+      && legacyConversationA11y.compactAfter.detailsPresent,
+    JSON.stringify(legacyConversationA11y));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

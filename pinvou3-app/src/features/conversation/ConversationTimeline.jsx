@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import {
@@ -243,7 +243,7 @@ function StructuredValue({ label, value }) {
   );
 }
 
-function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
+function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId }) {
   const tone = status === 'failed'
     ? 'text-red-500 bg-red-500/10'
     : status === 'warning'
@@ -253,6 +253,9 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle }) {
       : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
   return (
     <button type="button" onClick={onToggle}
+      data-testid="conversation-compact-item-toggle"
+      aria-expanded={controlsId ? Boolean(open) : undefined}
+      aria-controls={controlsId || undefined}
       className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
       <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       <span className="min-w-0 flex-1">
@@ -270,6 +273,7 @@ function CommandExecutionItem({ item, now, copy }) {
   const details = commandExecutionDetails(item.tool);
   const state = terminalStatus(item.status, details.exitCode);
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const countHint = details.commandCount > 1 ? ` · ${c.segments(details.commandCount)}` : '';
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const outcome = state === 'running'
@@ -280,9 +284,10 @@ function CommandExecutionItem({ item, now, copy }) {
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={localizedSemanticLabel(details.summary, c)}
-        meta={`${outcome}${countHint}`} status={state} open={open} onToggle={() => setOpen(value => !value)} />
+        meta={`${outcome}${countHint}`} status={state} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <TerminalBlock label={c.command} text={details.command} />
           {details.cwd && (
             <div className="mt-2 text-[10px] text-gray-400">
@@ -303,6 +308,7 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
+  const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const query = details.query || tool.title || c.webContent;
   const toolName = String(tool.name || '').trim() || 'web_search';
@@ -321,9 +327,10 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
   return (
     <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Wrench size={13} />} title={toolName}
-        meta={meta} status={state} open={open} onToggle={() => setOpen(value => !value)} />
+        meta={meta} status={state} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {details.results.length > 0 ? (
             <div className="mt-2 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
               {details.results.slice(0, 5).map((result, index) => {
@@ -383,6 +390,7 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   const visualState = responseWarning && state !== 'failed' ? 'warning' : state;
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
+  const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const toolName = String(tool.name || '').trim() || 'fetch_url';
   const statusLabel = details.status != null
@@ -404,9 +412,10 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
           : 'border-black/[0.05] dark:border-white/[0.07]'
     } bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Wrench size={13} />} title={toolName}
-        meta={meta} status={visualState} open={open} onToggle={() => setOpen(value => !value)} />
+        meta={meta} status={visualState} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {details.url && (
             <button
               type="button"
@@ -452,15 +461,17 @@ function GenericToolItem({ item, now, copy }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
         meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
-        status={state} open={open} onToggle={() => setOpen(value => !value)} />
+        status={state} open={open} controlsId={detailsId}
+        onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {tool.locations && tool.locations.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {tool.locations.map((location, index) => (
@@ -516,17 +527,21 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
   }`;
   const [open, setOpen] = useState(running);
   const expanded = running || open;
+  const detailsId = useId();
+  const hasDetails = items.length > 0;
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
         data-testid="conversation-tool-group-summary"
+        aria-expanded={hasDetails ? Boolean(expanded) : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
         className="w-full min-w-0 h-9 overflow-hidden px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         <ChevronDown size={13} className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
-      {expanded && (
-        <div className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
+      {expanded && hasDetails && (
+        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => (
             <ToolItem
               key={item.id}
@@ -547,6 +562,8 @@ function ReasoningItem({ item, now, copy }) {
   const c = conversationCopy(copy);
   const running = item.status === 'in_progress';
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const hasDetails = Boolean(item.text);
   const duration = item.startedAt == null
     ? ''
     : c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
@@ -554,13 +571,16 @@ function ReasoningItem({ item, now, copy }) {
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
+        data-testid="conversation-reasoning-toggle"
+        aria-expanded={hasDetails ? Boolean(open) : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
         <span>{statusText}{duration ? ` · ${duration}` : ''}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && item.text && (
-        <div data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      {open && hasDetails && (
+        <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {item.text}
         </div>
       )}
