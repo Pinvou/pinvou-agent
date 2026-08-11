@@ -600,6 +600,7 @@ function tick() {
 
 function createBridgeHarness(sharedStorage, runtimeOptions) {
   runtimeOptions = runtimeOptions || {};
+  var bridgeKind = runtimeOptions.bridgeKind === "web" ? "web" : "tauri";
   var listeners = Object.create(null);
   var handlers = Object.create(null);
   var calls = [];
@@ -663,6 +664,20 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     calls.push({ cmd: cmd, args: args || null });
     try {
       if (handlers[cmd]) return Promise.resolve(handlers[cmd](args || {}));
+      if (cmd === "web_access_load_session_chunk") {
+        var saved = handlers.load_session
+          ? handlers.load_session({ id: args.id })
+          : defaultInvoke("load_session", { id: args.id });
+        var encoded = Buffer.from(JSON.stringify(saved), "utf8");
+        var offset = Number(args.offset || 0);
+        return Promise.resolve({
+          download_id: "test-download-" + args.id,
+          offset: offset,
+          total: encoded.length,
+          data_base64: encoded.subarray(offset).toString("base64"),
+          eof: true,
+        });
+      }
       return Promise.resolve(defaultInvoke(cmd, args || {}));
     } catch (error) {
       return Promise.reject(error);
@@ -688,7 +703,19 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     },
     addEventListener: function () {},
     localStorage: storage,
+    location: { search: "" },
+    atob: function (value) { return Buffer.from(String(value), "base64").toString("binary"); },
+    btoa: function (value) { return Buffer.from(String(value), "binary").toString("base64"); },
   };
+  if (bridgeKind === "web") {
+    window.PinvouPlatform = {
+      kind: "web",
+      isWeb: true,
+      capabilities: {},
+      can: function () { return false; },
+      canInvoke: function () { return false; },
+    };
+  }
   window.window = window;
   window.document = document;
   var context = {
@@ -701,11 +728,31 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     setInterval: function () { return 0; },
     clearInterval: function () {},
     structuredClone: function (value) { return JSON.parse(JSON.stringify(value)); },
+    TextDecoder: TextDecoder,
+    Uint8Array: Uint8Array,
   };
-  vm.runInNewContext(tauriBridge, context, { filename: "tauri-bridge.js" });
+  vm.runInNewContext(
+    bridgeKind === "web" ? webBridge : tauriBridge,
+    context,
+    { filename: bridgeKind + "-bridge.js" }
+  );
+
+  var rawBridge = window.TauriBridge;
+  var bridge = bridgeKind === "web" ? {
+    sessions: {
+      switchToSession: function (id) { return rawBridge.switchToSession(id); },
+    },
+    chat: {
+      sendMessage: function (text, meta) { return rawBridge.sendMessage(text, meta); },
+    },
+    state: {
+      get: function () { return rawBridge.getState(); },
+    },
+  } : rawBridge;
 
   return {
-    bridge: window.TauriBridge,
+    bridge: bridge,
+    bridgeKind: bridgeKind,
     handlers: handlers,
     calls: calls,
     storageData: storageData,
@@ -1683,52 +1730,57 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
 }
 
 async function localCompletedTurnNeverBlocksTheNextMessage() {
-  var harness = createBridgeHarness(null, {
-    setTimeout: function (callback) { return setImmediate(callback); },
-  });
-  var bridge = harness.bridge;
-  var sessionId = "chat-local-terminal-nonblocking";
-  var durable = {
-    metadata: { id: sessionId, title: "Local nonblocking", message_count: 0 },
-    messages: [],
-    artifacts: [],
-    transcript_revision: "revision-before-local-turn",
-  };
-  harness.handlers.load_session = function () {
-    return JSON.parse(JSON.stringify(durable));
-  };
+  for (var bridgeKind of ["tauri", "web"]) {
+    var harness = createBridgeHarness(null, {
+      bridgeKind: bridgeKind,
+      setTimeout: function (callback) { return setImmediate(callback); },
+    });
+    var bridge = harness.bridge;
+    var sessionId = "chat-local-terminal-nonblocking-" + bridgeKind;
+    var durable = {
+      metadata: { id: sessionId, title: "Local nonblocking", message_count: 0 },
+      messages: [],
+      artifacts: [],
+      transcript_revision: "revision-before-local-turn",
+    };
+    harness.handlers.load_session = function () {
+      return JSON.parse(JSON.stringify(durable));
+    };
 
-  await bridge.sessions.switchToSession(sessionId);
-  await bridge.chat.sendMessage("first local question");
-  await harness.emit("chat:delta", {
-    session_id: sessionId,
-    text: "first local answer",
-  });
+    await bridge.sessions.switchToSession(sessionId);
+    await bridge.chat.sendMessage("first local question");
+    await harness.emit("chat:delta", {
+      session_id: sessionId,
+      text: "first local answer",
+    });
 
-  // Even if a readback would still expose an older revision, chat:done for a
-  // locally owned turn must release the input immediately. Rust emits the
-  // committed marker only after persisting the terminal transcript; the UI
-  // must not reclassify that local completion as a remote synchronization gate.
-  await harness.emit("chat:transcript_committed", {
-    session_id: sessionId,
-    transcript_revision: "revision-after-local-turn",
-  });
-  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
-  for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
+    // Even if a readback would still expose an older revision, chat:done for a
+    // locally owned turn must release the input immediately. Rust emits the
+    // committed marker only after persisting the terminal transcript; the UI
+    // must not reclassify that local completion as a remote synchronization gate.
+    await harness.emit("chat:transcript_committed", {
+      session_id: sessionId,
+      transcript_revision: "revision-after-local-turn",
+    });
+    await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+    for (var settleTick = 0; settleTick < 12; settleTick++) await tick();
 
-  var afterDone = bridge.state.get("chat");
-  assert.strictEqual(afterDone.busy, false, "a completed local turn must release busy immediately");
-  assert.ok(
-    !afterDone.chatItems.some(function (item) { return item && item.authoritySyncNotice; }),
-    "a completed local turn must not surface an authority-sync warning"
-  );
+    var afterDone = bridge.state.get("chat");
+    assert.strictEqual(afterDone.busy, false,
+      bridgeKind + " completed local turn must release busy immediately");
+    assert.ok(
+      !afterDone.chatItems.some(function (item) { return item && item.authoritySyncNotice; }),
+      bridgeKind + " completed local turn must not surface an authority-sync warning"
+    );
 
-  await bridge.chat.sendMessage("second local question");
-  assert.strictEqual(
-    harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
-    2,
-    "a stale readback must not prevent the next local message from reaching the engine"
-  );
+    await bridge.chat.sendMessage("second local question");
+    var chatCommand = bridgeKind === "web" ? "web_access_chat" : "chat";
+    assert.strictEqual(
+      harness.calls.filter(function (call) { return call.cmd === chatCommand; }).length,
+      2,
+      bridgeKind + " stale readback must not prevent the next local message from reaching the engine"
+    );
+  }
 
   [tauriBridge, webBridge].forEach(function (source) {
     assert.ok(source.includes("completedLocalTurn"),
