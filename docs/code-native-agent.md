@@ -211,8 +211,8 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
   scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
   按 `policy.connector_scope()` 取 code scope 禁用集替换 plain scope 的（非连接器
-  禁用如 `kb_search` 保留），并按 `policy.extra_hidden_tools()` 继续隐藏
-  `present_artifact` 与 `load_skill`。
+  禁用如 `kb_search` 保留），并按 `policy.extra_hidden_tools()` 恒隐藏
+  `present_artifact`；`load_skill` 按该会话组合目录是否为空动态决定（§8.6）。
 
 ### 8.4 远程端过滤原生代码会话事件
 

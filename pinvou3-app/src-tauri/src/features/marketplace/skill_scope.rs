@@ -68,8 +68,15 @@ fn load_disabled_skills_file() -> DisabledSkillsFile {
         }
     };
     if let Ok(legacy) = serde_json::from_str::<Vec<String>>(&content) {
+        // 与对象格式读路径一致：剥除 `skill:` 前缀（旧前端 bug 窗口期误写入的
+        // 带前缀 id），否则 `model_skill_names` 按裸 id 映射不到目录名，
+        // 该技能当次启动漏禁（下次读取自愈）。
+        let plain = legacy
+            .into_iter()
+            .map(|id| id.strip_prefix("skill:").map(str::to_string).unwrap_or(id))
+            .collect();
         let file = DisabledSkillsFile {
-            plain: legacy,
+            plain,
             code: Vec::new(),
             code_initialized: false,
             project_skills_enabled: false,
@@ -332,6 +339,31 @@ mod tests {
             assert!(
                 content.contains("\"plain\""),
                 "迁移后应为对象格式: {content}"
+            );
+        });
+    }
+
+    #[test]
+    fn migrates_legacy_bare_array_strips_skill_prefix() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(paths::pinvou3_home()).unwrap();
+            // 旧前端 bug 窗口期误写入的带 `skill:` 前缀条目：迁移时必须归一为裸 id，
+            // 否则按裸 id 匹配的 model_skill_names/组合目录物化会漏禁该技能。
+            std::fs::write(
+                disabled_skills_path(),
+                r#"["skill:visualizer","government-writing"]"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_skills_for(ConnectorScope::Plain),
+                vec!["visualizer".to_string(), "government-writing".to_string()],
+                "裸数组迁移应剥除 skill: 前缀"
+            );
+            // 落盘后的对象格式同样无前缀
+            let content = std::fs::read_to_string(disabled_skills_path()).unwrap();
+            assert!(
+                !content.contains("skill:visualizer"),
+                "迁移落盘不应残留前缀: {content}"
             );
         });
     }

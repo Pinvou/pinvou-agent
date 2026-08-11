@@ -86,12 +86,22 @@ pub async fn get_disabled_skills(scope: Option<String>) -> Result<Vec<String>, S
 #[tauri::command]
 pub async fn set_project_skills_enabled(
     enabled: bool,
+    app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled);
     // 开关影响 code 会话组合目录：重写在线会话 + 热刷 load_skill 隐藏判定。
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
+    // 广播工具变更：项目级 skills 开关影响 code 会话组合目录，其它窗口/实例
+    // 需借此事件刷新开关状态（与 set_disabled_skills 对齐）。
+    let payload = serde_json::json!({});
+    let _ = app.emit("remote_control:tools_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(
+        &app,
+        "remote_control:tools_changed",
+        payload,
+    );
     Ok(())
 }
 
