@@ -11,6 +11,11 @@ const allowedCommands = new Set([
   'web_access_set_codex_acp_model',
   'web_access_set_codex_acp_mode',
   'web_access_set_codex_acp_config_option',
+  'web_access_create_codex_acp_session',
+  'web_access_list_codex_workspace',
+  'web_access_search_codex_workspace',
+  'web_access_preview_codex_workspace_file',
+  'web_access_list_host_files',
   'web_access_upload_attachment_chunk',
   'web_access_abort_attachment_upload',
   'web_access_discard_attachment',
@@ -29,6 +34,14 @@ const platform = {
 };
 globalThis.window = {
   PinvouPlatform: platform,
+  PinvouHostFilePicker: {
+    async openWorkspace(options) {
+      return {
+        path: options.defaultPath || 'D:\\Projects\\pinvou',
+        workspaceHandle: `workspace_${'c'.repeat(32)}`,
+      };
+    },
+  },
   open() { return null; },
 };
 globalThis.window.window = globalThis.window;
@@ -61,6 +74,54 @@ globalThis.__TAURI__ = {
 };
 
 const acp = await import(`../src/platform/acp/client.js?test=${Date.now()}`);
+
+{
+  invocations.length = 0;
+  const selection = await acp.pickAcpWorkspace({
+    title: 'Choose project',
+    defaultPath: 'E:\\Code\\project',
+  });
+  assert.deepEqual(selection, {
+    path: 'E:\\Code\\project',
+    workspaceHandle: `workspace_${'c'.repeat(32)}`,
+  });
+  await acp.createAcpSession({
+    workspacePath: selection.path,
+    workspaceHandle: selection.workspaceHandle,
+    agentId: 'codex',
+  });
+  await acp.listAcpWorkspace({ sessionId: 'session-1', relativePath: 'src' });
+  await acp.searchAcpWorkspace({ sessionId: 'session-1', query: 'main' });
+  await acp.previewAcpWorkspaceFile({ sessionId: 'session-1', relativePath: 'src/main.rs' });
+  assert.deepEqual(invocations, [
+    {
+      command: 'web_access_create_codex_acp_session',
+      args: { workspaceHandle: selection.workspaceHandle, agentId: 'codex' },
+    },
+    {
+      command: 'web_access_list_codex_workspace',
+      args: { sessionId: 'session-1', relativePath: 'src' },
+    },
+    {
+      command: 'web_access_search_codex_workspace',
+      args: { sessionId: 'session-1', query: 'main' },
+    },
+    {
+      command: 'web_access_preview_codex_workspace_file',
+      args: { sessionId: 'session-1', relativePath: 'src/main.rs' },
+    },
+  ]);
+  assert.equal(JSON.stringify(invocations).includes('E:\\\\Code'), false,
+    'Web ACP RPCs must never contain a native workspace path');
+  await assert.rejects(
+    acp.createAcpSession({ workspacePath: 'C:\\private', agentId: 'codex' }),
+    /workspace authorization/,
+  );
+  await assert.rejects(
+    acp.listAcpWorkspace({ workspacePath: 'C:\\private', relativePath: '' }),
+    /require a Session/,
+  );
+}
 
 {
   invocations.length = 0;

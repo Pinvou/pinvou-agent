@@ -398,8 +398,14 @@ try {
     && codexView.includes('max-h-80 max-w-full overflow-auto whitespace-pre')
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
-  assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
+  assert.ok(acpClient.includes("directory: true")
+    && codexView.includes('pickAcpWorkspace'),
+  'new code sessions must expose the platform-specific directory picker');
+  assert.ok(codexView.includes('workspaceHandle: draftWorkspaceHandle')
+    && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
+    && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
+  'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')
     && codexView.includes('agentId: draftAgentId')
@@ -420,7 +426,9 @@ try {
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
-    && codexView.includes('const created = await createSession(draftWorkspacePath)'),
+    && codexView.includes('const created = await createSession()')
+    && codexView.includes('workspacePath: draftWorkspacePath')
+    && codexView.includes('workspaceHandle: draftWorkspaceHandle'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
   assert.ok(!codexView.includes('createSession(null)'),
   'the native (pinvou) first-send path must also forward the selected draft workspace');
@@ -557,8 +565,8 @@ try {
     && codexWorkspace.includes('onDoubleClick={resetPanelWidth}')
     && codexWorkspace.includes("document.body.style.cursor = 'col-resize'"),
   'the Codex workspace panel must support persisted drag resizing and double-click reset');
-  assert.ok(codexWorkspace.includes("invoke('list_codex_workspace'")
-    && codexWorkspace.includes("invoke('preview_codex_workspace_file'")
+  assert.ok(codexWorkspace.includes('listAcpWorkspace({')
+    && codexWorkspace.includes('previewAcpWorkspaceFile({')
     && codexWorkspace.includes("invoke('get_codex_workspace_changes'")
     && codexWorkspace.includes("invoke('get_codex_workspace_diff'"),
   'the workspace panel must use scoped file, preview, and read-only change commands');

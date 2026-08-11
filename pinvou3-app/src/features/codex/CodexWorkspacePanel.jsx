@@ -4,6 +4,11 @@ import {
   Link, Plus, RefreshCw, Search, X,
 } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  listAcpWorkspace,
+  previewAcpWorkspaceFile,
+  searchAcpWorkspace,
+} from '../../platform/acp/client.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { CodeViewerModal } from './CodeViewerModal.jsx';
 import { can } from '../../shared/platform.js';
@@ -299,7 +304,7 @@ export function CodexWorkspacePanel({
     if (!browsable || (!force && entriesByDirectory[path])) return;
     setLoadingDirectories(current => new Set([...current, path]));
     try {
-      const listing = await invoke('list_codex_workspace', {
+      const listing = await listAcpWorkspace({
         ...scopePayload(),
         relativePath: path || null,
       });
@@ -367,7 +372,7 @@ export function CodexWorkspacePanel({
     setSearching(true);
     const timer = window.setTimeout(async () => {
       try {
-        const results = await invoke('search_codex_workspace', {
+        const results = await searchAcpWorkspace({
           ...scopePayload(),
           query: query.trim(),
         });
@@ -399,7 +404,7 @@ export function CodexWorkspacePanel({
     const requestId = ++previewRequestRef.current;
     setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
     try {
-      const preview = await invoke('preview_codex_workspace_file', {
+      const preview = await previewAcpWorkspaceFile({
         ...scopePayload(),
         relativePath: entry.relativePath,
       });

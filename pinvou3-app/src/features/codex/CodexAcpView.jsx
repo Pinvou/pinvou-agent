@@ -75,6 +75,7 @@ import {
   openTauriDialog,
 } from '../../platform/tauri/client.js';
 import {
+  createAcpSession,
   discardAcpAttachment,
   getAcpSessionInfo,
   ingestAcpAttachmentPath,
@@ -82,6 +83,7 @@ import {
   loadAcpPendingPermissions,
   loadAcpTimeline,
   openAcpExternalUrl,
+  pickAcpWorkspace,
   setAcpConfigOption,
   setAcpMode,
   setAcpModel,
@@ -989,6 +991,7 @@ export function CodexAcpView({
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  const [draftWorkspaceHandle, setDraftWorkspaceHandle] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
   // 草稿态（会话未创建）下用户预选的配置：{ [agentId]: { model?, mode?, configs: { [id]: value } } }
@@ -1578,16 +1581,18 @@ export function CodexAcpView({
     }
   }
 
-  async function createSession(workspacePath = draftWorkspacePath) {
+  async function createSession() {
     setError('');
     setWorkspaceMenuOpen(false);
-    const metadata = await invoke('create_codex_acp_session', {
-      workspacePath,
+    const metadata = await createAcpSession({
+      workspacePath: draftWorkspacePath,
+      workspaceHandle: draftWorkspaceHandle,
       agentId: draftAgentId,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
-    if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
+    if (draftWorkspacePath) setRecentWorkspaces(rememberWorkspace(draftWorkspacePath));
+    setDraftWorkspaceHandle(null);
     await refreshSessions();
     skipNextActiveLoadRef.current = metadata.id;
     if (onActiveSessionChange) onActiveSessionChange(metadata.id);
@@ -1595,12 +1600,16 @@ export function CodexAcpView({
     return { id: metadata.id, info };
   }
 
-  function beginDraft(workspacePath = null, { clearComposer = false } = {}) {
+  function beginDraft(
+    workspacePath = null,
+    { clearComposer = false, workspaceHandle = null } = {},
+  ) {
     preserveDraftWorkspaceRef.current = true;
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
+    setDraftWorkspaceHandle(workspaceHandle);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
-    setWorkspaceOpen(Boolean(workspacePath));
+    setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
       setDraft('');
       const keysToClear = [
@@ -1657,16 +1666,14 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(true);
   }
 
-  async function chooseProjectDraft() {
-    const selected = await openTauriDialog({
-      directory: true,
-      multiple: false,
+  async function chooseProjectDraft(defaultPath = null) {
+    const selected = await pickAcpWorkspace({
       title: codexCopy.chooseProjectDialog,
+      defaultPath,
     });
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (path) {
-      setRecentWorkspaces(rememberWorkspace(path));
-      beginDraft(path);
+    if (selected?.path) {
+      setRecentWorkspaces(rememberWorkspace(selected.path));
+      beginDraft(selected.path, { workspaceHandle: selected.workspaceHandle });
     }
   }
 
@@ -2230,7 +2237,7 @@ export function CodexAcpView({
     try {
       let targetId = activeId;
       if (!targetId) {
-        const created = await createSession(draftWorkspacePath);
+        const created = await createSession();
         targetId = created.id;
         const appliedInfo = await applyDraftConfigSelections(targetId, created.info);
         if (appliedInfo && appliedInfo !== created.info) applySessionInfo(appliedInfo, targetId);
@@ -2280,7 +2287,7 @@ export function CodexAcpView({
     try {
       let targetId = activeId;
       if (!targetId) {
-        const created = await createSession(draftWorkspacePath);
+        const created = await createSession();
         targetId = created.id;
         // 草稿态暂存的模型/知识库/模式选择先落到新会话（失败会显式报错）。
         await applyNativeDraftControls(targetId);
@@ -2645,7 +2652,7 @@ export function CodexAcpView({
           </button>
         </header>
         )}
-        {!activeSession && draftWorkspacePath && (
+        {!isWeb && !activeSession && draftWorkspacePath && (
         <header className="h-14 shrink-0 px-5 flex items-center justify-end border-b border-black/[0.05] dark:border-white/[0.06]">
           <button
             type="button"
@@ -2970,7 +2977,10 @@ export function CodexAcpView({
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
-                                    onClick={() => beginDraft(path)}
+                                    onClick={() => {
+                                      if (isWeb) chooseProjectDraft(path).catch(showError);
+                                      else beginDraft(path);
+                                    }}
                                     className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
                                     <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>
@@ -3325,7 +3335,7 @@ export function CodexAcpView({
           </div>
         </div>
         </div>
-        {(activeSession || draftWorkspacePath) && (
+        {(activeSession || (!isWeb && draftWorkspacePath)) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}

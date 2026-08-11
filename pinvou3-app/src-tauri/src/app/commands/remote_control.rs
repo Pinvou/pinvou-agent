@@ -6,6 +6,7 @@ use std::io::{BufWriter, Write};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::codex_acp::workspace::{WorkspaceEntry, WorkspaceListing, WorkspacePreview};
 use crate::features::codex_acp::{
     project_acp_elicitation_request_for_web, project_acp_permission_request_for_web,
     AcpEventEnvelope, AcpPool, CodexAcpPendingElicitation, CodexAcpPendingPermission,
@@ -137,13 +138,33 @@ pub fn web_access_publish_event(
     manager.publish_frontend_event(&event, payload)
 }
 
-/// Browse the desktop host filesystem for the WebUI file picker. This returns
-/// paths only; browser bytes are never uploaded to the desktop.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebHostFileListing {
+    #[serde(flatten)]
+    listing: file_access::HostFileListing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_handle: Option<String>,
+}
+
+/// Browse the desktop host filesystem for the WebUI file picker. Directory
+/// mode may request an opaque workspace capability for the validated current
+/// directory; native host paths are never accepted by ACP Web RPCs.
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
-) -> Result<file_access::HostFileListing, String> {
-    file_access::list_host_files(path)
+    issue_workspace_handle: Option<bool>,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<WebHostFileListing, String> {
+    let listing = file_access::list_host_files(path)?;
+    let workspace_handle = issue_workspace_handle
+        .unwrap_or(false)
+        .then(|| manager.issue_web_workspace_grant(&listing.path))
+        .transpose()?;
+    Ok(WebHostFileListing {
+        listing,
+        workspace_handle,
+    })
 }
 
 /// WebUI navigation owns an independent selected Session. These wrappers
@@ -459,6 +480,57 @@ pub async fn web_access_chat(
         &app,
     )
     .await
+}
+
+/// Create a Web code Session from either a private temporary workspace or a
+/// one-shot capability minted by the host-file picker. The browser never gets
+/// to submit a native workspace path to this command.
+#[tauri::command]
+pub async fn web_access_create_codex_acp_session(
+    workspace_handle: Option<String>,
+    agent_id: Option<String>,
+    manager: State<'_, RemoteControlManager>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<deepseek_tui::session_manager::SessionMetadata, String> {
+    let workspace_path = workspace_handle
+        .as_deref()
+        .map(|handle| manager.consume_web_workspace_grant(handle))
+        .transpose()?
+        .map(|path| path.to_string_lossy().into_owned());
+    super::codex::create_codex_acp_session(workspace_path, agent_id, store, pool, acp_pool).await
+}
+
+/// Session-bound Web workspace reads. Draft browsing is intentionally owned
+/// by the host picker; once a code Session exists, its validated Session id is
+/// the only authority used to resolve the workspace root.
+#[tauri::command]
+pub async fn web_access_list_codex_workspace(
+    session_id: String,
+    relative_path: Option<String>,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspaceListing, String> {
+    super::codex::list_codex_workspace(Some(session_id), relative_path, None, acp_pool).await
+}
+
+#[tauri::command]
+pub async fn web_access_search_codex_workspace(
+    session_id: String,
+    query: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<WorkspaceEntry>, String> {
+    super::codex::search_codex_workspace(Some(session_id), query, None, acp_pool).await
+}
+
+#[tauri::command]
+pub async fn web_access_preview_codex_workspace_file(
+    session_id: String,
+    relative_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<WorkspacePreview, String> {
+    super::codex::preview_codex_workspace_file(Some(session_id), relative_path, None, acp_pool)
+        .await
 }
 
 /// Web-safe ACP prompt entry point. Browser and host-picked attachments are

@@ -103,6 +103,10 @@ for (const command of [
   'set_codex_acp_model',
   'set_codex_acp_mode',
   'set_codex_acp_config_option',
+  'create_codex_acp_session',
+  'list_codex_workspace',
+  'search_codex_workspace',
+  'preview_codex_workspace_file',
   'install_acp_agent',
   'login_acp_agent',
   'switch_acp_agent_account',
@@ -143,6 +147,10 @@ for (const command of [
   'web_access_set_codex_acp_model',
   'web_access_set_codex_acp_mode',
   'web_access_set_codex_acp_config_option',
+  'web_access_create_codex_acp_session',
+  'web_access_list_codex_workspace',
+  'web_access_search_codex_workspace',
+  'web_access_preview_codex_workspace_file',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be the bounded Web wrapper`);
 }
@@ -153,6 +161,13 @@ assert.match(bootstrap, /acpCodeMode:\s*\{[\s\S]*?commands:\s*\[[\s\S]*?web_acce
   'ACP code mode must require the complete Web-safe command and event contract');
 assert.match(acpPlatformClient, /web_access_codex_acp_prompt/);
 assert.match(acpPlatformClient, /attachmentHandles/);
+assert.match(acpPlatformClient, /web_access_create_codex_acp_session/);
+assert.match(acpPlatformClient, /workspaceHandle/);
+assert.doesNotMatch(
+  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0] || '',
+  /web_access_create_codex_acp_session[\s\S]*?workspacePath/,
+  'Web code-session creation must submit only the opaque workspace handle',
+);
 assert.doesNotMatch(codexView, /invoke\('codex_acp_prompt'/,
   'the shared code UI must submit through the platform ACP adapter');
 assert.match(acpRuntimeNotices, /manageAgentOnDesktop/,
@@ -209,6 +224,14 @@ assert.match(hostFilePicker, /if \(parentPath\) load\(parentPath\);[\s\S]{0,100}
   'up from a filesystem root must return to the root inventory');
 assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parentPath/,
   'filesystem roots must not be mixed into a drive directory listing');
+assert.match(hostFilePicker, /openWorkspace:/,
+  'the host picker must expose a dedicated code-workspace selection flow');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*options\.workspaceGrant === true/,
+  'only workspace selection should request a one-shot host capability');
+assert.match(hostFilePicker, /workspaceHandle:\s*currentWorkspaceHandle/,
+  'workspace selection must return the host-issued handle with its display path');
+assert.match(hostFilePicker, /initialPathPending[\s\S]*?path === initialPath[\s\S]*?load\(null\)/,
+  'a stale recent workspace must fall back to the normal host-file root instead of trapping the picker');
 // HTML5 拖放由当前可见输入框认领，再复用对应平台的上传通道。
 assert.match(chatView, /enabled=\{bridge\.available && \(!isWeb \|\| can\('deviceFileUpload'\)\)\}/,
   'browser drop must gate on the negotiated device upload capability');

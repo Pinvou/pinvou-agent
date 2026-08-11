@@ -21,7 +21,7 @@ use super::protocol::{
     WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind, PROTOCOL_VERSION,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
-use super::session_scope::validate_web_rpc_scope;
+use super::session_scope::{validate_web_rpc_scope, validate_web_workspace_grant_handle};
 use crate::platform::paths;
 
 // 正式安装包默认连接生产 Relay；本地联调由 run-dev.sh 显式覆盖到隔离的
@@ -47,6 +47,8 @@ const MAX_WEB_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WEB_ATTACHMENTS_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WEB_ATTACHMENT_UPLOADS: usize = 4;
 const MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WEB_WORKSPACE_GRANTS: usize = 64;
+const WEB_WORKSPACE_GRANT_TTL: Duration = Duration::from_secs(30 * 60);
 /// 浏览器本机上传在桌面端的短生命周期暂存目录前缀。仅带此前缀的目录会被
 /// 启动清扫与附件消费清理删除，避免波及旧版 E2E 使用的其他 uploads 子目录。
 pub(crate) const WEB_ATTACHMENT_UPLOAD_DIR_PREFIX: &str = "webup_";
@@ -119,6 +121,7 @@ struct Inner {
     web_attachment_bytes: usize,
     web_attachment_uploads: HashMap<String, WebAttachmentUpload>,
     web_attachment_upload_order: VecDeque<String>,
+    web_workspace_grants: WebWorkspaceGrantStore,
     web_session_uploads: HashMap<String, WebSessionUpload>,
     web_session_upload_order: VecDeque<String>,
     web_session_downloads: HashMap<String, WebSessionDownload>,
@@ -145,6 +148,7 @@ impl Default for Inner {
             web_attachment_bytes: 0,
             web_attachment_uploads: HashMap::new(),
             web_attachment_upload_order: VecDeque::new(),
+            web_workspace_grants: WebWorkspaceGrantStore::default(),
             web_session_uploads: HashMap::new(),
             web_session_upload_order: VecDeque::new(),
             web_session_downloads: HashMap::new(),
@@ -171,6 +175,72 @@ struct WebAttachmentUpload {
     total: usize,
     data: Vec<u8>,
     last_touched: Instant,
+}
+
+#[derive(Debug)]
+struct WebWorkspaceGrant {
+    endpoint_id: String,
+    path: PathBuf,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct WebWorkspaceGrantStore {
+    entries: HashMap<String, WebWorkspaceGrant>,
+    order: VecDeque<String>,
+}
+
+impl WebWorkspaceGrantStore {
+    fn issue(&mut self, handle: String, endpoint_id: String, path: PathBuf, now: Instant) {
+        self.remove_expired(now);
+        while self.entries.len() >= MAX_WEB_WORKSPACE_GRANTS {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.order.retain(|candidate| candidate != &handle);
+        self.entries.insert(
+            handle.clone(),
+            WebWorkspaceGrant {
+                endpoint_id,
+                path,
+                expires_at: now + WEB_WORKSPACE_GRANT_TTL,
+            },
+        );
+        self.order.push_back(handle);
+    }
+
+    fn consume(
+        &mut self,
+        handle: &str,
+        endpoint_id: &str,
+        now: Instant,
+    ) -> Result<PathBuf, String> {
+        validate_web_workspace_grant_handle(handle)?;
+        let Some(grant) = self.entries.remove(handle) else {
+            return Err("Web workspace authorization is invalid or already used".to_string());
+        };
+        self.order.retain(|candidate| candidate != handle);
+        if grant.expires_at <= now {
+            return Err("Web workspace authorization has expired".to_string());
+        }
+        if grant.endpoint_id != endpoint_id {
+            return Err("Web workspace authorization belongs to another endpoint".to_string());
+        }
+        Ok(grant.path)
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        self.entries.retain(|_, grant| grant.expires_at > now);
+        self.order
+            .retain(|handle| self.entries.contains_key(handle));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 #[derive(Debug)]
@@ -589,6 +659,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
             inner.event_stream.reset();
             inner.endpoint.take()
         };
@@ -660,6 +731,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
             inner.rpc_ledger = RpcLedger::default();
             inner.event_stream.reset();
             inner.idle_status = WebAccessStatusKind::Stopped;
@@ -747,6 +819,54 @@ impl RemoteControlManager {
             }
         }
         self.inner.lock().pending_revocations_in_flight.remove(&key);
+    }
+
+    /// Mint a short-lived capability for a directory that the host-file
+    /// picker has already listed through `validate_browsable_path`. The
+    /// browser may display the host path, but code-session creation receives
+    /// only this opaque, endpoint-bound, one-shot handle.
+    pub fn issue_web_workspace_grant(&self, raw_path: &str) -> Result<String, String> {
+        let path = crate::features::files::file_ingest::validate_browsable_path(raw_path)?;
+        if !path.is_dir() {
+            return Err(format!(
+                "Web code workspace must be a directory: {}",
+                path.display()
+            ));
+        }
+        let mut inner = self.inner.lock();
+        let endpoint_id = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone())
+            .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+        let handle = loop {
+            let candidate = format!(
+                "workspace_{}",
+                crate::features::remote_control::short_token(32)
+            );
+            if !inner.web_workspace_grants.entries.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        inner
+            .web_workspace_grants
+            .issue(handle.clone(), endpoint_id, path, Instant::now());
+        Ok(handle)
+    }
+
+    /// Atomically consume a workspace capability. Removing the entry before
+    /// validation makes expired, cross-endpoint, and replayed handles fail
+    /// closed without leaving a reusable authorization behind.
+    pub fn consume_web_workspace_grant(&self, handle: &str) -> Result<PathBuf, String> {
+        let mut inner = self.inner.lock();
+        let endpoint_id = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.endpoint_id.clone())
+            .ok_or_else(|| "Web access endpoint is not active".to_string())?;
+        inner
+            .web_workspace_grants
+            .consume(handle, &endpoint_id, Instant::now())
     }
 
     /// Keep parsed attachment contents on the desktop. The browser receives
@@ -1670,6 +1790,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
             inner.event_stream.reset();
             inner.idle_status = WebAccessStatusKind::Revoked;
             inner.idle_error = None;
@@ -1709,6 +1830,7 @@ impl RemoteControlManager {
             inner.rpc_cache.clear();
             inner.rpc_order.clear();
             clear_web_attachments(&mut inner);
+            inner.web_workspace_grants.clear();
         }
         self.emit_status();
     }
@@ -3654,6 +3776,78 @@ fn percent_encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workspace_handle(seed: usize) -> String {
+        format!("workspace_{seed:032x}")
+    }
+
+    #[test]
+    fn web_workspace_grant_is_endpoint_bound_and_one_shot() {
+        let now = Instant::now();
+        let handle = workspace_handle(1);
+        let path = PathBuf::from("workspace-one");
+        let mut store = WebWorkspaceGrantStore::default();
+        store.issue(
+            handle.clone(),
+            "endpoint-one".to_string(),
+            path.clone(),
+            now,
+        );
+
+        assert!(store
+            .consume(&handle, "endpoint-two", now + Duration::from_secs(1))
+            .is_err());
+        assert!(store
+            .consume(&handle, "endpoint-one", now + Duration::from_secs(1))
+            .is_err());
+
+        let second = workspace_handle(2);
+        store.issue(
+            second.clone(),
+            "endpoint-one".to_string(),
+            path.clone(),
+            now,
+        );
+        assert_eq!(
+            store
+                .consume(&second, "endpoint-one", now + Duration::from_secs(1))
+                .unwrap(),
+            path
+        );
+        assert!(store
+            .consume(&second, "endpoint-one", now + Duration::from_secs(2))
+            .is_err());
+    }
+
+    #[test]
+    fn web_workspace_grant_expires_and_store_is_bounded() {
+        let now = Instant::now();
+        let mut store = WebWorkspaceGrantStore::default();
+        let expired = workspace_handle(0);
+        store.issue(
+            expired.clone(),
+            "endpoint".to_string(),
+            PathBuf::from("expired"),
+            now,
+        );
+        assert!(store
+            .consume(&expired, "endpoint", now + WEB_WORKSPACE_GRANT_TTL)
+            .is_err());
+
+        for seed in 1..=MAX_WEB_WORKSPACE_GRANTS + 1 {
+            store.issue(
+                workspace_handle(seed),
+                "endpoint".to_string(),
+                PathBuf::from(format!("workspace-{seed}")),
+                now,
+            );
+        }
+        assert_eq!(store.entries.len(), MAX_WEB_WORKSPACE_GRANTS);
+        assert!(!store.entries.contains_key(&workspace_handle(1)));
+        assert!(store
+            .entries
+            .contains_key(&workspace_handle(MAX_WEB_WORKSPACE_GRANTS + 1)));
+    }
 
     #[test]
     fn stalled_in_flight_rpc_expires_after_ttl_only() {

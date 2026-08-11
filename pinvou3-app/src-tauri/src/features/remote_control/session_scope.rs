@@ -9,6 +9,86 @@ enum WebSessionScope {
     Optional(&'static str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebWorkspaceRpcPolicy {
+    HostFileBrowse,
+    CreateWithOptionalGrant,
+    SessionBoundRead,
+}
+
+const NATIVE_WORKSPACE_COMMANDS: &[&str] = &[
+    "create_codex_acp_session",
+    "list_codex_workspace",
+    "search_codex_workspace",
+    "preview_codex_workspace_file",
+    "open_codex_workspace_file",
+    "reveal_codex_workspace_file",
+    "open_code_reader",
+];
+
+pub(super) fn validate_web_workspace_grant_handle(handle: &str) -> Result<(), String> {
+    if handle.len() < 24
+        || handle.len() > 128
+        || !handle.starts_with("workspace_")
+        || !handle
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("Web workspace authorization handle is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
+    match command {
+        "web_access_list_host_files" => Some(WebWorkspaceRpcPolicy::HostFileBrowse),
+        "web_access_create_codex_acp_session" => {
+            Some(WebWorkspaceRpcPolicy::CreateWithOptionalGrant)
+        }
+        "web_access_list_codex_workspace"
+        | "web_access_search_codex_workspace"
+        | "web_access_preview_codex_workspace_file" => {
+            Some(WebWorkspaceRpcPolicy::SessionBoundRead)
+        }
+        _ => None,
+    }
+}
+
+fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String> {
+    if NATIVE_WORKSPACE_COMMANDS.contains(&command) {
+        return Err(format!(
+            "{command} is desktop-only; Web must use the scoped workspace wrapper"
+        ));
+    }
+    let Some(policy) = web_workspace_rpc_policy(command) else {
+        return Ok(());
+    };
+    if args.get("workspacePath").is_some() || args.get("workspace_path").is_some() {
+        return Err(format!("{command} does not accept a native workspace path"));
+    }
+    if policy == WebWorkspaceRpcPolicy::HostFileBrowse {
+        for field in ["issueWorkspaceHandle", "issue_workspace_handle"] {
+            if args.get(field).is_some_and(|value| !value.is_boolean()) {
+                return Err(format!("{field} must be a boolean"));
+            }
+        }
+        return Ok(());
+    }
+    if policy == WebWorkspaceRpcPolicy::CreateWithOptionalGrant {
+        let Some(handle) = args.get("workspaceHandle") else {
+            return Ok(());
+        };
+        if handle.is_null() {
+            return Ok(());
+        }
+        let Some(handle) = handle.as_str() else {
+            return Err("workspaceHandle must be a string or null".to_string());
+        };
+        validate_web_workspace_grant_handle(handle)?;
+    }
+    Ok(())
+}
+
 fn web_session_scope(command: &str) -> Option<WebSessionScope> {
     use WebSessionScope::{Optional, Required};
     let scope = match command {
@@ -87,6 +167,9 @@ fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "web_access_get_codex_acp_pending_elicitations"
         | "web_access_get_codex_acp_pending_permissions"
         | "web_access_get_codex_acp_session_info"
+        | "web_access_list_codex_workspace"
+        | "web_access_search_codex_workspace"
+        | "web_access_preview_codex_workspace_file"
         | "web_access_get_codex_acp_timeline"
         | "web_access_get_gate_report"
         | "web_access_get_role_logs"
@@ -166,6 +249,7 @@ pub(super) fn validate_web_rpc_scope(
     command: &str,
     args: &Value,
 ) -> Result<(), String> {
+    validate_web_workspace_rpc(command, args)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
     };
@@ -234,6 +318,9 @@ mod tests {
             "web_access_set_codex_acp_model",
             "web_access_set_codex_acp_mode",
             "web_access_set_codex_acp_config_option",
+            "web_access_list_codex_workspace",
+            "web_access_search_codex_workspace",
+            "web_access_preview_codex_workspace_file",
         ] {
             assert_eq!(
                 web_session_scope(command),
@@ -319,6 +406,95 @@ mod tests {
             assert!(
                 !super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
                 "只读查看 {command} 必须放行——Web 只读横幅要能取数"
+            );
+        }
+    }
+
+    #[test]
+    fn web_workspace_commands_reject_native_paths_and_require_explicit_policy() {
+        for command in NATIVE_WORKSPACE_COMMANDS {
+            assert!(
+                validate_web_workspace_rpc(command, &serde_json::json!({})).is_err(),
+                "native command {command} must fail closed over Web"
+            );
+        }
+
+        let valid_handle = format!("workspace_{}", "a".repeat(32));
+        assert!(validate_web_workspace_rpc(
+            "web_access_create_codex_acp_session",
+            &serde_json::json!({ "workspaceHandle": valid_handle })
+        )
+        .is_ok());
+        assert!(validate_web_workspace_rpc(
+            "web_access_create_codex_acp_session",
+            &serde_json::json!({ "workspaceHandle": null })
+        )
+        .is_ok());
+        assert!(validate_web_workspace_rpc(
+            "web_access_create_codex_acp_session",
+            &serde_json::json!({ "workspacePath": "C:\\private" })
+        )
+        .is_err());
+        assert!(validate_web_workspace_rpc(
+            "web_access_list_codex_workspace",
+            &serde_json::json!({ "sessionId": "session-1", "workspacePath": "C:\\private" })
+        )
+        .is_err());
+        assert!(validate_web_workspace_rpc(
+            "web_access_list_host_files",
+            &serde_json::json!({ "path": "C:\\work", "issueWorkspaceHandle": true })
+        )
+        .is_ok());
+        assert!(validate_web_workspace_rpc(
+            "web_access_list_host_files",
+            &serde_json::json!({ "path": "C:\\work", "issueWorkspaceHandle": "yes" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn every_allowlisted_web_workspace_command_has_an_explicit_parameter_policy() {
+        let policy: Value = serde_json::from_str(include_str!(
+            "../../../../src/platform/web/access-policy.json"
+        ))
+        .expect("Web access policy JSON");
+        let allowed = policy["allowed_commands"]
+            .as_array()
+            .expect("allowed_commands array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<std::collections::HashSet<_>>();
+
+        for command in NATIVE_WORKSPACE_COMMANDS {
+            assert!(
+                !allowed.contains(command),
+                "native workspace command {command} must remain desktop-only"
+            );
+        }
+        for command in [
+            "web_access_list_host_files",
+            "web_access_create_codex_acp_session",
+            "web_access_list_codex_workspace",
+            "web_access_search_codex_workspace",
+            "web_access_preview_codex_workspace_file",
+        ] {
+            assert!(allowed.contains(command), "missing safe wrapper {command}");
+            assert!(
+                web_workspace_rpc_policy(command).is_some(),
+                "{command} must have an explicit Web workspace policy"
+            );
+        }
+        for command in [
+            "web_access_list_codex_workspace",
+            "web_access_search_codex_workspace",
+            "web_access_preview_codex_workspace_file",
+            "get_codex_workspace_changes",
+            "get_codex_workspace_diff",
+        ] {
+            assert_eq!(
+                web_session_scope(command),
+                Some(WebSessionScope::Required("sessionId")),
+                "{command} must derive its workspace from a validated Session"
             );
         }
     }

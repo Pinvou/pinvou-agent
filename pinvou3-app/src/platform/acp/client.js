@@ -1,5 +1,5 @@
 import { can, canInvoke, isWeb } from '../../shared/platform.js';
-import { invokeTauri } from '../tauri/client.js';
+import { invokeTauri, openTauriDialog } from '../tauri/client.js';
 
 const DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;
 const DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
@@ -29,6 +29,84 @@ function cancelledError() {
 function invokeAcp(nativeCommand, webCommand, args) {
   const command = isWeb && canInvoke(webCommand) ? webCommand : nativeCommand;
   return args === undefined ? invokeTauri(command) : invokeTauri(command, args);
+}
+
+function invokeRequiredWebCommand(command, args) {
+  if (!canInvoke(command)) {
+    return Promise.reject(new Error(`Web ACP command is unavailable: ${command}`));
+  }
+  return args === undefined ? invokeTauri(command) : invokeTauri(command, args);
+}
+
+export async function pickAcpWorkspace({ title, defaultPath } = {}) {
+  if (!isWeb) {
+    const selected = await openTauriDialog({
+      directory: true,
+      multiple: false,
+      title,
+      ...(defaultPath ? { defaultPath } : {}),
+    });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    return path ? { path, workspaceHandle: null } : null;
+  }
+  const picker = globalThis.window?.PinvouHostFilePicker?.openWorkspace;
+  if (typeof picker !== 'function' || !canInvoke('web_access_list_host_files')) {
+    throw new Error('Web workspace picker is unavailable');
+  }
+  const selected = await picker({ title, defaultPath });
+  if (!selected) return null;
+  const path = typeof selected.path === 'string' ? selected.path.trim() : '';
+  const workspaceHandle = typeof selected.workspaceHandle === 'string'
+    ? selected.workspaceHandle.trim()
+    : '';
+  if (!path || !workspaceHandle.startsWith('workspace_')) {
+    throw new Error('Web workspace picker returned an invalid authorization');
+  }
+  return { path, workspaceHandle };
+}
+
+export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
+  if (!isWeb) {
+    return invokeTauri('create_codex_acp_session', { workspacePath, agentId });
+  }
+  if (workspacePath && !workspaceHandle) {
+    return Promise.reject(new Error('Web project Sessions require a workspace authorization'));
+  }
+  return invokeRequiredWebCommand('web_access_create_codex_acp_session', {
+    workspaceHandle: workspaceHandle || null,
+    agentId,
+  });
+}
+
+export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {
+  if (!isWeb) {
+    return invokeTauri('list_codex_workspace', { sessionId, relativePath, workspacePath });
+  }
+  if (!sessionId) return Promise.reject(new Error('Web workspace reads require a Session'));
+  return invokeRequiredWebCommand('web_access_list_codex_workspace', { sessionId, relativePath });
+}
+
+export function searchAcpWorkspace({ sessionId, query, workspacePath }) {
+  if (!isWeb) {
+    return invokeTauri('search_codex_workspace', { sessionId, query, workspacePath });
+  }
+  if (!sessionId) return Promise.reject(new Error('Web workspace reads require a Session'));
+  return invokeRequiredWebCommand('web_access_search_codex_workspace', { sessionId, query });
+}
+
+export function previewAcpWorkspaceFile({ sessionId, relativePath, workspacePath }) {
+  if (!isWeb) {
+    return invokeTauri('preview_codex_workspace_file', {
+      sessionId,
+      relativePath,
+      workspacePath,
+    });
+  }
+  if (!sessionId) return Promise.reject(new Error('Web workspace reads require a Session'));
+  return invokeRequiredWebCommand('web_access_preview_codex_workspace_file', {
+    sessionId,
+    relativePath,
+  });
 }
 
 export function acpAttachmentHandle(result) {
