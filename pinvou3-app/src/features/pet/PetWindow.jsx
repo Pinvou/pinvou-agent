@@ -78,6 +78,10 @@ const TICK_MS = 600;
 const DEFAULT_SCALE = 0.5;
 const MAX_SCALE = 1.2;
 const FIRST_AWAKE_MS = 8_000;
+// 活动卡消失后延迟收窗的窗口:多会话并发时事件/快照乱序会让 activities
+// 在 0↔N 间快速抖动,立即收窗会驱动原生窗口反复展开/收起(macOS 上肉眼
+// 可见的闪现)。延迟确认"真的空了"再收,期间恢复显示则取消收起。
+const ACTIVITY_COLLAPSE_DEBOUNCE_MS = 300;
 const PET_EDGE_PADDING = 24;
 const PET_BOTTOM_PADDING = 8;
 const PET_ACTIVITY_WINDOW_HEIGHT = 260;
@@ -195,6 +199,7 @@ export default function PetWindow({
   const characterSlotRef = useRef(null);
   const activityCardRectRef = useRef(null);
   const activityHeightRef = useRef(null);
+  const activityCollapseTimerRef = useRef(0);
   const openingSessionRef = useRef(null);
   const openingScheduledRunRef = useRef(null);
   const scheduledNoticeRef = useRef(null);
@@ -495,6 +500,7 @@ export default function PetWindow({
       disposed = true;
       window.clearInterval(timer);
       window.clearTimeout(scheduledRefreshTimer);
+      window.clearTimeout(activityCollapseTimerRef.current);
       unlisteners.forEach((unlisten) => { try { unlisten(); } catch (_) {} });
     };
   }, [petCopy.sendFailed]);
@@ -516,10 +522,23 @@ export default function PetWindow({
     if (!activityVisible || !list) {
       activityCardRectRef.current = null;
       activityHeightRef.current = null;
-      invokeActivityVisible(false, null);
+      // 收起防抖：先取消未决的收起定时器，再延迟确认。多会话并发时
+      // 卡片在 0↔N 之间快速抖动，立即 invoke(false) 会让原生窗口每抖一次
+      // 就收起又展开一次——macOS 上的"桌宠闪现"。延迟 300ms 确认真空了
+      // 才收窗；期间恢复显示会被下一条 effect 分支取消。
+      window.clearTimeout(activityCollapseTimerRef.current);
+      activityCollapseTimerRef.current = window.setTimeout(() => {
+        activityCollapseTimerRef.current = 0;
+        invokeActivityVisible(false, null);
+      }, ACTIVITY_COLLAPSE_DEBOUNCE_MS);
       return undefined;
     }
 
+    // 有内容立即展开，不等防抖窗口，避免收起→新活动到达时窗口迟滞一帧。
+    if (activityCollapseTimerRef.current) {
+      window.clearTimeout(activityCollapseTimerRef.current);
+      activityCollapseTimerRef.current = 0;
+    }
     activityHeightRef.current = PET_ACTIVITY_WINDOW_HEIGHT;
     measureActivityCard();
     invokeActivityVisible(true, PET_ACTIVITY_WINDOW_HEIGHT);
