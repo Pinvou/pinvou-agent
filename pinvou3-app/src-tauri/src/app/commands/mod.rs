@@ -23,6 +23,7 @@ pub(crate) mod dependencies;
 pub(crate) mod files;
 pub(crate) mod interaction;
 pub(crate) mod knowledge;
+pub(crate) mod llama_engine;
 pub(crate) mod local_llm;
 pub(crate) mod marketplace;
 pub(crate) mod memory;

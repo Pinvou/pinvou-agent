@@ -1151,10 +1151,16 @@ impl Pinvou3Bridge {
             translation_enabled: false,
             // 视觉配置跟随主模型端点：本地 vLLM 复用同一端点；
             // 第三方 provider 也复用（若不支持 vision，底座会优雅失败）。
+            // 本地多模态引擎运行中时，把端点指到本地 llama-server——纯文本主模型
+            // 由此获得 image_analyze 视觉能力。EngineConfig 在会话 spawn 时快照，
+            // 引擎启停后下次会话生效（见 features/llama_engine/mod.rs）。
             vision_config: Some(deepseek_tui::config::VisionModelConfig {
                 model: self.model(),
                 api_key: Some(self.api_key()),
-                base_url: Some(self.base_url()),
+                base_url: Some(
+                    crate::features::llama_engine::vision_endpoint()
+                        .unwrap_or_else(|| self.base_url()),
+                ),
             }),
             // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
             // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
