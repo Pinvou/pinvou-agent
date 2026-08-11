@@ -393,7 +393,7 @@ pub async fn load_session(
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
     let revision = crate::features::sessions::transcript_revision(&session.messages)
-        .map_err(|e| format!("load_session({id}) revision: {e:?}"))?;
+        .map_err(|e| format!("load_session({id}) revision: {e:#}"))?;
     Ok(DesktopSavedSession {
         session,
         transcript_revision: revision,

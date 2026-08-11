@@ -1736,7 +1736,7 @@ fn tool_call_result_parts(
 ) -> (String, bool, Option<serde_json::Value>) {
     match result {
         Ok(result) => (result.content, result.success, result.metadata),
-        Err(error) => (format!("{error:?}"), false, None),
+        Err(error) => (format!("{error:#}"), false, None),
     }
 }
 
@@ -1789,7 +1789,7 @@ pub(crate) async fn apply_harness_action(
                 expects_file_output,
             };
             if let Err(e) = handle.send(op).await {
-                eprintln!("[harness] spawn subagent failed: {e:?}");
+                eprintln!("[harness] spawn subagent failed: {e:#}");
             }
             true
         }
@@ -1833,7 +1833,7 @@ pub(crate) async fn apply_harness_action(
                     expects_file_output: t.expects_file_output,
                 };
                 if let Err(e) = handle.send(op).await {
-                    eprintln!("[harness] fan-out spawn failed: {e:?}");
+                    eprintln!("[harness] fan-out spawn failed: {e:#}");
                 }
             }
             emit_fanout(app, active_id, &base_role); // 初始 fan-out 状态 → 前端

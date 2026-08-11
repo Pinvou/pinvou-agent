@@ -666,7 +666,7 @@ async fn create_code_native_session(
             None,
             metadata_workspace,
         )
-        .map_err(|error| format!("create_codex_acp_session: {error:?}"))?;
+        .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
     if let Err(error) = acp_pool.agents().bind_code_native_session(
         &session.metadata.id,
         kind,
