@@ -48,10 +48,9 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
     }
 
     const PINVOU_KNOWN: &[(&str, u32)] = &[
-        // Kimi K3 官方标称 100 万 token（platform.kimi.com/docs/models）。
+        // Kimi K3 直连平台模型官方标称 100 万 token（platform.kimi.com/docs/models）。
         ("kimi-k3", 1_048_576),
-        // Coding Plan 裸 k3 同为 1M；低档服务端限 256K 时由显式后缀优先覆盖。
-        ("k3", 1_048_576),
+        // Coding Plan 裸 k3 的窗口取决于套餐；底座以 256K 安全值收录，1M 套餐应显式配置。
         // kimi-for-coding 系属 K2.7 Code，官方 256K。
         ("kimi-for-coding-highspeed", 262_144),
         ("kimi-k2.7-code-highspeed", 262_144),
@@ -83,7 +82,7 @@ mod tests {
     fn supplemental_cloud_models_resolve_to_verified_windows() {
         for (model, expected) in [
             ("kimi-k3", 1_048_576),
-            ("k3", 1_048_576),
+            ("k3", 262_144),
             ("qwen3.7-plus", 1_000_000),
             ("qwen3.7-max", 1_000_000),
             ("qwen3.7-flash", 1_000_000),

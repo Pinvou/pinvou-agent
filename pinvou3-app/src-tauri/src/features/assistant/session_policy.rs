@@ -10,11 +10,15 @@ use deepseek_tui::tui::approval::ApprovalMode;
 ///
 /// 两模式同文:R-1 已为 code 页接上方案审批卡(plan_snapshot/plan_ready → accept_plan),
 /// "方案卡片由系统自动展示"对 work/code 均为真实描述,无需按模式分化。
+///
+/// v0.9.5 起模型可见的进度工具只有 canonical `todo_write`(explanation/items 形式的
+/// `update_plan` 与 `checklist_write` 均为隐藏 replay 别名,不进模型目录);决策卡由
+/// engine 监听 todo_write 结果触发,方案步骤写进 todos.content,status 用 pending。
 const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
-     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
+     1. 想清楚后 → 调 `todo_write` 工具输出方案步骤(content 写清每一步,\
+     status 用 pending;系统会在你调 todo_write 后自动展示方案卡片)。\n\
      2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
+     方案卡片由系统在你调 todo_write 后自动展示,你写引导是死锁。";
 
 /// 原生代码会话没有产出物面板/成品卡语义(提示词也不再提及),隐藏 present_artifact。
 const PRESENT_ARTIFACT: &str = "mcp_pinvou3_present_artifact";

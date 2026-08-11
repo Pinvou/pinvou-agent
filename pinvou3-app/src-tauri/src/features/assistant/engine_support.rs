@@ -54,7 +54,7 @@ pub(super) fn persist_successful_tool_artifact(
         return Ok(None);
     }
     let output_path = artifact_path_from_tool_output(output);
-    let input_path = if is_file_artifact_tool(tool_name) {
+    let input_path = if is_file_artifact_tool(tool_name, tool_input) {
         artifact_path_from_value(tool_input)
     } else {
         None
@@ -73,8 +73,14 @@ pub(super) fn persist_successful_tool_artifact(
     Ok(Some(path))
 }
 
-fn is_file_artifact_tool(name: &str) -> bool {
-    ["write_file", "append_file", "edit_file"]
+fn is_file_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
+    if name.eq_ignore_ascii_case("File") {
+        return input
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| matches!(action, "write" | "edit"));
+    }
+    ["write_file", "edit_file"]
         .iter()
         .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
 }

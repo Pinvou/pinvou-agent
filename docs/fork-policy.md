@@ -1,155 +1,140 @@
-# pinvou3 对 CodeWhale 底座的 fork 维护策略
+# Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-08-07（公开发布基线 `pinvou-v0.9.0-r4@03e9e102`）
+> 最后更新：2026-08-10（公开维护基线：上游 `v0.9.5` + 5 个 Pinvou 主题）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
-## 0. 当前基线与组织方式
+## 0. 当前基线
 
-- 上游：`Hmbown/CodeWhale` tag `v0.9.0`，commit `d167c07c96282411956ea7f35ddb8227afa1402f`。
-- 公开 fork：`https://github.com/Pinvou/CodeWhale`。
-- 维护分支：`pinvou3-clean`，当前 head `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624`。
-- 父仓固定标签：`pinvou-v0.9.0-r4`，解引用后必须是上述 commit；`.gitmodules` 不配置浮动 `branch`。
-- fork 不再按历史 C1–C12 / W1–W13 批量编号维护，当前只保留 **6 个长期主题**：
+- 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
+- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `3782a78d4e11d1fb65042cf9c82231b9d644c20a`。
+- 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
+- `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r3` 均公开可达，并与父仓 gitlink 指向同一 commit；`r1`/`r2` 保留为父仓最新主线兼容补齐过程中的不可变候选。
+- `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
+- 当前只维护 5 个长期主题：
 
-  1. 宿主 library facade
-  2. 工具面、文件写入与执行安全
-  3. 提示词密封与 context / skill 单一来源
-  4. 定时任务执行与历史生命周期
-  5. 宿主编排、工作流完成闸与可取消登录
-  6. 宿主路由、预算与 shared automation 接口
+  1. 宿主嵌入与路由边界
+  2. 工具兼容与命令执行安全
+  3. 嵌入上下文与技能来源
+  4. 定时任务与运行生命周期
+  5. 三省六部编排与完成闸
 
-- 精确文件、commit、理由与测试见 `docs/fork-modifications.md`。
-- 新需求优先并入已有主题；只有形成新的稳定边界时才增加主题，禁止按 PR 批次、冲突批次或日期堆小 fork。
+精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入这 5 个主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
 
 ## 1. 核心原则
 
-### 1.1 不重复造底座
+### 1.1 最小 fork
 
-Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands、MCP client、Hooks、Compaction 等能力直接复用上游。扩展顺序：
+CodeWhale 提供 Engine、工具循环、Session、Skills、Commands、MCP、Hooks、Compaction、Fleet 和 Automation。扩展按以下顺序落位：
 
-1. `pinvou3-app` bridge / EngineConfig / Tauri wrapper
+1. `pinvou3-app` bridge / `EngineConfig` / Tauri wrapper
 2. bundle `instructions.md` / `SKILL.md`
-3. 独立 MCP server
-4. 通用 bug/API 缺口提上游 PR
-5. 只有 pinvou3 私有且必须进入底座生命周期的语义才留 fork
+3. MCP server / connector / plugin
+4. 通用缺口提交上游
+5. 只有必须进入底座生命周期、且不能由以上层完成的 Pinvou 语义才留 fork
 
-### 1.2 软上限
+Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app；底座只提供通用配置入口和执行期硬约束。
+
+### 1.2 规模软上限
 
 - 总 drift 软上限：1500 行。
 - 单文件 fork-distinct 改动软上限：200 行。
-- 超过不是自动拒绝，但必须在 `fork-modifications.md` 记录：为什么不能放 app/skill/MCP、哪些已 harvest、后续减量顺序。
-- 当前公开基线相对 v0.9.0 为 `+4839/-616，58 文件`，已经完成强制评估；结论见修改清单 §0。
+- 超过不是自动拒绝，但必须记录保留原因和减量顺序。
+- 当前相对 `v0.9.5` 为 `+1743/-263，45 文件`。净增量约 1480 行，修改面略超文件/总变更软线，主要集中在 Automation 持久化和三省六部完成闸；继续拆到 app 会复制底座状态机，因此本轮保留，后续优先上游化通用宿主接口和 Automation 生命周期修复。
 
 ### 1.3 主题提交
 
-- 一个长期主题可以跨多个强耦合文件；以“必须一起验证和回退”为合并标准。
-- 不按 cherry-pick 批次、冲突批次、旧 PR 编号拆 commit。
-- 小修必须 fixup/squash 回所属主题，避免在主题后维护一串 catch-up commit。
-- clean re-fork 后的线性主题历史应能从上游 tag 直接阅读。
+- 一个主题只包含共享状态、验证和回退边界的改动。
+- 小修 fixup/squash 回所属主题，不维护 catch-up 提交串。
+- 三省六部专用改动只能进入主题 5；通用宿主配置、路由、工具、定时任务和 OAuth 不得混入。
+- 每次升级从上游 release tag 直接阅读 5 个线性主题，不复用冲突批次作为长期历史。
 
-## 2. 新增 fork patch 决策树
+## 2. 新 fork patch 决策
 
 | 判断 | 处理 |
 |---|---|
-| app bridge / EngineConfig / instructions 能解决 | 放 app 或 bundle，不改 submodule |
-| 独立外部能力 | 写 MCP server |
-| 所有 CodeWhale embedder 都受益 | 从最新 upstream main 切净分支提上游 PR |
-| pinvou3 私有，且必须在 engine/subagent/task 生命周期内原子完成 | 放入最接近的现有 fork 主题 |
-| 与任何现有主题都不共享状态、验证或回退边界 | 才考虑新主题 |
+| app bridge / EngineConfig / instructions 能解决 | 放 app 或 bundle |
+| 独立外部能力 | MCP server / connector / plugin |
+| 所有 CodeWhale embedder 都受益 | 从最新 upstream main 提上游 PR |
+| Pinvou 私有且必须在 Engine、SubAgent、Task 生命周期中原子完成 | 并入最接近的既有主题 |
+| 与 5 个主题都不共享状态、验证或回退边界 | 评审后才新增主题 |
 
 ## 3. 同 PR 配套要求
 
-任何新增或修改 fork-distinct 代码的父仓 PR 必须同时包含：
+新增或修改 fork-distinct 行为时，同一父仓 PR 必须包含：
 
 1. `docs/fork-modifications.md` 对应主题更新。
-2. `scripts/fork-guard.sh` 固定字符串指纹。
-3. 至少一条 `forkguard_*` 结果式行为测试；纯平台行为需说明替代验证。
-4. 上游原测试因产品语义必然不成立时，明确 `#[ignore = "pinvou3 fork(...)"]`，不能静默删测试。
+2. `scripts/fork-guard.sh` 固定指纹更新。
+3. 至少一条结果式 `forkguard_*` 行为测试；纯平台行为说明替代验证。
+4. 上游测试因产品语义不再成立时明确标注原因，不静默删除。
 5. `./scripts/fork-guard.sh --fast` 通过。
 
-指纹、文档和 patch 必须同 PR；出现事后 catch-up PR 视为原 PR 漏项。
+只更新 gitlink 且行为不变时，仍需更新基线、commit 和指纹；现有行为测试已覆盖时不强制新增测试。
 
-## 4. 上游 sync 流程
+## 4. 上游同步流程
 
-### 4.1 sync 前
+### 4.1 同步前
 
 ```bash
 git -C CodeWhale fetch upstream --tags
 git -C CodeWhale branch backup/pre-vX-sync <current-fork-head>
 git -C CodeWhale diff --shortstat <current-release-tag>..<current-fork-head>
 ./scripts/fork-guard.sh --fast
-
-cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-  --bin dump_system_prompt --features dev-tools > /tmp/pre-sync-prompt.txt
 ```
 
-先核对工作树、worktree 和 submodule branch 占用；备份只建 branch，不删除 worktree、不 `git clean`。
+先核对父仓、submodule 和 worktree 状态。备份只建 branch，不删除用户 worktree 或未跟踪文件。
 
-### 4.2 选择 merge 还是 clean re-fork
+### 4.2 选择 merge 或 clean re-fork
 
-满足任一条件，优先 clean re-fork：
+以下任一成立时优先 clean re-fork：
 
-- 跨大版本或上游重构了 engine/subagent/prompt/automation 主干。
+- 上游重构 Engine、SubAgent、Prompt、Automation 或 crate 边界。
 - 预计冲突超过 10 处。
-- 旧 fork drift 已超过软上限。
-- 多个旧 patch 已被上游 harvest，merge 会保留大量无意义历史。
+- 旧 drift 超过软上限。
+- 多个旧 patch 已被上游吸收。
 
-clean re-fork 做法：从 release tag 新建隔离分支，逐主题重表达仍必要的语义；不要先把旧 fork 整包 merge 再按冲突结果提交。
+clean re-fork 从 release tag 新建隔离分支，逐主题重表达仍必要的语义；不得把旧 fork 整包 merge 后直接把冲突结果当作新基线。
 
 ### 4.3 逐项判定
 
-每个旧 patch 必须归入三类之一：
-
-- **上游已有**：逐字段确认等价，撤 fork 代码、指纹和说明。
-- **可移到 app/skill/MCP**：迁出底座并补应用层测试。
-- **仍需 fork**：按当前主题重打，并立即补新基线测试/指纹。
-
-最易静默漂移的面：
+每个旧 patch 归入：上游已有、迁到 app/Skill/MCP、仍需 fork。重点检查：
 
 | 面 | 必查内容 |
 |---|---|
-| prompt/context | composer 调用点、静态/运行时分层、project context 扫描源、Working Set |
-| tools/safety | active catalog 结果、deferred activator、写入上限、审批 fail-closed、Dangerous 命令 |
-| subagent/workflow | assignment、tool surface、完成判定、结构化落盘、取消与 terminal event |
-| automation/task | schema 兼容、conversation key、运行链接、锁跨 await、终态清理 |
-| embed API | lib module、opaque route、EngineConfig 新字段、Event/Op 结构变化 |
+| embed/route | library API、`EngineConfig` 新字段、resolved route、事件结构 |
+| tools/safety | canonical catalog、allowed/disallowed、宿主工具、文件上限、命令安全 |
+| prompt/skills | static composer、ambient context、Skill 根、disabled 语义、fragment 上限 |
+| automation | schema、conversation key、misfire、no-overlap、终态清理 |
+| 三省六部 | role、工具范围、最大步数、结构化/文件产出、取消和真实终态 |
 
-### 4.4 sync 后硬 gate
+### 4.4 同步后 gate
 
 ```bash
-# 指纹
 ./scripts/fork-guard.sh --fast
 
-# submodule
-cargo check -p codewhale-tui --lib
-cargo test -p codewhale-tui forkguard_ --lib -- --test-threads=1
-cargo test -p codewhale-tui automation_manager::tests --lib -- --test-threads=1
+cargo check --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked
+cargo test --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked \
+  forkguard_ -- --test-threads=1
 
-# app
-cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib
-cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
-
-# 静态 prompt
-cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-  --bin dump_system_prompt --features dev-tools > /tmp/post-sync-prompt.txt
-diff /tmp/pre-sync-prompt.txt /tmp/post-sync-prompt.txt
+cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --locked
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --locked \
+  -- --test-threads=1
+python3 scripts/architecture-guard.py
 ```
 
-完整产品签收仍以 `docs/底座升级验收清单.md` 为准。`fork-guard` 通过不等于 L1 真模型、GUI、MCP、OAuth、定时任务端到端已签收。
+`fork-guard` 和自动测试不替代真实模型、GUI、MCP/OAuth、定时任务和三省六部端到端签收。
 
-## 5. 上游 PR 策略
+## 5. 上游贡献策略
 
-- 从最新 upstream main 切净分支，一项通用语义一个 PR。
-- 提交前扫描 `pinvou|qwen|vllm|gb10|brother whale`，禁止产品 fixture 和中文私有注释泄漏。
-- PR 标题/body 按上游 `CONTRIBUTING.md`；父仓自己的 commit/PR 仍遵守中文规范。
-- CLOSED 不等于未 harvest；每次 sync 都按代码语义复核。
-- 当前优先候选：T6 opaque route/shared reconcile、T2 通用安全修复、T4 通用 automation 生命周期。
+- 从最新 upstream main 建净分支，一项通用语义一个 PR。
+- 提交前扫描 `pinvou|qwen|vllm|gb10|三省六部`，不得携带产品 fixture、私有注释或内部地址。
+- 优先候选：通用 embedding route API、命令安全修复、Automation 生命周期修复。
+- Pinvou 专用的提示词来源密封和三省六部完成闸不直接推上游。
 
-## 6. 收尾与发布边界
+## 6. 发布边界
 
-1. submodule 先形成干净的主题 commit，并完成底座测试。
-2. 父仓同一 PR 更新 gitlink、app 适配、Cargo.lock、两份文档和 guard。
-3. fork 稳定标签、远端维护分支与父仓 gitlink 必须指向同一个公开可达 commit；父仓不得通过 `.gitmodules branch` 跟随浮动分支。
-4. 未明确授权时，不直接 force-push 共享 main；先在同步分支交付验证结果。
-5. 合入后删除临时 worktree/branch 属单独清理动作，不与 sync 默认捆绑。
+1. CodeWhale 先形成干净的 5 主题提交并完成底座测试。
+2. 父仓更新 gitlink、app 适配、`Cargo.lock`、fork 文档、guard 和升级报告。
+3. 明确授权后才推送维护分支和固定标签；未推送前不得运行或放宽“公开可达”验证来伪造完成。
+4. 发布后复核远端 commit、不可变标签和父仓 gitlink 三者一致。
+5. 清理临时 worktree/branch 是独立动作，不与升级默认捆绑。

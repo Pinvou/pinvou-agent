@@ -43,6 +43,7 @@
     var shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
     var presentArtifactAbsPath = context.presentArtifactAbsPath;
     var extractArtifactPath = context.extractArtifactPath;
+    var fileMutationAction = context.fileMutationAction;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
@@ -555,7 +556,7 @@
 
     var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
       p.metadata.status === "Running" && p.metadata.task_id;
-    if (meta && meta.name === "exec_shell" && backgroundTaskId) {
+    if (meta && (meta.name === "exec_shell" || meta.name === "Bash") && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
       delete context.toolMeta[p.id];
       context.currentStreamText = ""; context.currentStreamId = 0;
@@ -657,15 +658,16 @@
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
 
-    // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
-    // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
+    // File.write/File.edit 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // 改成记账+去重:AI 一个 turn 会 edit 多次,实时续会刷出一堆卡;且 edit
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
-    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
+    var mutationAction = meta && fileMutationAction(meta.name, meta.args);
+    if (p.success && mutationAction) {
       var ap = extractArtifactPath(meta.args);
       if (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
-        if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
+        if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact

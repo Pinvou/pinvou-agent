@@ -405,7 +405,7 @@ pub(super) fn build_message_with_attachments_in_dir(
                 out.push_str(
                     "**以下代码块是文件完整内容,可直接使用,不需要再调 read_file / \
                      file_search 重新读取。**如需保存修改版本,用 write_file 写到 \
-                     PINVOU3_WORKSPACE 下;大产物用 append_file 分块追加。\n",
+                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
                 );
                 out.push_str("```\n");
                 out.push_str(md);

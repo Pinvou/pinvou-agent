@@ -133,8 +133,8 @@ const AcFmtIcon = FileTypeIcon;
           }
           return base;
         }
+        case 'File':
         case 'write_file':
-        case 'append_file':
         case 'edit_file':
           return toolBasename(args.path);
         case 'list_dir':
@@ -146,6 +146,7 @@ const AcFmtIcon = FileTypeIcon;
         case 'exec_shell':
         case 'task_shell_start':
         case 'shell':
+        case 'Bash':
           return typeof args.command === 'string' ? args.command.replace(/\s+/g, ' ').trim() : '';
         case 'checklist_update':
         case 'todo_update':

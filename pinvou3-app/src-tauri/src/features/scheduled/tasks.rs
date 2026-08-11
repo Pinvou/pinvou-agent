@@ -1831,6 +1831,7 @@ fn build_create_request(
         trust_mode: Some(true),
         // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
         auto_approve: Some(true),
+        delivery_mode: None,
         status: Some(status),
     })
 }
@@ -1860,6 +1861,7 @@ fn build_update_request(
         trust_mode: None,
         // 恒定 YOLO,更新请求不允许改动(见 build_create_request)。
         auto_approve: None,
+        delivery_mode: None,
         status,
     })
 }
@@ -1995,6 +1997,7 @@ pub fn humanize_rrule(rrule: &str) -> String {
                 .join("、");
             format!("{days} {byhour:02}:{byminute:02}")
         }
+        Ok(AutomationSchedule::Once { .. } | AutomationSchedule::Cron { .. }) => rrule.to_string(),
         Err(_) => rrule.to_string(),
     }
 }
@@ -2431,6 +2434,7 @@ mod tests {
                     allow_shell: Some(false),
                     trust_mode: Some(true),
                     auto_approve: Some(true),
+                    delivery_mode: None,
                     status: Some(AutomationStatus::Paused),
                 })
                 .expect("create automation");
@@ -3080,6 +3084,7 @@ mod tests {
             allow_shell: Some(false),
             trust_mode: Some(false),
             auto_approve: Some(false),
+            delivery_mode: None,
             status: AutomationStatus::Active,
             created_at: now,
             updated_at: now,

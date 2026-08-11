@@ -504,6 +504,7 @@ mod tests {
             allow_shell: Some(false),
             trust_mode: Some(false),
             auto_approve: Some(false),
+            owner_session_id: None,
         }
     }
 
@@ -658,6 +659,7 @@ mod tests {
                     allow_shell: Some(false),
                     trust_mode: Some(false),
                     auto_approve: Some(false),
+                    delivery_mode: None,
                     status: Some(AutomationStatus::Paused),
                 })?;
         runtime.bind_model_id(&automation.id, "scheduled-model", "deepseek-b");
@@ -729,6 +731,7 @@ mod tests {
                     allow_shell: Some(false),
                     trust_mode: Some(false),
                     auto_approve: Some(false),
+                    delivery_mode: None,
                     status: Some(AutomationStatus::Paused),
                 })?;
 

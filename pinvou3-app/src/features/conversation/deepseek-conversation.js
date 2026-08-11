@@ -9,6 +9,7 @@ const SHELL_TOOLS = new Set([
   'task_shell_start',
   'task_shell_wait',
   'shell',
+  'Bash',
 ]);
 
 export function conversationItemsForMode(chatItems = [], unified = true) {
