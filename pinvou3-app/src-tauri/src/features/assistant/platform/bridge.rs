@@ -1033,7 +1033,8 @@ impl Pinvou3Bridge {
             skills_dir: _,
             instructions: _,
             project_context_pack_enabled: _,
-            max_steps: _,
+            // advanced.max_steps 显式配置时覆盖；未配置则复用底座默认值。
+            max_steps: default_max_steps,
             max_subagents: _,
             snapshots_enabled: _,
             memory_enabled: _,
@@ -1134,9 +1135,8 @@ impl Pinvou3Bridge {
             skills_dir: self.bundle.skills_dir.clone(),
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            // 主 agent 每轮步数上限：默认对齐 subagent 的 MAX_SUBAGENT_STEPS=2000，
-            // 避免 100 步提前截断长任务（与多智能体模式的显式预算一致）。
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(2000),
+            // 主 agent 的默认预算由 CodeWhale 维护；Pinvou 只翻译显式用户配置。
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
             // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
@@ -3012,6 +3012,25 @@ mod tests {
             "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
+        );
+    }
+
+    #[test]
+    fn engine_config_reuses_base_max_steps_default_and_respects_override() {
+        let mut bridge = fixture_bridge();
+        let base_default = EngineConfig::default().max_steps;
+
+        assert_eq!(
+            bridge.build_engine_config().max_steps,
+            base_default,
+            "未显式配置时，主 agent 必须复用 CodeWhale 的 max_steps 默认值"
+        );
+
+        bridge.prefs.advanced.max_steps = Some(321);
+        assert_eq!(
+            bridge.build_engine_config().max_steps,
+            321,
+            "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
         );
     }
 
