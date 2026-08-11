@@ -6,13 +6,20 @@ const command = (kind, target) => ({ kind, target });
 
 export const FULL_FRONTEND_SMOKES = Object.freeze([
   command("npm", "test:bridge-smoke"),
-  command("npm", "test:webui"),
+  command("npm", "test:code-viewer-ui"),
+  command("npm", "test:code-viewer-diff-ui"),
+  command("npm", "test:workspace-panel-ui"),
+  command("npm", "test:workspace-panel-session-ui"),
+  command("npm", "test:reader-ui"),
+  command("npm", "test:reader-diff-ui"),
+  command("npm", "test:markdown-artifact-ui"),
   command("node", "tests/detached_boot_smoke.js"),
   command("node", "tests/drag_gesture_smoke.js"),
   command("node", "tests/update_notice_ui_smoke.js"),
   command("node", "tests/scheduled_tasks_smoke.js"),
   command("npm", "test:diff-ui"),
   command("node", "tests/pet_selector_ui_smoke.js"),
+  command("npm", "test:webui"),
 ]);
 
 const CORE_SMOKE = command("npm", "test:ui-smoke");
@@ -47,7 +54,9 @@ const FULL_PREFIXES = [
   "pinvou3-app/tests/",
   "pinvou3-app/vite.config.js",
   "scripts/mcp-server-contract-smoke.py",
+  "scripts/run-frontend-smokes.mjs",
   "scripts/run-user-journey-tests.sh",
+  "scripts/select-frontend-smokes.mjs",
 ];
 
 function isFrontendRelevant(path) {
@@ -66,7 +75,9 @@ function isFrontendRelevant(path) {
     path === "pinvou3-app/eslint.config.mjs" ||
     path === "pinvou3-app/src-tauri/tauri.conf.json" ||
     path === "scripts/run-user-journey-tests.sh" ||
-    path === "scripts/mcp-server-contract-smoke.py"
+    path === "scripts/run-frontend-smokes.mjs" ||
+    path === "scripts/mcp-server-contract-smoke.py" ||
+    path === "scripts/select-frontend-smokes.mjs"
   );
 }
 

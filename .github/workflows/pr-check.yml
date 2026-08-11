@@ -215,6 +215,8 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'remote-control-relay/**'
               - 'scripts/run-user-journey-tests.sh'
+              - 'scripts/run-frontend-smokes.mjs'
+              - 'scripts/select-frontend-smokes.mjs'
               - 'scripts/mcp-server-contract-smoke.py'
               - 'pinvou3-app/package.json'
               - 'pinvou3-app/package-lock.json'
@@ -384,15 +386,7 @@ jobs:
 
       - name: Merge Queue 完整浏览器 smoke
         if: ${{ github.event_name == 'merge_group' }}
-        run: |
-          npm run test:bridge-smoke
-          npm run test:webui
-          node tests/detached_boot_smoke.js
-          node tests/drag_gesture_smoke.js
-          node tests/update_notice_ui_smoke.js
-          node tests/scheduled_tasks_smoke.js
-          npm run test:diff-ui
-          node tests/pet_selector_ui_smoke.js
+        run: npm run test:browser-smoke
 
   relay-test:
     name: relay-test

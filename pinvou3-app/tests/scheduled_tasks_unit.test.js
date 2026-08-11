@@ -2,7 +2,7 @@
 /**
  * Static and behavioral regression checks for the scheduled-task frontend shell.
  *
- * Run: node pinvou3-app/tests/scheduled_tasks_unit.js
+ * Run: node --test pinvou3-app/tests/scheduled_tasks_unit.test.js
  */
 const assert = require('assert');
 const fs = require('fs');
