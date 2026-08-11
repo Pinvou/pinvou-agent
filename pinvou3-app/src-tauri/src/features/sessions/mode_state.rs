@@ -14,7 +14,6 @@
 //! restart, while skill bindings and model selections are persisted in their
 //! own sidecars (see [`super::sidecars`]).
 
-use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
 
 use anyhow::{bail, Context, Result};
@@ -154,27 +153,13 @@ impl Default for SessionModeState {
     }
 }
 
-/// `AppMode` 不是 Serialize，pinvou3 这层用一个序列化友好的镜像 enum，
-/// 跟前端 / settings.json 流通用，发给 engine 时 `to_app_mode()` 转回。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SerializableMode {
-    Plan,
-    Yolo,
-}
-
-impl SerializableMode {
-    pub fn to_app_mode(self) -> AppMode {
-        match self {
-            Self::Plan => AppMode::Plan,
-            Self::Yolo => AppMode::Yolo,
-        }
-    }
-}
+/// 序列化镜像(跨层协议类型),定义在 core。
+pub use crate::core::mode_state::SerializableMode;
 
 #[cfg(test)]
 mod type_tests {
     use super::*;
+    use deepseek_tui::tui::app::AppMode;
 
     #[test]
     fn default_is_yolo() {
