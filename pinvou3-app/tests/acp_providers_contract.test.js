@@ -232,6 +232,7 @@ const PROVIDER_FORM = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'settings', 'ProviderFormModal.jsx'),
   'utf8'
 );
+const I18N = fs.readFileSync(path.join(ROOT, 'src', 'shared', 'i18n.js'), 'utf8');
 const HOME_SWITCHER = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'),
   'utf8'
@@ -279,6 +280,34 @@ assert.match(
   PROVIDER_FORM,
   /copy\.showKey|copy\.hideKey/,
   'key 显隐按钮必须走 i18n 文案'
+);
+// 空 key / 删 key 自绘二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹）
+assert.match(
+  PROVIDER_FORM,
+  /acp-provider-form-confirm/,
+  '空 key/删 key 必须使用自绘二级确认弹窗'
+);
+assert.doesNotMatch(
+  PROVIDER_FORM,
+  /window\.confirm\s*\(/,
+  '表单不得调用 window.confirm（Tauri WebView2 下不弹）'
+);
+// 新建空 key 必须走 keep（允许保存后补 key），不得无条件 replace
+assert.match(
+  PROVIDER_FORM,
+  /trimmedKey\s*\?\s*'replace'\s*:\s*'keep'/,
+  '新建空 key 必须走 keep 而非 replace（否则后端误报「替换时 api_key 不能为空」）'
+);
+// key 回填加固：回填返回空串不得置 keyLoaded（防保存时把旧 key 静默删除）
+assert.match(
+  PROVIDER_FORM,
+  /if \(key\) setKeyLoaded\(true\)/,
+  '回填返回空串时不得置 keyLoaded（保存须走 keep 保留旧密钥）'
+);
+assert.strictEqual(
+  (I18N.match(/apiKeyEmptyConfirm/g) || []).length,
+  3,
+  '空 key 确认文案必须覆盖 zh/en/ja 三语'
 );
 // 会话级 Provider 覆盖仅 Codex 展示（H1）
 assert.match(

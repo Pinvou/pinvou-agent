@@ -67,6 +67,7 @@ function injectSource() {
     };
     var envConflicts = [];
     var envEffectiveEntries = [];
+    var nextProviderSeq = 0;
     var statusByAgent = {
       codex: { agent_id: 'codex', agent_name: 'Codex', installed: true, authenticated: true, version: '0.144.6', update_available: false, update_required: false, install_action: 'none', bridge_ready: true, setup_hint: null },
       claude: { agent_id: 'claude', agent_name: 'Claude Code', installed: true, authenticated: true, version: '2.0.0', update_available: false, update_required: false, install_action: 'none', bridge_ready: true, setup_hint: null },
@@ -105,7 +106,8 @@ function injectSource() {
         case 'get_acp_agent_status': return Promise.resolve(statusByAgent[args.agentId] || null);
         case 'save_acp_provider': {
           var state = providersByAgent[args.agent] || (providersByAgent[args.agent] = { currentProviderId: null, providers: [] });
-          var record = { id: args.providerId || 'pv-000000000009', name: args.name, baseUrl: args.baseUrl, model: args.model, wireApi: args.wireApi, hasCredential: args.apiKeyAction !== 'delete' && (!!args.apiKey || state.providers.some(function (p) { return p.id === args.providerId && p.hasCredential; })), created_at: '' };
+          // 新建按计数器分配唯一 id：固定 id 会让多次新增产生重复卡片/React key
+          var record = { id: args.providerId || ('pv-0000000000' + String(9 + nextProviderSeq++)), name: args.name, baseUrl: args.baseUrl, model: args.model, wireApi: args.wireApi, hasCredential: args.apiKeyAction !== 'delete' && (!!args.apiKey || state.providers.some(function (p) { return p.id === args.providerId && p.hasCredential; })), created_at: '' };
           if (args.providerId) {
             var index = state.providers.findIndex(function (p) { return p.id === args.providerId; });
             if (index >= 0) state.providers[index] = record;
@@ -277,6 +279,82 @@ async function clickSettingsSection(page, label) {
     return [...document.querySelectorAll('[data-testid^="acp-provider-card-"]')].some(card => (card.textContent || '').includes('新中转'));
   }));
 
+  // 新建空 key：自绘二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹）——
+  // 点保存后必须出现确认弹窗且**不**发保存请求；取消后确认弹窗消失仍不保存；
+  // 确认后以 apiKeyAction='keep' 保存成功（空 key 允许保存，之后补）。
+  await page.click('[data-testid="acp-provider-add"]');
+  await sleep(250);
+  await page.type('[data-testid="acp-provider-name"]', '空 Key 中转');
+  await page.type('[data-testid="acp-provider-base-url"]', 'https://relay-empty.example.com/v1');
+  const savesBeforeEmpty = await callCount(page, 'save_acp_provider');
+  await page.click('[data-testid="acp-provider-form-save"]');
+  await sleep(300);
+  rec('⑥.6 空 key 保存弹确认弹窗', await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="acp-provider-form-confirm"]');
+    return !!el && (el.textContent || '').includes('未填写 API Key');
+  }) && (await callCount(page, 'save_acp_provider')) === savesBeforeEmpty);
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-testid="acp-provider-form-confirm"]');
+    const cancel = [...modal.querySelectorAll('button')].find(button => (button.textContent || '').trim() === '取消');
+    cancel.click();
+  });
+  await sleep(200);
+  rec('⑥.7 取消确认弹窗后未保存', await page.evaluate(() =>
+    !document.querySelector('[data-testid="acp-provider-form-confirm"]')
+  ) && (await callCount(page, 'save_acp_provider')) === savesBeforeEmpty);
+  await page.click('[data-testid="acp-provider-form-save"]');
+  await sleep(300);
+  await page.click('[data-testid="acp-provider-form-confirm-ok"]');
+  await sleep(500);
+  rec('⑥.8 确认后以 keep 保存空 key', await page.evaluate(() => {
+    const saves = window.__ACP_PROVIDERS_TEST__.calls.filter(call => call.cmd === 'save_acp_provider');
+    const last = saves[saves.length - 1];
+    return !!last && last.args.apiKeyAction === 'keep' && !last.args.apiKey;
+  }));
+
+  // 编辑已存密钥的 Provider 并清空 key = 删除密钥：必须弹 deleteKey 确认弹窗，
+  // 确认后以 apiKeyAction='delete' 上送
+  await page.click('[data-testid="acp-provider-edit-pv-000000000001"]');
+  await sleep(400);
+  await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="acp-provider-api-key"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.click('[data-testid="acp-provider-form-save"]');
+  await sleep(300);
+  rec('⑥.9 清空已存 key 弹删除确认弹窗', await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="acp-provider-form-confirm"]');
+    return !!el && (el.textContent || '').includes('删除已保存的密钥');
+  }));
+  await page.click('[data-testid="acp-provider-form-confirm-ok"]');
+  await sleep(500);
+  rec('⑥.10 确认后以 delete 上送', await page.evaluate(() => {
+    const saves = window.__ACP_PROVIDERS_TEST__.calls.filter(call => call.cmd === 'save_acp_provider');
+    const last = saves[saves.length - 1];
+    return !!last && last.args.apiKeyAction === 'delete';
+  }));
+
+  // 编辑**无已存密钥**的 Provider + 空 key：与新建同语义，也必须弹
+  // 「未填写 API Key」确认（此前静默 keep 直接保存，不弹确认）
+  await page.click('[data-testid="acp-provider-edit-pv-000000000002"]');
+  await sleep(400);
+  const savesBeforeNoKeyEdit = await callCount(page, 'save_acp_provider');
+  await page.click('[data-testid="acp-provider-form-save"]');
+  await sleep(300);
+  rec('⑥.11 编辑无密钥 Provider 空 key 弹确认弹窗', await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="acp-provider-form-confirm"]');
+    return !!el && (el.textContent || '').includes('未填写 API Key');
+  }) && (await callCount(page, 'save_acp_provider')) === savesBeforeNoKeyEdit);
+  await page.click('[data-testid="acp-provider-form-confirm-ok"]');
+  await sleep(500);
+  rec('⑥.12 确认后以 keep 保存', await page.evaluate(() => {
+    const saves = window.__ACP_PROVIDERS_TEST__.calls.filter(call => call.cmd === 'save_acp_provider');
+    const last = saves[saves.length - 1];
+    return !!last && last.args.providerId === 'pv-000000000002' && last.args.apiKeyAction === 'keep';
+  }));
+
   // Claude 细化模型槽位：切到 claude 标签页 → 新增 → 五个槽位必填；输入主模型
   // 后槽位自动跟随填充；保存时 modelSlots 随参数上送
   await page.click('[data-testid="acp-agent-tab-claude"]');
@@ -435,7 +513,9 @@ async function clickSettingsSection(page, label) {
   // 安装中状态恢复与取消：installing=true 时安装按钮禁用并显示「正在安装」，
   // 取消按钮可见；点击后调用 cancel_acp_agent_install 并恢复可安装形态
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstalling('codex', true));
-  await page.click('[data-testid="acp-provider-refresh"]');
+  // DOM click 而非坐标点击：Provider 较多时内容更高，CLI 区滚入视口后
+  // 刷新按钮可能被吸顶通知条（3.2s 自动消失）遮住，坐标点击会打在通知条上
+  await page.evaluate(() => document.querySelector('[data-testid="acp-provider-refresh"]').click());
   await sleep(500);
   rec('⑯ 安装中按钮禁用且显示进行中文案', await page.evaluate(() => {
     const button = document.querySelector('[data-testid="acp-cli-install-update"]');
