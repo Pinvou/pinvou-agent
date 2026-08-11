@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
-const conversationDir = path.join(temp, 'conversation');
+const conversationDir = path.join(temp, 'features', 'conversation');
 mkdirSync(conversationDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
@@ -23,8 +23,10 @@ try {
     `${pathToFileURL(path.join(conversationDir, 'deepseek-conversation.js')).href}?t=${Date.now()}`
   );
   const {
+    countsAsFailedOperation,
     externalMarkdownUrl,
     fetchToolDetails,
+    isAgentWaitCall,
     isFetchTool,
     isNearConversationBottom,
     isSearchTool,
@@ -36,6 +38,25 @@ try {
   assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');
   assert.equal(externalMarkdownUrl('javascript:alert(1)'), '');
   assert.equal(externalMarkdownUrl('README.md'), '');
+  assert.equal(isAgentWaitCall('agent', { action: 'wait' }), true);
+  assert.equal(isAgentWaitCall('agents/wait', {}), true);
+  assert.equal(isAgentWaitCall('agent', { action: 'status' }), false);
+  assert.equal(isAgentWaitCall('agents/list', {}), false);
+  assert.equal(countsAsFailedOperation({
+    type: 'tool',
+    status: 'failed',
+    tool: { name: 'agent', rawInput: { action: 'wait' } },
+  }), false, 'legacy wait failures must not become child-task failures');
+  assert.equal(countsAsFailedOperation({
+    type: 'tool',
+    status: 'failed',
+    tool: { name: 'agents/wait', rawInput: {} },
+  }), false, 'canonical wait failures must have the same presentation semantics');
+  assert.equal(countsAsFailedOperation({
+    type: 'tool',
+    status: 'failed',
+    tool: { name: 'read_file', rawInput: {} },
+  }), true, 'ordinary tool failures must remain visible');
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 820, clientHeight: 100 }), true);
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 700, clientHeight: 100 }), false);
   const chatItems = [
@@ -131,6 +152,89 @@ try {
   assert.equal(projected.turns[2].waitingPermission, false);
   assert.equal(projected.turns[2].waitingInput, true);
   assert.deepEqual(projected.turns[2].usage, { used: 320, size: 4096 });
+
+  const waitCompatibilityProjection = projectDeepSeekConversation({
+    sessionId: 'wait-compatibility',
+    chatItems: [
+      { id: 1, type: 'user', text: 'wait for child' },
+      {
+        id: 2,
+        type: 'tool',
+        name: 'agent',
+        args: { action: 'wait', agent_id: 'agent_legacy' },
+        output: 'not available yet',
+        success: false,
+        state: 'failed',
+      },
+      {
+        id: 3,
+        type: 'tool',
+        name: 'agents/wait',
+        args: { agent_id: 'agent_canonical' },
+        output: 'not available yet',
+        success: false,
+        state: 'failed',
+      },
+      {
+        id: 4,
+        type: 'tool',
+        name: 'read_file',
+        args: { path: 'missing.txt' },
+        output: 'missing',
+        success: false,
+        state: 'failed',
+      },
+    ],
+  });
+  assert.equal(waitCompatibilityProjection.turns[0].operationCount, 3);
+  assert.equal(
+    waitCompatibilityProjection.turns[0].failedOperationCount,
+    1,
+    'only the real execution failure should be counted',
+  );
+
+  const rawMarkdownProjection = projectDeepSeekConversation({
+    sessionId: 'copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'copy' },
+      { id: 2, type: 'assistant', text: '## Result\n\n- item', html: '<h2>Result</h2><ul><li>item</li></ul>' },
+    ],
+  });
+  assert.equal(rawMarkdownProjection.turns[0].items[0].text, '## Result\n\n- item');
+  assert.equal(rawMarkdownProjection.turns[0].items[0].copyText, undefined);
+  assert.deepEqual(
+    rawMarkdownProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
+    'DeepSeek projection must defer canonical copy conversion until the user clicks copy',
+  );
+
+  const scheduledMarkdown = '```json\n{"name":"Daily","prompt":"Summarize","rrule":"FREQ=DAILY"}\n```';
+  const ordinaryScheduledProjection = projectDeepSeekConversation({
+    sessionId: 'ordinary-copy-contract',
+    chatItems: [
+      { id: 1, type: 'user', text: 'show schema' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(ordinaryScheduledProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    ordinaryScheduledProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: false },
+  );
+  const taskCreationProjection = projectDeepSeekConversation({
+    sessionId: 'scheduled-copy-contract',
+    allowScheduledTaskDraft: true,
+    chatItems: [
+      { id: 1, type: 'user', text: 'create task' },
+      { id: 2, type: 'assistant', text: scheduledMarkdown, html: '<pre><code>schema</code></pre>' },
+    ],
+  });
+  assert.equal(taskCreationProjection.turns[0].items[0].text, scheduledMarkdown);
+  assert.deepEqual(
+    taskCreationProjection.turns[0].items[0].copyOptions,
+    { allowScheduledTaskDraft: true },
+    'scheduled-task classification must remain available to the lazy copy resolver',
+  );
 
   const history = projectDeepSeekConversation({
     chatItems,
@@ -248,7 +352,7 @@ try {
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
     && toolRenderers.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
   'free-text questions must not render duplicate Other placeholder choices');
-  assert.ok(toolRenderers.includes('otherPlaceholder="Other"'),
+  assert.ok(toolRenderers.includes('otherPlaceholder={t.uiToolRender.other}'),
     'DeepSeek and Codex question cards must use the same free-text placeholder');
   assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
     && questionChoiceCard.includes('onClick={submit}'),

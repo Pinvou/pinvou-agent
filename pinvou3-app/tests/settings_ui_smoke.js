@@ -10,7 +10,28 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const assert = require('assert');
 const { startUiTestServer } = require('./ui_test_server');
+
+const settingsViewSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
+  'utf8',
+);
+const detectStart = settingsViewSource.indexOf('async function handleDetect()');
+const detectEnd = settingsViewSource.indexOf('function vllmStatusLabel(', detectStart);
+assert.notStrictEqual(detectStart, -1, 'local model detect handler must exist');
+assert.notStrictEqual(detectEnd, -1, 'local model detect handler boundary must exist');
+const detectSource = settingsViewSource.slice(detectStart, detectEnd);
+assert.match(
+  detectSource,
+  /loaded === true/,
+  'automatic local-model fill must require an explicitly loaded model',
+);
+assert.doesNotMatch(
+  detectSource,
+  /loaded !== false/,
+  'unknown model state must not be treated as loaded during automatic fill',
+);
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch (_) { /* fall through */ }
@@ -93,6 +114,7 @@ function injectSource() {
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
+    var dependencyCheckResponse = [];
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -148,7 +170,7 @@ function injectSource() {
             base_url: 'http://127.0.0.1:11434/v1',
             status: 'ready',
             model: 'qwen2.5-coder:32b',
-            models: ['qwen2.5-coder:32b', 'deepseek-r1:14b'],
+            models: [{ id: 'qwen2.5-coder:32b', loaded: true }, { id: 'deepseek-r1:14b', loaded: false }],
             max_model_len: 32768,
           },
           {
@@ -172,7 +194,8 @@ function injectSource() {
         case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
-        case 'check_dependencies': return Promise.resolve([]);
+        case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
+        case 'install_dependencies': return Promise.resolve(null);
         case 'submit_feedback': return Promise.resolve({ status: 'submitted', message: '反馈已提交，感谢你的帮助。' });
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
@@ -194,6 +217,7 @@ function injectSource() {
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
+      setDependencyCheckResponse: function (next) { dependencyCheckResponse = (next || []).slice(); },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -485,6 +509,10 @@ async function modalWidth(page, headingText) {
     return {
       hasSections: text.includes('Coding Plan') && text.includes('官方 API') && text.includes('自定义兼容接口'),
       hasProviders: text.includes('智谱 Coding Plan / GLM Coding Plan') && text.includes('Kimi Coding Plan') && text.includes('深度求索 / DeepSeek') && text.includes('MiniMax 中国版 / MiniMax China'),
+      hasOverseas: text.includes('OpenAI') && text.includes('Anthropic Claude') && text.includes('Google Gemini') && text.includes('xAI Grok'),
+      hasIntlNodes: text.includes('Kimi 国际版 / Kimi Global') && text.includes('智谱国际版 / GLM API (z.ai)')
+        && text.includes('MiniMax 国际版 / MiniMax Global') && text.includes('通义千问国际版 / Qwen International'),
+      hasTokenPlan: text.includes('通义千问 Token Plan'),
       providerFirst: !text.includes('deepseek-v4-pro') && !text.includes('kimi-k3'),
       noStale: stale.every(name => !text.includes(name)),
     };
@@ -500,6 +528,43 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.1 添加模型默认展示云端 tab 且保留本地 tab 入口', Object.values(addPickerDefault).every(Boolean), JSON.stringify(addPickerDefault));
+
+  await clickExact(page, '通义千问 Token Plan');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  const tokenPlanModels = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const lines = (root ? root.innerText : '').split('\n').map(line => line.trim());
+    return {
+      hasGa: lines.includes('qwen3.8-max'),
+      hasPreview: lines.includes('qwen3.8-max-preview'),
+    };
+  });
+  rec('⑥.1d Token Plan 条目同时列出 qwen3.8-max 正式版与预览版', Object.values(tokenPlanModels).every(Boolean), JSON.stringify(tokenPlanModels));
+  await clickExact(page, '取消');
+  await sleep(300);
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '豆包');
+  await sleep(300);
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  const doubaoModels = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const text = root ? root.innerText : '';
+    return {
+      hasCanonicalId: text.includes('doubao-seed-2-1-pro-260628'),
+      noLegacyId: !text.includes('doubao-seed-2.1-pro'),
+    };
+  });
+  rec('⑥.1e 豆包条目使用火山方舟规范模型 ID', Object.values(doubaoModels).every(Boolean), JSON.stringify(doubaoModels));
+  await clickExact(page, '取消');
+  await sleep(300);
+
+  await clickExact(page, '添加模型');
+  await sleep(300);
 
   await clickExact(page, '智谱 Coding Plan / GLM Coding Plan');
   await sleep(300);
@@ -553,6 +618,7 @@ async function modalWidth(page, headingText) {
       && savedCodingPlan.provider_kind === 'coding_plan'
       && savedCodingPlan.vendor === 'glm'
       && savedCodingPlan.model === 'glm-5-turbo'
+      && savedCodingPlan.name === 'glm-5-turbo'
       && savedCodingPlan.base_url === 'https://open.bigmodel.cn/api/coding/paas/v4'
       && savedCodingPlan.api_key === 'sk-coding-plan'
       && savedCodingPlan.credential_action === 'replace',
@@ -602,6 +668,9 @@ async function modalWidth(page, headingText) {
       ollamaModel: text.includes('qwen2.5-coder:32b') && text.includes('deepseek-r1:14b'),
       vllmModel: text.includes('qwen36_35b_256k'),
       providerLine: text.includes('Ollama · http://127.0.0.1:11434/v1') && text.includes('vLLM · http://127.0.0.1:8000/v1'),
+      notLoadedTag: text.includes('未加载') && text.includes('尚未载入内存，首次使用时会自动加载'),
+      loadedSortedFirst: text.indexOf('qwen2.5-coder:32b') > -1 && text.indexOf('deepseek-r1:14b') > -1
+        && text.indexOf('qwen2.5-coder:32b') < text.indexOf('deepseek-r1:14b'),
     };
   });
   rec('⑥.3 本地模型自动检测展示多个服务与多个模型 ID', Object.values(localDetectUi).every(Boolean), JSON.stringify(localDetectUi));
@@ -688,7 +757,12 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑦ 输入 API Key 后可保存新增模型', savedModel && savedModel.model === 'deepseek-v4-pro' && savedModel.api_key === 'sk-model-test', JSON.stringify(savedModel));
+  rec('⑦ 输入 API Key 后可保存新增模型',
+    savedModel
+      && savedModel.model === 'deepseek-v4-pro'
+      && savedModel.name === 'deepseek-v4-pro'
+      && savedModel.api_key === 'sk-model-test',
+    JSON.stringify(savedModel));
 
   // ⑦.img 图片输入能力/视觉模型控件:渲染默认值、排除自身、保存往返。
   await clickRowAction(page, 'deepseek-v4-pro', '编辑');
@@ -957,7 +1031,39 @@ async function modalWidth(page, headingText) {
       && deleteLaterSaved.metasoAction === 'delete',
     JSON.stringify({ width: searchDeleteWidth, savesBeforeDeleteLater, savesAfterDeleteLater, restartsBeforeDeleteLater, restartsAfterDeleteLater, deleteLaterSaved }));
 
+  await page.evaluate(() => window.__SETTINGS_TEST__.setDependencyCheckResponse([
+    { key: 'voice_asr_model', installed: false, apt: '', install_action: 'voice_asr_model' },
+    { key: 'knowledge_embedding_model', installed: false, apt: '', install_action: 'knowledge_embedding_model' },
+  ]));
   await clickSettingsSection(page, '权限与环境');
+  await page.evaluate(() => document.querySelector('#settings-dependencies button')?.click());
+  await sleep(300);
+  const onDemandModels = await page.evaluate(() => {
+    const section = document.querySelector('#settings-dependencies');
+    const text = section?.textContent || '';
+    const buttons = [...(section?.querySelectorAll('button') || [])];
+    buttons.at(-1)?.click();
+    return {
+      voiceModelVisible: text.includes('SenseVoice q8'),
+      knowledgeModelVisible: text.includes('bge-m3'),
+      runtimeItemHidden: !text.includes('本地语音识别'),
+      buttonCount: buttons.length,
+    };
+  });
+  await sleep(300);
+  const modelInstallCall = await page.evaluate(() => {
+    const call = window.__SETTINGS_TEST__.calls.find(item => item.cmd === 'install_dependencies');
+    return call && call.args;
+  });
+  rec('⑭.1 Windows 仅展示可修复模型并调用对应下载动作',
+    onDemandModels.voiceModelVisible
+      && onDemandModels.knowledgeModelVisible
+      && onDemandModels.runtimeItemHidden
+      && onDemandModels.buttonCount === 2
+      && Array.isArray(modelInstallCall?.packages)
+      && modelInstallCall.packages.length === 0
+      && JSON.stringify(modelInstallCall.actions) === JSON.stringify(['voice_asr_model', 'knowledge_embedding_model']),
+    JSON.stringify({ onDemandModels, modelInstallCall }));
   await page.evaluate(() => {
     const row = [...document.querySelectorAll('div')].find(node => (node.textContent || '').includes('高级执行权限') && node.querySelector('[role="switch"]'));
     const button = row && row.querySelector('[role="switch"]');

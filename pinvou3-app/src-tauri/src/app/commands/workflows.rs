@@ -6,10 +6,21 @@
 /// 工作流卡片不显示的 skill 名单。这些是 pinvou3 自带的基础能力组件
 /// (review 流程内部用),不应作为用户主动启用的工作流入口。
 ///
-/// 后续真正物理隔离会把这俩从 `bundle/skills/` 移到独立目录 +
-/// CodeWhale fork patch 让 EngineConfig 支持多 skills_dir。当前
-/// 用 skiplist 软隔离,工作量小,效果一致。
+/// 后续真正物理隔离需要由 app 按会话生成组合目录，再通过 CodeWhale 的单一
+/// `EngineConfig.skills_dir` 注入。当前用 skiplist 软隔离，工作量小、效果一致。
 const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
+
+/// 既有 Python 调度器与新的 CodeWhale 多智能体运行必须保持数据隔离。
+///
+fn resolve_legacy_scheduler_session(
+    session_id: Option<String>,
+    store: &SessionStore,
+) -> Result<String, String> {
+    let session_id = session_id
+        .or_else(|| store.active_id())
+        .ok_or_else(|| "no active session".to_string())?;
+    Ok(session_id)
+}
 
 /// 工作流视图卡片渲染需要的 skill 摘要 — 跟 CodeWhale runtime_api 的
 /// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
@@ -292,8 +303,8 @@ pub async fn start_workflow(
     // 2. 在 engine 的实际执行工作区下初始化项目目录。普通聊天使用 session 私有目录，
     //    定时任务使用 automation 私有目录；harness forwarder 必须读取同一路径。
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let project_dir = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
         let scenario = scenario.clone();
@@ -366,12 +377,10 @@ pub async fn kick_workflow(
 ) -> Result<String, String> {
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let ws = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let harness_workspace = ws.clone();
     let action = tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::step_fresh(&harness_workspace)
@@ -501,12 +510,10 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let ws = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let action = tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::retry_role(&ws, &rid)
@@ -1090,12 +1097,10 @@ pub async fn cancel_workflow_role(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let rid = role_id.clone();
     let result = tokio::task::spawn_blocking(move || {
         // 找到 project_dir
@@ -1153,12 +1158,10 @@ pub async fn stop_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let stop_reason = reason
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "user_stopped".to_string());
@@ -1205,12 +1208,10 @@ pub async fn approve_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
@@ -1251,12 +1252,10 @@ pub async fn reject_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
@@ -1293,12 +1292,10 @@ pub async fn get_workflow_state(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::read_full_agent_state(&workspace)
             .unwrap_or(serde_json::json!(null))
@@ -1445,4 +1442,5 @@ pub async fn list_session_skill_bindings(
     }
     Ok(out)
 }
+
 use super::prelude::*;

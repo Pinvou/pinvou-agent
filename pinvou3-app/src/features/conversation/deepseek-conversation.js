@@ -1,8 +1,7 @@
 import {
-  commandExecutionDetails,
+  countsAsFailedOperation,
   presentConversationItems,
 } from './conversation-model.js';
-
 const SHELL_TOOLS = new Set([
   'exec_shell',
   'exec_shell_wait',
@@ -29,12 +28,14 @@ function toolStatus(item) {
   return 'pending';
 }
 
-function projectItem(item, index) {
+function projectItem(item, index, copyOptions) {
   const id = stableItemId(item, index);
   if (item.type === 'assistant') {
     return {
       id,
       type: 'agent_message',
+      text: item.text || '',
+      copyOptions,
       status: item.streaming ? 'in_progress' : 'completed',
       legacyItem: item,
     };
@@ -184,6 +185,7 @@ export function projectDeepSeekConversation({
   tokens = null,
   sessionId = null,
   timelineEvents = [],
+  allowScheduledTaskDraft = false,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -208,7 +210,7 @@ export function projectDeepSeekConversation({
       userTurns.push(current);
       continue;
     }
-    ensureTurn(index).items.push(projectItem(item, index));
+    ensureTurn(index).items.push(projectItem(item, index, { allowScheduledTaskDraft }));
   }
 
   for (const turn of turns) {
@@ -217,14 +219,7 @@ export function projectDeepSeekConversation({
       ['command_execution', 'file_change', 'tool'].includes(item.type)
     ));
     turn.operationCount = operations.length;
-    turn.failedOperationCount = operations.filter(item => (
-      item.status === 'failed'
-      || (
-        item.type === 'command_execution'
-        && commandExecutionDetails(item.tool).exitCode != null
-        && commandExecutionDetails(item.tool).exitCode !== 0
-      )
-    )).length;
+    turn.failedOperationCount = operations.filter(countsAsFailedOperation).length;
     turn.waitingPermission = turn.items.some(item => (
       item.type === 'permission'
       && item.legacyItem
@@ -275,9 +270,9 @@ export function projectDeepSeekConversation({
     activeTurn.completedAt = null;
     activeTurn.error = null;
     activeTurn.lifecycleKnown = true;
-    activeTurn.activityLabel = thinking && thinking.phase === 'tool' && thinking.toolName
-      ? `正在调用 ${thinking.toolName}`
-      : '正在处理';
+    activeTurn.activityToolName = thinking && thinking.phase === 'tool' && thinking.toolName
+      ? thinking.toolName
+      : null;
   }
   if (activeTurn && busy && tokens && tokens.max > 0) {
     activeTurn.usage = {

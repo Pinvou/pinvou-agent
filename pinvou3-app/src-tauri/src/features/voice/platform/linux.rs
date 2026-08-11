@@ -83,7 +83,9 @@ pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
             serde_json::json!({ "stage": "ffmpeg", "downloaded": 0, "total": 0 }),
         );
         tokio::task::spawn_blocking(|| {
-            crate::features::dependencies::install_dependencies(vec!["ffmpeg".to_string()])
+            // 该 spawn_blocking 闭包不持有 app 句柄,无法把 brew 式逐行进度透传给
+            // 前端,故显式传 None:行为与新增 progress 回调前一致(静默安装 ffmpeg)。
+            crate::features::dependencies::install_dependencies(vec!["ffmpeg".to_string()], None)
         })
         .await
         .map_err(|e| format!("ffmpeg install task failed: {e}"))??;

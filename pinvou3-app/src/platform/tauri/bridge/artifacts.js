@@ -16,8 +16,8 @@
     var isDeliverable = context.isDeliverable;
     var isAbsPath = context.isAbsPath;
     var sessionStates = context.sessionStates;
-    var TAURI = context.TAURI;
-    var listen = context.listen;
+    var ensureSession = context.ensureSession;
+    var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var attachIdSeq = 0;
   // ── 产物面板 ─────────────────────────────────────────────────────
   function artifactInfo(path) { return invoke("artifact_info", { path: path }); }
@@ -33,6 +33,8 @@
   function openInSystem(path) { return invoke("open_in_system", { path: path }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 仅放白名单 URL (metaso.cn / open.bochaai.com),后端 open_external_url 强制校验。
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
+  // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
+  function openUserExternalUrl(url) { return invoke("open_user_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
   function listDeliverables(projectDir) {
     return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
@@ -121,76 +123,121 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  var recentDroppedPaths = {};
-  var DROP_DEDUP_MS = 1500;
-  function dropPathKey(path) {
-    return String(path || "").toLowerCase();
+  function updateAttachmentDragState(active) {
+    active = !!active;
+    if (!!state.attachmentDragActive === active) return;
+    state.attachmentDragActive = active;
+    notify();
   }
-  function droppedFilePaths(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload.filter(Boolean);
-    if (payload.payload) return droppedFilePaths(payload.payload);
-    if (payload.type && payload.type !== "drop") return [];
-    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
-    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
-    if (typeof payload.path === "string") return [payload.path];
-    if (typeof payload === "string") return [payload];
-    return [];
-  }
-  async function addDroppedAttachments(paths) {
-    var now = Date.now();
-    var seen = {};
-    var list = (paths || []).filter(function (p) {
-      var key = dropPathKey(p);
-      if (!p || seen[key]) return false;
-      seen[key] = true;
-      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
-      recentDroppedPaths[key] = now;
-      return true;
-    });
-    Object.keys(recentDroppedPaths).forEach(function (key) {
-      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
-    });
-    for (var i = 0; i < list.length; i++) {
-      await addAttachmentByPath(list[i]);
+
+  function encodeBase64Bytes(bytes) {
+    var binary = "";
+    var stride = 0x8000;
+    for (var offset = 0; offset < bytes.length; offset += stride) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + stride));
     }
+    return btoa(binary);
   }
+
+  async function addDroppedFileAttachment(file) {
+    if (!file) return;
+    if (!state.activeSessionId && ensureSession) await ensureSession();
+    var sessionId = state.activeSessionId;
+    if (!sessionId) {
+      addSystemItem(bt("attachNeedSession"));
+      return;
+    }
+    var id = ++attachIdSeq;
+    var att = { id: id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
+    var commitAcknowledged = false;
+    state.attachments.push(att);
+    notify();
+    try {
+      if (!file.size || file.size > 20 * 1024 * 1024) {
+        throw new Error(file.size ? bt("attachTooLarge") : bt("attachEmptyFile"));
+      }
+      var uploadId = "desktop_attach_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
+      att.uploadId = uploadId;
+      var offset = 0;
+      var result = null;
+      while (offset < file.size) {
+        if (att.cancelled) throw new Error(bt("attachAddCancelled"));
+        var end = Math.min(offset + 192 * 1024, file.size);
+        var bytes = await file.slice(offset, end).arrayBuffer();
+        result = await invoke("ingest_dropped_file_chunk", {
+          sessionId: sessionId,
+          uploadId: uploadId,
+          filename: file.name || "attachment",
+          offset: offset,
+          total: file.size,
+          dataBase64: encodeBase64Bytes(new Uint8Array(bytes)),
+          commit: end === file.size
+        });
+        if (end === file.size) commitAcknowledged = true;
+        offset = end;
+      }
+      if (att.cancelled) throw new Error(bt("attachAddCancelled"));
+      if (!result || !result.basename) throw new Error(bt("attachInvalidResult"));
+      Object.defineProperty(result, "__pinvouManagedAttachmentSessionId", {
+        value: sessionId,
+        enumerable: false,
+      });
+      att.basename = result.basename || att.basename;
+      att.status = "ready";
+      att.result = result;
+    } catch (e) {
+      // The command already removes staging on backend errors. Only the user's
+      // explicit cancellation, or an acknowledged commit with an invalid
+      // response, may delete the completed directory.
+      if (att.uploadId && (att.cancelled || commitAcknowledged)) {
+        await invoke("cancel_dropped_file_upload", {
+          sessionId: sessionId,
+          uploadId: att.uploadId,
+        }).catch(function () {});
+      }
+      att.status = "error";
+      att.error = String(e);
+    }
+    notify();
+  }
+
+  function conversationAttachmentArgs(reference) {
+    reference = reference || {};
+    return {
+      sessionId: reference.sessionId || state.activeSessionId,
+      messageIndex: Number(reference.messageIndex),
+      attachmentIndex: Number(reference.attachmentIndex),
+      basename: String(reference.basename || ""),
+      displayText: String(reference.displayText || ""),
+    };
+  }
+  function resolveConversationAttachment(reference) {
+    return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
+  }
+  function openConversationAttachment(reference) {
+    return invoke("open_conversation_attachment", conversationAttachmentArgs(reference))
+      .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
+  }
+  function revealConversationAttachment(reference) {
+    return invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference))
+      .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
+  }
+
   function initAttachmentDrop() {
     if (initAttachmentDrop.done) return;
     initAttachmentDrop.done = true;
-
-    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
-    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
-      currentWindow.onDragDropEvent(function (event) {
-        var paths = droppedFilePaths(event);
-        if (paths.length) addDroppedAttachments(paths);
-      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
+    if (!root.PinvouAttachmentDropController) {
+      console.warn("[attachment] drop controller is unavailable");
+      return;
     }
-
-    listen("tauri://file-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-    listen("tauri://drag-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-
-    document.addEventListener("dragover", function (e) {
-      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
+    root.PinvouAttachmentDropController.install({
+      document: document,
+      onActiveChange: updateAttachmentDragState,
+      onFiles: async function (files) {
+        for (var index = 0; index < files.length; index++) {
+          await addDroppedFileAttachment(files[index]);
+        }
       }
-    });
-    document.addEventListener("drop", function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      e.preventDefault();
-      var paths = [];
-      for (var i = 0; i < files.length; i++) {
-        if (files[i] && files[i].path) paths.push(files[i].path);
-      }
-      if (paths.length) addDroppedAttachments(paths);
     });
   }
   async function addPasteImage(filename, bytes) {
@@ -200,10 +247,25 @@
     } catch (e) { addSystemItem(bt("pasteImageFailed") + e); }
   }
   function removeAttachment(id) {
+    var removed = state.attachments.find(function (a) { return a.id === id; });
+    if (removed) {
+      removed.cancelled = true;
+      if (removed.status === "ready" && removed.result) {
+        discardManagedAttachment(removed.result);
+      }
+    }
     state.attachments = state.attachments.filter(function (a) { return a.id !== id; });
     notify();
   }
-  function clearAttachments() { state.attachments = []; }
+  function clearAttachments() {
+    state.attachments.forEach(function (attachment) {
+      attachment.cancelled = true;
+      if (attachment.status === "ready" && attachment.result) {
+        discardManagedAttachment(attachment.result);
+      }
+    });
+    state.attachments = [];
+  }
   // 打开系统文件选择器并摄入为附件
   async function pickAndAttach() {
     if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return; }
@@ -238,12 +300,16 @@
       listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,
+      openUserExternalUrl: openUserExternalUrl,
       addAttachmentByPath: addAttachmentByPath,
       addPasteImage: addPasteImage,
       removeAttachment: removeAttachment,
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
-      uploadDeviceFiles: uploadDeviceFiles
+      uploadDeviceFiles: uploadDeviceFiles,
+      resolveConversationAttachment: resolveConversationAttachment,
+      openConversationAttachment: openConversationAttachment,
+      revealConversationAttachment: revealConversationAttachment
     };
   };
 })(window);

@@ -19,12 +19,22 @@ const indexHtml = [
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow'
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow',
+  'multiagent'
 ];
-const tauriBridge = tauriBridgeFeatureNames
-  .map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8'))
+const bridgeMessages = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
+  'utf8'
+);
+const tauriBridge = [bridgeMessages]
+  .concat(tauriBridgeFeatureNames.map(name => fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', `${name}.js`), 'utf8')))
   .concat(fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge.js'), 'utf8'))
   .join('\n');
+const webBridge = [
+  bridgeMessages,
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge', 'turn-terminal.js'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
+].join('\n');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
@@ -386,6 +396,11 @@ assert.ok(
   'scheduled model selection should use saved model ids and submit modelId with the wire model'
 );
 assert.ok(
+  /label:\s*selectorMainLabel\(model, t\)/.test(indexHtml) &&
+    !/label:\s*model\.name && model\.name !== model\.model \?/.test(indexHtml),
+  'scheduled model selection should display the wire model instead of stale display names'
+);
+assert.ok(
   !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
     !/data-testid="scheduled-task-actions"/.test(indexHtml) &&
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
@@ -422,7 +437,7 @@ assert.ok(
   'an older autosave completion must not flash an error over newer pending edits'
 );
 assert.ok(
-  /editable=\{!busy && item\.id === lastUserId\}/.test(indexHtml) &&
+  /editable=\{!busy && !isMultiAgentReadOnly && item\.id === lastUserId\}/.test(indexHtml) &&
     !/async function editLastTurn\(newText\)[\s\S]{0,420}isScheduledRunSession\(state\.activeSessionId\)\) return false/.test(tauriBridge) &&
     !indexHtml.includes('定时运行使用创建时锁定的模型'),
   'a scheduled run opened from history should use the ordinary chat editor and composer controls'
@@ -457,6 +472,23 @@ assert.ok(
   /fn should_sync_session\(_is_scheduled: bool, _has_messages: bool\)[\s\S]{0,520}\n\s*true\s*\n}/.test(enginePoolRust) &&
     /should_sync_session\(is_scheduled, !saved\.messages\.is_empty\(\)\)/.test(enginePoolRust),
   'every Session must SyncSession even when its durable message list is empty'
+);
+assert.ok(
+  tauriBridge.includes('preserveInterruptedAssistantPresentation') &&
+    webBridge.includes('preserveInterruptedAssistantPresentation') &&
+    tauriBridge.includes('item.interruptedDisplayOnly = true') &&
+    webBridge.includes('item.interruptedDisplayOnly = true'),
+  'desktop and Web bridges must share the display-only interrupted response behavior'
+);
+assert.ok(
+  tauriBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"') &&
+    webBridge.includes('provenance === "runtime" || provenance === "subagent_handoff"'),
+  'desktop and Web bridges must both hide internal runtime and sub-agent handoff messages'
+);
+assert.ok(
+  tauriBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage') &&
+    webBridge.includes('!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage'),
+  'desktop and Web live event paths must not render internal runtime messages'
 );
 assert.ok(
   /请一次只问我一个问题[\s\S]*1\.[\s\S]*2\./.test(scheduledTaskPromptRust) &&
@@ -610,6 +642,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
         cmd === "list_scheduled_runs") return [];
     if (cmd === "get_mode_state") return { mode: "yolo" };
     if (cmd === "get_memory_overview") return {};
+    if (cmd === "session_mounted_collections_snapshot") return { revision: 0, collections: [] };
+    if (cmd === "session_mounted_collections") return [];
     if (cmd === "session_mounted_collection" || cmd === "get_active_persona" ||
         cmd === "find_resumable_run" || cmd === "check_for_update") return null;
     if (cmd === "get_settings") return { theme: "genesis", language: "zh-Hans" };
@@ -719,6 +753,122 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
   assert.strictEqual(completed[3].turn_id, "turn-current");
   assert.strictEqual(completed[3].status, "Failed");
   assert.strictEqual(completed[3].error, "模型失败");
+}
+
+async function internalSubagentHandoffStaysOutOfPresentation() {
+  var harness = createBridgeHarness();
+  var sessionId = "chat-subagent-handoff";
+  var completionText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'child-only completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 3 },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "请调研这个问题" }] },
+        { role: "user", content: [
+          { type: "text", text: completionText },
+          { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff\nInput authority: non_authoritative\n</turn_meta>" },
+        ] },
+        { role: "assistant", content: [{ type: "text", text: "这是父智能体的最终汇总" }] },
+      ],
+      artifacts: [],
+    };
+  };
+
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  var state = harness.bridge.state.get("chat");
+  var visible = JSON.stringify(state.chatItems);
+  var raw = JSON.stringify(state.messages);
+  assert.ok(visible.includes("请调研这个问题"), "real user input must remain visible");
+  assert.ok(visible.includes("这是父智能体的最终汇总"), "parent synthesis must remain visible");
+  assert.ok(!visible.includes("child-only completion summary"), "sub-agent handoff must not render as a user bubble");
+  assert.ok(!visible.includes("codewhale:runtime_event"), "internal runtime XML must stay out of the presentation");
+  assert.ok(raw.includes("child-only completion summary"), "sub-agent completion must remain in the parent model context");
+  assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: completionText,
+    operation: "append",
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
+  assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+}
+
+async function draftToggleFailureAbortsFirstSend() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  harness.handlers.set_multi_agent_mode = function () { throw new Error("git missing"); };
+
+  await bridge.interaction.setMultiAgentMode(true); // 草稿态寄存意图
+  await bridge.chat.sendMessage("并行调研测试");
+
+  var calls = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(!calls.includes("chat"), "开关落盘失败后首条消息不得发出（否则静默退化成普通对话）");
+  assert.ok(calls.includes("delete_session"), "中止物化必须清掉刚建的空会话");
+  assert.equal(bridge.state.get("sessions").activeSessionId, null, "必须回到草稿态");
+  assert.ok(
+    JSON.stringify(bridge.state.get("chat").chatItems).includes("git missing"),
+    "失败原因要如实提示"
+  );
+  assert.equal(
+    bridge.state.get("chat").composerPrefill.text,
+    "并行调研测试",
+    "被中止的输入必须回填输入框，不得静默丢字"
+  );
+
+  // 意图保留：修好依赖后再次发送，开关重试且消息正常发出。
+  harness.handlers.set_multi_agent_mode = function () { return { mode: "yolo", multi_agent: true }; };
+  await bridge.chat.sendMessage("再来一次");
+  var after = harness.calls.map(function (call) { return call.cmd; });
+  assert.ok(
+    after.filter(function (cmd) { return cmd === "set_multi_agent_mode"; }).length >= 2,
+    "草稿开关意图必须保留到下一次物化重试"
+  );
+  assert.ok(after.includes("chat"), "开关成功后消息正常发出");
+}
+
+async function multiAgentToggleFailureIsRoutedToTriggerSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var rejectToggle = null;
+  harness.handlers.set_multi_agent_mode = function () {
+    return new Promise(function (_resolve, reject) { rejectToggle = reject; });
+  };
+  harness.handlers.get_mode_state = function (args) {
+    return { mode: "yolo", multi_agent: args.sessionId === "chat-b" };
+  };
+
+  await bridge.sessions.switchToSession("chat-a");
+  var flight = bridge.interaction.setMultiAgentMode(true);
+  for (var i = 0; i < 20 && !rejectToggle; i++) await Promise.resolve();
+  assert.ok(rejectToggle, "toggle request must reach the backend handler");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, true,
+    "optimistic flip must be visible on the trigger session immediately");
+
+  // 请求还没返回，用户切到另一个开着多智能体的会话 B。
+  await bridge.sessions.switchToSession("chat-b");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, true, "B is on");
+  rejectToggle(new Error("roster boom"));
+  await flight;
+
+  var chatOnB = bridge.state.get("chat");
+  assert.strictEqual(chatOnB.modeState.multiAgent, true,
+    "the rollback must not clobber the session the user switched to");
+  assert.ok(!JSON.stringify(chatOnB.chatItems).includes("roster boom"),
+    "the failure toast must not land in the session the user switched to");
+
+  await bridge.sessions.switchToSession("chat-a");
+  assert.ok(JSON.stringify(bridge.state.get("chat").chatItems).includes("roster boom"),
+    "the failure toast must be routed back to the trigger session");
+  assert.strictEqual(bridge.state.get("chat").modeState.multiAgent, false,
+    "the trigger session must end up rolled back to off");
 }
 
 async function scheduledRunUnreadBehavior() {
@@ -941,14 +1091,14 @@ async function scheduledRunningHydrationRaceBehavior() {
     artifacts: [],
   });
   assert.strictEqual(await opening, true);
-  var rendered = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
+  var hydratedItems = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems;
+  var rendered = JSON.stringify(hydratedItems);
   assert.ok(rendered.includes("persisted scheduled prompt"), "durable history should survive live hydration");
   assert.ok(rendered.includes("delta received during durable load"), "live deltas received during load should survive hydration");
-  assert.strictEqual(
-    (rendered.match(/delta received during durable load/g) || []).length,
-    1,
-    "durable and live overlap should render once"
-  );
+  var overlappingAssistantItems = hydratedItems.filter(function (item) {
+    return item.type === "assistant" && item.text === "delta received during durable load";
+  });
+  assert.strictEqual(overlappingAssistantItems.length, 1, "durable and live overlap should render once");
   assert.strictEqual(
     bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
       return item.type === "tool" && item.toolId === "tool-hydrate";
@@ -1209,9 +1359,264 @@ async function authoritativeHydrateDropsReplayedAssistantTail() {
   });
   assert.strictEqual(assistantItems.length, 1, "durable full answer must replace the replayed assistant tail");
   assert.strictEqual(
-    (JSON.stringify(assistantItems).match(/answer tail/g) || []).length,
-    1,
+    assistantItems[0].text,
+    "complete answer tail",
+    "the canonical assistant source must come from the authoritative full answer"
+  );
+  assert.strictEqual(
+    assistantItems.some(function (item) { return item.interruptedDisplayOnly === true; }),
+    false,
     "the mid-turn replay tail must not be appended after the authoritative full answer"
+  );
+}
+
+async function interruptedTurnRetainsDisplayOnlyPartial() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-interrupted-display-only";
+  var durableMessages = [];
+  harness.handlers.create_session = function () {
+    return { id: sessionId, title: "New chat", transcript_revision: "empty" };
+  };
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "Interrupted display", message_count: durableMessages.length }];
+  };
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Interrupted display",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "display-" + durableMessages.length,
+    };
+  };
+
+  await bridge.sessions.createNewSession();
+  await bridge.chat.sendMessage("first question");
+  durableMessages = [
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+  ];
+  await harness.emit("chat:delta", { session_id: sessionId, text: "partial reply" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var interruptedState = bridge.state.get("chat");
+  assert.strictEqual(
+    interruptedState.messages.some(function (message) {
+      return JSON.stringify(message).includes("partial reply");
+    }),
+    false,
+    "an interrupted partial response must not enter the authoritative message list"
+  );
+  assert.ok(
+    interruptedState.chatItems.some(function (item) {
+      return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+        String(item.html || "").includes("partial reply");
+    }),
+    "the interrupted partial response must remain visible after authority reconciliation"
+  );
+
+  await bridge.chat.sendMessage("follow up");
+  var followupState = bridge.state.get("chat");
+  var firstUserIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "first question";
+  });
+  var partialIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true;
+  });
+  var followupIndex = followupState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "follow up";
+  });
+  assert.ok(
+    firstUserIndex >= 0 && firstUserIndex < partialIndex && partialIndex < followupIndex,
+    "the display-only partial must stay in its original turn when the user continues"
+  );
+
+  durableMessages = [
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+    { role: "user", content: [{ type: "text", text: "follow up" }] },
+    { role: "assistant", content: [{ type: "text", text: "complete follow-up" }] },
+  ];
+  await harness.emit("chat:delta", { session_id: sessionId, text: "complete follow-up" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var completedState = bridge.state.get("chat");
+  var completedPartialIndex = completedState.chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+      String(item.html || "").includes("partial reply");
+  });
+  var completedFollowupIndex = completedState.chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "follow up";
+  });
+  assert.ok(
+    completedPartialIndex >= 0 && completedPartialIndex < completedFollowupIndex,
+    "later authoritative refreshes must not move the interrupted partial into another turn"
+  );
+  assert.strictEqual(
+    completedState.messages.some(function (message) {
+      return JSON.stringify(message).includes("partial reply");
+    }),
+    false,
+    "later turns must not promote the display-only partial into model context"
+  );
+}
+
+async function remoteInterruptedTurnKeepsItsDisplayPosition() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-remote-interrupted-display";
+  var durableMessages = [
+    { role: "user", content: [{ type: "text", text: "older question" }] },
+    { role: "assistant", content: [{ type: "text", text: "remote partial reply" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Remote interrupted display",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "remote-" + durableMessages.length,
+    };
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: "remote question",
+    operation: "append",
+    base_transcript_revision: "remote-2",
+  });
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  durableMessages = durableMessages.concat([
+    { role: "user", content: [{ type: "text", text: "remote question" }] },
+  ]);
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "remote partial reply",
+  });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var chatItems = bridge.state.get("chat").chatItems;
+  var olderUserIndex = chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "older question";
+  });
+  var remoteUserIndex = chatItems.findIndex(function (item) {
+    return item.type === "user" && item.text === "remote question";
+  });
+  var partialIndex = chatItems.findIndex(function (item) {
+    return item.type === "assistant" && item.interruptedDisplayOnly === true &&
+      String(item.html || "").includes("remote partial reply");
+  });
+  assert.ok(
+    olderUserIndex >= 0 && olderUserIndex < remoteUserIndex && remoteUserIndex < partialIndex,
+    "a remote interrupted partial must stay after the remote user turn, not an older turn"
+  );
+}
+
+async function interruptedTurnWithoutUserItemDropsPartial() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var sessionId = "chat-interrupted-no-user-anchor";
+  var durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+  ];
+  harness.handlers.list_sessions = function () {
+    return [{ id: sessionId, title: "Unanchored interrupt", message_count: durableMessages.length }];
+  };
+  harness.handlers.load_session = function () {
+    return {
+      metadata: {
+        id: sessionId,
+        title: "Unanchored interrupt",
+        message_count: durableMessages.length,
+      },
+      messages: JSON.parse(JSON.stringify(durableMessages)),
+      artifacts: [],
+      transcript_revision: "no-user-" + durableMessages.length,
+    };
+  };
+
+  // transcript 里没有任何 user 消息(无 user 气泡、无法锚定轮次)的中断:
+  // 不得把全部历史 assistant 项标记为仅展示,否则权威重载会在末尾复活它们,
+  // 复制出整段历史的重复副本。
+  await bridge.sessions.switchToSession(sessionId);
+  await harness.emit("chat:turn_started", { session_id: sessionId });
+  await harness.emit("chat:delta", { session_id: sessionId, text: "orphan partial" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Interrupted",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var unanchoredState = bridge.state.get("chat");
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.interruptedDisplayOnly === true;
+    }),
+    "without any user turn anchor, nothing may be marked display-only"
+  );
+  assert.strictEqual(
+    unanchoredState.chatItems.filter(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("old reply");
+    }).length,
+    1,
+    "authority reconciliation must not duplicate the unanchored history"
+  );
+  assert.ok(
+    !unanchoredState.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("orphan partial");
+    }),
+    "an unanchorable interrupted partial must not be resurrected by authority reconciliation"
+  );
+
+  durableMessages = [
+    { role: "assistant", content: [{ type: "text", text: "old reply" }] },
+    { role: "user", content: [{ type: "text", text: "next question" }] },
+    { role: "assistant", content: [{ type: "text", text: "clean reply" }] },
+  ];
+  await bridge.chat.sendMessage("next question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "clean reply" });
+  await harness.emit("chat:done", {
+    session_id: sessionId,
+    status: "Completed",
+    error: null,
+  });
+  await tick();
+  await tick();
+
+  var followupState = bridge.state.get("chat");
+  var assistantMessages = followupState.messages.filter(function (message) {
+    return message.role === "assistant";
+  });
+  assert.ok(
+    assistantMessages.length > 0 &&
+      !JSON.stringify(assistantMessages).includes("orphan partial"),
+    "the dropped partial must not leak into the next authoritative assistant message"
   );
 }
 
@@ -1268,6 +1673,348 @@ async function completedTurnWaitsForAssistantInAuthoritySnapshot() {
       return item.type === "assistant" && String(item.html || "").includes("final answer");
     }),
     "the durable assistant snapshot must converge without a visible reply disappearing"
+  );
+}
+
+async function completedTurnUsesCommittedRevisionAsAuthority() {
+  var harness = createBridgeHarness(null, {
+    // A broken implementation exhausts all fallback retries. Keep that path
+    // deterministic and fast instead of adding more than a second to the test.
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-committed-revision-authority";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", {
+    session_id: sessionId,
+    text: "stream presentation",
+  });
+
+  // Native/provider tools may normalize the terminal assistant block before
+  // persistence. The committed revision, rather than byte-identical streamed
+  // presentation, proves which durable snapshot belongs to this turn.
+  durable = {
+    metadata: { id: sessionId, title: "Revision authority", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-after-turn",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
+    }),
+    "the committed revision must allow canonical hydration when streamed presentation differs"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a matching committed revision must not produce a false unsynced warning"
+  );
+
+  [tauriBridge, webBridge].forEach(function (source) {
+    assert.ok(source.includes('remoteCommittedRevision = revision'),
+      "desktop and Web bridges must both retain the committed turn revision");
+    assert.ok(source.includes('savedRevision !== expectedCommittedRevision'),
+      "desktop and Web bridges must both reconcile by committed revision");
+  });
+}
+
+async function completedTurnKeepsWarningWhenRevisionMismatches() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-revision-mismatch-warning";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision mismatch", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-stale",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // 后端提交的 revision 与快照携带的 revision 不一致:持久化快照不属于本轮,
+  // 必须保留同步警告,不得假装收敛。
+  durable = {
+    metadata: { id: sessionId, title: "Revision mismatch", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-different-turn",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  // 负向路径会耗尽 6 次重试:用 setImmediate 加速的轮次等待对账终态。
+  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a mismatched committed revision must keep the unsynced warning"
+  );
+}
+
+async function completedTurnAdoptsLateCommittedRevision() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-late-committed-revision";
+  var durable = {
+    metadata: { id: sessionId, title: "Late committed", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // Relay replay 可能在 chat:done 之后才送达 commit marker:对账重试窗口内
+  // 应拾取迟到的 revision 并收敛,而不是停留在较弱的展示身份回退上。
+  durable = {
+    metadata: { id: sessionId, title: "Late committed", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-after-done",
+  };
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-done",
+  });
+  for (var i = 0; i < 8; i++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical persisted answer");
+    }),
+    "a commit marker delivered after done must be adopted during retry"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "adopting the late committed revision must not warn"
+  );
+}
+
+async function completedTurnFallsBackWhenSnapshotLacksRevision() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-snapshot-no-revision";
+  var durable = {
+    metadata: { id: sessionId, title: "No revision", message_count: 0 },
+    messages: [],
+    artifacts: [],
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "final answer" });
+
+  // 旧契约/旧后端快照不含 transcript_revision 字段:即使已收到 committed 事件,
+  // 也不能因「期望非空但快照无字段」而必然失败,应回退到消息身份校验。
+  durable = {
+    metadata: { id: sessionId, title: "No revision", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+    ],
+    artifacts: [],
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+  await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("final answer");
+    }),
+    "a snapshot without a revision field must fall back to identity reconciliation"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "the fallback path must not produce a false unsynced warning"
+  );
+}
+
+async function completedTurnAdoptsRevisionBumpDuringRetry() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-revision-bump-during-retry";
+  var durable = {
+    metadata: { id: sessionId, title: "Revision bump", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream presentation" });
+
+  // 回合 1 提交 revision-after-turn 并完成;但此刻持久化快照仍停在
+  // revision-before-turn(模拟落盘延迟),reconcile 第一次尝试必然失败。
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-after-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  await tick();
+
+  // 在回合 1 的 reconcile 重试窗口内,回合 2 已提交并落盘:快照推进到
+  // revision-2,committed 事件也到达。每 attempt 重读 live revision 的修复
+  // 应收敛;若只在期望为空时重读(旧实现),6 次重试会一直拿 revision-after-turn
+  // 比较 revision-2 → 全部失败 → 误报「权威记录暂未同步」。
+  durable = {
+    metadata: { id: sessionId, title: "Revision bump", message_count: 4 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical answer 1" }] },
+      { role: "user", content: [{ type: "text", text: "followup" }] },
+      { role: "assistant", content: [{ type: "text", text: "canonical answer 2" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-2",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-2",
+  });
+  for (var bumpTick = 0; bumpTick < 12; bumpTick++) await tick();
+
+  var state = bridge.state.get("chat");
+  assert.ok(
+    state.chatItems.some(function (item) {
+      return item.type === "assistant" && String(item.html || "").includes("canonical answer 2");
+    }),
+    "a revision bump during the retry window must be adopted by the running reconcile"
+  );
+  assert.ok(
+    !state.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("权威记录暂未同步");
+    }),
+    "a revision bump during retry must not produce a false unsynced warning"
+  );
+}
+
+async function editLastTurnBlockedWhileAuthorityReconcilePending() {
+  var harness = createBridgeHarness(null, {
+    setTimeout: function (callback) { return setImmediate(callback); },
+  });
+  var bridge = harness.bridge;
+  var sessionId = "chat-edit-blocked-unsynced";
+  var durable = {
+    metadata: { id: sessionId, title: "Edit blocked", message_count: 0 },
+    messages: [],
+    artifacts: [],
+    transcript_revision: "revision-before-turn",
+  };
+  harness.handlers.load_session = function () {
+    return JSON.parse(JSON.stringify(durable));
+  };
+
+  await bridge.sessions.switchToSession(sessionId);
+  await bridge.chat.sendMessage("question");
+  await harness.emit("chat:delta", { session_id: sessionId, text: "stream answer" });
+
+  // 快照 revision 与 committed 不匹配:权威对账必然失败,remoteTurnActive
+  // 保持 true。此时编辑应被拦截(remoteTurnSyncing),而不是清掉 revision
+  // 继续编辑——否则陈旧 committed 事件会在编辑中重武装旧 revision。
+  durable = {
+    metadata: { id: sessionId, title: "Edit blocked", message_count: 2 },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "question" }] },
+      { role: "assistant", content: [{ type: "text", text: "persisted answer" }] },
+    ],
+    artifacts: [],
+    transcript_revision: "revision-stale",
+  };
+  await harness.emit("chat:transcript_committed", {
+    session_id: sessionId,
+    transcript_revision: "revision-committed-this-turn",
+  });
+  await harness.emit("chat:done", { session_id: sessionId, status: "Completed" });
+  // 负向路径耗尽 6 次重试:setImmediate 加速的轮次等待对账终态。
+  for (var mismatchTick = 0; mismatchTick < 20; mismatchTick++) await tick();
+
+  var editCallsBefore = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  await bridge.interaction.editLastTurn("edited question");
+  var editCallsAfter = harness.calls.filter(function (call) { return call.cmd === "edit_last_turn"; }).length;
+  assert.strictEqual(
+    editCallsAfter, editCallsBefore,
+    "editing must be blocked while the authority reconcile is still pending"
+  );
+
+  var blockedState = bridge.state.get("chat");
+  assert.ok(
+    blockedState.chatItems.some(function (item) {
+      return item.type === "system" && String(item.text || "").includes("该会话仍在同步另一端完成的回合");
+    }),
+    "a blocked edit must surface the sync-pending notice"
   );
 }
 
@@ -3137,8 +3884,241 @@ async function remoteSessionDeletionConvergesPresentationState() {
   assert.strictEqual(state.archivedSessions.some(function (session) { return session.id === deletedId; }), false);
 }
 
+async function multipleKnowledgeMountBehavior() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
+  var serverMounted = [];
+  var revision = 0;
+  function snapshot() {
+    revision += 1;
+    return { revision: revision, collections: serverMounted };
+  }
+  harness.handlers.session_add_mounted_collection = function (args) {
+    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    if (existing) existing.enabled = true;
+    else serverMounted.push({ collectionId: args.collectionId, enabled: true });
+    return snapshot();
+  };
+  harness.handlers.session_set_mounted_collection_enabled = function (args) {
+    var existing = serverMounted.find(function (entry) { return entry.collectionId === args.collectionId; });
+    if (existing) existing.enabled = !!args.enabled;
+    return snapshot();
+  };
+  harness.handlers.session_remove_mounted_collection = function (args) {
+    serverMounted = serverMounted.filter(function (entry) { return entry.collectionId !== args.collectionId; });
+    return snapshot();
+  };
+  harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
+
+  await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountCollection(8);
+  var mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: true },
+      { collectionId: 8, enabled: true },
+    ],
+    "adding a knowledge base must preserve existing mounts"
+  );
+  assert.strictEqual(mounted.mountedCollection, 7, "legacy field keeps the first enabled mount");
+
+  await bridge.knowledge.setCollectionEnabled(7, false);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, false);
+  assert.strictEqual(mounted.mountedCollection, 8, "disabled mounts must not remain active for retrieval");
+
+  await bridge.knowledge.removeCollection(8);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections.length, 1);
+  assert.strictEqual(mounted.mountedCollections[0].collectionId, 7);
+  assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
+
+  await bridge.knowledge.mountCollection(7);
+  mounted = bridge.state.get('knowledge');
+  assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
+  assert.strictEqual(mounted.mountedCollection, 7);
+
+  await bridge.knowledge.unmountCollection();
+  mounted = bridge.state.get('knowledge');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
+}
+
+async function queuedKnowledgeMountKeepsOriginalSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-origin"), true);
+  var pending = deferred();
+  harness.handlers.session_add_mounted_collection = function () { return pending.promise; };
+
+  var mount = bridge.knowledge.mountCollection(7);
+  await tick();
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-other"), true);
+  pending.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
+  await mount;
+
+  var addCall = harness.calls.find(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCall.args.sessionId, "chat-kb-origin",
+    "a queued mutation must stay bound to the session active when the user clicked");
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), [],
+    "a late response for another session must not overwrite the active session view");
+}
+
+async function staleKnowledgeSnapshotDoesNotCrossSessions() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var staleSnapshot = deferred();
+  var staleReadStarted = deferred();
+  harness.handlers.session_mounted_collections_snapshot = function (args) {
+    if (args.sessionId === "chat-kb-stale") {
+      staleReadStarted.resolve();
+      return staleSnapshot.promise;
+    }
+    return { revision: 1, collections: [{ collectionId: 8, enabled: true }] };
+  };
+
+  var staleSwitch = bridge.sessions.switchToSession("chat-kb-stale");
+  await staleReadStarted.promise;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-current"), true);
+  staleSnapshot.resolve({ revision: 9, collections: [{ collectionId: 7, enabled: true }] });
+  assert.strictEqual(await staleSwitch, false);
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [{ collectionId: 8, enabled: true }],
+    "a late snapshot from the previous session must not overwrite the current session"
+  );
+  assert.strictEqual(mounted.mountedCollectionsRevision, 1);
+}
+
+async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote"), true);
+  harness.handlers.session_mounted_collections_snapshot = function () {
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: false },
+        { collection_id: 7, enabled: true },
+        { collection_id: 8, enabled: true },
+      ],
+    };
+  };
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote",
+    revision: 2,
+    collections: [
+      { collection_id: 7, enabled: false },
+      { collection_id: 7, enabled: true },
+      { collection_id: 8, enabled: true },
+    ],
+  });
+  await tick();
+  await tick();
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedCollections)),
+    [
+      { collectionId: 7, enabled: false },
+      { collectionId: 8, enabled: true },
+    ],
+    "remote mount snapshots must use the same first-entry-wins normalization as local mutations"
+  );
+  assert.strictEqual(mounted.mountedCollection, 8);
+  assert.strictEqual(mounted.mountedCollectionsRevision, 2);
+}
+
+async function draftKnowledgeMountsCreateOneSession() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var create = deferred();
+  var serverMounted = [];
+  var revision = 0;
+  harness.handlers.create_session = function () { return create.promise; };
+  harness.handlers.session_add_mounted_collection = function (args) {
+    serverMounted.push({ collectionId: args.collectionId, enabled: true });
+    revision += 1;
+    return { revision: revision, collections: serverMounted };
+  };
+
+  var first = bridge.knowledge.mountCollection(7);
+  var second = bridge.knowledge.mountCollection(8);
+  await tick();
+  assert.strictEqual(harness.calls.filter(function (call) { return call.cmd === "create_session"; }).length, 1,
+    "rapid draft mounts must share one serialized session creation");
+  create.resolve({ id: "chat-kb-created" });
+  await Promise.all([first, second]);
+
+  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCalls.length, 2);
+  assert.ok(addCalls.every(function (call) { return call.args.sessionId === "chat-kb-created"; }),
+    "all draft mounts must target the one materialized session");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("knowledge").mountedCollections)),
+    [{ collectionId: 7, enabled: true }, { collectionId: 8, enabled: true }]
+  );
+}
+
+async function draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var firstMutation = deferred();
+  var firstMutationStarted = deferred();
+  var mutationCount = 0;
+  harness.handlers.session_add_mounted_collection = function (args) {
+    mutationCount += 1;
+    if (mutationCount === 1) {
+      firstMutationStarted.resolve();
+      return firstMutation.promise;
+    }
+    return {
+      revision: 2,
+      collections: [
+        { collectionId: 7, enabled: true },
+        { collectionId: args.collectionId, enabled: true },
+      ],
+    };
+  };
+
+  var first = bridge.knowledge.mountCollection(7);
+  var second = bridge.knowledge.mountCollection(8);
+  await firstMutationStarted.promise;
+  var materializedSessionId = harness.calls.find(function (call) {
+    return call.cmd === "session_add_mounted_collection";
+  }).args.sessionId;
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-navigated"), true);
+  firstMutation.resolve({ revision: 1, collections: [{ collectionId: 7, enabled: true }] });
+  await Promise.all([first, second]);
+
+  var addCalls = harness.calls.filter(function (call) { return call.cmd === "session_add_mounted_collection"; });
+  assert.strictEqual(addCalls.length, 2);
+  assert.ok(addCalls.every(function (call) { return call.args.sessionId === materializedSessionId; }),
+    "queued draft mounts must remain on their shared materialized session after navigation");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(bridge.state.get("knowledge").mountedCollections)),
+    [],
+    "background draft mutations must not leak into the newly active session"
+  );
+}
+
 Promise.resolve()
+  .then(multipleKnowledgeMountBehavior)
+  .then(queuedKnowledgeMountKeepsOriginalSession)
+  .then(staleKnowledgeSnapshotDoesNotCrossSessions)
+  .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
+  .then(draftKnowledgeMountsCreateOneSession)
+  .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
+  .then(internalSubagentHandoffStaysOutOfPresentation)
+  .then(multiAgentToggleFailureIsRoutedToTriggerSession)
+  .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)
   .then(scheduledRunNowPollStopsOnTerminalBehavior)
   .then(scheduledRunNowSidebarLinkBehavior)
@@ -3153,7 +4133,16 @@ Promise.resolve()
   .then(scheduledDoneBeforeBufferCreatesTerminalTombstone)
   .then(authoritativeTurnSyncDoesNotCrossSessions)
   .then(authoritativeHydrateDropsReplayedAssistantTail)
+  .then(interruptedTurnRetainsDisplayOnlyPartial)
+  .then(remoteInterruptedTurnKeepsItsDisplayPosition)
+  .then(interruptedTurnWithoutUserItemDropsPartial)
   .then(completedTurnWaitsForAssistantInAuthoritySnapshot)
+  .then(completedTurnUsesCommittedRevisionAsAuthority)
+  .then(completedTurnKeepsWarningWhenRevisionMismatches)
+  .then(completedTurnAdoptsLateCommittedRevision)
+  .then(completedTurnFallsBackWhenSnapshotLacksRevision)
+  .then(completedTurnAdoptsRevisionBumpDuringRetry)
+  .then(editLastTurnBlockedWhileAuthorityReconcilePending)
   .then(remoteAcceptPlanConvergesAcrossClients)
   .then(activePlanSurvivesUnrelatedTerminalHydrate)
   .then(activePlanHydrateMigratesTicketWithoutDuplicate)

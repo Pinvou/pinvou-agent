@@ -30,6 +30,25 @@ pub async fn get_mode_state(
     Ok(store.mode_state(&session_id))
 }
 
+/// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
+/// None = 首次使用 → Plan）与 yolo 一次性确认标志。前端 code 页启动/进草稿时拉取。
+#[tauri::command]
+pub async fn get_code_permission_prefs(
+    store: State<'_, SessionStore>,
+) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
+    Ok(store.code_permission_prefs())
+}
+
+/// 用户在 code 页确认卡【确认】切 yolo：全局记住，之后任何会话 Plan↔yolo
+/// 切换不再弹卡。确认是 UI 层语义（与 VS Code 同款），后端不在
+/// `exit_plan_to_yolo` 强制门控。
+#[tauri::command]
+pub async fn confirm_code_yolo(
+    store: State<'_, SessionStore>,
+) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
+    store.confirm_code_yolo()
+}
+
 // ===================== 卡片池: 专家面具 =====================
 
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
@@ -55,6 +74,38 @@ pub async fn exit_plan_to_yolo(
     store
         .set_mode(&session_id, SerializableMode::Yolo)
         .map_err(|error| format!("exit_plan_to_yolo({session_id}): {error:#}"))?;
+    Ok(store.mode_state(&session_id))
+}
+
+// ===================== 多智能体模式开关（ADR-0006） =====================
+
+/// 模型列表下方的会话级开关。开启：装配专家名册，并让下一次发送按多智能体
+/// 资源边界重建引擎；关闭：让下一次发送恢复普通对话的底座资源配置。切换时
+/// 回收空闲旧引擎，避免旧 hook / 深度 / 并发配置泄漏到新模式；正在生成时拒绝
+/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（委派提醒
+/// 不教学不推荐），裸 `agent` 本就对所有会话可用。
+#[tauri::command]
+pub async fn set_multi_agent_mode(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<SessionModeState, String> {
+    // 任何副作用（建目录、写角色文件）之前先过两道门：id 形状
+    // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
+    // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
+    crate::features::sessions::validate_session_id(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
+    store
+        .load(&session_id)
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
+    // EngineConfig 的深度、并发、准入上限不能完整热切；同时 SendMessage 会覆盖
+    // engine 级 hook。名册装配、状态持久化与旧引擎回收必须和发送共用同一个
+    // lifecycle + turn gate，避免切换/发送竞态。关闭也必须回收，否则普通对话
+    // 会继续背着多智能体限制。生成中 reserve 会直接拒绝，不会打断当前回复。
+    pool.reconfigure_multi_agent_mode(&session_id, enabled)
+        .await
+        .map_err(|error| format!("set_multi_agent_mode({session_id}): {error:#}"))?;
     Ok(store.mode_state(&session_id))
 }
 
@@ -91,7 +142,13 @@ pub async fn accept_plan(
             accepted_mode_state.clone(),
         ))
         .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
-    let instruction = accept_plan_instruction(&plan_markdown);
+    let instruction = super::multiagent::prepend_delegation_reminder(
+        pool.inner(),
+        &session_id,
+        accepted_mode_state.multi_agent,
+        &plan_markdown,
+        accept_plan_instruction(&plan_markdown),
+    );
     let display_content = display_message
         .map(|message| message.trim().to_string())
         .filter(|message| !message.is_empty())
@@ -251,8 +308,8 @@ pub async fn add_run_materials(
         .or_else(|| store.active_id())
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let project = crate::features::assistant::harness::find_project_dir(&workspace)
         .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
     let dst_dir = project.join("配套材料");
@@ -299,6 +356,27 @@ pub async fn cancel_user_input(
         .map_err(|e| format!("cancel_user_input: {e:?}"))
 }
 
+/// 会话当前的挂起输入请求与 turn 状态。
+///
+/// 代码页（CodexAcpView）的会话 lane 随组件卸载销毁，`chat:user_input_required`
+/// 事件不重发；remount 加载会话时调本命令还原确认卡并恢复 busy 展示。
+#[derive(serde::Serialize)]
+pub struct PendingUserInputState {
+    pub busy: bool,
+    pub pending: Vec<crate::features::assistant::pending_user_input::PendingUserInput>,
+}
+
+#[tauri::command]
+pub async fn get_pending_user_inputs(
+    session_id: String,
+    pool: State<'_, EnginePool>,
+) -> Result<PendingUserInputState, String> {
+    Ok(PendingUserInputState {
+        busy: pool.is_turn_active(&session_id),
+        pending: crate::features::assistant::pending_user_input::list(&session_id),
+    })
+}
+
 // (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
 //  本 PR 只含工作流基座 + 三省六部)
 
@@ -340,8 +418,8 @@ pub async fn summon_pinvou(
         .await
         .map_err(|e| format!("summon_pinvou prepare bridge({sid}): {e:#}"))?;
     let workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+        .ledger_root(&sid)
+        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     crate::features::review::summon(
         &bridge,
         &session.messages,

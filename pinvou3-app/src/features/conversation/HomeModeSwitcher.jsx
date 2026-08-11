@@ -1,5 +1,5 @@
 import React from 'react';
-import { Briefcase, Code, Palette } from '../../components/icons.jsx';
+import { Briefcase, Code, Palette, Settings } from '../../components/icons.jsx';
 import { CodexLogo } from '../../components/CodexLogo.jsx';
 import { AcpAgentLogo } from '../codex/AcpAgentLogo.jsx';
 import { IosSegmentedControl } from '../../components/IosControls.jsx';
@@ -13,6 +13,7 @@ const HOME_MODE_OPTIONS = [
 ];
 
 const CODE_AGENT_OPTIONS = [
+  { key: 'pinvou', label: '品悟', enabled: true },
   { key: 'codex', label: 'Codex', Logo: CodexLogo, enabled: true },
   { key: 'claude', label: 'Claude Code', enabled: true },
   { key: 'kimi', label: 'Kimi', enabled: true },
@@ -24,8 +25,9 @@ export function HomeModeSwitcher({
   codeSupported = true,
   codeAgent = 'codex',
   onCodeAgentChange,
+  onManageProviders,
   isDark = false,
-  copy = { work: '工作', design: '设计', code: '代码' },
+  copy = {},
 }) {
   const visibleModes = HOME_MODE_OPTIONS
     .filter(option => option.enabled !== false && (option.key !== 'code' || codeSupported))
@@ -71,6 +73,18 @@ export function HomeModeSwitcher({
               )}
             </button>
           ))}
+          {onManageProviders && (
+            <button
+              type="button"
+              data-testid="code-agent-provider-settings"
+              aria-label={copy.providerSettings}
+              title={copy.providerSettings}
+              onClick={onManageProviders}
+              className="ml-1 flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-black/[0.05] hover:text-gray-600 dark:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-300"
+            >
+              <Settings size={15} />
+            </button>
+          )}
         </div>
       )}
     </div>

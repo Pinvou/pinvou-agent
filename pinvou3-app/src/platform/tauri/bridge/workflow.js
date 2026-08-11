@@ -57,7 +57,7 @@
       await syncModeState();
       notify();
       return res;
-    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
+    } catch (e) { addSystemItem(bt("workflowActivateFailed") + e); notify(); return null; }
   }
   async function deactivateSkill() {
     if (state.activeSessionId) {
@@ -94,13 +94,13 @@
     try {
       res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
     } catch (e) {
-      addSystemItem("⚠️ 创建工作流失败: " + e);
+      addSystemItem(bt("workflowCreateFailed") + e);
       throw e;
     }
     try {
       await invoke("kick_workflow", { sessionId: res.session_id });
     } catch (e) {
-      addSystemItem("⚠️ 启动工作流失败: " + e);
+      addSystemItem(bt("workflowStartFailed") + e);
       throw e;
     }
     return res;
@@ -109,7 +109,7 @@
   // 供工作流页打开“修改需求并重新开始”的预填表单。
   async function stopWorkflowTask(reason) {
     var sid = state.workflow.run.sessionId;
-    if (!sid) throw new Error("当前没有可停止的工作流");
+    if (!sid) throw new Error(bt("workflowNoStoppableRun"));
     var result = await invoke("stop_workflow", {
       sessionId: sid,
       reason: reason || "user_stopped",
@@ -137,7 +137,7 @@
   // 交互卡动作
   async function submitWorkflowUserInput(cardId, toolCallId, answers) {
     try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
-    catch (e) { addSystemItem("⚠️ 提交失败: " + e); }
+    catch (e) { addSystemItem(bt("workflowSubmitFailed") + e); }
   }
   // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
   // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
@@ -147,7 +147,7 @@
     if (!selected) return [];
     var paths = Array.isArray(selected) ? selected : [selected];
     var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
-    addSystemItem("✅ 已添加 " + added.length + " 个素材到配套材料：" + added.join("、"));
+    addSystemItem(bt("workflowMaterialsAdded")(added.length, added));
     return added;
   }
   // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
@@ -158,21 +158,29 @@
     return Array.isArray(selected) ? selected : [selected];
   }
   async function pickFolder() {
-    if (!dialogOpen) throw new Error("当前环境无法打开文件夹选择器");
+    if (!dialogOpen) throw new Error(bt("workflowFolderPickerUnavailable"));
     var selected = await dialogOpen({
       directory: true,
       multiple: false,
-      title: "选择工作目录",
+      title: bt("workflowPickWorkDirTitle"),
     });
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  // 知识库「添加文件夹」：递归导入需要返回目录路径数组（可多选）。
+  // 后端 kb_collection_add_sources → expand_import_roots 会用 WalkDir 递归展开目录。
+  async function pickFolders() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ directory: true, multiple: true, title: bt("kbPickFolderTitle") });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     var selected = await dialogOpen({
       multiple: true,
       filters: [
-        { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
+        { name: bt("workflowMediaFilterName"), extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
       ],
     });
     if (!selected) return [];
@@ -192,23 +200,23 @@
       resolveRunCardsForRole(roleId, "approved");
       await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
       notify();
-    } catch (e) { addSystemItem("⚠️ 通过失败: " + e); }
+    } catch (e) { addSystemItem(bt("workflowApproveFailed") + e); }
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
+      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
       if (cardId) resolveRunCard(cardId, "rejected");
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
       notify();
-    } catch (e) { addSystemItem("⚠️ 打回失败: " + e); }
+    } catch (e) { addSystemItem(bt("workflowRejectFailed") + e); }
   }
   // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
   async function retryWorkflowRole(roleId) {
     try {
       const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      addSystemItem("🔄 重跑 " + roleId + ": " + r);
-    } catch (e) { addSystemItem("⚠️ 重跑失败: " + e); }
+      addSystemItem(bt("workflowRerunPrefix") + roleId + ": " + r);
+    } catch (e) { addSystemItem(bt("workflowRerunFailed") + e); }
   }
 
     return {
@@ -232,6 +240,7 @@
       pickAndAddMaterials: pickAndAddMaterials,
       pickFiles: pickFiles,
       pickFolder: pickFolder,
+      pickFolders: pickFolders,
       pickFeedbackFiles: pickFeedbackFiles,
       addMaterialsToSession: addMaterialsToSession,
       approveWorkflowGate: approveWorkflowGate,

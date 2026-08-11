@@ -80,7 +80,7 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 pub fn run(mut cmd: Command) -> Result<(bool, String, String), String> {
     let out = cmd
         .output()
-        .map_err(|e| format!("启动失败: {e}(需要对应 CLI；Linux ARM64 会优先使用内置 CLI)"))?;
+        .map_err(|e| format!("启动失败: {e}(需要先完成对应连接器 CLI 的在线安装)"))?;
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -111,7 +111,7 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动失败: {e}(需要 npm/Node 才能执行动态安装兜底)"))?;
+        .map_err(|e| format!("启动在线安装失败: {e}(请检查应用运行时是否完整)"))?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| format!("wait: {e}"))? {

@@ -15,7 +15,26 @@
     var timeStr = context.timeStr;
     var ensureSession = context.ensureSession;
     var personaPlaceholderTitles = context.personaPlaceholderTitles;
+    var isDefaultChatTitle = context.isDefaultChatTitle;
+    var listen = context.listen;
     var personaPoolCache = [];
+    // 专家卡增删改本体成功、但某些会话的名册联动失败时，后端不再把命令判失败
+    // （否则前端不刷新卡池，用户重试会造重复卡），改发本事件；这里如实提示。
+    // 文案取自统一词典 src/shared/i18n.js（经 window 挂载——本文件是静态
+    // 桥脚本，不能 ES import），不在桥内表重复维护译文。
+    function rosterSyncFailedCopy() {
+      var lang = (state.settings && state.settings.language) || "zh";
+      var shared = root.__PINVOU_SHARED_I18N__;
+      var section = shared && shared[lang] && shared[lang].uiMultiAgent;
+      return (section && section.rosterSyncFailed) || "⚠️ ";
+    }
+    if (listen) {
+      listen("multiagent:roster_sync_failed", function (e) {
+        var detail = (e && e.payload) || {};
+        addSystemItem(rosterSyncFailedCopy() + (detail.error || ""));
+        notify();
+      });
+    }
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
   async function loadPersonas() {
@@ -80,13 +99,13 @@
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
-      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
       var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
@@ -123,36 +142,124 @@
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
-  // ── 知识库挂载(会话级粘连,仿 persona) ──
-  // 给当前对话挂一个知识集;草稿态先物化 session(同 equipPersona)。挂上后每条消息
-  // 发送前后端自动检索注入(commands::chat)。返回挂载的 id 或 null(失败)。
+  // ── 多知识库挂载(会话级粘连,仿 persona) ──
+  function normalizeMountedCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (entry == null) return null;
+      var collectionId = typeof entry === "object"
+        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+        : entry;
+      if (collectionId == null || seen[String(collectionId)]) return null;
+      seen[String(collectionId)] = true;
+      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+    }).filter(Boolean);
+  }
+  function applyMountedCollections(value) {
+    var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
+    var revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
+    if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
+      return normalizeMountedCollections(state.mountedCollections);
+    }
+    var normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
+    state.mountedCollections = normalized;
+    state.mountedCollectionsRevision = revision;
+    var firstEnabled = normalized.find(function (entry) { return entry.enabled; });
+    state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
+    return normalized;
+  }
+  var mountedCollectionUpdate = Promise.resolve();
+  var mountedCollectionDraftTarget = null;
+  function mountedCollectionTargetAtEnqueue() {
+    if (state.activeSessionId) return { draft: false, promise: Promise.resolve(state.activeSessionId) };
+    var draftEpoch = Number(state.draftEpoch || 0);
+    if (!mountedCollectionDraftTarget || mountedCollectionDraftTarget.epoch !== draftEpoch || mountedCollectionDraftTarget.failed) {
+      var target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
+      target.promise = Promise.resolve().then(async function () {
+        // Navigation before draft materialization cancels this batch instead of
+        // silently retargeting it to the newly active session.
+        if (state.activeSessionId) return null;
+        var sessionId = await ensureSession();
+        if (!sessionId) target.failed = true;
+        return sessionId;
+      });
+      mountedCollectionDraftTarget = target;
+    }
+    mountedCollectionDraftTarget.pending += 1;
+    return mountedCollectionDraftTarget;
+  }
+  function updateMountedCollections(command, args) {
+    var requestedTarget = mountedCollectionTargetAtEnqueue();
+    mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
+      // The target is captured at click time. Rapid draft actions share one
+      // materialization promise and remain bound to that session after navigation.
+      var sessionId = await requestedTarget.promise;
+      if (!sessionId) return null;
+      try {
+        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
+        var normalized = normalizeMountedCollections(saved && saved.collections);
+        if (state.activeSessionId === sessionId) {
+          applyMountedCollections(saved);
+          notify();
+        }
+        return normalized;
+      } catch (e) {
+        addSystemItem(bt("mountCollectionFailed") + e);
+        return null;
+      }
+    });
+    if (requestedTarget.draft) {
+      mountedCollectionUpdate = mountedCollectionUpdate.finally(function () {
+        requestedTarget.pending -= 1;
+        if (requestedTarget.pending === 0 && mountedCollectionDraftTarget === requestedTarget) {
+          mountedCollectionDraftTarget = null;
+        }
+      });
+    }
+    return mountedCollectionUpdate;
+  }
+  // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
   async function mountCollection(collectionId) {
     if (collectionId == null) return null;
-    if (!state.activeSessionId) {
-      await ensureSession();
-      if (!state.activeSessionId) return null;
-    }
-    try {
-      await invoke("session_mount_collection", { sessionId: state.activeSessionId, collectionId: collectionId });
-      state.mountedCollection = collectionId;
-      notify();
-      return collectionId;
-    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+    var saved = await updateMountedCollections("session_add_mounted_collection", { collectionId: collectionId });
+    return saved ? collectionId : null;
   }
-  // 摘下当前对话的知识集挂载。
+  async function setCollectionEnabled(collectionId, enabled) {
+    return updateMountedCollections("session_set_mounted_collection_enabled", {
+      collectionId: collectionId,
+      enabled: !!enabled,
+    });
+  }
+  async function removeCollection(collectionId) {
+    return updateMountedCollections("session_remove_mounted_collection", { collectionId: collectionId });
+  }
+  // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; notify(); return; }
-    try { await invoke("session_unmount_collection", { sessionId: state.activeSessionId }); } catch (e) { /* 前端照样摘 */ }
-    state.mountedCollection = null;
-    notify();
+    if (!state.activeSessionId) { applyMountedCollections([]); notify(); return; }
+    return updateMountedCollections("session_unmount_collection", null);
   }
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; return; }
+    if (!state.activeSessionId) { applyMountedCollections([]); return; }
+    var sessionId = state.activeSessionId;
     try {
-      var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
-      state.mountedCollection = (cid == null) ? null : cid;
-    } catch (e) { state.mountedCollection = null; }
+      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
+      var mounted = await invoke("session_mounted_collections", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
+      var legacy = await invoke("session_mounted_collection", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      applyMountedCollections(legacy == null ? [] : [legacy]);
+    } catch (e) {
+      try {
+        var cid = await invoke("session_mounted_collection", { sessionId: sessionId });
+        if (state.activeSessionId !== sessionId) return;
+        applyMountedCollections(cid == null ? [] : [cid]);
+      } catch (_) { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
+    }
   }
 
   function getPersonas() { return personaPoolCache; }
@@ -167,6 +274,8 @@
       unequipPersona: unequipPersona,
       syncActivePersona: syncActivePersona,
       mountCollection: mountCollection,
+      setCollectionEnabled: setCollectionEnabled,
+      removeCollection: removeCollection,
       unmountCollection: unmountCollection,
       syncMountedCollection: syncMountedCollection
     };

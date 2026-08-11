@@ -51,14 +51,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo" };
+      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
 
@@ -96,7 +96,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo" };
+    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
   }
 
   function isActionablePlanCard(sid, itemId, planId) {
@@ -116,13 +116,13 @@
     var planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
-      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      addSystemItemFor(sid, bt("planTicketInvalid"));
       notify();
       return;
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItemFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -131,6 +131,7 @@
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
       planBuffer.remoteTerminalSeen = false;
+      planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     var echoEntry = null;
@@ -233,6 +234,63 @@
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
   }
+  // 多智能体开关（ADR-0006）：模型列表下方的会话级开关。后端做名册装配
+  // + 名册装配与即时推送；前端只认返回的权威状态。
+  // in-flight 期间丢弃**同会话**的后续调用（防重入兜底）：第二次点击会带
+  // 着旧的 multiAgentOn 重复提交，其中一次失败的回滚还会覆盖另一次的新
+  // 状态。按会话记账而非全局布尔：A 开启在途时不得殃及 B 的开关（复核 P3）。
+  var multiAgentToggleInFlight = new Set();
+  async function setMultiAgentMode(enabled) {
+    var flightKey = state.activeSessionId || "__draft__";
+    if (multiAgentToggleInFlight.has(flightKey)) return;
+    multiAgentToggleInFlight.add(flightKey);
+    try {
+      var sid = state.activeSessionId;
+      if (!sid) {
+        // 草稿态**不物化会话**：否则开个开关就在左侧列表凭空造出一条空
+        // 对话（真机反馈）。意图寄存在草稿上，首条消息经 ensureSession
+        // 创建会话时才落后端；这里只翻开关行的显示，权威状态以物化时的
+        // 后端返回为准。
+        state.pendingDraftMultiAgent = !!enabled;
+        state.modeState = {
+          mode: (state.modeState && state.modeState.mode) || "yolo",
+          multiAgent: !!enabled,
+        };
+        // 草稿分支会从 try 内提前返回，走不到函数末尾的 notify()。
+        // 必须在这里主动发布快照，否则拨杆只能等下一次无关状态事件才刷新。
+        notify();
+        return;
+      }
+      // 乐观翻转：开启在后端要做名册装配与引擎同步（可能耗时数百毫秒），
+      // 等返回再翻拨杆会像"点了没反应"。先翻显示并 notify，成功后用后端
+      // 权威状态复核；失败回滚显示并提示。in-flight 闸已挡并发重入。
+      var previousMultiAgent = !!(state.modeState && state.modeState.multiAgent);
+      state.modeState = {
+        mode: (state.modeState && state.modeState.mode) || "yolo",
+        multiAgent: !!enabled,
+      };
+      notify();
+      try {
+        var st = await invoke("set_multi_agent_mode", { sessionId: sid, enabled: !!enabled });
+        runOnSession(sid, function () { applyModeFromState(st); });
+      } catch (invokeError) {
+        // 回滚与报错必须定向回触发会话：await 期间用户可能已切走，直接改
+        // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
+        runOnSession(sid, function () {
+          state.modeState = {
+            mode: (state.modeState && state.modeState.mode) || "yolo",
+            multiAgent: previousMultiAgent,
+          };
+          addSystemItem(bt("switchModeFailed") + invokeError);
+        });
+      }
+    } catch (e) {
+      addSystemItem(bt("switchModeFailed") + e);
+    } finally {
+      multiAgentToggleInFlight.delete(flightKey);
+    }
+    notify();
+  }
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
@@ -250,7 +308,7 @@
     try {
       await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
       var summary = answers.map(function (a, i) {
-        var text = a.label === "其他" ? "(其他) " + a.value : a.label;
+        var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
         return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
       }).join(" · ");
       pushUserEcho("✓ " + summary, false);
@@ -272,6 +330,25 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
+    var sid = state.activeSessionId;
+    var editBuffer = getBuffer(sid);
+    // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
+    // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
+    if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addSystemItem(bt("remoteTurnSyncing"));
+      notify();
+      return;
+    }
+    // await 期间可能切会话或开始新回合,二次确认(与 web bridge 对齐)。
+    if (state.activeSessionId !== sid || state.busy) return;
+    // 编辑=新一轮:接管本地回合并清零 remote 对账状态,避免失败对账
+    // 状态下跨回合串用(与 web bridge 的 editLastTurn 对齐)。
+    if (editBuffer) {
+      editBuffer.localTurnOwned = true;
+      editBuffer.remoteTurnActive = false;
+      editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
+    }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
@@ -286,7 +363,7 @@
     startThinking();
     context.currentStreamText = "";
     context.currentStreamId = ++context.itemIdSeq;
-    state.chatItems.push({ id: context.currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    state.chatItems.push({ id: context.currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     notify();
     turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
     try {
@@ -321,6 +398,7 @@
       discardPlan: discardPlan,
       exitPlanToYolo: exitPlanToYolo,
       setPlanModeNext: setPlanModeNext,
+      setMultiAgentMode: setMultiAgentMode,
       planStuckReplan: planStuckReplan,
       planStuckGo: planStuckGo,
       submitUserInput: submitUserInput,

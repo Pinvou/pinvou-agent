@@ -10,7 +10,6 @@ const {
   prepareWindowsCodexBridge,
   WINDOWS_BRIDGE_CONFIG_PATH,
   WINDOWS_BRIDGE_ROOT,
-  WINDOWS_CLAUDE_EXECUTABLE,
 } = require("../scripts/tauri/codex-bridge.js");
 const {
   buildResourceManifest,
@@ -56,15 +55,21 @@ assert.equal(
   `@agentclientprotocol/codex-acp ${sourcePackage.dependencies["@agentclientprotocol/codex-acp"]}`,
 );
 
-const claudeExecutable = path.join(WINDOWS_BRIDGE_ROOT, WINDOWS_CLAUDE_EXECUTABLE);
-const claudeVersion = spawnSync(claudeExecutable, ["--version"], {
-  encoding: "utf8",
-  timeout: 10_000,
-  windowsHide: true,
-});
-assert.equal(claudeVersion.error, undefined);
-assert.equal(claudeVersion.status, 0, claudeVersion.stderr);
-assert.notEqual(`${claudeVersion.stdout}${claudeVersion.stderr}`.trim(), "");
+// Claude Code 走系统安装（与 Codex/Kimi 一致），Bridge 不得携带 claude 平台原生二进制。
+const anthropicScope = path.join(
+  WINDOWS_BRIDGE_ROOT,
+  "acp",
+  "node_modules",
+  "@anthropic-ai",
+);
+const leftoverClaudePackages = fs
+  .readdirSync(anthropicScope)
+  .filter((entry) => entry.startsWith("claude-agent-sdk-"));
+assert.deepEqual(
+  leftoverClaudePackages,
+  [],
+  `Bridge 中不得残留 Claude 平台二进制: ${leftoverClaudePackages.join(", ")}`,
+);
 
 const { effectiveConfig } = composeEffectiveConfig([
   platformConfigPath("win32"),

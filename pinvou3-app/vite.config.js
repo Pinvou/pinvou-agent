@@ -8,6 +8,7 @@ const staticExtensions = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.webp',
 ]);
 const staticScripts = new Set([
+  'features/attachments/attachment-drop-controller.js',
   'features/personas/personas-i18n.js',
   'features/updater/update-notice-logic.js',
   'platform/tauri/bridge.js',
@@ -15,11 +16,12 @@ const staticScripts = new Set([
   'platform/web/bridge.js',
   'platform/web/host-file-picker.js',
   'platform/web/access-policy.json',
+  'shared/bridge-messages.js',
   'vendor/marked.min.js',
   'vendor/purify.min.js',
   'vendor/tailwind.js',
 ]);
-const staticScriptPrefixes = ['platform/tauri/bridge/'];
+const staticScriptPrefixes = ['platform/tauri/bridge/', 'platform/web/bridge/'];
 
 function normalizeWebBasePath(value) {
   let raw = String(value || '/pinvou3/remote').trim();
@@ -82,6 +84,7 @@ export default defineConfig(({ mode }) => {
         : {
             main: resolve(sourceRoot, 'index.html'),
             pet: resolve(sourceRoot, 'pet.html'),
+            reader: resolve(sourceRoot, 'reader.html'),
           },
     },
   },

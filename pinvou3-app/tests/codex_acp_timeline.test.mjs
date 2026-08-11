@@ -124,6 +124,36 @@ try {
   assert.equal(pendingInputTurn.waitingInput, true);
   assert.equal(pendingInputTurn.items[0].status, 'waiting');
 
+  const interruptedTurn = projectAcpTimeline([
+    event(16, 'turn_started', { status: 'running' }, 'turn-interrupted'),
+    event(17, 'tool_call', { update: {
+      toolCallId: 'tool-interrupted',
+      title: '执行长任务',
+      kind: 'execute',
+      status: 'in_progress',
+    } }, 'turn-interrupted'),
+    event(18, 'permission_requested', {
+      toolCallId: 'permission-interrupted',
+      request: { options: [] },
+    }, 'turn-interrupted'),
+    event(19, 'elicitation_requested', {
+      elicitationId: 'input-interrupted',
+      request: { mode: 'form', requestedSchema: { type: 'object', properties: {} } },
+    }, 'turn-interrupted'),
+    event(20, 'turn_completed', {
+      status: 'Interrupted',
+      error: null,
+      recoveryReason: 'application_restarted',
+    }, 'turn-interrupted'),
+  ]).turns[0];
+  assert.equal(interruptedTurn.status, 'Interrupted');
+  assert.equal(interruptedTurn.waitingInput, false);
+  assert.deepEqual(
+    interruptedTurn.items.map(item => item.status),
+    ['cancelled', 'cancelled', 'cancelled'],
+    'terminal recovery must not leave tool, permission, or input items visually running',
+  );
+
   const commandEvents = [
     event(20, 'user_message', { content: [{ type: 'text', text: '检查 PR' }] }, 'turn-command'),
     event(21, 'turn_started', { status: 'running' }, 'turn-command'),
@@ -219,7 +249,7 @@ try {
     /if \(type === 'turn_started'\) \{[\s\S]*?refreshCodexSessions\(\)\.catch\(\(\) => \{\}\);[\s\S]*?\} else if \(type === 'turn_completed'\)/,
     'an accepted ACP turn must refresh the shared recent-session list while it is still running',
   );
-  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode || '代码' }")
+  assert.ok(main.includes("{ id: 'code', label: t.sidebarTaskFilterCode }")
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
     && i18n.includes("sidebarTaskFilterCode: 'Code'")
@@ -252,6 +282,8 @@ try {
   assert.ok(codexCommands.includes('agent_id: Option<String>')
     && codexCommands.includes('set_acp_workspace(&session.metadata.id, backend'),
   'code-session creation must bind the selected ACP Agent for the lifetime of the session');
+  assert.ok(codexCommands.includes('or(Some("pinvou"))'),
+    'code-session creation without an explicit agent must default to the built-in Pinwu backend');
   assert.ok(codexCommands.includes('pub async fn login_acp_agent')
     && codexCommands.includes('pub fn open_acp_agent_login_url')
     && codexCommands.includes('pub async fn submit_acp_agent_login_code'),
@@ -261,6 +293,10 @@ try {
   const runtime = readFileSync(path.join(root, 'src-tauri', 'src', 'features', 'codex_acp', 'mod.rs'), 'utf8');
   assert.ok(runtime.includes('self.session_store.touch_activity(session_id)'),
     'an accepted ACP turn must persist the session activity timestamp before it starts');
+  assert.ok(runtime.includes('interrupt_orphaned_turns("application_restarted")')
+    && runtime.includes('cancel_without_active_prompt')
+    && runtime.includes('runtime.busy.load(Ordering::Acquire)'),
+  'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
   assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
@@ -284,6 +320,10 @@ try {
   assert.ok(!runtime.includes('runtime.prompt(content, mode_id)'), 'prompt must not overwrite acknowledged config with local UI mode');
 
   const codexView = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const runtimeNoticeState = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
+    'utf8',
+  );
   assert.ok(codexView.includes('copy.permissionRequest(agentName)')
     && codexView.includes('tool.title || copy.protectedOperation')
     && codexView.includes('label={copy.command}')
@@ -312,18 +352,24 @@ try {
     && codexView.includes('agentId: draftAgentId')
     && codexView.includes("invoke('list_acp_agents')"),
   'the top code tabs must be the only Agent selector and bind the selected Agent on first send');
+  assert.ok(codexView.includes("const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection'")
+    && codexView.includes("useState(loadAgentSelection() || 'pinvou')")
+    && codexView.includes('saveAgentSelection(agentId)'),
+  'code draft agent must default to Pinwu and persist the user-selected agent across reopens');
   assert.ok(codexView.includes("invoke('login_acp_agent'")
     && codexView.includes("invoke('open_acp_agent_login_url'")
     && codexView.includes("invoke('submit_acp_agent_login_code'")
     && codexView.includes('status.login_code')
     && codexView.includes('status.login_input_required')
-    && codexView.includes('if (!activeStatus?.authenticated)')
+    && codexView.includes('if (!isNativeAgent && !activeStatus?.authenticated)')
     && codexView.includes('isAcpAuthenticationFailure(latest)'),
   'the code page must host browser/device-code login, block unauthenticated prompts, and refresh after token expiry');
   assert.ok(codexView.includes('codexCopy.temporarySession'), 'temporary sessions must remain an explicit choice');
   assert.ok(codexView.includes('DRAFT_ATTACHMENT_KEY')
     && codexView.includes('const created = await createSession(draftWorkspacePath)'),
   'the code home must keep a temporary draft and create its Codex session only on first send');
+  assert.ok(!codexView.includes('createSession(null)'),
+  'the native (pinvou) first-send path must also forward the selected draft workspace');
   assert.ok(codexView.includes('!activeId && (')
     && codexView.includes('data-testid="codex-workspace-selector"')
     && codexView.includes('codexCopy.recentProjects'),
@@ -342,15 +388,30 @@ try {
     && workspaceSelectorIndex > composerFooterIndex
     && attachmentButtonIndex > workspaceSelectorIndex,
   'the draft workspace selector must live in the composer footer before the attachment control');
-  assert.ok(codexView.includes('sessionInfo && (')
+  const accountTriggerIndex = codexView.indexOf('data-testid="acp-account-menu-trigger"');
+  const composerConfigsIndex = codexView.indexOf('data-testid="codex-composer-configs"');
+  assert.ok(accountTriggerIndex > composerFooterIndex
+    && composerConfigsIndex > accountTriggerIndex,
+  'Codex session controls must live in the composer footer right of the connection status');
+  assert.ok(codexView.includes('composerControlsVisible && !isNativeAgent && (')
     && codexView.includes('data-testid="codex-composer-configs"')
     && !codexView.includes('创建后同步'),
-  'Codex controls must appear in the composer only after the session reports real options');
+  'Codex controls must render from the session report or, in draft, the cached agent snapshot');
+  const draftControlsModule = readFileSync(
+    path.join(root, 'src', 'features', 'codex', 'acp-draft-controls.js'),
+    'utf8'
+  );
+  assert.ok(draftControlsModule.includes('pinvou_codex_draft_controls')
+    && codexView.includes('acp-draft-controls.js')
+    && codexView.includes('resolveAcpSessionControls(sessionControlsInfo || draftControlsInfo)')
+    && codexView.includes('stageDraftConfigSelection')
+    && codexView.includes('applyDraftConfigSelections(targetId, created.info)'),
+  'the draft composer must prefill model, mode and config controls from the agent cache and apply staged choices on first send');
   assert.ok(codexView.includes('function CodexComposerConfigSelect')
-    && codexView.includes('data-testid={`codex-config-${id}`}')
-    && codexView.includes('appearance-none opacity-0')
+    && codexView.includes('data-testid={testId || `codex-config-${id}`}')
+    && codexView.includes('<ComposerPopover')
     && codexView.includes('focus-within:ring-2 focus-within:ring-[#007AFF]/10'),
-  'Codex session controls must use the unified visual selector while retaining native select behavior');
+  'Codex session controls must use the unified visual selector with the app-styled ComposerPopover menu');
   assert.ok(!codexView.includes('<aside'),
     'Codex must use the app-wide session sidebar instead of rendering a second sidebar');
   assert.ok(homeModeSwitcher.includes("labelKey: 'work'") && homeModeSwitcher.includes("labelKey: 'code'")
@@ -391,7 +452,7 @@ try {
   'ACP sessions must keep the Codex mark and expose distinct Claude/Kimi identities');
   assert.ok(pinvouLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
     && chatView.includes('assistantAvatar={(')
-    && chatView.includes('<PinvouLogo className="h-5 w-5" title="品悟"')
+    && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
   'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
   assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
@@ -404,8 +465,8 @@ try {
     'running operation details must not interrupt the conversation by auto-expanding');
   assert.ok(!codexView.includes('if (running) setOpen(true)'),
     'running operation groups must remain compact by default');
-  assert.ok(codexView.includes("HTTP\\s*402")
-    && codexView.includes("kind = 'entitlement'")
+  assert.ok(runtimeNoticeState.includes("HTTP\\s*402")
+    && runtimeNoticeState.includes("kind = 'entitlement'")
     && codexView.includes('data-testid="acp-service-failure"'),
   'membership HTTP 402 failures must become a recoverable service card instead of a bare error');
   assert.ok(codexView.includes("invoke('switch_acp_agent_account'")
@@ -417,8 +478,10 @@ try {
     && codexView.includes('if (movingUp) autoScrollRef.current = false')
     && codexView.includes('if (autoScrollRef.current)')
     && codexView.includes('scrollConversationToBottom')
-    && codexView.includes('codexCopy.latest'),
-  'Codex streaming must pause auto-follow while the user reads history and expose an explicit return action');
+    && codexView.includes('codexCopy.latest')
+    && codexView.includes('bottom-full')
+    && !codexView.includes('bottom-[106px]'),
+  'Codex streaming must pause auto-follow and place the return action above, not over, the composer');
   assert.ok(!codexView.includes('<JsonBlock'), 'raw ACP JSON must not leak into normal command UI');
   assert.ok(codexView.includes("invoke('codex_acp_prompt', {")
     && codexView.includes('attachments: readyAttachments.map(attachment => attachment.result)')
@@ -473,12 +536,85 @@ try {
     && codexView.includes('[activeAgentId, activeStatus?.login_in_progress]'),
   'switching ACP sessions must never render or keep polling the previous Agent status');
   assert.ok(codexView.includes('<ConversationMarkdown')
-    && codexView.includes("invoke('open_external_url', { url })"),
+    && codexView.includes("invoke('open_user_external_url', { url })"),
   'both unified and fallback Codex messages must route links through the host opener');
   assert.ok(baseStyles.includes('.codex-markdown ul { list-style:disc outside; }'),
     'Codex unordered lists must retain bullets after Tailwind preflight');
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),
     'Codex ordered lists must retain numbering after Tailwind preflight');
+
+  // 原生（品悟）车道底栏控件契约：仅 isNativeAgent 渲染、与工作/设计页共用同一套
+  // 共享 composer 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
+  // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）、直调 per-session 命令、
+  // 并带与 ChatView 同款的语音输入按钮（bridge.voice 写回 draft）。
+  const composerControls = readFileSync(path.join(root, 'src', 'features', 'chat', 'composer-controls.jsx'), 'utf8');
+  assert.ok(codexView.includes('data-testid="native-composer-controls"')
+    && codexView.includes('{isNativeAgent && (')
+    && codexView.includes('<ComposerModeChip')
+    && codexView.includes('<ComposerModelSelector')
+    && codexView.includes('<ComposerKbSelector')
+    && codexView.includes('<ComposerToolMenu')
+    && codexView.includes('triggerTestId="native-tools"')
+    && codexView.includes('scope="code"')
+    && codexView.includes('mountedId={nativeMountedId}')
+    && codexView.includes('data-testid="codex-voice-input"'),
+  'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，
+  // 代码页卸载（切模式/视图）前必须取消进行中的录音/转写，否则识别结果可能写回
+  // 已卸载组件（草稿态 null→null 时守卫放行并显示「已完成」但文本丢失）。
+  assert.ok(codexView.includes('nativeVoiceInputRef = useRef(nativeVoiceInput)')
+    && codexView.includes('bridge.voice.cancelVoiceInput()')
+    && codexView.includes("voice.status === 'requesting_permission'"),
+  'the code page must cancel an in-flight voice input before unmount so results cannot be written back to a detached composer');
+  // 语音失败提示条须带 ChatView 同款「去依赖体检」入口（recognition_failed + 本地
+  // ASR 可安装 + onGotoSettings 时渲染 voiceGotoDeps 按钮）。
+  assert.ok(codexView.includes("can('localModelSetup') && can('dependencyInstall')")
+    && codexView.includes('nativeVoiceInput.category === \'recognition_failed\'')
+    && codexView.includes('t.voiceGotoDeps'),
+  'the code page voice notice must offer the dependency-check shortcut on recognition failure like ChatView');
+  // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
+  // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
+  assert.ok(codexView.includes('data-testid="codex-composer-configs"')
+    && codexView.includes('{composerControlsVisible && !isNativeAgent && (')
+    && codexView.includes('function CodexComposerConfigSelect')
+    && codexView.includes('data-testid={testId || `codex-config-${id}`}'),
+  'the plain lane must keep its self-drawn config select group while the shared config select keeps the ACP testid contract');
+  assert.ok(codexView.includes("invoke('get_session_model_id'")
+    && codexView.includes("invoke('set_session_model'")
+    && codexView.includes("invoke('session_mount_collection'")
+    && codexView.includes("invoke('session_unmount_collection'")
+    && codexView.includes("invoke('session_mounted_collection'")
+    && codexView.includes("invoke('get_mode_state'")
+    && codexView.includes("invoke('set_plan_mode_next'")
+    && codexView.includes("invoke('exit_plan_to_yolo'")
+    && codexView.includes("invoke('cancel_generation'"),
+  'native composer controls must switch via per-session commands with an explicit sessionId');
+  assert.ok(!codexView.includes('bridge.models.')
+    && !codexView.includes('bridge.knowledge.')
+    && !codexView.includes('bridge.interaction.')
+    && !codexView.includes('bridge.chat.'),
+  'the code lane must never call bridge chat-active-bound methods for composer controls');
+  assert.ok(codexView.includes('nativeDraftControls')
+    && codexView.includes('applyNativeDraftControls'),
+  'draft-state control selections must be staged and applied after session creation');
+  assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
+  'session control state must be scoped to its owning session to avoid cross-session flashes');
+  assert.ok(chatView.includes("from './composer-controls.jsx'")
+    && !chatView.includes('const ComposerKbSelector = ')
+    && !chatView.includes('const ComposerModeChip = ')
+    && composerControls.includes('export { COMPOSER_ICON_BUTTON_CLASS, ComposerKbSelector, ComposerModeChip }'),
+  'ChatView must consume the extracted composer controls module');
+  assert.ok(composerControls.includes('mountedIdProp !== undefined')
+    && composerControls.includes('modeProp != null')
+    && composerControls.includes('busyProp !== undefined')
+    && composerControls.includes('if (onMount) { onMount(id); return; }')
+    && composerControls.includes('if (onUnmount) { onUnmount(); return; }')
+    && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
+  'extracted controls must support explicit session-driven props while keeping the bridge fallback');
+  // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发
+  // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
+  assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
+  'ComposerModeChip must early-return when the clicked mode equals the active mode');
 
   console.log('codex_acp_timeline: ok');
 } finally {

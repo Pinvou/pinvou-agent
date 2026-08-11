@@ -50,13 +50,6 @@ const CLAUDE_BRIDGE_PACKAGE_JSON = path.join(
   "claude-agent-acp",
   "package.json",
 );
-const WINDOWS_CLAUDE_EXECUTABLE = path.join(
-  "acp",
-  "node_modules",
-  "@anthropic-ai",
-  "claude-agent-sdk-win32-x64",
-  "claude.exe",
-);
 const MARKER_NAME = "manifest.json";
 const PREPARE_FORMAT_VERSION = 4;
 const MINIMUM_NODE_MAJOR = 20;
@@ -159,17 +152,15 @@ function pruneWindowsPlatformPackages(root) {
   for (const packageRoot of packageDirectories(root, "@openai", "codex-")) {
     fs.rmSync(packageRoot, { recursive: true, force: true });
   }
-  const expectedClaudePackage = path.dirname(
-    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
-  );
+  // Claude Code 走系统安装（与 Codex/Kimi 一致），适配器通过
+  // CLAUDE_CODE_EXECUTABLE / PATH 中的 claude 启动，不随包携带 claude.exe
+  //（单个原生二进制约 140MB）。
   for (const packageRoot of packageDirectories(
     root,
     "@anthropic-ai",
     "claude-agent-sdk-",
   )) {
-    if (packageRoot !== expectedClaudePackage) {
-      fs.rmSync(packageRoot, { recursive: true, force: true });
-    }
+    fs.rmSync(packageRoot, { recursive: true, force: true });
   }
 }
 
@@ -180,14 +171,7 @@ function platformPackagesValid(root) {
     "@anthropic-ai",
     "claude-agent-sdk-",
   );
-  const expectedClaudePackage = path.dirname(
-    path.join(root, WINDOWS_CLAUDE_EXECUTABLE),
-  );
-  return (
-    codexPackages.length === 0 &&
-    claudePackages.length === 1 &&
-    claudePackages[0] === expectedClaudePackage
-  );
+  return codexPackages.length === 0 && claudePackages.length === 0;
 }
 
 function windowsBridgeOverlay() {
@@ -225,7 +209,6 @@ function isPrepared(expected = expectedMarker(), outputRoot = WINDOWS_BRIDGE_ROO
       claudePackageJson.version === expectedClaudeAcpVersion() &&
       nonemptyFile(path.join(outputRoot, BRIDGE_ENTRYPOINT)) &&
       nonemptyFile(path.join(outputRoot, CLAUDE_BRIDGE_ENTRYPOINT)) &&
-      nonemptyFile(path.join(outputRoot, WINDOWS_CLAUDE_EXECUTABLE)) &&
       platformPackagesValid(outputRoot) &&
       windowsChildProcessesHidden(path.join(outputRoot, BRIDGE_ENTRYPOINT))
     );
@@ -401,7 +384,6 @@ module.exports = {
   MINIMUM_NODE_MAJOR,
   WINDOWS_BRIDGE_ROOT,
   WINDOWS_BRIDGE_CONFIG_PATH,
-  WINDOWS_CLAUDE_EXECUTABLE,
   WINDOWS_NPM_CI_ARGS,
   expectedMarker,
   hideWindowsChildProcesses,

@@ -391,7 +391,7 @@ fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
     let key = set_test_oauth_token(server_name, url, "not-json");
     assert!(test_oauth_token_exists(&key));
 
-    uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap();
+    uninstall_marketplace_tool_sync("yuandian-mcp").unwrap();
 
     assert!(!test_oauth_token_exists(&key));
     assert!(!crate::features::marketplace::MarketplaceManager::new()
@@ -417,7 +417,7 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
         }),
     );
 
-    let err = uninstall_marketplace_tool("yuandian-mcp".to_string()).unwrap_err();
+    let err = uninstall_marketplace_tool_sync("yuandian-mcp").unwrap_err();
     assert!(err.contains("删除 MCP OAuth token 失败"));
     assert!(crate::features::marketplace::MarketplaceManager::new()
         .installed_ids()
@@ -547,7 +547,10 @@ fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn direct_skill_reinstall_reapplies_persisted_disable() {
+fn direct_skill_install_uninstall_scope_state_roundtrip() {
+    use crate::features::assistant::skill_materialization as sm;
+    use crate::features::marketplace::ConnectorScope;
+
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -560,26 +563,37 @@ fn direct_skill_reinstall_reapplies_persisted_disable() {
     std::fs::create_dir_all(&root).unwrap();
     std::env::set_var("PINVOU3_HOME", &root);
 
-    crate::features::marketplace::save_disabled_connectors(&["skill:visualizer".to_string()]);
+    // 用户关闭 visualizer（独立 disabled_skills.json，不再借道连接器文件）→
+    // 组合目录计算排除该技能。
+    sm::save_disabled_skills_for(ConnectorScope::Plain, &["visualizer".to_string()]);
     install_marketplace_skill_sync("visualizer").unwrap();
-    assert!(deepseek_tui::skills::is_skill_disabled("visualizer"));
+    assert!(
+        !sm::enabled_skills_for(ConnectorScope::Plain, None)
+            .iter()
+            .any(|(n, _)| n == "visualizer"),
+        "安装后仍受用户关闭状态约束（plain scope 禁用集）"
+    );
+    // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
+    assert!(sm::load_disabled_skills_for(ConnectorScope::Code)
+        .iter()
+        .any(|id| id == "visualizer"));
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
+    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
     assert!(
-        !deepseek_tui::skills::is_skill_disabled("visualizer"),
-        "卸载后底座运行态不应保留不存在的 skill"
+        !sm::load_disabled_skills_for(ConnectorScope::Plain)
+            .iter()
+            .any(|id| id == "visualizer"),
+        "卸载应从禁用集清除残留 id"
     );
-
-    // disabled_connectors.json 仍保留用户的关闭选择。重装命令必须主动刷新，
-    // 不能等用户再切一次 composer 开关。
     install_marketplace_skill_sync("visualizer").unwrap();
     assert!(
-        deepseek_tui::skills::is_skill_disabled("visualizer"),
-        "重装后 UI 的关闭状态必须与底座运行态一致"
+        sm::enabled_skills_for(ConnectorScope::Plain, None)
+            .iter()
+            .any(|(n, _)| n == "visualizer"),
+        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
     );
 
-    crate::features::marketplace::save_disabled_connectors(&[]);
-    crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
     match previous {
         Some(value) => std::env::set_var("PINVOU3_HOME", value),
         None => std::env::remove_var("PINVOU3_HOME"),
@@ -800,13 +814,14 @@ fn accept_plan_instruction_embeds_full_plan() {
 /// read_file + 无依据说不知道;空名兜底。
 #[test]
 fn agentic_guide_mentions_collection_and_kb_search() {
-    let g = build_kb_agentic_guide(Some("硬件资料"));
+    let g = build_kb_agentic_guide(&["硬件资料".to_string(), "团队规范".to_string()]);
     assert!(g.contains("《硬件资料》"));
     assert!(g.contains("kb_search"));
     assert!(g.contains("kb_open_source"));
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
-    assert!(build_kb_agentic_guide(None).contains("《本地知识集》"));
+    assert!(g.contains("《团队规范》"));
+    assert!(build_kb_agentic_guide(&[]).contains("《本地知识集》"));
 }
 
 #[test]
@@ -947,7 +962,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         .expect_err("scheduled runs must reject UI transcript overwrites");
     assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
     let locked = store
-        .execution_workspace(&scheduled.metadata.id)
+        .ledger_root(&scheduled.metadata.id)
         .expect("locked scheduled workspace");
     // 每次运行对话独立，同一 automation 共享自己的工作间；输入路径不会生效。
     assert_eq!(
@@ -965,6 +980,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         vec![crate::features::files::file_ingest::ingest(&source)],
         &locked,
         &staged_dir,
+        false,
     );
 
     let staged_relative = format!("{staged_dir}/source.png");
@@ -974,6 +990,7 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
         vec![mk_attachment("text", "big.log", 9_000, 50_000)],
         &locked,
         &staged_dir,
+        false,
     );
     let report = workspace.join("report.md");
     std::fs::write(&report, "scheduled result").expect("scheduled workspace artifact");
@@ -1084,7 +1101,7 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
 }
 
 #[test]
-fn ordinary_execution_workspace_behavior_is_unchanged() {
+fn ordinary_ledger_root_behavior_is_unchanged() {
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1107,8 +1124,8 @@ fn ordinary_execution_workspace_behavior_is_unchanged() {
 
     assert_eq!(
         store
-            .execution_workspace(&chat.metadata.id)
-            .expect("ordinary execution workspace"),
+            .ledger_root(&chat.metadata.id)
+            .expect("ordinary ledger root"),
         expected
     );
     assert_eq!(
@@ -1192,6 +1209,36 @@ async fn open_external_url_rejects_off_allowlist_targets() {
         assert!(
             err.as_deref().unwrap().contains("allowlist"),
             "reject reason should name allowlist for {url:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn user_clicked_external_urls_allow_http_https_only() {
+    for allowed in [
+        "https://example.com/path?q=1#section",
+        "http://127.0.0.1:8080/preview",
+        "https://例子.测试/",
+    ] {
+        assert!(
+            user_external_url(allowed).is_some(),
+            "user-clicked HTTP(S) URL should be accepted: {allowed}"
+        );
+    }
+    for rejected in [
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "data:text/html,hello",
+        "https://user@example.com/",
+        "https://user:secret@example.com/",
+        "https:///missing-host",
+        "https:\\\\example.com",
+        "https://\\example.com",
+        "",
+    ] {
+        assert!(
+            user_external_url(rejected).is_none(),
+            "unsafe user-clicked URL must be rejected: {rejected}"
         );
     }
 }
@@ -1654,6 +1701,79 @@ fn mk_test_ws(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn project_bound_code_session_references_staged_attachments_by_absolute_path() {
+    // 原生代码会话绑项目目录后：附件仍落盘到账本根（会话私有目录），但消息里的
+    // 引用必须是绝对路径——引擎 cwd 是项目目录，相对路径会解析落空。
+    let ledger = mk_test_ws("absolute-ledger");
+    let prompt = build_message_with_attachments_in_dir(
+        "inspect all".to_string(),
+        vec![mk_attachment("xlsx", "big.xlsx", 9_000, 50_000)],
+        &ledger,
+        "attachments",
+        true,
+    );
+    let staged = ledger.join("attachments/big.csv");
+    assert!(
+        staged.exists(),
+        "附件必须落盘到账本根: {}",
+        staged.display()
+    );
+    let absolute = staged.to_string_lossy().into_owned();
+    assert!(prompt.contains(&absolute), "消息必须引用绝对路径");
+    assert!(!prompt.contains("路径: `attachments/big.csv`"));
+
+    // 普通会话（两根一致）维持相对路径引用，行为不变。
+    let relative_ledger = mk_test_ws("relative-ledger");
+    let relative_prompt = build_message_with_attachments_in_dir(
+        "inspect all".to_string(),
+        vec![mk_attachment("xlsx", "big.xlsx", 9_000, 50_000)],
+        &relative_ledger,
+        "attachments",
+        false,
+    );
+    assert!(relative_prompt.contains("`attachments/big.csv`"));
+    let _ = std::fs::remove_dir_all(&ledger);
+    let _ = std::fs::remove_dir_all(&relative_ledger);
+}
+
+#[test]
+fn remote_artifact_authorization_stays_on_private_ledger_root() {
+    // 红线回归：即使原生代码会话把执行根绑到用户项目目录，远程下载授权根也必须
+    // 是会话私有目录——resolve_session_artifact_path 的 workspace_root 来自
+    // SessionStore::ledger_root（账本语义），项目内文件不可下载。
+    let _home = test_pinvou_home("pinvou3-remote-authz-test");
+    let store = SessionStore::boot().expect("session store");
+    let chat = store
+        .create_new("remote-authz-test".to_string(), None, std::env::temp_dir())
+        .expect("chat session");
+    let sid = chat.metadata.id.clone();
+    let ledger = store.ledger_root(&sid).expect("ledger workspace");
+    std::fs::create_dir_all(&ledger).expect("ledger dir");
+    std::fs::write(ledger.join("ok.txt"), "ok").expect("ledger file");
+
+    let project = mk_test_ws("remote-authz-project");
+    let outside = project.join("secret.txt");
+    std::fs::write(&outside, "secret").expect("project file");
+
+    crate::features::remote_control::file_access::resolve_session_artifact_path(
+        &store, &sid, "ok.txt",
+    )
+    .expect("账本根内的文件必须可下载");
+    assert!(
+        crate::features::remote_control::file_access::resolve_session_artifact_path(
+            &store,
+            &sid,
+            outside.to_str().expect("utf8 path"),
+        )
+        .is_err(),
+        "项目目录（执行根）内的文件不得经远程通道下载"
+    );
+
+    let _ = store.delete(&sid);
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+#[test]
 fn staged_attachment_basename_rejects_path_traversal_and_drive_prefixes() {
     for invalid in ["", ".", "..", "../x", "..\\x", "/x", "C:\\x"] {
         assert!(
@@ -1799,6 +1919,30 @@ fn concurrent_staging_reserves_distinct_targets_atomically() {
 }
 
 #[test]
+fn session_owned_attachment_reuses_workspace_relative_path() {
+    let workspace = mk_test_ws("reuse-session-attachment");
+    let attachment = workspace
+        .join("attachments")
+        .join("desktop_attach_test")
+        .join("image.png");
+    std::fs::create_dir_all(attachment.parent().unwrap()).expect("attachment directory");
+    std::fs::write(&attachment, b"image bytes").expect("attachment");
+
+    assert_eq!(
+        existing_workspace_relative_file(attachment.to_string_lossy().as_ref(), &workspace),
+        Some("attachments/desktop_attach_test/image.png".to_string())
+    );
+    assert_eq!(
+        std::fs::read_dir(attachment.parent().unwrap())
+            .expect("attachment entries")
+            .count(),
+        1,
+        "reusing a session-owned image must not create a second copy"
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn atomic_staging_keeps_legal_image_and_text_behavior() {
     let workspace = mk_test_ws("legal-atomic-staging");
     let source = workspace.join("source.png");
@@ -1842,7 +1986,8 @@ fn remote_attachment_source_survives_upload_temp_cleanup() {
     std::fs::remove_file(&image_source).unwrap();
     let image_prompt = build_message_with_attachments("看图".into(), vec![image], &workspace);
     assert!(image_prompt.contains("image_analyze"));
-    assert!(workspace.join("attachments/remote.png").exists());
+    assert!(staged_image.exists());
+    assert!(image_prompt.contains(".pinvou3/remote-attachments/remote.png"));
 
     let text_source = root.join("remote.txt");
     std::fs::write(&text_source, "远控大文本\n".repeat(20_000)).unwrap();

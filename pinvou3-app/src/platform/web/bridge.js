@@ -56,6 +56,9 @@
     return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
   }
   function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
     var html = neutralizeRawDangerousTags(marked.parse(text || ""));
     return DOMPurify.sanitize(html, {
@@ -116,6 +119,8 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // 专业子模式用户消息标签(sidecar, 不进 messages/LLM)。每项 {pos, scene}。
+    pinvouSceneEvents: [],
     // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
     pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
@@ -159,6 +164,7 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
+    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -191,6 +197,8 @@
     // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
+    mountedCollections: [],
+    mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -248,7 +256,9 @@
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
-      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      startupLoading: false,
+      startupReady: null,
+      status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },
@@ -340,6 +350,95 @@
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
       shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
       shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
+      sessionChunkInvalid: "The desktop app returned an invalid session chunk",
+      sessionChunkChanged: "Session data changed while reading. Please try again",
+      sessionChunkOverflow: "Session chunk exceeds the declared length",
+      sessionChunkEarlyEnd: "Session chunks ended prematurely",
+      sessionChunkNoProgress: "Session chunks made no progress",
+      scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule",
+      scheduledCreateFailed: "Failed to create scheduled task: ",
+      scheduledTaskFallbackName: "Scheduled task",
+      scheduledActionBusy: "Another scheduled task operation is still in progress",
+      scheduledCreateNoId: "Failed to create scheduled task: the backend returned no task ID",
+      scheduledChatPrefill: "I'd like to create a scheduled task: ",
+      runNoSession: "This run has no session to open",
+      sessionDataInvalid: "Invalid session data",
+      skillContentHidden: "(Skill loaded; content hidden)",
+      turnSyncRejected: "This session is syncing a turn completed elsewhere. Please try again shortly",
+      targetSessionMissing: "Target session does not exist",
+      replyContentEmpty: "Reply content is empty",
+      targetSessionSyncing: "The target session is still syncing a turn completed elsewhere",
+      sessionIdMissing: "The desktop app returned no new session ID",
+      turnSyncRetry: "⚠️ This session is still syncing a turn completed elsewhere. Please try again shortly",
+      pinvouNeedSession: "Start a chat first, then summon Pinvou for review.",
+      remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
+      workflowComplete: "🎉 Workflow complete — final artifact ready",
+      workflowBlocked: "⚙️ Workflow stuck: ",
+      unknownReason: "unknown reason",
+      workflowEnableFailed: "⚠️ Failed to enable workflow: ",
+      workflowKickFailed: "⚠️ kick_workflow failed: ",
+      workflowStartFailed: "⚠️ Failed to start workflow: ",
+      workflowNoneToStop: "No workflow to stop right now",
+      workflowSubmitFailed: "⚠️ Submit failed: ",
+      materialsAdded: (count, names) => "✅ Added " + count + " materials to run materials: " + names.join(", "),
+      folderPickerUnavailable: "The folder picker cannot be opened in this environment",
+      pickFolderTitle: "Choose a working directory",
+      kbPickFolderTitle: "Choose a folder to import into the knowledge base",
+      gateApproveFailed: "⚠️ Approval failed: ",
+      gateRejectFailed: "⚠️ Rejection failed: ",
+      roleRetried: (roleId, result) => "🔄 Rerunning " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ Rerun failed: ",
+      metricNotApplicable: "N/A", metricUnavailable: "Not available",
+      targetKindRemote: "Remote model",
+      targetKindLocal: "Local model",
+      targetKindInvalid: "Invalid configuration",
+      betaTag: " (Beta)",
+      memoryWriteFailed: "Failed to write memory: ",
+      memoryIgnoreFailed: "Failed to ignore memory: ",
+      memoryNeverFailed: "Failed to update the never-ask setting: ",
+      planTicketExpired: "⚠️ The plan ticket has expired. Regenerate the plan before running it",
+      downloadLimitSuffix: size => " (current file " + size + " MiB)",
+      downloadLimitError: suffix => "Remote artifact downloads are limited to 256 MiB" + suffix + ". Open the file directly on the desktop.",
+      downloadUnsupported: "⚠️ This desktop version does not support remote artifact download. Update the desktop app and try again.",
+      downloadFailed: "⚠️ Artifact download failed: ",
+      downloadNotEnabled: "Remote artifact download is not enabled in this environment",
+      artifactMissing: "The artifact does not exist or has been removed",
+      artifactSizeInvalid: "The desktop app returned an invalid artifact size. Download stopped",
+      artifactChunkInvalid: "The desktop app returned an invalid artifact chunk. Download stopped",
+      artifactChanged: "The artifact changed during download. Please try again",
+      artifactOverflow: "The desktop app sent more artifact data than declared. Download stopped",
+      artifactIncomplete: "The artifact download is incomplete. Please try again",
+      attachPathUnavailable: "WebUI does not expose desktop attachment paths",
+      attachDownloadUnsupported: "⚠️ This desktop version does not support remote attachment download. Update the desktop app and try again.",
+      attachChunkInvalid: "The desktop app returned an invalid attachment chunk. Download stopped",
+      attachChanged: "The attachment changed during download. Please try again",
+      attachOverflow: "The desktop app sent more attachment data than declared. Download stopped",
+      attachIncomplete: "The attachment download is incomplete. Please try again",
+      attachNoData: "Attachment download returned no data",
+      attachNoProgress: "Attachment download made no progress",
+      artifactNoProgress: "Artifact download made no progress",
+      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
+      newChatFallbackTitle: "New chat",
+      mountCollectionFailed: "Failed to mount knowledge collection: ",
+      depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
+      voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
+      voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
+      voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required audio configuration. Try again; if it still fails, check microphone settings or update system components.",
+      voiceEmptyResult: "No speech recognized. Move closer to the microphone and try again.",
+      voiceContextMismatch: "Recognition finished, but the active session changed, so the result was not inserted.",
+      voiceTimeout: "Voice input timed out. Please try again.",
+      voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
+      voiceInputFailed: "Voice input failed. Check the microphone and try again.",
+      voiceCancelled: "Voice input cancelled",
+      voiceTranscribing: "Recognizing speech…",
+      voiceTooShort: "Recording too short. Please try again.",
+      voiceWritten: "Voice text inserted into the input box",
+      voiceNeedDesktopAsr: "Install the speech recognition component on the desktop first, then use the microphone from the browser.",
+      voiceRequestingPermission: "Requesting microphone permission…",
+      voiceNoMicCapture: "This WebView does not support microphone capture.",
+      voiceNoAudioRecording: "This WebView does not support audio recording.",
+      voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
+      voiceRecording: "Recording… click again to stop",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -363,6 +462,95 @@
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
       shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
       shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
+      sessionChunkInvalid: "デスクトップ側が無効なセッションチャンクを返しました",
+      sessionChunkChanged: "読み込み中にセッションデータが変更されました。もう一度お試しください",
+      sessionChunkOverflow: "セッションチャンクが宣言された長さを超えています",
+      sessionChunkEarlyEnd: "セッションチャンクが途中で終了しました",
+      sessionChunkNoProgress: "セッションチャンクが進みませんでした",
+      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
+      scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
+      scheduledTaskFallbackName: "スケジュールタスク",
+      scheduledActionBusy: "別のスケジュールタスク操作がまだ進行中です",
+      scheduledCreateNoId: "スケジュールタスクの作成に失敗：バックエンドがタスク ID を返しませんでした",
+      scheduledChatPrefill: "スケジュールタスクを作成したいです：",
+      runNoSession: "この実行記録には開けるセッションがありません",
+      sessionDataInvalid: "セッションデータが無効です",
+      skillContentHidden: "（スキルを読み込みました。内容は表示しません）",
+      turnSyncRejected: "このセッションは別端末で完了したターンを同期中です。しばらくしてから再試行してください",
+      targetSessionMissing: "対象のセッションが存在しません",
+      replyContentEmpty: "返信内容が空です",
+      targetSessionSyncing: "対象のセッションは別端末で完了したターンをまだ同期中です",
+      sessionIdMissing: "デスクトップ側が新しいセッション ID を返しませんでした",
+      turnSyncRetry: "⚠️ このセッションは別端末で完了したターンをまだ同期中です。しばらくしてから再試行してください",
+      pinvouNeedSession: "先にチャットを開始してから Pinvou レビューを呼び出してください。",
+      remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
+      workflowComplete: "🎉 ワークフローが完了し、成果物が生成されました",
+      workflowBlocked: "⚙️ ワークフローが停止：",
+      unknownReason: "不明な原因",
+      workflowEnableFailed: "⚠️ ワークフローの有効化に失敗: ",
+      workflowKickFailed: "⚠️ kick_workflow に失敗: ",
+      workflowStartFailed: "⚠️ ワークフローの開始に失敗: ",
+      workflowNoneToStop: "現在停止できるワークフローはありません",
+      workflowSubmitFailed: "⚠️ 送信に失敗: ",
+      materialsAdded: (count, names) => "✅ 素材を " + count + " 件、配套材料に追加しました：" + names.join("、"),
+      folderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
+      pickFolderTitle: "作業ディレクトリを選択",
+      kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      gateApproveFailed: "⚠️ 承認に失敗: ",
+      gateRejectFailed: "⚠️ 差し戻しに失敗: ",
+      roleRetried: (roleId, result) => "🔄 再実行 " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ 再実行に失敗: ",
+      metricNotApplicable: "対象外", metricUnavailable: "未提供",
+      targetKindRemote: "リモートモデル",
+      targetKindLocal: "ローカルモデル",
+      targetKindInvalid: "構成エラー",
+      betaTag: " (ベータ版)",
+      memoryWriteFailed: "メモリの書き込みに失敗：",
+      memoryIgnoreFailed: "メモリの無視に失敗：",
+      memoryNeverFailed: "「今後表示しない」の設定に失敗：",
+      planTicketExpired: "⚠️ プランの認証情報が失効しました。プランを再生成してから実行してください",
+      downloadLimitSuffix: size => "（現在のファイル " + size + " MiB）",
+      downloadLimitError: suffix => "リモート制御での成果物ダウンロード上限は 256 MiB です" + suffix + "。デスクトップ側で直接開いてください。",
+      downloadUnsupported: "⚠️ 現在のデスクトップ側はリモート制御による成果物ダウンロードに対応していません。デスクトップを更新して再試行してください。",
+      downloadFailed: "⚠️ 成果物のダウンロードに失敗: ",
+      downloadNotEnabled: "現在の環境ではリモート制御による成果物ダウンロードが有効になっていません",
+      artifactMissing: "成果物が存在しないか、削除されています",
+      artifactSizeInvalid: "デスクトップ側が無効な成果物サイズを返しました。ダウンロードを中止しました",
+      artifactChunkInvalid: "デスクトップ側が無効な成果物チャンクを返しました。ダウンロードを中止しました",
+      artifactChanged: "ダウンロード中に成果物が変更されました。もう一度お試しください",
+      artifactOverflow: "デスクトップ側が宣言サイズを超える成果物データを返しました。ダウンロードを中止しました",
+      artifactIncomplete: "成果物のダウンロードが不完全です。もう一度お試しください",
+      attachPathUnavailable: "WebUI はデスクトップ側の添付ファイルパスを公開していません",
+      attachDownloadUnsupported: "⚠️ 現在のデスクトップ側はリモート添付ファイルのダウンロードに対応していません。デスクトップを更新して再試行してください。",
+      attachChunkInvalid: "デスクトップ側が無効な添付ファイルチャンクを返しました。ダウンロードを中止しました",
+      attachChanged: "ダウンロード中に添付ファイルが変更されました。もう一度お試しください",
+      attachOverflow: "デスクトップ側が宣言サイズを超える添付ファイルデータを返しました。ダウンロードを中止しました",
+      attachIncomplete: "添付ファイルのダウンロードが不完全です。もう一度お試しください",
+      attachNoData: "添付ファイルのダウンロードがデータを返しませんでした",
+      attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
+      artifactNoProgress: "成果物のダウンロードが進みませんでした",
+      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
+      newChatFallbackTitle: "新しいチャット",
+      mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
+      depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
+      voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
+      voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
+      voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定を確認するかシステムコンポーネントを更新してください。",
+      voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
+      voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
+      voiceTimeout: "音声入力がタイムアウトしました。もう一度お試しください。",
+      voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
+      voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
+      voiceCancelled: "音声入力をキャンセルしました",
+      voiceTranscribing: "音声を認識中…",
+      voiceTooShort: "録音が短すぎます。もう一度お試しください。",
+      voiceWritten: "音声を入力欄に書き込みました",
+      voiceNeedDesktopAsr: "先にデスクトップ側で音声認識コンポーネントをインストールしてから、ブラウザーでマイクを使用してください。",
+      voiceRequestingPermission: "マイクの権限を要求中…",
+      voiceNoMicCapture: "現在の WebView はマイク入力に対応していません。",
+      voiceNoAudioRecording: "現在の WebView は音声録音に対応していません。",
+      voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
+      voiceRecording: "録音中です。もう一度クリックすると終了します",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -386,12 +574,108 @@
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
       shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
       shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
+      sessionChunkInvalid: "桌面端返回了无效的会话分块",
+      sessionChunkChanged: "读取期间会话数据发生变化，请重试",
+      sessionChunkOverflow: "会话分块超出声明长度",
+      sessionChunkEarlyEnd: "会话分块提前结束",
+      sessionChunkNoProgress: "会话分块没有前进",
+      scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
+      scheduledCreateFailed: "定时任务创建失败：",
+      scheduledTaskFallbackName: "定时任务",
+      scheduledActionBusy: "另一个定时任务操作仍在进行中",
+      scheduledCreateNoId: "创建定时任务失败：后端未返回任务 ID",
+      scheduledChatPrefill: "我想创建一个定时任务：",
+      runNoSession: "该运行记录没有可打开的会话",
+      sessionDataInvalid: "会话数据无效",
+      skillContentHidden: "（技能已加载，内容不展示）",
+      turnSyncRejected: "该会话正在同步另一端完成的回合，请稍后重试",
+      targetSessionMissing: "目标会话不存在",
+      replyContentEmpty: "回复内容为空",
+      targetSessionSyncing: "目标会话仍在同步另一端完成的回合",
+      sessionIdMissing: "桌面端未返回新会话 ID",
+      turnSyncRetry: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
+      pinvouNeedSession: "先开始一个对话,再召唤 Pinvou 检阅。",
+      remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
+      workflowComplete: "🎉 工作流完成，成品已生成",
+      workflowBlocked: "⚙️ 工作流卡住：",
+      unknownReason: "未知原因",
+      workflowEnableFailed: "⚠️ 启用工作流失败: ",
+      workflowKickFailed: "⚠️ kick_workflow 失败: ",
+      workflowStartFailed: "⚠️ 启动工作流失败: ",
+      workflowNoneToStop: "当前没有可停止的工作流",
+      workflowSubmitFailed: "⚠️ 提交失败: ",
+      materialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
+      folderPickerUnavailable: "当前环境无法打开文件夹选择器",
+      pickFolderTitle: "选择工作目录",
+      kbPickFolderTitle: "选择要导入知识库的文件夹",
+      gateApproveFailed: "⚠️ 通过失败: ",
+      gateRejectFailed: "⚠️ 打回失败: ",
+      roleRetried: (roleId, result) => "🔄 重跑 " + roleId + ": " + result,
+      roleRetryFailed: "⚠️ 重跑失败: ",
+      metricNotApplicable: "不适用", metricUnavailable: "未提供",
+      targetKindRemote: "远端模型",
+      targetKindLocal: "本地模型",
+      targetKindInvalid: "配置异常",
+      betaTag: " (内测版)",
+      memoryWriteFailed: "记忆写入失败：",
+      memoryIgnoreFailed: "忽略记忆失败：",
+      memoryNeverFailed: "设置不再提示失败：",
+      planTicketExpired: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
+      downloadLimitSuffix: size => "（当前文件 " + size + " MiB）",
+      downloadLimitError: suffix => "远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。",
+      downloadUnsupported: "⚠️ 当前桌面端不支持远程控制产物下载，请更新桌面端后重试。",
+      downloadFailed: "⚠️ 产物下载失败: ",
+      downloadNotEnabled: "当前环境未启用远程控制产物下载能力",
+      artifactMissing: "产物不存在或已被移除",
+      artifactSizeInvalid: "桌面端返回了无效的产物大小，已停止下载",
+      artifactChunkInvalid: "桌面端返回了无效的产物分块，已停止下载",
+      artifactChanged: "产物在下载期间发生变化，请重试",
+      artifactOverflow: "桌面端返回的产物数据超过声明大小，已停止下载",
+      artifactIncomplete: "产物下载不完整，请重试",
+      attachPathUnavailable: "WebUI 无法访问桌面端附件路径",
+      attachDownloadUnsupported: "⚠️ 当前桌面端不支持远程附件下载，请更新桌面端后重试。",
+      attachChunkInvalid: "桌面端返回了无效的附件分块，已停止下载",
+      attachChanged: "附件在下载期间发生变化，请重试",
+      attachOverflow: "桌面端返回的附件数据超过声明大小，已停止下载",
+      attachIncomplete: "附件下载不完整，请重试",
+      attachNoData: "附件下载未返回数据",
+      attachNoProgress: "附件下载没有进展",
+      artifactNoProgress: "产物下载没有进展",
+      workflowRejectDefaultReason: "用户打回，请改进后重试",
+      newChatFallbackTitle: "新对话",
+      mountCollectionFailed: "挂载知识集失败: ",
+      depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
+      voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
+      voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
+      voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+      voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
+      voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
+      voiceTimeout: "本次语音输入超时，请重试。",
+      voiceRecognitionFailed: "语音识别失败，请稍后重试。",
+      voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
+      voiceCancelled: "已取消语音输入",
+      voiceTranscribing: "正在识别语音…",
+      voiceTooShort: "录音时间过短，请重试。",
+      voiceWritten: "语音已写入输入框",
+      voiceNeedDesktopAsr: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
+      voiceRequestingPermission: "正在请求麦克风权限…",
+      voiceNoMicCapture: "当前 WebView 不支持麦克风采集。",
+      voiceNoAudioRecording: "当前 WebView 不支持音频录制。",
+      voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
+      voiceRecording: "正在录音，再点一次结束",
     },
   };
   function bt(key) {
     var lang = state.settings && state.settings.language;
     var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
     return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+  }
+  // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
+  // 与 tauri 桥和 main.jsx 的同款判断保持一致。
+  function isDefaultChatTitle(title) {
+    return title === BT_TABLE.zh.newChatFallbackTitle
+      || title === BT_TABLE.en.newChatFallbackTitle
+      || title === BT_TABLE.ja.newChatFallbackTitle;
   }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
@@ -415,9 +699,102 @@
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   var personaPlaceholderTitles = {};
+  var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
+  function normalizePinvouScene(scene) {
+    scene = String(scene || "").trim();
+    return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
+  }
+  function pinvouSceneStorageKey(sid) {
+    return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();
+  }
+  function normalizePinvouSceneEvents(events) {
+    return (Array.isArray(events) ? events : []).map(function (event) {
+      var pos = Number(event && event.pos);
+      var scene = normalizePinvouScene(event && event.scene);
+      if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
+      return { pos: Math.floor(pos), scene: scene };
+    }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
+  }
+  function loadPinvouSceneEventsForSession(sid) {
+    if (!sid || !window.localStorage) return [];
+    try {
+      return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
+    } catch (_) {
+      return [];
+    }
+  }
+  function savePinvouSceneEventsForSession(sid, events) {
+    if (!sid) return;
+    var normalized = normalizePinvouSceneEvents(events);
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
+      }
+    } catch (_) {
+      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_pinvou_scene_events", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncPinvouSceneEventsForSession(sid) {
+    var cached = loadPinvouSceneEventsForSession(sid);
+    if (!sid) return cached;
+    try {
+      var remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+        } catch (_) {}
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch (_) {
+      return cached;
+    }
+  }
+  function recordPinvouSceneForMessage(sid, pos, scene) {
+    scene = normalizePinvouScene(scene);
+    pos = Number(pos);
+    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
+    pos = Math.floor(pos);
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== pos; });
+    events.push({ pos: pos, scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    state.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function recordPinvouSceneForBufferMessage(sid, buffer, pos, scene) {
+    scene = normalizePinvouScene(scene);
+    if (!sid || !buffer || !scene) return;
+    pos = Number(pos);
+    if (!Number.isFinite(pos) || pos < 0) return;
+    var events = normalizePinvouSceneEvents(buffer.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== Math.floor(pos); });
+    events.push({ pos: Math.floor(pos), scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    buffer.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function pinvouSceneForMessagePos(pos) {
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].pos === pos) return events[i].scene;
+    }
+    return "";
+  }
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -427,6 +804,7 @@
       remoteBaselineMessageCount: null,
       remoteBaselineTrusted: false,
       remoteExpectedAssistantKey: "",
+      remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
@@ -434,6 +812,8 @@
       tokens: { input: 0, max: maxModelLen },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
+      mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
+      mountedCollectionsRevision: 0,
       scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
@@ -638,11 +1018,14 @@
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
+    buf.pinvouSceneEvents = state.pinvouSceneEvents;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
     buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
     buf.mountedCollection = state.mountedCollection;
+    buf.mountedCollections = state.mountedCollections;
+    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
     buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: currentStreamText, currentStreamId: currentStreamId,
@@ -658,6 +1041,7 @@
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -666,6 +1050,10 @@
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
     state.mountedCollection = buf.mountedCollection || null;
+    state.mountedCollections = Array.isArray(buf.mountedCollections)
+      ? buf.mountedCollections
+      : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
+    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     var s = buf.stream || {};
     currentStreamText = s.currentStreamText || ""; currentStreamId = s.currentStreamId || 0;
@@ -687,12 +1075,14 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(saved.metadata && saved.metadata.id);
     if (completedRemoteTurn) {
       buf.remoteTurnActive = false;
       buf.remoteTerminalSeen = false;
       buf.remoteBaselineMessageCount = null;
       buf.remoteBaselineTrusted = false;
       buf.remoteExpectedAssistantKey = "";
+      buf.remoteCommittedRevision = "";
       buf.deferredRemoteUserEvent = null;
     }
     buf.stream = {
@@ -736,24 +1126,24 @@
       if (!Number.isSafeInteger(chunkOffset) || chunkOffset !== offset ||
           !Number.isSafeInteger(chunkTotal) || chunkTotal < 0 || chunkTotal > maxSessionBytes ||
           !chunkDownloadId || (downloadId && chunkDownloadId !== downloadId)) {
-        throw new Error("桌面端返回了无效的会话分块");
+        throw new Error(bt("sessionChunkInvalid"));
       }
       downloadId = chunkDownloadId;
       if (total === null) {
         total = chunkTotal;
         payload = new Uint8Array(total);
       } else if (chunkTotal !== total) {
-        throw new Error("读取期间会话数据发生变化，请重试");
+        throw new Error(bt("sessionChunkChanged"));
       }
       var data = decodeBase64Bytes(chunk.data_base64 || chunk.dataBase64);
-      if (offset + data.length > total) throw new Error("会话分块超出声明长度");
+      if (offset + data.length > total) throw new Error(bt("sessionChunkOverflow"));
       payload.set(data, offset);
       offset += data.length;
       if (chunk.eof) {
-        if (offset !== total) throw new Error("会话分块提前结束");
+        if (offset !== total) throw new Error(bt("sessionChunkEarlyEnd"));
         break;
       }
-      if (!data.length) throw new Error("会话分块没有前进");
+      if (!data.length) throw new Error(bt("sessionChunkNoProgress"));
     }
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
   }
@@ -775,6 +1165,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -833,7 +1224,7 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
@@ -843,6 +1234,7 @@
         : Number(meta && meta.message_count);
       if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
       buf.remoteExpectedAssistantKey = "";
+      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
       buf.remoteTerminalSeen = false;
     }
     buf.remoteTurnActive = true;
@@ -880,6 +1272,13 @@
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
+    // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
+    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
+    // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
+    // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
+    // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
+    var meta = state.sessions.find(function (s) { return s.id === sid; });
+    if (!meta) return;
     var buf = sid === state.activeSessionId ? null : sessionStates[sid];
     var msgs = buf ? buf.messages : state.messages;
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
@@ -887,14 +1286,13 @@
     else state.artifacts = arts;
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
-      var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
+      if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          if (meta) meta.title = newTitle;
+          meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
@@ -909,10 +1307,17 @@
     if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
     // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
     // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
-    // 已完整显示的流式 assistant 气泡一闪覆盖掉。以终态前的本地工作集作为
-    // authority barrier：消息数不能倒退，且最后一条 assistant 必须已进入快照。
+    // 已完整显示的流式 assistant 气泡一闪覆盖掉。优先用后端已提交 revision
+    // 建立 authority barrier；旧桌面端未提供 revision 时，才回退到消息数与
+    // 最后一条 assistant 的展示身份校验。
     var expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    // The committed revision identifies the canonical terminal transcript.
+    // Streamed/native-tool blocks may be normalized before persistence, so a
+    // presentation-derived message key is only a fallback for older desktops.
+    var expectedCommittedRevision = buf.remoteTerminalSeen
+      ? String(buf.remoteCommittedRevision || "")
       : "";
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
@@ -920,11 +1325,27 @@
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        // Relay replay may deliver the commit marker immediately after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
+          expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
+        }
         try {
           var saved = await loadSessionForClient(sid, false);
           if (!saved || !Array.isArray(saved.messages)) continue;
-          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
-          if (expectedAssistantKey) {
+          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
+          // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
+          // 无字段」导致对账必然失败(每轮误报)。
+          if (expectedCommittedRevision && savedRevision) {
+            if (savedRevision !== expectedCommittedRevision) continue;
+          } else {
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          }
+          if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
@@ -952,7 +1373,8 @@
               resolvedPlanTickets[key].push(String(item.planId));
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
-              if (!item || item.type === "user" || item.type === "assistant" || item.type === "tool") return false;
+              if (!item || item.type === "user" || item.type === "tool") return false;
+              if (item.type === "assistant") return item.interruptedDisplayOnly === true;
               if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // Plan cards need semantic matching by their plan snapshot. Their
               // generic hydration key includes ticket/action state and would
@@ -1010,6 +1432,7 @@
           buf.remoteBaselineMessageCount = null;
           buf.remoteBaselineTrusted = false;
           buf.remoteExpectedAssistantKey = "";
+          buf.remoteCommittedRevision = "";
           buf.deferredRemoteUserEvent = null;
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
@@ -1358,7 +1781,7 @@
       modelId: lockedModelId,
     }));
     if (!draft) {
-      var invalidDraftError = new Error("定时任务草稿缺少名称、任务说明或时间规则");
+      var invalidDraftError = new Error(bt("scheduledDraftInvalid"));
       setScheduledTaskError(invalidDraftError, "action");
       notify();
       throw invalidDraftError;
@@ -1413,7 +1836,7 @@
         // createScheduledTask 通常已记录错误；忙锁在进入 action 前抛出时在这里补记，且不产生未处理 Promise。
         if (!state.scheduledTaskError) setScheduledTaskError(error, "action");
         runSyncOnSession(creationSessionId, function () {
-          addSystemItem("定时任务创建失败：" + scheduledTaskErrorText(error), {
+          addSystemItem(bt("scheduledCreateFailed") + scheduledTaskErrorText(error), {
             scheduledTaskCreationError: true,
           });
         });
@@ -1484,7 +1907,7 @@
       rememberScheduledRunOwner(run);
       var merged = Object.assign({}, run, {
         automationId: run.automationId || task.id,
-        taskName: task.name || "定时任务",
+        taskName: task.name || bt("scheduledTaskFallbackName"),
         taskModel: task.model || null,
       });
       var index = rows.findIndex(function (row) { return row && row.id === merged.id; });
@@ -1551,7 +1974,7 @@
         var task = tasksById[automationId] || null;
         return Object.assign({}, run, {
           automationId: automationId,
-          taskName: task && task.name || "定时任务",
+          taskName: task && task.name || bt("scheduledTaskFallbackName"),
           taskModel: task && task.model || null,
         });
       }).filter(function (run) {
@@ -1635,7 +2058,7 @@
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: "定时任务" };
+        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -1673,7 +2096,7 @@
 
   async function runScheduledTaskAction(action, operation) {
     if (state.scheduledTaskBusyAction) {
-      throw new Error("另一个定时任务操作仍在进行中");
+      throw new Error(bt("scheduledActionBusy"));
     }
     state.scheduledTaskBusyAction = action;
     setScheduledTaskError(null);
@@ -1709,7 +2132,7 @@
       var backendInput = scheduledTaskBackendInput(input);
       var created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
-        throw new Error("创建定时任务失败：后端未返回任务 ID");
+        throw new Error(bt("scheduledCreateNoId"));
       }
       if (templateId) rememberScheduledTaskTemplateSource(created.id, templateId);
       attachScheduledTaskTemplateSource(created);
@@ -1820,7 +2243,7 @@
       state.scheduledTaskAutoOpenId = null;
       await createNewSession();
       state.scheduledTaskPendingGuide = prompt;
-      prefillComposer("我想创建一个定时任务：");
+      prefillComposer(bt("scheduledChatPrefill"));
       notify();
       return prompt;
     });
@@ -2067,6 +2490,8 @@
     var results = await Promise.all([
       invokeOutcome("get_mode_state", { sessionId: sessionId }),
       invokeOutcome("get_active_persona", { sessionId: sessionId }),
+      invokeOutcome("session_mounted_collections_snapshot", { sessionId: sessionId }),
+      invokeOutcome("session_mounted_collections", { sessionId: sessionId }),
       invokeOutcome("session_mounted_collection", { sessionId: sessionId }),
       invokeOutcome("get_memory_overview", { sessionId: sessionId }),
     ]);
@@ -2074,13 +2499,21 @@
 
     var mode = results[0];
     var persona = results[1];
-    var collection = results[2];
-    var memory = results[3];
+    var snapshot = results[2];
+    var collections = results[3];
+    var legacyCollection = results[4];
+    var memory = results[5];
     state.modeState = mode.ok && mode.value
-      ? { mode: mode.value.mode || "yolo" }
-      : { mode: "yolo" };
+      ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
+      : { mode: "yolo", multiAgent: false };
     state.activePersona = persona.ok ? (persona.value || null) : null;
-    state.mountedCollection = collection.ok && collection.value != null ? collection.value : null;
+    if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
+      applyMountedCollections(snapshot.value);
+    } else if (collections.ok && Array.isArray(collections.value)) {
+      applyMountedCollections(collections.value);
+    } else {
+      applyMountedCollections(legacyCollection.ok && legacyCollection.value != null ? [legacyCollection.value] : []);
+    }
     if (memory.ok) {
       applyMemoryOverview(memory.value);
       rehydratePendingMemoryCandidates(memory.value);
@@ -2193,6 +2626,45 @@
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
     var availableByKey = Object.create(null);
+    function interruptedDisplayRange(item) {
+      if (!item || item.interruptedDisplayOnly !== true) return null;
+      var anchorIndex = -1;
+      var nextUserIndex = -1;
+      var afterMessageIndex = Number(item.afterMessageIndex);
+      if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
+        for (var index = 0; index < state.chatItems.length; index++) {
+          var candidate = state.chatItems[index];
+          if (!candidate || candidate.type !== "user") continue;
+          var candidateMessageIndex = Number(candidate.messageIndex);
+          if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
+          else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
+            nextUserIndex = index;
+            break;
+          }
+        }
+      }
+      var afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        var userOrdinal = -1;
+        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          var fallback = state.chatItems[fallbackIndex];
+          if (!fallback || fallback.type !== "user") continue;
+          userOrdinal += 1;
+          if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
+          else if (userOrdinal > afterUserOrdinal) {
+            nextUserIndex = fallbackIndex;
+            break;
+          }
+        }
+      }
+      if (anchorIndex < 0) {
+        return { start: state.chatItems.length, end: state.chatItems.length };
+      }
+      return {
+        start: anchorIndex + 1,
+        end: nextUserIndex >= 0 ? nextUserIndex : state.chatItems.length,
+      };
+    }
     state.chatItems.forEach(function (item, index) {
       var key = hydratedChatItemKey(item);
       if (!key) return;
@@ -2201,8 +2673,21 @@
     });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var matches = key && availableByKey[key];
-      var existingIndex = matches && matches.length ? matches.shift() : -1;
+      var range = interruptedDisplayRange(item);
+      var existingIndex = -1;
+      if (range) {
+        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          var rangeItem = state.chatItems[rangeIndex];
+          if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
+              hydratedChatItemKey(rangeItem) === key) {
+            existingIndex = rangeIndex;
+            break;
+          }
+        }
+      } else {
+        var matches = key && availableByKey[key];
+        existingIndex = matches && matches.length ? matches.shift() : -1;
+      }
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -2213,7 +2698,14 @@
       }
       var clone = Object.assign({}, item, { id: ++itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
-      state.chatItems.push(clone);
+      if (range && range.end < state.chatItems.length) {
+        state.chatItems.splice(range.end, 0, clone);
+        Object.keys(availableByKey).forEach(function (availableKey) {
+          availableByKey[availableKey] = availableByKey[availableKey].map(function (index) {
+            return index >= range.end ? index + 1 : index;
+          });
+        });
+      } else state.chatItems.push(clone);
     });
     return remappedCurrentStreamId;
   }
@@ -2223,7 +2715,7 @@
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("runNoSession")), errorScope);
       return false;
     }
     if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
@@ -2260,6 +2752,7 @@
     var saved;
     var personaEvents;
     var pinvouReviews;
+    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     var turnTimeline;
     try {
       var primary = await Promise.all([
@@ -2278,7 +2771,7 @@
     }
     if (requestToken !== sessionSwitchRequestToken) return false;
     if (!saved || !saved.metadata || !saved.metadata.id) {
-      reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
 
@@ -2303,6 +2796,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.pinvouSceneEvents = pinvouSceneEvents.length ? pinvouSceneEvents : (liveBuffer.pinvouSceneEvents || []);
       state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
@@ -2324,6 +2818,7 @@
       sessionStates[id].sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.pinvouSceneEvents = pinvouSceneEvents;
       state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];
@@ -2350,7 +2845,7 @@
   async function openScheduledRunChatOnce(run, task) {
     var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), "scheduled");
+      reportSessionSwitchFailure(new Error(bt("runNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);
@@ -2710,14 +3205,19 @@
     return "";
   }
 
+  function isInternalUserMessageProvenance(provenance) {
+    return provenance === "runtime" || provenance === "subagent_handoff";
+  }
+
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (userMessageInputProvenance(blocks) === "runtime") return "";
+    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
@@ -2805,7 +3305,9 @@
         var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "" };
+          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          var scene = pinvouSceneForMessagePos(mi);
+          if (scene) uitem2.pinvouScene = scene;
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
@@ -2826,7 +3328,7 @@
               });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
+              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -2842,7 +3344,7 @@
           textBuf += b.text;
         } else if (b.type === "thinking") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           var reasoningText = String(b.thinking || b.text || "");
@@ -2854,7 +3356,7 @@
           }
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -2938,7 +3440,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
@@ -3335,6 +3837,16 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  function formatAttachmentDisplayText(text, attachments) {
+    var names = (attachments || []).map(function (attachment) {
+      return typeof attachment === "string" ? attachment : attachment && attachment.basename;
+    }).filter(Boolean).map(String);
+    if (!names.length) return String(text || "");
+    var attachmentLine = "📎 " + JSON.stringify(names);
+    return String(text || "").trim()
+      ? String(text) + "\n\n" + attachmentLine
+      : attachmentLine;
+  }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
   // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
@@ -3358,30 +3870,39 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
-      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+      return Promise.reject(new Error(bt("turnSyncRejected")));
     }
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
+      turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      var uitem = { type: "user", text: displayText, time: timeStr() };
+      var uitem = {
+        type: "user",
+        text: displayText,
+        time: timeStr(),
+        messageIndex: state.messages.length,
+      };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      if (meta && meta.pinvouScene) uitem.pinvouScene = meta.pinvouScene; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
       currentStreamText = "";
       currentStreamId = ++itemIdSeq;
       submittedStreamId = currentStreamId;
-      state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+      state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
@@ -3399,6 +3920,11 @@
     return invoke(chatCommand, chatArgs)
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {
@@ -3429,8 +3955,9 @@
         return false;
       });
   }
-  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
-  // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
+  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
+  // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
+  // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
@@ -3442,22 +3969,19 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var items = q.splice(0, q.length);
-    // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
-    var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
-    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
-    var attachments = [];
-    items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
-    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
-    var restrictTools = items.some(function (i) { return !!i.restrictTools; });
+    var item = q.shift();
+    var attachments = item.attachments || [];
+    var displayText = item.displayText == null
+      ? formatAttachmentDisplayText(item.text, attachments)
+      : item.displayText;
     notify();
-    doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
+    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         var retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
-        Array.prototype.unshift.apply(retryQueue, items);
+        retryQueue.unshift(item);
         notify();
       });
   }
@@ -3465,10 +3989,10 @@
   async function sendMessageToSession(sessionId, text, meta) {
     var sid = String(sessionId || "").trim();
     var content = String(text || "").trim();
-    if (!sid) throw new Error("目标会话不存在");
-    if (!content) throw new Error("回复内容为空");
+    if (!sid) throw new Error(bt("targetSessionMissing"));
+    if (!content) throw new Error(bt("replyContentEmpty"));
     var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
-    if (!exists) throw new Error("目标会话不存在");
+    if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
     var targetBuffer = getBuffer(sid);
@@ -3489,7 +4013,7 @@
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      throw new Error("目标会话仍在同步另一端完成的回合");
+      throw new Error(bt("targetSessionSyncing"));
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
@@ -3559,7 +4083,7 @@
     return { snapshot: snapshot, payloadText: payloadText, restrictTools: restrictTools };
   }
 
-  function seedAcceptedFirstTurn(buffer, submission) {
+  function seedAcceptedFirstTurn(sessionId, buffer, submission) {
     var existingUser = null;
     for (var index = buffer.chatItems.length - 1; index >= 0; index--) {
       if (buffer.chatItems[index] && buffer.chatItems[index].type === "user") {
@@ -3570,6 +4094,8 @@
     if (existingUser) {
       existingUser.deliveryState = "accepted";
       existingUser.clientMessageId = submission.clientMessageId;
+      if (submission.pinvouScene) existingUser.pinvouScene = submission.pinvouScene;
+      recordPinvouSceneForBufferMessage(sessionId, buffer, 0, submission.pinvouScene);
       return;
     }
 
@@ -3582,9 +4108,12 @@
       type: "user",
       text: submission.displayText,
       time: submission.time,
+      messageIndex: 0,
       deliveryState: "accepted",
       clientMessageId: submission.clientMessageId,
     };
+    if (submission.pinvouScene) userItem.pinvouScene = submission.pinvouScene;
+    recordPinvouSceneForBufferMessage(sessionId, buffer, buffer.messages.length, submission.pinvouScene);
     buffer.chatItems.push(userItem);
     buffer.messages.push({
       role: "user",
@@ -3593,6 +4122,7 @@
     buffer.localTurnOwned = true;
     buffer.remoteTurnActive = false;
     buffer.remoteTerminalSeen = false;
+    buffer.remoteCommittedRevision = "";
     buffer.busy = true;
     buffer.thinking = {
       active: true,
@@ -3619,7 +4149,7 @@
 
   function acceptFirstTurnSubmission(submission, metadata) {
     var sessionId = String(metadata && metadata.id || "").trim();
-    if (!sessionId) throw new Error("桌面端未返回新会话 ID");
+    if (!sessionId) throw new Error(bt("sessionIdMissing"));
     var existingMetaIndex = state.sessions.findIndex(function (session) {
       return session && session.id === sessionId;
     });
@@ -3631,7 +4161,7 @@
     buffer.sessionRevision = String(
       metadata.transcript_revision || metadata.transcriptRevision || buffer.sessionRevision || "",
     );
-    seedAcceptedFirstTurn(buffer, submission);
+    seedAcceptedFirstTurn(sessionId, buffer, submission);
 
     // The desktop consumed these one-shot handles even if the user navigated
     // away while the atomic first turn was in flight. Remove the exact
@@ -3696,10 +4226,12 @@
       type: "user",
       text: displayText,
       time: time,
+      messageIndex: 0,
       deliveryState: "sending",
       deliveryError: "",
       clientMessageId: clientMessageId,
     };
+    if (meta && meta.pinvouScene) optimisticItem.pinvouScene = meta.pinvouScene;
     addChatItem(optimisticItem);
     var submission = {
       clientMessageId: clientMessageId,
@@ -3708,6 +4240,7 @@
       optimisticItemId: optimisticItem.id,
       time: time,
       displayText: displayText,
+      pinvouScene: meta && meta.pinvouScene,
       readyAttachments: readyAttachments.slice(),
       uiSnapshot: prepared.snapshot,
       args: {
@@ -3749,9 +4282,7 @@
       return;
     }
 
-    var displayText = readyAttachments.length > 0
-      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
-      : text;
+    var displayText = formatAttachmentDisplayText(text, readyAttachments);
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
@@ -3827,7 +4358,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -3884,7 +4415,7 @@
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
   async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("pinvouNeedSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
@@ -4028,6 +4559,12 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function isInternalRuntimeUserMessage(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
+  }
+
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
@@ -4042,6 +4579,7 @@
       return false;
     }
     var content = String(payload.content || "");
+    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
     var operation = String(payload.operation || "append");
     var action = String(payload.action || "");
     var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -4078,10 +4616,13 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+        state.modeState = {
+          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
+          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
+        };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      if (!snapshotAlreadyCoversTurn) {
+      if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
@@ -4130,7 +4671,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -4177,24 +4721,37 @@
     }]);
   }
 
-  function recordTurnCompleted(payload) {
-    var openStart = latestOpenTimelineStart();
-    var turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
-    if (!turnId) return;
-    var timestamp = Date.now();
-    var start = openStart || (state.turnTimeline || []).find(function (event) {
-      return event && event.turn_id === turnId && event.event === "user_start";
-    });
-    state.turnTimeline = (state.turnTimeline || []).concat([{
-      turn_id: turnId,
-      event: "assistant_done",
-      timestamp: timestamp,
-      ts: new Date(timestamp).toISOString(),
-      status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
-      error: payload && payload.error || null,
-      ui_turn_index: start && start.ui_turn_index,
-    }]);
-    state.activeTurnTimelineId = null;
+  function preserveInterruptedAssistantPresentation() {
+    var userItemIndex = -1;
+    var afterMessageIndex = -1;
+    var afterUserOrdinal = -1;
+    for (var index = 0; index < state.chatItems.length; index++) {
+      var candidate = state.chatItems[index];
+      if (!candidate || candidate.type !== "user") continue;
+      afterUserOrdinal += 1;
+      userItemIndex = index;
+      afterMessageIndex = -1;
+      if (Number.isFinite(Number(candidate.messageIndex))) {
+        afterMessageIndex = Number(candidate.messageIndex);
+      }
+    }
+    // 没有任何 user 气泡时无法锚定轮次;若把全部历史 assistant 项都标记为
+    // 仅展示,下次权威重载会在末尾追加整段历史的重复副本。此时放弃保留,
+    // 退化为修复前行为(重载后消失),但必须清空 pending 以免污染下一轮。
+    if (userItemIndex < 0) {
+      pendingAssistantText = "";
+      pendingAssistantBlocks = [];
+      return;
+    }
+    for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+      var item = state.chatItems[itemIndex];
+      if (!item || item.type !== "assistant" || !item.html) continue;
+      item.interruptedDisplayOnly = true;
+      item.afterMessageIndex = afterMessageIndex;
+      item.afterUserOrdinal = afterUserOrdinal;
+    }
+    pendingAssistantText = "";
+    pendingAssistantBlocks = [];
   }
 
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
@@ -4305,6 +4862,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
+      item.text = currentStreamText;
       item.html = renderMarkdown(currentStreamText);
       item.streaming = true;
     } else {
@@ -4313,6 +4871,7 @@
       state.chatItems.push({
         id: currentStreamId,
         type: "assistant",
+        text: currentStreamText,
         html: renderMarkdown(currentStreamText),
         time: timeStr(),
         streaming: true,
@@ -4499,7 +5058,7 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
+    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
@@ -4585,12 +5144,20 @@
       return;
     }
     var doneBuffer = sid ? getBuffer(sid) : null;
-    if (doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    if (doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed precedes chat:done. Preserve its revision when a
+      // reconnecting client first materializes the turn at the terminal tail.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       var error = e.payload && e.payload.error;
-      recordTurnCompleted(e.payload || {});
+      window.PinvouWebTurnTerminal.recordCompleted(
+        state,
+        latestOpenTimelineStart(),
+        e.payload || {}
+      );
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
@@ -4608,7 +5175,12 @@
           });
         }
       }
-      flushAssistantMessageToHistory();
+      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      var interrupted = terminalStatus === "interrupted" ||
+        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      if (interrupted) preserveInterruptedAssistantPresentation();
+      else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
@@ -4669,7 +5241,7 @@
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。");
+          addSystemItem(bt("remoteDoneUnsynced"));
         });
       }
       notify();
@@ -5004,7 +5576,7 @@
     state.workflow.run.status = "complete";
     // [edict-obs] 后端带回成品路径 → 弹成品卡(一键打开 deck)
     if (p.artifact) {
-      pushRunCard({ kind: "artifact", path: p.artifact, text: "🎉 工作流完成，成品已生成", resolved: false });
+      pushRunCard({ kind: "artifact", path: p.artifact, text: bt("workflowComplete"), resolved: false });
     }
     notify();
   });
@@ -5013,7 +5585,7 @@
     if (state.workflow.run.status === "stopped") return;
     state.workflow.run.status = "blocked";
     // 后端 emit 的是 message(+warmup_report)，不是 reason/waiting_roles。
-    pushRunCard({ kind: "system", text: "⚙️ 工作流卡住：" + (p.message || p.reason || "未知原因"), resolved: false });
+    pushRunCard({ kind: "system", text: bt("workflowBlocked") + (p.message || p.reason || bt("unknownReason")), resolved: false });
     notify();
   });
   listen("workflow:stopped", function (e) {
@@ -5213,13 +5785,13 @@
       // Format values for display
       var vllm = snap.vllm || null;
       var metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      var metricNotApplicableText = "不适用";
-      var metricUnavailableText = "未提供";
+      var metricNotApplicableText = bt("metricNotApplicable");
+      var metricUnavailableText = bt("metricUnavailable");
       var diagnostic = vllm && vllm.diagnostic ? vllm.diagnostic : null;
       var metricDiagnostic = vllm && vllm.metric_diagnostics && vllm.metric_diagnostics.length
         ? vllm.metric_diagnostics[0] : null;
       var targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      var targetKindLabel = targetKind === "remote" ? "远端模型" : (targetKind === "local" ? "本地模型" : "配置异常");
+      var targetKindLabel = targetKind === "remote" ? bt("targetKindRemote") : (targetKind === "local" ? bt("targetKindLocal") : bt("targetKindInvalid"));
       var vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
       var healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
       var appQueue = appQueueSnapshot();
@@ -5274,9 +5846,9 @@
         vllmKv: kvShown != null ? kvShown.toFixed(1) + "%" : "0%",
         vllmKvHasData: kvShown != null,
         vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "0 s",
+          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
         vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "0 tok/s",
+          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
         vllmTokTotal: sadj
           ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
         vllmStatsCleared: !!(sadj && sadj.cleared),
@@ -5289,7 +5861,7 @@
           gen: sadj.gen != null ? sadj.gen : null,
           prompt: sadj.prompt != null ? sadj.prompt : null,
         } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + " (内测版)" : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaTag") : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",
@@ -5654,14 +6226,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   async function syncModeState() {
     if (!state.activeSessionId) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
-      state.modeState = { mode: ms.mode || "yolo" };
+      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
-      state.modeState = { mode: "yolo" };
+      state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
 
@@ -5692,6 +6264,8 @@
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
 
+  // 记忆状态值是固定中文数据（会被持久化，且 React 侧按固定键做逻辑判断与本地化映射），
+  // 因此这里刻意不走 bt()，与 tauri 端 memory.js 保持一致。
   function memoryWriteLabel(event) {
     var text = event && event.text || "";
     if (!text) return "记忆已更新";
@@ -5930,7 +6504,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("记忆写入失败：" + e);
+      addSystemItem(bt("memoryWriteFailed") + e);
     }
   }
   async function ignoreMemoryCandidate(memoryId, chatItemId) {
@@ -5942,7 +6516,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("忽略记忆失败：" + e);
+      addSystemItem(bt("memoryIgnoreFailed") + e);
     }
   }
   async function neverMemoryCandidate(memoryId, chatItemId) {
@@ -5954,7 +6528,7 @@
       await loadMemoryOverview();
       notify();
     } catch (e) {
-      addSystemItem("设置不再提示失败：" + e);
+      addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
@@ -5963,7 +6537,7 @@
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo" };
+    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
   }
 
   function isActionablePlanCard(sid, itemId, planId) {
@@ -5983,13 +6557,13 @@
     var planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
-      addSystemItemFor(sid, "⚠️ 方案凭证已失效，请重新生成方案后再执行");
+      addSystemItemFor(sid, bt("planTicketExpired"));
       notify();
       return;
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItemFor(sid, bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -5998,6 +6572,7 @@
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
       planBuffer.remoteTerminalSeen = false;
+      planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     var echoEntry = null;
@@ -6150,7 +6725,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem(bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -6171,6 +6746,7 @@
       editBuffer.localTurnOwned = true;
       editBuffer.remoteTurnActive = false;
       editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
     }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
@@ -6186,7 +6762,7 @@
     startThinking();
     currentStreamText = "";
     currentStreamId = ++itemIdSeq;
-    state.chatItems.push({ id: currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+    state.chatItems.push({ id: currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     if (editBuffer) saveWorkingSetTo(editBuffer);
     notify();
     turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
@@ -6263,6 +6839,25 @@
       return Promise.resolve(!!opened);
     }
     return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+  }
+  function openUserExternalUrl(url) {
+    try {
+      var rawUrl = String(url || "").trim();
+      if (!/^https?:\/\/[^/\\\s]/i.test(rawUrl)) {
+        return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
+      }
+      var parsed = new URL(rawUrl);
+      if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
+        return Promise.reject(new Error("only credential-free HTTP(S) links are supported"));
+      }
+      if (IS_WEB) {
+        var opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
+        return Promise.resolve(!!opened);
+      }
+      return invoke("open_user_external_url", { url: parsed.href }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    } catch (_) {
+      return Promise.reject(new Error("invalid external link"));
+    }
   }
   // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
   function listDeliverables(projectDir, sessionId) {
@@ -6344,34 +6939,34 @@
   var MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
   function webArtifactDownloadLimitError(size) {
     var suffix = Number.isSafeInteger(size) && size >= 0
-      ? "（当前文件 " + (size / (1024 * 1024)).toFixed(1) + " MiB）"
+      ? bt("downloadLimitSuffix")((size / (1024 * 1024)).toFixed(1))
       : "";
-    return new Error("远程控制单个产物下载上限为 256 MiB" + suffix + "，请在桌面端直接打开该文件。");
+    return new Error(bt("downloadLimitError")(suffix));
   }
 
   async function downloadArtifact(path, sessionId) {
     if (IS_WEB && !hasCapability("artifactDownload")) {
-      addSystemItem("⚠️ 当前桌面端不支持远程控制产物下载，请更新桌面端后重试。");
+      addSystemItem(bt("downloadUnsupported"));
       return false;
     }
     try {
       return await downloadArtifactRaw(path, sessionId);
     } catch (e) {
-      addSystemItem("⚠️ 产物下载失败: " + String((e && e.message) || e));
+      addSystemItem(bt("downloadFailed") + String((e && e.message) || e));
       return false;
     }
   }
 
   async function downloadArtifactRaw(path, sessionId) {
     if (!IS_WEB || !hasCapability("artifactDownload")) {
-      throw new Error("当前环境未启用远程控制产物下载能力");
+      throw new Error(bt("downloadNotEnabled"));
     }
     var resolvedSessionId = sessionId || state.activeSessionId || null;
     var info = await artifactInfo(path, resolvedSessionId);
-    if (!info || info.exists === false) throw new Error("产物不存在或已被移除");
+    if (!info || info.exists === false) throw new Error(bt("artifactMissing"));
     var expectedSize = Number(info.size);
     if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
-      throw new Error("桌面端返回了无效的产物大小，已停止下载");
+      throw new Error(bt("artifactSizeInvalid"));
     }
     if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
       throw webArtifactDownloadLimitError(expectedSize);
@@ -6391,30 +6986,30 @@
       var partSize = Number(part.size);
       if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
           !Number.isSafeInteger(partSize) || partSize < 0) {
-        throw new Error("桌面端返回了无效的产物分块，已停止下载");
+        throw new Error(bt("artifactChunkInvalid"));
       }
       if (partSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
         throw webArtifactDownloadLimitError(partSize);
       }
       if (partSize !== expectedSize) {
-        throw new Error("产物在下载期间发生变化，请重试");
+        throw new Error(bt("artifactChanged"));
       }
       filename = part.name || filename;
       var encoded = String(part.data_base64 || part.dataBase64 || "");
       var binary = atob(encoded);
       var bytes = new Uint8Array(binary.length);
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      if (!bytes.length && !part.eof) throw new Error("Artifact download made no progress");
+      if (!bytes.length && !part.eof) throw new Error(bt("artifactNoProgress"));
       if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
         throw webArtifactDownloadLimitError(offset + bytes.length);
       }
       if (offset + bytes.length > expectedSize) {
-        throw new Error("桌面端返回的产物数据超过声明大小，已停止下载");
+        throw new Error(bt("artifactOverflow"));
       }
       chunks.push(bytes);
       offset += bytes.length;
       if (part.eof) {
-        if (offset !== expectedSize) throw new Error("产物下载不完整，请重试");
+        if (offset !== expectedSize) throw new Error(bt("artifactIncomplete"));
         break;
       }
     }
@@ -6432,6 +7027,102 @@
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
+  function conversationAttachmentArgs(reference) {
+    reference = reference || {};
+    return {
+      sessionId: reference.sessionId || state.activeSessionId,
+      messageIndex: Number(reference.messageIndex),
+      attachmentIndex: Number(reference.attachmentIndex),
+      basename: String(reference.basename || ""),
+      displayText: String(reference.displayText || ""),
+    };
+  }
+  function resolveConversationAttachment(reference) {
+    if (!IS_WEB) {
+      return invoke("resolve_conversation_attachment", conversationAttachmentArgs(reference));
+    }
+    return Promise.reject(new Error(bt("attachPathUnavailable")));
+  }
+  async function downloadConversationAttachment(reference) {
+    if (!hasCapability("artifactDownload")) {
+      throw new Error(bt("attachDownloadUnsupported"));
+    }
+    var args = conversationAttachmentArgs(reference);
+    var expectedSize = null;
+    var offset = 0;
+    var chunks = [];
+    var filename = args.basename || "attachment";
+    while (true) {
+      var part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
+        offset: offset,
+        limit: 262144,
+      }, args));
+      if (!part) throw new Error(bt("attachNoData"));
+      var partOffset = Number(part.offset);
+      var partSize = Number(part.size);
+      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
+          !Number.isSafeInteger(partSize) || partSize < 0) {
+        throw new Error(bt("attachChunkInvalid"));
+      }
+      if (expectedSize === null) {
+        expectedSize = partSize;
+        if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
+          throw webArtifactDownloadLimitError(expectedSize);
+        }
+      } else if (partSize !== expectedSize) {
+        throw new Error(bt("attachChanged"));
+      }
+      filename = part.name || filename;
+      var encoded = String(part.data_base64 || part.dataBase64 || "");
+      var binary = atob(encoded);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length && !part.eof) throw new Error(bt("attachNoProgress"));
+      if (offset + bytes.length > expectedSize) {
+        throw new Error(bt("attachOverflow"));
+      }
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (part.eof) {
+        if (offset !== expectedSize) throw new Error(bt("attachIncomplete"));
+        break;
+      }
+    }
+    var blob = new Blob(chunks, { type: "application/octet-stream" });
+    var objectUrl = URL.createObjectURL(blob);
+    var anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
+    return true;
+  }
+  async function openConversationAttachment(reference) {
+    try {
+      if (!IS_WEB) {
+        await invoke("open_conversation_attachment", conversationAttachmentArgs(reference));
+        return true;
+      }
+      return await downloadConversationAttachment(reference);
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+  async function revealConversationAttachment(reference) {
+    if (IS_WEB) return false;
+    try {
+      await invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference));
+      return true;
+    } catch (e) {
+      addSystemItem(bt("openFailed") + e);
+      return false;
+    }
+  }
+
   async function addAttachmentByPath(path) {
     var id = ++attachIdSeq;
     var att = { id: id, basename: basename(path), status: "parsing", result: null, error: null };
@@ -6442,76 +7133,26 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  var recentDroppedPaths = {};
-  var DROP_DEDUP_MS = 1500;
-  function dropPathKey(path) {
-    return String(path || "").toLowerCase();
+  function updateAttachmentDragState(active) {
+    active = !!active;
+    if (!!state.attachmentDragActive === active) return;
+    state.attachmentDragActive = active;
+    notify();
   }
-  function droppedFilePaths(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload.filter(Boolean);
-    if (payload.payload) return droppedFilePaths(payload.payload);
-    if (payload.type && payload.type !== "drop") return [];
-    if (Array.isArray(payload.paths)) return payload.paths.filter(Boolean);
-    if (Array.isArray(payload.files)) return payload.files.filter(Boolean);
-    if (typeof payload.path === "string") return [payload.path];
-    if (typeof payload === "string") return [payload];
-    return [];
-  }
-  async function addDroppedAttachments(paths) {
-    var now = Date.now();
-    var seen = {};
-    var list = (paths || []).filter(function (p) {
-      var key = dropPathKey(p);
-      if (!p || seen[key]) return false;
-      seen[key] = true;
-      if (recentDroppedPaths[key] && now - recentDroppedPaths[key] < DROP_DEDUP_MS) return false;
-      recentDroppedPaths[key] = now;
-      return true;
-    });
-    Object.keys(recentDroppedPaths).forEach(function (key) {
-      if (now - recentDroppedPaths[key] > DROP_DEDUP_MS * 4) delete recentDroppedPaths[key];
-    });
-    for (var i = 0; i < list.length; i++) {
-      await addAttachmentByPath(list[i]);
-    }
-  }
+  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
+  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
   function initAttachmentDrop() {
     if (initAttachmentDrop.done) return;
     initAttachmentDrop.done = true;
-
-    var currentWindow = TAURI.window && TAURI.window.getCurrentWindow ? TAURI.window.getCurrentWindow() : null;
-    if (currentWindow && typeof currentWindow.onDragDropEvent === "function") {
-      currentWindow.onDragDropEvent(function (event) {
-        var paths = droppedFilePaths(event);
-        if (paths.length) addDroppedAttachments(paths);
-      }).catch(function (e) { console.warn("[attachment] drag-drop listener failed", e); });
+    if (!window.PinvouAttachmentDropController) {
+      console.warn("[attachment] drop controller is unavailable");
+      return;
     }
-
-    listen("tauri://file-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-    listen("tauri://drag-drop", function (event) {
-      var paths = droppedFilePaths(event);
-      if (paths.length) addDroppedAttachments(paths);
-    }).catch(function () {});
-
-    document.addEventListener("dragover", function (e) {
-      if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") >= 0) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }
-    });
-    document.addEventListener("drop", function (e) {
-      var files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      e.preventDefault();
-      var paths = [];
-      for (var i = 0; i < files.length; i++) {
-        if (files[i] && files[i].path) paths.push(files[i].path);
-      }
-      if (paths.length) addDroppedAttachments(paths);
+    window.PinvouAttachmentDropController.install({
+      document: document,
+      canAccept: function () { return hasCapability("deviceFileUpload"); },
+      onActiveChange: updateAttachmentDragState,
+      onFiles: function (files) { return uploadDeviceFiles(files); }
     });
   }
   async function addPasteImage(filename, bytes) {
@@ -6555,7 +7196,7 @@
   // ── 浏览器本机文件上传 ──────────────────────────────────────────
   // 「从此设备上传」入口:文件按 256KB 分块经 Relay 转发(Relay 只转发不保存),
   // 桌面端最后一块落盘 + ingest 后返回与桌面文件附件相同的 WebAttachmentSummary。
-  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_ARTIFACT_CHUNK_BYTES
+  var DEVICE_UPLOAD_CHUNK_BYTES = 256 * 1024;      // 对齐桌面 MAX_TRANSFER_CHUNK_BYTES
   var DEVICE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;  // 对齐 file_ingest::MAX_FILE_BYTES
   var DEVICE_UPLOAD_CANCELLED = new Error("device-upload-cancelled");
 
@@ -6622,7 +7263,7 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  if (!IS_WEB) initAttachmentDrop();
+  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
@@ -6689,13 +7330,13 @@
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
-      // 标题仍是默认值「新对话」→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
       var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (m.title === "新对话" || m.title === "New chat" || personaPlaceholderTitles[sid])) {
+      if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
@@ -6732,36 +7373,124 @@
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
-  // ── 知识库挂载(会话级粘连,仿 persona) ──
-  // 给当前对话挂一个知识集;草稿态先物化 session(同 equipPersona)。挂上后每条消息
-  // 发送前后端自动检索注入(commands::chat)。返回挂载的 id 或 null(失败)。
+  // ── 多知识库挂载(会话级粘连,仿 persona) ──
+  function normalizeMountedCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (entry == null) return null;
+      var collectionId = typeof entry === "object"
+        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+        : entry;
+      if (collectionId == null || seen[String(collectionId)]) return null;
+      seen[String(collectionId)] = true;
+      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+    }).filter(Boolean);
+  }
+  function applyMountedCollections(value) {
+    var hasSnapshot = value && !Array.isArray(value) && Array.isArray(value.collections);
+    var revision = hasSnapshot ? Number(value.revision || 0) : Number(state.mountedCollectionsRevision || 0);
+    if (hasSnapshot && revision < Number(state.mountedCollectionsRevision || 0)) {
+      return normalizeMountedCollections(state.mountedCollections);
+    }
+    var normalized = normalizeMountedCollections(hasSnapshot ? value.collections : value);
+    state.mountedCollections = normalized;
+    state.mountedCollectionsRevision = revision;
+    var firstEnabled = normalized.find(function (entry) { return entry.enabled; });
+    state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
+    return normalized;
+  }
+  var mountedCollectionUpdate = Promise.resolve();
+  var mountedCollectionDraftTarget = null;
+  function mountedCollectionTargetAtEnqueue() {
+    if (state.activeSessionId) return { draft: false, promise: Promise.resolve(state.activeSessionId) };
+    var draftEpoch = Number(state.draftEpoch || 0);
+    if (!mountedCollectionDraftTarget || mountedCollectionDraftTarget.epoch !== draftEpoch || mountedCollectionDraftTarget.failed) {
+      var target = { draft: true, epoch: draftEpoch, failed: false, pending: 0, promise: null };
+      target.promise = Promise.resolve().then(async function () {
+        // Navigation before draft materialization cancels this batch instead of
+        // silently retargeting it to the newly active session.
+        if (state.activeSessionId) return null;
+        var sessionId = await ensureSession();
+        if (!sessionId) target.failed = true;
+        return sessionId;
+      });
+      mountedCollectionDraftTarget = target;
+    }
+    mountedCollectionDraftTarget.pending += 1;
+    return mountedCollectionDraftTarget;
+  }
+  function updateMountedCollections(command, args) {
+    var requestedTarget = mountedCollectionTargetAtEnqueue();
+    mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
+      // The target is captured at click time. Rapid draft actions share one
+      // materialization promise and remain bound to that session after navigation.
+      var sessionId = await requestedTarget.promise;
+      if (!sessionId) return null;
+      try {
+        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
+        var normalized = normalizeMountedCollections(saved && saved.collections);
+        if (state.activeSessionId === sessionId) {
+          applyMountedCollections(saved);
+          notify();
+        }
+        return normalized;
+      } catch (e) {
+        addSystemItem(bt("mountCollectionFailed") + e);
+        return null;
+      }
+    });
+    if (requestedTarget.draft) {
+      mountedCollectionUpdate = mountedCollectionUpdate.finally(function () {
+        requestedTarget.pending -= 1;
+        if (requestedTarget.pending === 0 && mountedCollectionDraftTarget === requestedTarget) {
+          mountedCollectionDraftTarget = null;
+        }
+      });
+    }
+    return mountedCollectionUpdate;
+  }
+  // 添加知识集；已挂载但停用时重新启用，不覆盖其他挂载项。
   async function mountCollection(collectionId) {
     if (collectionId == null) return null;
-    if (!state.activeSessionId) {
-      await ensureSession();
-      if (!state.activeSessionId) return null;
-    }
-    try {
-      await invoke("session_mount_collection", { sessionId: state.activeSessionId, collectionId: collectionId });
-      state.mountedCollection = collectionId;
-      notify();
-      return collectionId;
-    } catch (e) { addSystemItem("挂载知识集失败: " + e); return null; }
+    var saved = await updateMountedCollections("session_add_mounted_collection", { collectionId: collectionId });
+    return saved ? collectionId : null;
   }
-  // 摘下当前对话的知识集挂载。
+  async function setCollectionEnabled(collectionId, enabled) {
+    return updateMountedCollections("session_set_mounted_collection_enabled", {
+      collectionId: collectionId,
+      enabled: !!enabled,
+    });
+  }
+  async function removeCollection(collectionId) {
+    return updateMountedCollections("session_remove_mounted_collection", { collectionId: collectionId });
+  }
+  // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; notify(); return; }
-    try { await invoke("session_unmount_collection", { sessionId: state.activeSessionId }); } catch (e) { /* 前端照样摘 */ }
-    state.mountedCollection = null;
-    notify();
+    if (!state.activeSessionId) { applyMountedCollections([]); notify(); return; }
+    return updateMountedCollections("session_unmount_collection", null);
   }
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
   async function syncMountedCollection() {
-    if (!state.activeSessionId) { state.mountedCollection = null; return; }
+    if (!state.activeSessionId) { applyMountedCollections([]); return; }
+    var sessionId = state.activeSessionId;
     try {
-      var cid = await invoke("session_mounted_collection", { sessionId: state.activeSessionId });
-      state.mountedCollection = (cid == null) ? null : cid;
-    } catch (e) { state.mountedCollection = null; }
+      var snapshot = await invoke("session_mounted_collections_snapshot", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      if (snapshot && Array.isArray(snapshot.collections)) { applyMountedCollections(snapshot); return; }
+      var mounted = await invoke("session_mounted_collections", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      if (Array.isArray(mounted)) { applyMountedCollections(mounted); return; }
+      var legacy = await invoke("session_mounted_collection", { sessionId: sessionId });
+      if (state.activeSessionId !== sessionId) return;
+      applyMountedCollections(legacy == null ? [] : [legacy]);
+    } catch (e) {
+      try {
+        var cid = await invoke("session_mounted_collection", { sessionId: sessionId });
+        if (state.activeSessionId !== sessionId) return;
+        applyMountedCollections(cid == null ? [] : [cid]);
+      } catch (_) { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
+    }
   }
 
   // ── 应用内升级 ───────────────────────────────────────────────────
@@ -6932,7 +7661,12 @@
     var missing = deps.filter(function (d) { return !d.installed; });
     if (!missing.length || state.depsInstalling) return;
     var pkgs = [];
+    var actions = [];
     missing.forEach(function (d) {
+      var action = String(d.install_action || "").trim();
+      if (/^[a-z0-9_]+$/i.test(action) && actions.indexOf(action) < 0) {
+        actions.push(action);
+      }
       var parts = String(d.apt).trim().split(/\s+/).filter(Boolean);
       if (!parts.length || !parts.every(function (p) { return /^[a-z0-9][a-z0-9+.-]*$/i.test(p); })) {
         return;
@@ -6941,18 +7675,20 @@
         if (pkgs.indexOf(p) < 0) pkgs.push(p);
       });
     });
-    if (!pkgs.length) {
-      state.depsInstallError = "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。";
+    if (!pkgs.length && !actions.length) {
+      state.depsInstallError = bt("depsNotInstallable");
       notify();
       return;
     }
     state.depsInstalling = true; state.depsInstallError = null; notify();
     try {
-      await invoke("install_dependencies", { packages: pkgs });
-      state.deps = await invoke("check_dependencies"); // 装完实时重检,缺失项应清空
+      await invoke("install_dependencies", { packages: pkgs, actions: actions });
     } catch (e) {
       state.depsInstallError = String(e);
     }
+    try {
+      state.deps = await invoke("check_dependencies"); // 成功或部分成功后均实时反映当前状态
+    } catch (_) { /* keep the last successful dependency snapshot */ }
     state.depsInstalling = false; notify();
   }
 
@@ -6989,10 +7725,10 @@
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     var constraint = String((err && err.constraint) || "");
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
-      return { category: "permission_denied", stage: "permission", message: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。" };
+      return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
     if (name === "NotFoundError" || name === "DevicesNotFoundError" || rawCategory === "device_unavailable") {
-      return { category: "device_unavailable", stage: "device", message: "未检测到可用麦克风，请检查录音设备是否启用或被占用。" };
+      return { category: "device_unavailable", stage: "device", message: bt("voiceNoDevice") };
     }
     // WebKitGTK 可能把不支持的音频约束报为 OverconstrainedError / "Invalid constraint"。
     // 这和没有录音设备不同：设备可能存在，只是不支持 channelCount、降噪等配置。
@@ -7000,26 +7736,26 @@
       return {
         category: "constraint_unsupported",
         stage: "device",
-        message: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+        message: bt("voiceConstraintUnsupported"),
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
     if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: "未识别到语音内容，请靠近麦克风后重试。" };
+      return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
     }
     if (rawCategory === "context_mismatch") {
-      return { category: "context_mismatch", stage: "writeback", message: "识别已完成，但当前会话已切换，结果未自动写入。" };
+      return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
     }
     if (rawCategory === "timeout") {
-      return { category: "timeout", stage: "recording", message: "本次语音输入超时，请重试。" };
+      return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
     }
     if (rawCategory === "recognition_failed") {
-      return { category: "recognition_failed", stage: rawStage, message: rawMessage || "语音识别失败，请稍后重试。" };
+      return { category: "recognition_failed", stage: rawStage, message: rawMessage || bt("voiceRecognitionFailed") };
     }
     return {
       category: rawCategory || "recording_failed",
       stage: rawStage,
-      message: rawMessage || "语音输入失败，请检查麦克风后重试。",
+      message: rawMessage || bt("voiceInputFailed"),
     };
   }
 
@@ -7113,12 +7849,12 @@
     if (cancelled) {
       cleanupVoiceInputSession(session);
       activeVoiceInput = null;
-      setVoiceInputStatus("cancelled", { message: "已取消语音输入", completedAt: Date.now() });
+      setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
       emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
       return;
     }
 
-    setVoiceInputStatus("transcribing", { message: "正在识别语音…", stage: "transcribing" });
+    setVoiceInputStatus("transcribing", { message: bt("voiceTranscribing"), stage: "transcribing" });
     cleanupVoiceInputSession(session);
 
     try {
@@ -7128,7 +7864,7 @@
       var raw = mergeFloatChunks(session.chunks);
       var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
-        throw { category: "recording_failed", stage: "recording", message: "录音时间过短，请重试。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceTooShort") };
       }
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
@@ -7153,7 +7889,7 @@
       if (typeof session.writeback === "function") {
         session.writeback(text, session.draftBeforeStart);
       }
-      setVoiceInputStatus("completed", { message: "语音已写入输入框", completedAt: Date.now() });
+      setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
@@ -7195,17 +7931,30 @@
 
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
   // kb_model:progress 事件。resolve 时模型已就绪，调用方据 status.installed 收起 gate。
-  async function downloadKbModel() {
+  async function downloadKbModel(repair) {
     if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
     notify();
     try {
-      var st = await invoke("kb_model_download");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, status: st, progress: { stage: "done" } });
+      var st = await invoke("kb_model_download", { repair: !!repair });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        downloading: false,
+        startupLoading: false,
+        startupReady: st && typeof st.ready === "boolean" ? st.ready : true,
+        status: st,
+        progress: { stage: "done" },
+      });
       notify();
       return st;
     } catch (e) {
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: false, error: String(e) });
+      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        downloading: false,
+        startupLoading: false,
+        startupReady: failedStatus && typeof failedStatus.ready === "boolean" ? failedStatus.ready : false,
+        status: failedStatus || state.kbModelSetup.status,
+        error: String(e),
+      });
       notify();
       throw e;
     }
@@ -7251,7 +8000,7 @@
         if (IS_WEB) {
           if (primedAudioContext) primedAudioContext.close().catch(function () {});
           setVoiceInputStatus("failed", {
-            message: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
+            message: bt("voiceNeedDesktopAsr"),
             error: "voice_asr_not_ready",
             category: "dependency_unavailable",
             stage: "dependency",
@@ -7279,7 +8028,7 @@
     };
     activeVoiceInput = session;
     setVoiceInputStatus("requesting_permission", {
-      message: "正在请求麦克风权限…",
+      message: bt("voiceRequestingPermission"),
       sessionId: session.sessionId,
       startedAt: session.startedAt,
       stage: "permission",
@@ -7288,10 +8037,10 @@
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw { category: "device_unavailable", stage: "device", message: "当前 WebView 不支持麦克风采集。" };
+        throw { category: "device_unavailable", stage: "device", message: bt("voiceNoMicCapture") };
       }
       if (!AudioCtor) {
-        throw { category: "recording_failed", stage: "recording", message: "当前 WebView 不支持音频录制。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceNoAudioRecording") };
       }
       session.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -7309,7 +8058,7 @@
       if (primedAudioResume) await primedAudioResume;
       if (session.audioContext.state === "suspended") await session.audioContext.resume();
       if (session.audioContext.state !== "running") {
-        throw { category: "recording_failed", stage: "recording", message: "浏览器未允许启动音频采集，请再次点击麦克风。" };
+        throw { category: "recording_failed", stage: "recording", message: bt("voiceAudioStartBlocked") };
       }
       session.sampleRate = session.audioContext.sampleRate || 16000;
       session.source = session.audioContext.createMediaStreamSource(session.stream);
@@ -7325,7 +8074,7 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: "正在录音，再点一次结束", stage: "recording" });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
@@ -7420,7 +8169,7 @@
       await syncModeState();
       notify();
       return res;
-    } catch (e) { addSystemItem("⚠️ 启用工作流失败: " + e); notify(); return null; }
+    } catch (e) { addSystemItem(bt("workflowEnableFailed") + e); notify(); return null; }
   }
   async function deactivateSkill() {
     if (state.activeSessionId) {
@@ -7456,15 +8205,15 @@
     try {
       var res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
       try { await invoke("kick_workflow", { sessionId: res.session_id }); }
-      catch (e) { addSystemItem("⚠️ kick_workflow 失败: " + e); }
+      catch (e) { addSystemItem(bt("workflowKickFailed") + e); }
       return res;
-    } catch (e) { addSystemItem("⚠️ 启动工作流失败: " + e); return null; }
+    } catch (e) { addSystemItem(bt("workflowStartFailed") + e); return null; }
   }
   // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
   // 供工作流页打开“修改需求并重新开始”的预填表单。
   async function stopWorkflowTask(reason) {
     var sid = state.workflow.run.sessionId;
-    if (!sid) throw new Error("当前没有可停止的工作流");
+    if (!sid) throw new Error(bt("workflowNoneToStop"));
     var result = await invoke("stop_workflow", {
       sessionId: sid,
       reason: reason || "user_stopped",
@@ -7508,7 +8257,7 @@
   // 交互卡动作
   async function submitWorkflowUserInput(cardId, toolCallId, answers) {
     try { await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.workflow.run.sessionId }); resolveRunCard(cardId, "submitted"); }
-    catch (e) { addSystemItem("⚠️ 提交失败: " + e); }
+    catch (e) { addSystemItem(bt("workflowSubmitFailed") + e); }
   }
   // [2026-06-06] 素材上传：复用系统文件选择器(dialogOpen) → 拷进当前 run 的 配套材料/。
   // 返回落盘文件名数组(含同名去重);失败 throw 给调用方(卡片上报错)。
@@ -7518,7 +8267,7 @@
     if (!selected) return [];
     var paths = Array.isArray(selected) ? selected : [selected];
     var added = await invoke("add_run_materials", { sessionId: state.workflow.run.sessionId, paths: paths });
-    addSystemItem("✅ 已添加 " + added.length + " 个素材到配套材料：" + added.join("、"));
+    addSystemItem(bt("materialsAdded")(added.length, added));
     return added;
   }
   // [新建任务模态] 只弹系统选择器拿路径,不拷贝(run 还没建)。返回路径数组。
@@ -7529,14 +8278,23 @@
     return Array.isArray(selected) ? selected : [selected];
   }
   async function pickFolder() {
-    if (!dialogOpen) throw new Error("当前环境无法打开文件夹选择器");
+    if (!dialogOpen) throw new Error(bt("folderPickerUnavailable"));
     var selected = await dialogOpen({
       directory: true,
       multiple: false,
-      title: "选择工作目录",
+      title: bt("pickFolderTitle"),
     });
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  // 知识库「添加文件夹」：host-file-picker 目录模式返回单个目录路径，
+  // 包成数组交给后端 kb_collection_add_sources（在桌面进程用 WalkDir 递归展开）。
+  async function pickFolders() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return []; }
+    var selected = await dialogOpen({ directory: true, multiple: false, title: bt("kbPickFolderTitle") });
+    if (!selected) return [];
+    var p = Array.isArray(selected) ? selected[0] : selected;
+    return p ? [p] : [];
   }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
@@ -7563,23 +8321,23 @@
       resolveRunCardsForRole(roleId, "approved");
       await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
       notify();
-    } catch (e) { addSystemItem("⚠️ 通过失败: " + e); }
+    } catch (e) { addSystemItem(bt("gateApproveFailed") + e); }
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     try {
-      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || "用户打回，请改进后重试", sessionId: state.workflow.run.sessionId });
+      await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
       if (cardId) resolveRunCard(cardId, "rejected");
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
       notify();
-    } catch (e) { addSystemItem("⚠️ 打回失败: " + e); }
+    } catch (e) { addSystemItem(bt("gateRejectFailed") + e); }
   }
   // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
   async function retryWorkflowRole(roleId) {
     try {
       const r = await invoke("retry_workflow_role", { roleId: roleId, sessionId: state.workflow.run.sessionId });
-      addSystemItem("🔄 重跑 " + roleId + ": " + r);
-    } catch (e) { addSystemItem("⚠️ 重跑失败: " + e); }
+      addSystemItem(bt("roleRetried")(roleId, r));
+    } catch (e) { addSystemItem(bt("roleRetryFailed") + e); }
   }
 
   // ── Init ─────────────────────────────────────────────────────────
@@ -7777,6 +8535,7 @@
     listDeliverables: listDeliverables,
     listDeliverableIndex: listDeliverableIndex,
     openExternalUrl: openExternalUrl,
+    openUserExternalUrl: openUserExternalUrl,
     // 附件
     addAttachmentByPath: addAttachmentByPath,
     addPasteImage: addPasteImage,
@@ -7784,6 +8543,9 @@
     clearAttachments: clearAttachments,
     pickAndAttach: pickAndAttach,
     uploadDeviceFiles: uploadDeviceFiles,
+    resolveConversationAttachment: resolveConversationAttachment,
+    openConversationAttachment: openConversationAttachment,
+    revealConversationAttachment: revealConversationAttachment,
     markResolved: markResolved,
     // 工作流
     loadSkills: loadSkills,
@@ -7806,6 +8568,7 @@
     submitWorkflowUserInput: submitWorkflowUserInput,
     pickAndAddMaterials: pickAndAddMaterials,
     pickFiles: pickFiles,
+    pickFolders: pickFolders,
     pickFeedbackFiles: pickFeedbackFiles,
     addMaterialsToSession: addMaterialsToSession,
     attachRun: attachRun,
@@ -7821,6 +8584,8 @@
     unequipPersona: unequipPersona,
     // 知识库挂载(会话级)
     mountCollection: mountCollection,
+    setCollectionEnabled: setCollectionEnabled,
+    removeCollection: removeCollection,
     unmountCollection: unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
@@ -7876,104 +8641,4 @@
   } else {
     setTimeout(init, 0);
   }
-})();
-/**
- * Adapt the Web transport to the same domain API and state slices consumed by
- * the desktop UI. The legacy flat object stays private to this platform layer.
- */
-(function () {
-  "use strict";
-  var platform = window.PinvouPlatform;
-  if (!platform || (platform.kind !== "web" && platform.isWeb !== true)) return;
-  var flat = window.TauriBridge;
-  if (!flat || !flat.available || typeof flat.getState !== "function") return;
-  var fields = {
-    platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
-    voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection"],
-    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
-    monitor: ["monitor", "monitorError"],
-    settings: ["settings", "selectedPet"],
-    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
-    vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
-    interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
-    personas: ["activePersona", "personaEvents", "personaPool"],
-    workflow: ["workflow"],
-    memory: ["memory"],
-    remoteControl: ["webAccess"],
-    updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
-    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"]
-  };
-  function clone(value) {
-    if (typeof structuredClone === "function") {
-      try { return structuredClone(value); } catch (_) {}
-    }
-    return JSON.parse(JSON.stringify(value));
-  }
-  function get(domainName) {
-    var names = fields[domainName];
-    if (!names) throw new Error("Unknown Tauri bridge state slice: " + domainName);
-    var full = flat.getState();
-    var result = {};
-    names.forEach(function (name) { result[name] = full[name]; });
-    return clone(result);
-  }
-  function getMany(domains) {
-    if (!Array.isArray(domains) || domains.length === 0) throw new Error("Tauri bridge state.getMany requires at least one domain");
-    var result = {};
-    domains.forEach(function (domainName) { Object.assign(result, get(domainName)); });
-    return result;
-  }
-  function subscribe(domainName, callback) {
-    get(domainName);
-    return flat.subscribe(function () { callback(get(domainName)); });
-  }
-  function subscribeMany(domains, callback) {
-    getMany(domains);
-    return flat.subscribe(function () { callback(getMany(domains)); });
-  }
-  function domain(names, aliases) {
-    var result = {};
-    names.forEach(function (name) { if (typeof flat[name] === "function") result[name] = flat[name]; });
-    Object.keys(aliases || {}).forEach(function (name) {
-      var fn = flat[aliases[name]];
-      if (typeof fn === "function") result[name] = fn;
-    });
-    return result;
-  }
-  window.TauriBridge = {
-    available: true,
-    lifecycle: { init: flat.init },
-    state: { get: get, getMany: getMany, subscribe: subscribe, subscribeMany: subscribeMany },
-    platform: {},
-    chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "retryFirstTurn", "prefillComposer", "removeQueued", "cancelGeneration", "cancelShellTask"]),
-    voice: domain(["startVoiceInput", "installVoiceAsr", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText", "runVoiceInputDebugAssertions"]),
-    knowledge: domain(["downloadKbModel", "cancelKbModel", "mountCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
-    scheduled: domain(["loadScheduledTasks", "readScheduledTask", "loadScheduledTaskRuns", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "clearScheduledTaskSelection", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "toggleScheduledTaskPinned", "deleteScheduledTask", "runScheduledTaskNow", "pickFolder", "startScheduledTaskChat", "confirmScheduledTaskDraft", "clearScheduledTaskDraft", "openScheduledRunChat", "exitScheduledRunChat"]),
-    sessions: domain(["createNewSession", "switchToSession", "deleteSession", "renameSession", "toggleSessionPinned", "archiveSession", "restoreArchivedSession"]),
-    monitor: domain(["startMonitorPolling", "stopMonitorPolling", "clearMonitorStats"]),
-    settings: domain(["setSelectedPet", "saveSettings", "saveSettingsAndRestart", "saveSearchSettings", "saveSearchSettingsAndRestart", "testSearchProvider"]),
-    feedback: domain(["submitFeedback"]),
-    vllm: domain(["discoverLocalVllm", "detectLocalVllmSetup", "bootstrapLocalVllm", "dismissVllmSetup", "declineVllmSetup"]),
-    models: domain(["getEffectiveModelConfig", "getImageInputCapability", "loadModels", "saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection", "testImageInputCapability"]),
-    interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setPlanModeNext", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn", "compactNow"]),
-    rendering: domain(["renderMarkdown"]),
-    remoteControl: domain(["getWebRelaySettings", "setWebRelayAddress", "resetWebRelayAddress"], {
-      startRemoteControl: "enableWebAccess",
-      stopRemoteControl: "disableWebAccess",
-      refreshRemoteControlQr: "rotateWebAccessLink",
-      refreshRemoteControlStatus: "refreshWebAccessStatus"
-    }),
-    artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openInSystem", "openArtifactExternal", "downloadArtifact", "listDeliverables", "listDeliverableIndex", "openExternalUrl"]),
-    attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "clearAttachments", "pickAndAttach", "uploadDeviceFiles"]),
-    resolutions: domain(["markResolved"]),
-    workflow: domain(["loadSkills", "activateSkill", "deactivateSkill", "openDemo", "closeDemo", "setCurrentPhase", "startWorkflowTask", "stopWorkflowTask", "listWorkflows", "resetWorkflowRun", "selectWorkflowRole", "closeWorkflowDrawer", "getRolePrompt", "getRoleOutputs", "getGateReport", "getRoleLogs", "submitWorkflowUserInput", "pickAndAddMaterials", "addMaterialsToSession", "attachRun", "resumeWorkflowOnBoot", "approveWorkflowGate", "rejectWorkflowGate", "retryWorkflowRole"]),
-    files: domain(["pickFiles", "pickFeedbackFiles"]),
-    personas: domain(["loadPersonas", "getPersonas", "readPersonaBody", "equipPersona", "unequipPersona", "postCardCreatorIntro", "createPersona", "updatePersona", "deletePersona"]),
-    memory: domain(["loadMemoryOverview", "saveMemoryProfilePatch", "deleteMemoryPreference", "updateMemoryItem", "deleteMemoryItem", "archiveRecentWorkMemory", "confirmMemoryCandidate", "ignoreMemoryCandidate", "neverMemoryCandidate"]),
-    updater: domain(["checkForUpdate", "downloadAndInstallUpdate", "cancelUpdate", "restartApp"]),
-    dependencies: domain(["checkDependencies", "installDependencies"])
-  };
 })();

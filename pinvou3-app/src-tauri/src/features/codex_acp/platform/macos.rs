@@ -1,18 +1,12 @@
-use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use tokio::process::Command;
-
-use super::ManagedCodexArtifact;
 
 pub(super) const NODE_EXECUTABLE_NAME: &str = "node";
 pub(super) const SYSTEM_CODEX_NAME: &str = "codex";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp";
 pub(super) const BUNDLED_ADAPTER_NAME: &str = "codex-acp";
-pub(super) const MANAGED_CODEX_EXECUTABLE_NAME: &str = "codex";
-/// macOS 没有托管下载产物，系统 Codex 通过 Homebrew cask 安装。
-pub(super) const INSTALL_METHOD: &str = "homebrew";
 
 pub(super) fn development_bridge_root(manifest_dir: &Path) -> PathBuf {
     manifest_dir
@@ -31,6 +25,13 @@ pub(super) fn bridge_node_relative_path() -> PathBuf {
         .join(target)
         .join("bin")
         .join(NODE_EXECUTABLE_NAME)
+}
+
+pub(super) fn codex_official_install_path() -> PathBuf {
+    crate::platform::os::user_home_dir()
+        .join(".local")
+        .join("bin")
+        .join(SYSTEM_CODEX_NAME)
 }
 
 pub(super) fn adapter_needs_node(adapter: &Path) -> bool {
@@ -56,14 +57,6 @@ pub(super) fn codex_login_command(codex: &Path) -> Command {
     command
 }
 
-pub(super) fn managed_artifact(architecture: &str) -> Result<ManagedCodexArtifact> {
-    bail!("当前托管 Codex 下载不支持平台: macos-{architecture}")
-}
-
-pub(super) fn should_retry_file_lock(_error: &io::Error) -> bool {
-    false
-}
-
 /// 解析 brew 绝对路径（与 dependencies/platform/macos.rs 的 brew_bin 同策略）：
 /// GUI 启动的 app 通常不继承 shell 的 PATH，先探测 Apple Silicon
 /// (/opt/homebrew/bin/brew) 与 Intel (/usr/local/bin/brew) 两个标准位置，
@@ -75,6 +68,28 @@ pub(super) fn brew_bin() -> &'static str {
         }
     }
     "brew"
+}
+
+/// brew 安装前缀（如 /opt/homebrew、/usr/local），由 brew_bin() 推导；
+/// 标准路径未命中时回退 `brew --prefix` 查询，brew 不可用返回 None。
+/// 供 install_source 判定时确认「正在使用的 CLI 路径」是否真由 brew 管理。
+pub(super) fn brew_prefix() -> Option<PathBuf> {
+    let bin = brew_bin();
+    if bin != "brew" {
+        return Path::new(bin)
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+    }
+    crate::platform::process::HiddenCommand::new("brew")
+        .arg("--prefix")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!prefix.is_empty()).then_some(PathBuf::from(prefix))
+        })
 }
 
 /// 探测 Homebrew 是否可用。brew_bin() 返回非 "brew" 说明标准路径下找到了

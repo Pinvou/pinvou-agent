@@ -1,3 +1,9 @@
+import {
+  PERSONAL_WORKBENCH_SCENE_KEY,
+  createPersonalWorkbenchMessageMeta,
+  shouldUsePersonalWorkbenchScene,
+} from './personal-workbench-scene.js';
+
 const WORK_DOCUMENT_SCENE_KEY = 'document-writing';
 const WORK_DATA_VISUALIZATION_SCENE_KEY = 'data-visualization';
 const DESIGN_DATA_VISUALIZATION_SCENE_KEY = WORK_DATA_VISUALIZATION_SCENE_KEY;
@@ -65,11 +71,14 @@ function createDataVisualizationMessageMeta(text) {
 
 export {
   DESIGN_DATA_VISUALIZATION_SCENE_KEY,
+  PERSONAL_WORKBENCH_SCENE_KEY,
   WORK_DATA_VISUALIZATION_SCENE_KEY,
   WORK_DOCUMENT_SCENE_KEY,
   buildWorkScenePayloadText,
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
+  createPersonalWorkbenchMessageMeta,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
+  shouldUsePersonalWorkbenchScene,
 };

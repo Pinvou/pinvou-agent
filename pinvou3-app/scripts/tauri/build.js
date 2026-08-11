@@ -11,10 +11,14 @@ const {
   platformArchitectureConfigPath,
   platformConfigPath,
 } = require("./platform-config.js");
+const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { prepareWebTemplate } = require("./web-template.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
-const { stageWindowsRuntime } = require("./windows-runtime.js");
+const {
+  stageWindowsOnnxRuntime,
+  stageWindowsRuntime,
+} = require("./windows-runtime.js");
 
 function tauriCommandIndex(args) {
   return args.findIndex((argument) => argument === "build" || argument === "bundle");
@@ -62,19 +66,25 @@ function prepareTauriArgs(
   const prepared = [...args];
   const commandIndex = tauriCommandIndex(prepared);
   if (commandIndex < 0) {
-    // dev 默认不注入 packaging overlay;但 macOS 的原生红绿灯顶栏定义在平台
-    // overlay 里,dev 也必须带上,否则 npm run dev 与打包产物顶栏不一致
-    // (run-dev.sh 直连 tauri dev 时已显式带同一份 overlay,两条入口行为对齐)。
+    // dev 不注入 packaging overlay。macOS 复用平台 overlay 保持原生顶栏一致；
+    // Linux 只注入 dev overlay，让冷启动窗口等 React 首次提交后再显示，避开
+    // Mutter/XWayland 首次映射期间视觉表面与输入表面短暂错位。
     const devIndex = prepared.indexOf("dev");
-    if (devIndex >= 0 && platform === "darwin") {
+    const devConfig = platform === "darwin"
+      ? platformConfigPath(platform)
+      : platform === "linux"
+        ? linuxStartupWindowConfigSpec()
+        : null;
+    if (devIndex >= 0 && devConfig) {
       // 与 build/bundle 保持相同优先级:自动平台配置在前,调用方显式
       // --config 在后,从而仍可有意覆盖平台默认值。
-      prepared.splice(devIndex + 1, 0, "--config", platformConfigPath(platform));
+      prepared.splice(devIndex + 1, 0, "--config", devConfig);
     }
     return prepared;
   }
 
   const automaticConfigs = [platformConfigPath(platform)];
+  if (platform === "linux") automaticConfigs.push(linuxStartupWindowConfigSpec());
   const architectureConfig = platformArchitectureConfigPath(platform, architecture);
   if (architectureConfig) automaticConfigs.push(architectureConfig);
   const stagedRuntime = stageRuntime({ platform });
@@ -89,31 +99,21 @@ function prepareTauriArgs(
   return prepared;
 }
 
-function prepareLinuxArm64Connectors({
-  platform = process.platform,
-  architecture = process.arch,
-} = {}) {
-  if (platform !== "linux" || architecture !== "arm64") return;
-  const script = path.resolve(APP_ROOT, "..", "scripts", "fetch-linux-arm64-connectors.sh");
-  const result = spawnSync("bash", [script], {
-    cwd: path.resolve(APP_ROOT, ".."),
-    stdio: "inherit",
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Linux ARM64 连接器准备失败（退出码 ${result.status ?? "unknown"}）`);
-  }
-}
-
-function runTauri(preparedArgs, spawn = spawnSync) {
+function runTauri(preparedArgs, spawn = spawnSync, environment = process.env) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
   const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
     cwd: APP_ROOT,
-    env: { ...process.env, [WRAPPER_ENV]: "1" },
+    env: { ...environment, [WRAPPER_ENV]: "1" },
     stdio: "inherit",
   });
   if (child.error) throw child.error;
   return child.status === null ? 1 : child.status;
+}
+
+function tauriRuntimeEnvironment(runtime, environment = process.env) {
+  return runtime
+    ? { ...environment, ORT_DYLIB_PATH: runtime.onnxRuntimeDylib }
+    : environment;
 }
 
 function main() {
@@ -126,9 +126,15 @@ function main() {
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
   const additionalConfigs = [];
+  // Windows 的 fastembed 使用动态 ONNX Runtime。正式包 staging 完整运行时并通过
+  // resource overlay 携带 DLL；dev 只校验并展开 ONNX 组件，避免为 UI 开发准备无关工具。
   const windowsRuntime =
-    hasTauriBuildCommand && process.platform === "win32" ? stageWindowsRuntime() : null;
-  if (windowsRuntime) {
+    hasTauriBuildCommand && process.platform === "win32"
+      ? stageWindowsRuntime()
+      : null;
+  const windowsDevRuntime =
+    isDev && process.platform === "win32" ? stageWindowsOnnxRuntime() : null;
+  if (windowsRuntime && hasTauriBuildCommand) {
     stageWindowsInstaller({
       bundleTargets: windowsBundleTargets(args),
       runtime: windowsRuntime,
@@ -145,7 +151,6 @@ function main() {
     prepareWindowsCodexBridge();
   }
   if (hasTauriBuildCommand) {
-    prepareLinuxArm64Connectors();
     prepareWebTemplate();
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
@@ -166,7 +171,8 @@ function main() {
     );
   }
 
-  process.exitCode = runTauri(preparedArgs);
+  const tauriEnvironment = tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime);
+  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
 }
 
 if (require.main === module) {
@@ -181,13 +187,14 @@ if (require.main === module) {
 module.exports = {
   configSpecs,
   main,
-  prepareLinuxArm64Connectors,
   prepareCodexBridge,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
+  stageWindowsOnnxRuntime,
   stageWindowsRuntime,
   prepareTauriArgs,
   runTauri,
+  tauriRuntimeEnvironment,
   tauriCommandIndex,
   windowsBundleTargets,
 };

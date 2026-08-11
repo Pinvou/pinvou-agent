@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{bail, Context, Result};
@@ -322,11 +323,158 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     })
 }
 
-pub fn workspace_diff(root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
+/// diff 内存缓存：键 = (session_id, 相对路径)，值 = 文件指纹 + diff 文本。
+/// 指纹覆盖工作区文件（size + mtime 纳秒 + 头尾采样 hash——内容变而 size/mtime
+/// 未变（同尺寸覆盖写）也能失效）、`.git/index`（git add/reset 等暂存区变化
+/// 会更新 index）与 HEAD 指向的 ref 文件（reset --soft / update-ref / commit 只
+/// 移动 HEAD、可能不更新 index 或工作区——而 git diff --cached 依赖 HEAD），
+/// 任一变化即失效；仅进程内存、不落盘，重启即清空。
+const DIFF_CACHE_MAX_ENTRIES: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiffFingerprint {
+    file_size: u64,
+    file_modified: u128,
+    head_tail_hash: u64,
+    index_size: u64,
+    index_modified: u128,
+    head_ref_size: u64,
+    head_ref_modified: u128,
+}
+
+#[derive(Clone)]
+struct CachedDiff {
+    fingerprint: DiffFingerprint,
+    text: String,
+    truncated: bool,
+}
+
+static DIFF_CACHE: LazyLock<Mutex<HashMap<(String, String), CachedDiff>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default()
+}
+
+// 头 4KB + 尾 4KB 的 FNV-1a 采样：文件内容变化（含同尺寸覆盖写）时大概率失效，
+// 每次开销恒定 ~8KB 读取，远小于重跑 git diff。
+fn sample_head_tail_hash(path: &Path, len: u64) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut visit = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x1_0000_0000_01b3);
+        }
+    };
+    if let Ok(mut file) = fs::File::open(path) {
+        let head_len = 4096.min(len as usize);
+        let mut head = vec![0u8; head_len];
+        if file.read_exact(&mut head).is_ok() {
+            visit(&head);
+        }
+        if len > 8192 {
+            let tail_len = 4096.min((len - head_len as u64) as usize);
+            let mut tail = vec![0u8; tail_len];
+            if file.seek(SeekFrom::End(-(tail_len as i64))).is_ok()
+                && file.read_exact(&mut tail).is_ok()
+            {
+                visit(&tail);
+            }
+        }
+    }
+    hash
+}
+
+fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
+    let mut fingerprint = DiffFingerprint {
+        file_size: 0,
+        file_modified: 0,
+        head_tail_hash: 0,
+        index_size: 0,
+        index_modified: 0,
+        head_ref_size: 0,
+        head_ref_modified: 0,
+    };
+    if let Ok(metadata) = root.join(relative).metadata() {
+        fingerprint.file_size = metadata.len();
+        fingerprint.file_modified = modified_nanos(&metadata);
+        fingerprint.head_tail_hash = sample_head_tail_hash(&root.join(relative), metadata.len());
+    }
+    // git 暂存区变化会重写 .git/index；非 git 工作区无此文件，字段保持 0。
+    if let Ok(metadata) = root.join(".git/index").metadata() {
+        fingerprint.index_size = metadata.len();
+        fingerprint.index_modified = modified_nanos(&metadata);
+    }
+    // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref / commit 只移动
+    // HEAD（改写其指向的 ref 文件），可能不更新 .git/index 或工作区。解析 .git/HEAD
+    // （多为 symref: ref: refs/heads/<branch>）后 stat 目标文件，使此类改动也能失效。
+    if let Some(head_ref) = head_ref_path(root) {
+        if let Ok(metadata) = head_ref.metadata() {
+            fingerprint.head_ref_size = metadata.len();
+            fingerprint.head_ref_modified = modified_nanos(&metadata);
+        }
+    }
+    fingerprint
+}
+
+// 解析 .git/HEAD：symref（`ref: refs/heads/<branch>`）→ `.git/` 下的 ref 文件路径；
+// 分离头（直接存 commit SHA）→ .git/HEAD 本身。reset --soft / update-ref 改写后者，
+// stat 它即可让指纹失效。非 git 工作区无 .git/HEAD 时返回 None。
+fn head_ref_path(root: &Path) -> Option<PathBuf> {
+    let git_dir = root.join(".git");
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    match head.trim().strip_prefix("ref:") {
+        // symref 目标相对 .git/（如 refs/heads/main），需在 git_dir 下解析。
+        Some(target) => Some(git_dir.join(target.trim())),
+        None => Some(git_dir.join("HEAD")),
+    }
+}
+
+fn diff_cache_get(session_id: &str, root: &Path, relative: &str) -> Option<CachedDiff> {
+    let fingerprint = diff_fingerprint(root, relative);
+    DIFF_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&(session_id.to_string(), relative.to_string()))
+        .filter(|cached| cached.fingerprint == fingerprint)
+        .cloned()
+}
+
+fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, truncated: bool) {
+    let fingerprint = diff_fingerprint(root, relative);
+    let mut cache = DIFF_CACHE.lock().unwrap_or_else(|error| error.into_inner());
+    // 简单上限：超限整体清空，避免进程内无限膨胀（纯内存，不落盘）。
+    if cache.len() >= DIFF_CACHE_MAX_ENTRIES {
+        cache.clear();
+    }
+    cache.insert(
+        (session_id.to_string(), relative.to_string()),
+        CachedDiff {
+            fingerprint,
+            text,
+            truncated,
+        },
+    );
+}
+
+pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
     let path = root.join(&relative);
     ensure_path_within_workspace(&root, &path)?;
+
+    if let Some(cached) = diff_cache_get(session_id, &root, &relative) {
+        return Ok(WorkspaceDiff {
+            relative_path: relative,
+            text: cached.text,
+            truncated: cached.truncated,
+        });
+    }
 
     let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
         let unstaged = git_output(
@@ -375,11 +523,19 @@ pub fn workspace_diff(root: &Path, relative_path: &str) -> Result<WorkspaceDiff>
         text.truncate(DIFF_LIMIT);
         text.push_str("\n\n…差异过大，已截断");
     }
+    diff_cache_put(session_id, &root, &relative, text.clone(), truncated);
     Ok(WorkspaceDiff {
         relative_path: relative,
         text,
         truncated,
     })
+}
+
+/// 校验相对路径落在工作区内，但不要求文件存在（git diff 可展示已删除文件）。
+pub fn validate_workspace_relative_path(root: &Path, relative_path: &str) -> Result<()> {
+    let relative = normalize_relative_path(relative_path)?;
+    let path = root.join(&relative);
+    ensure_path_within_workspace(root, &path)
 }
 
 pub(super) fn resolve_workspace_references(
@@ -595,10 +751,83 @@ fn file_kind(path: &Path) -> String {
             | "java"
             | "kt"
             | "swift"
+            | "rb"
+            | "php"
+            | "cs"
+            | "lua"
+            | "scala"
+            | "gradle"
+            | "tf"
+            | "tex"
+            | "rst"
+            | "pl"
+            | "pm"
+            | "r"
+            | "m"
+            | "mm"
     ) {
         return "text".to_string();
     }
+    // 无扩展名的常见文本文件名（Dockerfile、Makefile、LICENSE、.gitignore 等）。
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        file_name.as_str(),
+        "dockerfile"
+            | "makefile"
+            | "gnumakefile"
+            | "jenkinsfile"
+            | "vagrantfile"
+            | "gemfile"
+            | "rakefile"
+            | "brewfile"
+            | "cmakelists.txt"
+            | "license"
+            | "licence"
+            | "copying"
+            | "notice"
+            | "authors"
+            | "contributors"
+            | "changelog"
+            | "readme"
+            | ".gitignore"
+            | ".gitattributes"
+            | ".gitmodules"
+            | ".editorconfig"
+            | ".npmrc"
+            | ".yarnrc"
+            | ".env"
+            | ".envrc"
+    ) {
+        return "text".to_string();
+    }
+    // 扩展名白名单之外的内容嗅探：头部 8KB 无 NUL 且为合法 UTF-8 即按文本处理，
+    // 覆盖 .hbs/.ipynb/.cmake 等未列举扩展名及无扩展名的文本文件。
+    if looks_like_text(path) {
+        return "text".to_string();
+    }
     "binary".to_string()
+}
+
+fn looks_like_text(path: &Path) -> bool {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut buffer = [0u8; 8192];
+    let read = std::io::Read::read(&mut file, &mut buffer).unwrap_or(0);
+    let sample = &buffer[..read];
+    if sample.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(sample) {
+        Ok(_) => true,
+        // 8KB 截断点恰好落在多字节字符中间时，容忍末尾不完整序列（≤4 字节）。
+        Err(error) => error.valid_up_to() > 0 && sample.len() - error.valid_up_to() <= 4,
+    }
 }
 
 fn image_mime_type(path: &Path) -> &'static str {
@@ -911,6 +1140,76 @@ mod tests {
     }
 
     #[test]
+    fn validates_relative_path_without_requiring_file_existence() {
+        let root = TestDir::new("validate-relative");
+        assert!(validate_workspace_relative_path(root.path(), "src/main.py").is_ok());
+        assert!(validate_workspace_relative_path(root.path(), "").is_ok());
+        assert!(validate_workspace_relative_path(root.path(), "../secret.txt").is_err());
+        assert!(validate_workspace_relative_path(root.path(), "/absolute/secret.txt").is_err());
+    }
+
+    #[test]
+    fn diff_cache_hits_within_session_and_invalidates_on_file_change() {
+        // 无真实 git 仓库时 workspace_diff 走文件系统对比分支，内容随文件变化——正适合验证缓存失效。
+        let root = TestDir::new("diff-cache");
+        fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
+
+        let first = workspace_diff("s-1", root.path(), "main.py").unwrap();
+        assert!(first.text.contains("print(1)"));
+        // 同会话、文件未变：命中缓存，内容一致。
+        let second = workspace_diff("s-1", root.path(), "main.py").unwrap();
+        assert_eq!(first.text, second.text);
+
+        // 文件变化 → 指纹失效，重新计算出新内容。
+        fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
+        let third = workspace_diff("s-1", root.path(), "main.py").unwrap();
+        assert_ne!(first.text, third.text);
+        assert!(third.text.contains("print(2)"));
+        // 稳定后再次命中缓存。
+        let fourth = workspace_diff("s-1", root.path(), "main.py").unwrap();
+        assert_eq!(third.text, fourth.text);
+    }
+
+    #[test]
+    fn diff_fingerprint_covers_file_and_git_index() {
+        let root = TestDir::new("diff-fingerprint");
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".git/index"), b"idx1").unwrap();
+        fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
+
+        let baseline = diff_fingerprint(root.path(), "main.py");
+        // 文件内容变化 → 指纹变化。
+        fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // 暂存区变化（.git/index 重写）→ 指纹变化。
+        fs::write(root.path().join(".git/index"), b"idx2").unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+    }
+
+    #[test]
+    fn diff_fingerprint_invalidates_on_head_change() {
+        // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref 只改写 HEAD
+        // 指向的 ref 文件、不更新 .git/index 或工作区——指纹必须覆盖此场景，否则缓存
+        // 会返回陈旧差异。.git/HEAD 多为 symref（ref: refs/heads/<branch>），目标文件
+        // 是 41 字节的 SHA（不同提交同尺寸），故此处以同尺寸重写验证 mtime 失效。
+        let root = TestDir::new("diff-fingerprint-head");
+        fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
+        let head_ref = root.path().join(".git/refs/heads/main");
+        fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(&head_ref, format!("{}\n", "a".repeat(40))).unwrap();
+        fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
+
+        let baseline = diff_fingerprint(root.path(), "main.py");
+        // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
+        fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+
+        // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
+        fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+    }
+
+    #[test]
     fn lists_and_previews_workspace_files_without_build_directories() {
         let root = TestDir::new("listing");
         fs::create_dir_all(root.path().join("src")).unwrap();
@@ -930,7 +1229,55 @@ mod tests {
     }
 
     #[test]
+    fn preview_kind_covers_special_names_and_sniffs_unknown_text() {
+        let root = TestDir::new("file-kind");
+        fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        fs::write(root.path().join("LICENSE"), "MIT License\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(root.path().join("script.rb"), "puts 1\n").unwrap();
+        fs::write(root.path().join("notes"), "plain text without extension\n").unwrap();
+        fs::write(root.path().join("empty.weird"), "").unwrap();
+        fs::write(
+            root.path().join("payload.bin"),
+            [0x89, 0x50, 0x4E, 0x47, 0x00, 0x0D],
+        )
+        .unwrap();
+
+        for (path, expected) in [
+            ("Dockerfile", "text"),
+            ("LICENSE", "text"),
+            (".gitignore", "text"),
+            ("script.rb", "text"),
+            ("notes", "text"),
+            ("empty.weird", "text"),
+            ("payload.bin", "binary"),
+        ] {
+            let preview = preview_workspace_file(root.path(), path).unwrap();
+            assert_eq!(preview.kind, expected, "unexpected kind for {path}");
+        }
+        let preview = preview_workspace_file(root.path(), "notes").unwrap();
+        assert_eq!(
+            preview.text.as_deref(),
+            Some("plain text without extension\n")
+        );
+    }
+
+    #[test]
+    fn preview_kind_tolerates_utf8_boundary_at_sniff_cutoff() {
+        let root = TestDir::new("utf8-boundary");
+        // 8191 个 ASCII + 一个三字节字符：8KB 采样正好切在该字符中间。
+        let content = format!("{}中", "a".repeat(8191));
+        fs::write(root.path().join("boundary.unknown"), content).unwrap();
+        let preview = preview_workspace_file(root.path(), "boundary.unknown").unwrap();
+        assert_eq!(preview.kind, "text");
+    }
+
+    #[test]
     fn non_git_baseline_detects_added_modified_and_deleted_files() {
+        // baseline 文件路径派生自 PINVOU3_HOME，与改 home 的测试并发会互相误删目录。
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let root = TestDir::new("baseline");
         let session_id = format!("workspace-test-{}", std::process::id());
         fs::write(root.path().join("before.txt"), "before").unwrap();

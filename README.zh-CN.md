@@ -4,7 +4,7 @@
 
 # Pinvou Agent
 
-**能调用工具、操作文件、沉淀知识并交付产物的开源桌面 AI Agent 工作台。**
+**面向工作、设计与代码的开源桌面 AI Agent 工作台。**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -14,11 +14,11 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-快速开始)
 [![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-[官网](https://pinvou.com/) · [CodeWhale 底座](https://github.com/Pinvou/CodeWhale) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
+[下载预览版](https://github.com/Pinvou/pinvou-agent/releases) · [官网](https://pinvou.com/) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/home.webp" alt="观看 Pinvou Agent 90 秒功能演示">
+    <img src="docs/assets/screenshots/mode-work.webp" alt="Pinvou Agent 工作模式">
   </a>
 </p>
 <p align="center">
@@ -27,7 +27,23 @@
 
 </div>
 
-Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识、专家角色和工作流放进同一个桌面应用，让 AI 从“回答问题”进一步走到“**完成任务**”。模型既可以运行在本地，也可以接入任意 OpenAI-compatible 服务；工具与连接器按需启用。
+Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和代码开发放进同一个桌面应用，让 AI 从“回答问题”进一步走到“**完成任务**”。你可以让它调用工具、处理文件和沉淀知识，也可以通过 ACP 驱动专业代码 Agent，或把一句描述变成可继续编辑的视觉产物。
+
+模型既可以运行在本地，也可以接入任意 OpenAI-compatible 服务；工具、Skills 与连接器按需启用。
+
+## 🧭 一个工作台，三种工作方式
+
+### 💼 工作：让 AI 处理真实任务
+
+结合文件附件、个人知识、专家角色、Skills、MCP 工具和工作流，完成资料整理、公文写作、信息检索、业务分析等任务，并把结果交付为可继续使用的文件，而不只是一段聊天回复。
+
+### 🎨 设计：从一句描述到可编辑的视觉产物
+
+用自然语言生成海报和数据可视化产物。生成后可以直接进入编辑模式，选中画面中的元素，调整文案、字体、颜色、尺寸和布局；也可以继续描述要求，让 AI 在当前设计上迭代。
+
+### 💻 代码：把代码 Agent 带进真实项目
+
+通过 [ACP](docs/multi-agent-acp.md) 在同一工作台中使用 **Codex、Claude Code 和 Kimi**。代码 Agent 可以在真实项目目录或隔离的临时工作区中阅读和修改代码、运行命令，并展示计划、工具步骤、权限请求和文件变化；会话与工作区绑定，可在应用重启后继续。
 
 ## ✨ 功能特性
 
@@ -38,11 +54,10 @@ Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识�
 - **产物面板**自动收集 AI 创建或修改的文件，集中预览、定位和打开
 - **Markdown 产物可直接编辑**，也可选中内容继续让 AI 修改
 - **Plan / YOLO 双模式**：复杂任务先确认方案，明确任务可直接执行
-- **ACP 代码会话**（如 Codex）：在同一工作台中驱动代码 Agent 完成编码任务
 
 ### 🧠 知识与记忆
 
-- **本地知识库**支持文件管理、全文检索与向量检索
+- **本地知识库**支持文件管理、全文检索与向量检索；同一对话可挂载多个知识库并分别启用、停用或移除，回答保留知识库与文件来源
 - **记忆中心**沉淀长期偏好和上下文，并提供候选确认与管理
 - **专家卡牌池**可创建、保存和加持不同领域角色
 - **Skills、Commands 与工作流**把可复用的方法固化为稳定能力
@@ -67,6 +82,14 @@ Pinvou Agent 不只是一个聊天界面。它把模型、工具、个人知识�
 ## 📸 界面预览
 
 <table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="Pinvou Agent 设计模式"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="Pinvou Agent 代码模式"></td>
+  </tr>
+  <tr>
+    <td align="center">设计模式：海报与数据可视化</td>
+    <td align="center">代码模式：Codex、Claude Code 与 Kimi</td>
+  </tr>
   <tr>
     <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="工具商店"></td>
     <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="产物预览"></td>
@@ -199,9 +222,9 @@ docs/                 架构设计、验证报告与维护文档
 
 <a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
  </picture>
 </a>
 

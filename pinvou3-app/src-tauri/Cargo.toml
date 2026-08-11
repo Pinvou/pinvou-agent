@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.7.1"
+version = "0.7.7"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -39,6 +39,7 @@ tauri-build = { version = "2.6.1", features = [] }
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+toml = "0.8.23"
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
@@ -183,6 +184,9 @@ fastembed = { version = "4", optional = true }
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
+# Tauri 的 show/set_focus 是两条独立主循环消息；隐藏启动窗口在 release 下可能
+# 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
+gtk = "0.18"
 webkit2gtk = "2.0"
 # 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
 # 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。

@@ -38,52 +38,40 @@ BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 bridge_runtime_valid() {
   local root="$1"
   local node
-  local claude_native
+  # 本 PR 前生成的旧 staging 可能仍残留 Claude 平台原生二进制；发现即视为无效，
+  # 强制重打包，避免本地复用旧产物时把约 245MB 的二进制重新打进安装包。
+  if find "$root/acp/node_modules/@anthropic-ai" -maxdepth 1 -mindepth 1 \
+    -type d -name 'claude-agent-sdk-*' -print -quit 2>/dev/null | grep -q .; then
+    return 1
+  fi
   local entry="$root/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js"
   local claude_entry="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
   local package_json="$root/acp/node_modules/@agentclientprotocol/codex-acp/package.json"
   local claude_package_json="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/package.json"
+  local npm_cli="$root/node/lib/node_modules/npm/bin/npm-cli.js"
   local version_output
   case "$OS_NAME-$(uname -m)" in
-    Linux-x86_64)
+    Linux-x86_64|Linux-aarch64|Linux-arm64)
       node="$root/node/bin/node"
-      claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"
-      ;;
-    Linux-aarch64|Linux-arm64)
-      node="$root/node/bin/node"
-      claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude"
       ;;
     Darwin-arm64)
       node="$root/node/darwin-arm64/bin/node"
-      claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
       [ -x "$root/node/darwin-x64/bin/node" ] \
-        && [ -x "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude" ] \
         && /usr/bin/lipo "$node" -verify_arch arm64 \
-        && /usr/bin/lipo "$claude_native" -verify_arch arm64 \
-        && /usr/bin/lipo "$root/node/darwin-x64/bin/node" -verify_arch x86_64 \
-        && /usr/bin/lipo \
-          "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude" \
-          -verify_arch x86_64 || return 1
+        && /usr/bin/lipo "$root/node/darwin-x64/bin/node" -verify_arch x86_64 || return 1
       ;;
     Darwin-x86_64)
       node="$root/node/darwin-x64/bin/node"
-      claude_native="$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/claude"
       [ -x "$root/node/darwin-arm64/bin/node" ] \
-        && [ -x "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" ] \
         && /usr/bin/lipo "$root/node/darwin-arm64/bin/node" -verify_arch arm64 \
-        && /usr/bin/lipo \
-          "$root/acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" \
-          -verify_arch arm64 \
-        && /usr/bin/lipo "$node" -verify_arch x86_64 \
-        && /usr/bin/lipo "$claude_native" -verify_arch x86_64 || return 1
+        && /usr/bin/lipo "$node" -verify_arch x86_64 || return 1
       ;;
     *)
       return 1
       ;;
   esac
-  [ -x "$node" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
-    && [ -s "$claude_entry" ] && [ -s "$claude_package_json" ] \
-    && [ -x "$claude_native" ] || return 1
+  [ -x "$node" ] && [ -s "$npm_cli" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
+    && [ -s "$claude_entry" ] && [ -s "$claude_package_json" ] || return 1
   version_output="$(
     env CODEX_PATH="$(command -v codex || true)" \
       "$node" "$entry" --version 2>/dev/null
@@ -93,8 +81,7 @@ bridge_runtime_valid() {
   claude_version="$(
     "$node" -e 'process.stdout.write(require(process.argv[1]).version)' "$claude_package_json"
   )" || return 1
-  [ "$claude_version" = "$CLAUDE_ACP_VERSION" ] \
-    && "$claude_native" --version >/dev/null 2>&1
+  [ "$claude_version" = "$CLAUDE_ACP_VERSION" ]
 }
 
 if bridge_runtime_valid "$OUT_DIR"; then
@@ -223,29 +210,21 @@ npm_ci_for_target() {
   PATH="$NODE_DIST_ROOT/bin:$PATH" "$NODE_DIST_ROOT/bin/npm" "${npm_args[@]}"
 }
 
-if [ "$OS_NAME" = "Darwin" ]; then
-  # 发布产物是 universal DMG。用同一份 JS 依赖配齐 arm64/x64 两套 Claude
-  # 原生程序，并保留两套 Node，运行时由对应架构切片选择，避免 Intel Mac
-  # 启动 Apple Silicon Runtime（反之亦然）。
-  npm_ci_for_target "$ACP_ROOT" darwin arm64
-  ACP_X64_ROOT="$BUILD_DIR/acp-x64"
-  mkdir -p "$ACP_X64_ROOT"
-  cp $DD "$BRIDGE_PACKAGE_DIR/package.json" "$BRIDGE_PACKAGE_DIR/package-lock.json" "$ACP_X64_ROOT/"
-  npm_ci_for_target "$ACP_X64_ROOT" darwin x64
-  cp -R $DD \
-    "$ACP_X64_ROOT/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64" \
-    "$ACP_ROOT/node_modules/@anthropic-ai/"
-else
-  npm_ci_for_target "$ACP_ROOT" "$NODE_OS" "$NODE_CPU"
-  # Anthropic SDK 同时声明 glibc/musl 包；deb 只保留 glibc 版本。
-  rm -rf -- "$ACP_ROOT/node_modules/@anthropic-ai/claude-agent-sdk-linux-${NODE_CPU}-musl"
-fi
+npm_ci_for_target "$ACP_ROOT" "$NODE_OS" "$NODE_CPU"
 
-# Bridge 总是通过 CODEX_PATH 启动系统或托管 Codex，不需要随包携带平台 Codex。
+# Bridge 通过 CODEX_PATH 启动系统或托管 Codex，通过 CLAUDE_CODE_EXECUTABLE / PATH
+# 中的 claude 启动系统 Claude Code（与 Kimi 一致），均不随包携带平台原生二进制
+#（单个 claude 二进制解压后约 245MB，universal 双架构会让 dmg 多出约 140MB）。
 rm -rf $DD "$ACP_ROOT/node_modules/@openai"/codex-*
+rm -rf $DD "$ACP_ROOT"/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,linux,win32}-*
 if find "$ACP_ROOT/node_modules/@openai" -maxdepth 1 -mindepth 1 \
   -type d -name 'codex-*' -print -quit | grep -q .; then
   echo "Bridge 中仍残留 Codex 平台二进制，拒绝打包" >&2
+  exit 1
+fi
+if find "$ACP_ROOT/node_modules/@anthropic-ai" -maxdepth 1 -mindepth 1 \
+  -type d -name 'claude-agent-sdk-*' -print -quit | grep -q .; then
+  echo "Bridge 中仍残留 Claude 平台二进制，拒绝打包" >&2
   exit 1
 fi
 
@@ -266,6 +245,10 @@ else
   install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$READY_DIR/node/LICENSE"
   READY_NODE="$READY_DIR/node/bin/node"
 fi
+# 连接器首次使用时由随包 Node 运行 npm；保留 Node 官方发行包自带的纯 JS npm，
+# Linux/macOS 均不再依赖用户机器预装 npm。
+mkdir -p "$READY_DIR/node/lib/node_modules"
+cp -R $DD "$NODE_DIST_ROOT/lib/node_modules/npm" "$READY_DIR/node/lib/node_modules/npm"
 mv $DD "$ACP_ROOT/node_modules" "$READY_DIR/acp/node_modules"
 
 "$READY_NODE" -e '
@@ -281,7 +264,7 @@ const nodes = platform === "darwin"
     }
   : { [runtimeArch]: "node/bin/node" };
 const manifest = {
-  schema_version: 2,
+  schema_version: 3,
   node_version: process.argv[2],
   codex_acp_version: process.argv[3],
   claude_acp_version: process.argv[4],
@@ -290,6 +273,7 @@ const manifest = {
   arch: platform === "darwin" ? "universal" : runtimeArch,
   node: nodes[runtimeArch],
   nodes,
+  npm: "node/lib/node_modules/npm/bin/npm-cli.js",
   entrypoints: {
     codex: "acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
     claude: "acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"

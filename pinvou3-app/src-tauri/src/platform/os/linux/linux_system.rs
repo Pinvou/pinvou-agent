@@ -125,6 +125,11 @@ pub fn email_dependency_packages() -> &'static str {
     "python3 libemail-outlook-message-perl"
 }
 
+/// Linux 上邮件依赖可通过 apt 一键安装(libemail-outlook-message-perl),无需手动指引。
+pub fn email_manual_hint() -> Option<&'static str> {
+    None
+}
+
 pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
     linux_path::pdf_tool_path(command)
 }

@@ -191,7 +191,12 @@ mod tests {
         store
             .set_mode(&session_id, SerializableMode::Plan)
             .expect("set plan mode");
-        let artifact = paths::session_workspace_dir(&session_id).join("output.md");
+        // 产物落在账本根下：经 SessionStore::session_roots 取根，不直接拼 paths。
+        let artifact = store
+            .session_roots(&session_id)
+            .expect("resolve session roots")
+            .ledger
+            .join("output.md");
         std::fs::create_dir_all(artifact.parent().expect("artifact parent"))
             .expect("create artifact parent");
         std::fs::write(&artifact, "# report\n").expect("write artifact");

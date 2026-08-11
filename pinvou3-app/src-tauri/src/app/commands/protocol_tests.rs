@@ -60,6 +60,7 @@ command_protocol!(
         "read_artifact_thumbnail",
         "render_artifact_visual",
         "open_external_url",
+        "open_user_external_url",
         "detect_obsidian",
         "open_in_system",
         "open_containing_folder",
@@ -76,6 +77,10 @@ command_protocol!(
     [
         "set_disabled_connectors",
         "get_disabled_connectors",
+        "set_disabled_skills",
+        "get_disabled_skills",
+        "set_project_skills_enabled",
+        "get_project_skills_enabled",
         "refresh_connector_auth_gates",
         "feishu_ensure_cli",
         "feishu_status",
@@ -124,6 +129,12 @@ command_protocol!(
     "files.rs",
     [
         "ingest_file",
+        "ingest_dropped_file_chunk",
+        "cancel_dropped_file_upload",
+        "discard_dropped_attachment",
+        "resolve_conversation_attachment",
+        "open_conversation_attachment",
+        "reveal_conversation_attachment",
         "detect_system_tools",
         "save_paste_image",
         "verify_upload"
@@ -135,8 +146,11 @@ command_protocol!(
     [
         "compact_now",
         "get_mode_state",
+        "get_code_permission_prefs",
+        "confirm_code_yolo",
         "set_plan_mode_next",
         "exit_plan_to_yolo",
+        "set_multi_agent_mode",
         "accept_plan",
         "get_super_permission_status",
         "set_super_permission",
@@ -145,6 +159,7 @@ command_protocol!(
         "submit_user_input",
         "add_run_materials",
         "cancel_user_input",
+        "get_pending_user_inputs",
         "restart_engine",
         "summon_pinvou"
     ]
@@ -154,8 +169,14 @@ command_protocol!(
     "knowledge.rs",
     [
         "session_mount_collection",
+        "session_set_mounted_collections",
+        "session_add_mounted_collection",
+        "session_set_mounted_collection_enabled",
+        "session_remove_mounted_collection",
         "session_unmount_collection",
         "session_mounted_collection",
+        "session_mounted_collections",
+        "session_mounted_collections_snapshot",
         "kb_start_scan",
         "kb_scan_status",
         "kb_cancel_scan",
@@ -167,6 +188,9 @@ command_protocol!(
         "kb_collection_add_sources",
         "kb_index_status",
         "kb_index_cancel",
+        "kb_index_failed_files",
+        "kb_index_resume",
+        "kb_index_retry_file",
         "kb_documents",
         "kb_remove_document",
         "kb_embed_info",
@@ -307,6 +331,7 @@ command_protocol!(
         "web_access_upload_attachment_chunk",
         "web_access_abort_attachment_upload",
         "web_access_discard_attachment",
+        "web_access_read_conversation_attachment_chunk",
         "web_access_create_session_and_chat",
         "web_access_chat",
         "web_access_save_session_messages_chunk",
@@ -362,6 +387,8 @@ command_protocol!(
         "get_active_session",
         "save_session_messages",
         "save_session_artifacts",
+        "save_session_pinvou_scene_events",
+        "get_session_pinvou_scene_events",
         "list_workspace_files"
     ]
 );
@@ -394,7 +421,11 @@ command_protocol!(
     "timeline.rs",
     ["get_session_timeline", "get_session_stats"]
 );
-command_protocol!(startup_protocol, "startup.rs", ["report_frontend_startup"]);
+command_protocol!(
+    startup_protocol,
+    "startup.rs",
+    ["report_frontend_startup", "reveal_startup_window"]
+);
 command_protocol!(
     updater_protocol,
     "updater.rs",
@@ -446,4 +477,11 @@ command_protocol!(
         "get_session_active_skill",
         "list_session_skill_bindings"
     ]
+);
+// 多智能体（会话内主动委派，ADR-0006）。独立入口/台账/审批命令已随收缩
+// 退役，只剩子智能体执行记录的只读投影；开关命令在 interaction.rs。
+command_protocol!(
+    multiagent_protocol,
+    "multiagent.rs",
+    ["list_subagent_transcripts", "read_subagent_transcript"]
 );

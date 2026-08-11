@@ -108,6 +108,10 @@ pub fn email_dependency_packages() -> &'static str {
     ""
 }
 
+pub fn email_manual_hint() -> Option<&'static str> {
+    None
+}
+
 pub fn pdf_tool_path(command: &str) -> PathBuf {
     PathBuf::from(command)
 }
@@ -181,6 +185,10 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
+}
+
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    path.to_string()
 }
 
 pub fn python_command() -> String {

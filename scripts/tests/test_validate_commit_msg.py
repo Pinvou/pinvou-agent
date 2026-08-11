@@ -13,6 +13,62 @@ validate_commit_msg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(validate_commit_msg)
 
 
+class ValidateCommitTextTests(unittest.TestCase):
+    def test_github_pr_suffix_is_not_counted_towards_description_limit(self) -> None:
+        description = "修" * 50
+
+        self.assertEqual(
+            validate_commit_msg.validate_text(
+                f"fix: {description} (#191)",
+                "squash commit",
+            ),
+            [],
+        )
+
+    def test_description_over_limit_is_rejected_before_github_pr_suffix(self) -> None:
+        description = "修" * 51
+
+        errors = validate_commit_msg.validate_text(
+            f"fix: {description} (#191)",
+            "squash commit",
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("description must be 50 characters or fewer, got 51", errors[0])
+
+    def test_only_terminal_github_pr_suffix_is_excluded(self) -> None:
+        description = f"{'修' * 50} (#191) 后续"
+
+        errors = validate_commit_msg.validate_text(
+            f"fix: {description}",
+            "regular commit",
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(
+            f"description must be 50 characters or fewer, got {len(description)}",
+            errors[0],
+        )
+
+    def test_github_pr_suffix_does_not_hide_forbidden_punctuation(self) -> None:
+        errors = validate_commit_msg.validate_text(
+            "fix: 修复权限声明。 (#191)",
+            "squash commit",
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("description must not end with punctuation", errors[0])
+
+    def test_github_pr_suffix_does_not_hide_vague_description(self) -> None:
+        errors = validate_commit_msg.validate_text(
+            "fix: 修改代码 (#191)",
+            "squash commit",
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("description is too vague: 修改代码", errors[0])
+
+
 class ValidateCommitRangeTests(unittest.TestCase):
     def test_range_grandfathers_legacy_history_and_skips_merges(self) -> None:
         with (

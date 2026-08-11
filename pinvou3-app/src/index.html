@@ -157,7 +157,11 @@
   <script>document.addEventListener('contextmenu', function (e) { e.preventDefault(); });</script>
   <script src="%BASE_URL%platform/web/bootstrap.js"></script>
   <script src="%BASE_URL%platform/web/host-file-picker.js"></script>
+  <script src="%BASE_URL%features/attachments/attachment-drop-controller.js"></script>
+  <script src="%BASE_URL%shared/bridge-messages.js"></script>
+  <script src="%BASE_URL%platform/web/bridge/turn-terminal.js"></script>
   <script src="%BASE_URL%platform/web/bridge.js"></script>
+  <script src="%BASE_URL%platform/web/bridge/domain-adapter.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge/artifact-tracker.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge/chat.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge/chat-events.js"></script>
@@ -177,6 +181,7 @@
   <script src="%BASE_URL%platform/tauri/bridge/interaction.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge/workflow-runtime.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge/workflow.js"></script>
+  <script src="%BASE_URL%platform/tauri/bridge/multiagent.js"></script>
   <script src="%BASE_URL%platform/tauri/bridge.js" onload="__PINVOU_STARTUP__.mark('app:tauri_bridge_loaded')" onerror="__PINVOU_STARTUP__.mark('app:tauri_bridge_error')"></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {

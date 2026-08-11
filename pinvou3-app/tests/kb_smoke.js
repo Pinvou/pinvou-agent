@@ -18,8 +18,18 @@ function loadPuppeteer() {
   console.error('SKIP: 找不到 puppeteer-core'); process.exit(2);
 }
 const puppeteer = loadPuppeteer();
-const CHROME = process.env.CHROME || ['/snap/bin/chromium','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
-if (!CHROME) { console.error('SKIP: 未找到 chromium'); process.exit(2); }
+const CHROME = process.env.CHROME || [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/snap/bin/chromium',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+].find(p => fs.existsSync(p));
+if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-kb-'));
 
 function injectSource() {
@@ -43,6 +53,7 @@ function injectSource() {
     ];
     function invoke(cmd,args){
       window.__KB_CALLS__.push({cmd:cmd,args:args||null});
+      if (window.__KB_FAIL_IMPORT_CMD__ === cmd) return Promise.reject(new Error('mock import failure'));
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
@@ -66,7 +77,14 @@ function injectSource() {
         case 'kb_find_duplicates': return Promise.resolve([]);
         case 'kb_collection_list': return Promise.resolve(COLLS);
         case 'kb_documents': return Promise.resolve((args&&args.collectionId>0)?DOCS:DOCS);
-        case 'kb_index_status': return Promise.resolve({running:false,phase:'idle',done:0,total:0});
+        case 'kb_index_status': return Promise.resolve(window.__KB_INDEX_STATE__ || {running:false,phase:'idle',done:0,total:0,failed:0});
+        case 'kb_index_resume': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,resumable:false,phase:'parsing'}; return Promise.resolve(window.__KB_INDEX_STATE__);
+        case 'kb_index_cancel': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:false,resumable:false,phase:'cancelled'}; return Promise.resolve(null);
+        case 'kb_index_failed_files':
+          if (window.__KB_DEFER_FAILED_PAGE__) return new Promise(resolve => { window.__KB_RESOLVE_FAILED_PAGE__ = resolve; });
+          if (window.__KB_FAILED_PAGES__) return Promise.resolve(window.__KB_FAILED_PAGES__[String(args.offset)] || {files:[],nextOffset:null});
+          return Promise.resolve(window.__KB_FAILED_PAGE__ || {files:[],nextOffset:null});
+        case 'kb_index_retry_file': window.__KB_INDEX_STATE__={...window.__KB_INDEX_STATE__,running:true,phase:'parsing',failed:0,failedFiles:[]}; return Promise.resolve(window.__KB_INDEX_STATE__);
         case 'kb_collection_create': return Promise.resolve(3);
         case 'kb_collection_add_sources': return Promise.resolve({running:true,phase:'parsing',done:0,total:2});
         case 'kb_retrieve': return Promise.resolve([{text:'受访者认为保险报价流程过于繁琐，希望一键比价。竞品在交强险环节体验更顺畅。',score:-1.5,docName:'访谈纪要.md',docPath:'/home/x/访谈纪要.md',ord:0}]);
@@ -152,7 +170,7 @@ async function clickContains(page, sel, text) {
   }, callsBeforeKnowledge);
   const initialCommands = [
     'kb_scan_status', 'kb_stats', 'kb_type_counts',
-    'kb_collection_list', 'kb_documents', 'kb_embed_info', 'kb_model_status',
+    'kb_collection_list', 'kb_documents', 'kb_embed_info', 'kb_model_status', 'kb_index_status',
   ];
   rec('⓪b 本地知识首次加载不重复请求', initialCommands.every(cmd => initialKnowledgeCalls[cmd] === 1), JSON.stringify(initialKnowledgeCalls));
   await clickContains(page, 'button', '本地文件管理');
@@ -193,16 +211,37 @@ async function clickContains(page, sel, text) {
     const x = document.body.innerText;
     const reset = [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '全部'
       && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件'));
-    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加文件') };
+    return { scoped: reset, docList: x.includes('路线图.md'), addBtn: x.includes('添加') };
   });
   rec('④ 聚焦知识集后显示范围/文档列表/添加文件', focused.scoped && focused.docList && focused.addBtn, JSON.stringify(focused));
 
-  // 聚焦后添加文件：dialog mock 返回路径，必须透传到当前知识集。
-  await clickContains(page, 'button', '添加文件');
+  // 聚焦后添加文件：先点「添加」触发按钮打开下拉菜单，再点「文件」菜单项；dialog mock 返回路径，必须透传到当前知识集。
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled); if (b) b.click(); });
+  await sleep(300);
+  await page.evaluate(() => { const item = document.querySelector('[data-testid="kb-add-files"]'); if (item) item.click(); });
   await sleep(500);
   const added = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_collection_add_sources'
     && c.args && c.args.collectionId === 1 && Array.isArray(c.args.paths) && c.args.paths.includes('/home/x/新文档.pdf')));
   rec('⑤ 添加文件透传当前知识集和所选路径', added);
+
+  // ⑤b 添加文件夹：步骤⑤触发索引后「添加」按钮被禁用，先等轮询将索引复位（mock 返回 idle），
+  // 再点「添加」→「文件夹」菜单项；dialog mock 仍返回路径，断言同样透传到当前知识集。
+  await page.waitForFunction(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled);
+    return !!b;
+  }, { timeout: 5000 });
+  const addSourcesBefore = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_collection_add_sources').length);
+  await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('添加') && !b.disabled); if (b) b.click(); });
+  await sleep(300);
+  await page.evaluate(() => { const item = document.querySelector('[data-testid="kb-add-folder"]'); if (item) item.click(); });
+  await sleep(500);
+  const addedFolder = await page.evaluate((before) => {
+    const calls = window.__KB_CALLS__.filter(c => c.cmd === 'kb_collection_add_sources');
+    if (calls.length <= before) return false;
+    const last = calls[calls.length - 1];
+    return last.args && last.args.collectionId === 1 && Array.isArray(last.args.paths) && last.args.paths.length > 0;
+  }, addSourcesBefore);
+  rec('⑤b 添加文件夹同样透传当前知识集与所选路径', addedFolder);
 
   await page.evaluate(() => {
     const reset = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '全部'
@@ -215,7 +254,122 @@ async function clickContains(page, sel, text) {
       && b.parentElement && (b.parentElement.textContent || '').includes('知识库内文件')));
   rec('⑥ 返回全部知识集后恢复跨库文件表', unscoped);
 
-  rec('⑦ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
+  // 模拟应用重启后发现中断任务：应展示保存进度并提供继续/取消，不要求重新选择整批文件。
+  await page.evaluate(() => { window.__KB_INDEX_STATE__ = {
+    jobId:'kb-import-test',running:false,resumable:true,collectionId:1,phase:'interrupted',
+    done:3,total:8,completed:3,skipped:0,failed:0,currentPath:null,
+    currentChunksDone:0,currentChunksTotal:0,failedFiles:[]
+  }; });
+  await clickContains(page, 'button', '本地文件管理'); await sleep(300);
+  await clickContains(page, 'button', '知识库'); await sleep(700);
+  const resumeUi = await page.evaluate(() => document.body.innerText.includes('发现未完成的导入任务')
+    && document.body.innerText.includes('文件进度 3/8') && document.body.innerText.includes('继续导入'));
+  await clickContains(page, 'button', '继续导入'); await sleep(300);
+  const resumed = await page.evaluate(() => window.__KB_CALLS__.some(c => c.cmd === 'kb_index_resume'
+    && c.args && c.args.jobId === 'kb-import-test'));
+  rec('⑦ 中断任务显示持久化进度并可继续', resumeUi && resumed);
+
+  await page.evaluate(() => {
+    window.__KB_INDEX_STATE__ = {
+      jobId:'kb-import-paged',running:false,resumable:false,collectionId:1,phase:'done_with_errors',
+      done:3,total:3,completed:0,skipped:0,failed:3,currentPath:null,
+      currentChunksDone:0,currentChunksTotal:0,
+      failedFiles:[
+        {itemId:1,name:'失败-1.md',path:'/tmp/失败-1.md',error:'解析失败'},
+        {itemId:2,name:'失败-2.md',path:'/tmp/失败-2.md',error:'解析失败'}
+      ]
+    };
+    window.__KB_FAILED_PAGES__ = {
+      '0': {files:[
+        {itemId:1,name:'失败-1.md',path:'/tmp/失败-1.md',error:'解析失败'},
+        {itemId:2,name:'失败-2.md',path:'/tmp/失败-2.md',error:'解析失败'}
+      ],nextOffset:2},
+      '2': {files:[{itemId:3,name:'失败-3.md',path:'/tmp/失败-3.md',error:'解析失败'}],nextOffset:null}
+    };
+  });
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地文件管理')?.click());
+  await sleep(150);
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '知识库')?.click());
+  await sleep(450);
+  await page.evaluate(() => { window.__KB_DEFER_FAILED_PAGE__ = true; });
+  await clickContains(page, 'button', '加载更多失败文件'); await sleep(100);
+  const retryDisabledDuringPage = await page.evaluate(() => [...document.querySelectorAll('button')]
+    .filter(b => (b.textContent || '').trim() === '重试').every(b => b.disabled));
+  // 同 job 的 status reset 必须递增 generation，使在途分页响应失效。
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地文件管理')?.click());
+  await sleep(100);
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '知识库')?.click());
+  await sleep(250);
+  await page.evaluate(() => {
+    window.__KB_DEFER_FAILED_PAGE__ = false;
+    window.__KB_RESOLVE_FAILED_PAGE__?.({
+      files:[{itemId:999,name:'过期响应.md',path:'/tmp/过期响应.md',error:'过期'}],nextOffset:null
+    });
+  });
+  await sleep(150);
+  const staleIgnored = await page.evaluate(() => !document.body.innerText.includes('过期响应.md'));
+  await clickContains(page, 'button', '加载更多失败文件'); await sleep(250);
+  await clickContains(page, 'button', '加载更多失败文件'); await sleep(250);
+  const pagedFailures = await page.evaluate(() => ({
+    visible: document.body.innerText.includes('失败-3.md'),
+    requested: [0, 2].every(offset => window.__KB_CALLS__.some(c => c.cmd === 'kb_index_failed_files'
+      && c.args && c.args.jobId === 'kb-import-paged' && c.args.offset === offset && c.args.limit === 50)),
+    unique: ['失败-1.md','失败-2.md','失败-3.md'].every(name => document.body.innerText.split(name).length === 2),
+  }));
+  rec('⑧ 分页游标按服务端推进且过期同 job 响应不合并',
+    retryDisabledDuringPage && staleIgnored && pagedFailures.visible && pagedFailures.requested && pagedFailures.unique,
+    JSON.stringify({ retryDisabledDuringPage, staleIgnored, ...pagedFailures }));
+
+  // 继续/取消/单文件重试的后端拒绝不能静默吞掉；错误要可见，且失败后重新拉取持久化状态。
+  const exerciseImportFailure = async (cmd, state, buttonText, expectedText) => {
+    await page.evaluate(({ cmd, state }) => {
+      window.__KB_FAIL_IMPORT_CMD__ = cmd;
+      window.__KB_INDEX_STATE__ = state;
+    }, { cmd, state });
+    await page.evaluate(() => [...document.querySelectorAll('button')]
+      .find(b => (b.textContent || '').trim() === '本地文件管理')?.click());
+    await sleep(150);
+    await page.evaluate(() => [...document.querySelectorAll('button')]
+      .find(b => (b.textContent || '').trim() === '知识库')?.click());
+    await sleep(600);
+    const before = await page.evaluate(() => window.__KB_CALLS__.filter(c => c.cmd === 'kb_index_status').length);
+    await page.evaluate((buttonText) => [...document.querySelectorAll('button')]
+      .find(b => (b.textContent || '').trim() === buttonText)?.click(), buttonText);
+    await sleep(300);
+    return page.evaluate(({ before, expectedText }) => ({
+      visible: !!document.querySelector('[data-testid="kb-import-error"][role="alert"]')
+        && document.body.innerText.includes(expectedText)
+        && document.body.innerText.includes('mock import failure'),
+      refreshed: window.__KB_CALLS__.filter(c => c.cmd === 'kb_index_status').length > before,
+      commands: window.__KB_CALLS__.slice(-5).map(c => c.cmd),
+    }), { before, expectedText });
+  };
+  const resumableState = {
+    jobId:'kb-import-reject',running:false,resumable:true,collectionId:1,phase:'interrupted',
+    done:1,total:2,completed:1,skipped:0,failed:0,currentPath:null,
+    currentChunksDone:0,currentChunksTotal:0,failedFiles:[]
+  };
+  const resumeFailure = await exerciseImportFailure('kb_index_resume', resumableState, '继续导入', '继续导入失败');
+  const cancelFailure = await exerciseImportFailure('kb_index_cancel', resumableState, '取消任务', '取消导入失败');
+  const failedState = {
+    jobId:'kb-import-retry-reject',running:false,resumable:false,collectionId:1,phase:'done_with_errors',
+    done:1,total:1,completed:0,skipped:0,failed:1,currentPath:null,
+    currentChunksDone:0,currentChunksTotal:0,
+    failedFiles:[{itemId:99,name:'失败.md',path:'/tmp/失败.md',error:'解析失败'}]
+  };
+  const retryFailure = await exerciseImportFailure('kb_index_retry_file', failedState, '重试', '重试文件失败');
+  await page.evaluate(() => { window.__KB_FAIL_IMPORT_CMD__ = null; });
+  rec('⑨ 导入操作失败可见并刷新持久化状态',
+    resumeFailure.visible && resumeFailure.refreshed
+      && cancelFailure.visible && cancelFailure.refreshed
+      && retryFailure.visible && retryFailure.refreshed,
+    JSON.stringify({ resumeFailure, cancelFailure, retryFailure }));
+
+  rec('⑩ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 
   await browser.close();
   const failed = results.filter(r => !r.pass).length;

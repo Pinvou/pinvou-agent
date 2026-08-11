@@ -5,6 +5,7 @@
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
 pub mod skill_marketplace;
+pub mod skill_scope;
 
 use std::path::PathBuf;
 
@@ -16,18 +17,23 @@ use crate::platform::credential_store::{
 };
 use crate::platform::paths;
 
-/// Persist connector visibility and refresh the skill catalogue.
+/// 按会话类型 scope 持久化连接器禁用列表。
 ///
-/// Refreshing live engines is an application orchestration concern and is
-/// deliberately left to the caller, keeping marketplace independent from the
-/// assistant runtime.
-pub async fn apply_disabled_connectors(connector_ids: Vec<String>) -> Result<(), String> {
+/// Refreshing live engines (组合目录重写 + 工具热刷) is an application
+/// orchestration concern and is deliberately left to the caller, keeping
+/// marketplace independent from the assistant runtime. 连接器禁用影响
+/// companion skills 的可见性:组合目录计算时按 scope 排除被禁用连接器的
+/// companion skills(`skill_materialization::disabled_skill_names_for`),
+/// 因此落盘后需由调用方重写在线会话的组合目录。
+pub async fn apply_disabled_connectors_for(
+    scope: ConnectorScope,
+    connector_ids: Vec<String>,
+) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        save_disabled_connectors(&connector_ids);
-        skill_marketplace::refresh_disabled_skills();
+        save_disabled_connectors_for(scope, &connector_ids);
     })
     .await
-    .map_err(|error| format!("apply_disabled_connectors join: {error}"))?;
+    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
     Ok(())
 }
 
@@ -373,26 +379,151 @@ pub struct MarketplaceToolValidation {
 }
 
 // ---------------------------------------------------------------------------
-// 会话工具开关:全局持久的"被禁用连接器"列表(用户关一次,所有新对话/窗口都继承,
-// 直到手动开回 —— 见「工具开关」方案,持久语义)。落盘到 ~/.pinvou3/disabled_connectors.json。
+// 会话工具开关:按会话类型(普通 `plain` / 原生代码 `code`)各自持久化的
+// "被禁用连接器"列表。用户在某类会话里关一次,该类型所有新对话/窗口都继承,
+// 直到手动开回 —— 见「工具开关」方案,持久语义。落盘到
+// ~/.pinvou3/disabled_connectors.json。
+//
+// 旧版本只存一个裸数组(即 plain 语义),读时兼容;写入总是写带命名空间的
+// 对象,避免两个 scope 互相覆盖。
 // ---------------------------------------------------------------------------
+
+/// 两个 scope 的禁用连接器列表。`plain` = 普通会话,`code` = 原生代码会话。
+///
+/// `code` scope 遵循「默认全关」安全默认:文件里还没有 code 记录时(首次读取),
+/// 代码会话默认禁用**所有已安装连接器**(外部能力显式开启);一旦用户改过 code
+/// 开关(`code_initialized=true`),就以落盘列表为准。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DisabledConnectorsFile {
+    #[serde(default)]
+    pub plain: Vec<String>,
+    #[serde(default)]
+    pub code: Vec<String>,
+    /// code scope 是否已被用户显式初始化过(改过开关)。false = 未初始化,按
+    /// 「默认全禁已装连接器」处理。
+    #[serde(default)]
+    pub code_initialized: bool,
+}
+
+/// 会话类型 scope;`plain` 是缺省值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorScope {
+    Plain,
+    Code,
+}
 
 fn disabled_connectors_path() -> std::path::PathBuf {
     paths::pinvou3_home().join("disabled_connectors.json")
 }
 
-/// 读全局被禁用的连接器 id 列表(读不到/空 → 空)。
-pub fn load_disabled_connectors() -> Vec<String> {
-    std::fs::read_to_string(disabled_connectors_path())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-        .unwrap_or_default()
+/// `disabled_connectors.json` 读-改-写的进程内串行化:开关命令、安装/卸载同步、
+/// bundle 同步都可能并发触发同一份文件的读-改-写,串行化避免交错丢更新
+/// (单写者内的落盘本身由原子写保证不撕裂,见 `save_disabled_connectors_file`)。
+static DISABLED_CONNECTORS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 读完整文件(兼容旧版裸数组格式 → plain)。
+fn load_disabled_connectors_file() -> DisabledConnectorsFile {
+    let content = match std::fs::read_to_string(disabled_connectors_path()) {
+        Ok(c) => c,
+        Err(_) => return DisabledConnectorsFile::default(),
+    };
+    // 旧格式:裸数组 `["a","b"]` → 视为 plain。
+    if let Ok(legacy) = serde_json::from_str::<Vec<String>>(&content) {
+        return DisabledConnectorsFile {
+            plain: legacy,
+            code: Vec::new(),
+            code_initialized: false,
+        };
+    }
+    serde_json::from_str(&content).unwrap_or_default()
 }
 
-/// 写全局被禁用的连接器 id 列表。
+/// 写完整文件(总是对象格式)。临时文件 + rename 原子替换,并发读者不会看到
+/// 半写文件;与 sessions/scheduled 等模块一致走底座 `write_atomic`(含 Windows
+/// 替换重试)。
+fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
+    if let Ok(json) = serde_json::to_string(file) {
+        if let Err(error) =
+            deepseek_tui::utils::write_atomic(&disabled_connectors_path(), json.as_bytes())
+        {
+            eprintln!("[marketplace] write disabled_connectors.json failed: {error}");
+        }
+    }
+}
+
+/// 读某 scope 被禁用的连接器 id 列表(读不到/空 → 空)。
+///
+/// `code` scope 未初始化时(用户从未改过代码会话开关)返回全部已安装连接器 id,
+/// 即「代码会话默认全关,外部能力显式开启」的安全默认。
+pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
+    let file = load_disabled_connectors_file();
+    match scope {
+        ConnectorScope::Plain => file.plain,
+        ConnectorScope::Code => {
+            if file.code_initialized {
+                file.code
+            } else {
+                MarketplaceManager::new().installed_ids()
+            }
+        }
+    }
+}
+
+/// 写某 scope 被禁用的连接器 id 列表。
+pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_connectors_file();
+    match scope {
+        ConnectorScope::Plain => file.plain = ids.to_vec(),
+        ConnectorScope::Code => {
+            file.code = ids.to_vec();
+            file.code_initialized = true;
+        }
+    }
+    save_disabled_connectors_file(&file);
+}
+
+/// 读全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
+pub fn load_disabled_connectors() -> Vec<String> {
+    load_disabled_connectors_for(ConnectorScope::Plain)
+}
+
+/// 写全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
 pub fn save_disabled_connectors(ids: &[String]) {
-    if let Ok(json) = serde_json::to_string(ids) {
-        let _ = std::fs::write(disabled_connectors_path(), json);
+    save_disabled_connectors_for(ConnectorScope::Plain, ids);
+}
+
+/// 连接器安装后同步 code scope:若用户已初始化过代码会话开关(改过),新装的
+/// 连接器默认仍保持关闭(加入 code 禁用集);未初始化时无需处理(load 会按
+/// 「默认全禁已装连接器」兜底)。
+pub fn sync_code_scope_after_install(tool_id: &str) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_connectors_file();
+    if !file.code_initialized {
+        return;
+    }
+    if !file.code.iter().any(|id| id == tool_id) {
+        file.code.push(tool_id.to_string());
+        save_disabled_connectors_file(&file);
+    }
+}
+
+/// 连接器卸载后同步两个 scope:已卸载的连接器从 plain/code 禁用集移除,避免
+/// 残留 id 指向不存在的工具。
+pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_connectors_file();
+    let before = (file.plain.len(), file.code.len());
+    file.plain.retain(|id| id != tool_id);
+    file.code.retain(|id| id != tool_id);
+    if file.plain.len() != before.0 || file.code.len() != before.1 {
+        save_disabled_connectors_file(&file);
     }
 }
 
@@ -434,9 +565,14 @@ pub fn sync_mcp_secret_env_vars() -> Result<(), String> {
     MarketplaceManager::new().sync_secret_env_vars()
 }
 
-/// 当前被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+/// 当前(plain)被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
 pub fn disabled_tool_names() -> Vec<String> {
-    MarketplaceManager::new().model_tool_names(&load_disabled_connectors())
+    disabled_tool_names_for(ConnectorScope::Plain)
+}
+
+/// 按会话类型 scope:被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
+    MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope))
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,6 +1840,15 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
+    /// 直接写 installed.json 模拟已安装连接器(避免走完整 install 的远程校验)。
+    fn write_installed_ids(ids: &[String]) {
+        let path = crate::platform::paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(ids).unwrap()).unwrap();
+    }
+
     fn read_mcp_json() -> serde_json::Value {
         let content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
         serde_json::from_str(&content).unwrap()
@@ -2002,92 +2147,134 @@ mod tests {
         });
     }
 
-    /// 连接器禁用联动技能:禁用声明了 companion_skills 的连接器 → 该技能进底座停用集;
-    /// 开回来 → 移出。守"公文 MCP 关掉 → government-writing 从 ## Skills 隐藏"这条链路。
+    /// 双 scope(plain/code)独立持久化:互不影响,code 首次写会标记已初始化。
     #[test]
-    fn disabling_connector_hides_companion_skill() {
+    fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
-            write_tool_manifest(
-                "gongwen",
-                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            // 模拟已装 2 个连接器。
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            // 未初始化:code 默认全禁已装连接器;plain 仍按空处理。
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()]
             );
-
-            // 禁用公文 MCP → 联动刷新 → 关联技能进底座停用集
-            save_disabled_connectors(&["gongwen".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("government-writing"),
-                "禁用公文 MCP 后关联技能应被停用"
+            // plain 写 weather → code 不受影响(仍默认全禁)。
+            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
             );
-
-            // 开回来 → 移出停用集
-            save_disabled_connectors(&[]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("government-writing"),
-                "启用公文 MCP 后关联技能应恢复"
+            // code 显式写 → 标记初始化,此后以落盘为准。
+            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["pptx".to_string()]
+            );
+            // plain 再写空,不影响 code。
+            save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["pptx".to_string()]
             );
         });
     }
 
-    /// 独立安装的 marketplace skill 没有 companion MCP,但 composer 工具菜单也允许
-    /// 直接开关它;禁用列表里的 skill id 必须能直接进入底座停用集。
+    /// 旧版裸数组格式 `["a","b"]` 迁移到 plain scope,code 保持未初始化默认。
     #[test]
-    fn disabling_direct_skill_id_hides_skill() {
+    fn disabled_connectors_legacy_array_migrates_to_plain() {
         with_temp_home(|| {
-            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                .install("visualizer")
-                .unwrap();
-
-            save_disabled_connectors(&["skill:visualizer".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("visualizer"),
-                "禁用独立 namespaced skill id 后该 skill 应被停用"
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, r#"["weather","pptx"]"#).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec!["weather".to_string(), "pptx".to_string()]
             );
-
-            save_disabled_connectors(&[]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("visualizer"),
-                "启用独立 skill id 后该 skill 应恢复"
+            // 旧格式不初始化 code scope → 仍默认全禁。
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()]
             );
         });
     }
 
-    /// connector id 和用户上传 skill id 同名时,关闭 connector 不应误停用该 skill;
-    /// 独立 skill 必须通过 `skill:<id>` 命名空间禁用。
+    /// 新装连接器:code 未初始化时无需落盘(load 已默认全禁);已初始化时自动加入禁用集(默认仍关)。
     #[test]
-    fn disabling_connector_id_does_not_hide_same_named_user_skill() {
+    fn sync_code_scope_after_install_keeps_new_connector_disabled_by_default() {
         with_temp_home(|| {
-            write_tool_manifest(
-                "weather",
-                r#"{"id":"weather","name":"天气","description":"d","version":"1.0.0","icon":"cloud","category":"查询","mcp_tools":["mcp_weather_query"],"command":"python","args":["server.py"]}"#,
+            write_installed_ids(&["pptx".to_string()]);
+            // 未初始化 → 不落盘,文件保持无/空。
+            sync_code_scope_after_install("weather");
+            assert!(load_disabled_connectors_file().code.is_empty());
+            // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
+            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            sync_code_scope_after_install("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string()]
             );
-            let skill_dir = crate::platform::paths::bundle_skills_dir().join("weather");
-            std::fs::create_dir_all(&skill_dir).unwrap();
-            std::fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: weather\ndescription: user weather skill\n---\n# Weather\n",
-            )
-            .unwrap();
-            std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
-
-            save_disabled_connectors(&["weather".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                !deepseek_tui::skills::is_skill_disabled("weather"),
-                "禁用同名 connector 不应误停用用户上传 skill"
-            );
-
-            save_disabled_connectors(&["skill:weather".to_string()]);
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
-            assert!(
-                deepseek_tui::skills::is_skill_disabled("weather"),
-                "禁用 namespaced skill id 才应停用用户上传 skill"
+            // 已存在不重复。
+            sync_code_scope_after_install("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string()]
             );
         });
     }
+
+    /// 卸载连接器:从 plain/code 两个 scope 禁用集移除,避免残留 id。
+    #[test]
+    fn remove_connector_cleans_both_scopes() {
+        with_temp_home(|| {
+            save_disabled_connectors_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            );
+            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
+            remove_connector_from_disabled_scopes("weather");
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()]
+            );
+            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+        });
+    }
+
+    /// 两个 scope 并发写同一文件:进程内串行化 + 原子写保证不丢更新、不撕裂——
+    /// 结束后两边最后一次写入都必须还在,且文件始终是合法 JSON。
+    #[test]
+    fn concurrent_scope_writes_do_not_lose_updates() {
+        with_temp_home(|| {
+            let plain_writer = std::thread::spawn(|| {
+                for _ in 0..50 {
+                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+                }
+            });
+            let code_writer = std::thread::spawn(|| {
+                for _ in 0..50 {
+                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+                }
+            });
+            plain_writer.join().unwrap();
+            code_writer.join().unwrap();
+
+            let file = load_disabled_connectors_file();
+            assert_eq!(file.plain, vec!["weather".to_string()]);
+            assert!(file.code_initialized);
+            assert_eq!(file.code, vec!["pptx".to_string()]);
+        });
+    }
+
+    /// 连接器禁用联动技能、独立 skill 开关、同名不误伤三个场景的组合目录断言
+    /// 已随 `enabled_skills_for` 移入 `assistant::skill_materialization` 的测试
+    /// （marketplace → assistant 会构成 feature 依赖环，架构守卫拒绝）。
+    /// 覆盖位置：`skill_materialization.rs` tests 中
+    /// `companion_skill_excluded_when_connector_disabled` /
+    /// `enabled_skills_respect_first_wins_and_scope_disabled` /
+    /// `disabling_connector_id_does_not_hide_same_named_user_skill`。
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {

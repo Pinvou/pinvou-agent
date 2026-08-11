@@ -90,6 +90,21 @@ pub(crate) async fn chat_with_reservation(
     if message.trim().is_empty() && attachments.as_ref().is_none_or(|a| a.is_empty()) {
         return Err("empty message".to_string());
     }
+    // 默认标题会话用首条消息自动命名（原生代码会话与 ACP 同一语义）。
+    // 命名失败不阻断发送——标题是展示层信息，正文投递才是关键路径。
+    let title_source = if message.trim().is_empty() {
+        attachments
+            .as_deref()
+            .unwrap_or_default()
+            .first()
+            .map(|attachment| attachment.basename.clone())
+            .unwrap_or_default()
+    } else {
+        message.trim().to_string()
+    };
+    if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
+        log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");
+    }
     let chat_started_at = std::time::Instant::now();
     let message_len = message.len();
     let attachment_count = attachments.as_ref().map_or(0, Vec::len);
@@ -99,9 +114,19 @@ pub(crate) async fn chat_with_reservation(
         message_len,
         attachment_count
     );
-    let execution_workspace = store
-        .execution_workspace(&sid)
-        .map_err(|error| format!("resolve execution workspace for {sid}: {error:#}"))?;
+    let roots = store
+        .session_roots(&sid)
+        .map_err(|error| format!("resolve session roots for {sid}: {error:#}"))?;
+    // 附件引用与落盘都走账本根（scheduled 会话 = 其 automation workspace，其余
+    // 会话 = 会话私有目录），与引擎执行根解耦。
+    let ledger_root = roots.ledger.clone();
+    let attachment_record =
+        prepare_conversation_attachment_record(attachments.as_deref().unwrap_or_default(), || {
+            store
+                .load(&sid)
+                .map(|session| session.messages.len())
+                .map_err(|error| format!("load Session {sid} for attachment references: {error:#}"))
+        })?;
     let is_scheduled = store.scheduled_profile(&sid).is_some();
     if is_scheduled {
         for attachment in attachments.as_deref().unwrap_or_default() {
@@ -161,14 +186,19 @@ pub(crate) async fn chat_with_reservation(
     }
     let display_content = attachment_display_text(&message, &attachments);
     let raw_message = message.clone();
+    // 原生代码会话绑项目目录时，落盘根（会话私有目录）与引擎 cwd（项目目录）
+    // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。
+    // 两个根由 SessionStore::session_roots 统一解析（与引擎执行根同一来源）。
+    let reference_absolute = roots.ledger != roots.execution;
     // Native: 图片成 LocalImage 引用块,不注入"看不到图"硬规则;其余路径维持
     // 现有文本拼接(Fallback 含 image_analyze 硬规则提示)。两分支互斥,各自
-    // consume message/attachments。
+    // consume message/attachments。图片暂存到引擎执行根(relative_path 相对引擎
+    // cwd 解析);文本附件引用走账本根,两根不同时引用取绝对路径。
     let (prepared, mut full) = if has_images && image_mode == ImageInputMode::Native {
         let prepared = prepare_native_user_message_in_dir(
             message,
             attachments,
-            &execution_workspace,
+            &roots.execution,
             &attachment_dir,
         )?;
         let segment = prepared.text_segment().to_string();
@@ -179,8 +209,9 @@ pub(crate) async fn chat_with_reservation(
             build_message_with_attachments_in_dir(
                 message,
                 attachments,
-                &execution_workspace,
+                &ledger_root,
                 &attachment_dir,
+                reference_absolute,
             ),
         )
     };
@@ -229,24 +260,43 @@ pub(crate) async fn chat_with_reservation(
     // 索引状态可能在 engine spawn 后才变化。挂集 turn 先刷新 live engine 的工具门控;
     // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
     // 状态当普通文本复述给用户。
-    if let Some(cid) = store.mounted_collection(&sid) {
+    let mounted_collection_ids = store.mounted_collection_ids(&sid);
+    if !mounted_collection_ids.is_empty() {
         let disallowed = pool.compute_disallowed_tools();
         let kb_search_hidden = disallowed
             .iter()
             .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
-            let coll_name = app
+            let collection_names = app
                 .try_state::<KnowledgeService>()
-                .and_then(|kb| kb.l1().collection_name(cid).ok().flatten());
+                .map(|kb| {
+                    mounted_collection_ids
+                        .iter()
+                        .filter_map(|collection_id| {
+                            kb.l1().collection_name(*collection_id).ok().flatten()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             full = format!(
                 "{}\n\n---\n\n{full}",
-                build_kb_agentic_guide(coll_name.as_deref())
+                build_kb_agentic_guide(&collection_names)
             );
         }
     }
-    // 取该 session 的 mode。
-    let mode = store.mode_state(&sid).mode;
+    // 取该 session 的 mode 状态（mode + 多智能体开关）。
+    let mode_state = store.mode_state(&sid);
+    // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用提醒组装；每轮
+    // 重申而非首轮一次性教学，关掉开关即保持原消息不变。
+    full = super::multiagent::prepend_delegation_reminder(
+        pool,
+        &sid,
+        mode_state.multi_agent,
+        &raw_message,
+        full,
+    );
+    let mode = mode_state.mode;
     // Native: skill/persona/知识库引导 prepend 全部完成后,用最终文本刷新
     // Text block(图片块保持不动),组装结构化 input。bridge 之后还会把
     // `<system-reminder>` 并进该 Text block 与 Op.content(两者保持一致,
@@ -269,7 +319,7 @@ pub(crate) async fn chat_with_reservation(
         .send_reserved_user_message(
             &sid,
             full,
-            user_display_message(display_content),
+            user_display_message(display_content.clone()),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
             reservation,
@@ -279,6 +329,23 @@ pub(crate) async fn chat_with_reservation(
     {
         Ok(()) => {
             pending_injections.commit();
+            if let Some((message_index, attachment_references)) = attachment_record {
+                if let Err(error) =
+                    crate::features::files::attachment_upload::record_conversation_attachments(
+                        &ledger_root,
+                        &sid,
+                        message_index,
+                        &display_content,
+                        attachment_references,
+                    )
+                {
+                    log::warn!(
+                        "[pinvou3][chat] persist attachment references failed sid={} error={}",
+                        sid,
+                        error
+                    );
+                }
+            }
             if memory_enabled {
                 crate::features::memory::record_turn_user(&sid, &raw_message);
             }
@@ -305,5 +372,84 @@ pub(crate) async fn chat_with_reservation(
             );
             Err(format!("send_user_message failed: {e:?}"))
         }
+    }
+}
+
+fn prepare_conversation_attachment_record(
+    attachments: &[crate::features::files::file_ingest::IngestResult],
+    load_message_index: impl FnOnce() -> Result<usize, String>,
+) -> Result<
+    Option<(
+        usize,
+        Vec<crate::features::files::attachment_upload::ConversationAttachmentReference>,
+    )>,
+    String,
+> {
+    if attachments.is_empty() {
+        return Ok(None);
+    }
+    let message_index = load_message_index()?;
+    let references = attachments
+        .iter()
+        .map(|attachment| {
+            crate::features::files::attachment_upload::ConversationAttachmentReference {
+                basename: attachment.basename.clone(),
+                path: attachment.path.clone(),
+            }
+        })
+        .collect();
+    Ok(Some((message_index, references)))
+}
+
+fn display_chat_message(
+    message: &str,
+    attachments: &[crate::features::files::file_ingest::IngestResult],
+) -> String {
+    if attachments.is_empty() {
+        return message.to_string();
+    }
+    let names = attachments
+        .iter()
+        .map(|attachment| attachment.basename.as_str())
+        .collect::<Vec<_>>();
+    // Persist a JSON array after the human-readable marker. Unlike the legacy
+    // `name · name` format, this preserves every legal filename exactly.
+    let names = serde_json::to_string(&names).expect("attachment filenames serialize");
+    if message.trim().is_empty() {
+        format!("📎 {names}")
+    } else {
+        format!("{message}\n\n📎 {names}")
+    }
+}
+
+#[cfg(test)]
+mod attachment_record_tests {
+    use super::{display_chat_message, prepare_conversation_attachment_record};
+    use crate::features::files::file_ingest::IngestResult;
+
+    #[test]
+    fn messages_without_attachments_do_not_load_the_session_index() {
+        let record = prepare_conversation_attachment_record(&[], || {
+            panic!("message index must stay lazy without attachments")
+        })
+        .unwrap();
+        assert!(record.is_none());
+    }
+
+    #[test]
+    fn attachment_display_protocol_preserves_delimiter_inside_filename() {
+        let attachments = vec![IngestResult {
+            kind: "xlsx".into(),
+            basename: "预算 · 最终.xlsx".into(),
+            path: "/tmp/预算 · 最终.xlsx".into(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size: 1,
+            warning: None,
+        }];
+        assert_eq!(
+            display_chat_message("请分析", &attachments),
+            "请分析\n\n📎 [\"预算 · 最终.xlsx\"]"
+        );
     }
 }

@@ -37,6 +37,9 @@
     var invalidateScheduledTaskReads = context.invalidateScheduledTaskReads;
     var applyScheduledRunViewed = context.applyScheduledRunViewed;
     var loadScheduledTaskRecentRuns = context.loadScheduledTaskRecentRuns;
+    var loadPinvouSceneEventsForSession = context.loadPinvouSceneEventsForSession || function () { return []; };
+    var syncPinvouSceneEventsForSession = context.syncPinvouSceneEventsForSession ||
+      function (sid) { return Promise.resolve(loadPinvouSceneEventsForSession(sid)); };
     var MAX_SCHEDULED_SESSION_BUFFERS = 64;
     var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     var sessionBufferTouchClock = 0;
@@ -45,7 +48,7 @@
     var sessionSwitchRequestToken = 0;
   function freshBuffer() {
     return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], artifacts: [], busy: false, queued: [],
+      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
       loadedFromDisk: false,
       localTurnOwned: false,
       remoteTurnActive: false,
@@ -55,6 +58,7 @@
       remoteBaselineMessageCount: null,
       remoteBaselineTrusted: false,
       remoteExpectedAssistantKey: "",
+      remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
@@ -62,6 +66,8 @@
       tokens: { input: 0, max: state.tokens.max },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
       mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
+      mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
+      mountedCollectionsRevision: 0,
       scheduledTaskDraft: null,
       scheduledRunSession: false,
       scheduledInitialTurnPhase: null,
@@ -268,11 +274,14 @@
     buf.activeTurnTimelineId = state.activeTurnTimelineId;
     buf.personaEvents = state.personaEvents;
     buf.pinvouReviews = state.pinvouReviews;
+    buf.pinvouSceneEvents = state.pinvouSceneEvents;
     buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
     buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
     buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
     buf.activePersona = state.activePersona;
     buf.mountedCollection = state.mountedCollection;
+    buf.mountedCollections = state.mountedCollections;
+    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
     buf.scheduledTaskDraft = state.scheduledTaskDraft;
     buf.stream = {
       currentStreamText: context.currentStreamText, currentStreamId: context.currentStreamId,
@@ -288,6 +297,7 @@
     state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
     state.personaEvents = buf.personaEvents || [];
     state.pinvouReviews = buf.pinvouReviews || [];
+    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -296,6 +306,10 @@
     state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
     state.activePersona = buf.activePersona || null;
     state.mountedCollection = buf.mountedCollection || null;
+    state.mountedCollections = Array.isArray(buf.mountedCollections)
+      ? buf.mountedCollections
+      : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
+    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
     state.scheduledTaskDraft = buf.scheduledTaskDraft || null;
     var s = buf.stream || {};
     context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;
@@ -317,12 +331,14 @@
     buf.artifacts = filterSessionArtifacts(buf.artifacts, saved.metadata && saved.metadata.id);
     buf.personaEvents = [];
     buf.pinvouReviews = [];
+    buf.pinvouSceneEvents = loadPinvouSceneEventsForSession(saved.metadata && saved.metadata.id);
     if (completedRemoteTurn) {
       buf.remoteTurnActive = false;
       buf.remoteTerminalSeen = false;
       buf.remoteBaselineMessageCount = null;
       buf.remoteBaselineTrusted = false;
       buf.remoteExpectedAssistantKey = "";
+      buf.remoteCommittedRevision = "";
       buf.deferredRemoteUserEvent = null;
     }
     buf.stream = {
@@ -352,6 +368,7 @@
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
+    buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch (e) { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
     // 仅 hydrate messages 而把 chatItems 留空，会让后续 switchToSession 命中缓存快路径，
@@ -366,6 +383,8 @@
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
+    // 离开草稿（无论物化还是切去既有会话），未消费的开关寄存意图作废。
+    state.pendingDraftMultiAgent = false;
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = id;
     var buf = sessionStates[id];
@@ -400,6 +419,11 @@
     state.scheduledRunContext = null;
     state.draftEpoch++; // 每次点击都自增——含下面提前返回的「已在草稿态」分支,让前端能重置 welcomeToolId
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
+    // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
+    state.pendingDraftMultiAgent = false;
+    if (state.modeState && state.modeState.multiAgent) {
+      state.modeState = { mode: state.modeState.mode || "yolo", multiAgent: false };
+    }
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -426,11 +450,40 @@
       // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
       // 不能把 await 前的已发送文本带入新 session。
       var composerDraft = state.composerDraft || "";
+      // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
+      // 清：switchActiveTo 会把寄存意图当作已消费。
+      var pendingMultiAgent = state.pendingDraftMultiAgent === true;
+      state.pendingDraftMultiAgent = false;
       switchActiveTo(meta.id, { fresh: true });
       // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
       // 跟随迁移；这不是用户主动切换到另一个已有会话。
       state.composerDraft = composerDraft;
       sessionStates[meta.id].composerDraft = composerDraft;
+      if (pendingMultiAgent) {
+        try {
+          await invoke("set_multi_agent_mode", { sessionId: meta.id, enabled: true });
+        } catch (toggleError) {
+          // 开关落盘失败不得让首条消息静默退化成普通对话（复核 P1）：
+          // 中止物化——删掉刚建的空会话、回到草稿并保留开关意图，等用户
+          // 处理环境或权限问题后重试。调用方以 activeSessionId 为空判定
+          // 中止，不发送本条消息。
+          try {
+            await invoke("delete_session", { id: meta.id });
+          } catch (cleanupError) {
+            // 空会话残留可手动删除，不掩盖主错误。
+          }
+          enterDraft();
+          state.pendingDraftMultiAgent = true;
+          state.modeState = {
+            mode: (state.modeState && state.modeState.mode) || "yolo",
+            multiAgent: true,
+          };
+          addSystemItem(bt("switchModeFailed") + toggleError);
+          await refreshHistoryList();
+          notify();
+          return null;
+        }
+      }
       await refreshHistoryList();
       await syncModeState();
       await syncActivePersona();
@@ -531,6 +584,45 @@
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {
     var remappedCurrentStreamId = 0;
     var availableByKey = Object.create(null);
+    function interruptedDisplayRange(item) {
+      if (!item || item.interruptedDisplayOnly !== true) return null;
+      var anchorIndex = -1;
+      var nextUserIndex = -1;
+      var afterMessageIndex = Number(item.afterMessageIndex);
+      if (Number.isFinite(afterMessageIndex) && afterMessageIndex >= 0) {
+        for (var index = 0; index < state.chatItems.length; index++) {
+          var candidate = state.chatItems[index];
+          if (!candidate || candidate.type !== "user") continue;
+          var candidateMessageIndex = Number(candidate.messageIndex);
+          if (candidateMessageIndex === afterMessageIndex) anchorIndex = index;
+          else if (anchorIndex >= 0 && candidateMessageIndex > afterMessageIndex) {
+            nextUserIndex = index;
+            break;
+          }
+        }
+      }
+      var afterUserOrdinal = Number(item.afterUserOrdinal);
+      if (anchorIndex < 0 && Number.isInteger(afterUserOrdinal) && afterUserOrdinal >= 0) {
+        var userOrdinal = -1;
+        for (var fallbackIndex = 0; fallbackIndex < state.chatItems.length; fallbackIndex++) {
+          var fallback = state.chatItems[fallbackIndex];
+          if (!fallback || fallback.type !== "user") continue;
+          userOrdinal += 1;
+          if (userOrdinal === afterUserOrdinal) anchorIndex = fallbackIndex;
+          else if (userOrdinal > afterUserOrdinal) {
+            nextUserIndex = fallbackIndex;
+            break;
+          }
+        }
+      }
+      if (anchorIndex < 0) {
+        return { start: state.chatItems.length, end: state.chatItems.length };
+      }
+      return {
+        start: anchorIndex + 1,
+        end: nextUserIndex >= 0 ? nextUserIndex : state.chatItems.length,
+      };
+    }
     state.chatItems.forEach(function (item, index) {
       var key = hydratedChatItemKey(item);
       if (!key) return;
@@ -539,8 +631,21 @@
     });
     (liveChatItems || []).forEach(function (item) {
       var key = hydratedChatItemKey(item);
-      var matches = key && availableByKey[key];
-      var existingIndex = matches && matches.length ? matches.shift() : -1;
+      var range = interruptedDisplayRange(item);
+      var existingIndex = -1;
+      if (range) {
+        for (var rangeIndex = range.start; rangeIndex < range.end; rangeIndex++) {
+          var rangeItem = state.chatItems[rangeIndex];
+          if (rangeItem && rangeItem.interruptedDisplayOnly !== true &&
+              hydratedChatItemKey(rangeItem) === key) {
+            existingIndex = rangeIndex;
+            break;
+          }
+        }
+      } else {
+        var matches = key && availableByKey[key];
+        existingIndex = matches && matches.length ? matches.shift() : -1;
+      }
       if (existingIndex >= 0) {
         var existingId = state.chatItems[existingIndex].id;
         state.chatItems[existingIndex] = Object.assign({}, state.chatItems[existingIndex], item, {
@@ -551,7 +656,14 @@
       }
       var clone = Object.assign({}, item, { id: ++context.itemIdSeq });
       if (item && item.id === liveCurrentStreamId) remappedCurrentStreamId = clone.id;
-      state.chatItems.push(clone);
+      if (range && range.end < state.chatItems.length) {
+        state.chatItems.splice(range.end, 0, clone);
+        Object.keys(availableByKey).forEach(function (availableKey) {
+          availableByKey[availableKey] = availableByKey[availableKey].map(function (index) {
+            return index >= range.end ? index + 1 : index;
+          });
+        });
+      } else state.chatItems.push(clone);
     });
     return remappedCurrentStreamId;
   }
@@ -561,7 +673,7 @@
     var forceDurableLoad = !!(options && options.forceDurableLoad);
     var hydrateLiveSession = !!(options && options.hydrateLiveSession);
     if (!id) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("runHasNoSession")), errorScope);
       return false;
     }
     if (hydrateLiveSession && !sessionStates[id]) sessionStates[id] = freshBuffer();
@@ -596,12 +708,13 @@
     }
     if (requestToken !== sessionSwitchRequestToken) return false;
     if (!saved || !saved.metadata || !saved.metadata.id) {
-      reportSessionSwitchFailure(new Error("会话数据无效"), errorScope);
+      reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
 
     var personaEvents = [];
     var pinvouReviews = [];
+    var pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     var turnTimeline = [];
     try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch (_) {}
     try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch (_) {}
@@ -629,6 +742,7 @@
       );
       state.personaEvents = personaEvents.length ? personaEvents : (liveBuffer.personaEvents || []);
       state.pinvouReviews = pinvouReviews.length ? pinvouReviews : (liveBuffer.pinvouReviews || []);
+      state.pinvouSceneEvents = pinvouSceneEvents.length ? pinvouSceneEvents : (liveBuffer.pinvouSceneEvents || []);
       state.turnTimeline = turnTimeline.length ? turnTimeline : (liveBuffer.turnTimeline || []);
       state.artifacts = filterSessionArtifacts(
         mergeHydratedArtifacts(saved.artifacts, liveArtifacts),
@@ -647,6 +761,7 @@
       sessionStates[id].loadedFromDisk = true;
       state.personaEvents = personaEvents;
       state.pinvouReviews = pinvouReviews;
+      state.pinvouSceneEvents = pinvouSceneEvents;
       state.turnTimeline = turnTimeline;
       resetPendingAssistant();
       state.chatItems = [];
@@ -671,7 +786,7 @@
   async function openScheduledRunChatOnce(run, task) {
     var sessionId = run && typeof run.sessionId === "string" ? run.sessionId.trim() : "";
     if (!sessionId) {
-      reportSessionSwitchFailure(new Error("该运行记录没有可打开的会话"), "scheduled");
+      reportSessionSwitchFailure(new Error(bt("runHasNoSession")), "scheduled");
       return false;
     }
     rememberScheduledRunOwner(run);

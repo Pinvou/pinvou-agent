@@ -24,13 +24,22 @@ pub struct DiscoverLocalVllmRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LocalVllmModelEntry {
+    pub id: String,
+    /// 是否已加载到内存：`None` = 未知。Ollama/LM Studio 的列表接口返回全部
+    /// 已下载模型且均为 JIT 加载，前端据此区分"就绪"与"未加载"，避免把未加载
+    /// 的大模型自动填充为可用模型（首次推理会静默载入内存）。
+    pub loaded: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LocalVllmCandidate {
     pub base_url: String,
     pub status: VllmStatus,
     pub provider: String,
     pub label: String,
     pub model: Option<String>,
-    pub models: Vec<String>,
+    pub models: Vec<LocalVllmModelEntry>,
     pub max_model_len: Option<u32>,
 }
 
@@ -56,12 +65,29 @@ pub async fn discover_local_vllm(
 
     let mut candidates = Vec::new();
     for base_url in urls {
-        if let Some(probe) = crate::features::monitor::probe_openai_models(&base_url).await {
+        // 按框架选探测方式：Ollama / LM Studio 的列表接口返回全部已下载模型，
+        // 需用各自原生接口区分已加载；vLLM 等 served 即已加载。
+        let probe = match local_port_of(&base_url) {
+            Some(11434) => crate::core::model_endpoint::probe_ollama_models(&base_url).await,
+            Some(1234) => crate::core::model_endpoint::probe_lmstudio_models(&base_url).await,
+            _ => crate::core::model_endpoint::probe_openai_models(&base_url)
+                .await
+                .map(|mut probe| {
+                    for model in &mut probe.models {
+                        model.loaded = Some(true);
+                    }
+                    probe
+                }),
+        };
+        if let Some(probe) = probe {
             let (provider, label) = local_model_provider_for_url(&base_url);
             let models = probe
                 .models
                 .iter()
-                .map(|model| model.id.clone())
+                .map(|model| LocalVllmModelEntry {
+                    id: model.id.clone(),
+                    loaded: model.loaded,
+                })
                 .collect::<Vec<_>>();
             let first = probe.models.first();
             candidates.push(LocalVllmCandidate {
@@ -108,15 +134,18 @@ fn normalize_local_vllm_base_url(raw: &str) -> Option<String> {
     Some(format!("http://{host}:{port}/v1"))
 }
 
-fn local_model_provider_for_url(base_url: &str) -> (&'static str, &'static str) {
-    let port = base_url
+fn local_port_of(base_url: &str) -> Option<u16> {
+    base_url
         .trim()
         .trim_end_matches('/')
         .split('/')
         .nth(2)
         .and_then(|host_port| host_port.rsplit_once(':').map(|(_, port)| port))
-        .and_then(|port| port.parse::<u16>().ok());
-    match port {
+        .and_then(|port| port.parse::<u16>().ok())
+}
+
+fn local_model_provider_for_url(base_url: &str) -> (&'static str, &'static str) {
+    match local_port_of(base_url) {
         Some(11434) => ("ollama", "Ollama"),
         Some(1234) => ("lm_studio", "LM Studio"),
         Some(8000 | 8001 | 8002) => ("vllm", "vLLM"),

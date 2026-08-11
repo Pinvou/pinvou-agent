@@ -27,38 +27,31 @@ use deepseek_tui::config::{
 };
 use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::hooks::{Hook, HookEvent, HookExecutor, HooksConfig};
+use deepseek_tui::hooks::{Hook, HookCondition, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tui::app::AppMode;
-use deepseek_tui::tui::approval::ApprovalMode;
 
-use self::bundle::{Pinvou3Bundle, INSTRUCTIONS_MD};
+use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
+use crate::core::session_mode::SessionMode;
 use crate::features::assistant::image_capability::{
     effective_image_capability, EffectiveImageCapability,
 };
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
+use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 
-/// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）。
-///
-/// 后缀 `_256k` 由 fork B1 (`context_window_for_model` 的 `_Nk` hint) 识别,
-/// 让底座为本地 Qwen 派生 256K 窗口 → context_input_budget / capacity ratio /
-/// compaction 派生路径全部能算对。若改名为无后缀,底座立刻退化到 `None`,
-/// preflight + emergency recovery 默认不生效 (codex adversarial-review 抓到的
-/// 高优 finding)。回归测试 `bridge::tests::default_model_window_recognized`
-/// 锁住这个不变量。
-///
-/// ⚠️ ops 同步要求:vLLM 启动也要带
-/// `--served-model-name qwen36_35b_256k`,否则 OpenAI-compat API 报
-/// `model_not_found`。
-const LOCAL_VLLM_MODEL: &str = "qwen36_35b_256k";
-// 127.0.0.1 让 .deb 装到任何机器都默认连本机 vLLM(全量包 install.sh
-// 起 systemd 容器 --network host 绑 0.0.0.0:8000);vLLM 与应用同机,
-// 用 loopback 免疫 DHCP 换 IP,别再写具体内网 IP。
-const LOCAL_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
+// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）;`_256k` 后缀语义与
+// ops 同步要求见 `ModelPreset::default_model` 的 LocalVllm 注释（prefs/model.rs）。
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
+
+// 多智能体是“主会话总协调、复杂任务最多再拆一层”的 agent 集群，不是
+// 无界递归树。普通对话继续沿用 CodeWhale 原始上限；仅开启多智能体的
+// 会话收紧资源预算。
+const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
+const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
+const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -111,7 +104,12 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+/// 原生代码会话的执行根解析器与「两个根」类型统一由
+/// [`crate::features::sessions`] 定义(SessionStore 与 bridge 共用同一实现),
+/// 此处 re-export 保持既有调用路径不变。
+pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
+
+#[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
     pub bundle: Pinvou3Bundle,
@@ -126,6 +124,36 @@ pub struct Pinvou3Bridge {
     /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
     /// active_route_limits，并与 output profile 一起推导压缩阈值。
     pub probed_context_tokens: Option<u32>,
+    /// 原生代码会话的执行根（engine cwd / shell 目录）解析器；None = 无代码会话
+    /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
+    /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
+    pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
+    /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
+    /// 共用 AcpPool 那份 SessionAgentStore 注入。
+    pub code_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Pinvou3Bridge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Pinvou3Bridge")
+            .field("prefs", &self.prefs)
+            .field("bundle", &self.bundle)
+            .field("workspace", &self.workspace)
+            .field("session_model", &self.session_model)
+            .field("runtime_model_credential", &self.runtime_model_credential)
+            .field("probed_context_tokens", &self.probed_context_tokens)
+            .field(
+                "execution_root_resolver",
+                &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "code_session_predicate",
+                &self.code_session_predicate.as_ref().map(|_| "Some(..)"),
+            )
+            .finish()
+    }
 }
 
 impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
@@ -204,6 +232,8 @@ impl Pinvou3Bridge {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
         };
         this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
@@ -298,12 +328,32 @@ impl Pinvou3Bridge {
 
     /// Render the session-scoped inline instructions. Workspace is deliberately
     /// absent from this static prompt and is supplied through per-turn metadata.
-    pub fn build_session_system_prompt(&self, _session_id: &str) -> String {
+    pub fn build_session_system_prompt(&self, session_id: &str) -> String {
         // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
-        let mut rendered = INSTRUCTIONS_MD
+        // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
+        // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
+        let base = if self.session_policy(session_id).mode().is_code() {
+            let workspace_hint = self
+                .execution_root_resolver
+                .as_ref()
+                .and_then(|resolver| resolver(session_id))
+                .map(|root| {
+                    format!(
+                        "你正在用户的项目目录 `{}` 中工作,相对路径即相对项目根;",
+                        root.display()
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "你在本会话专属工作目录中工作,相对路径即相对该目录;".to_string()
+                });
+            instructions_code_md(&workspace_hint)
+        } else {
+            instructions_md().to_string()
+        };
+        let mut rendered = base
             .replace("{{PINVOU3_MODEL}}", &self.model())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -326,15 +376,136 @@ impl Pinvou3Bridge {
         rendered
     }
 
-    /// 当前 active session 的 workspace 目录。
+    /// 统一解析一个会话的两个根（执行根 + 账本根）。调用方按用途显式选择
+    /// [`SessionRoots::execution`] 或 [`SessionRoots::ledger`]，避免把执行根误当
+    /// 账本根写盘（或反之）。
+    ///
+    /// - `execution`：原生代码会话绑定了项目目录时返回项目目录（engine cwd 与
+    ///   shell 执行目录由此同源），其余会话返回会话私有目录。
+    /// - `ledger`：绑定了项目目录的原生代码会话恒为会话私有目录（附件/审计/产物
+    ///   不污染用户项目）；其余会话与 execution 相同。
+    ///
+    /// 本入口不感知 scheduled 会话（bridge 拿不到 SessionStore）；scheduled 的
+    /// 两个根由调用方经 [`crate::features::sessions::SessionStore::session_roots`]
+    /// 解析。与 SessionStore 入口共用 [`sessions::session_roots_for`] 同一实现。
+    pub fn session_roots(&self, session_id: &str) -> SessionRoots {
+        let bound_project_root = self
+            .execution_root_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(session_id));
+        sessions::session_roots_for(session_id, bound_project_root)
+    }
+
+    /// 当前 active session 的执行根目录：原生代码会话绑定了项目目录时返回项目目录
+    /// （engine cwd 与 shell 执行目录由此同源），其余会话返回会话私有目录。
+    /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
-        paths::session_workspace_dir(session_id)
+        self.session_roots(session_id).execution
+    }
+
+    /// 注入原生代码会话的执行根解析器；由 app 组合根在 AcpPool 就绪后调用一次。
+    pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
+        self.execution_root_resolver = Some(resolver);
+    }
+
+    /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
+    pub fn set_code_session_predicate(
+        &mut self,
+        predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) {
+        self.code_session_predicate = Some(predicate);
+    }
+
+    /// 该 session 是否为原生（品悟 Engine）代码会话（含临时与绑项目两种）。
+    pub fn is_code_session(&self, session_id: &str) -> bool {
+        self.code_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id))
+    }
+
+    /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
+    /// instructions）按它取数，不再散 `is_code_session` if（D-2/D-3 统一入口）。
+    /// predicate 未注入时默认 Plain——与 `is_code_session` 缺省 false 等价。
+    pub fn session_policy(&self, session_id: &str) -> SessionPolicy {
+        let mode = if self.is_code_session(session_id) {
+            SessionMode::Code
+        } else {
+            SessionMode::Plain
+        };
+        SessionPolicy::for_mode(mode)
+    }
+
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）取数。plain 会话原样返回
+    /// （不移除、不追加，与历史实现逐字节等价）;代码会话换 scope 并追加策略
+    /// 隐藏工具。spawn 初值与全局热刷都经此整形。
+    ///
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。对代码会话,连接器工具
+    /// 不再沿用 plain scope 的禁用集,而是改用策略给定的 code scope 禁用集 ——
+    /// 两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;非
+    /// 连接器禁用(kb_search 等)仍保留。代码会话额外隐藏的工具:产物卡恒隐藏
+    /// （[`SessionPolicy::extra_hidden_tools`]）;`load_skill` 按**该会话组合目录
+    /// 是否为空**动态决定（V-5 联动）——目录为空（无任何启用技能）时隐藏,避免
+    /// "开关开着但没技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录
+    /// 检查是磁盘 I/O,策略对象保持纯数据）。
+    pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
+        let policy = self.session_policy(session_id);
+        // plain：不移除、不追加,原样返回。
+        if !policy.mode().is_code() {
+            return tools;
+        }
+        // code：用策略 scope 的连接器禁用集替换 plain scope 的连接器禁用集。
+        let plain_connector = crate::features::marketplace::disabled_tool_names();
+        let code_connector =
+            crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
+        tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
+        for blocked in code_connector {
+            if !tools.iter().any(|tool| tool == &blocked) {
+                tools.push(blocked);
+            }
+        }
+        for hidden in policy.extra_hidden_tools() {
+            if !tools.iter().any(|tool| tool == hidden) {
+                tools.push((*hidden).to_string());
+            }
+        }
+        // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+        if crate::features::assistant::skill_materialization::session_skills_is_empty(session_id) {
+            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+            if !tools.iter().any(|tool| tool == load_skill) {
+                tools.push(load_skill.to_string());
+            }
+        }
+        tools
+    }
+
+    /// 应用账本根：审计等应用自有文件的落盘根。绑了项目目录的原生代码会话恒为
+    /// 会话私有目录（不污染用户项目）；其余会话与传入的执行根相同——普通会话两
+    /// 根本来一致，scheduled 会话继续写其项目目录，行为逐字节不变。
+    ///
+    /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
+    /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
+    /// 会话（普通/临时代码/scheduled），直接返回调用方传入的执行根，保持
+    /// scheduled 会话写其项目目录的既有行为。
+    pub fn audit_workspace(
+        &self,
+        session_id: &str,
+        execution_workspace: &std::path::Path,
+    ) -> std::path::PathBuf {
+        let roots = self.session_roots(session_id);
+        if roots.ledger != roots.execution {
+            roots.ledger
+        } else {
+            execution_workspace.to_path_buf()
+        }
     }
 
     /// session 专属 `EngineConfig.instructions` 注入:
     ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
     ///      不写 disk — 见 C 方案 P-no-disk 决策);
-    ///   2. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
+    ///   2. 受限项目规则:绑定了项目目录的原生代码会话,注入项目根 → 用户家目录
+    ///      (不含)路径上的 `AGENTS.md`,root→cwd 顺序(审阅建议③a;底座 C5 fork
+    ///      已砍空 `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
+    ///   3. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
     /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
     /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
@@ -348,6 +519,9 @@ impl Pinvou3Bridge {
             name: format!("pinvou3:sessions/{session_id}/instructions"),
             content: rendered,
         });
+        for project_rule in self.code_session_project_rules(session_id) {
+            out.push(InstructionSource::File(project_rule));
+        }
         let user = paths::user_instructions();
         if user.is_file() {
             out.push(InstructionSource::File(user));
@@ -359,6 +533,52 @@ impl Pinvou3Bridge {
             ),
         }
         out
+    }
+
+    /// 受限项目规则（审阅建议③a）：仅对**绑定了项目目录的原生代码会话**注入
+    /// `AGENTS.md`，覆盖项目根向上到用户家目录（不含）的路径——项目根即家目录时
+    /// 一层都不注入；项目不在家目录之下时覆盖到文件系统根。
+    ///
+    /// 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描），这里在 app 侧
+    /// 按安全边界补齐。行为语义：
+    ///   - 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致，
+    ///     越靠近项目根的规则在提示词中越靠后；
+    ///   - 家目录边界：home 与项目路径走同一归一化（canonicalize + 去 Windows
+    ///     `\\?\` verbatim 前缀，与绑定入口 `validate_codex_project_workspace`
+    ///     同源），`~/AGENTS.md` 等家目录及以上层不注入；归一化失败 fail-closed
+    ///     ——项目根无法归一化时不注入，家目录无法归一化时只注入项目根本层、
+    ///     不上溯祖先；
+    ///   - symlink 拒读：`AGENTS.md` 是 symlink（可指向工作区外任意文件，如
+    ///     ~/.ssh/id_rsa）时跳过，与底座 `project_context::load_context_file`
+    ///     的防御范式对齐；
+    ///   - 文件不存在或不可读时跳过。普通会话/临时代码会话不注入（行为不变）。
+    fn code_session_project_rules(&self, session_id: &str) -> Vec<PathBuf> {
+        let Some(project_root) = self
+            .execution_root_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(session_id))
+        else {
+            return Vec::new();
+        };
+        if !self.session_policy(session_id).mode().is_code() {
+            return Vec::new();
+        }
+        // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
+        let Some(project_root) = normalize_rule_boundary_path(&project_root) else {
+            return Vec::new();
+        };
+        // 家目录归一化失败 → 无法确定上溯边界，fail-closed：只注入项目根本层。
+        let home = normalize_rule_boundary_path(&crate::platform::paths::user_home_dir());
+        let mut rules = Vec::new();
+        for dir in collect_project_rule_chain(&project_root, home.as_deref()) {
+            // 项目根及各祖先层（不含家目录本身）的 AGENTS.md 都注入，支持
+            // monorepo 根规则覆盖子目录的既有语义。
+            let agents = dir.join("AGENTS.md");
+            if is_plain_file(&agents) {
+                rules.push(agents);
+            }
+        }
+        rules
     }
 
     /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
@@ -406,10 +626,15 @@ impl Pinvou3Bridge {
                 "minimax" => Some("minimax"),
                 "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
                 "doubao" | "volcengine" => Some("volcengine"),
-                // DashScope 和腾讯 Coding Plan 暂无对应内建 provider，
-                // 保留 OpenAI Chat Completions wire route，另由下方显式
-                // reasoning_stream_style 保留独立思考字段。
-                "qwen" | "tencent" | "openai" => Some("openai"),
+                // Anthropic 走底座内建 anthropic provider(Messages 原生协议,
+                // x-api-key 鉴权),不能落入 OpenAI Chat Completions 路由。
+                "anthropic" | "claude" => Some("anthropic"),
+                "xai" | "grok" => Some("xai"),
+                // DashScope、腾讯 Coding Plan 和 Gemini 暂无对应内建 provider,
+                // 保留 OpenAI Chat Completions wire route(Gemini 官方提供
+                // OpenAI 兼容端点),另由下方显式 reasoning_stream_style 保留
+                // 独立思考字段。
+                "qwen" | "tencent" | "openai" | "gemini" | "google" => Some("openai"),
                 _ => None,
             };
             if let Some(provider) = provider {
@@ -431,7 +656,13 @@ impl Pinvou3Bridge {
             ModelPreset::Minimax => "minimax".to_string(),
             ModelPreset::Glm => "zai".to_string(),
             ModelPreset::Mimo => "xiaomi-mimo".to_string(),
-            ModelPreset::OpenaiCompatible | ModelPreset::Qwen => "openai".to_string(),
+            ModelPreset::Anthropic => "anthropic".to_string(),
+            ModelPreset::Xai => "xai".to_string(),
+            // Gemini 走官方 OpenAI 兼容端点，复用 openai wire route。
+            ModelPreset::OpenaiCompatible
+            | ModelPreset::Qwen
+            | ModelPreset::Openai
+            | ModelPreset::Gemini => "openai".to_string(),
         }
     }
 
@@ -521,19 +752,14 @@ impl Pinvou3Bridge {
         self.default_model_for_preset()
     }
 
-    /// 各厂商默认模型名。
+    /// 各厂商默认模型名（表在 prefs `ModelPreset::default_model`）。
     fn default_model_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => LOCAL_VLLM_MODEL.into(),
-            ModelPreset::Deepseek => "deepseek-v4-pro".to_string(),
-            ModelPreset::Kimi => "kimi-k3".to_string(),
-            ModelPreset::OpenaiCompatible => "gpt-5.6-terra".to_string(),
-            ModelPreset::Qwen => "qwen3.7-plus".to_string(),
-            ModelPreset::Doubao => "doubao-seed-evolving".to_string(),
-            ModelPreset::Minimax => "MiniMax-M3".to_string(),
-            ModelPreset::Glm => "glm-5.2".to_string(),
-            ModelPreset::Mimo => "mimo-v2.5-pro".to_string(),
-        }
+        self.prefs
+            .advanced
+            .model_preset
+            .unwrap_or_default()
+            .default_model()
+            .to_string()
     }
 
     /// 当前 active base_url（传给底座 `DtConfig.providers.*.base_url`）。
@@ -554,19 +780,14 @@ impl Pinvou3Bridge {
         self.provider() != "vllm" && !base_url_uses_loopback(&self.base_url())
     }
 
-    /// 各厂商默认 API base URL。
+    /// 各厂商默认 API base URL（表在 prefs `ModelPreset::default_base_url`）。
     fn default_base_url_for_preset(&self) -> String {
-        match self.prefs.advanced.model_preset.unwrap_or_default() {
-            ModelPreset::LocalVllm => LOCAL_VLLM_BASE_URL.into(),
-            ModelPreset::Deepseek => "https://api.deepseek.com".to_string(),
-            ModelPreset::Kimi => "https://api.moonshot.cn/v1".to_string(),
-            ModelPreset::OpenaiCompatible => "https://api.openai.com/v1".to_string(),
-            ModelPreset::Qwen => "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            ModelPreset::Doubao => "https://ark.cn-beijing.volces.com/api/v3".to_string(),
-            ModelPreset::Minimax => "https://api.minimaxi.com/v1".to_string(),
-            ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4".to_string(),
-            ModelPreset::Mimo => "https://api.xiaomimimo.com/v1".to_string(),
-        }
+        self.prefs
+            .advanced
+            .model_preset
+            .unwrap_or_default()
+            .default_base_url()
+            .to_string()
     }
 
     /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
@@ -880,13 +1101,13 @@ impl Pinvou3Bridge {
         threshold.clamp(4_096, (window * 3 / 4).max(4_096))
     }
 
-    /// legacy 单引擎路径(headless harness 用):走 INSTRUCTIONS_MD inline + 用户自定义。
-    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 INSTRUCTIONS_MD 原文
+    /// legacy 单引擎路径(headless harness 用):走 instructions inline + 用户自定义。
+    /// 跟 [`session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
     /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: INSTRUCTIONS_MD.to_string(),
+            content: instructions_md().to_string(),
         }];
         let user = paths::user_instructions();
         if user.is_file() {
@@ -974,6 +1195,10 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            // pinvou3-fork（能力档案 fork ②）：按会话注入的隐藏工具集。
+            // skill 线不注入（None=回退编译期常量，行为不变）；include 通道由
+            // 能力档案统一 PR 接入。pinvou3 暂不启用会话裁剪，显式保持底座固定隐藏集。
+            hidden_tools: _,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1159,6 +1384,9 @@ impl Pinvou3Bridge {
             goal_status,
             // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
             // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
+            // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
+            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。委派提醒只教
+            // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
             disallowed_tools: {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() {
@@ -1167,6 +1395,10 @@ impl Pinvou3Bridge {
                     Some(n)
                 }
             },
+            // CodeWhale r4 新增会话隐藏集注入（fork ② 字段）。父仓本次只接入底座
+            // 基线，继续使用编译期 PINVOU3_HIDDEN_TOOLS；能力档案启用另行在 app
+            // 层按会话计算。本线不注入（None=回退常量，行为不变）。
+            hidden_tools: None,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
@@ -1212,6 +1444,72 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&workspace);
         cfg.workspace = workspace;
         cfg.instructions = self.session_instructions(session_id);
+        // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
+        // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
+        // 目录不存在时底座 `insert_configured_skills_dir` 会跳过（发现集为空 →
+        // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
+        // 目录在下次物化时机前被重建。
+        cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        cfg
+    }
+
+    /// 多智能体会话专用配置（ADR-0006）。
+    ///
+    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡写进
+    /// 会话工作区（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
+    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
+    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
+    /// 提醒不教学不推荐）。本产品模式仅供 Work 会话使用：默认直属实例为叶子；
+    /// 复杂任务允许直属实例再拆一层，第二层不得继续派生；直属并行 4 / 全树
+    /// 准入 8。更深后代为避免父子互等死锁不占直属 launch gate，但仍受整棵树
+    /// 的准入上限约束。
+    pub fn build_engine_config_for_multi_agent(
+        &self,
+        session_id: &str,
+        workspace: PathBuf,
+    ) -> EngineConfig {
+        let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
+        // This builder configures Pinvou's opt-in Work multi-agent mode. Keep
+        // it scoped here so stale state or a future direct caller cannot project
+        // expert profiles into a native Code project. Returning the ordinary
+        // config deliberately preserves CodeWhale's base agent/workflow tools.
+        if !self.session_policy(session_id).multi_agent_mode_available() {
+            return cfg;
+        }
+        // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
+        // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
+        // 开启之前，这里只兜底记录。
+        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
+            eprintln!("[multiagent] {err}");
+        }
+        // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
+        // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
+        // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
+        // 收窄）与全局准入/并发额度兜底。
+        cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
+        let max_concurrent = MULTI_AGENT_WORK_MAX_CONCURRENT;
+        let max_admitted = MULTI_AGENT_WORK_MAX_ADMITTED;
+        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
+        // 使用工作模式的产品默认。
+        cfg.max_subagents = self
+            .prefs
+            .advanced
+            .max_subagents
+            .map_or(max_admitted, |configured| configured.min(max_admitted));
+        cfg.max_admitted_subagents = cfg
+            .max_admitted_subagents
+            .min(max_admitted)
+            .max(cfg.max_subagents);
+        cfg.launch_concurrency = cfg
+            .launch_concurrency
+            .min(max_concurrent)
+            .min(cfg.max_subagents);
+        cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
+        cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+            &codewhale_config::FleetConfigToml::default(),
+            &cfg.workspace,
+        ));
         cfg
     }
 
@@ -1281,6 +1579,20 @@ impl Pinvou3Bridge {
             ),
             "xiaomi-mimo" => configure_provider(
                 &mut providers.xiaomi_mimo,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "anthropic" => configure_provider(
+                &mut providers.anthropic,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            ),
+            "xai" => configure_provider(
+                &mut providers.xai,
                 &base_url,
                 &api_key,
                 &model,
@@ -1370,6 +1682,50 @@ impl Pinvou3Bridge {
         ))
     }
 
+    /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 2` 允许直属
+    /// 代理为复杂任务再拆一层；该 hook 拦住**主会话**在 `agent` / `workflow`
+    /// 调用中用正数深度覆盖参数扩大上限，并要求 Workflow 文件调用改用
+    /// 可检查的 inline 输入。嵌套子代理的工具调用不经过 ToolCallBefore
+    /// hook——那一层由继承上限与全局准入/并发额度兜底，提醒词只作教学。
+    /// 普通对话不挂载此 hook。
+    fn build_multi_agent_hook_executor(&self, workspace: &std::path::Path) -> Arc<HookExecutor> {
+        #[cfg(windows)]
+        let command = {
+            let script = self.bundle.multiagent_depth_guard_ps1.to_string_lossy();
+            format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let script = self
+                .bundle
+                .multiagent_depth_guard_sh
+                .to_string_lossy()
+                .replace('\'', "'\\''");
+            format!("bash '{script}'")
+        };
+
+        let mut config = self.build_hooks_config();
+        config.hooks.push(Hook {
+            event: HookEvent::ToolCallBefore,
+            command,
+            condition: Some(HookCondition::Any {
+                conditions: vec![
+                    HookCondition::ToolName {
+                        name: "agent".to_string(),
+                    },
+                    HookCondition::ToolName {
+                        name: "workflow".to_string(),
+                    },
+                ],
+            }),
+            timeout_secs: 5,
+            background: false,
+            continue_on_error: false,
+            name: Some("pinvou3-multiagent-depth-guard".into()),
+        });
+        Arc::new(HookExecutor::new(config, workspace.to_path_buf()))
+    }
+
     /// 构造发给 engine 的 [`Op::SendMessage`]——按 `mode` 切换 trust/approval/sandbox。
     ///
     /// 决策来源：`docs/Plan-YOLO双模式-设计决策.md` 第 4.1 节复用底座 mode 字段。
@@ -1384,9 +1740,11 @@ impl Pinvou3Bridge {
     /// 强制特定状态行为。Qwen3.6 短期注意力强,放 message 顶端命中率高。
     /// 见决策文档 V2 §13.1。
     ///
-    /// 注：CodeWhale 当前的 `auto_approve` 字段不旁路 `await_tool_approval`
-    /// （上游 bug），所以 event forwarder 仍要监听 ApprovalRequired 并主动
-    /// 调 `approve_tool_call`。这条逻辑见 `engine.rs::spawn_event_forwarder`。
+    /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
+    /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
+    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
+    /// 因此多智能体工作流由 `engine.rs::apply_workflow_turn_policy` 同时收紧 mode、
+    /// trust 与审批字段，定时任务则按 profile。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -1419,11 +1777,70 @@ impl Pinvou3Bridge {
 
     pub fn build_send_message_op(
         &self,
+        session_id: &str,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         input: Option<deepseek_tui::core::ops::UserMessageInput>,
+    ) -> Result<Op> {
+        self.ensure_session_skills_for_send(session_id);
+        self.build_send_message_op_with_hooks(
+            session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            input,
+            self.build_hook_executor(),
+        )
+    }
+
+    /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
+    /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
+    pub(crate) fn build_multi_agent_send_message_op(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        workspace: &std::path::Path,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
+    ) -> Result<Op> {
+        self.ensure_session_skills_for_send(session_id);
+        self.build_send_message_op_with_hooks(
+            session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            input,
+            self.build_multi_agent_hook_executor(workspace),
+        )
+    }
+
+    fn ensure_session_skills_for_send(&self, session_id: &str) {
+        // 发送路径自愈（skill 双 scope 治理 §2.3.3）：组合目录缺失时按当前 scope
+        // 重建（微秒级 stat），防手动删除后静默丢失；不做每轮全量比对（V-7/V-10）。
+        let policy = self.session_policy(session_id);
+        let project_workspace = self.session_roots(session_id).execution;
+        crate::features::assistant::skill_materialization::ensure_session_skills(
+            session_id,
+            policy.connector_scope(),
+            Some(&project_workspace),
+        );
+    }
+
+    fn build_send_message_op_with_hooks(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
+        hook_executor: Arc<HookExecutor>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1442,13 +1859,21 @@ impl Pinvou3Bridge {
         // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
         // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
         let sudo = crate::platform::super_permission::turn_reminder();
-        let mut reminder_body = match reminder_for(mode) {
-            // Plan: 无 exec,不带 sudo。
-            Some(r) if matches!(mode, AppMode::Plan) => r.to_string(),
-            // Yolo: reminder + sudo(能 exec,sudo 状态 load-bearing)。
-            Some(r) => format!("{r}\n\n{sudo}"),
-            // Agent(pinvou3 不暴露,reminder_for=None): 能 exec,带 sudo。
-            None => sudo.to_string(),
+        // mode 维度的 per-turn reminder(砍 PlanPhase 后只剩 mode 维度):Plan 经会话
+        // 策略产出(D-2,本期两模式同文);其余 mode 无 reminder——Yolo 大产物分块实测
+        // 不再 load-bearing 已砍(只剩 sudo 动态状态),Agent pinvou3 不暴露。
+        // 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
+        let policy = self.session_policy(session_id);
+        // plan_reminder() 仅 Plan 产出 Some;原两步 match 的 `Some(r) => format!(…sudo)`
+        // 分支要求 Some 且 mode≠Plan,永不命中,故合并为单 match 消除死分支。
+        let mut reminder_body = match mode {
+            // Plan: 只读无 exec,只注入 mode reminder(不混 sudo)。
+            AppMode::Plan => policy
+                .plan_reminder()
+                .map(str::to_string)
+                .unwrap_or_else(|| sudo.to_string()),
+            // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
+            AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {
@@ -1476,6 +1901,8 @@ impl Pinvou3Bridge {
             input
         });
         let model = self.model();
+        // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
+        let (auto_approve, approval_mode) = policy.approval_params();
         Ok(Op::SendMessage {
             content: full_content,
             // Native 路径携结构化图片块(设计 §9.2);其余路径为 None,底座走纯文本。
@@ -1494,8 +1921,10 @@ impl Pinvou3Bridge {
             auto_model: false,
             allow_shell,
             trust_mode,
-            auto_approve: true,
-            approval_mode: ApprovalMode::Auto,
+            // 审批参数按会话策略取数(R-2):本期两模式同为全自动+Auto,与此前写死
+            // 值一致;S-1 安全分化落地时改 SessionPolicy::approval_params 即可。
+            auto_approve,
+            approval_mode,
             translation_enabled: false,
             // v0.8.47 上游新增;pinvou3 reasoning_effort=off 故无实际影响,取默认。
             show_thinking: true,
@@ -1512,7 +1941,7 @@ impl Pinvou3Bridge {
             },
             // 底座会用这里的值覆盖 Engine 级 hook_executor；必须每轮显式携带，
             // 否则 ToolCallBefore 防火墙会在第一条消息时被 None 清掉。
-            hook_executor: Some(self.build_hook_executor()),
+            hook_executor: Some(hook_executor),
             // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
             verbosity: None,
             // dynamic_tools: per-message 动态工具;pinvou3 不用,空。
@@ -1523,25 +1952,60 @@ impl Pinvou3Bridge {
     }
 }
 
-/// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
-/// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。
-const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
-     1. 想清楚后 → 调 `update_plan` 工具输出方案(explanation 字段写关键决策,\
-     items 写 3-8 个执行步骤),可选再调 `checklist_write` 拆细。\n\
-     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 update_plan 后自动展示,你写引导是死锁。";
-
-/// M1: per-turn `<system-reminder>` 文案,按当前 mode 选段(砍 PlanPhase 后只剩 mode 维度)。
-/// 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
-fn reminder_for(mode: AppMode) -> Option<&'static str> {
-    match mode {
-        AppMode::Plan => Some(PLAN_REMINDER),
-        // Yolo: 大产物分块实测不再 load-bearing(landing.html 397 行一次 write_file、73.8s 不撞
-        // timeout——idle timeout 早从 90s 提到 240-280s;且 legacy-ppt-workflow 等大-deck workflow 已下线,
-        // 无依赖)→ 砍光 YOLO_REMINDER。Yolo per-turn 只剩 sudo(动态状态)。Agent pinvou3 不暴露。
-        AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => None,
-    }
+/// 项目规则注入链的路径归一化：canonicalize（解析 symlink/8.3 短名、统一大小写）
+/// 后去掉 Windows `\\?\` verbatim 前缀——与绑定入口 `validate_codex_project_workspace`
+/// 的 `platform_compat_path` 归一化同源，保证 home 与项目路径按同一形式比较
+/// （`canonicalize` 的 verbatim 路径与绑定链的常规盘符路径按组件比较永不相等，
+/// 不做这层归一化，家目录边界在 Windows 上是死代码）。归一化失败（路径不存在/
+/// 不可访问）返回 None，调用方按 fail-closed 处理。
+fn normalize_rule_boundary_path(path: &std::path::Path) -> Option<PathBuf> {
+    path.canonicalize()
+        .ok()
+        .map(|canonical| crate::platform::os::platform_compat_path(&canonical.to_string_lossy()))
 }
+
+/// 项目规则注入的目录链（纯函数，home 可注入以便单测）：从 `project_root` 逐级
+/// 向上，到达用户家目录即停止——家目录本身不入链（`~/AGENTS.md` 等全局上下文
+/// 不注入），项目根即家目录时整链为空；项目不在家目录之下时上溯到文件系统根。
+/// `home` 为 None（家目录归一化失败）时 fail-closed：只返回项目根本层、不上溯。
+///
+/// 返回顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 的项目规则注入
+/// 惯例一致。
+fn collect_project_rule_chain(
+    project_root: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return vec![project_root.to_path_buf()];
+    };
+    let mut chain = Vec::new();
+    let mut current = Some(project_root);
+    while let Some(dir) = current {
+        if dir == home {
+            break;
+        }
+        chain.push(dir.to_path_buf());
+        current = dir.parent();
+    }
+    chain.reverse();
+    chain
+}
+
+/// `AGENTS.md` 注入前的文件类型检查：只接受普通文件，拒绝 symlink——symlink
+/// 可指向工作区外任意文件（如 ~/.ssh/id_rsa），`is_file()` 会跟随 symlink，
+/// 不能用于安全边界。与底座 `project_context::load_context_file` 的
+/// `symlink_metadata` 防御范式对齐；文件不存在或不可读时返回 false（跳过）。
+fn is_plain_file(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| {
+            let file_type = metadata.file_type();
+            file_type.is_file() && !file_type.is_symlink()
+        })
+        .unwrap_or(false)
+}
+
+// Plan reminder 文案与按 mode 的选择已收进 `session_policy`(D-2 策略化);
+// 本模块只经 `SessionPolicy::plan_reminder` 取数。
 
 #[cfg(test)]
 // 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
@@ -1603,7 +2067,487 @@ mod tests {
             session_model: None,
             runtime_model_credential: None,
             probed_context_tokens: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
         }
+    }
+
+    #[test]
+    fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
+        let mut bridge = fixture_bridge();
+        let private = crate::platform::paths::session_workspace_dir("sess-plain");
+        // 未注入 resolver：所有会话都用会话私有目录（现状不变）。
+        assert_eq!(bridge.session_workspace("sess-plain"), private);
+
+        let project = std::env::temp_dir().join("pinvou3-resolver-test-project");
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        // 命中：绑了项目目录的原生代码会话解析到项目目录（engine 与 shell 同源）。
+        assert_eq!(bridge.session_workspace("sess-code-project"), project);
+        // 未命中：普通会话与临时代码会话仍回退会话私有目录。
+        assert_eq!(bridge.session_workspace("sess-plain"), private);
+        assert_eq!(
+            bridge.session_workspace("sess-code-temp"),
+            crate::platform::paths::session_workspace_dir("sess-code-temp"),
+        );
+
+        // 账本根：仅绑项目的代码会话改用会话私有目录，其余会话与执行根相同。
+        let execution = std::env::temp_dir().join("pinvou3-resolver-test-execution");
+        assert_eq!(
+            bridge.audit_workspace("sess-code-project", &execution),
+            crate::platform::paths::session_workspace_dir("sess-code-project"),
+        );
+        assert_eq!(bridge.audit_workspace("sess-plain", &execution), execution);
+        assert_eq!(
+            bridge.audit_workspace("sess-code-temp", &execution),
+            execution
+        );
+    }
+
+    #[test]
+    fn session_roots_exposes_both_roots_for_every_session_kind() {
+        let mut bridge = fixture_bridge();
+        let private_plain = crate::platform::paths::session_workspace_dir("sess-plain");
+        // 未注入 resolver：普通会话两个根一致，均为会话私有目录。
+        let roots = bridge.session_roots("sess-plain");
+        assert_eq!(roots.execution, private_plain);
+        assert_eq!(roots.ledger, private_plain);
+
+        let project = std::env::temp_dir().join("pinvou3-session-roots-test-project");
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+
+        // 绑项目的原生代码会话：执行根 = 项目目录，账本根 = 会话私有目录。
+        let roots = bridge.session_roots("sess-code-project");
+        assert_eq!(roots.execution, project);
+        assert_eq!(
+            roots.ledger,
+            crate::platform::paths::session_workspace_dir("sess-code-project")
+        );
+        // 未命中（普通 / 临时代码）：执行根与账本根一致，均为会话私有目录。
+        for sid in ["sess-plain", "sess-code-temp"] {
+            let roots = bridge.session_roots(sid);
+            let private = crate::platform::paths::session_workspace_dir(sid);
+            assert_eq!(roots.execution, private);
+            assert_eq!(roots.ledger, private);
+        }
+    }
+
+    #[test]
+    fn code_session_project_rules_inject_root_agents_only_for_bound_code_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-inject-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // 布局：base/project/AGENTS.md（项目根规则）、base/AGENTS.md（monorepo 根规则）。
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+        std::fs::write(base.join("AGENTS.md"), "monorepo root rules").unwrap();
+        // 家目录边界的纯函数语义（含伪造家目录、项目根==家目录、归一化失败
+        // fail-closed）由 project_rule_chain_stops_at_home_boundary 覆盖；
+        // 这里走真实 user_home_dir() 做端到端注入验证。返回的路径已按
+        // normalize_rule_boundary_path 归一化，期望值同样归一化后再比较。
+        let expected_base = normalize_rule_boundary_path(&base)
+            .unwrap()
+            .join("AGENTS.md");
+        let expected_project = normalize_rule_boundary_path(&project)
+            .unwrap()
+            .join("AGENTS.md");
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+                || session_id == "sess-code-temp"
+                || session_id == "sess-code-project2"
+        }));
+
+        // 绑项目的代码会话：注入 project/AGENTS.md 与 base/AGENTS.md（monorepo 根）。
+        let rules = bridge.code_session_project_rules("sess-code-project");
+        assert!(
+            rules.iter().any(|p| p == &expected_project),
+            "应注入项目根 AGENTS.md: {rules:?}"
+        );
+        assert!(
+            rules.iter().any(|p| p == &expected_base),
+            "应注入 monorepo 根 AGENTS.md: {rules:?}"
+        );
+        // 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致。
+        let position = |target: &std::path::Path| rules.iter().position(|p| p == target);
+        assert!(
+            position(&expected_base)
+                .zip(position(&expected_project))
+                .is_some_and(|(base_pos, project_pos)| base_pos < project_pos),
+            "注入顺序应为 root→cwd（monorepo 根在前、项目根最后）: {rules:?}"
+        );
+
+        // 临时代码会话 / 普通会话：resolver 未命中 → 不注入。
+        assert!(bridge
+            .code_session_project_rules("sess-code-temp")
+            .is_empty());
+        assert!(bridge.code_session_project_rules("sess-plain").is_empty());
+
+        // 没有 AGENTS.md 的目录链不注入（project2 无规则文件）。
+        let project2 = base.join("project2");
+        std::fs::create_dir_all(&project2).unwrap();
+        let hit2 = project2.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project2").then(|| hit2.clone())
+        }));
+        assert!(
+            !bridge
+                .code_session_project_rules("sess-code-project2")
+                .is_empty(),
+            "project2 位于 base 下,base/AGENTS.md 应仍注入"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 家目录边界的纯函数语义：伪造 home 注入，覆盖项目在家目录之下、
+    /// 项目根==家目录、家目录归一化失败（fail-closed）、项目不在家目录之下
+    /// 四种情形（原实现自认「无法伪造家目录」而无边界测试，抽纯函数后可测）。
+    #[test]
+    fn project_rule_chain_stops_at_home_boundary() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-rule-chain-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // 布局：home/project/sub，另有不相关目录 other。
+        let home = base.join("home");
+        let project = home.join("project");
+        let sub = project.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // 纯函数假定入参已归一化；测试侧自行 canonicalize（Windows 的 temp_dir
+        // 可能含 8.3 短名，不归一化会与生产侧 canonicalize 结果比歪）。
+        let home = home.canonicalize().unwrap();
+        let project = project.canonicalize().unwrap();
+        let sub = sub.canonicalize().unwrap();
+
+        // 项目在家目录之下：链不含家目录本身，root→cwd（祖先在前）。
+        assert_eq!(
+            collect_project_rule_chain(&sub, Some(&home)),
+            vec![project.clone(), sub.clone()]
+        );
+        // 项目根即家目录：整链为空（~/AGENTS.md 不注入）。
+        assert!(collect_project_rule_chain(&home, Some(&home)).is_empty());
+        // 家目录归一化失败（None）：fail-closed，只留项目根本层、不上溯。
+        assert_eq!(collect_project_rule_chain(&sub, None), vec![sub.clone()]);
+        // 项目不在家目录之下：上溯到文件系统根，仍不含 home。
+        let other = base.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = other.canonicalize().unwrap();
+        let chain = collect_project_rule_chain(&other, Some(&home));
+        assert_eq!(chain.last(), Some(&other));
+        assert_eq!(
+            chain.first().map(std::path::PathBuf::as_path),
+            other.ancestors().last()
+        );
+        assert!(!chain.contains(&home));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// symlink 拒读：恶意仓库把 AGENTS.md 指到工作区外文件时不得注入
+    /// （与底座 load_context_file 的 symlink_metadata 防御对齐）。
+    /// Windows 创建 symlink 需管理员/开发者模式，无权限时优雅跳过而非失败。
+    #[test]
+    fn code_session_project_rules_rejects_symlinked_agents_md() {
+        #[cfg(not(any(unix, windows)))]
+        {
+            eprintln!("[test] 该平台不支持创建 symlink，跳过 symlink 拒绝断言");
+            return;
+        }
+        #[cfg(any(unix, windows))]
+        {
+            let base = std::env::temp_dir().join(format!(
+                "pinvou3-agents-symlink-test-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+            let project = base.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            // 工作区外的"敏感文件"与指向它的 AGENTS.md symlink。
+            let outside = base.join("outside-secret.md");
+            std::fs::write(&outside, "secret content").unwrap();
+            let link = project.join("AGENTS.md");
+            #[cfg(unix)]
+            let link_result = std::os::unix::fs::symlink(&outside, &link);
+            #[cfg(windows)]
+            let link_result = std::os::windows::fs::symlink_file(&outside, &link);
+            if let Err(err) = link_result {
+                eprintln!("[test] symlink 创建失败（{err}，Windows 需管理员/开发者模式），跳过");
+                let _ = std::fs::remove_dir_all(&base);
+                return;
+            }
+
+            let mut bridge = fixture_bridge();
+            let hit = project.clone();
+            bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+                (session_id == "sess-code-project").then(|| hit.clone())
+            }));
+            bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+                session_id == "sess-code-project"
+            }));
+
+            // symlink 的 AGENTS.md 不得注入（项目目录下唯一的 AGENTS.md 即该 symlink）。
+            let rules = bridge.code_session_project_rules("sess-code-project");
+            let marker = base.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                !rules.iter().any(|p| p.to_string_lossy().contains(&marker)),
+                "symlink 的 AGENTS.md 不得注入: {rules:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// 双门控：resolver 命中（存在绑定的项目目录）但 predicate 判定非原生代码
+    /// 会话（如索引在、sidecar 缺失的降级会话）→ 不注入，避免项目规则泄进
+    /// 普通会话提示词。
+    #[test]
+    fn code_session_project_rules_skip_when_resolver_hits_but_not_code_session() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-gate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-degraded").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
+
+        assert!(
+            bridge
+                .code_session_project_rules("sess-degraded")
+                .is_empty(),
+            "resolver 命中但非代码会话时不应注入项目规则"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 100KB 截断端到端：bridge 注入的超限 AGENTS.md 经底座渲染系统提示词时
+    /// 按 INSTRUCTIONS_FILE_MAX_BYTES（100KB）截断并带标记。
+    #[test]
+    fn session_instructions_oversize_agents_md_truncated_end_to_end() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-trunc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        // 超过底座 100KB 上限的项目规则。
+        let oversized = "a".repeat(120 * 1024);
+        std::fs::write(project.join("AGENTS.md"), &oversized).unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+
+        let instructions = bridge.session_instructions("sess-code-project");
+        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+            &project,
+            None,
+            None,
+            Some(&instructions),
+            None,
+        );
+        let flat = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
+        assert!(
+            flat.contains("[…truncated"),
+            "超过 100KB 的 AGENTS.md 应被截断并带标记"
+        );
+        assert!(
+            !flat.contains(&oversized),
+            "截断后的提示词不应包含完整 120KB 内容"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn session_instructions_append_project_rules_for_bound_code_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("pinvou3-agents-instr-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
+
+        let mut bridge = fixture_bridge();
+        let hit = project.clone();
+        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+            (session_id == "sess-code-project").then(|| hit.clone())
+        }));
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+
+        let instr = bridge.session_instructions("sess-code-project");
+        // 第一项 Inline（自家 prompt），随后是项目规则 File 项。
+        assert!(matches!(instr[0], InstructionSource::Inline { .. }));
+        let files: Vec<_> = instr
+            .iter()
+            .filter_map(|s| match s {
+                InstructionSource::File(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            files.iter().any(|p| p
+                == &normalize_rule_boundary_path(&project)
+                    .unwrap()
+                    .join("AGENTS.md")),
+            "session instructions 应含项目 AGENTS.md: {files:?}"
+        );
+
+        // 普通会话不注入项目规则。
+        let plain_instr = bridge.session_instructions("sess-plain");
+        let plain_files: Vec<_> = plain_instr
+            .iter()
+            .filter_map(|s| match s {
+                InstructionSource::File(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !plain_files.iter().any(|p| p.ends_with("AGENTS.md")),
+            "普通会话不应注入 AGENTS.md: {plain_files:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn code_session_tool_shaping_hides_present_artifact_only_for_code_sessions() {
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate：一律按非代码会话处理。
+        let plain = vec!["kb_search".to_string()];
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", plain.clone()),
+            plain
+        );
+
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-temp" || session_id == "sess-code-project"
+        }));
+        assert!(bridge.is_code_session("sess-code-temp"));
+        assert!(bridge.is_code_session("sess-code-project"));
+        assert!(!bridge.is_code_session("sess-plain"));
+
+        // 临时与绑项目的代码会话都隐藏成品卡工具并禁用 load_skill；普通会话不受影响。
+        for sid in ["sess-code-temp", "sess-code-project"] {
+            let shaped = bridge.shape_disallowed_tools(sid, plain.clone());
+            assert!(shaped.contains(&"mcp_pinvou3_present_artifact".to_string()));
+            assert!(shaped.contains(&"load_skill".to_string()));
+            assert!(shaped.contains(&"kb_search".to_string()));
+            // 幂等：不重复追加。
+            let twice = bridge.shape_disallowed_tools(sid, shaped);
+            assert_eq!(
+                twice
+                    .iter()
+                    .filter(|tool| *tool == "mcp_pinvou3_present_artifact")
+                    .count(),
+                1
+            );
+            assert_eq!(twice.iter().filter(|tool| *tool == "load_skill").count(), 1);
+        }
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", plain.clone()),
+            plain
+        );
+    }
+
+    /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
+    /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
+    /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
+    #[test]
+    fn code_session_tool_shaping_uses_code_scope_for_connectors() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-bridge-shape-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        // 模拟已装 weather/pptx 两个连接器(code 未初始化 → 默认全禁)。
+        let installed = dir.join("marketplace").join("installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(
+            &installed,
+            serde_json::to_string(&["weather".to_string(), "pptx".to_string()]).unwrap(),
+        )
+        .unwrap();
+        // model_tool_names 依赖 servers_dir 下的 manifest 才能把连接器 id 映射成工具全名。
+        let servers_dir = crate::platform::paths::bundle_mcp_servers_dir();
+        for (id, tool) in [("weather", "get_weather"), ("pptx", "make_pptx")] {
+            let mdir = servers_dir.join(id);
+            std::fs::create_dir_all(&mdir).unwrap();
+            std::fs::write(
+                mdir.join("manifest.json"),
+                format!(
+                    r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["{tool}"],"command":"python","args":["server.py"]}}"#
+                ),
+            )
+            .unwrap();
+        }
+        // 每 scope 已装连接器映射成模型可见全名。
+        let weather = crate::features::marketplace::MarketplaceManager::new()
+            .model_tool_names(&["weather".to_string()]);
+        let pptx = crate::features::marketplace::MarketplaceManager::new()
+            .model_tool_names(&["pptx".to_string()]);
+        assert_eq!(weather.len(), 1);
+        assert_eq!(pptx.len(), 1);
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+
+        use crate::features::marketplace::ConnectorScope;
+        // plain 禁 weather(模拟普通会话里用户关了天气)。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Plain,
+            &["weather".to_string()],
+        );
+        // code scope 未初始化 → 默认全禁已装连接器。
+        let tools = vec!["kb_search".to_string()];
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        assert!(shaped.contains(&weather[0]));
+        assert!(shaped.contains(&pptx[0]));
+        assert!(shaped.contains(&"kb_search".to_string()));
+        // 代码会话整体禁用 load_skill(skill 开关是进程级全局,无法按会话生效的过渡方案)。
+        assert!(shaped.contains(&"load_skill".to_string()));
+
+        // code 显式只禁 pptx → weather 恢复,pptx 仍禁;plain 的 weather 禁用不再影响代码会话。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Code,
+            &["pptx".to_string()],
+        );
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        assert!(!shaped.contains(&weather[0]));
+        assert!(shaped.contains(&pptx[0]));
+        assert!(shaped.contains(&"load_skill".to_string()));
+
+        // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
+        let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
+        assert_eq!(shaped, tools);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2354,7 +3298,7 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("用户消息".to_string(), mode, None, false, None)
+            .build_send_message_op("sess-plain", "用户消息".to_string(), mode, None, false, None)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -2380,6 +3324,7 @@ mod tests {
         let persona = "你现在戴着【数据库架构师】专家面具。".to_string();
         let op = bridge
             .build_send_message_op(
+                "sess-plain",
                 "用户消息".to_string(),
                 AppMode::Yolo,
                 Some(persona.clone()),
@@ -2397,7 +3342,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -2411,7 +3356,14 @@ mod tests {
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
         let allowed = |restrict| match bridge
-            .build_send_message_op("hi".to_string(), AppMode::Yolo, None, restrict, None)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Yolo,
+                None,
+                restrict,
+                None,
+            )
             .expect("resolve test route")
         {
             Op::SendMessage { allowed_tools, .. } => allowed_tools,
@@ -2426,6 +3378,40 @@ mod tests {
             allowed(false),
             None,
             "普通卡 / 未加持不限制工具,沿用 engine 全量工具表"
+        );
+    }
+
+    /// R-2:逐轮工具白名单对 code 会话同样生效——op 链路不感知会话类型,
+    /// `restrict_tools=true` 时空白名单把工具挡在模型视野外;false 时行为与现状一致。
+    /// 前端入口见 CodexAcpView.jsx `restrictTools` 注释(S-1 分化时按策略驱动)。
+    #[test]
+    fn build_send_message_op_restrict_tools_also_applies_to_code_sessions() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+        let allowed = |restrict| match bridge
+            .build_send_message_op(
+                "sess-code-project",
+                "hi".to_string(),
+                AppMode::Yolo,
+                None,
+                restrict,
+            )
+            .expect("resolve test route")
+        {
+            Op::SendMessage { allowed_tools, .. } => allowed_tools,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        assert_eq!(
+            allowed(true),
+            Some(Vec::new()),
+            "code 会话逐轮白名单入口必须生效(R-2)"
+        );
+        assert_eq!(
+            allowed(false),
+            None,
+            "code 会话未限制时沿用 engine 全量工具表(行为不变)"
         );
     }
 
@@ -2846,7 +3832,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("test".into(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "test".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -2956,7 +3942,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("hi".into(), AppMode::Yolo, None, false, None)
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -2968,7 +3954,7 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("list dir".into(), AppMode::Plan, None, false, None)
+            .build_send_message_op("sess-plain", "list dir".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -2989,7 +3975,7 @@ mod tests {
         std::env::remove_var("PINVOU3_ALLOW_SHELL");
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("exec ls".into(), AppMode::Plan, None, false, None)
+            .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false, None)
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
@@ -3022,17 +4008,96 @@ mod tests {
     #[test]
     fn yolo_has_no_mode_reminder_plan_reminder_has_no_write_content() {
         // 大产物分块实测不再 load-bearing(397 行一次写 73.8s 不撞 timeout)→ YOLO_REMINDER 砍光,
-        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo)。
+        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo,由 build_send_message_op 的
+        // mode 匹配产出 None)。
+        let bridge = fixture_bridge();
+        let yolo = match bridge
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
+            .expect("resolve test route")
+        {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
         assert!(
-            reminder_for(AppMode::Yolo).is_none(),
+            !yolo.contains("Plan 模式(只读调研)"),
             "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
-        // Plan 仍有 reminder,但只读不写,不含任何写文件/分块内容。
-        let plan = reminder_for(AppMode::Plan).expect("plan reminder exists");
+        // Plan 仍有 reminder(经会话策略产出,D-2),但只读不写,不含任何写文件/分块内容。
+        let plan = SessionPolicy::for_mode(SessionMode::Plain)
+            .plan_reminder()
+            .expect("plan reminder exists");
         assert!(
             !plan.contains("append_file") && !plan.contains("write_file"),
             "Plan reminder 不该含写文件/分块内容: {plan}"
         );
+    }
+
+    /// D-2 行为不变断言:Plan reminder 经会话策略产出,本期 plain/code 两模式同文——
+    /// code 会话 op 注入的 reminder 与 plain 逐字节相等(R-1 才按模式分化)。
+    #[test]
+    fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
+        let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
+            .build_send_message_op(
+                session_id,
+                "方案调研".to_string(),
+                AppMode::Plan,
+                None,
+                false,
+            )
+            .expect("resolve test route")
+        {
+            Op::SendMessage { content, .. } => content,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate:按 plain 缺省(与历史 reminder_for 不感知会话等价)。
+        let plain = content_of(&bridge, "sess-plain");
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        let code = content_of(&bridge, "sess-code");
+        assert!(
+            plain.contains("Plan 模式(只读调研)"),
+            "Plan 模式必须注入 per-turn reminder,得到:\n{plain}"
+        );
+        assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
+    }
+
+    /// D-2 行为不变断言:整形按策略数据驱动。plain 会话逐字节原样返回(不移除、
+    /// 不追加);code 会话按策略追加两个隐藏工具且幂等不重复(连接器 scope 切换
+    /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
+    #[test]
+    fn shape_disallowed_tools_follows_session_policy() {
+        let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
+        let mut bridge = fixture_bridge();
+        // 未注入 predicate → plain:原样返回。
+        assert_eq!(
+            bridge.shape_disallowed_tools("sess-plain", tools.clone()),
+            tools
+        );
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        // code:按策略追加隐藏工具,保留非连接器禁用项,且不重复。
+        let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
+        for kept in &tools {
+            assert!(shaped.contains(kept), "非连接器禁用项应保留: {shaped:?}");
+        }
+        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+            assert_eq!(
+                shaped.iter().filter(|tool| tool == hidden).count(),
+                1,
+                "策略隐藏工具应恰好出现一次: {hidden}"
+            );
+        }
+        let twice = bridge.shape_disallowed_tools("sess-code", shaped);
+        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+            assert_eq!(
+                twice.iter().filter(|tool| tool == hidden).count(),
+                1,
+                "整形应幂等(不重复追加): {hidden}"
+            );
+        }
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
@@ -3563,7 +4628,7 @@ mod tests {
             "",
         );
         assert_eq!(bridge.provider(), "openai");
-        assert_eq!(bridge.model(), "qwen3.7-plus");
+        assert_eq!(bridge.model(), "qwen3.8-max");
         assert_eq!(
             bridge.base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -3574,6 +4639,96 @@ mod tests {
                 .as_ref()
                 .and_then(|providers| providers.openai.reasoning_stream_style.as_deref()),
             Some(SEPARATE_REASONING_FIELD)
+        );
+    }
+
+    /// Anthropic 模型必须走底座内建 anthropic provider(Messages 原生协议),
+    /// 凭证与地址写入 providers.anthropic,不得落入 openai/vllm 表。
+    #[test]
+    fn anthropic_preset_routes_to_native_messages_provider() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Anthropic,
+            ModelPreset::Anthropic.default_model(),
+            ModelPreset::Anthropic.default_base_url(),
+            "sk-ant",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("claude".to_string());
+
+        assert_eq!(bridge.provider(), "anthropic");
+        assert_eq!(bridge.model(), "claude-sonnet-5");
+        assert_eq!(bridge.base_url(), "https://api.anthropic.com/v1");
+        assert_eq!(bridge.api_key(), "sk-ant");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Anthropic
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.anthropic.base_url.as_deref(),
+            Some("https://api.anthropic.com/v1")
+        );
+        assert_eq!(providers.anthropic.api_key.as_deref(), Some("sk-ant"));
+        assert_eq!(providers.openai.base_url.as_deref(), None);
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+        // Anthropic 的思考为原生 thinking block,不注入 OpenAI 系 reasoning 字段。
+        assert_eq!(providers.anthropic.reasoning_stream_style.as_deref(), None);
+    }
+
+    /// xAI 走内建 xai provider;Gemini 无内建 provider,经官方 OpenAI
+    /// 兼容端点复用 openai wire route。
+    #[test]
+    fn xai_and_gemini_routing() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Xai,
+            ModelPreset::Xai.default_model(),
+            ModelPreset::Xai.default_base_url(),
+            "xai-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("grok".to_string());
+
+        assert_eq!(bridge.provider(), "xai");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.api_provider(), deepseek_tui::config::ApiProvider::Xai);
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.xai.base_url.as_deref(),
+            Some("https://api.x.ai/v1")
+        );
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Gemini,
+            ModelPreset::Gemini.default_model(),
+            ModelPreset::Gemini.default_base_url(),
+            "gemini-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("gemini".to_string());
+
+        assert_eq!(bridge.provider(), "openai");
+        assert_eq!(bridge.model(), "gemini-3.6-flash");
+        let cfg = bridge.build_dt_config();
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.openai.base_url.as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai")
         );
     }
 
@@ -3597,5 +4752,210 @@ mod tests {
         );
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+    }
+
+    /// 工具面与主线持平：不得往基础配置里追加 `workflow` 禁令（复核指出
+    /// 全局禁用改变了主分支已有能力）。禁用列表只来自连接器开关。
+    #[test]
+    fn chat_engine_config_keeps_the_workflow_tool_available() {
+        let bridge = fixture_bridge();
+        let cfg = bridge.build_engine_config();
+        let disallowed = cfg.disallowed_tools.unwrap_or_default();
+        assert!(
+            !disallowed.iter().any(|name| name == "workflow"),
+            "不得禁用 workflow——与主线能力持平，实际: {disallowed:?}"
+        );
+    }
+
+    #[test]
+    fn code_session_keeps_base_agents_without_multi_agent_projection() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "code-session"
+        }));
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-code-multiagent-gate-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+
+        let plain = bridge.build_engine_config_for_session_at("plain-session", root.join("plain"));
+        let code_workspace = root.join("code");
+        let code =
+            bridge.build_engine_config_for_multi_agent("code-session", code_workspace.clone());
+
+        assert!(plain.subagents_enabled, "Work 会话保持底座委派能力");
+        assert!(
+            code.subagents_enabled,
+            "收缩 Pinvou 多智能体入口不得禁用 CodeWhale 原有 agent/workflow"
+        );
+        let code_has_multi_agent_guard = code.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        assert!(
+            !code_has_multi_agent_guard,
+            "Code 会话不得装配多智能体专用深度护栏"
+        );
+        assert!(
+            !code_workspace.join(".codewhale").exists(),
+            "Code 会话不得向用户项目投影专家名册"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
+    /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
+    #[test]
+    fn multi_agent_engine_config_adds_roles_and_resource_guards() {
+        let bridge = fixture_bridge();
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-wf-roles-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        let ordinary = bridge.build_engine_config();
+        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", workspace.clone());
+
+        assert_eq!(
+            cfg.disallowed_tools, ordinary.disallowed_tools,
+            "多智能体会话的禁用列表必须与普通对话一字不差"
+        );
+        assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
+        assert_eq!(cfg.max_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
+        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_WORK_MAX_CONCURRENT);
+        assert_ne!(
+            ordinary.max_spawn_depth, cfg.max_spawn_depth,
+            "普通对话应保持底座原有深度，只收紧多智能体会话"
+        );
+        let ordinary_has_guard = ordinary.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        let multi_agent_has_guard = cfg.hook_executor.as_ref().is_some_and(|executor| {
+            executor
+                .config()
+                .hooks
+                .iter()
+                .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+        });
+        assert!(!ordinary_has_guard, "普通对话不得挂载多智能体深度护栏");
+        assert!(multi_agent_has_guard, "多智能体会话必须拦截深度覆盖");
+
+        // 专家池卡片使用 exp-* profile；不得播种旧版非 exp 默认角色文件。
+        // 底座自带的内置成员（verifier 等）也保持可用。
+        let agents_dir = workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+        let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| !n.starts_with("exp-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(seeded.is_empty(), "不得再播种内置角色文件: {seeded:?}");
+        assert!(
+            cfg.fleet_roster
+                .get("exp-engineering-frontend-developer")
+                .is_some(),
+            "专家池内置前端专家应注册为可派 profile"
+        );
+        assert!(
+            cfg.fleet_roster.get("verifier").is_some(),
+            "底座内置成员应保持可用"
+        );
+
+        let mut disabled_bridge = fixture_bridge();
+        disabled_bridge.prefs.advanced.max_subagents = Some(0);
+        let disabled =
+            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", workspace.clone());
+        assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
+        assert_eq!(disabled.launch_concurrency, 0);
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 多智能体与普通对话保持相同模式、工具面和审批语义；每轮唯一差异是
+    /// 多智能体附加直属深度护栏，且普通对话不得受影响。
+    #[test]
+    fn multi_agent_send_path_only_adds_resource_guard() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-flash",
+            "https://api.deepseek.com",
+            "k",
+        );
+        let ordinary_op = bridge
+            .build_send_message_op("plain-session", "hi".into(), AppMode::Yolo, None, false)
+            .expect("build op");
+        let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
+        let multi_agent_op = bridge
+            .build_multi_agent_send_message_op(
+                "multi-agent-session",
+                "hi".into(),
+                AppMode::Yolo,
+                None,
+                false,
+                &workspace,
+            )
+            .expect("build multi-agent op");
+        let deepseek_tui::core::ops::Op::SendMessage {
+            mode,
+            allowed_tools,
+            hook_executor: ordinary_hooks,
+            ..
+        } = ordinary_op
+        else {
+            panic!("SendMessage op expected");
+        };
+        let deepseek_tui::core::ops::Op::SendMessage {
+            mode: multi_mode,
+            allowed_tools: multi_allowed_tools,
+            hook_executor: multi_hooks,
+            ..
+        } = multi_agent_op
+        else {
+            panic!("multi-agent SendMessage op expected");
+        };
+        assert_eq!(mode, AppMode::Yolo, "会话模式原样透传，不被多智能体改写");
+        assert_eq!(multi_mode, mode);
+        assert_eq!(
+            allowed_tools, None,
+            "完整工具面：不得再为多智能体收紧单工具白名单"
+        );
+        assert_eq!(multi_allowed_tools, allowed_tools);
+        let has_hook = |executor: &Option<Arc<HookExecutor>>, name: &str| {
+            executor.as_ref().is_some_and(|executor| {
+                executor
+                    .config()
+                    .hooks
+                    .iter()
+                    .any(|hook| hook.name.as_deref() == Some(name))
+            })
+        };
+        assert!(
+            !has_hook(&ordinary_hooks, "pinvou3-multiagent-depth-guard"),
+            "普通对话每轮不得挂载多智能体深度护栏"
+        );
+        assert!(
+            has_hook(&multi_hooks, "pinvou3-multiagent-depth-guard"),
+            "多智能体每轮必须重新携带深度护栏"
+        );
+        assert!(
+            !has_hook(&multi_hooks, "pinvou3-workflow-approval"),
+            "强制 ask Hook 已随每图必停协议退役"
+        );
     }
 }

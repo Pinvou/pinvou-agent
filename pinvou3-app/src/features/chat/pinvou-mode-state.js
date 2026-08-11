@@ -1,20 +1,16 @@
 const PINVOU_MODES = ['work', 'design'];
 
-const PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v2';
+const PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v3';
+const PREVIOUS_PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v2';
 const LEGACY_PINVOU_MODE_STORAGE_KEY = 'pinvou_mode_state_v1';
 const DEFAULT_PINVOU_MODE_SCOPE = 'draft';
 const MAX_SESSION_MODE_STATES = 200;
 
-const PINVOU_MODE_LABELS = {
-  work: '工作',
-  design: '设计',
-  code: '代码',
-};
-
-const DEFAULT_WORK_SUBTAB = 'document-writing';
 const UNROUTED_WORK_SUBTAB = 'general';
-const WORK_SUBTABS = [UNROUTED_WORK_SUBTAB, DEFAULT_WORK_SUBTAB];
-const DESIGN_SUBTABS = ['poster', 'data-visualization'];
+const DEFAULT_WORK_SUBTAB = UNROUTED_WORK_SUBTAB;
+const DEFAULT_DESIGN_SUBTAB = UNROUTED_WORK_SUBTAB;
+const WORK_SUBTABS = [UNROUTED_WORK_SUBTAB, 'personal-workbench', 'document-writing'];
+const DESIGN_SUBTABS = [UNROUTED_WORK_SUBTAB, 'poster', 'data-visualization'];
 
 function normalizePinvouMode(value) {
   return PINVOU_MODES.includes(value) ? value : 'work';
@@ -25,7 +21,7 @@ function normalizeWorkSubtab(value) {
 }
 
 function normalizeDesignSubtab(value) {
-  return DESIGN_SUBTABS.includes(value) ? value : DESIGN_SUBTABS[0];
+  return DESIGN_SUBTABS.includes(value) ? value : DEFAULT_DESIGN_SUBTAB;
 }
 
 function createPinvouModeScopeKey(sessionId) {
@@ -61,11 +57,10 @@ function createEmptyModeStore() {
   };
 }
 
-function readModeStore(target) {
+function parsedModeStoreFromRaw(raw) {
   const empty = createEmptyModeStore();
-  if (!target || typeof target.getItem !== 'function') return empty;
   try {
-    const parsed = JSON.parse(target.getItem(PINVOU_MODE_STORAGE_KEY) || '{}');
+    const parsed = JSON.parse(raw || '{}');
     if (!parsed || typeof parsed !== 'object') return empty;
     const sessions = parsed.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {};
     const normalizedSessions = {};
@@ -79,6 +74,36 @@ function readModeStore(target) {
         ? parsed.sessionOrder.filter((key) => Object.prototype.hasOwnProperty.call(normalizedSessions, key))
         : Object.keys(normalizedSessions),
     };
+  } catch (_) {
+    return empty;
+  }
+}
+
+function migratePreviousModeStore(previous) {
+  const migrated = parsedModeStoreFromRaw(previous);
+  return {
+    ...migrated,
+    draft: persistedPinvouModeState({
+      ...migrated.draft,
+      workSubtab: migrated.draft.workSubtab === 'document-writing'
+        ? UNROUTED_WORK_SUBTAB
+        : migrated.draft.workSubtab,
+      designSubtab: migrated.draft.designSubtab === 'poster'
+        ? UNROUTED_WORK_SUBTAB
+        : migrated.draft.designSubtab,
+    }),
+  };
+}
+
+function readModeStore(target) {
+  const empty = createEmptyModeStore();
+  if (!target || typeof target.getItem !== 'function') return empty;
+  try {
+    const current = target.getItem(PINVOU_MODE_STORAGE_KEY);
+    if (current) return parsedModeStoreFromRaw(current);
+    const previous = target.getItem(PREVIOUS_PINVOU_MODE_STORAGE_KEY);
+    if (previous) return migratePreviousModeStore(previous);
+    return empty;
   } catch (_) {
     return empty;
   }
@@ -98,7 +123,7 @@ function readLegacyDraftState(target) {
 function hasStoredModeState(target) {
   if (!target || typeof target.getItem !== 'function') return false;
   try {
-    return !!target.getItem(PINVOU_MODE_STORAGE_KEY);
+    return !!target.getItem(PINVOU_MODE_STORAGE_KEY) || !!target.getItem(PREVIOUS_PINVOU_MODE_STORAGE_KEY);
   } catch (_) {
     return false;
   }
@@ -192,7 +217,6 @@ function reducePinvouModeState(state, action) {
 export {
   DEFAULT_PINVOU_MODE_SCOPE,
   DESIGN_SUBTABS,
-  PINVOU_MODE_LABELS,
   PINVOU_MODE_STORAGE_KEY,
   PINVOU_MODES,
   WORK_SUBTABS,

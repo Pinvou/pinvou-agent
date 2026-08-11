@@ -43,7 +43,9 @@ Web 端在 <640px 紧凑视口启用移动壳层：隐藏侧栏窄轨，改为�
 
 - `pinvou3-app/src/`：共享 React UI、平台能力门控、浏览器 bridge；
 - `pinvou3-app/src/platform/web/access-policy.json`：Web 可调用命令和可订阅事件白名单；
-- `pinvou3-app/src-tauri/src/remote_control/`：持久 endpoint、RPC 去重、事件序列与重放；
+- `pinvou3-app/src-tauri/src/features/remote_control/`：`manager.rs` 编排 endpoint、Relay 与 RPC
+  生命周期，`event_stream.rs` 独占订阅、事件序列和重放状态，`file_access.rs` 负责宿主文件与
+  Session 产物授权读取；
 - `remote-control-relay/server.js`：静态站点和 WebSocket v2 Relay；
 - `remote-control-relay/PROTOCOL.md`：线上消息格式的单一协议说明。
 
@@ -203,7 +205,7 @@ Session 索引后再发送 `state_ready=true`，桌面才重放初始化窗口�
   与 `web_access_discard_attachment`
   时才显示"从此设备上传"入口（`deviceFileUpload` 语义能力）；旧桌面实例自动回落为
   原有的单入口远程文件浏览；
-- 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_ARTIFACT_CHUNK_BYTES`，base64
+- 浏览器本机上传走分块 RPC：单块 ≤ 256 KiB（对齐 `MAX_TRANSFER_CHUNK_BYTES`，base64
   后仍在 1 MiB RPC 请求上限内），单文件 ≤ `file_ingest::MAX_FILE_BYTES`（20 MiB，超限
   在传输前拒绝），桌面内存缓冲最多 4 个、总量 64 MiB、闲置 10 分钟过期，取消命令幂等。
   Relay 只转发分块帧，不保存任何内容。最后一块提交时字节落入

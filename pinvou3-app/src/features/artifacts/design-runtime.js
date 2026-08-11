@@ -751,7 +751,11 @@ function buildDesignRuntimeScript() {
         event.preventDefault();
         event.stopPropagation();
         finishTextEdit(false);
-      } else if (event.key === 'Enter' && !event.shiftKey) {
+      } else if (event.key === 'Enter' && !event.shiftKey
+        // IME 守卫:此处运行在隔离 iframe 内(由 buildDesignRuntimeScript 生成脚本注入,
+        // 测试以 vm.runInContext 模拟),无法 ESM import,故内联与 src/shared/ime-guard.mjs
+        // 中 isImeComposing 等价的判断。keyCode === 229 兜底 macOS WKWebView bug 165004。
+        && !(event.isComposing || event.keyCode === 229)) {
         event.preventDefault();
         event.stopPropagation();
         finishTextEdit(true);

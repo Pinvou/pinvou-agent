@@ -136,7 +136,11 @@ fn full_l0_l1_e2e() {
 
     let db = root.join("index.db");
     let svc = KnowledgeService::new(&db).expect("KnowledgeService::new");
-    assert!(svc.reload_embedder(), "测试 embedding 模型应能后台热加载");
+    assert!(
+        svc.reload_embedder()
+            .expect("测试 embedding 模型应能后台热加载"),
+        "测试 embedding 模型应进入就绪态"
+    );
 
     // ───── L0：扫描 ─────
     svc.start_scan(vec![root.clone()]);

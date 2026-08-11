@@ -11,16 +11,20 @@ const {
 const {
   configSpecs,
   prepareCodexBridge,
-  prepareLinuxArm64Connectors,
   prepareWindowsCodexBridge,
   prepareTauriArgs,
   runTauri,
+  tauriRuntimeEnvironment,
   tauriCommandIndex,
 } = require("../scripts/tauri/build.js");
 const {
   platformArchitectureConfigPath,
   platformConfigPath,
 } = require("../scripts/tauri/platform-config.js");
+const {
+  linuxStartupWindowConfig,
+  linuxStartupWindowConfigSpec,
+} = require("../scripts/tauri/startup-window-config.js");
 const { requireWrapper, WRAPPER_ENV } = require("../scripts/tauri/require-wrapper.js");
 const { WINDOWS_BRIDGE_CONFIG_PATH } = require("../scripts/tauri/codex-bridge.js");
 
@@ -61,18 +65,23 @@ assert.equal(
 assert.throws(() => requireWrapper({}), /禁止绕过平台 overlay/);
 assert.doesNotThrow(() => requireWrapper({ [WRAPPER_ENV]: "1" }));
 
+const linuxStartupOverlay = linuxStartupWindowConfigSpec();
 const buildArgs = prepareTauriArgs(
   ["--verbose", "build", "--bundles", "deb"],
   { platform: "linux" },
 );
 assert.equal(tauriCommandIndex(buildArgs), 1, "build command may follow global options");
-assert.equal(configSpecs(buildArgs)[0], platformConfigPath("linux"));
+assert.deepEqual(configSpecs(buildArgs), [
+  platformConfigPath("linux"),
+  linuxStartupOverlay,
+]);
 const linuxArmArgs = prepareTauriArgs(
   ["build", "--bundles", "deb"],
   { platform: "linux", architecture: "arm64" },
 );
 assert.deepEqual(configSpecs(linuxArmArgs), [
   platformConfigPath("linux"),
+  linuxStartupOverlay,
 ]);
 
 const explicitOverlay = "custom-signing.json";
@@ -101,8 +110,18 @@ assert.deepEqual(configSpecs(windowsCodexArgs), [
 ]);
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "linux" }),
+  ["dev", "--config", linuxStartupOverlay],
+  "Linux dev must hide the main window until the first React commit",
+);
+assert.deepEqual(
+  prepareTauriArgs(["dev"], { platform: "win32" }),
   ["dev"],
-  "Linux/Windows dev must not receive packaging overlays",
+  "Windows dev must not receive packaging overlays",
+);
+assert.deepEqual(
+  configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], { platform: "linux" })),
+  [linuxStartupOverlay, explicitOverlay],
+  "explicit Linux dev overlays must override the automatic cold-start overlay",
 );
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "darwin" }),
@@ -124,20 +143,33 @@ assert.match(
   "Windows dev must prepare the ACP Bridge without packaging overlays",
 );
 let tauriInvocation = null;
+const tauriEnvironment = { PINVOU_TEST_ENV: "kept" };
 assert.equal(
   runTauri(["--version"], (command, args, options) => {
     tauriInvocation = { command, args, options };
     return { status: 0 };
-  }),
+  }, tauriEnvironment),
   0,
 );
 assert.equal(tauriInvocation.command, process.execPath);
 assert.match(tauriInvocation.args[0], /@tauri-apps[\\/]cli[\\/]tauri\.js$/);
 assert.equal(tauriInvocation.args[1], "--version");
 assert.equal(tauriInvocation.options.env[WRAPPER_ENV], "1");
+assert.equal(tauriInvocation.options.env.PINVOU_TEST_ENV, "kept");
+const ortEnvironment = tauriRuntimeEnvironment(
+  { onnxRuntimeDylib: "C:\\runtime\\onnxruntime.dll" },
+  tauriEnvironment,
+);
+assert.equal(ortEnvironment.PINVOU_TEST_ENV, "kept");
+assert.equal(ortEnvironment.ORT_DYLIB_PATH, "C:\\runtime\\onnxruntime.dll");
 
-const linux = composeEffectiveConfig([platformConfigPath("linux")]).effectiveConfig;
+const linux = composeEffectiveConfig([
+  platformConfigPath("linux"),
+  linuxStartupOverlay,
+]).effectiveConfig;
 assert.deepEqual(linux.bundle.targets, ["deb"]);
+assert.equal(linux.app.windows[0].visible, false);
+assert.match(linux.app.windows[0].url, /[?&]startupWindow=hidden(?:&|$)/);
 assert.match(linux.build.beforeBuildCommand, /require-wrapper\.js build/);
 assert.match(
   linux.build.beforeBuildCommand,
@@ -166,12 +198,44 @@ assert.ok(
 
 assert.equal(platformArchitectureConfigPath("linux", "arm64"), null);
 
+const linuxDev = composeEffectiveConfig([linuxStartupOverlay]).effectiveConfig;
+assert.equal(linuxDev.app.windows[0].visible, false);
+assert.match(linuxDev.app.windows[0].url, /[?&]startupWindow=hidden(?:&|$)/);
+const baseMainWindow = composeEffectiveConfig([]).effectiveConfig.app.windows[0];
+for (const [label, config] of [["packaging", linux], ["dev", linuxDev]]) {
+  const mainWindow = { ...config.app.windows[0], visible: undefined };
+  mainWindow.url = mainWindow.url.replace("&startupWindow=hidden", "");
+  assert.deepEqual(
+    mainWindow,
+    { ...baseMainWindow, visible: undefined },
+    `Linux ${label} must only override the main-window cold-start controls`,
+  );
+}
+
+const generatedFromChangedBase = linuxStartupWindowConfig({
+  readFile: () => JSON.stringify({
+    app: { windows: [{ label: "main", url: "index.html", width: 1234 }] },
+  }),
+});
+assert.equal(generatedFromChangedBase.app.windows[0].width, 1234);
+assert.equal(generatedFromChangedBase.app.windows[0].visible, false);
+assert.equal(
+  generatedFromChangedBase.app.windows[0].url,
+  "index.html?startupWindow=hidden",
+  "Linux startup overlay must derive window properties from the base config",
+);
+
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
 assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
 assert.ok(macos.bundle.resources["resources/common/web-template/"]);
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/codex-bridge/"],
   "runtime/codex-bridge",
+);
+assert.equal(
+  macos.bundle.resources["resources/platforms/macos/infoplist/"],
+  "./",
+  "macOS must bundle localized privacy purpose strings",
 );
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/aarch64/asr/"],
@@ -183,6 +247,14 @@ assert.ok(
   macosManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
   "macOS resource manifest must contain the Codex ACP Bridge runtime",
 );
+for (const locale of ["en", "zh-Hans", "ja"]) {
+  assert.ok(
+    macosManifest.files.some(
+      (file) => file.destination === `${locale}.lproj/InfoPlist.strings`,
+    ),
+    `macOS resource manifest must contain ${locale} privacy purpose strings`,
+  );
+}
 assert.ok(
   !macosManifest.files.some((file) => file.destination.startsWith("runtime/asr/")),
   "macOS resource manifest must not contain a legacy ASR runtime",

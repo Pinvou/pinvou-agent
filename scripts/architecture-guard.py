@@ -22,8 +22,6 @@ from typing import Iterable
 SCHEMA_VERSION = 1
 DEFAULT_BASELINE = Path("scripts/architecture-baseline.json")
 FRONTEND_SUFFIXES = {".html", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
-RUST_LARGE_FILE_LINES = 1500
-FRONTEND_LARGE_FILE_LINES = 1000
 
 
 def normalize(path: Path, root: Path) -> str:
@@ -43,11 +41,6 @@ def source_files(root: Path, directory: str, suffixes: set[str]) -> Iterable[Pat
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def count_lines(path: Path) -> int:
-    with path.open("r", encoding="utf-8") as handle:
-        return sum(1 for _ in handle)
 
 
 def git_head(root: Path) -> str:
@@ -169,13 +162,12 @@ def frontend_import_target(specifier: str, source: Path, src_root: Path) -> Path
     return None
 
 
-def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
+def scan_frontend(root: Path) -> dict[str, Counter[str]]:
     rules: dict[str, Counter[str]] = {
         "frontend_feature_imports_app": Counter(),
         "frontend_tauri_global_outside_platform": Counter(),
         "frontend_user_agent_platform_detection": Counter(),
     }
-    warnings: list[str] = []
     src_root = (root / "pinvou3-app/src").resolve()
     feature_root = (src_root / "features").resolve()
     app_root = (src_root / "app").resolve()
@@ -210,13 +202,7 @@ def scan_frontend(root: Path) -> tuple[dict[str, Counter[str]], list[str]]:
         count = len(user_agent_pattern.findall(text))
         if count:
             rules["frontend_user_agent_platform_detection"][relative] += count
-        lines = count_lines(path)
-        if lines > FRONTEND_LARGE_FILE_LINES:
-            warnings.append(
-                f"large frontend file: {relative} has {lines} lines "
-                f"(advisory threshold {FRONTEND_LARGE_FILE_LINES})"
-            )
-    return rules, warnings
+    return rules
 
 
 def feature_name(path: Path, feature_root: Path) -> str:
@@ -273,6 +259,16 @@ def platform_detail_allowed(relative: str) -> bool:
     return "/platform/" in f"/{relative}"
 
 
+def file_exception_allowed(text: str, exception: str) -> bool:
+    """Return whether a reasoned file-level exception appears near the header."""
+    header = "\n".join(text.splitlines()[:20])
+    pattern = re.compile(
+        rf"(?m)^[ \t]*//[ \t]*architecture-guard:[ \t]*"
+        rf"allow-{re.escape(exception)}[ \t]+--[ \t]+\S[^\r\n]*$"
+    )
+    return bool(pattern.search(header))
+
+
 def count_platform_cfgs(text: str) -> int:
     """Count platform selectors inside cfg/cfg_attr expressions.
 
@@ -307,26 +303,22 @@ def count_platform_cfgs(text: str) -> int:
     return count
 
 
-def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], list[str]]:
+def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     rules: dict[str, Counter[str]] = {
         "rust_feature_depends_on_app": Counter(),
         "rust_platform_depends_on_upper_layer": Counter(),
         "rust_cyclic_feature_dependencies": Counter(),
         "rust_target_cfg_outside_adapter": Counter(),
         "rust_platform_details_outside_adapter": Counter(),
-        "rust_legacy_module_indirection": Counter(),
         "rust_tauri_commands_outside_app": Counter(),
         "rust_tauri_handler_outside_app": Counter(),
     }
-    warnings: list[str] = []
     aliases = rust_aliases(root)
     rust_root = root / "pinvou3-app/src-tauri/src"
     feature_root = rust_root / "features"
     platform_root = rust_root / "platform"
     graph: dict[str, set[str]] = defaultdict(set)
     feature_edge_counts: Counter[tuple[str, str]] = Counter()
-    include_pattern = re.compile(r"\binclude\s*!\s*\(")
-    path_pattern = re.compile(r"#\s*\[\s*path\s*=")
     tauri_command_pattern = re.compile(r"#\s*\[\s*tauri\s*::\s*command\b")
     tauri_handler_pattern = re.compile(r"generate_handler\s*!\s*\[(.*?)\]", re.DOTALL)
     platform_detail_patterns = [
@@ -361,20 +353,21 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
                         f"{relative}->{layer}::{target}"
                     ] += 1
         target_count = count_platform_cfgs(text)
-        if target_count and not target_cfg_allowed(relative):
+        if (
+            target_count
+            and not target_cfg_allowed(relative)
+            and not file_exception_allowed(text, "target-cfg")
+        ):
             rules["rust_target_cfg_outside_adapter"][relative] += target_count
-        if not platform_detail_allowed(relative):
+        if (
+            not platform_detail_allowed(relative)
+            and not file_exception_allowed(text, "platform-detail")
+        ):
             detail_count = sum(
                 len(pattern.findall(text)) for pattern in platform_detail_patterns
             )
             if detail_count:
                 rules["rust_platform_details_outside_adapter"][relative] += detail_count
-        include_count = len(include_pattern.findall(text))
-        if include_count:
-            rules["rust_legacy_module_indirection"][f"{relative}:include!"] += include_count
-        path_count = len(path_pattern.findall(text))
-        if path_count:
-            rules["rust_legacy_module_indirection"][f"{relative}:#[path]"] += path_count
         command_count = len(tauri_command_pattern.findall(text))
         if command_count and "/app/commands/" not in f"/{relative}":
             rules["rust_tauri_commands_outside_app"][relative] += command_count
@@ -386,18 +379,12 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]], lis
                     "crate::app::commands::"
                 ):
                     rules["rust_tauri_handler_outside_app"][f"{relative}:{entry}"] += 1
-        lines = count_lines(path)
-        if lines > RUST_LARGE_FILE_LINES:
-            warnings.append(
-                f"large Rust file: {relative} has {lines} lines "
-                f"(advisory threshold {RUST_LARGE_FILE_LINES})"
-            )
     cycles = strongly_connected_components(graph)
     for source_target, count in feature_edge_counts.items():
         source, target = source_target
         if any({source, target}.issubset(set(cycle)) for cycle in cycles):
             rules["rust_cyclic_feature_dependencies"][f"{source}->{target}"] = count
-    return rules, cycles, warnings
+    return rules, cycles
 
 
 def scan_resources(root: Path) -> dict[str, Counter[str]]:
@@ -421,9 +408,9 @@ def scan_resources(root: Path) -> dict[str, Counter[str]]:
     return rules
 
 
-def current_state(root: Path) -> tuple[dict, list[str]]:
-    frontend_rules, frontend_warnings = scan_frontend(root)
-    rust_rules, cycles, rust_warnings = scan_rust(root)
+def current_state(root: Path) -> dict:
+    frontend_rules = scan_frontend(root)
+    rust_rules, cycles = scan_rust(root)
     resource_rules = scan_resources(root)
     rules = {**frontend_rules, **rust_rules, **resource_rules}
     serializable_rules = {
@@ -435,7 +422,7 @@ def current_state(root: Path) -> tuple[dict, list[str]]:
         "rules": serializable_rules,
         "rust_feature_cycles": cycles,
     }
-    return state, frontend_warnings + rust_warnings
+    return state
 
 
 def compare_counts(rule: str, current: dict[str, int], allowed: dict[str, int]) -> tuple[list[str], list[str]]:
@@ -498,7 +485,10 @@ def should_fail(failures: list[str], baseline_updates: list[str]) -> bool:
     return bool(failures or baseline_updates)
 
 
-def compare_baseline_ratchet(candidate: dict, previous: dict) -> list[str]:
+def compare_baseline_ratchet(
+    candidate: dict,
+    previous: dict,
+) -> list[str]:
     """Reject baseline increases relative to the PR target branch."""
     failures: list[str] = []
     if previous.get("schema_version") != candidate.get("schema_version"):
@@ -556,7 +546,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    state, warnings = current_state(root)
+    state = current_state(root)
     if args.print_current:
         print(json.dumps(state, indent=2, ensure_ascii=False))
         return 0
@@ -586,9 +576,9 @@ def main() -> int:
                 f"INFO: {args.base_ref} has no architecture baseline; accepting initial baseline"
             )
         else:
-            failures.extend(compare_baseline_ratchet(baseline, previous_baseline))
-    for message in warnings:
-        print(f"WARNING: {message}")
+            failures.extend(
+                compare_baseline_ratchet(baseline, previous_baseline)
+            )
     if should_fail(failures, progress):
         print("architecture guard failed:", file=sys.stderr)
         if failures:

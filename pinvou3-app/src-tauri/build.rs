@@ -12,11 +12,14 @@ fn main() {
     // build.rs，hash 跟着变，ensure_extracted 自动覆写 disk 的 bundle 文件。
     //
     // 纳入哈希的资源（任一变化都要触发老安装重新解包）：
-    //   - instructions.md：system prompt 模板
+    //   - instructions-shared.md / instructions-work.md / instructions-code.md：
+    //     system prompt 骨架与各模式层
     //   - deny_sensitive_paths.sh：敏感目录/命令硬拦截 hook（只改它也要落盘）
     let mut hashed = Vec::new();
     for f in [
-        "resources/common/bundle/instructions.md",
+        "resources/common/bundle/instructions-shared.md",
+        "resources/common/bundle/instructions-work.md",
+        "resources/common/bundle/instructions-code.md",
         "resources/common/bundle/deny_sensitive_paths.sh",
     ] {
         println!("cargo:rerun-if-changed={f}");
@@ -33,14 +36,6 @@ fn main() {
     let sansheng_workflow_hash =
         hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("target OS is set by Cargo");
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").expect("target arch is set by Cargo");
-    let platform_bundle = PathBuf::from("resources/platforms")
-        .join(target_os)
-        .join(target_arch)
-        .join("bundle");
-    let connector_cli_hash = hash_dir(&platform_bundle.join("connectors"));
-    println!("cargo:rustc-env=BUNDLE_CONNECTOR_CLI_HASH={connector_cli_hash:016x}");
     tauri_build::build();
 }
 

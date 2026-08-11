@@ -3,6 +3,7 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { Check, Sparkles, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const createTurndown = () => {
   const turndown = new TurndownService({
@@ -23,35 +24,20 @@ const markdownFenceFor = (text) => {
 
 const buildAiPrompt = ({ t, artifact, selectedText, instruction }) => {
   const fence = markdownFenceFor(selectedText);
-  if (typeof t.apMdAiPrompt === 'function') {
-    return t.apMdAiPrompt({
-      path: artifact.path,
-      title: artifact.basename || artifact.path,
-      selectedText,
-      instruction,
-      fence,
-    });
-  }
-  return [
-    'Please edit the selected content in this Markdown artifact.',
-    '',
-    `File path: ${artifact.path}`,
-    '',
-    'Selected content:',
-    `${fence}markdown`,
+  return t.apMdAiPrompt({
+    path: artifact.path,
+    title: artifact.basename || artifact.path,
     selectedText,
-    fence,
-    '',
-    'Edit request:',
     instruction,
-  ].join('\n');
+    fence,
+  });
 };
 
 const statusText = (t, state) => {
-  if (state === 'dirty') return t.apMdDirty || 'Unsaved';
-  if (state === 'saving') return t.apMdSaving || 'Saving...';
-  if (state === 'error') return t.apMdSaveFailed || 'Save failed';
-  return t.apMdSaved || 'Saved';
+  if (state === 'dirty') return t.apMdDirty || '';
+  if (state === 'saving') return t.apMdSaving || '';
+  if (state === 'error') return t.apMdSaveFailed || '';
+  return t.apMdSaved || '';
 };
 
 const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
@@ -315,7 +301,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     if (!instruction) return;
     const ok = await saveNow();
     if (!ok) return;
-    const confirmText = t.apMdComposerReplaceConfirm || 'This will fill the chat input with the AI edit instruction. Continue?';
+    const confirmText = t.apMdComposerReplaceConfirm || '';
     if (typeof window !== 'undefined' && !window.confirm(confirmText)) return;
     bridge.chat.prefillComposer?.(buildAiPrompt({
       t,
@@ -361,7 +347,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
           {!aiInputOpen ? (
             <button type="button" onMouseDown={openAiInput}
               className={`h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] ${isDark ? 'border-white/10 bg-[#1C1C1E] text-[#F2F2F7]' : 'border-black/10 bg-white text-[#1C1C1E]'}`}>
-              <Sparkles size={15} /> {t.apMdAiEdit || 'AI 编辑'}
+              <Sparkles size={15} /> {t.apMdAiEdit}
             </button>
           ) : (
             <div className={`w-[316px] max-w-[calc(100vw-24px)] h-11 rounded-[22px] border shadow-[0_12px_32px_rgba(0,0,0,0.18)] flex items-center gap-1.5 px-2.5 ${isDark ? 'border-white/10 bg-[#1C1C1E]' : 'border-black/10 bg-white'}`}>
@@ -375,10 +361,10 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                 value={aiInstruction}
                 onChange={(e) => setAiInstruction(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitAiEdit();
+                  if (e.key === 'Enter' && !isImeComposing(e)) submitAiEdit();
                   if (e.key === 'Escape') clearAiUi();
                 }}
-                placeholder={t.apMdAiInstructionPlaceholder || '想怎么改？'}
+                placeholder={t.apMdAiInstructionPlaceholder}
                 className={`min-w-0 flex-1 bg-transparent outline-none text-[13px] leading-5 ${isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1C1C1E] placeholder:text-[#8E8E93]'}`}
               />
               <button type="button" onClick={submitAiEdit}

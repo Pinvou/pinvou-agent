@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { desktopBridgeApi } from './bridge_domain_contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
@@ -75,25 +76,27 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   workflow: ['bridge/workflow-runtime.js', 'bridge/workflow.js'],
+  multiAgent: ['bridge/multiagent.js'],
 };
 
 const expectedProtocolHashes = {
-  orchestration: '978048c1070c0d876fa2cd1b0493b46f973d46d9ed8bf1b937dbe36b5fe6a9b3',
-  artifacts: 'cbb7f68ec32ead55ad759859e2bb2df6af5eb9a649e985c313e665aee7c2f0af',
-  chat: '46d4abf14c023e93845c27fb0048da69655769043935ec115221aaed1e00a3d0',
-  dependencies: '53dc5f9fa4245b065c27904068fa15d8fee0492abf21f0cbc1d91f5dd0a89bb9',
-  interaction: 'db1647d6c406d6c34c1ac33a914797bfb3effde0c5d5b2670581a3cc35aa6993',
-  knowledge: 'f1e6bf2e21474ba5573e9411e5c5e32d63ecdb0517b42320232ccd0940a59b69',
+  multiAgent: 'b123eece32980d80787ab9cd7315f3566b0943ab366a2358a1ff0cb247b65491',
+  orchestration: 'e5e333aca4d1fb7e8ed32f879d3b310c01cd0845d0e5cdc2b5ed1e95aee3ea31',
+  artifacts: '9de646442d1192440abd14046e75ec402afc2c8bea1a8a88ff9667aab5e6ac4c',
+  chat: '2fa5debc3613bbd8ec3c580857e3f94d9561759aef940eb9dbca77646e6c95c8',
+  dependencies: '257468e4f9e2e9270de6ef75f685d5eafcd000226d44cfb81a1b04c0e7615707',
+  interaction: 'dc75ecf05e5b015833c08ffa4e3de4319f657de5ce300b68f873e966236a4898',
+  knowledge: '3ae1fb7f8b4909601edb91ec1b2df83d37a3a6cc302911517c5913b557b716ca',
   memory: 'd92cbabf27c277a64b743e7af25b48d8b8b65513e33aeb0f38c906d4b300616b',
   monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
-  personas: '5959bca3e4169cd3136db9dfff145370f1019ffeb865b357d2982b4d877fdf7e',
-  remoteControl: '48a5034874a5c850d1d4d81deac5a7fc0f82c9826d80c31a5117ff135f2fc587',
+  personas: '120fe92020f81ed7551b9f2e6efa7e95266ea41871bc0ca012bbec4ae46009d9',
+  remoteControl: '3e8d54d1051d1f59d5b9f41440b73444b82594391e47f4cbce56904afd72fb81',
   scheduled: '239292d75c308973053cc0091e0ac9437191bf2375fd5fd8181ea26f4f749900',
-  sessions: 'a62bd0a08a586a019b14755a61aaa63229442e3ce300f4461028db0d48c68621',
-  settings: '84ec262e084fd5940c7f8f2d8818b43cd1b3cd535e4ff4b6217505666c80527a',
-  updater: 'b4a287c32fc618553aa40d3fac078e9dc8536acefa4e064274e5766ec5cd88bc',
+  sessions: '67b309b75cc8efe80f37df48b39b146a79795dbedd9bd2d1325a269aaafb046e',
+  settings: '624810915759a0b46f3524e1b401f65b13d44368639e1bc2887fea4168a0e16d',
+  updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
   voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',
-  workflow: '602a275bbfa7e8dfa0a95f52dc82e5c340d8514b9ebc795572515948ef487aaf',
+  workflow: 'c92e92ed3dc3850bae17f451810184fad2cadbfda6bf9f565a8b2862ad0595a1',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
@@ -139,30 +142,8 @@ const context = vm.createContext({
 vm.runInContext(read('bridge.js'), context, { filename: 'bridge.js' });
 
 const api = windowObject.TauriBridge;
-const expectedApi = {
-  lifecycle: ['init'], state: ['get', 'getMany', 'subscribe', 'subscribeMany'], platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
-  chat: ['cancelGeneration', 'cancelShellTask', 'getComposerDraft', 'prefillComposer', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
-  voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'runVoiceInputDebugAssertions', 'startVoiceInput'],
-  knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'unmountCollection'],
-  scheduled: ['clearScheduledTaskDraft', 'clearScheduledTaskSelection', 'confirmScheduledTaskDraft', 'createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTaskRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'pickFolder', 'readScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'toggleScheduledTaskPinned', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'renameSession', 'restoreArchivedSession', 'switchToSession', 'toggleSessionPinned'],
-  monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
-  settings: ['saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'saveSettingsAndRestart', 'setSelectedPet', 'testSearchProvider'], feedback: ['submitFeedback'],
-  vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
-  models: ['deleteModel', 'getEffectiveModelConfig', 'getImageInputCapability', 'loadModels', 'loadSessionModel', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
-  interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'toggleSuperPerm'],
-  rendering: ['renderMarkdown'], remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
-  attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'pickAndAttach', 'removeAttachment', 'uploadDeviceFiles'], resolutions: ['markResolved'],
-  workflow: ['activateSkill', 'addMaterialsToSession', 'approveWorkflowGate', 'attachRun', 'closeDemo', 'closeWorkflowDrawer', 'deactivateSkill', 'getGateReport', 'getRoleLogs', 'getRoleOutputs', 'getRolePrompt', 'listWorkflows', 'loadSkills', 'openDemo', 'pickAndAddMaterials', 'rejectWorkflowGate', 'resetWorkflowRun', 'resumeWorkflowOnBoot', 'retryWorkflowRole', 'selectWorkflowRole', 'setCurrentPhase', 'startWorkflowTask', 'stopWorkflowTask', 'submitWorkflowUserInput'],
-  files: ['pickFeedbackFiles', 'pickFiles'],
-  personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],
-  memory: ['archiveRecentWorkMemory', 'confirmMemoryCandidate', 'deleteMemoryItem', 'deleteMemoryPreference', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'neverMemoryCandidate', 'saveMemoryProfilePatch', 'updateMemoryItem'],
-  updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'], dependencies: ['checkDependencies', 'installDependencies'],
-};
-
-assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(expectedApi)].sort());
-for (const [domain, methods] of Object.entries(expectedApi)) {
+assert.deepEqual(Object.keys(api).sort(), ['available', ...Object.keys(desktopBridgeApi)].sort());
+for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`);
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
@@ -178,6 +159,11 @@ function sourceFiles(directory) {
 for (const file of sourceFiles(path.join(root, 'src'))) {
   if (file.startsWith(bridgeRoot)) continue;
   const source = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(
+    source,
+    /\bbridge\.[A-Za-z_$][\w$]*\s*\(/,
+    `${path.relative(root, file)} must not call the removed flat bridge facade`,
+  );
   if (file.startsWith(path.join(root, 'src', 'features'))) {
     assert.doesNotMatch(
       source,

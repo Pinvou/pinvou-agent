@@ -4,7 +4,7 @@
 
 # Pinvou Agent
 
-**An open-source desktop AI agent that uses tools, works with your files, builds knowledge, and delivers real artifacts.**
+**An open-source desktop AI agent workspace for work, design, and coding.**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -14,11 +14,11 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-quick-start)
 [![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-[Website](https://pinvou.com/) · [CodeWhale Engine](https://github.com/Pinvou/CodeWhale) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
+[Download Preview](https://github.com/Pinvou/pinvou-agent/releases) · [Website](https://pinvou.com/) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/home.webp" alt="Watch the 90-second Pinvou Agent feature demo">
+    <img src="docs/assets/screenshots/mode-work.webp" alt="Pinvou Agent Work mode">
   </a>
 </p>
 <p align="center">
@@ -27,9 +27,23 @@
 
 </div>
 
-Pinvou Agent is more than a chat window. It brings models, tools, personal knowledge, specialist personas, and reusable workflows into one desktop workspace — designed for work that should end with **a result**, not just another chat response.
+Pinvou Agent is more than a chat window. It brings everyday work, visual design, and software development into one desktop workspace — designed for tasks that should end with **a result**, not just another chat response. Use tools, work with files, and build personal knowledge; bring a dedicated coding agent into a real project over ACP; or turn a prompt into a visual artifact you can continue editing.
 
 Use a local model for a fully private loop, connect any OpenAI-compatible endpoint, and extend the agent with MCP servers, CLI connectors, Skills, and workflows.
+
+## 🧭 One workspace, three ways to work
+
+### 💼 Work: give the agent a real task
+
+Combine attachments, personal knowledge, specialist personas, Skills, MCP tools, and workflows to research, analyze, write, and deliver reusable files — not just another block of chat text.
+
+### 🎨 Design: from a prompt to an editable visual
+
+Create posters and data visualizations in natural language. Open the result in design mode, select elements directly, and adjust copy, fonts, colors, dimensions, and layout — or keep describing changes and let the agent iterate on the current design.
+
+### 💻 Code: bring a coding agent into a real project
+
+Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in the same desktop workspace. The coding agent can read and edit a real project or an isolated temporary workspace, run commands, and surface plans, tool steps, permission requests, and file changes. Sessions stay bound to their workspace and can be continued after restarting the app.
 
 ## ✨ Features
 
@@ -40,11 +54,10 @@ Use a local model for a fully private loop, connect any OpenAI-compatible endpoi
 - **Artifact panel** automatically collects every file the agent creates or edits; preview, locate, and open them in one place
 - **Editable Markdown artifacts** — edit directly, or select a passage and ask the agent to revise it
 - **Plan / YOLO modes** — review the plan first for complex work, or execute directly when the task is clear
-- **Code sessions over ACP** (e.g. Codex) bring a coding agent into the same workspace
 
 ### 🧠 Knowledge and memory
 
-- **Local knowledge base** with file management, full-text search, and vector retrieval
+- **Local knowledge base** with file management, full-text and vector retrieval; attach multiple collections to one chat, enable or disable each independently, and retain collection and file provenance in answers
 - **Memory center** captures long-term preferences and context, with explicit candidate review and confirmation
 - **Persona card pool** — create, save, and apply specialist roles for different domains
 - **Skills, Commands, and workflows** turn proven methods into stable, reusable capabilities
@@ -69,6 +82,14 @@ Use a local model for a fully private loop, connect any OpenAI-compatible endpoi
 ## 📸 Screenshots
 
 <table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="Pinvou Agent Design mode"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="Pinvou Agent Code mode"></td>
+  </tr>
+  <tr>
+    <td align="center">Design mode for posters and data visualizations</td>
+    <td align="center">Code mode with Codex, Claude Code, and Kimi</td>
+  </tr>
   <tr>
     <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="Pinvou Agent tool store"></td>
     <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="Pinvou Agent artifact preview"></td>
@@ -194,9 +215,9 @@ Licensing, third-party attribution, SBOM, and brand-use boundaries are documente
 
 <a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=dH-un0EupjNPvTStPHK9G9AkXKJFl3LHuv30_BOI9z759gjx6gu1te1lVdtZvSYu9xJelAf5fYH1MuPMfbPR5bqc7MZj69CDjVTABUcOxqLN1qdH8Rzv8ZbzaOD9VS7maAlMp2arBTxkehnFhMD3XrAwDT3_KbSEHUKEf7A3qdK45xY0OmfEx1TbuA7a" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
  </picture>
 </a>
 

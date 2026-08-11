@@ -1,22 +1,25 @@
 name: PR Check
 
 # Jobs:
-# - commit-message:强制校验 PR/push/Merge Queue 的 Git commit 信息规范。
+# - commit-message:强制校验 PR/push 的 Git commit 信息规范。
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
-# - frontend-test:前端/Relay/WebUI 改动时跑 lint、构建、逻辑测试和浏览器旅程。
+# - frontend-test:Draft 跑 lint/build/逻辑测试；Ready PR 跑定向浏览器 smoke；
+#   Merge Queue 对最新组合提交跑完整受影响前端门禁。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
-# - rust-test(编译类):普通 PR 默认不跑;进入 Merge Queue 后基于最新 main 跑完整测试。
-#   高风险 PR 可加 ci:full-rust 标签提前跑,无需等待到入队。
-# - rust-lint:fmt / clippy / cargo-deny 三项硬门禁(均无 continue-on-error),
+# - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
+#   标签提前跑；Merge Queue 对最新组合提交运行；main push 写暖 cache。
+# - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
+#   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test:只在 main push 且 rust 相关路径变更时跑，不作为 PR 或 Merge Queue 合入门禁。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
-# - required-gate:汇总所有适用检查，作为 PR 与 Merge Queue 的唯一 required check。
-# - merge_group:进入 Merge Queue 后基于最新 main 跑完整检查，不要求开放 PR 反复 rebase。
+# - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
+# - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
+#   最新 main + 入队 PR；因此无冲突 PR 不需要为主线日常前进反复人工 rebase。
 #
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
@@ -34,10 +37,16 @@ name: PR Check
 
 on:
   pull_request:
-    branches: [main]
-    # 标签事件用于按需开启/关闭 ci:full-rust。
+    # 不限制 base 分支:堆叠 PR(base 为功能分支而非 main)同样必须跑完整
+    # lint + test gate。此前 `branches: [main]` 使栈中段 PR(base=功能分支)
+    # 只触发无 base 过滤的 DCO/Gitleaks/dependency-review,整条 pr-check
+    # (含 lint:ui / npm test / 浏览器 smoke / required-gate)被静默跳过,
+    # 导致 no-undef 与签名回归在栈中段漏检(见 #166/#168 评审)。changes
+    # job 已按路径短路无关 job(rust-test 默认跳过等),不会无差别烧 CI 分钟。
+    # ready/converted 事件用于切换 Draft 快检与 Ready 定向门禁；标签事件用于
+    # 按需开启/关闭 ci:full-rust。
     # closed 事件会进入同一个 concurrency group，及时取消已合并/关闭 PR 的旧任务。
-    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, closed]
   merge_group:
     types: [checks_requested]
   push:
@@ -47,8 +56,8 @@ permissions:
   contents: read
   pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
 
-# 同一 PR 连续 push 或被合并/关闭时取消旧检查；main/merge queue 的完整 Rust
-# 验证不取消，避免 cache writer 反复被截断导致后续持续冷编译。
+# 同一 PR 连续 push 或被合并/关闭时取消旧检查；main 的完整 Rust 验证不取消，
+# 避免 cache writer 反复被截断导致后续持续冷编译。
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -56,7 +65,7 @@ concurrency:
 jobs:
   commit-message:
     name: commit-message
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -69,8 +78,6 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
-          elif [ "${{ github.event_name }}" = "merge_group" ]; then
-            python3 scripts/validate-commit-msg.py --range "${{ github.event.merge_group.base_sha }}" "${{ github.event.merge_group.head_sha }}"
           else
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
@@ -90,14 +97,18 @@ jobs:
         with:
           node-version: "22"
 
-      - name: 版本同步脚本测试
-        run: node --test scripts/tests/sync-version.test.mjs
+      - name: 版本与 CI 路由脚本测试
+        run: >-
+          node --test
+          scripts/tests/sync-version.test.mjs
+          scripts/tests/select-frontend-smokes.test.mjs
 
       - name: 校验 VERSION 与各版本文件一致
         run: node scripts/sync-version.mjs --check
 
-  # PR 按路径选择检查；Merge Queue 对最新 main 组合跑完整检查。
-  # push(main) 也跑:dorny/paths-filter 在 push 下用 before..sha 本地 diff(需 fetch-depth:0),
+  # PR、Merge Queue 与 main push 均按实际改动路径选择检查。
+  # paths-filter v4 在 merge_group 上使用事件 base/head SHA 比较队列组合提交。
+  # push(main) 下 dorny/paths-filter 用 before..sha 本地 diff(需 fetch-depth:0),
   # 供 windows-rust-test 按路径触发(docs-only 推送不再烧 32min Windows runner)。
   changes:
     name: changes
@@ -105,21 +116,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      rust_code: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.rust_code }}
-      release_contract: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.release_contract }}
-      l1: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.l1 }}
-      pet: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.pet }}
-      frontend: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.frontend }}
-      relay: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.relay }}
-      acp_runtime: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.acp_runtime }}
-      windows_codex: ${{ github.event_name == 'merge_group' && 'true' || steps.filter.outputs.windows_codex }}
+      rust_code: ${{ steps.filter.outputs.rust_code }}
+      rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
+      release_contract: ${{ steps.filter.outputs.release_contract }}
+      l1: ${{ steps.filter.outputs.l1 }}
+      pet: ${{ steps.filter.outputs.pet }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      relay: ${{ steps.filter.outputs.relay }}
+      acp_runtime: ${{ steps.filter.outputs.acp_runtime }}
+      windows_codex: ${{ steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v4
         id: filter
-        if: github.event_name != 'merge_group'
         with:
           filters: |
             rust_code:
@@ -127,6 +138,14 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/build.rs'
+              - 'CodeWhale'
+              - '.gitmodules'
+              - '.github/workflows/pr-check.yml'
+              - '.github/workflows/mac-build.yml'
+            rust_dependencies:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/deny.toml'
               - 'CodeWhale'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
@@ -208,6 +227,7 @@ jobs:
               - 'remote-control-relay/**'
               - '.github/workflows/pr-check.yml'
             acp_runtime:
+              - 'pinvou3-app/run-dev.sh'
               - 'pinvou3-app/scripts/codex-bridge-runtime/**'
               - 'pinvou3-app/scripts/prepare-codex-bridge-runtime.sh'
               - 'pinvou3-app/scripts/tauri/build.js'
@@ -251,10 +271,9 @@ jobs:
           fetch-depth: 0
 
       - name: 架构边界门禁
-        env:
-          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
         run: |
-          base_ref="${BASE_REF#refs/heads/}"
+          base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
+          base_ref="${base_ref#refs/heads/}"
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
@@ -267,10 +286,9 @@ jobs:
         run: ./scripts/fork-guard.sh --fast
 
       - name: fork 合规联动 (gitlink ↔ fork-modifications)
-        env:
-          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}
         run: |
-          base_ref="${BASE_REF#refs/heads/}"
+          base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
+          base_ref="${base_ref#refs/heads/}"
           ./scripts/ci-fork-link-check.sh "origin/$base_ref"
 
       - name: Setup Python
@@ -300,10 +318,9 @@ jobs:
     needs: changes
     # 合并原 diff-viewer-test + pet-frontend-test:两者各自 npm ci + build:ui 纯重复,
     # pet 跑 npm test(链尾含 test:diff-parser)与 diff-viewer 的 test:diff-parser 也重复,
-    # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖、无重复。
-    # (merge_group 事件下 changes outputs 恒为 true,故自动覆盖前端全量检查。)
-    # diff_viewer 的路径本是 frontend(pinvou3-app/src/**、tests/**、package.json 等)的
-    # 严格子集,故不再单列 output,仅 frontend || pet 即可覆盖全部触发面。
+    # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖。
+    # Draft 仅跑 lint/build/逻辑测试；Ready PR 按 diff 选定 browser smoke；
+    # merge_group 对最新组合提交跑完整 browser smoke。
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -312,6 +329,8 @@ jobs:
         working-directory: pinvou3-app
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -327,6 +346,7 @@ jobs:
       # test:webui smoke (本 job 末尾) 会 spawn remote-control-relay/server.js,
       # 其顶层 require('ws') 解析自 remote-control-relay/node_modules,故必须装 relay 依赖。
       - name: 安装 Remote relay 依赖 (供 test:webui smoke)
+        if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
         run: npm --prefix ../remote-control-relay ci --prefer-offline --no-audit
 
       - name: ESLint (含 pet 缺失项,现已全覆盖)
@@ -335,15 +355,36 @@ jobs:
       - name: Vite build
         run: npm run build:ui
 
-      - name: 前端逻辑测试 (pet 全套 + diff parser + markdown,不再跨 job 重复)
-        run: |
-          npm test
-          npm run test:markdown
+      - name: 前端逻辑测试 (pet 全套 + diff parser + markdown)
+        run: npm test
 
-      - name: 浏览器 smoke (diff viewer + 桌宠选择器)
+      - name: 准备浏览器
+        if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
         run: |
-          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          test -n "$CHROME"
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$chrome"
+          echo "CHROME=$chrome" >> "$GITHUB_ENV"
+
+      - name: Ready PR 定向浏览器 smoke
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | node ../scripts/select-frontend-smokes.mjs \
+            > "$RUNNER_TEMP/frontend-smokes.tsv"
+          while IFS="$(printf '\t')" read -r kind target; do
+            case "$kind" in
+              npm) npm run "$target" ;;
+              node) node "$target" ;;
+              *) echo "未知 smoke 类型: $kind" >&2; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/frontend-smokes.tsv"
+
+      - name: Merge Queue 完整浏览器 smoke
+        if: ${{ github.event_name == 'merge_group' }}
+        run: |
           npm run test:bridge-smoke
           npm run test:webui
           node tests/detached_boot_smoke.js
@@ -356,7 +397,7 @@ jobs:
   relay-test:
     name: relay-test
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.relay == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.relay == 'true' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -377,9 +418,9 @@ jobs:
   release-contract-test:
     name: release-contract-test
     needs: changes
-    # PR 只验证版本同步、Tauri overlay 与各平台打包契约，不生成 deb/dmg/nsis。
-    # Merge Queue 全量执行，确保组合后的 main 仍满足发布契约。
-    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'merge_group' || needs.changes.outputs.release_contract == 'true') }}
+    # Ready PR/Queue/main 仅在发布链路相关路径变化时验证版本同步、
+    # Tauri overlay 与各平台打包契约，不生成 deb/dmg/nsis。
+    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.release_contract == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -413,6 +454,9 @@ jobs:
     if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.rust_code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
+      RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -421,17 +465,6 @@ jobs:
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
-
-      # 同 rust-test:tauri/webkit 系统库 + cmake(aws-lc-sys build script 需要)。
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
-            libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
 
       # 本 step 只作 rustup 引导;实际工具链由 pinvou3-app/src-tauri/rust-toolchain.toml
       # 锁定具体版本(下方 cargo 步骤 working-directory 在 src-tauri,rustup 按该文件
@@ -442,6 +475,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cargo cache
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
@@ -453,39 +487,55 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: cargo fmt -- --check
 
+      # clippy 需要 Tauri/WebKit 系统库；Draft 不安装，避免每次 push 消耗 ~70s。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            librsvg2-dev libssl-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libayatana-appindicator3-dev \
+            build-essential pkg-config cmake
+
       # clippy 硬门禁(无 continue-on-error):lint 配置走 Cargo.toml [lints] 表,
       # 不用命令行 -W/-D(避免与本地行为分叉)。[lints] 只启用实测零欠账的 lint(deny),
       # deny 命中即非零退出;欠账 lint/group 显式 allow(见表内注释,清理 PR 消化后启用)。
       # --lib:只检查主库,不编译 tests/examples。--no-deps:不 lint 依赖;
       # CodeWhale 子模块(path 依赖)的告警不受本仓 [lints] 约束,属上游欠账,仅显示不挡。
       - name: cargo clippy --lib (硬门禁,[lints] deny 命中即 fail)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo clippy --lib --no-deps
 
-      # cargo-deny 硬门禁:advisories(RUSTSEC)/licenses/bans/sources,规则见 deny.toml。
+      # cargo-deny 只与 Cargo/lock/deny/gitlink 等依赖与策略路径有关。
       - name: cargo-deny (advisories/licenses/bans/sources)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
       - name: cargo deny check (硬门禁)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo deny check advisories licenses bans sources
 
   rust-test:
     name: rust-test
     needs: changes
-    # 普通 PR 即使改 Rust 也默认跳过，避免评审阶段每次 push 都等完整编译。
-    # Merge Queue 必跑；Rust 相关 main push 跑并写暖 cache；高风险 PR 可用标签提前跑。
+    # Draft/普通 PR 默认跳过；Merge Queue 对最新组合提交跑；
+    # main push 写暖 cache；Ready 高风险 PR 可用标签提前跑。
     if: >-
       ${{
         !cancelled() &&
         github.event.action != 'closed' &&
+        needs.changes.outputs.rust_code == 'true' &&
         (
           github.event_name == 'merge_group' ||
-          (github.event_name == 'push' && needs.changes.outputs.rust_code == 'true') ||
+          github.event_name == 'push' ||
           (
             github.event_name == 'pull_request' &&
-            needs.changes.outputs.rust_code == 'true' &&
+            github.event.pull_request.draft == false &&
             contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
           )
         )
@@ -498,7 +548,7 @@ jobs:
       # 同 rust-lint:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
-      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
+      # PR 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
       SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
@@ -585,14 +635,15 @@ jobs:
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
       - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
         run: |
-          export CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
       - name: L1 harness 严格错误回归（不调用真模型）
-        # Merge Queue/main 完整跑；显式 PR 只在 harness 相关路径变化时追加。
+        # 仅在 harness 及其直接依赖路径变化时追加，避免无关 Rust 改动重复跑。
         # 保留 --test-threads=1:仅 3 个 strict_mode_ 测试,harness 本身需串行语义。
-        if: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || needs.changes.outputs.l1 == 'true' }}
+        if: ${{ needs.changes.outputs.l1 == 'true' }}
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --test l1_dialog_harness strict_mode_
@@ -685,7 +736,7 @@ jobs:
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true' }}
+    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -710,7 +761,7 @@ jobs:
   macos-codex-runtime-test:
     name: macos-codex-runtime-test
     needs: changes
-    if: ${{ needs.changes.outputs.acp_runtime == 'true' }}
+    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.acp_runtime == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -760,7 +811,14 @@ jobs:
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
-          if [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            # 队列提交由 GitHub 生成，不重复校验人工 commit message；
+            # 其余基础与产品门禁必须验证当前组合提交。
+            if [[ "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
+              echo "Merge Queue 基础检查失败: version-consistency=$VERSION_CONSISTENCY_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
+              exit 1
+            fi
+          elif [[ "$COMMIT_MESSAGE_RESULT" != success || "$VERSION_CONSISTENCY_RESULT" != success || "$CHANGES_RESULT" != success || "$FAST_GATE_RESULT" != success ]]; then
             echo "基础检查失败: commit-message=$COMMIT_MESSAGE_RESULT version-consistency=$VERSION_CONSISTENCY_RESULT changes=$CHANGES_RESULT fast-gate=$FAST_GATE_RESULT" >&2
             exit 1
           fi

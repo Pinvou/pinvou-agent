@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
-import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RefreshCw, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PinIcon, PinOffIcon } from '../components/icons.jsx';
-import { ArchiveConfirmDialog, ArchiveToast, ArchivedDeleteConfirmDialog, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
+import { I, Plus, Edit2, Trash2, ClipboardList, BarChart2, Settings, Monitor, Smartphone, Brain, BrainCircuit, Clock, Sun, Moon, Zap, Package, RotateCcw, Search, Upload, Lightbulb, Paperclip, Mic, Send, Store, Terminal, ChevronDown, IconGrid, IconList, Copy, CheckCircle2, AlertTriangle, Menu, MoreHorizontal, Check, Filter, Database, Download, FolderPlus, Award, Feather, AppWindow, Radio, Palette, Briefcase, StopCircle, XCircle, Wrench, Layers, MessageSquare, X, ArrowLeft, FolderOpen, ExternalLink, BookOpen, Code, FileText, Hexagon, Layout, Presentation, Mail, MessageCircle, Navigation, Video, Puzzle, LineChart, Building2, Cpu, Server, Globe, ChevronLeft, XIcon, CloudSun, TrendingUp, TrendingDown, GridIcon, TableIcon, PresentationIcon, ImageIcon, Archive, PetPawIcon } from '../components/icons.jsx';
+import { ArchiveConfirmDialog, ArchiveToast, NavItem, RecentItem } from '../components/layout/NavigationComponents.jsx';
 import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
@@ -12,43 +12,64 @@ import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { runSessionBatch, sessionRoute } from '../shared/session-management.js';
+import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
+import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
+import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
+import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
-  emitTauri,
+  sessionTitlePlainText,
+  sessionTitlePresentation,
+} from '../features/attachments/attachment-message.js';
+import {
   invokeTauri,
   isTauriAvailable,
   tauriCommands,
   tauriEvents,
-  tryGetCurrentTauriWindow,
 } from '../platform/tauri/client.js';
+import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+
+// 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
+// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
+const DEFAULT_CHAT_TITLES = new Set(Object.values(dict).map(d => d && d.newChat).filter(Boolean));
 // Static regression anchor: SCHEDULED_TASKS_ENTRY_ENABLED && (<NavItem icon={<Clock size={18} />} label={t.scheduledPlans} unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))} />)
 const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
-  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskName: '每日早报', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
-  { id: 'preview-run-4', automationId: 'preview-follow-up', taskName: '事项督办', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
-  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskName: '销售线索周报', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
+  { id: 'preview-run-1', automationId: 'preview-daily-brief', taskNameKey: 'previewTaskDailyBrief', sessionId: 'preview-session-1', status: 'completed', scheduledFor: '2026-07-14T08:00:00+08:00', unread: true },
+  { id: 'preview-run-4', automationId: 'preview-follow-up', taskNameKey: 'previewTaskFollowUp', sessionId: 'preview-session-4', status: 'running', scheduledFor: '2026-07-14T09:00:00+08:00', unread: false },
+  { id: 'preview-run-6', automationId: 'preview-weekly-report', taskNameKey: 'previewTaskSalesWeekly', sessionId: 'preview-session-6', status: 'completed', scheduledFor: '2026-07-10T16:00:00+08:00', unread: false },
 ];
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
 import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
+import { SearchView } from '../features/search/SearchView.jsx';
+import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
+import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
+import { DetachedShell } from './DetachedShell.jsx';
+import { TitleBar } from './DesktopTitleBar.jsx';
 
+installGlobalMarkdownRenderer(window);
 window.__PINVOU_STARTUP__.mark('app:main_module_body_enter');
 
 let appFirstRenderMarked = false;
 
+const APP_BRIDGE_STATE_DOMAINS = [
+  'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
+  'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
+  'memory', 'remoteControl', 'updater', 'dependencies',
+];
 
 function emitPetEvent(ev, name, payload) {
   if (!ev) return Promise.resolve(false);
@@ -77,113 +98,22 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
-/* ==========================================
-       Lucide icon replacements (inline SVG)
-       ========================================== */
-    const appWindow = tryGetCurrentTauriWindow();
-    const TitleBar = ({ theme, t, sidebarOpen = true }) => {
-      const isDark = theme === 'dark';
-      const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/10';
-      const titleBarBg = isDark ? (sidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]';
-      // macOS 顶栏走系统原生实现:窗口带 decorations + titleBarStyle=Overlay
-      // (见 src-tauri/config/platforms/macos/tauri.conf.json),系统红绿灯悬浮在内容区左上角,
-      // 此时不再渲染 Windows 风格三键,并为红绿灯留出左侧空间。
-      // 红绿灯纵向位置由 overlay 配置 trafficLightPosition y=20 决定:tao 按
-      // "容器高 = 按钮高(14) + y" 布局,按钮顶边距窗口顶 y-9,按钮圆心 7,
-      // 故 y=20 时圆心 18,正好与本 h-9(36px)顶栏内容中线对齐;调整顶栏高度需同步改 y。
-      // Windows/Linux 窗口无边框(decorations=false),继续用自绘三键。
-      // 以窗口实际 decorations 状态为准,不解析 UA / 平台字符串。
-      // 初始 null 表示探测未决:此时不渲染自绘三键,避免 macOS 原生顶栏下
-      // 三键先闪现一帧再被隐藏;探测失败回退为自绘三键(fail-safe)。
-      const [nativeControls, setNativeControls] = useState(null);
-      useEffect(() => {
-        let cancelled = false;
-        if (appWindow && typeof appWindow.isDecorated === 'function') {
-          appWindow.isDecorated()
-            .then((decorated) => { if (!cancelled) setNativeControls(decorated === true); })
-            .catch(() => { if (!cancelled) setNativeControls(false); });
-        } else {
-          setNativeControls(false);
-        }
-        return () => { cancelled = true; };
-      }, []);
-      return (
-        <div data-tauri-drag-region
-          className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
-          <div data-tauri-drag-region className={`flex items-center gap-2 ${nativeControls === true ? 'pl-[76px] pr-3' : 'px-3'} text-[13px] font-medium pointer-events-none`}>
-            <PinvouLogo className="h-[18px] w-[18px] select-none" />
-            {t.appTitle}
-          </div>
-          {nativeControls === false && (
-          <div className="flex items-center h-full">
-            <button onClick={() => appWindow && appWindow.minimize()} title={t.winMin}
-              className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>
-              <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor"/></svg>
-            </button>
-            <button onClick={() => appWindow && appWindow.toggleMaximize()} title={t.winMax}
-              className={`h-full w-12 flex items-center justify-center transition-colors ${hoverBg}`}>
-              <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
-            </button>
-            <button onClick={() => appWindow && appWindow.close()} title={t.winClose}
-              className="h-full w-12 flex items-center justify-center transition-colors hover:bg-[#E81123] hover:text-white">
-              <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1 1 L10 10 M10 1 L1 10" stroke="currentColor" strokeWidth="1.1"/></svg>
-            </button>
-          </div>
-          )}
-        </div>
-      );
-    };
-
-    // 桌宠快捷开关的爪印图标(lucide paw-print 风格,icons.jsx 没有现成的)
-    const PetPawIcon = () => (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="11" cy="4" r="2" /><circle cx="18" cy="8" r="2" /><circle cx="4" cy="8" r="2" />
-        <path d="M14.35 13.5a4 4 0 0 0-6.7 0c-.63 1.4-1.6 2.4-2.25 3.3-.72 1 .16 3.2 1.9 3.2 1.4 0 2.3-1 4.35-1s2.95 1 4.35 1c1.74 0 2.62-2.2 1.9-3.2-.65-.9-1.62-1.9-2.25-3.3z" />
-      </svg>
-    );
-
-    /* ==========================================
-       MegaCube 本地大模型引导:进行中步骤指示 + 自跑计时
-       (后端 vllm-setup:phase 事件给 phase/attempt;秒数本组件自跑,pkexec 阻塞期也在涨)
-       ========================================== */
-    class SettingsErrorBoundary extends React.Component {
-      constructor(props) {
-        super(props);
-        this.state = { error: null };
-      }
-
-      static getDerivedStateFromError(error) {
-        return { error };
-      }
-
-      render() {
-        if (this.state.error) {
-          const isDark = this.props.theme === 'dark';
-          const accountCopy = this.props.t.uiAccount;
-          return (
-            <div className="flex-1 flex flex-col w-full h-full relative z-10 px-16 py-12">
-              <div className={`max-w-[800px] rounded-2xl border p-5 ${isDark ? 'bg-[#1F2023] border-[#333537] text-[#E8EAED]' : 'bg-white border-[#DDE3EA] text-[#1F1F1F]'}`}>
-                <div className="text-[18px] font-semibold mb-2">{accountCopy.settingsLoadFailed}</div>
-                <div className={`text-[13px] leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                  {String((this.state.error && this.state.error.message) || this.state.error)}
-                </div>
-              </div>
-            </div>
-          );
-        }
-        return this.props.children;
-      }
-    }
-
     const App = () => {
       if (!appFirstRenderMarked) {
         appFirstRenderMarked = true;
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
-      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor', 'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow', 'memory', 'remoteControl', 'updater', 'dependencies']);
+      const bs = useBridgeState(APP_BRIDGE_STATE_DOMAINS);
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
+        // Linux 的主窗口在配置中隐藏创建。首次 React 提交说明可交互 DOM 已就绪，
+        // 此时再映射 XWayland 窗口，避免冷启动阶段把尚未稳定的输入表面暴露给用户。
+        void revealStartupWindow().then((revealed) => {
+          if (!revealed) return;
+          window.__PINVOU_STARTUP__.mark('react:startup_window_revealed');
+          window.__PINVOU_STARTUP__.flush();
+        });
       }, []);
       useEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_effect');
@@ -232,6 +162,13 @@ function workspaceDisplayName(path) {
         }
       });
       const [codexBusyBySession, setCodexBusyBySession] = useState({});
+      // 全局事件监听器按 id 判断是否为代码会话（监听器注册一次，不能闭包旧列表）。
+      const codexSessionIdsRef = useRef(new Set());
+      // 进入设置前的页面（openSettingsSection 记录），关闭设置时原路返回。
+      const settingsReturnViewRef = useRef(null);
+      useEffect(() => {
+        codexSessionIdsRef.current = new Set(codexSessions.map(session => session && session.id));
+      }, [codexSessions]);
       const refreshCodexSessions = useCallback(async () => {
         if (!codexAcpSupported || !isTauriAvailable()) {
           setCodexSessions([]);
@@ -285,6 +222,20 @@ function workspaceDisplayName(path) {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
         }).catch(() => {});
+        // 原生（品悟）代码会话的 turn 走 chat:* 事件：busy 徽标与 ACP 会话同机制，
+        // 只跟踪代码会话列表内的 session，普通聊天会话不影响。
+        ['chat:turn_started', 'chat:done'].forEach(eventName => {
+          tauriEvents.listen(eventName, (message) => {
+            if (disposed) return;
+            const sessionId = message && message.payload && message.payload.session_id;
+            if (!sessionId || !codexSessionIdsRef.current.has(sessionId)) return;
+            setCodexBusyBySession(current => ({ ...current, [sessionId]: eventName === 'chat:turn_started' }));
+            refreshCodexSessions().catch(() => {});
+          }).then(unlisten => {
+            if (disposed) unlisten();
+            else unlisteners.push(unlisten);
+          }).catch(() => {});
+        });
         return () => {
           disposed = true;
           unlisteners.forEach(unlisten => unlisten());
@@ -508,6 +459,18 @@ function workspaceDisplayName(path) {
       }, []);
 
       const t = dict[language];
+      // 静态 HTML 的 <title>/<html lang> 与非模块脚本(远程文件选择器、web bootstrap)拿不到语言上下文,
+      // 在此按当前语言同步,并把选择器/bootstrap 错误文案暴露给 platform/web/ 下的脚本。
+      // 桌宠窗口标题由 PetWindow 自行同步(主包不做桌宠检测,见 pet_bootstrap_isolation 测试)。
+      useEffect(() => {
+        const misc = t.uiPlatformMisc;
+        if (!misc) return;
+        document.title = misc.appTitle;
+        if (misc.htmlLang) document.documentElement.lang = misc.htmlLang;
+        window.PinvouHostFilePickerStrings = misc.hostFilePicker;
+        // platform/web/bootstrap.js 的 invoke 拒绝错误文案（web bootstrap 内置中文兜底）。
+        window.PinvouWebClientStrings = misc.webClientErrors;
+      }, [t]);
       // 有可用新版 → 侧边栏设置图标亮红点（不弹窗不打断）
       const hasUpdate = !!(bs && bs.updateInfo && bs.updateInfo.available);
       const isWebAccessConnected = !!(bs && bs.webAccess && bs.webAccess.web_client_connected);
@@ -690,28 +653,37 @@ function workspaceDisplayName(path) {
       // Build chat history from sessions
       const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
       const sessionBusy = (bs && bs.sessionBusy) || {};
-      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => ({
-        id: s.id,
-        // 后端默认标题是字面 "新对话"/"New chat"(bridge 以此判断是否自动改名)——显示层映射成当前语言
-        title: (!s.title || s.title === '新对话' || s.title === 'New chat') ? t.newChat : s.title,
-        date: formatSessionDate(s.updated_at || s.created_at, language),
-        updatedAt: s.updated_at || s.created_at || '',
-        pinned: !!s.pinned,
-        pinnedAt: s.pinned_at || '',
-        skill: skillBindings[s.id] || null,
-        working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
-        leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
-        testId: 'regular-sidebar-item',
-        menuTestId: 'regular-sidebar-menu',
-      })) : [];
+      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
+        const isPlaceholder = !s.title || DEFAULT_CHAT_TITLES.has(s.title);
+        const titlePresentation = isPlaceholder
+          ? { text: t.newChat, attachments: [] }
+          : sessionTitlePresentation(s.title, s.title_attachment_names);
+        return {
+          id: s.id,
+          // 后端默认标题是三语哨兵之一(见 DEFAULT_CHAT_TITLES;bridge 以此判断是否自动改名)——显示层映射成当前语言
+          title: sessionTitlePlainText(titlePresentation),
+          titleContent: titlePresentation.attachments.length
+            ? <SessionAttachmentTitle presentation={titlePresentation} />
+            : null,
+          date: formatSessionDate(s.updated_at || s.created_at, language),
+          updatedAt: s.updated_at || s.created_at || '',
+          pinned: !!s.pinned,
+          pinnedAt: s.pinned_at || '',
+          skill: skillBindings[s.id] || null,
+          working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
+          testId: 'regular-sidebar-item',
+          menuTestId: 'regular-sidebar-menu',
+        };
+      }) : [];
       const codexHistory = codexSessions.map(session => ({
         id: session.id,
-        title: (!session.title || session.title === '新对话' || session.title === 'New chat')
+        title: (!session.title || DEFAULT_CHAT_TITLES.has(session.title))
           ? t.newChat
           : session.title,
         subtitle: session.workspace_kind === 'project'
           ? workspaceDisplayName(session.workspace_path)
-          : '临时会话',
+          : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
         pinned: !!session.pinned,
@@ -728,7 +700,7 @@ function workspaceDisplayName(path) {
         .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
       const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
         ? bs.scheduledTaskRecentRuns
-        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS : []);
+        : (!bridge.available ? PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })) : []);
       const scheduledRunSessionIds = new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
@@ -747,8 +719,8 @@ function workspaceDisplayName(path) {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
           // 状态由后端 run DTO 直接携带。
           const rawTitle = run.sessionTitle || '';
-          const title = (!rawTitle || rawTitle === '新对话' || rawTitle === 'New chat')
-            ? (run.taskName || '定时任务')
+          const title = (!rawTitle || DEFAULT_CHAT_TITLES.has(rawTitle))
+            ? (run.taskName || t.scheduledPlans)
             : rawTitle;
           return {
             id: run.sessionId,
@@ -780,8 +752,8 @@ function workspaceDisplayName(path) {
 
       function decorateScheduledRunChat(chat, run) {
         if (!run) return chat;
-        const title = (!chat.title || chat.title === t.newChat || chat.title === '新对话' || chat.title === 'New chat')
-          ? (run.taskName || '定时任务')
+        const title = (!chat.title || DEFAULT_CHAT_TITLES.has(chat.title))
+          ? (run.taskName || t.scheduledPlans)
           : chat.title;
         return Object.assign({}, chat, {
           title,
@@ -834,14 +806,14 @@ function workspaceDisplayName(path) {
       }, [taskFilterOpen]);
 
       const sidebarTaskFilterOptions = [
-        { id: 'all', label: t.sidebarTaskFilterAll || '全部' },
-        { id: 'pinned', label: t.sidebarTaskFilterPinned || '置顶' },
-        { id: 'code', label: t.sidebarTaskFilterCode || '代码' },
-        { id: 'scheduled', label: t.sidebarTaskFilterScheduled || '定时任务' },
+        { id: 'all', label: t.sidebarTaskFilterAll },
+        { id: 'pinned', label: t.sidebarTaskFilterPinned },
+        { id: 'code', label: t.sidebarTaskFilterCode },
+        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
       ];
       const sidebarTaskSortOptions = [
-        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst || '置顶优先' },
-        { id: 'recent', label: t.sidebarTaskSortRecent || '最近更新' },
+        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
+        { id: 'recent', label: t.sidebarTaskSortRecent },
       ];
       const allSidebarTasks = pinnedHistory
         .map((chat) => {
@@ -937,6 +909,9 @@ function workspaceDisplayName(path) {
       }
 
       function openSettingsSection(section = 'general') {
+        // 记录进入设置前的页面（代码页齿轮等深链入口），关闭设置时原路返回，
+        // 而不是一律回工作页。
+        if (currentView !== 'settings') settingsReturnViewRef.current = currentView;
         setSettingsInitialSection(section);
         return navigateFromScheduledRun('settings');
       }
@@ -949,13 +924,7 @@ function workspaceDisplayName(path) {
       }
 
       function scheduledRunLabel(value) {
-        return ({
-          queued: '等待中',
-          running: '运行中',
-          completed: '已完成',
-          failed: '失败',
-          canceled: '已取消',
-        }[value] || value || '未知');
+        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }
 
       async function handleOpenScheduledRunShortcut(run) {
@@ -1208,7 +1177,7 @@ function workspaceDisplayName(path) {
                 await emitToPet('pet:reply_failed', {
                   request_id: requestId,
                   session_id: sid,
-                  error: '目标会话不存在',
+                  error: t.uiMainApp.petSessionMissing,
                   unavailable: true,
                 }).catch(() => {});
                 continue;
@@ -1225,7 +1194,7 @@ function workspaceDisplayName(path) {
                     return emitToPet('pet:reply_failed', {
                       request_id: requestId,
                       session_id: sid,
-                      error: String(outcome?.error?.message || outcome?.error || '任务未能启动'),
+                      error: String(outcome?.error?.message || outcome?.error || t.uiMainApp.petTaskStartFailed),
                     }).catch(() => {});
                   });
                 }
@@ -1383,11 +1352,11 @@ function workspaceDisplayName(path) {
           const result = await bridge.interaction.toggleSuperPerm();
           if (!result || result.ok === false) {
             setSuperPerm(!!(result && result.enabled));
-            setSettingsToast((result && result.error) || '无法开启高级执行权限');
+            setSettingsToast((result && result.error) || t.uiMainApp.superPermFailed);
           }
         } catch (error) {
           setSuperPerm(!target);
-          setSettingsToast(String(error || '无法开启高级执行权限'));
+          setSettingsToast(String(error || t.uiMainApp.superPermFailed));
         }
       }
 
@@ -1426,7 +1395,7 @@ function workspaceDisplayName(path) {
       }
 
       function handleTestSearchProvider(p) {
-        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve('当前环境不可测试搜索源');
+        if (!bridge.available || !bridge.settings.testSearchProvider) return Promise.resolve(t.uiMainApp.searchTestUnavailable);
         const action = searchProviderKeyAction(p);
         const draft = searchKeyDrafts[p] || '';
         return bridge.settings.testSearchProvider(p, action === 'replace' ? draft : '');
@@ -1446,7 +1415,7 @@ function workspaceDisplayName(path) {
         const saved = isWeb
           ? await bridge.settings.saveSearchSettings(search)
           : await bridge.settings.saveSearchSettingsAndRestart(search);
-        if (saved === false) setSettingsToast('搜索配置保存失败，请重试');
+        if (saved === false) setSettingsToast(t.uiMainApp.searchSaveFailed);
       }
 
       async function handleSaveSearchConfig() {
@@ -1454,7 +1423,7 @@ function workspaceDisplayName(path) {
         const search = buildSearchSettingsPayload();
         const saved = await bridge.settings.saveSearchSettings(search);
         if (saved === false) {
-          setSettingsToast('搜索配置保存失败，请重试');
+          setSettingsToast(t.uiMainApp.searchSaveFailed);
           return false;
         }
         return true;
@@ -1577,7 +1546,7 @@ function workspaceDisplayName(path) {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || '代码')
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -1590,32 +1559,36 @@ function workspaceDisplayName(path) {
       // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
       const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
       // 日期分组/平铺两种布局共用的任务项渲染
-      const renderSidebarTaskItem = (chat) => (
-        <RecentItem
-          key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
-          chat={chat}
-          theme={activeTheme}
-          t={t}
-          active={chat.taskKind === 'codex'
-            ? activeCodexId === chat.id && currentView === 'codex'
-            : chat.scheduledRun
-              ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
-              : activeChat === chat.id && currentView === 'chat'}
-          personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
-          onSelect={chat.taskKind === 'codex'
-            ? handleSwitchCodexSession
-            : chat.scheduledRun
-              ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
-              : handleSwitchSession}
-          onRename={handleRenameSession}
-          onDelete={handleDeleteSession}
-          onTogglePinned={handleToggleSessionPinned}
-          onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
-          onArchive={handleArchiveSession}
-          dragging={chat.taskKind !== 'codex' && canDetachWindows && !!dragAvatar && dragAvatar.key === 'session:' + chat.id}
-          onPickUp={chat.taskKind !== 'codex' && canDetachWindows ? ((geom) => beginTearOff('session', chat.id, chat.title, geom)) : undefined}
-        />
-      );
+      const renderSidebarTaskItem = (chat) => {
+        const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
+        return (
+          <RecentItem
+            key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
+            chat={chat}
+            theme={activeTheme}
+            t={t}
+            active={chat.taskKind === 'codex'
+              ? activeCodexId === chat.id && currentView === 'codex'
+              : chat.scheduledRun
+                ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
+                : activeChat === chat.id && currentView === 'chat'}
+            personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+            onSelect={chat.taskKind === 'codex'
+              ? handleSwitchCodexSession
+              : chat.scheduledRun
+                ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                : handleSwitchSession}
+            onRename={handleRenameSession}
+            onDelete={handleDeleteSession}
+            onTogglePinned={handleToggleSessionPinned}
+            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+            onArchive={handleArchiveSession}
+            dragKind={detachKind}
+            dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
+            onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
+          />
+        );
+      };
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
@@ -1697,7 +1670,7 @@ function workspaceDisplayName(path) {
           {isWeb && isSidebarOpen && (
             <button
               type="button"
-              aria-label="关闭导航"
+              aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
               className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
             />
@@ -1772,6 +1745,7 @@ function workspaceDisplayName(path) {
                   active={currentView === 'scheduled'}
                   unread={!!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns))}
                   theme={activeTheme}
+                  t={t}
                   isSidebarOpen={isSidebarOpen}
                   onClick={() => navigateFromScheduledRun('scheduled')}
                 />
@@ -1846,7 +1820,7 @@ function workspaceDisplayName(path) {
                       activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'
                     }`}>
                       <span className="truncate">
-                        {t.sidebarTaskList || '任务列表'} ({sidebarTaskHistory.length})
+                        {t.sidebarTaskList} ({sidebarTaskHistory.length})
                       </span>
                       <span className="flex items-center">
                         {/* 对话管理页入口:悬停任务列表行显现(触屏常显),替代原搜索入口 */}
@@ -1855,13 +1829,13 @@ function workspaceDisplayName(path) {
                           onClick={() => navigateFromScheduledRun('search')}
                           className={`mr-1 h-6 px-2 shrink-0 rounded-full text-[12px] font-normal transition-opacity opacity-0 group-hover:opacity-100 max-sm:opacity-100 ${activeTheme === 'dark' ? 'text-[#A8C7FA] hover:bg-[#282A2C]' : 'text-[#0B57D0] hover:bg-[#E1E5EA]'}`}
                         >
-                          {t.sidebarViewAll || '查看全部'}
+                          {t.sidebarViewAll}
                         </button>
                         <button
                           type="button"
                           data-testid="sidebar-task-filter"
                           onClick={() => setTaskFilterOpen(v => !v)}
-                          title={t.sidebarTaskFilter || '筛选'}
+                          title={t.sidebarTaskFilter}
                           className={`w-7 h-7 -mr-2 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                             taskFilterOpen
                               ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
@@ -1880,7 +1854,7 @@ function workspaceDisplayName(path) {
                         }`}
                       >
                         <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                          {t.sidebarTaskFilter || '筛选'}
+                          {t.sidebarTaskFilter}
                         </div>
                         {sidebarTaskFilterOptions.map(option => (
                           <button
@@ -1895,7 +1869,7 @@ function workspaceDisplayName(path) {
                         ))}
                         <div className={`my-1 h-px ${activeTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
                         <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${activeTheme === 'dark' ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                          {t.sidebarTaskSort || '排序'}
+                          {t.sidebarTaskSort}
                         </div>
                         {sidebarTaskSortOptions.map(option => (
                           <button
@@ -1916,7 +1890,7 @@ function workspaceDisplayName(path) {
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
                           <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                            {t.sidebarTaskEmpty || '暂无任务'}
+                            {t.sidebarTaskEmpty}
                           </div>
                         )}
                       </div>
@@ -1950,7 +1924,7 @@ function workspaceDisplayName(path) {
                       </>
                     ) : (
                       <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                        {t.sidebarTaskEmpty || '暂无任务'}
+                        {t.sidebarTaskEmpty}
                       </div>
                     )}
                   </div>
@@ -1973,7 +1947,7 @@ function workspaceDisplayName(path) {
                     </button>}
                     {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
@@ -2013,7 +1987,7 @@ function workspaceDisplayName(path) {
                     </button>}
                     {can('pet') && <button
                       onClick={() => handleSetPetEnabled(!(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled))}
-                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? '隐藏公仔' : '召唤公仔'}
+                      title={(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? t.uiPet.hide : t.uiMainApp.petSummon}
                       className={`relative w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${(bs && bs.settings && bs.settings.pet && bs.settings.pet.enabled) ? 'text-[#34A853]' : (activeTheme === 'dark' ? 'text-[#C4C7C5]' : 'text-[#444746]')} ${activeTheme === 'dark' ? 'hover:bg-[#333537]' : 'hover:bg-[#E1E5EA]'}`}
                     >
                       <PetPawIcon />
@@ -2037,7 +2011,9 @@ function workspaceDisplayName(path) {
           <div className={`flex-1 flex flex-col relative min-w-0 overflow-hidden ${activeTheme === 'dark' ? 'bg-[#131314]' : 'bg-white'} ${isCompactShell ? '' : 'rounded-tl-[28px]'}`}>
 
             {/* Gemini Style Background Glow */}
-            {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
+            {(currentView === 'chat'
+              || currentView === 'codex'
+              || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
               activeTheme === 'light' ? (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,_rgba(232,240,254,0.8)_0%,_transparent_60%)] pointer-events-none z-0"></div>
               ) : (
@@ -2077,7 +2053,7 @@ function workspaceDisplayName(path) {
                   onSidebarDateGroupingChange={handleSetSidebarDateGrouping}
                   updateFocusTick={settingsUpdateFocusTick}
                   initialSection={settingsInitialSection}
-                  onCloseSettings={() => navigateFromScheduledRun('chat')}
+                  onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
               </SettingsErrorBoundary>
             )}
@@ -2095,13 +2071,18 @@ function workspaceDisplayName(path) {
                 onActiveSessionChange={updateActiveCodexSession}
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
+                onOpenSettingsSection={openSettingsSection}
+                bs={bs}
+                onGotoModelSettings={() => openSettingsSection('model')}
+                onGotoSettings={() => openSettingsSection('general')}
+                onGotoTools={() => navigateFromScheduledRun('toolStore')}
               />
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
                 <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
               ) : (
-                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} />
+                <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
@@ -2114,9 +2095,6 @@ function workspaceDisplayName(path) {
             {currentView === 'search' && (
               <SearchView
                 theme={activeTheme} history={allSidebarTasks} t={t} language={language}
-                activeId={activeChat}
-                activeCodexId={activeCodexId}
-                activeScheduledId={(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId) || ''}
                 archived={(bs && bs.archivedSessions) || []}
                 showArchived={searchShowArchived}
                 onShowArchivedConsumed={() => setSearchShowArchived(false)}
@@ -2328,824 +2306,7 @@ function workspaceDisplayName(path) {
       );
     };
 
-    const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
-      const isDark = theme === 'dark';
-      const logic = window.UpdateNoticeLogic;
-      const isPreview = !bridge.available && logic.previewEnabled(window.location);
-      const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
-      const [closed, setClosed] = useState(false);
-
-      useEffect(() => { setClosed(false); }, [logic.versionKey(updateInfo)]);
-
-      if (!updateInfo || closed) return null;
-
-      const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
-        downloadInstall: t.downloadInstall,
-        downloadInstallRestart: t.downloadInstallRestart,
-        downloading: t.downloading,
-        installing: t.installing,
-        restartNow: t.restartNow,
-        updateInstallerStarted: t.updateInstallerStarted,
-      });
-
-      const handleUpgrade = () => {
-        if (isPreview) {
-          return;
-        }
-        if (!bridge.available) return;
-        if (vm.action === 'restart') bridge.updater.restartApp();
-        else if (vm.action === 'download') bridge.updater.downloadAndInstallUpdate();
-      };
-
-      const handleShowChangelog = () => {
-        if (onShowChangelog) onShowChangelog();
-      };
-
-      return (
-        <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 ${
-          isDark
-            ? 'bg-[#1c1c21]/85 border-white/[0.06] text-gray-200 shadow-2xl'
-            : 'bg-white/85 border-gray-200/60 text-gray-800'
-        }`}>
-          <div className="flex items-center gap-3 mb-3">
-            <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 ${
-              isDark
-                ? 'bg-gradient-to-br from-[#2c2c35] to-[#1a1a20] border-white/[0.08]'
-                : 'bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80'
-            }`}>
-              <PinvouLogo className="h-6 w-6" />
-            </div>
-
-            <div className="flex flex-col justify-center flex-1 min-w-0">
-              <div className="flex items-center justify-between">
-                <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 ${
-                  isDark ? 'text-gray-100' : 'text-gray-900'
-                }`}>{t.newVersionFound}</span>
-                <button
-                  type="button"
-                  onClick={() => setClosed(true)}
-                  className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none ${
-                    isDark
-                      ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.08]'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={t.winClose}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 ${
-                isDark ? 'text-gray-400 bg-black/20' : 'text-gray-500 bg-gray-100'
-              }`}>PINVOU v{vm.version}</span>
-            </div>
-          </div>
-
-          {vm.error && (
-            <div className="mb-3 text-[11px] leading-relaxed text-[#EA4335] break-words">{vm.error}</div>
-          )}
-
-          <div className="flex gap-2 text-xs font-medium">
-            <button
-              type="button"
-              data-update-notes-button="true"
-              onClick={handleShowChangelog}
-              className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] ${
-                isDark
-                  ? 'bg-white/[0.06] hover:bg-white/[0.1] text-gray-200'
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              }`}
-            >
-              {t.updateNotes}
-            </button>
-            <button
-              type="button"
-              onClick={handleUpgrade}
-              disabled={vm.disabled}
-              className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-[0.96] flex justify-center items-center gap-1.5 shadow-sm shadow-blue-900/20 disabled:opacity-80 disabled:cursor-not-allowed"
-            >
-              {vm.downloading ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> : <RefreshCw size={14} />}
-              <span>{vm.label}</span>
-            </button>
-          </div>
-        </div>
-      );
-    };
-
-    /* ==========================================
-       Helpers
-       ========================================== */
-    const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
-      const isDark = theme === 'dark';
-      const [query, setQuery] = useState('');
-      const inputRef = useRef(null);
-      const filtered = query
-        ? history.filter(h => String(h.title || '').toLowerCase().includes(query.toLowerCase()))
-        : history;
-
-      useEffect(() => {
-        const timer = window.setTimeout(() => inputRef.current && inputRef.current.focus(), 80);
-        const onKey = (e) => {
-          if (e.key === 'Escape') onClose();
-        };
-        window.addEventListener('keydown', onKey);
-        return () => {
-          window.clearTimeout(timer);
-          window.removeEventListener('keydown', onKey);
-        };
-      }, [onClose]);
-
-      return (
-        <div
-          role="presentation"
-          className="fixed inset-0 z-[180] flex items-start justify-center px-5 pt-[76px]"
-          style={{
-            background: isDark ? 'rgba(0,0,0,.34)' : 'rgba(255,255,255,.28)',
-            backdropFilter: 'blur(18px) saturate(150%)',
-            WebkitBackdropFilter: 'blur(18px) saturate(150%)',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
-          }}
-          onClick={onClose}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={t.searchChats}
-            className="w-full max-w-[680px] overflow-hidden rounded-[28px] border shadow-2xl"
-            style={{
-              background: isDark ? 'rgba(32,33,36,.86)' : 'rgba(255,255,255,.88)',
-              borderColor: isDark ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.08)',
-              boxShadow: isDark ? '0 30px 90px rgba(0,0,0,.58)' : '0 30px 90px rgba(25,33,45,.20)',
-              color: isDark ? '#F2F2F7' : '#1F1F1F',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="p-3">
-              <div
-                className="flex h-12 items-center gap-3 rounded-full px-4"
-                style={{
-                  background: isDark ? 'rgba(255,255,255,.08)' : 'rgba(118,118,128,.12)',
-                }}
-              >
-                <Search size={20} className={isDark ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'} />
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder={t.searchPlaceholder}
-                  className={`min-w-0 flex-1 bg-transparent border-none outline-none text-[17px] leading-6 ${
-                    isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1D1D1F] placeholder:text-[#8A8A8E]'
-                  }`}
-                />
-                {query && (
-                  <button
-                    type="button"
-                    onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                    title={t.clearSearch}
-                    aria-label={t.clearSearch}
-                    className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
-                    style={{
-                      background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
-                      color: isDark ? '#C7C7CC' : '#6E6E73',
-                    }}
-                  >
-                    <X size={15} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onClose}
-                  title={t.winClose}
-                  aria-label={t.winClose}
-                  className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-colors"
-                  style={{
-                    background: isDark ? 'rgba(255,255,255,.10)' : 'rgba(60,60,67,.18)',
-                    color: isDark ? '#C7C7CC' : '#6E6E73',
-                  }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-            </div>
-
-            <div className="max-h-[min(620px,calc(100vh-180px))] overflow-y-auto custom-scrollbar px-2 pb-2">
-              <div className={`px-4 pb-2 pt-1 text-[13px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                {t.recent}
-              </div>
-              {filtered.length > 0 ? filtered.map(chat => (
-                <button
-                  key={chat.id}
-                  type="button"
-                  onClick={() => onSelect && onSelect(chat.id)}
-                  className={`w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors ${
-                    isDark ? 'hover:bg-white/[.08]' : 'hover:bg-black/[.05]'
-                  }`}
-                  style={{ color: isDark ? '#F2F2F7' : '#1D1D1F' }}
-                >
-                  <div className="flex min-w-0 items-center justify-between gap-4">
-                    <span className="min-w-0 truncate text-[16px] leading-6">{chat.title}</span>
-                    <span className={`shrink-0 text-[13px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{chat.date}</span>
-                  </div>
-                </button>
-              )) : (
-                <div className={`px-4 py-8 text-center text-[14px] ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                  {t.sidebarTaskEmpty || '暂无任务'}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // 对话管理页:上方搜索框,工具行「对话|已收纳」切换 + 批量管理,左侧日期栏,右侧对话列表。
-    // 已收纳与在线对话共用同一套日期分组/搜索/多选管线,仅数据源与行操作不同
-    // (在线:置顶/重命名/收纳/删除;已收纳:恢复/永久删除,按对话自身更新时间分组)。
-    // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
-    // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
-    const SearchView = ({ theme, history, t, language, activeId, activeCodexId, activeScheduledId, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
-      const isDark = theme === 'dark';
-      const [query, setQuery] = useState('');
-      const [selectedDate, setSelectedDate] = useState(null);
-      const [showArchived, setShowArchived] = useState(false);
-      const [batchMode, setBatchMode] = useState(false);
-      const [selectedIds, setSelectedIds] = useState(() => new Set());
-      const [batchDeleteConfirming, setBatchDeleteConfirming] = useState(false);
-      const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(null);
-      const [listFilter, setListFilter] = useState('all'); // all | pinned | scheduled(仅对话面板生效,与侧栏任务列表同款)
-      const [listSort, setListSort] = useState('pinned_first'); // pinned_first | recent
-      const [filterOpen, setFilterOpen] = useState(false);
-      const filterRef = useRef(null);
-      const inputRef = useRef(null);
-      const listRef = useRef(null);
-      const groupRefs = useRef({});
-
-      // 收纳 toast「前往查看」的一次性信号:展开「已收纳」面板后立刻消费,避免下次进页又自动打开
-      useEffect(() => {
-        if (showArchivedProp) {
-          setShowArchived(true);
-          onShowArchivedConsumed && onShowArchivedConsumed();
-        }
-      }, [showArchivedProp]);
-
-      const archivedList = archived || [];
-      // 已收纳复用同一套日期分组管线:归一成 history 形状(updatedAt 取对话自身更新时间),
-      // 原始 DTO 挂 raw 供恢复/删除按钮取 archived_at 等信息
-      const archivedHistory = archivedList.map(s => ({
-        id: s.id,
-        title: s.title || t.newChat,
-        date: formatSessionDate(s.updated_at || s.created_at, language),
-        updatedAt: s.updated_at || s.created_at || '',
-        raw: s,
-      }));
-      // 筛选/排序与左侧任务列表同款(仅对话面板):全部/置顶/定时任务 + 置顶优先/最近更新
-      const searchFilterOptions = [
-        { id: 'all', label: t.sidebarTaskFilterAll },
-        { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        { id: 'scheduled', label: t.sidebarTaskFilterScheduled },
-      ];
-      const searchSortOptions = [
-        { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
-        { id: 'recent', label: t.sidebarTaskSortRecent },
-      ];
-      const sourceHistory = (showArchived ? archivedHistory : (history || []))
-        .filter(c => {
-          if (showArchived || listFilter === 'all') return true;
-          if (listFilter === 'pinned') return !!c.pinned;
-          if (listFilter === 'scheduled') return c.taskKind === 'scheduled';
-          return true;
-        })
-        .sort((a, b) => {
-          if (showArchived || listSort === 'recent') {
-            return String(b.updatedAt || b.pinnedAt || '').localeCompare(String(a.updatedAt || a.pinnedAt || ''));
-          }
-          if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-          const aTime = a.pinned ? (a.pinnedAt || a.updatedAt) : (a.updatedAt || a.pinnedAt);
-          const bTime = b.pinned ? (b.pinnedAt || b.updatedAt) : (b.updatedAt || b.pinnedAt);
-          return String(bTime || '').localeCompare(String(aTime || ''));
-        });
-
-      // 筛选菜单:点外部/Escape 关闭(与侧栏筛选菜单同款交互)
-      useEffect(() => {
-        if (!filterOpen) return undefined;
-        const closeOnPointerDown = (event) => {
-          if (filterRef.current && !filterRef.current.contains(event.target)) setFilterOpen(false);
-        };
-        const closeOnEscape = (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            setFilterOpen(false);
-          }
-        };
-        document.addEventListener('pointerdown', closeOnPointerDown);
-        window.addEventListener('keydown', closeOnEscape);
-        return () => {
-          document.removeEventListener('pointerdown', closeOnPointerDown);
-          window.removeEventListener('keydown', closeOnEscape);
-        };
-      }, [filterOpen]);
-
-      // 按本地日历日分组:组内时间倒序,组间日期倒序,无时间戳落 'unknown' 沉底
-      const dateGroups = [];
-      {
-        const byDate = new Map();
-        // sourceHistory 已按当前面板排好序(置顶优先/最近更新),组内顺序即排序结果
-        sourceHistory.forEach(chat => {
-          const key = localDateKey(chat.updatedAt);
-          if (!byDate.has(key)) byDate.set(key, []);
-          byDate.get(key).push(chat);
-        });
-        byDate.forEach((rows, key) => dateGroups.push({ key, rows }));
-        dateGroups.sort((a, b) => {
-          if (a.key === 'unknown') return 1;
-          if (b.key === 'unknown') return -1;
-          return b.key.localeCompare(a.key);
-        });
-      }
-      // 'all' = 全部日期;未选或所选日期已不存在时,默认落在最近一天
-      const activeDate = selectedDate === 'all'
-        ? 'all'
-        : dateGroups.some(g => g.key === selectedDate)
-          ? selectedDate
-          : (dateGroups[0] ? dateGroups[0].key : null);
-
-      const q = query.trim().toLowerCase();
-      const searching = q.length > 0;
-      const matchedGroups = searching
-        ? dateGroups
-            .map(g => ({ key: g.key, rows: g.rows.filter(c => c.title.toLowerCase().includes(q)) }))
-            .filter(g => g.rows.length > 0)
-        : dateGroups;
-      // 左侧日期栏:搜索时只保留有匹配项的日期
-      const railGroups = searching ? matchedGroups : dateGroups;
-      const railTotal = railGroups.reduce((n, g) => n + g.rows.length, 0);
-      const activeGroup = dateGroups.find(g => g.key === activeDate) || null;
-
-      // 当前右侧可见的会话 id(全选范围):搜索态=全部匹配,否则=所选日期(或「全部」)的分组
-      const visibleGroups = searching ? matchedGroups : (activeDate === 'all' ? dateGroups : (activeGroup ? [activeGroup] : []));
-      const visibleIds = visibleGroups.flatMap(g => g.rows.map(c => c.id));
-      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
-
-      const exitBatch = () => { setBatchMode(false); setSelectedIds(new Set()); setBatchDeleteConfirming(false); };
-      const toggleSelect = (id) => setSelectedIds(prev => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id); else next.add(id);
-        return next;
-      });
-      const toggleSelectAll = () => setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
-      const switchPanel = (toArchived) => { setShowArchived(toArchived); exitBatch(); };
-      const runBatchArchive = () => { if (onArchiveMany) onArchiveMany(Array.from(selectedIds)); exitBatch(); };
-      const runBatchDelete = () => { if (onDeleteMany) onDeleteMany(Array.from(selectedIds)); exitBatch(); };
-      const runBatchRestore = () => { if (onRestoreMany) onRestoreMany(Array.from(selectedIds)); exitBatch(); };
-
-      const handlePickDate = (key) => {
-        setSelectedDate(key);
-        if (!searching) return;
-        // 搜索态:右侧是全部匹配的长列表,点击日期滚动到对应分组,「全部」回顶部
-        const container = listRef.current;
-        if (!container) return;
-        if (key === 'all') { container.scrollTo({ top: 0, behavior: 'smooth' }); return; }
-        const el = groupRefs.current[key];
-        if (el) container.scrollTo({ top: el.offsetTop, behavior: 'smooth' });
-      };
-
-      const renderChatRow = (chat) => {
-        if (batchMode) {
-          const selected = selectedIds.has(chat.id);
-          return (
-            <div
-              key={chat.id}
-              onClick={() => toggleSelect(chat.id)}
-              className={`flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
-            >
-              <span className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
-                selected
-                  ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-                  : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
-              }`}>
-                {selected && <Check size={13} />}
-              </span>
-              {chat.pinned && <PinIcon size={12} className={`shrink-0 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
-              <span className={`flex-1 min-w-0 truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
-              <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{chat.date}</span>
-            </div>
-          );
-        }
-        if (showArchived) {
-          // 已收纳行:恢复 / 永久删除(删除走 ArchivedDeleteConfirmDialog 二次确认)
-          const s = chat.raw || chat;
-          return (
-            <div
-              key={chat.id}
-              className={`flex items-center gap-2 px-4 py-[12px] rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
-            >
-              <span className="flex-1 min-w-0 pr-2">
-                <span className={`block truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.title}</span>
-                <span className={`block truncate text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                  {t.searchArchivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}
-                </span>
-              </span>
-              <button
-                type="button"
-                onClick={() => onRestoreArchived && onRestoreArchived(chat.id)}
-                className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
-              >
-                {t.searchRestore}
-              </button>
-              <button
-                type="button"
-                onClick={() => setArchivedDeleteConfirm(s)}
-                className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
-              >
-                {t.cpDelete}
-              </button>
-            </div>
-          );
-        }
-        // 与左侧任务列表同款行项目:置顶/重命名/删除/收纳/打开文件夹/右键菜单;
-        // 定时任务运行项点按进入运行会话(与侧栏一致)。
-        // 管理页只是会话清单,不高亮当前会话(active 恒 false),避免打开过的对话残留"选中"背景。
-        const route = sessionRoute(chat);
-        return (
-          <RecentItem
-            key={chat.id}
-            chat={chat}
-            theme={theme}
-            t={t}
-            active={false}
-            personaTarget={false}
-            onSelect={route === 'codex'
-              ? () => onOpenCodex && onOpenCodex(chat.id)
-              : route === 'scheduled'
-                ? () => onOpenScheduledRun && onOpenScheduledRun(chat.scheduledRun)
-                : onSelect}
-            onRename={onRename}
-            onDelete={onDelete}
-            onTogglePinned={onTogglePinned}
-            onOpenFolder={onOpenFolder}
-            onArchive={onArchive}
-          />
-        );
-      };
-
-      const renderDateHeader = (key) => (
-        <div className={`px-4 pt-4 pb-1 text-[13px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-          {formatDateGroupLabel(key, language)}
-        </div>
-      );
-
-      return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 animate-in fade-in duration-300">
-          <div className="flex-1 min-h-0 flex flex-col px-6 pt-16 pb-6">
-            <div className="max-w-[960px] w-full mx-auto flex flex-col flex-1 min-h-0 relative">
-
-              {/* Centered Search Bar */}
-              <div className={`shrink-0 flex items-center gap-3 px-6 py-4 rounded-full mb-4 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
-                <Search size={22} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
-                <input
-                  ref={inputRef}
-                  type="text"
-                  placeholder={t.searchPlaceholder}
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  className={`flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`}
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    aria-label={t.clearSearch}
-                    title={t.clearSearch}
-                    onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                    className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#DDE3EA]'}`}
-                  >
-                    <X size={16} />
-                  </button>
-                ) : null}
-              </div>
-
-              {/* 工具行:「对话|已收纳」切换(批量模式下换成全选) + 批量管理开关;与搜索框同宽对齐 */}
-              <div className="shrink-0 h-9 mb-2 flex items-center justify-between">
-                {batchMode ? (
-                  <button
-                    type="button"
-                    onClick={toggleSelectAll}
-                    className={`h-8 px-2 flex items-center gap-2 rounded-full text-[13px] transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
-                  >
-                    <span className={`w-4 h-4 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
-                      allVisibleSelected
-                        ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-                        : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
-                    }`}>
-                      {allVisibleSelected && <Check size={11} />}
-                    </span>
-                    <span>{t.searchSelectAll} · {t.searchSelectedCount(selectedIds.size)}</span>
-                  </button>
-                ) : (
-                  <div className={`flex items-center gap-0.5 p-0.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
-                    {[{ key: false, label: t.searchPanelChats }, { key: true, label: `${t.searchArchivedEntry} (${archivedList.length})` }].map(tab => (
-                      <button
-                        key={String(tab.key)}
-                        type="button"
-                        onClick={() => switchPanel(tab.key)}
-                        className={`h-7 px-3 rounded-full text-[13px] font-medium transition-colors ${
-                          showArchived === tab.key
-                            ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#1F1F1F] shadow-sm')
-                            : (isDark ? 'text-[#C4C7C5]' : 'text-[#444746]')
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div className="flex items-center gap-1">
-                  {!showArchived && (
-                    <div ref={filterRef} className="relative">
-                      <button
-                        type="button"
-                        title={t.sidebarTaskFilter}
-                        onClick={() => setFilterOpen(v => !v)}
-                        className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${
-                          filterOpen || listFilter !== 'all' || listSort !== 'pinned_first'
-                            ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
-                            : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
-                        }`}
-                      >
-                        <Filter size={15} />
-                      </button>
-                      {filterOpen && (
-                        <div className={`absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${isDark ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'}`}>
-                          <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                            {t.sidebarTaskFilter}
-                          </div>
-                          {searchFilterOptions.map(option => (
-                            <button
-                              key={option.id}
-                              type="button"
-                              onClick={() => setListFilter(option.id)}
-                              className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
-                            >
-                              <span className="w-4 shrink-0">{listFilter === option.id && <Check size={13} />}</span>
-                              <span className="truncate">{option.label}</span>
-                            </button>
-                          ))}
-                          <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
-                          <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
-                            {t.sidebarTaskSort}
-                          </div>
-                          {searchSortOptions.map(option => (
-                            <button
-                              key={option.id}
-                              type="button"
-                              onClick={() => setListSort(option.id)}
-                              className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
-                            >
-                              <span className="w-4 shrink-0">{listSort === option.id && <Check size={13} />}</span>
-                              <span className="truncate">{option.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${
-                      batchMode
-                        ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
-                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
-                    }`}
-                  >
-                    {batchMode ? t.searchBatchDone : t.searchBatchManage}
-                  </button>
-                </div>
-              </div>
-
-              {/* 主体:左日期栏 + 右对话列表 */}
-              <div className="flex-1 min-h-0 flex gap-2">
-                {/* 日期栏(跟随「对话|已收纳」切换的数据集) */}
-                <div className="w-[150px] max-sm:w-[112px] shrink-0 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => handlePickDate('all')}
-                    className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
-                      activeDate === 'all'
-                        ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
-                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
-                    }`}
-                  >
-                    <span className="truncate">{t.searchDateAll}</span>
-                    <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{railTotal}</span>
-                  </button>
-                  {railGroups.map(g => {
-                    const active = g.key === activeDate;
-                    return (
-                      <button
-                        key={g.key}
-                        type="button"
-                        onClick={() => handlePickDate(g.key)}
-                        className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
-                          active
-                            ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
-                            : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
-                        }`}
-                      >
-                        <span className="truncate">{formatDateGroupLabel(g.key, language)}</span>
-                        <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{g.rows.length}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* 对话列表:「对话|已收纳」共用日期分组渲染,仅行项目不同 */}
-                <div ref={listRef} className="relative flex-1 min-w-0 overflow-y-auto custom-scrollbar">
-                  {showArchived && archivedList.length === 0 && !searching ? (
-                    <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                      {t.searchArchivedEmpty}
-                    </div>
-                  ) : searching ? (
-                    matchedGroups.length > 0 ? matchedGroups.map(g => (
-                      <div key={g.key} ref={el => { if (el) groupRefs.current[g.key] = el; }}>
-                        {renderDateHeader(g.key)}
-                        {g.rows.map(renderChatRow)}
-                      </div>
-                    )) : (
-                      <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                        {t.searchNoResults}
-                      </div>
-                    )
-                  ) : (
-                    activeDate === 'all' ? dateGroups.map(g => (
-                      <div key={g.key}>
-                        {renderDateHeader(g.key)}
-                        {g.rows.map(renderChatRow)}
-                      </div>
-                    )) : (
-                      activeGroup && (
-                        <div>
-                          {renderDateHeader(activeGroup.key)}
-                          {activeGroup.rows.map(renderChatRow)}
-                        </div>
-                      )
-                    )
-                  )}
-                </div>
-              </div>
-
-              {/* 批量操作条:多选模式下吸附底部(在线=收纳/删除,已收纳=恢复/删除) */}
-              {batchMode && (
-                <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 pl-4 pr-2 py-2 rounded-full shadow-xl border ${isDark ? 'bg-[#202124] border-white/10' : 'bg-white border-black/10'}`}>
-                  <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
-                    {t.searchSelectedCount(selectedIds.size)}
-                  </span>
-                  {batchDeleteConfirming ? (
-                    <span className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                      <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
-                      <button
-                        type="button"
-                        title={t.riDelConfirm}
-                        disabled={selectedIds.size === 0}
-                        onClick={runBatchDelete}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
-                      >
-                        <Check size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        title={t.cpCancel}
-                        onClick={() => setBatchDeleteConfirming(false)}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}
-                      >
-                        <X size={14} />
-                      </button>
-                    </span>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        disabled={selectedIds.size === 0}
-                        onClick={showArchived ? runBatchRestore : runBatchArchive}
-                        className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
-                      >
-                        {showArchived ? t.searchRestore : t.archiveSession}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={selectedIds.size === 0}
-                        onClick={() => setBatchDeleteConfirming(true)}
-                        className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
-                      >
-                        {t.cpDelete}
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* 永久删除已收纳对话(二次确认,沿用原设置页同款弹窗) */}
-              {archivedDeleteConfirm && createPortal(
-                <ArchivedDeleteConfirmDialog
-                  theme={theme}
-                  t={t}
-                  onCancel={() => setArchivedDeleteConfirm(null)}
-                  onConfirm={() => {
-                    const id = archivedDeleteConfirm.id;
-                    setArchivedDeleteConfirm(null);
-                    if (id && onDelete) onDelete(id);
-                  }}
-                />,
-                document.body
-              )}
-
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-
     // ==========================================
-    // Knowledge View — 本地知识 L0：全系统秒搜 + 去重
-    // 后端 kb_* 命令（src-tauri/src/knowledge）。纯 L0 元数据，不过模型。
-    // ==========================================
-    // KnowledgeView 用 currentView 条件渲染:切 tab 会卸载、丢 state,回来重新加载 → 每次闪
-    // 一下"还没建立索引"空状态再加载。模块级缓存上次拉到的 L0/L1 数据:remount 时初始 state
-    // 直接用缓存(切回秒显),后台 refresh 更新。loaded=false 时显示加载中而非误判空状态。
-    const useDetachedBase = () => {
-      const bs = useBridgeState(['platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'settings', 'workflow']);
-      const [language, setLanguage] = useState('zh');
-      const [activeTheme, setActiveTheme] = useState('dark');
-      const initRef = useRef(false);
-      // 一次性从落盘 settings 恢复语言/主题(镜像 App 的恢复逻辑,但自包含,不动 App)。
-      useEffect(() => {
-        if (initRef.current || !bs || !bs.settings) return;
-        const lang = TAG_TO_LANG[bs.settings.language];
-        if (lang) setLanguage(lang);
-        setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
-        initRef.current = true;
-      }, [bs]);
-      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
-      return { bs, activeTheme, t: dict[language] };
-    };
-
-    // 撕离窗口的面板错误边界:某个 View 抛错时不白屏,退化为提示,保留标题栏可关窗。
-    class DetachedErrorBoundary extends React.Component {
-      constructor(p) { super(p); this.state = { err: null }; }
-      static getDerivedStateFromError(err) { return { err }; }
-      render() {
-        if (this.state.err) {
-          return <div className="p-6 text-sm opacity-70">面板加载失败:{String(this.state.err && this.state.err.message || this.state.err)}</div>;
-        }
-        return this.props.children;
-      }
-    }
-
-    // kind → 撕离窗口该挂载的面板。复用主窗口同款 View 组件(见主渲染区 currentView 分支);
-    // 跨视图导航类 handler 在撕离窗口里是 no-op(单视图,无处可跳)。
-    const DETACHED_VIEWS = {
-      session:   ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={()=>{}} onOpenEditor={()=>{}} justInstalledTool={null} setJustInstalledTool={()=>{}} onGotoSettings={()=>{}} onGotoTools={()=>{}} />,
-      workflow:  ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
-      monitor:   ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
-      cardpool:  ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={()=>{}} onAICreate={()=>{}} initialMyOnly={false} />,
-      toolstore: ({ theme, t, bs }) => <ToolStoreView theme={theme} t={t} onNewChat={()=>{}} />,
-      knowledge: ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} />,
-      outputs:   ({ theme, t, bs }) => <KnowledgeView theme={theme} t={t} mode="outputs" />,
-    };
-
-    const DetachedShell = ({ kind, id }) => {
-      const { bs, activeTheme, t } = useDetachedBase();
-      // session 窗口:boot 时把该 session 切为 active,让 ChatView 显示它。
-      useEffect(() => {
-        if (kind === 'session' && id && bridge.available && bridge.sessions.switchToSession) bridge.sessions.switchToSession(id);
-      }, [kind, id]);
-      useEffect(() => {
-        if (kind !== 'monitor' || !bridge.available) return;
-        bridge.monitor.startMonitorPolling();
-        return () => { if (bridge.monitor.stopMonitorPolling) bridge.monitor.stopMonitorPolling(); };
-      }, [kind]);
-      // 关闭时通知主窗口回坞(去角标)。
-      useEffect(() => {
-        const key = kind + ':' + (id || '');
-        const onUnload = () => { if (isTauriAvailable()) void emitTauri('detach:closed', key).catch(() => {}); };
-        window.addEventListener('beforeunload', onUnload);
-        return () => window.removeEventListener('beforeunload', onUnload);
-      }, [kind, id]);
-      const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
-      const isDark = activeTheme === 'dark';
-      return (
-        <div className={`h-screen w-screen flex flex-col ${isDark ? 'bg-[#1B1C1D] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
-          <div data-tauri-drag-region className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"
-               style={{ borderBottom: '1px solid rgba(128,128,128,.2)' }}>
-            <span data-tauri-drag-region className="pointer-events-none">{(t && t.tearoffTitle) || '撕离窗口'} · {kind}</span>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto">
-            {bs ? <DetachedErrorBoundary><View theme={activeTheme} t={t} bs={bs} /></DetachedErrorBoundary> : <div className="p-6 text-sm opacity-60">…</div>}
-          </div>
-        </div>
-      );
-    };
-
     // 长按撕离:按住 ~350ms 不动 → onPickUp(info)(DOM avatar 浮起跟手 + begin_detach_drag 原生判落点);
     // 长按达成前移动 >10px = 视为滚动/取消;长按达成后吞掉随之而来的 click(避免又切视图);
     // 按在内部按钮/输入框上不起手(让它们自理)。按下即禁选,防止长按选中下方文字。

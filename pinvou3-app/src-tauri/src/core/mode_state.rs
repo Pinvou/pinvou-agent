@@ -29,6 +29,21 @@ pub struct ActiveSkillBinding {
     pub project_dir: Option<String>,
 }
 
+/// 会话挂载的单个本地知识集。`enabled=false` 保留挂载关系，但不参与检索。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedCollection {
+    pub collection_id: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedCollectionsSnapshot {
+    pub revision: u64,
+    pub collections: Vec<MountedCollection>,
+}
+
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
@@ -78,6 +93,18 @@ pub struct SessionModeState {
     /// 不落盘——重启 app 后回到未挂载。
     #[serde(default)]
     pub mounted_collection: Option<i64>,
+    /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
+    #[serde(default)]
+    pub mounted_collections: Vec<MountedCollection>,
+    /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
+    #[serde(skip)]
+    pub mounted_collections_revision: u64,
+    /// 多智能体模式开关（ADR-0006）：模型列表下方的会话级开关。开启后本会话
+    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入并回收引擎，取消
+    /// 仍在后台运行的子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
+    /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
+    #[serde(default)]
+    pub multi_agent: bool,
 }
 
 impl Default for SessionModeState {
@@ -91,6 +118,9 @@ impl Default for SessionModeState {
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
+            mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
+            multi_agent: false,
         }
     }
 }
@@ -146,6 +176,9 @@ mod tests {
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
+            mounted_collections: Vec::new(),
+            mounted_collections_revision: 0,
+            multi_agent: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));

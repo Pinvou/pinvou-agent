@@ -47,15 +47,20 @@ function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__TAURI_INVOKES__=[];
+    window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false};
+    window.__KB_MODEL_DOWNLOAD_ARGS__=[];
     const ZOMBIE={session_id:'s-zombie',project_dir:'/x/wf',scenario:'sansheng_liubu'};
     const WF_STATE={project_dir:'/x/wf',scenario:'sansheng_liubu',all_completed:false,roles:{taizi:{name:'太子',status:'running'},zhongshu:{name:'中书',status:'pending'}}};
     const WF_TEMPLATE={id:'sansheng-liubu',name:'三省六部帮你办',enabled:true,scenarios:['sansheng_liubu'],ui:{header:'🏛️ 三省六部帮你办',template:{title:'🏛️ 三省六部帮你办',badge:'11 agent',desc:'太子接旨 → 中书省起草 → 门下省审议 → 尚书省派单 → 六部并行办差 → 回奏呈报。'},agentDefs:[{id:'taizi',name:'太子',color:'#C9A227'},{id:'zhongshu',name:'中书省',color:'#4285F4'}],lanes:[{lane:0,title:'接旨',agents:['taizi']},{lane:1,title:'起草',agents:['zhongshu']}]}};
     let SESSIONS=[
       {id:'s-pinned-old',title:'置顶旧会话',created_at:'2026-06-01T08:00:00Z',updated_at:'2026-06-01T08:00:00Z',pinned:true,pinned_at:'2026-07-20T08:00:00Z'},
+      {id:'s-attachment',title:'看看这个\\n\\n📎 PINV',title_attachment_names:['PINVOU-M0-开源决策基线.md'],created_at:Date.now()-2000,updated_at:Date.now()-2000},
       {id:'s1',title:'第三季度财报分析',created_at:Date.now()-1000,updated_at:Date.now()}
     ];
-    let CODEX_SESSIONS=[{id:'codex-1',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
+    let CODEX_SESSIONS=[{id:'codex-1',agent_id:'codex',title:'Codex回归会话',created_at:new Date(Date.now()-1000).toISOString(),updated_at:new Date().toISOString(),workspace_kind:'temporary',workspace_path:''}];
     let ARCHIVED_SESSIONS=[];
+    let MOUNTED_COLLECTIONS=[];
+    let MOUNTED_COLLECTIONS_REVISION=0;
     window.__SHELL_JOBS__=[{
       id:'task-history-done',job_id:'history-1',command:'history-shell',cwd:'C:/tmp',status:'Completed',
       exit_code:0,elapsed_ms:20,stdout_tail:'history output',stderr_tail:'',stdout_len:14,stderr_len:0,
@@ -71,7 +76,9 @@ function injectSource() {
       {role:'assistant',content:[{type:'tool_use',id:'t-shell-history',name:'exec_shell',input:{command:'history-shell'}}]},
       {role:'user',content:[{type:'tool_result',tool_use_id:'t-shell-history',content:'history output'}]},
       {role:'assistant',content:[{type:'tool_use',id:'t-mcp',name:'mcp_pptx_make_pptx',input:{title:'季度报告'}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]}]}};
+      {role:'user',content:[{type:'tool_result',tool_use_id:'t-mcp',content:'{"path":"/home/x/季度报告.pptx"}'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060json\\n{"name":"Reviewer\\\'s Agent","body":"hidden-prompt","description":"It\\\'s a highlighted JSON card"}\\n\\u0060\\u0060\\u0060'}]},
+      {role:'assistant',content:[{type:'text',text:'\\u0060\\u0060\\u0060card-question\\n{"question":"继续执行？","options":["继续","取消"]}\\n\\u0060\\u0060\\u0060'}]}]}};
     function invoke(cmd,args){
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
@@ -83,7 +90,14 @@ function injectSource() {
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_codex_acp_status': return Promise.resolve({installed:false,node_supported:false,authenticated:false});
-        case 'get_codex_acp_timeline': return Promise.resolve([]);
+        case 'get_acp_agent_status': return Promise.resolve({agent_id:args.agentId||'codex',installed:true,node_supported:true,authenticated:true});
+        case 'get_codex_acp_session_info': return Promise.resolve({session_id:args.sessionId,models:[],current_model_id:'',modes:null,config_options:[]});
+        case 'get_codex_acp_timeline': return Promise.resolve([
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:1,timestamp:'2026-08-04T01:00:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test copy layout'}]}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
+          {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:4,timestamp:'2026-08-04T01:00:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}},
+        ]);
         case 'get_codex_acp_pending_permissions': return Promise.resolve([]);
         case 'get_codex_acp_pending_elicitations': return Promise.resolve([]);
         case 'list_codex_workspace': return Promise.resolve({entries:[]});
@@ -129,12 +143,44 @@ function injectSource() {
         case 'exit_plan_to_yolo': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
+        case 'session_mounted_collections_snapshot': return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'session_mounted_collections': return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_mounted_collection': return Promise.resolve(MOUNTED_COLLECTIONS.find(function(entry){ return entry.enabled; })?.collectionId || null);
+        case 'session_set_mounted_collections': MOUNTED_COLLECTIONS=(args.collections||[]).map(function(entry){ return {collectionId:entry.collectionId,enabled:entry.enabled!==false}; }); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve(MOUNTED_COLLECTIONS);
+        case 'session_add_mounted_collection': {
+          const entry=MOUNTED_COLLECTIONS.find(function(item){return item.collectionId===args.collectionId;});
+          if(entry) entry.enabled=true; else MOUNTED_COLLECTIONS.push({collectionId:args.collectionId,enabled:true});
+          MOUNTED_COLLECTIONS_REVISION+=1;
+          return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        }
+        case 'session_set_mounted_collection_enabled': {
+          const entry=MOUNTED_COLLECTIONS.find(function(item){return item.collectionId===args.collectionId;});
+          if(entry) entry.enabled=args.enabled!==false;
+          MOUNTED_COLLECTIONS_REVISION+=1;
+          return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        }
+        case 'session_remove_mounted_collection': MOUNTED_COLLECTIONS=MOUNTED_COLLECTIONS.filter(function(item){return item.collectionId!==args.collectionId;}); MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'session_unmount_collection': MOUNTED_COLLECTIONS=[]; MOUNTED_COLLECTIONS_REVISION+=1; return Promise.resolve({revision:MOUNTED_COLLECTIONS_REVISION,collections:MOUNTED_COLLECTIONS});
+        case 'kb_model_status': return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_model_download':
+          window.__KB_MODEL_DOWNLOAD_ARGS__.push(args||{});
+          if(!(args&&args.repair)) return Promise.reject(new Error('mock embedding load failed'));
+          window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false,failed:false,error:null};
+          return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_collection_list': return Promise.resolve([
+          {id:7,name:'项目资料',docCount:3},
+          {id:8,name:'团队规范',docCount:5},
+        ]);
         case 'list_workflows': return Promise.resolve([WF_TEMPLATE]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'summon_pinvou': return Promise.resolve({personas:[{id:'travel',label:'旅行规划',primary:true}],alternates:['budget'],trace:'看了下，有几点确认',recommendations:[{topic:'预算',pick:'中档',why:'稳妥'}],issues:[{severity:'high',kind:'quality',persona:'travel',text:'日期冲突',suggestion:'对齐'}],coverage:[],framework:[],risk:'medium',confidence:0.8});
         case 'load_session': return Promise.resolve(CONV[args&&args.id]||{metadata:{id:'x'},messages:[],artifacts:[]});
+        case 'get_session_timeline': return Promise.resolve([
+          {turn_id:'copy-deepseek',event:'user_start',timestamp:1000,ui_turn_index:0},
+          {turn_id:'copy-deepseek',event:'assistant_done',timestamp:3000,status:'Completed',usage:{input_tokens:12,output_tokens:4}},
+        ]);
         case 'list_shell_tasks': return Promise.resolve(window.__SHELL_JOBS__);
         case 'cancel_shell_task':
           window.__CANCEL_SHELL_ARGS__=args;
@@ -226,6 +272,101 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
+  const markdownHighlight = await page.evaluate(() => {
+    const render = window.PinvouMarkdownRenderer && window.PinvouMarkdownRenderer.renderMarkdown;
+    if (typeof render !== 'function') return { found: false };
+
+    const fixture = document.createElement('section');
+    fixture.style.cssText = 'position:fixed;left:-10000px;top:0;width:720px;visibility:hidden;';
+    document.body.appendChild(fixture);
+    const markdown = [
+      '```json',
+      '{"enabled": true, "message": "hello"}',
+      '```',
+      '',
+      '```diff',
+      '-oldValue',
+      '+newValue',
+      '```',
+    ].join('\n');
+
+    function addSample(mode, structure) {
+      const wrapper = document.createElement('div');
+      let content;
+      if (structure === 'nested') {
+        wrapper.className = `${mode}-code`;
+        content = document.createElement('div');
+        content.className = 'msg-md';
+        wrapper.appendChild(content);
+      } else if (structure === 'persona') {
+        content = wrapper;
+        content.className = `persona-body ${mode}-code`;
+      } else {
+        content = wrapper;
+        content.className = `msg-md ${mode}-code`;
+      }
+      content.innerHTML = render(markdown);
+      fixture.appendChild(wrapper);
+      const pre = content.querySelector('pre[data-language-id="json"]');
+      const stringToken = pre && pre.querySelector('.hljs-string');
+      const attrToken = pre && pre.querySelector('.hljs-attr');
+      const addition = content.querySelector('.language-diff .hljs-addition');
+      return {
+        languageId: pre && pre.dataset.languageId,
+        stringColor: stringToken && getComputedStyle(stringToken).color,
+        attrColor: attrToken && getComputedStyle(attrToken).color,
+        preBackground: pre && getComputedStyle(pre).backgroundColor,
+        label: pre && getComputedStyle(pre, '::before').content,
+        diffBackground: addition && getComputedStyle(addition).backgroundColor,
+      };
+    }
+
+    const lightNested = addSample('light', 'nested');
+    const lightSame = addSample('light', 'same');
+    const darkNested = addSample('dark', 'nested');
+    const darkSame = addSample('dark', 'same');
+    const darkPersona = addSample('dark', 'persona');
+
+    const sanitized = document.createElement('div');
+    sanitized.innerHTML = render([
+      '<img src="x" onerror="window.__MARKDOWN_XSS__=true">',
+      '<script>window.__MARKDOWN_XSS__=true</script>',
+      '',
+      '```json',
+      '{"safe": true}',
+      '```',
+    ].join('\n'));
+    const sanitizedPre = sanitized.querySelector('pre[data-language-id="json"]');
+    const security = {
+      noScriptElement: !sanitized.querySelector('script'),
+      noEventAttribute: !sanitized.querySelector('img')?.hasAttribute('onerror'),
+      noExecution: window.__MARKDOWN_XSS__ !== true,
+      dataAttributePreserved: sanitizedPre?.dataset.languageId === 'json',
+      highlightMarkupPreserved: !!sanitizedPre?.querySelector('.hljs-attr'),
+    };
+    fixture.remove();
+    return { found: true, lightNested, lightSame, darkNested, darkSame, darkPersona, security };
+  });
+  const transparent = value => !value || value === 'rgba(0, 0, 0, 0)' || value === 'transparent';
+  rec(
+    'Markdown highlighting uses sanitized DOM and consistent computed themes',
+    markdownHighlight.found
+      && Object.values(markdownHighlight.security || {}).every(Boolean)
+      && markdownHighlight.lightNested.languageId === 'json'
+      && markdownHighlight.lightNested.stringColor === markdownHighlight.lightSame.stringColor
+      && markdownHighlight.lightNested.attrColor === markdownHighlight.lightSame.attrColor
+      && markdownHighlight.darkNested.stringColor === markdownHighlight.darkSame.stringColor
+      && markdownHighlight.darkNested.attrColor === markdownHighlight.darkSame.attrColor
+      && markdownHighlight.darkSame.stringColor === markdownHighlight.darkPersona.stringColor
+      && markdownHighlight.darkSame.attrColor === markdownHighlight.darkPersona.attrColor
+      && markdownHighlight.darkSame.stringColor !== markdownHighlight.lightSame.stringColor
+      && markdownHighlight.darkSame.preBackground === markdownHighlight.darkPersona.preBackground
+      && !transparent(markdownHighlight.darkSame.diffBackground)
+      && !transparent(markdownHighlight.lightSame.diffBackground)
+      && String(markdownHighlight.darkPersona.label).includes('JSON'),
+    JSON.stringify(markdownHighlight),
+  );
+
   // ① 启动落草稿页(僵尸 run 不劫持)
   const st = await page.evaluate(() => {
     const s = window.TauriBridge.state.getMany(['chat', 'workflow', 'vllm']);
@@ -262,6 +403,22 @@ async function expand(page) {
   rec('①a-1 默认置顶会话跨日期分组上浮且不重复',
     pinnedSidebarState.count === 1 && pinnedSidebarState.beforeToday && pinnedSidebarState.pinVisible,
     JSON.stringify(pinnedSidebarState));
+  const attachmentSidebarState = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('[data-testid="regular-sidebar-item"]')]
+      .find(node => (node.textContent || '').includes('PINVOU-M0-开源决策基线.md'));
+    return {
+      exists: !!row,
+      text: row ? row.textContent || '' : '',
+      hasMarkdownIcon: !!(row && row.querySelector('svg path[fill="#42a5f5"]')),
+    };
+  });
+  rec(
+    '①a-2 附件会话标题隐藏协议符号并显示对应文件图标',
+    attachmentSidebarState.exists
+      && !attachmentSidebarState.text.includes('📎')
+      && attachmentSidebarState.hasMarkdownIcon,
+    JSON.stringify(attachmentSidebarState),
+  );
   await page.click('[data-testid="sidebar-task-filter"]'); await sleep(200);
   const sidebarTaskFilterMenu = await page.evaluate(() => {
     const menu = document.querySelector('[data-testid="sidebar-task-filter-menu"]');
@@ -277,7 +434,7 @@ async function expand(page) {
       hasRegularChat: text.includes('普通会话'),
     };
   });
-  rec('①a-2 任务筛选弹层只保留有效筛选与排序项',
+  rec('①a-3 任务筛选弹层只保留有效筛选与排序项',
     sidebarTaskFilterMenu.exists && sidebarTaskFilterMenu.hasAll && sidebarTaskFilterMenu.hasPinned &&
     sidebarTaskFilterMenu.hasScheduled && sidebarTaskFilterMenu.hasPinnedFirst && sidebarTaskFilterMenu.hasRecent &&
     !sidebarTaskFilterMenu.hasCurrentChat && !sidebarTaskFilterMenu.hasRegularChat,
@@ -302,6 +459,46 @@ async function expand(page) {
   rec('①a-3 对话管理页正确打开 Codex 会话',
     codexManagedOpen.found && codexManagedState.view === 'codex' && codexManagedState.activeId === 'codex-1',
     JSON.stringify({ ...codexManagedOpen, ...codexManagedState }));
+
+  const codexAssistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__CODEX_ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const turn = [...document.querySelectorAll('section')]
+      .find(node => node.innerText.includes('Codex copy layout'));
+    const action = turn?.querySelector('[data-testid="assistant-message-actions"]');
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    const footer = action?.closest('[data-testid="assistant-message-footer"]');
+    const children = [...(footer?.children || [])];
+    if (!button || children.length < 2) return { found: false, childCount: children.length };
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => { throw new Error('clipboard denied'); } },
+    });
+    document.execCommand = () => false;
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const firstRect = children[0].getBoundingClientRect();
+    return {
+      found: true,
+      copied: window.__CODEX_ASSISTANT_COPY_TEXT__ || '',
+      failureFeedback: button.textContent.trim(),
+      failureTitle: button.getAttribute('title') || '',
+      childCount: children.length,
+      sameRow: children.every(node => {
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
+    };
+  });
+  rec('①a-3b Codex 复制操作与完成状态保持同一行',
+    codexAssistantCopy.found && codexAssistantCopy.copied === 'Codex copy layout' &&
+    codexAssistantCopy.failureFeedback === '复制失败' && codexAssistantCopy.failureTitle === '复制失败' &&
+    codexAssistantCopy.sameRow,
+    JSON.stringify(codexAssistantCopy));
 
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
@@ -430,6 +627,35 @@ async function expand(page) {
     brief: (document.querySelector('textarea') || {}).value || '',
   }));
   rec('①b 工作流可停止并预填原需求重开', stopButton && stopped.status === 'stopped' && stopped.sessionId === 's-zombie' && stopped.brief === '原始三省六部需求', JSON.stringify(stopped));
+
+  const workflowModalCoverage = await page.evaluate(() => {
+    const modal = document.querySelector('[data-testid="workflow-new-task-modal"]');
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    if (!modal || !sidebar) return { found: !!modal, sidebarFound: !!sidebar };
+    const modalRect = modal.getBoundingClientRect();
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const coveredElement = document.elementFromPoint(
+      sidebarRect.left + sidebarRect.width / 2,
+      sidebarRect.top + sidebarRect.height / 2,
+    );
+    return {
+      found: true,
+      sidebarFound: true,
+      mountedAtBody: modal.parentElement === document.body,
+      position: getComputedStyle(modal).position,
+      coversViewport: Math.abs(modalRect.left) < 1 && Math.abs(modalRect.top) < 1
+        && Math.abs(modalRect.width - window.innerWidth) < 1
+        && Math.abs(modalRect.height - window.innerHeight) < 1,
+      coversSidebar: !!coveredElement?.closest('[data-testid="workflow-new-task-modal"]'),
+    };
+  });
+  rec(
+    '①b-2 工作流新建任务弹窗遮罩覆盖包括左侧导航在内的整个窗口',
+    workflowModalCoverage.found && workflowModalCoverage.sidebarFound
+      && workflowModalCoverage.mountedAtBody && workflowModalCoverage.position === 'fixed'
+      && workflowModalCoverage.coversViewport && workflowModalCoverage.coversSidebar,
+    JSON.stringify(workflowModalCoverage),
+  );
 
   // ①c stop marker 是最终状态：迟到快照即使仍带 running/reviewing，也不能让角色卡回跳。
   const stoppedAfterLateSnapshot = await page.evaluate(async () => {
@@ -581,6 +807,138 @@ async function expand(page) {
     restored.shellHistoryCount === 1 && restored.shellHistoryTaskId === 'task-history-done' &&
     restored.shellHistoryOutput === 'history output',
     JSON.stringify({ hit, ...restored }));
+
+  const multiKb = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    document.querySelector('[data-testid="kb-mount-trigger"]')?.click();
+    await wait(100);
+    const row = name => [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes(name));
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('项目资料')?.querySelector('[data-testid="kb-mount-toggle"]')?.click();
+    await wait(100);
+    row('团队规范')?.querySelector('[data-testid="kb-mount-remove"]')?.click();
+    await wait(100);
+    const knowledge = window.TauriBridge.state.get('knowledge');
+    return {
+      mountedCollections: knowledge.mountedCollections,
+      mountedCollection: knowledge.mountedCollection,
+      menuText: document.body.innerText,
+      commands: window.__TAURI_INVOKES__
+        .filter(call => /^session_(?:add|set|remove)_mounted_collection/.test(call.cmd))
+        .map(call => ({ cmd: call.cmd, args: call.args })),
+    };
+  });
+  rec('③a-1 多知识库可追加、单独停用和移除且不覆盖其他挂载项',
+    multiKb.commands.length === 4 &&
+    multiKb.commands[0].cmd === 'session_add_mounted_collection' &&
+    multiKb.commands[1].cmd === 'session_add_mounted_collection' &&
+    multiKb.commands[2].cmd === 'session_set_mounted_collection_enabled' &&
+    multiKb.commands[3].cmd === 'session_remove_mounted_collection' &&
+    multiKb.mountedCollections.length === 1 &&
+    multiKb.mountedCollections[0].collectionId === 7 &&
+    multiKb.mountedCollections[0].enabled === false &&
+    multiKb.mountedCollection === null &&
+    multiKb.menuText.includes('项目资料') && multiKb.menuText.includes('已停用'),
+    JSON.stringify(multiKb));
+  const kbRuntimeGate = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = { installed: true, ready: false, loading: true };
+    const trigger = document.querySelector('[data-testid="kb-mount-trigger"]');
+    // 上一个场景结束时菜单仍展开：先关闭，再打开以刷新运行时状态。
+    trigger?.click();
+    await wait(50);
+    trigger?.click();
+    await wait(100);
+    const row = [...document.querySelectorAll('[data-testid="kb-mount-row"]')]
+      .find(node => (node.textContent || '').includes('团队规范'));
+    const toggle = row?.querySelector('[data-testid="kb-mount-toggle"]');
+    const before = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    toggle?.click();
+    await wait(50);
+    const after = window.__TAURI_INVOKES__.filter(call => call.cmd === 'session_add_mounted_collection').length;
+    return {
+      disabled: Boolean(toggle && toggle.disabled),
+      blockedCopy: document.body.innerText.includes('Embedding 模型正在加载或加载失败'),
+      mountCallsUnchanged: before === after,
+    };
+  });
+  rec('③a-2 模型文件已安装但运行时未就绪时不允许挂载',
+    kbRuntimeGate.disabled && kbRuntimeGate.blockedCopy && kbRuntimeGate.mountCallsUnchanged,
+    JSON.stringify(kbRuntimeGate));
+  const kbRepairFlow = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    window.__KB_MODEL_STATUS__ = {
+      installed: true,
+      ready: false,
+      loading: false,
+      failed: true,
+      error: 'mock embedding load failed',
+    };
+    await window.TauriBridge.knowledge.downloadKbModel(false).catch(() => {});
+    document.querySelector('[data-nav="knowledge"]')?.click();
+    await wait(300);
+    const failedVisible = document.body.innerText.includes('Embedding 模型加载失败');
+    const repairButton = [...document.querySelectorAll('button')]
+      .find(button => (button.textContent || '').includes('重新下载并修复'));
+    repairButton?.click();
+    await wait(250);
+    const calls = window.__KB_MODEL_DOWNLOAD_ARGS__.slice();
+    return {
+      failedVisible,
+      repairFound: Boolean(repairButton),
+      repairRequested: calls.some(args => args && args.repair === true),
+      recovered: document.body.innerText.includes('AI 知识库'),
+    };
+  });
+  rec('③a-3 模型加载失败时可重新下载、验证并恢复知识库',
+    kbRepairFlow.failedVisible && kbRepairFlow.repairFound && kbRepairFlow.repairRequested && kbRepairFlow.recovered,
+    JSON.stringify(kbRepairFlow));
+  await clickText(page, '第三季度财报分析');
+  await sleep(300);
+  const assistantCopy = await page.evaluate(async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async text => { window.__ASSISTANT_COPY_TEXT__ = text; } },
+    });
+    const action = [...document.querySelectorAll('[data-testid="assistant-message-actions"]')]
+      .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
+    const button = action?.querySelector('[data-testid="assistant-message-copy"]');
+    if (!button) return { found: false };
+    const turn = action.closest('[data-conversation-turn]');
+    const footer = action.closest('[data-testid="assistant-message-footer"]');
+    const footerChildren = [...(footer?.children || [])];
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return {
+      found: true,
+      copied: window.__ASSISTANT_COPY_TEXT__ || '',
+      renderedCard: turn?.innerText.includes("Reviewer's Agent") && turn?.innerText.includes("It's a highlighted JSON card"),
+      renderedQuestion: turn?.innerText.includes('继续执行？') && turn?.innerText.includes('继续') && turn?.innerText.includes('取消'),
+      hiddenPayloadAbsent: !turn?.innerText.includes('hidden-prompt') && !turn?.innerText.includes('"question"'),
+      feedback: button.textContent.trim(),
+      title: button.getAttribute('title') || '',
+      singleAction: turn?.querySelectorAll('[data-testid="assistant-message-actions"]').length === 1,
+      sharedFooter: Boolean(footer),
+      footerChildCount: footerChildren.length,
+      sameRow: footerChildren.length > 1 && footerChildren.every((node) => {
+        const firstRect = footerChildren[0].getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        return Math.abs((rect.top + rect.height / 2) - (firstRect.top + firstRect.height / 2)) < 2;
+      }),
+    };
+  });
+  rec('③a 每条完成态助手回复提供一键复制并显示成功反馈',
+    assistantCopy.found && assistantCopy.copied.includes('已生成会议纪要。') &&
+    assistantCopy.copied.includes("Reviewer's Agent\n\nIt's a highlighted JSON card") &&
+    assistantCopy.copied.includes('继续执行？\n\n1. 继续\n2. 取消') &&
+    assistantCopy.renderedCard && assistantCopy.renderedQuestion && assistantCopy.hiddenPayloadAbsent &&
+    assistantCopy.feedback === '已复制' && assistantCopy.title === '已复制' &&
+    assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
+    JSON.stringify(assistantCopy));
 
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。

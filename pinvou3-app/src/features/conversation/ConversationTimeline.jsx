@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -11,6 +11,7 @@ import {
 } from '../../components/icons.jsx';
 import {
   commandExecutionDetails,
+  countsAsFailedOperation,
   elapsedMs,
   externalMarkdownUrl,
   fetchToolDetails,
@@ -19,6 +20,8 @@ import {
   searchToolDetails,
   terminalStatus,
 } from './conversation-model.js';
+import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMessageActions.jsx';
+import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 
 const DEFAULT_COPY = {
   completed: '已完成',
@@ -26,6 +29,8 @@ const DEFAULT_COPY = {
   interrupted: '已中断',
   limitReached: '达到限制',
   processing: '处理中',
+  processingActive: '正在处理',
+  callingTool: name => `正在调用 ${name}`,
   waitingPermission: '等待授权',
   waitingInput: '等待你的输入',
   waitingInputShort: '等待输入',
@@ -88,6 +93,9 @@ const DEFAULT_COPY = {
   contextUsage: (used, size) => `上下文 ${used} / ${size}`,
   attachment: '附件',
   operations: (count, failedCount) => `执行 ${count} 项${failedCount ? ` · ${failedCount} 项失败` : ''}`,
+  copyReply: '复制回复',
+  copyReplySuccess: '已复制',
+  copyReplyFailed: '复制失败',
 };
 
 function conversationCopy(copy) {
@@ -103,14 +111,12 @@ function localizedSemanticLabel(value, copy) {
     网页内容: copy.webContent,
     网页: copy.webPage,
     '执行 Shell 命令': copy.shellCommand,
+    工具: copy.tool,
   }[value] || value;
 }
 
 export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(String(text || '')), {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
-  }), [text]);
+  const html = useMemo(() => renderMarkdown(text), [text]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -450,7 +456,7 @@ function GenericToolItem({ item, now, copy }) {
   const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
-      <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
+      <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
         meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
         status={state} open={open} onToggle={() => setOpen(value => !value)} />
       {open && (
@@ -472,14 +478,26 @@ function GenericToolItem({ item, now, copy }) {
   );
 }
 
+function ToolItem({ item, now, renderToolItem, onOpenExternal, copy }) {
+  const custom = renderToolItem && renderToolItem(item);
+  if (custom !== undefined) return custom;
+  if (item.type === 'command_execution') {
+    return <CommandExecutionItem item={item} now={now} copy={copy} />;
+  }
+  if (isSearchTool(item.tool)) {
+    return <SearchToolItem item={item} now={now} onOpenExternal={onOpenExternal} copy={copy} />;
+  }
+  if (isFetchTool(item.tool)) {
+    return <FetchToolItem item={item} now={now} onOpenExternal={onOpenExternal} copy={copy} />;
+  }
+  return <GenericToolItem item={item} now={now} copy={copy} />;
+}
+
 function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
   const c = conversationCopy(copy);
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
-  const failedCount = items.filter(item => terminalStatus(
-    item.status,
-    item.type === 'command_execution' ? commandExecutionDetails(item.tool).exitCode : null,
-  ) === 'failed').length;
+  const failedCount = items.filter(countsAsFailedOperation).length;
   const failed = failedCount > 0;
   const runningItem = [...items].reverse().find(item => terminalStatus(item.status) === 'running');
   const runningLabel = runningItem
@@ -501,17 +519,16 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
       </button>
       {expanded && (
         <div className="ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
-          {items.map(item => {
-            const custom = renderToolItem && renderToolItem(item);
-            if (custom !== undefined) return <React.Fragment key={item.id}>{custom}</React.Fragment>;
-            return item.type === 'command_execution'
-              ? <CommandExecutionItem key={item.id} item={item} now={now} copy={c} />
-              : isSearchTool(item.tool)
-                ? <SearchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
-                : isFetchTool(item.tool)
-                  ? <FetchToolItem key={item.id} item={item} now={now} onOpenExternal={onOpenExternal} copy={c} />
-                : <GenericToolItem key={item.id} item={item} now={now} copy={c} />;
-          })}
+          {items.map(item => (
+            <ToolItem
+              key={item.id}
+              item={item}
+              now={now}
+              renderToolItem={renderToolItem}
+              onOpenExternal={onOpenExternal}
+              copy={c}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -629,6 +646,17 @@ function DefaultItem({
       />
     );
   }
+  if (item.type === 'tool' || item.type === 'command_execution' || item.type === 'file_change') {
+    return (
+      <ToolItem
+        item={item}
+        now={now}
+        renderToolItem={renderToolItem}
+        onOpenExternal={onOpenExternal}
+        copy={copy}
+      />
+    );
+  }
   if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
   if (item.type === 'permission') {
     return (
@@ -685,6 +713,7 @@ export function ConversationTurn({
       ? c.contextUsage(Number(turnUsage.used || 0).toLocaleString(), Number(turnUsage.size || 0).toLocaleString())
       : '';
   const userAttachments = Array.isArray(turn.userAttachments) ? turn.userAttachments : [];
+  const assistantAvailable = assistantResponseAvailable(turn);
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length)
@@ -698,9 +727,8 @@ export function ConversationTurn({
                     <span
                       key={`${attachment.name || 'attachment'}-${index}`}
                       className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4"
-                      title={attachment.name}
                     >
-                      <span>📎</span>
+                      <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
                       <span className="truncate">{attachment.name || c.attachment}</span>
                     </span>
                   ))}
@@ -724,7 +752,7 @@ export function ConversationTurn({
           {running && (
             <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingAttention ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
               <span className={`w-1.5 h-1.5 rounded-full ${waitingAttention ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityLabel || c.processing)} · {duration}
+              {waitingPermission ? c.waitingPermission : waitingInput ? c.waitingInputShort : (turn.activityToolName ? c.callingTool(turn.activityToolName) : c.processingActive)} · {duration}
             </div>
           )}
           {presentation.map((item, index) => {
@@ -748,8 +776,11 @@ export function ConversationTurn({
               />
             );
           })}
-          {(turn.lifecycleKnown || turn.completedAt || turn.error) && !running && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-2">
+          {!running && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error) && <AssistantMessageFooter>
+            {assistantAvailable && (
+              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={c} />
+            )}
+            {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}
               {operationCount > 0 && (
@@ -759,8 +790,8 @@ export function ConversationTurn({
               )}
               {usageLabel && <span className="text-[11px] text-gray-400">{usageLabel}</span>}
               {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </div>
-          )}
+            </>}
+          </AssistantMessageFooter>}
         </div>
       </div>
     </section>

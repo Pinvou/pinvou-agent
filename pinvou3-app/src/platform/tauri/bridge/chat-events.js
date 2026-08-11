@@ -114,6 +114,96 @@
       }]);
       state.activeTurnTimelineId = null;
     }
+
+    function latestTimelineCompletion(events) {
+      var latest = 0;
+      (Array.isArray(events) ? events : []).forEach(function (event) {
+        if (!event || event.event !== "assistant_done") return;
+        var timestamp = Number(event.timestamp || 0);
+        if (Number.isFinite(timestamp)) latest = Math.max(latest, timestamp);
+      });
+      return latest;
+    }
+
+    function authoritativeTimelineMissesKnownCompletion(local, authoritative) {
+      var authoritativeStarts = Object.create(null);
+      var authoritativeCompletions = Object.create(null);
+      (Array.isArray(authoritative) ? authoritative : []).forEach(function (event) {
+        if (!event || !event.turn_id) return;
+        if (event.event === "user_start") authoritativeStarts[event.turn_id] = true;
+        if (event.event === "assistant_done") authoritativeCompletions[event.turn_id] = true;
+      });
+      return (Array.isArray(local) ? local : []).some(function (event) {
+        return event && event.event === "assistant_done" && event.turn_id &&
+          authoritativeStarts[event.turn_id] && !authoritativeCompletions[event.turn_id];
+      });
+    }
+
+    // chat:done 可能来自后台、页面恢复或切换后的会话，本地 buffer 不一定见过
+    // 对应的 turn_started。后端保证先落 timing_events 再发终态；这里重新读取
+    // 权威时间线，避免明明已完成却漏掉状态徽标与耗时。读取失败时保留本地投影。
+    function refreshAuthoritativeTurnTimeline(sessionId) {
+      if (!sessionId) return Promise.resolve(false);
+      return invoke("get_session_timeline", { sessionId: sessionId })
+        .then(function (authoritative) {
+          if (!Array.isArray(authoritative) || authoritative.length === 0) return false;
+          var changed = false;
+          runSyncOnSession(sessionId, function () {
+            // 不允许一次短暂的旧磁盘快照把刚收到的本地终态倒退回“执行中”。
+            // 正常后端已保证先落盘再发事件；这层同时保护旧版本和异常 I/O 时序。
+            if (authoritativeTimelineMissesKnownCompletion(state.turnTimeline, authoritative)) return;
+            var localLatest = latestTimelineCompletion(state.turnTimeline);
+            var authoritativeLatest = latestTimelineCompletion(authoritative);
+            // timing sidecar 是 best-effort；若权威快照明显旧于刚收到的本地终态，
+            // 不用旧数据覆盖当前可见状态。
+            if (localLatest && authoritativeLatest + 5000 < localLatest) return;
+            state.turnTimeline = authoritative;
+            changed = true;
+          });
+          if (changed) notify();
+          return changed;
+        })
+        .catch(function (error) {
+          safeConsoleInfo("[pinvou3][chat-ui] timeline refresh skipped", {
+            sid: sessionId,
+            error: String(error || ""),
+          });
+          return false;
+        });
+    }
+
+    function preserveInterruptedAssistantPresentation() {
+      var userItemIndex = -1;
+      var afterMessageIndex = -1;
+      var afterUserOrdinal = -1;
+      for (var index = 0; index < state.chatItems.length; index++) {
+        var candidate = state.chatItems[index];
+        if (!candidate || candidate.type !== "user") continue;
+        afterUserOrdinal += 1;
+        userItemIndex = index;
+        afterMessageIndex = -1;
+        if (Number.isFinite(Number(candidate.messageIndex))) {
+          afterMessageIndex = Number(candidate.messageIndex);
+        }
+      }
+      // 没有任何 user 气泡时无法锚定轮次;若把全部历史 assistant 项都标记为
+      // 仅展示,下次权威重载会在末尾追加整段历史的重复副本。此时放弃保留,
+      // 退化为修复前行为(重载后消失),但必须清空 pending 以免污染下一轮。
+      if (userItemIndex < 0) {
+        context.pendingAssistantText = "";
+        context.pendingAssistantBlocks = [];
+        return;
+      }
+      for (var itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+        var item = state.chatItems[itemIndex];
+        if (!item || item.type !== "assistant" || !item.html) continue;
+        item.interruptedDisplayOnly = true;
+        item.afterMessageIndex = afterMessageIndex;
+        item.afterUserOrdinal = afterUserOrdinal;
+      }
+      context.pendingAssistantText = "";
+      context.pendingAssistantBlocks = [];
+    }
     var markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     var trackArtifact = context.trackArtifact;
     var untrackArtifact = context.untrackArtifact;
@@ -146,6 +236,12 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
+  function isInternalRuntimeUserMessage(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
+  }
+
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;
@@ -157,6 +253,7 @@
       return false;
     }
     var content = String(payload.content || "");
+    var hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
     var operation = String(payload.operation || "append");
     var action = String(payload.action || "");
     var actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -193,10 +290,13 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = { mode: String(acceptedMode && acceptedMode.mode || "yolo") };
+        state.modeState = {
+          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
+          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
+        };
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      if (!snapshotAlreadyCoversTurn) {
+      if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (var index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
@@ -237,7 +337,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -356,6 +459,7 @@
     // Update the streaming chat item
     var item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
+      item.text = context.currentStreamText;
       item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
@@ -364,6 +468,7 @@
       state.chatItems.push({
         id: context.currentStreamId,
         type: "assistant",
+        text: context.currentStreamText,
         html: renderMarkdown(context.currentStreamText),
         time: timeStr(),
         streaming: true,
@@ -521,7 +626,7 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? "（技能已加载，内容不展示）" : p.output;
+    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {
@@ -611,7 +716,12 @@
     });
     var doneBuffer = sid ? getBuffer(sid) : null;
     var requiresAuthorityReconcile = !isScheduledRunSession(sid);
-    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed is emitted before chat:done. A client that joins
+      // at the terminal tail may not have seen an earlier turn event, so keep
+      // the already received revision while initializing remote-turn state.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
@@ -631,7 +741,12 @@
           });
         }
       }
-      flushAssistantMessageToHistory();
+      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      var terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
+      var interrupted = terminalStatus === "interrupted" ||
+        terminalStatus === "cancelled" || terminalStatus === "canceled";
+      if (interrupted) preserveInterruptedAssistantPresentation();
+      else flushAssistantMessageToHistory();
       // 本 turn 写/改过的产物 → 末尾补一张成品卡(带召唤图标),让 Boss 就近召唤 pinvou。
       // present 过的复用其 title/desc;AI 没 present 的兜底用文件名补首卡(否则没召唤入口=这次的 bug)。
       // 本 turn 刚 present_artifact 出过卡的跳过,不重复。edit/append 改多次也只补一张。
@@ -682,6 +797,7 @@
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
+    refreshAuthoritativeTurnTimeline(sid);
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
@@ -690,7 +806,7 @@
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。");
+          addSystemItem(bt("desktopDoneSyncPending"));
         });
       }
       notify();
@@ -793,9 +909,10 @@
       return attachment && attachment.basename;
     }).filter(Boolean);
     var displayText = attachmentNames.length
-      ? content + (content ? "\n\n" : "") + "📎 " + attachmentNames.join(" · ")
+      ? content + (content ? "\n\n" : "") + "📎 " + JSON.stringify(attachmentNames)
       : content;
-    if (isBusyFor(sid)) {
+    var remoteBuffer = getBuffer(sid);
+    if (isBusyFor(sid) || (remoteBuffer && remoteBuffer.queued && remoteBuffer.queued.length > 0)) {
       runSyncOnSession(sid, function () {
         state.queued.push({
           id: ++context.itemIdSeq,
@@ -806,6 +923,7 @@
         });
       });
       notify();
+      if (!isBusyFor(sid)) flushQueued(sid);
       return;
     }
     doSendFor(sid, content, displayText, attachments, { remoteClientMessageId: p.client_message_id || null });
@@ -819,18 +937,56 @@
   });
 
   // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
-  // 桌面前端 state.mountedCollection(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
+  // 桌面前端多知识库状态(由 ChatView 渲染 KB 指示器)。否则 mobile 切了 KB,
   // 桌面端 chip 仍显旧状态直到用户切 session 强制重读。
-  // payload 形状:{ session_id, collection_id } 或 { session_id, collection_id: null }。
+  // 新 payload 带 collections；collection_id 保留给旧远程端兼容。
   // 只处理当前 active session 的变更(其他 session 的挂载不影响当前视图)。
+  var kbMountSyncGeneration = 0;
+  function normalizeMountedCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (entry == null) return null;
+      var collectionId = typeof entry === "object"
+        ? (entry.collectionId != null ? entry.collectionId : entry.collection_id)
+        : entry;
+      if (collectionId == null || seen[String(collectionId)]) return null;
+      seen[String(collectionId)] = true;
+      return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
+    }).filter(Boolean);
+  }
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
     if (p.session_id !== state.activeSessionId) return;
-    var cid = (p.collection_id == null) ? null : p.collection_id;
-    if (state.mountedCollection === cid) return;
-    state.mountedCollection = cid;
-    notify();
+    var sessionId = p.session_id;
+    var generation = ++kbMountSyncGeneration;
+    var payloadMounted = Array.isArray(p.collections)
+      ? normalizeMountedCollections(p.collections)
+      : (p.collection_id == null ? [] : [{ collectionId: p.collection_id, enabled: true }]);
+    function normalizeSnapshot(value) {
+      if (value && !Array.isArray(value) && Array.isArray(value.collections)) {
+        return { revision: Number(value.revision || 0), collections: value.collections };
+      }
+      return { revision: 0, collections: Array.isArray(value) ? value : payloadMounted };
+    }
+    function commit(value) {
+      if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
+      var snapshot = normalizeSnapshot(value);
+      if (snapshot.revision < Number(state.mountedCollectionsRevision || 0)) return;
+      var mounted = normalizeMountedCollections(snapshot.collections);
+      state.mountedCollections = mounted;
+      state.mountedCollectionsRevision = snapshot.revision;
+      var firstEnabled = mounted.find(function (entry) { return entry.enabled; });
+      state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
+      notify();
+    }
+    // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
+    invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
+      .then(function (snapshot) { commit(snapshot); })
+      .catch(function () {
+        commit({ revision: Number(p.revision || 0), collections: payloadMounted });
+      });
   });
 
   // 本地语音识别依赖安装进度（模型下载 / ffmpeg 安装）
@@ -871,7 +1027,7 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo" };
+    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo", multiAgent: !!readyMode.multi_agent };
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;
@@ -930,6 +1086,10 @@
   });
 
 
-    return {};
+    return {
+      latestTimelineCompletion: latestTimelineCompletion,
+      authoritativeTimelineMissesKnownCompletion: authoritativeTimelineMissesKnownCompletion,
+      refreshAuthoritativeTurnTimeline: refreshAuthoritativeTurnTimeline,
+    };
   };
 })();

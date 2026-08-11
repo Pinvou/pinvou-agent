@@ -8,14 +8,17 @@ Their original licenses remain in effect.
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
 | CodeWhale | `pinvou-v0.9.0-r1` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
-| DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; Linux ARM64 CLI downloaded during build | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
-| Lark CLI and skills | 1.0.65 | MIT skill sources; Linux ARM64 CLI downloaded during build | MIT | https://github.com/larksuite/cli |
-| WeCom CLI and skills | 0.1.9 | MIT skill sources; Linux ARM64 CLI downloaded during build | MIT | https://github.com/WecomTeam/wecom-cli |
+| DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
+| Lark CLI and skills | 1.0.65 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
+| WeCom CLI and skills | 0.1.9 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
 | agency-agents-zh | bundle schema `agency-1.0`, 201-role snapshot imported 2026-06-03 | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |
 | DOMPurify | 3.4.2 | Vendored browser script (`pinvou3-app/src/vendor/purify.min.js`, `remote-control-relay/web/purify.min.js`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
+| Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
+| Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
+| cc-switch (provider preset data) | Public preset list (trimmed 2026-08-05) | Base URL / protocol presets in `pinvou3-app/src/features/settings/acp-provider-catalog.js` | MIT | https://github.com/farion1231/cc-switch |
 
 Vendored script attribution:
 
@@ -24,12 +27,25 @@ Vendored script attribution:
   John Gruber attribution and BSD-style terms.
 - DOMPurify: Copyright 2025–2026 Dr.-Ing. Mario Heiderich, Cure53.
 - Tailwind CSS: Copyright (c) Tailwind Labs, Inc.
+- Material Icon Theme: Copyright (c) 2025 Material Extensions. The glyphs
+  were exported from the
+  [Iconify Material Icon Theme collection](https://icon-sets.iconify.design/material-icon-theme/);
+  Iconify is used only as the export source and is not a runtime dependency.
+- Material Icon Theme (file/folder icon subset): Copyright (c) 2025 Material
+  Extensions. The SVGs in `pinvou3-app/src/file-icons/theme/` were downloaded
+  from the upstream `icons/` directory (`csv.svg` is upstream `table.svg`);
+  `file.svg`, `folder.svg`, and `folder-open.svg` are build-time defaults the
+  upstream repository does not commit, reproduced verbatim from the upstream
+  generator source (`src/core/generator`, default color `#90a4ae`).
 
 Detailed license texts and upstream notices for bundled connectors are kept
 next to their resources under `pinvou3-app/src-tauri/resources/`.
 
-The exact connector URLs and SHA-256 checksums are recorded in
-`pinvou3-app/src-tauri/resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json`.
+The exact connector URLs and SHA-256 checksums are recorded in the per-platform
+`connectors.lock.json` manifests under
+`pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/`
+(linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64), and are
+fetched on first use by the app itself; `scripts/fetch-connectors.sh` is the CI/reviewer helper that materializes the same artifacts for verification.
 
 ## Package dependencies and SBOM
 
@@ -40,11 +56,36 @@ metadata.
 
 ## Assets and trademarks
 
-The application images, screenshots, pet sprites, and Pinvou visual assets in
-this repository were created for Pinvou and are not imported third-party asset
-packs. Service icons and product names may reproduce third-party marks only to
-identify compatible integrations.
+Except for components and icon glyphs identified above, the application
+images, screenshots, pet sprites, and Pinvou visual assets in this repository
+were created for Pinvou and are not imported third-party asset packs. Service
+icons and product names may reproduce third-party marks only to identify
+compatible integrations.
 
 Product names and trademarks belong to their respective owners. Inclusion
 does not imply endorsement or grant trademark rights. See
 [`TRADEMARKS.md`](TRADEMARKS.md).
+
+## Material Icon Theme license
+
+The MIT License (MIT)
+
+Copyright (c) 2025 Material Extensions
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

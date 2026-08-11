@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const rgbToHex = (value, fallback = '#000000') => {
   const raw = String(value || '').trim();
@@ -36,7 +37,7 @@ const COLOR_PRESETS = [
 ];
 
 const FONT_PRESETS = [
-  { label: '系统默认', group: 'System', value: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { label: '系统默认', labelKey: 'diFontSystem', group: 'System', value: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
   { label: '微软雅黑', group: 'Chinese', value: '"Microsoft YaHei", "PingFang SC", sans-serif' },
   { label: '苹方', group: 'Chinese', value: '"PingFang SC", "Microsoft YaHei", sans-serif' },
   { label: '宋体', group: 'Chinese', value: 'SimSun, "Songti SC", serif' },
@@ -78,29 +79,32 @@ const shortElementLabel = (element) => {
   return String(element.tagName || selector || 'element').toLowerCase();
 };
 
-const describeSelectedElement = (element) => {
-  if (!element) return { title: '未选择', subtitle: '' };
+const describeSelectedElement = (element, L) => {
+  if (!element) return { title: L.diNoSelection, subtitle: '', typeKey: '' };
   const tag = String(element.tagName || '').toLowerCase();
   const className = String(element.className || '').trim();
   const text = String(element.text || '').trim();
   const selector = String(element.selector || '');
   const lower = `${tag} ${className} ${selector}`.toLowerCase();
-  let type = '元素';
-  if (tag === 'img' || tag === 'svg' || tag === 'canvas' || lower.includes('icon')) type = '图形';
-  else if (tag === 'button' || lower.includes('button') || lower.includes('btn')) type = '按钮';
-  else if (tag === 'a') type = '链接';
-  else if (tag === 'input' || tag === 'textarea' || tag === 'select') type = '输入控件';
-  else if (tag === 'span' || tag === 'p' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || text) type = '文字';
-  else if (lower.includes('card') || lower.includes('item')) type = '卡片';
-  else if (tag === 'section' || tag === 'article' || tag === 'main' || tag === 'header' || tag === 'footer' || tag === 'div') type = '容器';
+  let typeKey = 'element';
+  if (tag === 'img' || tag === 'svg' || tag === 'canvas' || lower.includes('icon')) typeKey = 'graphic';
+  else if (tag === 'button' || lower.includes('button') || lower.includes('btn')) typeKey = 'button';
+  else if (tag === 'a') typeKey = 'link';
+  else if (tag === 'input' || tag === 'textarea' || tag === 'select') typeKey = 'input';
+  else if (tag === 'span' || tag === 'p' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || text) typeKey = 'text';
+  else if (lower.includes('card') || lower.includes('item')) typeKey = 'card';
+  else if (tag === 'section' || tag === 'article' || tag === 'main' || tag === 'header' || tag === 'footer' || tag === 'div') typeKey = 'container';
   const readableClass = className.split(/\s+/).filter(Boolean)[0] || '';
+  const fallbackTag = tag || L.diTypes.element;
   return {
-    title: `已选中${type}`,
-    subtitle: readableClass ? `${readableClass} · ${tag || '元素'}` : (tag || '元素'),
+    title: L.diSelected(L.diTypes[typeKey]),
+    subtitle: readableClass ? `${readableClass} · ${fallbackTag}` : fallbackTag,
+    typeKey,
   };
 };
 
-const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyChange, onClearChanges, docked = false }) => {
+const DesignInspectorPanel = ({ isDark, t, selectedElement, changes = [], onApplyChange, onClearChanges, docked = false }) => {
+  const L = t.uiArtifacts;
   const style = (selectedElement && selectedElement.computedStyle) || {};
   const [textDraft, setTextDraft] = useState('');
   const [changesExpanded, setChangesExpanded] = useState(false);
@@ -229,10 +233,10 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
   const fontFamilyField = () => {
     const current = cssValue(style, 'fontFamily');
     const matched = findFontPreset(current);
-    const displayLabel = matched ? matched.label : (current ? '自定义字体' : '系统默认');
+    const displayLabel = matched ? (matched.labelKey ? L[matched.labelKey] : matched.label) : (current ? L.diFontCustom : L.diFontSystem);
     return (
       <div className="relative flex flex-col gap-1 sm:col-span-2">
-        <span className={labelCls}>字体</span>
+        <span className={labelCls}>{L.diFont}</span>
         <button
           type="button"
           data-testid="design-font-family-input"
@@ -264,7 +268,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                   applyFontFamily(preset.value);
                 }}
               >
-                <span className="text-[13px] font-medium">{preset.label}</span>
+                <span className="text-[13px] font-medium">{preset.labelKey ? L[preset.labelKey] : preset.label}</span>
               </button>
             ))}
           </div>
@@ -320,7 +324,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                 onChange={(e) => setColorDraft(e.target.value)}
                 onBlur={submitColorDraft}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === 'Enter' && !isImeComposing(e)) {
                     e.preventDefault();
                     submitColorDraft();
                     setColorMenu(null);
@@ -347,7 +351,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                     : (isDark ? 'border-white/20' : 'border-black/10')
                 }`}
                 style={{ background: color }}
-                aria-label={`选择颜色 ${color}`}
+                aria-label={L.diPickColor(color)}
               />
             ))}
           </div>
@@ -362,7 +366,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                   : (isDark ? 'bg-white/[0.08] hover:bg-white/[0.12]' : 'bg-black/[0.05] hover:bg-black/[0.08]')
               }`}
             >
-              清除
+              {L.diClear}
             </button>
             <button
               type="button"
@@ -372,7 +376,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
               }}
               className="h-8 rounded-full bg-[#007AFF] px-3 text-[12px] font-semibold text-white hover:bg-[#006EE6]"
             >
-              完成
+              {L.diDone}
             </button>
           </div>
         </div>
@@ -382,13 +386,13 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
   };
   const groupedChanges = changes.reduce((acc, change) => {
     const key = change.groupId || `${change.selector || 'unknown'}:${change.id}`;
-    if (!acc[key]) acc[key] = { key, label: change.groupLabel || change.elementLabel || change.selector || '设计变更', items: [] };
+    if (!acc[key]) acc[key] = { key, label: change.groupLabel || change.elementLabel || change.selector || L.diChangeFallback, items: [] };
     acc[key].items.push(change);
     return acc;
   }, {});
-  const selectedSummary = describeSelectedElement(selectedElement);
+  const selectedSummary = describeSelectedElement(selectedElement, L);
   const hasTextContent = String(selectedElement && selectedElement.text || '').trim().length > 0;
-  const isTextElement = selectedSummary.title.includes('文字') || hasTextContent;
+  const isTextElement = selectedSummary.typeKey === 'text' || hasTextContent;
   const hasValue = (property) => {
     const raw = cssValue(style, property).trim();
     return raw && !['auto', 'normal', 'none', 'initial', 'unset', '0px', '0', 'rgba(0, 0, 0, 0)'].includes(raw);
@@ -397,7 +401,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
   if (!selectedElement) {
     return (
       <div data-testid="design-inspector-panel" className={panelCls}>
-        <div className={docked ? 'p-4 text-[13px] font-semibold' : 'text-[13px] font-semibold'}>请选择预览中的元素</div>
+        <div className={docked ? 'p-4 text-[13px] font-semibold' : 'text-[13px] font-semibold'}>{L.diSelectHint}</div>
       </div>
     );
   }
@@ -419,7 +423,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
               onClick={() => setDetailsOpen((value) => !value)}
               className={`mt-1 text-[11px] font-medium ${isDark ? 'text-[#A8C7FA] hover:text-[#C2D7FB]' : 'text-[#0B57D0] hover:text-[#174EA6]'}`}
             >
-              {detailsOpen ? '收起详情' : '查看详情'}
+              {detailsOpen ? L.diCollapseDetails : L.diViewDetails}
             </button>
           </div>
           {changes.length > 0 && (
@@ -431,35 +435,35 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                 isDark ? 'bg-white/[0.08] hover:bg-white/[0.12] text-[#F5F5F7]' : 'bg-black/[0.05] hover:bg-black/[0.08] text-[#3C3C43]'
               }`}
             >
-              清空修改
+              {L.diClearChanges}
             </button>
           )}
         </div>
         {detailsOpen && (
           <div data-testid="design-selected-details" className={`mt-2 rounded-[10px] p-2 text-[11px] leading-relaxed ${isDark ? 'bg-white/[0.04] text-[#A8A8A8]' : 'bg-black/[0.035] text-[#757575]'}`}>
             <div className="font-semibold">{shortElementLabel(selectedElement)}</div>
-            <div className="mt-1 break-all">{selectedElement.selector || selectedElement.className || '无定位信息'}</div>
+            <div className="mt-1 break-all">{selectedElement.selector || selectedElement.className || L.diNoLocation}</div>
           </div>
         )}
 
-        {renderSection('常用编辑', (
+        {renderSection(L.diSecCommon, (
           <div className={rowGridCls}>
             {isTextElement && (
               <label className="flex flex-col gap-1 col-span-2">
-                <span className={labelCls}>文案</span>
+                <span className={labelCls}>{L.diText}</span>
                 <input
                   data-testid="design-text-input"
                   className={inputCls}
                   value={textDraft}
                   onChange={(e) => setTextDraft(e.target.value)}
                   onBlur={commitText}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) { e.preventDefault(); e.currentTarget.blur(); } }}
                 />
               </label>
             )}
             {fontFamilyField()}
             <label className="flex flex-col gap-1">
-              <span className={labelCls}>字号</span>
+              <span className={labelCls}>{L.diFontSize}</span>
               <input
                 data-testid="design-font-size-input"
                 type="number"
@@ -469,24 +473,24 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                 onBlur={(e) => onApplyChange && onApplyChange({ type: 'style', property: 'fontSize', oldValue: style.fontSize || '', newValue: `${e.target.value || 0}px` })}
               />
             </label>
-            {textField('字重', 'fontWeight')}
-            {selectField('对齐', 'textAlign', [
-              { value: 'start', label: '默认' },
-              { value: 'left', label: '左对齐' },
-              { value: 'center', label: '居中' },
-              { value: 'right', label: '右对齐' },
-              { value: 'justify', label: '两端对齐' },
+            {textField(L.diFontWeight, 'fontWeight')}
+            {selectField(L.diAlign, 'textAlign', [
+              { value: 'start', label: L.diOptDefault },
+              { value: 'left', label: L.diAlignLeft },
+              { value: 'center', label: L.diOptCenter },
+              { value: 'right', label: L.diAlignRight },
+              { value: 'justify', label: L.diAlignJustify },
             ])}
-            {colorField('文字颜色', 'color', '#000000', 'design-color-input', { allowClear: false })}
+            {colorField(L.diTextColor, 'color', '#000000', 'design-color-input', { allowClear: false })}
           </div>
         ), { testId: 'design-section-common' })}
 
-        {renderSection('外观', (
+        {renderSection(L.diSecAppearance, (
           <div className={rowGridCls}>
-            {colorField('背景颜色', 'backgroundColor', '#ffffff', 'design-background-input')}
-            {colorField('边框色', 'borderTopColor', '#000000')}
+            {colorField(L.diBgColor, 'backgroundColor', '#ffffff', 'design-background-input')}
+            {colorField(L.diBorderColor, 'borderTopColor', '#000000')}
             <label className="flex flex-col gap-1">
-              <span className={labelCls}>圆角</span>
+              <span className={labelCls}>{L.diRadius}</span>
               <input
                 data-testid="design-radius-input"
                 type="number"
@@ -497,7 +501,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className={labelCls}>透明度</span>
+              <span className={labelCls}>{L.diOpacity}</span>
               <input
                 type="number"
                 min="0"
@@ -507,14 +511,14 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                 onBlur={(e) => applyTextStyle('opacity', String(Math.max(0, Math.min(100, Number(e.target.value || 0))) / 100))}
               />
             </label>
-            {hasValue('backgroundImage') && textField('背景图', 'backgroundImage')}
+            {hasValue('backgroundImage') && textField(L.diBgImage, 'backgroundImage')}
           </div>
         ), { testId: 'design-section-appearance' })}
 
-        {renderSection('尺寸', (
+        {renderSection(L.diSecSize, (
           <div className={rowGridCls}>
-            {pxField('宽', 'width')}
-            {pxField('高', 'height')}
+            {pxField(L.diWidth, 'width')}
+            {pxField(L.diHeight, 'height')}
           </div>
         ), { testId: 'design-section-size' })}
 
@@ -525,92 +529,92 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
             onClick={() => setAdvancedOpen((value) => !value)}
             className="flex w-full items-center justify-between px-3.5 py-3 text-left"
           >
-            <span className={`text-[13px] font-semibold ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>高级样式</span>
-            <span className={`text-[12px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#6E6E73]'}`}>{advancedOpen ? '收起' : '展开'}</span>
+            <span className={`text-[13px] font-semibold ${isDark ? 'text-[#F5F5F7]' : 'text-[#1D1D1F]'}`}>{L.diSecAdvanced}</span>
+            <span className={`text-[12px] ${isDark ? 'text-[#A1A1AA]' : 'text-[#6E6E73]'}`}>{advancedOpen ? L.diCollapse : L.diExpand}</span>
           </button>
           {advancedOpen && (
             <div data-testid="design-advanced-content">
               <div className={rowGridCls}>
-                {pxField('行高', 'lineHeight')}
-                {pxField('字距', 'letterSpacing')}
-                {textField('背景图', 'backgroundImage')}
-                {textField('背景尺寸', 'backgroundSize', { placeholder: 'cover / contain' })}
-                {textField('背景位置', 'backgroundPosition')}
-                {selectField('重复', 'backgroundRepeat', [
-                  { value: 'repeat', label: '重复' },
-                  { value: 'no-repeat', label: '不重复' },
-                  { value: 'repeat-x', label: '横向重复' },
-                  { value: 'repeat-y', label: '纵向重复' },
+                {pxField(L.diLineHeight, 'lineHeight')}
+                {pxField(L.diLetterSpacing, 'letterSpacing')}
+                {textField(L.diBgImage, 'backgroundImage')}
+                {textField(L.diBgSize, 'backgroundSize', { placeholder: 'cover / contain' })}
+                {textField(L.diBgPosition, 'backgroundPosition')}
+                {selectField(L.diRepeat, 'backgroundRepeat', [
+                  { value: 'repeat', label: L.diRepeat },
+                  { value: 'no-repeat', label: L.diRepeatNone },
+                  { value: 'repeat-x', label: L.diRepeatX },
+                  { value: 'repeat-y', label: L.diRepeatY },
                 ])}
-                {pxField('最小宽', 'minWidth')}
-                {pxField('最大宽', 'maxWidth')}
-                {pxField('最小高', 'minHeight')}
-                {pxField('最大高', 'maxHeight')}
-                {pxField('外边距上', 'marginTop')}
-                {pxField('外边距右', 'marginRight')}
-                {pxField('外边距下', 'marginBottom')}
-                {pxField('外边距左', 'marginLeft')}
-                {pxField('内边距上', 'paddingTop')}
-                {pxField('内边距右', 'paddingRight')}
-                {pxField('内边距下', 'paddingBottom')}
-                {pxField('内边距左', 'paddingLeft')}
-                {pxField('间距', 'gap')}
-                {pxField('行间距', 'rowGap')}
-                {pxField('列间距', 'columnGap')}
-                {selectField('显示', 'display', [
-                  { value: 'block', label: '块级' },
-                  { value: 'flex', label: '弹性' },
-                  { value: 'grid', label: '网格' },
-                  { value: 'inline', label: '行内' },
-                  { value: 'inline-block', label: '行内块' },
-                  { value: 'none', label: '隐藏' },
+                {pxField(L.diMinWidth, 'minWidth')}
+                {pxField(L.diMaxWidth, 'maxWidth')}
+                {pxField(L.diMinHeight, 'minHeight')}
+                {pxField(L.diMaxHeight, 'maxHeight')}
+                {pxField(L.diMarginTop, 'marginTop')}
+                {pxField(L.diMarginRight, 'marginRight')}
+                {pxField(L.diMarginBottom, 'marginBottom')}
+                {pxField(L.diMarginLeft, 'marginLeft')}
+                {pxField(L.diPaddingTop, 'paddingTop')}
+                {pxField(L.diPaddingRight, 'paddingRight')}
+                {pxField(L.diPaddingBottom, 'paddingBottom')}
+                {pxField(L.diPaddingLeft, 'paddingLeft')}
+                {pxField(L.diGap, 'gap')}
+                {pxField(L.diRowGap, 'rowGap')}
+                {pxField(L.diColumnGap, 'columnGap')}
+                {selectField(L.diDisplay, 'display', [
+                  { value: 'block', label: L.diDisplayBlock },
+                  { value: 'flex', label: L.diDisplayFlex },
+                  { value: 'grid', label: L.diDisplayGrid },
+                  { value: 'inline', label: L.diDisplayInline },
+                  { value: 'inline-block', label: L.diDisplayInlineBlock },
+                  { value: 'none', label: L.diOptHidden },
                 ])}
-                {selectField('方向', 'flexDirection', [
-                  { value: 'row', label: '横向' },
-                  { value: 'row-reverse', label: '横向反转' },
-                  { value: 'column', label: '纵向' },
-                  { value: 'column-reverse', label: '纵向反转' },
+                {selectField(L.diDirection, 'flexDirection', [
+                  { value: 'row', label: L.diDirRow },
+                  { value: 'row-reverse', label: L.diDirRowReverse },
+                  { value: 'column', label: L.diDirColumn },
+                  { value: 'column-reverse', label: L.diDirColumnReverse },
                 ])}
-                {selectField('主轴', 'justifyContent', [
-                  { value: 'normal', label: '默认' },
-                  { value: 'flex-start', label: '起点' },
-                  { value: 'center', label: '居中' },
-                  { value: 'flex-end', label: '终点' },
-                  { value: 'space-between', label: '两端分布' },
-                  { value: 'space-around', label: '环绕分布' },
+                {selectField(L.diJustify, 'justifyContent', [
+                  { value: 'normal', label: L.diOptDefault },
+                  { value: 'flex-start', label: L.diOptStart },
+                  { value: 'center', label: L.diOptCenter },
+                  { value: 'flex-end', label: L.diOptEnd },
+                  { value: 'space-between', label: L.diJustifyBetween },
+                  { value: 'space-around', label: L.diJustifyAround },
                 ])}
-                {selectField('交叉轴', 'alignItems', [
-                  { value: 'normal', label: '默认' },
-                  { value: 'stretch', label: '拉伸' },
-                  { value: 'flex-start', label: '起点' },
-                  { value: 'center', label: '居中' },
-                  { value: 'flex-end', label: '终点' },
+                {selectField(L.diAlignItems, 'alignItems', [
+                  { value: 'normal', label: L.diOptDefault },
+                  { value: 'stretch', label: L.diStretch },
+                  { value: 'flex-start', label: L.diOptStart },
+                  { value: 'center', label: L.diOptCenter },
+                  { value: 'flex-end', label: L.diOptEnd },
                 ])}
-                {selectField('溢出', 'overflow', [
-                  { value: 'visible', label: '可见' },
-                  { value: 'hidden', label: '隐藏' },
-                  { value: 'clip', label: '裁剪' },
-                  { value: 'scroll', label: '滚动' },
-                  { value: 'auto', label: '自动' },
+                {selectField(L.diOverflow, 'overflow', [
+                  { value: 'visible', label: L.diOptVisible },
+                  { value: 'hidden', label: L.diOptHidden },
+                  { value: 'clip', label: L.diOverflowClip },
+                  { value: 'scroll', label: L.diOverflowScroll },
+                  { value: 'auto', label: L.diOptAuto },
                 ])}
-                {selectField('定位', 'position', [
-                  { value: 'static', label: '默认' },
-                  { value: 'relative', label: '相对' },
-                  { value: 'absolute', label: '绝对' },
-                  { value: 'fixed', label: '固定' },
-                  { value: 'sticky', label: '吸附' },
+                {selectField(L.diPosition, 'position', [
+                  { value: 'static', label: L.diOptDefault },
+                  { value: 'relative', label: L.diPosRelative },
+                  { value: 'absolute', label: L.diPosAbsolute },
+                  { value: 'fixed', label: L.diPosFixed },
+                  { value: 'sticky', label: L.diPosSticky },
                 ])}
-                {pxField('上', 'top')}
-                {pxField('右', 'right')}
-                {pxField('下', 'bottom')}
-                {pxField('左', 'left')}
-                {textField('层级', 'zIndex')}
-                {selectField('可见性', 'visibility', [
-                  { value: 'visible', label: '可见' },
-                  { value: 'hidden', label: '隐藏' },
-                  { value: 'collapse', label: '折叠' },
+                {pxField(L.diTop, 'top')}
+                {pxField(L.diRight, 'right')}
+                {pxField(L.diBottom, 'bottom')}
+                {pxField(L.diLeft, 'left')}
+                {textField(L.diZIndex, 'zIndex')}
+                {selectField(L.diVisibility, 'visibility', [
+                  { value: 'visible', label: L.diOptVisible },
+                  { value: 'hidden', label: L.diOptHidden },
+                  { value: 'collapse', label: L.diVisCollapse },
                 ])}
-                {textField('光标', 'cursor')}
+                {textField(L.diCursor, 'cursor')}
               </div>
             </div>
           )}
@@ -624,8 +628,8 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
               data-testid="design-changes-toggle"
               className="flex w-full items-center justify-between text-left font-semibold"
             >
-              <span>设计变更 {changes.length}</span>
-              <span>{changesExpanded ? '收起' : '展开'}</span>
+              <span>{L.diChangesLog(changes.length)}</span>
+              <span>{changesExpanded ? L.diCollapse : L.diExpand}</span>
             </button>
             {changesExpanded && (
               <div className="mt-1 max-h-48 overflow-y-auto space-y-2">
@@ -634,7 +638,7 @@ const DesignInspectorPanel = ({ isDark, selectedElement, changes = [], onApplyCh
                     <div className="mb-1 truncate font-semibold">{group.label} · {group.items.length}</div>
                     {group.items.slice(-6).map((change) => (
                       <div key={change.id} className="truncate">
-                        {change.type === 'text' ? 'text' : change.property}: {change.oldValue || '空'} -&gt; {change.newValue || '空'}
+                        {change.type === 'text' ? 'text' : change.property}: {change.oldValue || L.diEmpty} -&gt; {change.newValue || L.diEmpty}
                       </div>
                     ))}
                   </div>

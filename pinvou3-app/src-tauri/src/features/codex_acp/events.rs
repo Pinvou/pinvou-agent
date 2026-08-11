@@ -107,6 +107,40 @@ impl EventBridge {
         }
     }
 
+    /// 把 timeline 中只开始、未结束的旧回合收口为已中断。
+    ///
+    /// ACP prompt future 和当前 turn 只存在于宿主进程内；应用被直接关闭后，Agent
+    /// 会话虽然可以恢复，但旧 prompt 已无法重新挂接。继续把这种回合展示为 running
+    /// 会让前端永久停在“处理中”，而恢复后的 session/cancel 也没有旧 turn 可取消。
+    ///
+    /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
+    /// `prompt()` 返回后调用 `finish_turn()` 收口。
+    pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
+        let events = match load_timeline(&self.pinvou_session_id) {
+            Ok(events) => events,
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] inspect orphaned ACP turns failed for {}: {error:#}",
+                    self.pinvou_session_id
+                );
+                return 0;
+            }
+        };
+        let orphaned = orphaned_turn_ids(&events);
+        for turn_id in &orphaned {
+            self.emit_with_turn(
+                Some(turn_id.clone()),
+                "turn_completed",
+                json!({
+                    "status": "Interrupted",
+                    "error": null,
+                    "recoveryReason": reason,
+                }),
+            );
+        }
+        orphaned.len()
+    }
+
     pub fn handle(&self, notification: SessionNotification) {
         let meta = serde_json::to_value(notification.meta).unwrap_or(Value::Null);
         match notification.update {
@@ -272,6 +306,29 @@ fn chunk_contains_binary(chunk: &ContentChunk) -> bool {
     )
 }
 
+fn orphaned_turn_ids(events: &[AcpEventEnvelope]) -> Vec<String> {
+    let mut open = HashMap::<String, u64>::new();
+    let mut ordered = events.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|event| event.seq);
+    for envelope in ordered {
+        let Some(turn_id) = envelope.turn_id.as_ref() else {
+            continue;
+        };
+        match envelope.event.event_type.as_str() {
+            "turn_started" => {
+                open.entry(turn_id.clone()).or_insert(envelope.seq);
+            }
+            "turn_completed" => {
+                open.remove(turn_id);
+            }
+            _ => {}
+        }
+    }
+    let mut orphaned = open.into_iter().collect::<Vec<_>>();
+    orphaned.sort_by_key(|(_, started_seq)| *started_seq);
+    orphaned.into_iter().map(|(turn_id, _)| turn_id).collect()
+}
+
 fn timeline_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, TIMELINE_FILE)
 }
@@ -374,6 +431,20 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::{AudioContent, ImageContent, TextContent};
 
+    fn event(seq: u64, turn_id: Option<&str>, event_type: &str) -> AcpEventEnvelope {
+        AcpEventEnvelope {
+            version: EVENT_VERSION,
+            session_id: "session-1".into(),
+            turn_id: turn_id.map(str::to_string),
+            seq,
+            timestamp: format!("2026-01-01T00:00:{seq:02}Z"),
+            event: AcpEvent {
+                event_type: event_type.into(),
+                data: json!({}),
+            },
+        }
+    }
+
     #[test]
     fn timeline_rejects_path_traversal() {
         assert!(timeline_path("../escape").is_err());
@@ -418,5 +489,27 @@ mod tests {
         // 反向佐证:图片块序列化后确实带 data,不过滤就会写进 acp-timeline.jsonl。
         let leaked = serde_json::to_string(&image).unwrap();
         assert!(leaked.contains("aGVsbG8td29ybGQ="));
+    }
+
+    fn orphaned_turns_are_detected_in_start_order_and_recovery_is_idempotent() {
+        let mut events = vec![
+            event(1, Some("turn-completed"), "turn_started"),
+            event(2, Some("turn-orphan-1"), "turn_started"),
+            event(3, Some("turn-completed"), "turn_completed"),
+            event(4, None, "cancel_requested"),
+            event(5, Some("turn-orphan-2"), "turn_started"),
+        ];
+        assert_eq!(
+            orphaned_turn_ids(&events),
+            vec!["turn-orphan-1", "turn-orphan-2"],
+            "global cancel events must not accidentally close a persisted turn"
+        );
+
+        events.push(event(6, Some("turn-orphan-1"), "turn_completed"));
+        events.push(event(7, Some("turn-orphan-2"), "turn_completed"));
+        assert!(
+            orphaned_turn_ids(&events).is_empty(),
+            "re-running recovery after terminal events must be a no-op"
+        );
     }
 }

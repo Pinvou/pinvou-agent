@@ -4,6 +4,12 @@
     .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* 隐藏 WebView2/Chromium 给 type=password 输入框自带的「显示密码」眼睛：
+       应用内各表单均提供自己的显隐按钮，原生眼睛与之重复。 */
+    input[type="password"]::-ms-reveal,
+    input[type="password"]::-ms-clear {
+      display: none;
+    }
     /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
     html.compact-web-viewport,
     html.compact-web-viewport body,
@@ -31,18 +37,32 @@
     .msg-md li { margin:0.2em 0; line-height:1.6; }
     .msg-md code { font-family:"JetBrains Mono","SF Mono",Consolas,monospace; font-size:0.88em; padding:0.15em 0.4em; border-radius:6px; }
     .msg-md pre { margin:0.6em 0; padding:1em; border-radius:12px; overflow-x:auto; font-size:0.88em; line-height:1.5; }
-    .msg-md pre code { padding:0; background:none; }
+    .msg-md pre > code { display:block; padding:0; background:transparent; color:inherit; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
     .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
     .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
     /* Dark theme code blocks */
-    .dark-code .msg-md code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
-    .dark-code .msg-md pre { background:rgba(0,0,0,0.3); color:#E3E3E3; }
+    .dark-code .msg-md :not(pre) > code,
+    .msg-md.dark-code :not(pre) > code,
+    .persona-body.dark-code :not(pre) > code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
+    .dark-code .msg-md pre,
+    .msg-md.dark-code pre,
+    .persona-body.dark-code pre { background:#16181d; color:#E3E3E3; }
+    .dark-code .msg-md pre > code,
+    .msg-md.dark-code pre > code,
+    .persona-body.dark-code pre > code { background:transparent; color:inherit; }
     /* Light theme code blocks */
-    .light-code .msg-md code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
-    .light-code .msg-md pre { background:rgba(0,0,0,0.04); color:#1F1F1F; }
+    .light-code .msg-md :not(pre) > code,
+    .msg-md.light-code :not(pre) > code,
+    .persona-body.light-code :not(pre) > code { background:rgba(0,0,0,0.06); color:#1F1F1F; }
+    .light-code .msg-md pre,
+    .msg-md.light-code pre,
+    .persona-body.light-code pre { background:#F6F8FA; color:#1F2328; }
+    .light-code .msg-md pre > code,
+    .msg-md.light-code pre > code,
+    .persona-body.light-code pre > code { background:transparent; color:inherit; }
 
     /* Codex ACP: scoped Markdown layout (Tailwind preflight removes native list styles). */
     .codex-markdown > :first-child { margin-top:0; }
@@ -72,11 +92,11 @@
     .codex-markdown code {
       padding:.12em .36em;
       border-radius:5px;
-      background:rgba(0,0,0,.055);
       font-family:"JetBrains Mono","SF Mono",Consolas,monospace;
       font-size:.88em;
     }
-    .dark .codex-markdown code { background:rgba(255,255,255,.09); }
+    .codex-markdown :not(pre) > code { background:rgba(0,0,0,.055); }
+    .dark .codex-markdown :not(pre) > code { background:rgba(255,255,255,.09); }
     .codex-markdown pre {
       margin:.7em 0;
       padding:.85em 1em;
@@ -91,7 +111,8 @@
       border-color:rgba(255,255,255,.08);
       background:rgba(0,0,0,.28);
     }
-    .codex-markdown pre code { padding:0; background:none; }
+    .codex-markdown pre > code { display:block; padding:0; background:transparent; color:inherit; }
+    .dark .codex-markdown pre > code { background:transparent; color:inherit; }
     .codex-markdown blockquote {
       margin:.65em 0;
       padding:.1em 0 .1em 1em;
@@ -116,6 +137,273 @@
       padding:.4em .7em;
       border:1px solid rgba(128,128,128,.25);
       text-align:left;
+    }
+
+    /* Shared fenced-code presentation and syntax colors. */
+    .light-code .msg-md,
+    .msg-md.light-code,
+    .persona-body.light-code,
+    .codex-markdown,
+    .code-viewer-body {
+      --pinvou-code-border:rgba(31,35,40,.14);
+      --pinvou-code-divider:rgba(31,35,40,.10);
+      --pinvou-code-label:#57606A;
+      --pinvou-hl-comment:#6E7781;
+      --pinvou-hl-keyword:#CF222E;
+      --pinvou-hl-title:#8250DF;
+      --pinvou-hl-string:#0A3069;
+      --pinvou-hl-number:#0550AE;
+      --pinvou-hl-built-in:#953800;
+      --pinvou-hl-attribute:#116329;
+      --pinvou-hl-property:#0550AE;
+      --pinvou-hl-parameter:#9A6700;
+      --pinvou-hl-meta:#8250DF;
+      --pinvou-hl-punctuation:#8C959F;
+      --pinvou-hl-operator:#57606A;
+      --pinvou-hl-addition:#116329;
+      --pinvou-hl-deletion:#A40E26;
+      --pinvou-hl-warning:#9A6700;
+      --pinvou-hl-addition-bg:rgba(46,160,67,.13);
+      --pinvou-hl-deletion-bg:rgba(255,129,130,.16);
+      --pinvou-hl-quote-bg:rgba(84,174,255,.09);
+    }
+    .dark-code .msg-md,
+    .msg-md.dark-code,
+    .persona-body.dark-code,
+    .dark .codex-markdown,
+    .dark .code-viewer-body {
+      --pinvou-code-border:rgba(240,246,252,.16);
+      --pinvou-code-divider:rgba(240,246,252,.12);
+      --pinvou-code-label:#8B949E;
+      --pinvou-hl-comment:#8B949E;
+      --pinvou-hl-keyword:#FF7B72;
+      --pinvou-hl-title:#D2A8FF;
+      --pinvou-hl-string:#A5D6FF;
+      --pinvou-hl-number:#79C0FF;
+      --pinvou-hl-built-in:#FFA657;
+      --pinvou-hl-attribute:#7EE787;
+      --pinvou-hl-property:#79C0FF;
+      --pinvou-hl-parameter:#E3B341;
+      --pinvou-hl-meta:#D2A8FF;
+      --pinvou-hl-punctuation:#6E7681;
+      --pinvou-hl-operator:#C9D1D9;
+      --pinvou-hl-addition:#7EE787;
+      --pinvou-hl-deletion:#FFA198;
+      --pinvou-hl-warning:#E3B341;
+      --pinvou-hl-addition-bg:rgba(46,160,67,.18);
+      --pinvou-hl-deletion-bg:rgba(248,81,73,.18);
+      --pinvou-hl-quote-bg:rgba(56,139,253,.12);
+    }
+    .msg-md pre.pinvou-code-block,
+    .persona-body pre.pinvou-code-block,
+    .codex-markdown pre.pinvou-code-block {
+      position:relative;
+      padding:2.55rem 1rem 1rem;
+      border:1px solid var(--pinvou-code-border, rgba(128,128,128,.2));
+      tab-size:4;
+      white-space:pre;
+    }
+    .msg-md pre.pinvou-code-block::before,
+    .persona-body pre.pinvou-code-block::before,
+    .codex-markdown pre.pinvou-code-block::before {
+      content:attr(data-language);
+      position:absolute;
+      top:0;
+      right:0;
+      left:0;
+      height:1.85rem;
+      box-sizing:border-box;
+      padding:0 .85rem;
+      border-bottom:1px solid var(--pinvou-code-divider, rgba(128,128,128,.16));
+      color:var(--pinvou-code-label, #6E7781);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      font-size:11px;
+      font-weight:600;
+      line-height:1.85rem;
+      letter-spacing:.02em;
+      user-select:none;
+    }
+    .pinvou-code-block .hljs-comment,.pinvou-code-block .hljs-quote { color:var(--pinvou-hl-comment, #6E7781); font-style:italic; }
+    .pinvou-code-block .hljs-keyword,.pinvou-code-block .hljs-selector-tag,.pinvou-code-block .hljs-literal,.pinvou-code-block .hljs-section,.pinvou-code-block .hljs-link { color:var(--pinvou-hl-keyword, #CF222E); }
+    .pinvou-code-block .hljs-title,.pinvou-code-block .hljs-title.class_,.pinvou-code-block .hljs-title.function_,.pinvou-code-block .hljs-name,.pinvou-code-block .hljs-type { color:var(--pinvou-hl-title, #8250DF); }
+    .pinvou-code-block .hljs-string,.pinvou-code-block .hljs-regexp,.pinvou-code-block .hljs-symbol,.pinvou-code-block .hljs-bullet { color:var(--pinvou-hl-string, #0A3069); }
+    .pinvou-code-block .hljs-number,.pinvou-code-block .hljs-variable,.pinvou-code-block .hljs-template-variable { color:var(--pinvou-hl-number, #0550AE); }
+    .pinvou-code-block .hljs-built_in,.pinvou-code-block .hljs-builtin-name { color:var(--pinvou-hl-built-in, #953800); }
+    .pinvou-code-block .hljs-attr,.pinvou-code-block .hljs-attribute,.pinvou-code-block .hljs-selector-attr,.pinvou-code-block .hljs-selector-class,.pinvou-code-block .hljs-selector-id { color:var(--pinvou-hl-attribute, #116329); }
+    .pinvou-code-block .hljs-property { color:var(--pinvou-hl-property, #0550AE); }
+    .pinvou-code-block .hljs-params { color:var(--pinvou-hl-parameter, #9A6700); }
+    .pinvou-code-block .hljs-meta { color:var(--pinvou-hl-meta, #8250DF); }
+    .pinvou-code-block .hljs-punctuation { color:var(--pinvou-hl-punctuation, #8C959F); }
+    .pinvou-code-block .hljs-operator { color:var(--pinvou-hl-operator, #57606A); }
+    .pinvou-code-block .hljs-addition { color:var(--pinvou-hl-addition, #116329); }
+    .pinvou-code-block .hljs-deletion { color:var(--pinvou-hl-deletion, #A40E26); }
+    .pinvou-code-block .hljs-warning { color:var(--pinvou-hl-warning, #9A6700); }
+    .pinvou-code-block .hljs-emphasis { font-style:italic; }
+    .pinvou-code-block .hljs-strong { font-weight:700; }
+
+    /* Language-specific refinements built on the shared token theme. */
+    code.language-diff .hljs-addition,
+    code.language-diff .hljs-deletion {
+      display:inline-block;
+      min-width:100%;
+      box-sizing:border-box;
+      font-weight:650;
+    }
+    code.language-diff .hljs-addition { background:var(--pinvou-hl-addition-bg); }
+    code.language-diff .hljs-deletion { background:var(--pinvou-hl-deletion-bg); }
+    /* diff 文件头行（--- a/… / +++ b/…）：红/绿文字提示加减侧，无背景块（对齐 GitHub/VS Code）。 */
+    code.language-diff .hljs-diff-file-header.old { color:var(--pinvou-hl-deletion); }
+    code.language-diff .hljs-diff-file-header.new { color:var(--pinvou-hl-addition); }
+
+    code.language-json .hljs-attr {
+      color:var(--pinvou-hl-property);
+      font-weight:650;
+    }
+    code.language-json .hljs-punctuation { opacity:.64; }
+    code.language-json .hljs-literal { font-weight:600; }
+
+    code:is(.language-yaml,.language-ini) .hljs-attr {
+      color:var(--pinvou-hl-property);
+      font-weight:650;
+    }
+    code:is(.language-yaml,.language-ini) .hljs-section {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+    code:is(.language-yaml,.language-ini) .hljs-literal { font-weight:600; }
+
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-built_in {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-variable {
+      color:var(--pinvou-hl-number);
+      font-weight:600;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-operator {
+      color:var(--pinvou-hl-operator);
+      font-weight:700;
+    }
+    code:is(.language-bash,.language-shell,.language-powershell) .hljs-meta {
+      color:var(--pinvou-code-label);
+      font-weight:500;
+    }
+
+    code:is(.language-sql,.language-pgsql) .hljs-keyword { font-weight:750; }
+    code:is(.language-sql,.language-pgsql) .hljs-built_in {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-sql,.language-pgsql) :is(.hljs-meta,.hljs-variable) {
+      color:var(--pinvou-hl-parameter);
+      font-weight:600;
+    }
+
+    code.language-xml .hljs-tag { color:var(--pinvou-hl-punctuation); }
+    code.language-xml .hljs-name {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code.language-xml .hljs-attr {
+      color:var(--pinvou-hl-attribute);
+      font-weight:600;
+    }
+    pre:is([data-language-id="vue"],[data-language-id="svelte"]) code.language-xml .hljs-name {
+      color:var(--pinvou-hl-built-in);
+      font-weight:700;
+    }
+    pre:is([data-language-id="vue"],[data-language-id="svelte"]) code.language-xml .hljs-attr {
+      color:var(--pinvou-hl-meta);
+    }
+
+    code:is(.language-javascript,.language-typescript) .hljs-title.class_ { font-weight:750; }
+    code:is(.language-javascript,.language-typescript) .hljs-title.function_ { font-weight:650; }
+    code:is(.language-javascript,.language-typescript) :is(.hljs-type,.hljs-meta) {
+      color:var(--pinvou-hl-meta);
+      font-weight:600;
+    }
+
+    code.language-python .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+    code.language-python .hljs-built_in { font-weight:650; }
+    code.language-python .hljs-title.class_ { font-weight:750; }
+    code.language-python .hljs-title.function_ { font-weight:650; }
+
+    code:is(.language-java,.language-csharp,.language-kotlin) .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+    code:is(.language-java,.language-csharp,.language-kotlin) :is(.hljs-type,.hljs-title.class_) {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+    code:is(.language-java,.language-csharp,.language-kotlin) :is(.hljs-title.function_,.hljs-function > .hljs-title) {
+      font-weight:650;
+    }
+
+    code:is(.language-c,.language-cpp) .hljs-meta {
+      color:var(--pinvou-hl-meta);
+      font-weight:600;
+    }
+    code:is(.language-c,.language-cpp) :is(.hljs-type,.hljs-title.class_,.hljs-class .hljs-title) {
+      color:var(--pinvou-hl-title);
+      font-weight:700;
+    }
+
+    code:is(.language-go,.language-rust) .hljs-type {
+      color:var(--pinvou-hl-title);
+      font-weight:650;
+    }
+    code:is(.language-go,.language-rust) :is(.hljs-title.class_,.hljs-title.function_,.hljs-function > .hljs-title) {
+      font-weight:700;
+    }
+    code.language-rust :is(.hljs-symbol,.hljs-built_in) {
+      color:var(--pinvou-hl-meta);
+      font-weight:650;
+    }
+
+    code.language-markdown .hljs-section {
+      color:var(--pinvou-hl-title);
+      font-weight:750;
+    }
+    code.language-markdown .hljs-quote {
+      display:inline-block;
+      min-width:100%;
+      box-sizing:border-box;
+      padding-left:.65em;
+      border-left:3px solid var(--pinvou-hl-comment);
+      background:var(--pinvou-hl-quote-bg);
+    }
+    code.language-markdown .hljs-link {
+      color:var(--pinvou-hl-number);
+      text-decoration:underline;
+      text-underline-offset:2px;
+    }
+
+    code.language-dockerfile > .hljs-keyword {
+      color:var(--pinvou-hl-keyword);
+      font-weight:750;
+      letter-spacing:.02em;
+    }
+
+    code:is(.language-accesslog,.language-log) {
+      font-variant-numeric:tabular-nums;
+    }
+    code:is(.language-accesslog,.language-log) .hljs-keyword {
+      color:var(--pinvou-hl-keyword);
+      font-weight:750;
+    }
+    code:is(.language-accesslog,.language-log) .hljs-string { color:var(--pinvou-hl-string); }
+    code:is(.language-accesslog,.language-log) .hljs-number {
+      color:var(--pinvou-hl-number);
+      font-weight:600;
+    }
+    code.language-log .hljs-warning { font-weight:700; }
+    code.language-log .hljs-deletion {
+      color:var(--pinvou-hl-deletion);
+      font-weight:750;
     }
 
     /* Tool card styles */
@@ -184,3 +472,199 @@
     .persona-body pre code { background:none; padding:0; }
     .persona-body strong { font-weight:600; }
     .persona-body hr { border:none; border-top:1px solid rgba(128,128,128,.25); margin:.8em 0; }
+
+/* ── 多智能体开关行的「专家光晕」面板（原创设计，不再仿制 Claude Code） ──
+   开启态整行是深紫面板，三团柔光——品红、靛蓝、薰衣草——各自以慢速独立
+   周期往复漂移、彼此交叠，像极光一样安静地持续流动
+   （真机点名"动画不能停"）；三团光晕呼应"多"智能体的意象。圆心横坐标
+   用 @property 注册成可插值百分比，ease-in-out alternate 让转向零速度、
+   无跳变；三个周期互质错拍，叠加图样长时间不重复，看起来是有机的。
+   光晕之上再叠一条斜向穿行的柔光带（可平铺渐变走
+   background-position）——单靠慢速光晕会读成静止（真机点名"没有流动
+   性"），流光带负责肉眼可见的持续流动；各层节奏整体压慢过一档（真机
+   点名"有点快"）。反僵硬（真机点名"非常僵硬"）：光晕 x/y 双轴互质周期
+   游移成利萨茹式漫步——仅横向来回像滑块；流光带过场段内 ease-in-out
+   有缓急，过场完停顿小半拍再来——匀速等距循环像传送带。流光带必须窄
+   于视窗且峰值明显高于光晕，宽过视窗只会读成整行缓明缓暗（真机点名
+   "看不出来"）。光晕同理要"小而亮"（≈42%~55% 行宽、alpha 0.5~0.55，靛蓝换天蓝拉开
+   与紫底的明度差）才是可辨的彩色光斑；大而淡只剩均匀染色，紫上叠紫
+   也认不出（真机点名"没看出来/不明显"）。
+   揭幕只在用户点击开启一刻播一次：clip-path 圆形从拨杆位置（行右侧
+   91% 50%）1.2s 慢起步铺满（快了看不清"从零铺满"）；::after 的水花亮
+   环与 clip 圆同曲线同时长放大——两者都从 0 按同一条 f(t) 增长，半径
+   全程成比例，亮环贴着增长边缘走，铺满时消散（真机点名"增长的尾部要
+   有水花感"）。亮环画在内容之下面板之上，扫过时不糊文字。弹层重开、
+   切会话回来、重启同步出的开启态不重播揭幕，直接是流动面板。光晕动画
+   同名，摘类续跑不重启。
+   全部紫色画在 ::before 上一起被裁剪：行元素自身若落底色，开启瞬间整行
+   先闪成纯紫，扩散就看不见了。文字色 0.3s 过渡随面板变浅。不用
+   will-change/conic/filter，也不叠像素噪点贴图（40px 小行上糊成脏斑，
+   真机点名淘汰）；内核太旧不认 @property 时光晕退化为分段挪动，面板与
+   揭幕不受影响。 */
+@property --pinvou-aurora1 {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 30%;
+}
+@property --pinvou-aurora2 {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 80%;
+}
+@property --pinvou-aurora3 {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 55%;
+}
+@property --pinvou-aurora1y {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 40%;
+}
+@property --pinvou-aurora2y {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 60%;
+}
+@property --pinvou-aurora3y {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 49%;
+}
+.pinvou-ultra-row {
+  position: relative;
+  overflow: hidden;
+  color: #f5f3ff;
+  transition: color 0.3s ease-in;
+  text-shadow: 0 1px 2px rgba(46, 16, 101, 0.5); /* 亮光斑飘过文字下方时保辨识 */
+}
+.pinvou-ultra-row > * {
+  position: relative;
+  z-index: 1;
+}
+.pinvou-ultra-row::after {
+  content: "";
+  position: absolute;
+  left: 91%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.15);
+  background: radial-gradient(circle,
+    transparent 0% 50%,
+    rgba(216, 180, 254, 0.5) 62%,
+    rgba(245, 243, 255, 0.95) 70%,
+    rgba(196, 181, 253, 0.35) 82%,
+    transparent 100%);
+}
+.pinvou-ultra-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-color: #2e1065;
+  background-image:
+    linear-gradient(112deg,
+      transparent 0%,
+      transparent 40%,
+      rgba(216, 180, 254, 0.22) 46%,
+      rgba(245, 243, 255, 0.42) 50%,
+      rgba(216, 180, 254, 0.22) 54%,
+      transparent 60%,
+      transparent 100%),
+    radial-gradient(45% 130% at var(--pinvou-aurora1) var(--pinvou-aurora1y),
+      rgba(240, 100, 250, 0.55), transparent 58%),
+    radial-gradient(42% 125% at var(--pinvou-aurora2) var(--pinvou-aurora2y),
+      rgba(96, 165, 250, 0.5), transparent 56%),
+    radial-gradient(55% 150% at var(--pinvou-aurora3) var(--pinvou-aurora3y),
+      rgba(216, 200, 255, 0.52), transparent 60%),
+    linear-gradient(115deg, #4c1d95 0%, #6d28d9 48%, #5b21b6 100%);
+  background-size: 200% 100%, auto, auto, auto, auto;
+  /* 动画未生效时（reduced-motion/旧内核）流光带停在拷贝间隙里，
+     不在拨杆旁卡出一块静态斜亮斑。 */
+  background-position: -30% 0, 0 0, 0 0, 0 0, 0 0;
+  animation:
+    pinvou-ultra-aurora1 9s ease-in-out alternate infinite,
+    pinvou-ultra-aurora1y 7.5s ease-in-out alternate infinite,
+    pinvou-ultra-aurora2 13s ease-in-out alternate infinite,
+    pinvou-ultra-aurora2y 10.5s ease-in-out alternate infinite,
+    pinvou-ultra-aurora3 11s ease-in-out alternate infinite,
+    pinvou-ultra-aurora3y 9.5s ease-in-out alternate infinite,
+    pinvou-ultra-sheen 6.5s linear infinite;
+}
+/* 点击开启一刻加本类：揭幕播一次（both 保持终态全显），光晕并行不断。 */
+.pinvou-ultra-row-reveal::before {
+  animation:
+    pinvou-ultra-reveal 1.2s cubic-bezier(0.3, 0, 0.25, 1) both,
+    pinvou-ultra-aurora1 9s ease-in-out alternate infinite,
+    pinvou-ultra-aurora1y 7.5s ease-in-out alternate infinite,
+    pinvou-ultra-aurora2 13s ease-in-out alternate infinite,
+    pinvou-ultra-aurora2y 10.5s ease-in-out alternate infinite,
+    pinvou-ultra-aurora3 11s ease-in-out alternate infinite,
+    pinvou-ultra-aurora3y 9.5s ease-in-out alternate infinite,
+    pinvou-ultra-sheen 6.5s linear infinite;
+}
+.pinvou-ultra-row-reveal::after {
+  animation: pinvou-ultra-splash 1.2s cubic-bezier(0.3, 0, 0.25, 1) both;
+}
+@keyframes pinvou-ultra-aurora1 {
+  from { --pinvou-aurora1: -15%; }
+  to { --pinvou-aurora1: 60%; }
+}
+@keyframes pinvou-ultra-aurora2 {
+  from { --pinvou-aurora2: 115%; }
+  to { --pinvou-aurora2: 45%; }
+}
+@keyframes pinvou-ultra-aurora3 {
+  from { --pinvou-aurora3: 15%; }
+  to { --pinvou-aurora3: 90%; }
+}
+@keyframes pinvou-ultra-aurora1y {
+  from { --pinvou-aurora1y: 22%; }
+  to { --pinvou-aurora1y: 58%; }
+}
+@keyframes pinvou-ultra-aurora2y {
+  from { --pinvou-aurora2y: 78%; }
+  to { --pinvou-aurora2y: 42%; }
+}
+@keyframes pinvou-ultra-aurora3y {
+  from { --pinvou-aurora3y: 30%; }
+  to { --pinvou-aurora3y: 68%; }
+}
+@keyframes pinvou-ultra-sheen {
+  0% {
+    background-position: -30% 0, 0 0, 0 0, 0 0, 0 0;
+    animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+  }
+  58% {
+    background-position: 140% 0, 0 0, 0 0, 0 0, 0 0;
+  }
+  100% {
+    background-position: 140% 0, 0 0, 0 0, 0 0, 0 0;
+  }
+}
+@keyframes pinvou-ultra-splash {
+  from {
+    opacity: 0;
+    transform: scale(0.15);
+  }
+  10% { opacity: 0.95; }
+  75% { opacity: 0.75; }
+  to {
+    opacity: 0;
+    transform: scale(26);
+  }
+}
+@keyframes pinvou-ultra-reveal {
+  from { clip-path: circle(0% at 91% 50%); }
+  to { clip-path: circle(135% at 91% 50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pinvou-ultra-row::before,
+  .pinvou-ultra-row-reveal::before,
+  .pinvou-ultra-row-reveal::after { animation: none; }
+}

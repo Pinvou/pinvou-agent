@@ -3,9 +3,9 @@ mod linux_permission;
 mod linux_system;
 
 pub use linux_path::{
-    apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command, kill_pid_tree,
-    obsidian_config_path, path_component_eq, platform_compat_path, python_command, user_home_dir,
-    validate_upload_location,
+    apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
+    filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,
+    platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
 pub use linux_permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
@@ -13,7 +13,7 @@ pub use linux_permission::{
 };
 pub use linux_system::{
     archive_dependency_packages, archive_tool_exists, archive_tool_path, command_exists,
-    email_dependency_packages, email_tool_exists, libreoffice_missing_message,
+    email_dependency_packages, email_manual_hint, email_tool_exists, libreoffice_missing_message,
     libreoffice_open_fallback_needed, libreoffice_tool_path, msg_converter_required,
     msg_native_supported, nvidia_smi_candidates, ocr_dependency_packages, ocr_tessdata_dir,
     ocr_tool_exists, ocr_tool_path, open_target, pandoc_dependency_packages,

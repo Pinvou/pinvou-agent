@@ -1,3 +1,5 @@
+mod event_stream;
+pub(crate) mod file_access;
 pub(crate) mod manager;
 mod platform;
 mod protocol;
@@ -5,6 +7,8 @@ mod relay_client;
 
 pub use manager::{RelaySettingsInfo, RemoteControlManager};
 pub use protocol::{WebAccessInfo, WebAccessStatus};
+
+pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 
 use rand::distr::Alphanumeric;
 use rand::Rng;

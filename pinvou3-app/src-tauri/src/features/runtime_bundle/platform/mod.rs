@@ -51,10 +51,6 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-static CONNECTOR_CLI_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/platforms/linux/aarch64/bundle/connectors");
-
 /// 7 个企微域技能目录名(门控写 / 删共用)。
 const WECOM_SKILL_DIRS: [&str; 7] = [
     "wecomcli-msg",
@@ -89,18 +85,80 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.15: 增加 exec_shell 登录终端环境过滤 hook(shell_env.sh)
 /// 0.16: 接入腾讯会议官方 tmeet CLI skill
 /// 0.17: 接入腾讯 ima OpenAPI Skill（原生受控工具）
+/// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
+/// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
+/// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
 pub const BUNDLE_VERSION: &str = concat!(
-    "0.17-",
+    "0.20-",
     env!("BUNDLE_INSTRUCTIONS_HASH"),
     "-",
     env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
-    "-",
-    env!("BUNDLE_CONNECTOR_CLI_HASH"),
 );
 
-/// pinvou3 内置的 instructions.md（Qwen3.6 适配 prompt），编译时内嵌。
-pub const INSTRUCTIONS_MD: &str =
-    include_str!("../../../../resources/common/bundle/instructions.md");
+/// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
+/// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
+/// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
+/// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
+/// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
+/// 不连续，纯 concat 无法逐字节复原，故骨架留占位行、按模式替换拼装。
+pub const INSTRUCTIONS_SHARED_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-shared.md");
+
+/// work 模式层：§工作环境（产出物面板语义与 tmp/ 规则）+ §工具与事实 的
+/// present_artifact 成品条。两段以空行分隔，供 [`work_layer_sections`] 切分。
+pub const INSTRUCTIONS_WORK_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-work.md");
+
+/// work 层两段：§工作环境 整节（无尾换行）与成品条（含尾换行）。
+fn work_layer_sections() -> (&'static str, &'static str) {
+    INSTRUCTIONS_WORK_MD
+        .split_once("\n\n")
+        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + 成品条段")
+}
+
+/// work 模式完整 instructions（共享骨架 + work 层占位替换）。
+/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
+pub fn instructions_md() -> &'static str {
+    static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RENDERED.get_or_init(|| {
+        let (env_section, artifact_rule) = work_layer_sections();
+        INSTRUCTIONS_SHARED_MD
+            // §工作环境 位：work 段无尾换行，补回占位行换行形成节间空行。
+            .replace("{{PINVOU3_MODE_ENV_SECTION}}", &format!("{env_section}\n"))
+            // 成品条位：占位行整体（含换行）替换为成品条原文 + 补回节间空行。
+            .replace(
+                "{{PINVOU3_MODE_ARTIFACT_RULE}}\n",
+                &format!("{artifact_rule}\n"),
+            )
+    })
+}
+
+/// 代码模式层（品悟原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
+/// 工作区占位）+ ## 代码场景纪律 增量段，两段以空行分隔。
+/// 底座 `CORE_EXECUTION_PROFILE_PROMPT` 不复制进文件，由 [`instructions_code_md`]
+/// 在渲染层原样拼接——上游更新自动跟随。
+pub const INSTRUCTIONS_CODE_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-code.md");
+
+/// 代码模式完整 instructions（共享骨架 + 代码层）：
+/// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
+/// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
+/// core_execution 执行循环与 ## 代码场景纪律。
+pub fn instructions_code_md(workspace_hint: &str) -> String {
+    let (env_section, discipline) = INSTRUCTIONS_CODE_MD
+        .split_once("\n\n")
+        .expect("instructions-code.md 必须是 §工作环境 段 + 空行 + ## 代码场景纪律 段");
+    let env_section = env_section.replace("{{PINVOU3_WORKSPACE_HINT}}", workspace_hint);
+    let mut out = INSTRUCTIONS_SHARED_MD
+        .replace("{{PINVOU3_MODE_ENV_SECTION}}", &format!("{env_section}\n"))
+        .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}\n", "");
+    out.push_str("\n\n");
+    out.push_str(deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim());
+    out.push_str("\n\n");
+    out.push_str(discipline.trim_end());
+    out.push('\n');
+    out
+}
 
 /// 内置「视觉设计」技能（设计系统直出 HTML）。编译期内嵌，解包到
 /// `~/.pinvou3/bundle/skills/visual-design/SKILL.md`，进 SkillRegistry 的 `## Skills`
@@ -109,17 +167,17 @@ pub const INSTRUCTIONS_MD: &str =
 const VISUAL_DESIGN_SKILL_MD: &str =
     include_str!("../../../../resources/common/bundle/skills/visual-design/SKILL.md");
 
-/// pinvou3 版 base prompt（Constitution / 工具纪律 / embedder-aware / 删 RLM·Toolbox·V4），
-/// 编译期内嵌。通过底座 `prompts::set_base_prompt_override` 注入，替换底座的上游
-/// `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,CodeWhale submodule 的
-/// base.md 回退上游原文（fork drift 归零）。
+/// pinvou3 版 base prompt，编译期内嵌。通过底座 `prompts::set_base_prompt_override`
+/// 注入，替换底座的上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,
+/// CodeWhale submodule 的 base.md 回退上游原文（fork drift 归零）。
+/// 注：base.md 已折叠为自述空壳，实际静态文案由本文件的 composer（见下）输出，
+/// 工具纪律与语言要求分别由 instructions.md 与 `LOCALE_PREAMBLE_*` 承载。
 pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
 /// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
-/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言已由
-/// base.md §Language("match the latest user message")管,这里只补
-/// "判断不了时的默认语言"。closer 同理。
+/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言由
+/// 用户消息驱动,这里只补"判断不了时的默认语言"。closer 同理。
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
 代码、路径、工具名、URL 保持原样。";
@@ -141,9 +199,9 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 判断できない場合は日本語。";
 
 /// pinvou3 版静态层 mode 块——Yolo（生产主路径,approval=Auto）。瘦身依据:
-/// 行为引导大头已由 `bridge::reminder_for` 每 turn `<system-reminder>` 注入,
-/// 静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/Session Longevity/
-/// Efficient Approvals 的逐条教学全不保留。
+/// 行为引导大头已由 `build_send_message_op`(Plan 段经 `SessionPolicy::plan_reminder`)
+/// 每 turn `<system-reminder>` 注入,静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/
+/// Session Longevity/Efficient Approvals 的逐条教学全不保留。
 ///
 /// (史料,防重蹈:句尾曾有「phase rules」尾巴,是 phase 时代残留;b891b2f 删它属正确清理。
 /// 我一度误以为删它致 GUI 首请求采歪、还恢复过(8e20f16)——实为 **gongwen MCP 工具才是
@@ -248,6 +306,16 @@ pub const DENY_SENSITIVE_PATHS_SH: &str =
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
+/// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
+/// 普通对话不使用。会话上限允许一级代理再派生一层；hook 拦截主会话显式
+/// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
+/// 继承上限与准入/并发额度兜底）；Workflow 的
+/// `source_path` 要求改用 inline script/plan，避免 hook 无法检查文件内参数。
+pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
+    include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
+pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
+    include_str!("../../../../resources/common/bundle/multiagent_depth_guard.ps1");
+
 /// 内嵌的 exec_shell CLI 兼容环境 hook：读取登录 shell 环境并过滤凭证。
 pub const SHELL_ENV_SH: &str = include_str!("../../../../resources/common/bundle/shell_env.sh");
 #[derive(Debug, Clone)]
@@ -259,6 +327,8 @@ pub struct Pinvou3Bundle {
     pub mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
+    pub multiagent_depth_guard_sh: PathBuf,
+    pub multiagent_depth_guard_ps1: PathBuf,
     pub shell_env_sh: PathBuf,
 }
 
@@ -272,6 +342,8 @@ impl Pinvou3Bundle {
             mcp_json: paths::bundle_mcp_json(),
             deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
             deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
+            multiagent_depth_guard_sh: paths::bundle_root().join("multiagent_depth_guard.sh"),
+            multiagent_depth_guard_ps1: paths::bundle_root().join("multiagent_depth_guard.ps1"),
             shell_env_sh: paths::bundle_root().join("shell_env.sh"),
         }
     }
@@ -304,9 +376,9 @@ impl Pinvou3Bundle {
         crate::platform::startup::mark("bundle_extract:write_workflows:start");
         self.write_workflows()?;
         crate::platform::startup::mark("bundle_extract:write_workflows:done");
-        crate::platform::startup::mark("bundle_extract:write_connector_clis:start");
-        self.write_connector_clis(bundle_changed)?;
-        crate::platform::startup::mark("bundle_extract:write_connector_clis:done");
+        // PR #132 早期构建曾把 CLI 解包进 immutable bundle；统一在线安装后清掉该
+        // app 自有旧目录，避免旧二进制掩盖按需安装与 hash 校验。
+        let _ = std::fs::remove_dir_all(paths::bundle_root().join("connectors"));
         // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
@@ -390,7 +462,7 @@ impl Pinvou3Bundle {
         // 首次解包按当前 sudoers 状态填 PINVOU3_SUDO_INSTRUCTION,避免占位符原文
         // 漏到 LLM 看到的 system prompt(engine boot 时是从 disk 读的)。
         // 用户切换开关时 set_super_permission 会 sync_session 重写。
-        let rendered = INSTRUCTIONS_MD
+        let rendered = instructions_md()
             .replace("{{PINVOU3_WORKSPACE}}", &workspace_abs.to_string_lossy())
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
@@ -403,11 +475,17 @@ impl Pinvou3Bundle {
         // PINVOU 自有 hooks：写入 + 加可执行位
         std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
         std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
+        std::fs::write(&self.multiagent_depth_guard_sh, MULTIAGENT_DEPTH_GUARD_SH)?;
+        std::fs::write(&self.multiagent_depth_guard_ps1, MULTIAGENT_DEPTH_GUARD_PS1)?;
         std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for script in [&self.deny_sensitive_sh, &self.shell_env_sh] {
+            for script in [
+                &self.deny_sensitive_sh,
+                &self.multiagent_depth_guard_sh,
+                &self.shell_env_sh,
+            ] {
                 let mut perm = std::fs::metadata(script)?.permissions();
                 perm.set_mode(0o755);
                 std::fs::set_permissions(script, perm)?;
@@ -489,6 +567,8 @@ impl Pinvou3Bundle {
             if disabled.len() != before {
                 crate::features::marketplace::save_disabled_connectors(&disabled);
             }
+            // 代码会话的 code scope 同样清理残留。
+            crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
 
             let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
         }
@@ -512,35 +592,6 @@ impl Pinvou3Bundle {
         // sansheng-liubu
         let dest = workflow_root.join("sansheng-liubu");
         Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
-        Ok(())
-    }
-
-    fn write_connector_clis(&self, force: bool) -> std::io::Result<()> {
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            let root = paths::bundle_connectors_dir();
-            let bin = root.join("linux-arm64").join("bin");
-            if force
-                || !bin.join("lark-cli").is_file()
-                || !bin.join("wecom-cli").is_file()
-                || !bin.join("dws").is_file()
-            {
-                Self::extract_dir(&CONNECTOR_CLI_DIR, &root)?;
-            }
-            use std::os::unix::fs::PermissionsExt;
-            for rel in [
-                "linux-arm64/bin/lark-cli",
-                "linux-arm64/bin/wecom-cli",
-                "linux-arm64/bin/dws",
-            ] {
-                let p = root.join(rel);
-                if p.is_file() {
-                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
-                }
-            }
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
-        let _ = force;
         Ok(())
     }
 
@@ -819,6 +870,94 @@ mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
 
+    /// 拆分前 instructions.md 原文快照（2026-08，33 行）。
+    /// golden：work 渲染必须与原文逐字节相等——骨架占位行替换的任何手滑
+    /// （换行/空行/节序/分段锚错位）都会让本测试变红。
+    const LEGACY_INSTRUCTIONS_MD: &str = "# pinvou3 运行守则\n\n> 你是 {{PINVOU3_MODEL}},运行在 pinvou3(本地桌面 GUI 助手)中。运行时态(Plan / Yolo 模式、超级权限开关)走每轮 `<system-reminder>`,以那里为准。禁 `read_file` `.pinvou3/bundle/` 下任何文件。\n\n## 底线\n- **真相优先**:不编造工具结果 / 路径 / 数字;声称做完前先验证(跑检查 / 读回关键处)或如实说明为何没验。\n- **权威顺序**:用户当前指令 > 既定规则 > 你的记忆;实时工具输出与文件内容 > 你的记忆,冲突时重读、信工具。\n- 语气平实,少感叹号与最高级。\n\n## 工作环境\n- workspace = `$HOME`,但**这不是项目目录** —— 你是桌面 GUI 助手。产出用**相对路径**写(如 `write_file(\"report.html\", …)`),自动落到本会话专属工作目录;别用 `~` 或绝对路径。\n- **工作目录根 = 用户看到的「产出物」面板**:只有**最终成品**才直接写到根。所有**中间 / 临时文件**(命令行入参、API 响应、分步数据等)一律写到 `tmp/` 子目录(相对路径,如 `tmp/params.json`)—— 子目录里的文件不进产出物列表,免得一堆过程文件污染面板。能用 stdin / 内存不落文件就别落。\n- 用户文件常在 `~/Documents` `~/Desktop` `~/Downloads` `~/桌面` `~/下载` `~/文档`;找文件用 `file_search`,别 `list_dir ~/` 或 `find ~/` 扫整个家目录。\n\n## 工具与事实\n- **只调你工具列表里实际出现的工具**;没出现的就是没有,别编工具名(算术 / 跑脚本用 `exec_shell python3 -c '...'`,git log 用 `exec_shell git log`)。\n- **不知道的当前信息必须调工具、禁止凭记忆编**:算术 / 精确当前时间 / 系统状态 / 库最新版本 / 文件内容与行数。\n- 给客户看的**单文件成品**(html / markdown / 图)写完,立刻调 `mcp_pinvou3_present_artifact`(绝对 `path` + 一眼看懂的 `title`,**title 用{{PINVOU3_TITLE_LANG}}、与你的回复同语种**);迭代重写后再调一次。\n\n## 怎么干\n- **说做就做,别光宣布**:一旦说要用工具做某事(写文件 / 搜索 / 读取 / 展示成品),就在**同一条回复里立刻发出该工具调用**;严禁只回「我来写 / 现在开始 / 让我…」之类就停下、把回合交还用户。前言一两句够了,别长篇铺垫策略。\n- 缺信息当轮就用工具补,别硬编;读多文件 / 多关键词搜索**并行**发起。\n- 遇到**影响结果走向的岔路**(选哪个方案 / 往哪个方向做),主动用 `request_user_input` 给 2-3 个选项让用户拍板,别自己闷头猜;纯执行细节有合理默认就直接做。不复述过程,做完给结果 + 关键决策。\n- 复杂任务(≥5 步)先 `checklist_write` 列清单再做(列完同轮就动手);**及时收手**,信息够答好就交付,别拿到 80% 还抠细节。\n\n## 红线(任何模式、任何请求都不破)\n- **密钥凭证禁读禁写**:`~/.ssh`、含 `id_rsa` / `credentials` / `.env` / `token` 的路径、`/etc/shadow`;被要求时给终端替代方案。\n- 不 `rm -rf` 用户文件 / 目录、不 `git reset --hard` / 批量清理,**除非用户精确点名**那个操作。\n- 写 `/etc` `/usr` `/var` 需超级权限:关闭态禁写,引导用户去【设置 → 系统权限】。\n\n## 输出\nGUI 富文本,代码块 / 列表 / 表格随便用。\n{{PINVOU3_SUDO_INSTRUCTION}}\n";
+
+    #[test]
+    fn work_instructions_render_byte_identical_to_legacy() {
+        assert_eq!(instructions_md(), LEGACY_INSTRUCTIONS_MD);
+    }
+
+    #[test]
+    fn shared_skeleton_keeps_mode_placeholder_rows_in_place() {
+        // 骨架占位行必须仍在原位：§底线 与 §工具与事实 之间、§工具与事实 与 §怎么干 之间。
+        let env_at = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ENV_SECTION}}")
+            .expect("env placeholder");
+        let artifact_at = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ARTIFACT_RULE}}")
+            .expect("artifact placeholder");
+        let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
+        let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
+        assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
+    }
+
+    #[test]
+    fn code_instructions_render_project_hint_and_drop_artifact_semantics() {
+        let rendered =
+            instructions_code_md("你正在用户的项目目录 `/repo/demo` 中工作,相对路径即相对项目根;");
+        // 工作区占位渲染正确。
+        assert!(rendered.contains("你正在用户的项目目录 `/repo/demo` 中工作"));
+        assert!(!rendered.contains("{{PINVOU3_WORKSPACE_HINT}}"));
+        // 底座执行循环原样引用（上游常量内容的一个稳定锚点）。
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let anchor = core.lines().next().expect("core_execution 非空");
+        assert!(rendered.contains(anchor));
+        assert!(rendered.contains(core));
+        // 无产出物/成品卡语义：work 层的面板与落盘规则不出现（增量段的否定式
+        // 提及“没有产出物面板/不建 tmp/”是刻意保留的行为指引）。
+        assert!(!rendered.contains("mcp_pinvou3_present_artifact"));
+        assert!(!rendered.contains("只有**最终成品**"));
+        assert!(!rendered.contains("自动落到本会话专属工作目录"));
+        assert!(!rendered.contains("产出用**相对路径**写"));
+        // 代码场景纪律与共享红线都在。
+        assert!(rendered.contains("## 代码场景纪律"));
+        assert!(rendered.contains("不主动执行 git 写操作"));
+        assert!(rendered.contains("## 红线"));
+        // 占位行无残留。
+        assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
+        assert!(!rendered.contains("{{PINVOU3_MODE_ARTIFACT_RULE}}"));
+        // 骨架结构保持：代码环境段位于 §底线 与 §工具与事实 之间。
+        let bottom = rendered.find("## 底线").unwrap();
+        let env = rendered.find("## 工作环境").unwrap();
+        let tools = rendered.find("## 工具与事实").unwrap();
+        assert!(bottom < env && env < tools);
+    }
+
+    #[test]
+    fn code_instructions_render_temporary_hint() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        assert!(rendered.contains("你在本会话专属工作目录中工作"));
+        assert!(!rendered.contains("项目目录"));
+    }
+
+    fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(&bundle.multiagent_depth_guard_ps1);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("bash");
+            command.arg(&bundle.multiagent_depth_guard_sh);
+            command
+        };
+        command
+            .env("DEEPSEEK_TOOL_NAME", tool)
+            .env("DEEPSEEK_TOOL_ARGS", args)
+            .output()
+            .expect("run multi-agent depth guard")
+    }
+
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
     /// 借 paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
     /// 不靠唯一 nanos 路径躲 race（仍会读 env var）。
@@ -835,6 +974,8 @@ mod tests {
         assert!(bundle.mcp_json.is_file());
         assert!(bundle.deny_sensitive_sh.is_file());
         assert!(bundle.deny_sensitive_ps1.is_file());
+        assert!(bundle.multiagent_depth_guard_sh.is_file());
+        assert!(bundle.multiagent_depth_guard_ps1.is_file());
         assert!(bundle.shell_env_sh.is_file());
         assert!(paths::bundle_version_file().is_file());
         // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
@@ -907,6 +1048,72 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn multiagent_depth_guard_enforces_two_level_inputs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        bundle.ensure_extracted().unwrap();
+
+        let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
+        assert_eq!(positive.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&positive.stderr).contains("at most two child levels"),
+            "拒绝原因必须能指导模型重试: {positive:?}"
+        );
+
+        let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
+        assert!(
+            inherited.status.success(),
+            "复杂一级委派省略深度参数时应继承会话两层上限: {inherited:?}"
+        );
+
+        let leaf = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":0}"#);
+        assert!(leaf.status.success(), "叶子委派应通过: {leaf:?}");
+
+        let positive_one =
+            run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":1}"#);
+        assert_eq!(
+            positive_one.status.code(),
+            Some(2),
+            "正数覆盖会让嵌套代理逐层扩大上限，必须拒绝"
+        );
+
+        let alias = run_depth_guard(
+            &bundle,
+            "agent",
+            r#"{"prompt":"inspect","max_spawn_depth":2}"#,
+        );
+        assert_eq!(alias.status.code(), Some(2));
+
+        let quoted_example = run_depth_guard(
+            &bundle,
+            "agent",
+            r#"{"prompt":"review this JSON: {\"max_depth\":2}"}"#,
+        );
+        assert!(
+            quoted_example.status.success(),
+            "任务正文里的转义示例不得误伤: {quoted_example:?}"
+        );
+
+        let workflow = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"script":"return task({ description: 'x', maxDepth: 1 });"}"#,
+        );
+        assert_eq!(workflow.status.code(), Some(2));
+
+        let opaque_workflow = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"source_path":"workflows/review.workflow.js"}"#,
+        );
+        assert_eq!(opaque_workflow.status.code(), Some(2));
 
         cleanup(&tmp);
     }

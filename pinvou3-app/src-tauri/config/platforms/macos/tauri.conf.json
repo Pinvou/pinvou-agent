@@ -12,6 +12,7 @@
         "resizable": true,
         "fullscreen": false,
         "maximized": true,
+        "dragDropEnabled": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
@@ -23,7 +24,8 @@
     "targets": ["app", "dmg"],
     "resources": {
       "resources/platforms/macos/PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy",
-      "resources/platforms/macos/codex-bridge/": "runtime/codex-bridge"
+      "resources/platforms/macos/codex-bridge/": "runtime/codex-bridge",
+      "resources/platforms/macos/infoplist/": "./"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",

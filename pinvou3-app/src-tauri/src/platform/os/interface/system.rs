@@ -1,4 +1,4 @@
-﻿use std::ffi::OsStr;
+use std::ffi::OsStr;
 
 use std::path::{Path, PathBuf};
 
@@ -89,6 +89,10 @@ pub fn archive_dependency_packages() -> &'static str {
 
 pub fn email_dependency_packages() -> &'static str {
     super::super::platform::email_dependency_packages()
+}
+
+pub fn email_manual_hint() -> Option<&'static str> {
+    super::super::platform::email_manual_hint()
 }
 
 pub fn pandoc_missing_message() -> &'static str {

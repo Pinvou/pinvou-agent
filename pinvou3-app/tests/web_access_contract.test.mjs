@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeRoot = path.join(root, 'src', 'platform', 'tauri');
 const webBridge = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+const webDomainAdapter = fs.readFileSync(
+  path.join(root, 'src', 'platform', 'web', 'bridge', 'domain-adapter.js'),
+  'utf8',
+);
+const attachmentDropController = fs.readFileSync(
+  path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
+  'utf8',
+);
 const desktopRemoteControlBridge = fs.readFileSync(
   path.join(bridgeRoot, 'bridge', 'remote-control.js'),
   'utf8',
@@ -23,9 +31,14 @@ const desktopBridgeSources = [
 ];
 const bridge = [
   webBridge,
+  webDomainAdapter,
   ...desktopBridgeSources,
 ].join('\n');
 const bootstrap = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
+const hostFilePicker = fs.readFileSync(
+  path.join(root, 'src', 'platform', 'web', 'host-file-picker.js'),
+  'utf8',
+);
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
@@ -66,6 +79,18 @@ for (const command of [
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
 
+// 知识库批量导入的进度查看与继续/取消/重试/失败文件分页是一组协同命令：Web 端知识库
+// 已开放（kb_collection_add_sources 等），任一导入控制命令遗漏会让对应按钮静默失败。
+for (const command of [
+  'kb_index_status',
+  'kb_index_cancel',
+  'kb_index_resume',
+  'kb_index_retry_file',
+  'kb_index_failed_files',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
+}
+
 for (const command of [
   'web_access_chat',
   'web_access_create_session_and_chat',
@@ -91,7 +116,7 @@ assert.match(chatView, /bridge\.attachments\.uploadDeviceFiles\(files\)/);
 assert.match(chatView, /bridge\.attachments\.pickAndAttach\(\)/,
   'the desktop-instance picker entry must keep using the existing remote browser');
 assert.match(webBridge, /DEVICE_UPLOAD_CHUNK_BYTES = 256 \* 1024/,
-  'upload chunks must stay aligned with the desktop MAX_ARTIFACT_CHUNK_BYTES limit');
+  'upload chunks must stay aligned with the desktop MAX_TRANSFER_CHUNK_BYTES limit');
 assert.match(webBridge, /DEVICE_UPLOAD_MAX_BYTES = 20 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
 assert.match(webBridge, /web_access_abort_attachment_upload/,
@@ -107,6 +132,25 @@ assert.match(bootstrap, /SEMANTIC_COMMAND_REQUIREMENTS/);
 assert.match(bootstrap, /supportsCapability\(capability\)/);
 assert.match(bootstrap, /if \(!this\.desktopCapabilitiesReady\) return false/);
 assert.match(bridge, /if \(IS_WEB && typeof PLATFORM\.can === "function"\) return PLATFORM\.can\(name\) === true/);
+assert.match(hostFilePicker, /function rememberRoots\(listing\)/,
+  'the Web host picker must retain the desktop-provided root inventory');
+assert.match(hostFilePicker, /function showRoots\(\)/,
+  'the Web host picker must expose an explicit root view');
+assert.match(hostFilePicker, /rootsButton\.addEventListener\("click", showRoots\)/,
+  'the root view must remain directly reachable from nested folders');
+assert.match(hostFilePicker, /if \(parentPath\) load\(parentPath\);[\s\S]{0,100}else if \(!showingRoots\) showRoots\(\);/,
+  'up from a filesystem root must return to the root inventory');
+assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parentPath/,
+  'filesystem roots must not be mixed into a drive directory listing');
+// HTML5 拖放复用 deviceFileUpload 分块通道:同一能力门控、同一上传/取消/丢弃语义。
+assert.match(webBridge, /canAccept: function \(\) \{ return hasCapability\("deviceFileUpload"\); \}/,
+  'browser drop must gate on the negotiated device upload capability');
+assert.match(webBridge, /onFiles: function \(files\) \{ return uploadDeviceFiles\(files\); \}/,
+  'browser drop must reuse the device upload pipeline instead of a parallel channel');
+assert.match(webBridge, /PinvouAttachmentDropController\.install/);
+assert.match(attachmentDropController, /dataTransfer\.dropEffect = "copy"/);
+assert.match(attachmentDropController, /setActive\(true\)/);
+assert.match(attachmentDropController, /setActive\(false\)/);
 assert.match(bootstrap, /sendReady\(false\)/);
 assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);
@@ -157,7 +201,7 @@ assert.match(commands, /app\.emit\(event, payload\.clone\(\)\)/);
 assert.match(commands, /forward_app_event\(app, event, payload\)/);
 assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
-assert.match(webBridge, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
+assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
 assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');

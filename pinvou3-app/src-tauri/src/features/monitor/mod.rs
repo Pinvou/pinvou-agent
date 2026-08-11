@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use serde::Serialize;
 
+use crate::core::model_endpoint::{is_anthropic_endpoint, models_probe_url, strip_v1_suffix};
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
@@ -544,17 +545,17 @@ async fn snapshot_for_model_config(
     };
     let metrics_applicable = target_kind == "local";
 
-    // 1) /v1/models 健康
-    // upstream 通常已带 `/v1` 后缀（DEEPSEEK_BASE_URL=http://...:8000/v1），
-    // 所以直接拼 `/models`；不带的话补 `/v1/models`。
-    let models_url = if upstream.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", upstream.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", upstream.trim_end_matches('/'))
-    };
+    // 1) /models 健康
+    let models_url = models_probe_url(upstream);
     let mut request = client.get(models_url);
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
-        request = request.bearer_auth(key);
+        if is_anthropic_endpoint(upstream) {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            request = request.bearer_auth(key);
+        }
     }
     let should_probe_models =
         target_kind == "local" || api_key.map(str::trim).is_some_and(|key| !key.is_empty());
@@ -837,81 +838,20 @@ fn base_model_snapshot(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenAiModelInfo {
-    pub id: String,
-    pub max_model_len: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenAiModelsProbe {
-    pub models: Vec<OpenAiModelInfo>,
-}
-
 fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
-    let first = parse_models_response_list(v)?.into_iter().next()?;
+    let first = crate::core::model_endpoint::parse_models_response_list(v)?
+        .into_iter()
+        .next()?;
     Some((Some(first.id), first.max_model_len))
-}
-
-fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
-    let data = v.get("data")?.as_array()?;
-    let models = data
-        .iter()
-        .filter_map(|item| {
-            let id = item.get("id").and_then(|v| v.as_str())?.trim();
-            if id.is_empty() {
-                return None;
-            }
-            let max_model_len = item
-                .get("max_model_len")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
-            Some(OpenAiModelInfo {
-                id: id.to_string(),
-                max_model_len,
-            })
-        })
-        .collect::<Vec<_>>();
-    (!models.is_empty()).then_some(models)
-}
-
-pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
-    };
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
-    Some(OpenAiModelsProbe {
-        models: parse_models_response_list(v)?,
-    })
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
     // 模型名事实与 Engine route_limits 共用同一入口，避免页面显示 1M、实际仍按
-    // 128K 压缩。这里只保留底座与补充表都无法识别时的供应商预设兜底。
+    // 128K 压缩。底座与补充表都无法识别时按供应商预设兜底（表在 prefs::model_preset）。
     if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
         return Some(window);
     }
-    match preset {
-        ModelPreset::LocalVllm => Some(262_144),
-        ModelPreset::Deepseek => Some(131_072),
-        ModelPreset::Kimi => Some(262_144),
-        ModelPreset::OpenaiCompatible => Some(131_072),
-        ModelPreset::Qwen => Some(131_072),
-        ModelPreset::Doubao => Some(262_144),
-        ModelPreset::Minimax => Some(204_800),
-        ModelPreset::Glm => Some(131_072),
-        ModelPreset::Mimo => Some(1_000_000),
-    }
+    preset.context_window_fallback(model)
 }
 
 /// 推理性能相关的 6 个累计指标，统一解析、统一缺省 None。
@@ -999,16 +939,6 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     }
     // 域名或公网 IPv6 → 云端 API
     "remote"
-}
-
-fn strip_v1_suffix(url: &str) -> Option<String> {
-    let trimmed = url.trim_end_matches('/');
-    Some(
-        trimmed
-            .strip_suffix("/v1")
-            .map(String::from)
-            .unwrap_or_else(|| trimmed.to_string()),
-    )
 }
 
 /// 轻量探测本地 vLLM:一次 `/v1/models` 拿两样——实际 served 模型名 + `max_model_len`
@@ -1186,22 +1116,6 @@ mod tests {
         assert!(parse_prom_metric(text, "vllm:num_requests_running").is_none());
     }
 
-    #[test]
-    fn strip_v1_suffix_removes_trailing_v1() {
-        assert_eq!(
-            strip_v1_suffix("http://host:8000/v1").as_deref(),
-            Some("http://host:8000")
-        );
-        assert_eq!(
-            strip_v1_suffix("http://host:8000/v1/").as_deref(),
-            Some("http://host:8000")
-        );
-        assert_eq!(
-            strip_v1_suffix("http://host:8000").as_deref(),
-            Some("http://host:8000")
-        );
-    }
-
     #[tokio::test]
     async fn sample_all_keeps_other_fields_when_cpu_snapshot_is_none() {
         let state = MonitorState::new();
@@ -1238,20 +1152,6 @@ mod tests {
         let (id, max) = parse_models_response(json).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
-    }
-
-    #[test]
-    fn parse_models_response_list_keeps_all_model_ids() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"object":"list","data":[{"id":"qwen2.5-coder:32b"},{"id":"deepseek-r1:14b","max_model_len":32768}]}"#,
-        )
-        .unwrap();
-        let models = parse_models_response_list(json).unwrap();
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0].id, "qwen2.5-coder:32b");
-        assert_eq!(models[0].max_model_len, None);
-        assert_eq!(models[1].id, "deepseek-r1:14b");
-        assert_eq!(models[1].max_model_len, Some(32768));
     }
 
     /// 真机冒烟(#[ignore]):对活着的本地 vLLM 跑 `probe_vllm_model_info`,确认拿到
@@ -1379,6 +1279,10 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
+            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
+            // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
+            (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
+            (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -1389,7 +1293,8 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         }
     }
 
-    /// 推断优先级：显式 Nk 后缀 > pinvou 补充表/底座 > 预设兜底。
+    /// 推断优先级：显式 Nk 后缀 > pinvou 补充表/底座 > 预设兜底
+    /// （兜底表逐厂商覆盖见 prefs::model_preset 的 context_window_fallback 测试）。
     #[test]
     fn infer_context_window_fallback_order() {
         // 显式后缀优先于一切（含底座 catalog 里的同名模型）
@@ -1402,15 +1307,6 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             infer_context_window(ModelPreset::Deepseek, Some("my-custom-finetune")),
             Some(131_072)
         );
-        assert_eq!(
-            infer_context_window(ModelPreset::Minimax, Some("minimax-future-x")),
-            Some(204_800)
-        );
-        assert_eq!(
-            infer_context_window(ModelPreset::Mimo, Some("mimo-future-x")),
-            Some(1_000_000)
-        );
-        // 无模型名 → 预设兜底
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
     }
 }

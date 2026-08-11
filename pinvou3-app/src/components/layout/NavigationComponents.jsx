@@ -2,8 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false }) => {
+const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t }) => {
       const isDark = theme === 'dark';
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
@@ -26,7 +27,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           <div className={`relative ${isSidebarOpen ? 'mr-3' : ''} shrink-0 ${active ? (isDark ? 'text-[#041E49]' : 'text-[#0B57D0]') : ''}`}>
             {icon}
             {unread && (
-              <span data-testid="scheduled-nav-unread" aria-label="定时任务有未查看的运行对话"
+              <span data-testid="scheduled-nav-unread" aria-label={t.uiScheduled.navUnreadAria}
                 className="absolute -right-1.5 -top-1 w-2.5 h-2.5 rounded-full border-2"
                 style={{ background: '#0B57D0', borderColor: active ? (isDark ? '#A8C7FA' : '#D3E3FD') : (isDark ? '#1E1F20' : '#F0F4F9') }} />
             )}
@@ -206,14 +207,14 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
     };
 
     // 近期会话项：支持重命名(内联编辑) + 删除(内联二次确认)
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [menuOpen, setMenuOpen] = useState(false);
       const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
-      const sessionDragKind = onPickUp ? 'session' : null;
+      const sessionDragKind = onPickUp ? dragKind : null;
       const drag = useLongPressDrag(sessionDragKind, onPickUp);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);
@@ -302,7 +303,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
               onClick={e => e.stopPropagation()}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
+              onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
               className={`w-full px-3 py-1 rounded-full text-[15px] outline-none ${isDark ? 'bg-[#131314] text-[#E3E3E3] ring-1 ring-[#A8C7FA]' : 'bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0]'}`} />
           </div>
@@ -313,6 +314,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {...dragProps}
           onContextMenu={openContextMenu}
           data-testid={chat.testId}
+          data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={ dragging ? { opacity: 0.4 } : (personaTarget ? { background: isDark?'rgba(10,132,255,.20)':'rgba(0,122,255,.12)', boxShadow:'inset 0 0 0 1px '+(isDark?'rgba(10,132,255,.6)':'rgba(0,122,255,.45)'), color: isDark?'#fff':'#1F1F1F' } : undefined) }
           className={`group flex h-11 items-center px-4 rounded-full cursor-pointer text-[15px] transition-all
@@ -328,7 +330,7 @@ const NavItem = ({ icon, label, active, unread = false, theme, isSidebarOpen = t
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
           {chat.pinned && <PinIcon size={12} className={`shrink-0 mr-1.5 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
           <span className="min-w-0 flex-1 pr-2">
-            <span className="block truncate whitespace-nowrap leading-5">{chat.title}</span>
+            <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
             {chat.subtitle && (
               <span className={`block truncate text-[12px] leading-4 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{chat.subtitle}</span>
             )}

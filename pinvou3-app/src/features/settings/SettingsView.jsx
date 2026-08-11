@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Video, Wrench, X, Zap } from '../../components/icons.jsx';
+import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Store, Trash2, User, Users, Video, Wrench, X, Zap } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -9,16 +9,21 @@ import { visibleUserModels } from '../../shared/model-options.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { buildComposerToolMenuState } from './composer-tool-menu-logic.js';
 import { notifyComposerToolsChanged } from '../tools/tool-events.js';
-import deepseekIcon from '../../brand-icons/deepseek.svg';
-import doubaoIcon from '../../brand-icons/doubao.svg';
-import glmIcon from '../../brand-icons/glm.svg';
-import kimiIcon from '../../brand-icons/kimi.svg';
-import mimoIcon from '../../brand-icons/mimo.svg';
-import minimaxIcon from '../../brand-icons/minimax.svg';
-import openaiIcon from '../../brand-icons/openai.svg';
 import qwenIcon from '../../brand-icons/qwen.svg';
-import tencentCloudIcon from '../../brand-icons/tencentcloud.svg';
+import {
+  MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
+  MODEL_CATALOG_SECTIONS, MODEL_CATALOG, CLOUD_MODEL_PROVIDERS,
+  BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
+  presetOptionsI18n, presetProviderLabel,
+  normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
+  groupModelsForSelector, selectorMainLabel, selectorSubLabel,
+} from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  artifactPreviewExternalUrlFromMessage,
+  buildArtifactPreviewDocument,
+} from '../artifacts/artifact-preview-navigation.js';
+import { ProvidersSection } from './ProvidersSection.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -91,7 +96,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       </div>
     );
 
-    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange }) => {
+    const MemorySettingsCard = ({ isDark, bs, memoryEnabled, onMemoryEnabledChange, t }) => {
+      const copy = t.uiSettingsView;
+      const detailCopy = t.uiSettingsDetail;
       const memory = (bs && bs.memory) || {};
       const profile = memory.profile || {};
       const identity = profile.identity || {};
@@ -124,8 +131,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         : 'bg-[#E8F0FE] border-[#B8D1FF] text-[#0B57D0]';
       const profileCount = (identity.call_name ? 1 : 0) + (identity.assistant_alias ? 1 : 0);
       const profileSummary = [
-        identity.call_name ? `称呼：${identity.call_name}` : '',
-        identity.assistant_alias ? `助手昵称：${identity.assistant_alias}` : '',
+        identity.call_name ? copy.profileCallName(identity.call_name) : '',
+        identity.assistant_alias ? copy.profileAssistantAlias(identity.assistant_alias) : '',
       ].filter(Boolean).join(' · ');
       const total = preferences.length + workContext.length + currentFocus.length + recentActivity.length;
       const longTermItems = [
@@ -139,14 +146,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const longTermCount = profileCount + longTermItems.length;
       const recentCount = recentItems.length;
       const tabs = [
-        { key: 'long_term', label: '长期记忆', count: longTermCount, icon: Database },
-        { key: 'recent', label: '近期记忆', count: recentCount, icon: RefreshCw },
+        { key: 'long_term', label: detailCopy.longMemory, count: longTermCount, icon: Database },
+        { key: 'recent', label: copy.memoryTabRecent, count: recentCount, icon: RefreshCw },
       ];
       const tabMeta = tabs.find(x => x.key === tab) || tabs[0];
-      const memoryTypeLabel = kind => kind === 'current_focus' ? '当前关注'
-        : kind === 'recent_activity' ? '近期动态'
-        : kind === 'work_context' ? '工作背景'
-        : '长期偏好';
+      const memoryTypeLabel = kind => kind === 'current_focus' ? detailCopy.memoryTypes.current_focus
+        : kind === 'recent_activity' ? detailCopy.memoryTypes.recent_activity
+        : kind === 'work_context' ? detailCopy.memoryTypes.work_context
+        : detailCopy.memoryTypes.preference;
       const memoryTypeIcon = kind => kind === 'current_focus' ? Lightbulb
         : kind === 'recent_activity' ? RefreshCw
         : kind === 'work_context' ? Briefcase
@@ -211,7 +218,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const deleteItem = async item => {
         setMenuFor(null);
         if (!item || !bridge.memory.deleteMemoryItem) return;
-        if (!window.confirm('删除后这条记忆不会再被使用，确定删除吗？')) return;
+        if (!window.confirm(copy.memoryDeleteConfirm)) return;
         await bridge.memory.deleteMemoryItem(item.kind, item.id);
       };
       const archiveItem = async item => {
@@ -224,21 +231,21 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       const formatMemoryTime = item => {
         const raw = item.updated_at || item.created_at || item.last_seen_at || item.last_used_at;
-        if (!raw) return '已记住';
+        if (!raw) return copy.memoryTimeSaved;
         const date = new Date(raw);
-        if (Number.isNaN(date.getTime())) return '已记住';
+        if (Number.isNaN(date.getTime())) return copy.memoryTimeSaved;
         const diff = Date.now() - date.getTime();
         const day = 24 * 60 * 60 * 1000;
-        if (diff >= 0 && diff < day) return '今天更新';
-        if (diff >= day && diff < 7 * day) return `${Math.floor(diff / day)} 天前更新`;
-        return `${date.getMonth() + 1}月${date.getDate()}日更新`;
+        if (diff >= 0 && diff < day) return copy.memoryTimeToday;
+        if (diff >= day && diff < 7 * day) return copy.memoryTimeDaysAgo(Math.floor(diff / day));
+        return copy.memoryTimeDate(date.getMonth() + 1, date.getDate());
       };
       const confidenceText = item => {
         const n = Number(item.confidence);
-        if (!Number.isFinite(n)) return '自动整理';
-        if (n >= 0.85) return '置信度高';
-        if (n >= 0.65) return '置信度中';
-        return '置信度低';
+        if (!Number.isFinite(n)) return copy.memoryConfidenceAuto;
+        if (n >= 0.85) return copy.memoryConfidenceHigh;
+        if (n >= 0.65) return copy.memoryConfidenceMid;
+        return copy.memoryConfidenceLow;
       };
 
       const MemoryRow = ({ item }) => {
@@ -255,11 +262,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 </div>
                 <div className="text-[14px] leading-relaxed break-words">{item.text}</div>
                 <div className={`mt-3 text-[12px] ${faintText}`}>
-                  来源：对话识别 · {confidenceText(item)}
+                  {copy.memorySource} · {confidenceText(item)}
                 </div>
               </div>
               <button
-                title="更多操作"
+                title={copy.memoryMoreActions}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuFor(menuFor === rowKey ? null : rowKey);
@@ -271,11 +278,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
             {menuFor === rowKey && (
               <div onClick={(e) => e.stopPropagation()} className={`absolute right-4 top-12 z-10 min-w-[118px] rounded-xl border ${border} ${isDark ? 'bg-[#24262B] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'} shadow-2xl overflow-hidden`}>
-                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />编辑</button>
+                <button onClick={() => startEdit(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Edit2 size={14} />{detailCopy.edit}</button>
                 {(item.kind === 'current_focus' || item.kind === 'recent_activity') && (
-                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />归档</button>
+                  <button onClick={() => archiveItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${isDark ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.04]'}`}><Archive size={14} />{copy.memoryArchive}</button>
                 )}
-                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />删除</button>
+                <button onClick={() => deleteItem(item)} className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] ${dangerBtn}`}><Trash2 size={14} />{detailCopy.delete}</button>
               </div>
             )}
           </div>
@@ -284,16 +291,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
 
       return (
         <>
-          <SCard isDark={isDark} title="记忆">
+          <SCard isDark={isDark} title={copy.memoryCardTitle}>
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <div className={`text-[14px] font-medium ${isDark ? 'text-[#E8EAED]' : 'text-[#1F1F1F]'}`}>
-                  {memoryEnabled ? '已启用' : '已关闭'}
+                  {memoryEnabled ? copy.memoryEnabled : copy.memoryDisabled}
                 </div>
                 <div className={`mt-1 text-[13px] leading-relaxed ${subText}`}>
                   {memoryEnabled
-                    ? (memory.loading ? '正在读取记忆' : (profileSummary ? `${profileSummary} · ${total} 条有效记忆。` : `PINVOU 会记住你的偏好、工作背景和近期事项，让后续对话更容易接上上下文。已记录 ${total} 条有效记忆。`))
-                    : '开启后，PINVOU 可以记住你的称呼、稳定偏好、工作背景和近期事项，减少重复说明。'}
+                    ? (memory.loading ? copy.memoryLoading : (profileSummary ? copy.memorySummaryWithProfile(profileSummary, total) : copy.memorySummary(total)))
+                    : copy.memoryOffDesc}
                 </div>
                 {memory.error && <div className="mt-2 text-[13px] text-[#EA4335]">{memory.error}</div>}
               </div>
@@ -302,14 +309,14 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   onClick={() => onMemoryEnabledChange && onMemoryEnabledChange(!memoryEnabled)}
                   role="switch"
                   aria-checked={!!memoryEnabled}
-                  title={memoryEnabled ? '关闭记忆' : '开启记忆'}
+                  title={memoryEnabled ? copy.memoryTurnOff : copy.memoryTurnOn}
                   className={`w-12 h-7 rounded-full p-1 flex items-center transition-colors ${memoryEnabled ? 'justify-end bg-[#0B57D0]' : `justify-start ${isDark ? 'bg-[#3C4043]' : 'bg-[#DADCE0]'}`}`}
                 >
                   <span className="block w-5 h-5 rounded-full bg-white shadow" />
                 </button>
                 {memoryEnabled && (
                   <button onClick={() => { setOpen(true); reload(); }} className={`text-[13px] font-medium px-4 py-2 rounded-full transition-colors ${primaryBtn}`}>
-                    查看和管理
+                    {copy.memoryViewManage}
                   </button>
                 )}
               </div>
@@ -322,11 +329,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`relative w-full max-w-[980px] max-h-[88vh] overflow-hidden rounded-[22px] border ${border} ${panelBg} shadow-2xl`}>
                 <div className={`flex items-center justify-between gap-4 px-6 py-4 border-b ${border}`}>
                   <div>
-                    <div className="text-[19px] font-semibold">记忆中心</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>记忆由 AI 自动整理，非必要无需手动管理。</div>
+                    <div className="text-[19px] font-semibold">{copy.memoryCenterTitle}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryCenterDesc}</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? '同步中' : '同步记忆'}</button>
+                    <button onClick={reload} disabled={!!memory.loading} className={`inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-full ${ghostBtn}`}><RefreshCw size={13} className={memory.loading ? 'animate-spin' : ''} />{memory.loading ? copy.memorySyncing : copy.memorySync}</button>
                     <button onClick={() => setOpen(false)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
                   </div>
                 </div>
@@ -349,45 +356,45 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className="p-5 overflow-auto" onClick={() => setMenuFor(null)}>
                     {!memoryEnabled && (
                       <div className={`mb-4 rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.04] border-white/[0.08]' : 'bg-white border-[#DDE3EA]'}`}>
-                        <div className={`text-[13px] leading-relaxed ${subText}`}>开启记忆后，PINVOU 会在对话中使用这些信息，并自动整理新的长期记忆与近期记忆。</div>
+                        <div className={`text-[13px] leading-relaxed ${subText}`}>{copy.memoryOffNotice}</div>
                       </div>
                     )}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
                       <div>
                         <div className="text-[16px] font-semibold">{tabMeta.label}</div>
-                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? '称呼、长期偏好与工作背景' : '当前关注与近期动态'} · {tabMeta.count} 条</div>
+                        <div className={`text-[12px] mt-1 ${faintText}`}>{tab === 'long_term' ? copy.memoryLongTermTabDesc : copy.memoryRecentTabDesc} · {copy.memoryItemCount(tabMeta.count)}</div>
                       </div>
                       <div className={`h-10 min-w-0 md:w-[260px] flex items-center gap-2 rounded-full border px-3 ${inputBg}`}>
                         <Search size={15} className={faintText} />
-                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder="搜索记忆" className="w-full bg-transparent outline-none text-[13px]" />
+                        <input value={query} onChange={e => setQuery(e.target.value)} onClick={e => e.stopPropagation()} placeholder={copy.memorySearchPlaceholder} className="w-full bg-transparent outline-none text-[13px]" />
                       </div>
                     </div>
 
                     {tab === 'long_term' ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <SField isDark={isDark} label="助手称呼我" value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder="例如：欣哥" />
-                          <SField isDark={isDark} label="我称呼助手" value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder="例如：小猪" />
+                          <SField isDark={isDark} label={copy.memoryCallNameLabel} value={draft.call_name} onChange={e => setDraft({ ...draft, call_name: e.target.value })} placeholder={copy.memoryCallNamePlaceholder} />
+                          <SField isDark={isDark} label={copy.memoryAssistantAliasLabel} value={draft.assistant_alias} onChange={e => setDraft({ ...draft, assistant_alias: e.target.value })} placeholder={copy.memoryAssistantAliasPlaceholder} />
                         </div>
                         <div className="flex justify-end">
-                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                          <button onClick={saveProfile} disabled={saving} className={`text-[12px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${saving ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
                         </div>
                         {filteredList.length === 0 ? (
-                          <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的长期记忆。' : '暂无长期偏好或工作背景。'}</div>
+                          <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchLongTerm : copy.memoryEmptyLongTerm}</div>
                         ) : (
                           <div className="space-y-3">{filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}</div>
                         )}
                         <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>长期记忆会长期保留，用来理解你的稳定偏好、工作背景和称呼习惯。它不会自动过期，你可以随时编辑或删除。</div>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryLongTermHint}</div>
                         </div>
                       </div>
                     ) : filteredList.length === 0 ? (
-                      <div className={`text-[13px] ${subText}`}>{query.trim() ? '没有匹配的近期记忆。' : '暂无当前关注或近期动态。'}</div>
+                      <div className={`text-[13px] ${subText}`}>{query.trim() ? copy.memoryNoMatchRecent : copy.memoryEmptyRecent}</div>
                     ) : (
                       <div className="space-y-3">
                         {filteredList.map(item => <MemoryRow key={`${item.kind}:${item.id}`} item={item} />)}
                         <div className={`rounded-2xl border px-4 py-3 ${isDark ? 'bg-white/[0.03] border-white/[0.06]' : 'bg-white/70 border-[#DDE3EA]'}`}>
-                          <div className={`text-[12px] leading-relaxed ${faintText}`}>近期记忆会记录最近正在推进和刚完成的事情，用来帮助 PINVOU 接上上下文。它会随时间自动淡出，你也可以手动归档或删除。</div>
+                          <div className={`text-[12px] leading-relaxed ${faintText}`}>{copy.memoryRecentHint}</div>
                         </div>
                       </div>
                     )}
@@ -403,20 +410,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               <div className={`relative w-full max-w-[560px] rounded-[18px] border ${border} ${panelBg} p-5 shadow-2xl`}>
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div>
-                    <div className="text-[16px] font-semibold">编辑{memoryTypeLabel(editing.kind)}</div>
-                    <div className={`text-[12px] mt-1 ${subText}`}>修改后会立即影响后续记忆注入。</div>
+                    <div className="text-[16px] font-semibold">{detailCopy.editTitle(memoryTypeLabel(editing.kind))}</div>
+                    <div className={`text-[12px] mt-1 ${subText}`}>{copy.memoryEditDesc}</div>
                   </div>
                   <button onClick={() => setEditing(null)} className={`w-8 h-8 rounded-full flex items-center justify-center ${ghostBtn}`}><X size={15} /></button>
                 </div>
                 <div className="space-y-3">
                   <label className="block">
-                    <span className={`block text-[12px] mb-1.5 ${subText}`}>内容</span>
+                    <span className={`block text-[12px] mb-1.5 ${subText}`}>{detailCopy.content}</span>
                     <textarea value={editing.text} onChange={e => setEditing({ ...editing, text: e.target.value })} rows={5} className={`w-full rounded-xl border px-3 py-2 text-[14px] outline-none resize-none ${inputBg}`} />
                   </label>
                 </div>
                 <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>取消</button>
-                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? '保存中' : '保存'}</button>
+                  <button onClick={() => setEditing(null)} className={`text-[13px] px-4 py-2 rounded-full ${ghostBtn}`}>{detailCopy.cancel}</button>
+                  <button onClick={saveEdit} disabled={saving || !editing.text.trim()} className={`text-[13px] font-medium px-4 py-2 rounded-full ${primaryBtn} ${(saving || !editing.text.trim()) ? 'opacity-50' : ''}`}>{saving ? detailCopy.saving : detailCopy.save}</button>
                 </div>
               </div>
             </div>
@@ -425,310 +432,6 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         </>
       );
     };
-
-    // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
-    // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
-    const MODEL_PRESET_DEFS = {
-      local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-      deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-      kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
-      openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-      qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
-      doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-      minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-      glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
-      mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
-    };
-    const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
-    const PROVIDER_KIND_OFFICIAL_API = 'official_api';
-    const PROVIDER_KIND_CUSTOM = 'custom';
-    const MODEL_CATALOG_SECTIONS = {
-      coding_plan: 'Coding Plan',
-      official_api: '官方 API',
-      custom: '自定义兼容接口',
-    };
-    function presetOptionsI18n(t) {
-      return [
-        { key: 'local_vllm', label: t.modelPresetLocalVllm },
-        { key: 'deepseek', label: t.modelPresetDeepseek },
-        { key: 'kimi', label: t.modelPresetKimi },
-        { key: 'openai_compatible', label: t.modelPresetOpenaiCompatible },
-        { key: 'qwen', label: t.modelPresetQwen },
-        { key: 'doubao', label: t.modelPresetDoubao },
-        { key: 'minimax', label: t.modelPresetMinimax },
-        { key: 'glm', label: t.modelPresetGlm },
-        { key: 'mimo', label: t.modelPresetMimo },
-      ];
-    }
-    function presetProviderLabel(preset, t) {
-      const m = {};
-      presetOptionsI18n(t).forEach(o => { m[o.key] = o.label; });
-      return m[preset] || preset;
-    }
-
-    const BRAND_ICON_BY_PRESET = {
-      deepseek: deepseekIcon,
-      kimi: kimiIcon,
-      glm: glmIcon,
-      qwen: qwenIcon,
-      doubao: doubaoIcon,
-      minimax: minimaxIcon,
-      mimo: mimoIcon,
-      openai_compatible: openaiIcon,
-    };
-    const BRAND_ICON_BY_VENDOR = {
-      glm: glmIcon,
-      kimi: kimiIcon,
-      deepseek: deepseekIcon,
-      qwen: qwenIcon,
-      doubao: doubaoIcon,
-      minimax: minimaxIcon,
-      mimo: mimoIcon,
-      openai: openaiIcon,
-      tencent: tencentCloudIcon,
-    };
-
-    const MODEL_CATALOG = {
-      local: [
-        {
-          key: 'local',
-          title: '本地 vLLM',
-          preset: 'local_vllm',
-          items: [
-            { model: 'qwen36_35b_256k', title: 'qwen36_35b_256k', desc: '本地服务默认模型' },
-            { model: '', title: '自定义本地模型', desc: '填写本地服务暴露的模型 ID', custom: true },
-          ],
-        },
-      ],
-      cloud: [
-        {
-          key: 'glm_coding_plan',
-          section: 'coding_plan',
-          title: '智谱 Coding Plan / GLM Coding Plan',
-          configTitle: '智谱 Coding Plan',
-          desc: '智谱编码与 Agent 场景专用接口',
-          preset: 'openai_compatible',
-          providerKind: PROVIDER_KIND_CODING_PLAN,
-          vendor: 'glm',
-          baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-          endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
-          items: [
-            { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
-            { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
-            { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
-            { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'tencent_coding_plan',
-          section: 'coding_plan',
-          title: '腾讯云 Coding Plan / Tencent Cloud Coding Plan',
-          configTitle: '腾讯云 Coding Plan',
-          desc: '腾讯云编码计划接口',
-          preset: 'openai_compatible',
-          providerKind: PROVIDER_KIND_CODING_PLAN,
-          vendor: 'tencent',
-          baseUrl: 'https://api.lkeap.cloud.tencent.com/coding/v3',
-          endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
-          items: [
-            { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
-            { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'kimi_coding_plan',
-          section: 'coding_plan',
-          title: 'Kimi Coding Plan',
-          configTitle: 'Kimi Coding Plan',
-          desc: 'Kimi 编码场景专用接口',
-          preset: 'openai_compatible',
-          providerKind: PROVIDER_KIND_CODING_PLAN,
-          vendor: 'kimi',
-          baseUrl: 'https://api.kimi.com/coding/v1',
-          endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions'],
-          items: [
-            { model: 'kimi-for-coding', title: 'kimi-for-coding', desc: '标准编码模型' },
-            { model: 'k3-256k', title: 'k3-256k', desc: 'K3 256K 上下文模型' },
-            { model: 'k3', title: 'k3', desc: 'K3 长上下文模型' },
-            { model: 'kimi-for-coding-highspeed', title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
-            { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'deepseek',
-          section: 'official_api',
-          title: '深度求索 / DeepSeek',
-          configTitle: 'DeepSeek',
-          desc: 'DeepSeek 官方 API',
-          preset: 'deepseek',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'deepseek',
-          items: [
-            { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
-            { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
-            { model: '', title: '自定义 DeepSeek 模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'kimi',
-          section: 'official_api',
-          title: 'Kimi 中国版 / Kimi China',
-          configTitle: 'Kimi',
-          desc: 'Moonshot 官方 API',
-          preset: 'kimi',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'kimi',
-          items: [
-            { model: 'kimi-k3', title: 'kimi-k3', desc: '最新通用模型' },
-            { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
-            { model: 'kimi-k2.7-code-highspeed', title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景' },
-            { model: 'kimi-k2.6', title: 'kimi-k2.6', desc: '稳定可用' },
-            { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'glm',
-          section: 'official_api',
-          title: '智谱开放平台 / GLM API',
-          configTitle: 'GLM API',
-          desc: '智谱开放平台普通 API',
-          preset: 'glm',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'glm',
-          items: [
-            { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
-            { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
-            { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
-            { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
-            { model: '', title: '自定义 GLM 模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'minimax',
-          section: 'official_api',
-          title: 'MiniMax 中国版 / MiniMax China',
-          configTitle: 'MiniMax',
-          desc: 'MiniMax 官方 API',
-          preset: 'minimax',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'minimax',
-          items: [
-            { model: 'MiniMax-M3', title: 'MiniMax-M3', desc: '最新推荐' },
-            { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
-            { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
-            { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '兼容保留' },
-            { model: 'MiniMax-M2.5-highspeed', title: 'MiniMax-M2.5-highspeed', desc: '兼容高速' },
-            { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'mimo',
-          section: 'official_api',
-          title: 'MiMo',
-          desc: '小米 MiMo 官方 API',
-          preset: 'mimo',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'mimo',
-          items: [
-            { model: 'mimo-v2.5-pro', title: 'mimo-v2.5-pro', desc: '最新推荐' },
-            { model: 'mimo-v2.5', title: 'mimo-v2.5', desc: '通用能力' },
-            { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'qwen',
-          section: 'official_api',
-          title: '通义千问',
-          desc: '阿里云 DashScope 兼容 API',
-          preset: 'qwen',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'qwen',
-          items: [
-            { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '最新推荐' },
-            { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '旗舰推理' },
-            { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '高性价比' },
-            { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
-            { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'doubao',
-          section: 'official_api',
-          title: '豆包',
-          desc: '火山方舟官方 API',
-          preset: 'doubao',
-          providerKind: PROVIDER_KIND_OFFICIAL_API,
-          vendor: 'doubao',
-          items: [
-            { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐' },
-            { model: 'doubao-seed-2.1-pro', title: 'doubao-seed-2.1-pro', desc: '高能力模型' },
-            { model: 'doubao-seed-2.1-turbo', title: 'doubao-seed-2.1-turbo', desc: '快速响应' },
-            { model: 'doubao-seed-2.0-pro', title: 'doubao-seed-2.0-pro', desc: '稳定通用' },
-            { model: 'doubao-seed-2.0-lite', title: 'doubao-seed-2.0-lite', desc: '轻量模型' },
-            { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
-          ],
-        },
-        {
-          key: 'openai_compatible',
-          section: 'custom',
-          title: 'OpenAI Compatible',
-          desc: '自定义 OpenAI 兼容接口',
-          preset: 'openai_compatible',
-          providerKind: PROVIDER_KIND_CUSTOM,
-          vendor: 'openai',
-          items: [
-            { model: 'gpt-5.6-terra', title: 'gpt-5.6-terra', desc: '兼容端点示例' },
-            { model: 'gpt-5.6-luna', title: 'gpt-5.6-luna', desc: '兼容端点示例' },
-            { model: 'gpt-5.6-sol', title: 'gpt-5.6-sol', desc: '兼容端点示例' },
-            { model: '', title: '自定义兼容模型', desc: '手动填写模型 ID 和服务地址', custom: true },
-          ],
-        },
-      ],
-    };
-
-    const CLOUD_MODEL_PROVIDERS = MODEL_CATALOG.cloud;
-    function normalizeEndpointUrl(value) {
-      const raw = String(value || '').trim();
-      if (!raw) return '';
-      return raw.replace(/\/+$/, '');
-    }
-    function normalizeOpenAiBaseUrl(value) {
-      const trimmed = normalizeEndpointUrl(value);
-      return trimmed.replace(/\/chat\/completions$/i, '');
-    }
-    function providerBaseUrl(provider) {
-      if (!provider) return '';
-      return provider.baseUrl || (MODEL_PRESET_DEFS[provider.preset] && MODEL_PRESET_DEFS[provider.preset].baseUrl) || '';
-    }
-    function normalizedProviderBaseUrl(provider) {
-      const base = providerBaseUrl(provider);
-      if (provider && provider.endpointMode === 'full_chat_completions') return normalizeEndpointUrl(base);
-      return normalizeOpenAiBaseUrl(base);
-    }
-    function findCloudProviderForModel(model) {
-      if (!model) return null;
-      const providerKind = model.provider_kind || model.providerKind;
-      const vendor = model.vendor;
-      const base = normalizeEndpointUrl(model.base_url || model.baseUrl || '');
-      return CLOUD_MODEL_PROVIDERS.find(provider => {
-        if (providerKind && provider.providerKind !== providerKind) return false;
-        if (vendor && provider.vendor !== vendor) return false;
-        const urls = [providerBaseUrl(provider), ...(provider.endpointAliases || [])]
-          .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
-        const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
-        if (compareBase && urls.includes(compareBase)) return true;
-        return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && item.model === model.model);
-      }) || null;
-    }
-    function providerLabelForModel(model, t) {
-      const provider = findCloudProviderForModel(model);
-      if (provider) return provider.title;
-      return presetProviderLabel(model && model.preset, t);
-    }
-    function isCodingPlanModel(model) {
-      const providerKind = model && (model.provider_kind || model.providerKind);
-      return providerKind === PROVIDER_KIND_CODING_PLAN || !!(model && findCloudProviderForModel(model)?.providerKind === PROVIDER_KIND_CODING_PLAN);
-    }
 
     const ProviderIcon = ({ preset, vendor, providerKind, model, isDark, compact = false }) => {
       const modelId = String(model || '').toLowerCase();
@@ -762,7 +465,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </span>
         );
       }
-      const src = BRAND_ICON_BY_PRESET[preset];
+      const src = BRAND_ICON_BY_PRESET[preset] || (vendor && BRAND_ICON_BY_VENDOR[vendor]);
       if (!src) return null;
       const darkBacked = preset === 'kimi';
       return (
@@ -772,83 +475,77 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    // 聊天输入框上方:当前会话模型 chip + 下拉热切。
-    const ModelChip = ({ isDark, t, bs, onGotoSettings }) => {
+    // 输入框底栏:模型选择器(iOS 化;darkMode:'class' 故用 dark: 变体)。
+    // 可选“显式会话态驱动”props（代码模块原生车道用）：sessionId/sessionModelId/
+    // busy/onSwitchModel 传入时绕开 bridge 聊天 active 绑定；不传走原 bs/bridge 路径。
+    const ComposerModelSelector = ({
+      t,
+      bs,
+      onGotoSettings,
+      compact,
+      sessionId: sessionIdProp,
+      sessionModelId: sessionModelIdProp,
+      busy: busyProp,
+      onSwitchModel,
+      multiAgentEnabled: multiAgentEnabledProp,
+      multiAgentAvailable: multiAgentAvailableProp,
+      onToggleMultiAgent,
+    }) => {
       const [open, setOpen] = useState(false);
+      const triggerRef = useRef(null);
       const canManageModels = can('modelManagement');
       const canSwitchModels = can('sessionModelSwitch');
+      // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
+      // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
+      const canMultiAgent = can('multiAgent') && multiAgentAvailableProp !== false;
+      const multiAgentOn = multiAgentEnabledProp !== undefined
+        ? Boolean(multiAgentEnabledProp)
+        : !!(bs && bs.modeState && bs.modeState.multiAgent);
+      const multiAgentCopy = (t && t.uiMultiAgent) || {};
+      // 防重入（复核点名）：后端事务完成前再点会带着旧状态重复提交，
+      // 其中一次名册推送失败的回滚还会覆盖另一次已开启的状态。切换期间
+      // 禁用按钮；bridge 侧另有 in-flight 丢弃兜底（双入口防线）。
+      const [multiAgentBusy, setMultiAgentBusy] = useState(false);
+      // 揭幕动效只在用户点击开启这一刻播放：会话切换/重启同步出现的
+      // 开启态、弹层关了再开，都不重播揭幕（真机点名），但光晕持续漂移
+      // （真机点名"动画不能停"，挂在常态类上）。触发源是点击处理器而
+      // 不是状态上升沿；点击关闭或弹层关闭时清掉标记，避免误续播。
+      const [multiAgentRevealing, setMultiAgentRevealing] = useState(false);
+      useEffect(() => {
+        if (!open) setMultiAgentRevealing(false);
+      }, [open]);
+      async function toggleMultiAgent() {
+        if (multiAgentBusy || busy) return;
+        if (!onToggleMultiAgent
+          && !(bridge.available && bridge.interaction && bridge.interaction.setMultiAgentMode)) return;
+        setMultiAgentRevealing(!multiAgentOn);
+        setMultiAgentBusy(true);
+        try {
+          if (onToggleMultiAgent) await onToggleMultiAgent(!multiAgentOn);
+          else await bridge.interaction.setMultiAgentMode(!multiAgentOn);
+        } finally {
+          setMultiAgentBusy(false);
+        }
+      }
       const savedModels = visibleUserModels((bs && bs.savedModels) || []);
-      const activeSessionId = bs ? bs.activeSessionId : null;
+      const activeSessionId = sessionIdProp !== undefined ? sessionIdProp : (bs ? bs.activeSessionId : null);
       const activeModelId = bs && bs.activeModelId;
-      const currentSessionModelId = bs && bs.currentSessionModelId;
-      const busy = bs ? bs.busy : false;
+      const currentSessionModelId = sessionModelIdProp !== undefined ? sessionModelIdProp : (bs && bs.currentSessionModelId);
+      const busy = busyProp !== undefined ? busyProp : (bs ? bs.busy : false);
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
       if (!savedModels.length) return null;
       function pick(id) {
         setOpen(false);
         if (id === effectiveId) return;
+        if (onSwitchModel) { onSwitchModel(activeSessionId, id); return; }
         if (bridge.available) bridge.models.switchModel(activeSessionId, id);
       }
       return (
-        <div className="relative px-2 mb-2">
-          <button onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
-            title={busy ? t.modelSwitchBusy : t.switchModelTitle}
-            className={`inline-flex items-center gap-1.5 pl-3 pr-2 py-1 rounded-full text-[12px] font-medium transition-colors disabled:opacity-50 ${isDark ? 'bg-[#2A2B2D] text-[#E3E3E3] hover:bg-[#333537]' : 'bg-[#EAEDF1] text-[#1F1F1F] hover:bg-[#E0E3E7]'}`}>
-            <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]"></span>
-            <span className="max-w-[220px] truncate">{current ? current.name : t.modelNonePick}</span>
-            <ChevronDown size={13} />
-          </button>
-          {open && canSwitchModels && (
-            <div>
-              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}></div>
-              <div className={`absolute bottom-full left-2 mb-1 z-50 min-w-[240px] max-h-[340px] overflow-y-auto rounded-xl border shadow-lg py-1 ${isDark ? 'bg-[#1E1F20] border-[#333537]' : 'bg-white border-[#E0E3E7]'}`}>
-                {savedModels.map(m => (
-                  <button key={m.id} onClick={() => pick(m.id)}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${isDark ? 'hover:bg-[#2A2B2D]' : 'hover:bg-[#F0F4F9]'}`}>
-                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${m.id === effectiveId ? 'bg-[#34A853]' : 'bg-transparent'}`}></span>
-                    <span className="flex-1 min-w-0">
-                      <span className={`block text-[13px] truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{m.name}</span>
-                      <span className={`block text-[11px] truncate ${isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'}`}>{m.model}</span>
-                    </span>
-                    {m.id === activeModelId && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-[#37393B] text-[#9AA0A6]' : 'bg-[#E8EAED] text-[#5F6368]'}`}>{t.modelActiveTag}</span>}
-                  </button>
-                ))}
-                {canManageModels && (
-                  <div className={`border-t mt-1 pt-1 ${isDark ? 'border-[#333537]' : 'border-[#E8EAED]'}`}>
-                    <button onClick={() => { setOpen(false); if (onGotoSettings) onGotoSettings(); }}
-                      className={`w-full px-3 py-1.5 text-left text-[12px] ${isDark ? 'text-[#9AA0A6] hover:bg-[#2A2B2D]' : 'text-[#5F6368] hover:bg-[#F0F4F9]'}`}>
-                      {t.manageModels}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // 输入框底栏:模型选择器(iOS 化,复用 ModelChip 的 switchModel 逻辑;darkMode:'class' 故用 dark: 变体)。
-    const ComposerModelSelector = ({ t, bs, onGotoSettings, compact }) => {
-      const [open, setOpen] = useState(false);
-      const triggerRef = useRef(null);
-      const canManageModels = can('modelManagement');
-      const canSwitchModels = can('sessionModelSwitch');
-      const savedModels = visibleUserModels((bs && bs.savedModels) || []);
-      const activeSessionId = bs ? bs.activeSessionId : null;
-      const activeModelId = bs && bs.activeModelId;
-      const currentSessionModelId = bs && bs.currentSessionModelId;
-      const busy = bs ? bs.busy : false;
-      const effectiveId = currentSessionModelId || activeModelId;
-      const current = savedModels.find(m => m.id === effectiveId);
-      if (!savedModels.length) return null;
-      function pick(id) { setOpen(false); if (id !== effectiveId && bridge.available) bridge.models.switchModel(activeSessionId, id); }
-      return (
         <div className="relative min-w-0">
           <button ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
-            title={(current ? current.name : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
+            title={(current ? selectorMainLabel(current, t) : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
+            className={`relative shrink-0 flex items-center justify-center ${multiAgentOn ? 'text-[#6d28d9] dark:text-[#c4b5fd]' : 'text-gray-700 dark:text-gray-200'} transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -857,23 +554,65 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             ) : (
               <>
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-[#34C759]"></span>
-                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? current.name : t.modelNonePick)}</span>
+                <span className="max-w-[116px] truncate">{t.composerModelLabel(current ? selectorMainLabel(current, t) : t.modelNonePick)}</span>
                 <ChevronDown size={13} className="opacity-50 shrink-0" />
               </>
             )}
           </button>
           <ComposerPopover open={open && canSwitchModels} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {savedModels.map(m => (
-                  <button key={m.id} onClick={() => pick(m.id)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-                      <span className="truncate">{m.name}</span>
-                    </span>
-                    {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
-                  </button>
-                ))}
+                {(() => {
+                  const { preset, custom } = groupModelsForSelector(savedModels);
+                  const renderGroup = (label, items, withDivider) => items.length > 0 && (
+                    <>
+                      {withDivider && <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />}
+                      <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-gray-400 dark:text-gray-500">{label}</div>
+                      {items.map(m => (
+                        <button key={m.id} onClick={() => pick(m.id)}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left rounded-xl transition-colors group hover:bg-[#007AFF] hover:text-white">
+                          <span className="flex items-center gap-2.5 min-w-0">
+                            <Cpu size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                            <span className="min-w-0">
+                              <span className="block text-[13px] truncate text-gray-700 dark:text-gray-200 group-hover:text-white">{selectorMainLabel(m, t)}</span>
+                              <span className="block text-[11px] truncate text-gray-400 dark:text-gray-500 group-hover:text-white/80">{selectorSubLabel(m, t)}</span>
+                            </span>
+                          </span>
+                          {m.id === effectiveId && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+                        </button>
+                      ))}
+                    </>
+                  );
+                  return (
+                    <>
+                      {renderGroup(t.modelGroupPreset, preset, false)}
+                      {renderGroup(t.modelGroupCustom, custom, preset.length > 0)}
+                    </>
+                  );
+                })()}
+                {canMultiAgent && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <button type="button" data-testid="multiagent-toggle" onClick={toggleMultiAgent}
+                      disabled={multiAgentBusy || busy}
+                      title={multiAgentCopy.toggleHint || ''}
+                      onAnimationEnd={(event) => {
+                        if (event.animationName === 'pinvou-ultra-reveal') setMultiAgentRevealing(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl ${
+                        multiAgentOn
+                          ? 'pinvou-ultra-row'
+                          : 'text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07]'
+                      } ${multiAgentRevealing ? 'pinvou-ultra-row-reveal' : ''}`}>
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Users size={15} className={`shrink-0 ${multiAgentOn ? 'text-current' : 'text-gray-400'}`} />
+                        <span className={`truncate ${multiAgentOn ? 'font-medium' : ''}`}>{multiAgentCopy.toggleLabel || ''}</span>
+                      </span>
+                      <span aria-hidden="true" className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${multiAgentOn ? 'bg-white/30' : 'bg-black/20 dark:bg-white/25'}`}>
+                        <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${multiAgentOn ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                      </span>
+                    </button>
+                  </>
+                )}
                 {canManageModels && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
@@ -1021,9 +760,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // 产物 HTML 预览：测内容自然尺寸，比面板宽就整体等比缩小铺满（只缩不放）。
     // 治"固定尺寸 banner 在窄预览面板里溢出、出滚动条、只露一角"。响应式整页缩放比≈1、不受影响。
     const clampPreviewScale = value => Math.max(0.1, Math.min(3, Number(value) || 1));
-    const ScaledHtmlPreview = ({ html, onFrameLoad, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
+    const ScaledHtmlPreview = ({ html, onFrameLoad, onOpenExternal, zoomMode = 'auto-width', customScale = 1, onScaleChange, onCustomScaleChange }) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
+      const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
       const [box, setBox] = useState(null); // { w, h, scale }
       const [ready, setReady] = useState(false);
       const managedZoom = zoomMode !== 'auto-width';
@@ -1034,11 +774,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (!fr || !wrap || !fr.contentWindow) return;
           const doc = fr.contentWindow.document;
           const de = doc.documentElement, bd = doc.body;
-          const naturalW = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
-          const h = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
           const panelW = wrap.clientWidth;
           const panelH = wrap.clientHeight;
-          const w = managedZoom ? Math.max(canvasW, naturalW || 0) : naturalW;
+          // 内容自然尺寸只在面板参考宽度下测量一次并缓存；后续仅依据面板尺寸重算缩放。
+          // 若把「已按自然宽度撑开的 iframe 视口」每次再喂回测量，弹层里的 vw/vh 与
+          // 溢出内容（如 right:-120px 的绝对定位元素）会让 scrollWidth/scrollHeight 随 iframe
+          // 被撑大而继续放大，触发 ResizeObserver 无限反馈 → 预览无限放大。
+          let nat = naturalRef.current;
+          if (!nat) {
+            const cw = Math.max(de ? de.scrollWidth : 0, bd ? bd.scrollWidth : 0);
+            const ch = Math.max(de ? de.scrollHeight : 0, bd ? bd.scrollHeight : 0);
+            nat = { w: cw, h: ch };
+            // iframe 内容可能尚未真正加载(scrollWidth=0 或 scrollHeight=0)：这种空测量不写入缓存，
+            // 等 onLoad 后测到真实尺寸再缓存，避免把首轮空值固化导致正常页面缩放出错。
+            if (cw > 0 && ch > 0) naturalRef.current = nat;
+          }
+          const w = managedZoom ? Math.max(canvasW, nat.w || 0) : nat.w;
+          const h = nat.h;
           let scale = 1;
           if (zoomMode === 'fit') {
             const widthScale = w > 0 && panelW > 0 ? panelW / w : 1;
@@ -1064,7 +816,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (onScaleChange) onScaleChange(scale);
         } catch (e) { /* 未就绪/跨域，忽略 */ }
       };
-      useEffect(() => { setReady(false); setBox(null); }, [html]);
+      useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]);
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {
         if (!wrapRef.current || typeof ResizeObserver === 'undefined') return;
@@ -1102,6 +854,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         doc.addEventListener('wheel', handleFrameWheel, { passive: false, capture: true });
         return () => doc.removeEventListener('wheel', handleFrameWheel, { capture: true });
       }, [managedZoom, ready, box && box.scale, customScale, onCustomScaleChange]);
+      useEffect(() => {
+        const handlePreviewMessage = event => {
+          const frameWindow = frameRef.current && frameRef.current.contentWindow;
+          if (!frameWindow || event.source !== frameWindow) return;
+          const url = artifactPreviewExternalUrlFromMessage(event.data);
+          if (url && onOpenExternal) onOpenExternal(url);
+        };
+        window.addEventListener('message', handlePreviewMessage);
+        return () => window.removeEventListener('message', handlePreviewMessage);
+      }, [onOpenExternal]);
       const scaled = box && box.scale !== 1;
       const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
       const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
@@ -1134,13 +896,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                 data-zoom-mode={zoomMode}
                 data-zoom-scale={box ? String(box.scale) : ''}
                 style={frameStyle()}
-                srcDoc={"<script>"
-                  + "document.addEventListener('contextmenu',function(e){e.preventDefault();});"
-                  // 预览内拦截 <a> 导航：srcDoc 的 base 是父文档(app)，放任会把 iframe 跳成 app 首页。
-                  // 阻止默认导航；页内 #锚点 改为在预览内滚动；外链/# 不跳走。<button> 的 onclick 不受影响。
-                  + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a'):null;if(!a)return;e.preventDefault();var h=a.getAttribute('href')||'';if(h.charAt(0)==='#'&&h.length>1){var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView({behavior:'smooth'});}},true);"
-                  + "document.addEventListener('submit',function(e){e.preventDefault();},true);"
-                  + "<\/script><style>html,body{background:#15171a;margin:0;}</style>" + (html || '')} />
+                srcDoc={buildArtifactPreviewDocument(html)} />
             </div>
           </div>
         </div>
@@ -1152,7 +908,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     const ComposerModeMenu = ({ t, bs, compact }) => {
       const [open, setOpen] = useState(false);
       const SKILLS = [
-        { id: 'visual-design', name: '视觉设计', desc: '设计系统直出网页/banner/海报/简历…', kind: 'auto' },
+        { id: 'visual-design', name: t.uiSettingsView.visualDesignSkillName, desc: t.uiSettingsView.visualDesignSkillDesc, kind: 'auto' },
       ];
       const activeId = bs && bs.activeSkill;
       const cur = SKILLS.find(s => s.id === activeId && s.kind === 'auto');
@@ -1195,13 +951,20 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
     };
 
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill }) => {
+    // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
+    //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
+    // 下拉内容不变；不传变体时聊天页外观逐字节不变。
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
+      // scope: 'code' = 原生代码会话(独立开关,默认全关),缺省 = 普通会话(plain)。
+      const toolScope = scope === 'code' ? 'code' : 'plain';
       const [marketplaceTools, setMarketplaceTools] = useState([]);
       const [marketplaceSkills, setMarketplaceSkills] = useState([]);
-      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(全局持久)
+      const [disabled, setDisabled] = useState(() => new Set()); // 被关掉的连接器 id(按 scope 持久)
+      const [disabledSkills, setDisabledSkills] = useState(() => new Set()); // 被关掉的技能 id(按 scope 持久,独立文件)
+      const [projectSkillsEnabled, setProjectSkillsEnabled] = useState(false); // 项目级 skills(仅 code scope 生效)
       const [feishuOn, setFeishuOn] = useState(false); // 飞书是否已连接(CLI 路线)
       const [feishuEnabled, setFeishuEnabled] = useState(true); // 飞书技能是否启用(未手动停用)
       const [wecomOn, setWecomOn] = useState(false); // 企微是否已连接(CLI 路线)
@@ -1221,8 +984,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch (e) { /* ignore */ }
         try {
-          const dis = await invokeTauri('get_disabled_connectors');
+          const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
           if (isAlive()) setDisabled(new Set(dis || []));
+        } catch (e) { /* ignore */ }
+        try {
+          const disSkills = await invokeTauri('get_disabled_skills', { scope: toolScope });
+          if (isAlive()) setDisabledSkills(new Set(disSkills || []));
+        } catch (e) { /* ignore */ }
+        try {
+          const proj = await invokeTauri('get_project_skills_enabled');
+          if (isAlive()) setProjectSkillsEnabled(!!proj);
         } catch (e) { /* ignore */ }
         try {
           const fs = await invokeTauri('feishu_skills_state');
@@ -1249,30 +1020,58 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
-      function toggleTool(id) {
+      function toggleTool(id, kind) {
         if (!canMutateToolStore) return;
+        // 技能行走独立双 scope 开关（disabled_skills.json）；工具/服务行走连接器开关。
+        if (kind === 'skill') {
+          // 技能行 row.id 带 `skill:` 命名空间前缀，后端与组合目录物化按裸 id
+          // 匹配——传前缀会导致开关不落盘、视觉不翻转（strip 对齐契约）。
+          const skillId = id.startsWith('skill:') ? id.slice('skill:'.length) : id;
+          const next = new Set(disabledSkills);
+          next.has(skillId) ? next.delete(skillId) : next.add(skillId);
+          setDisabledSkills(next);
+          if (bridge.available) {
+            invokeTauri('set_disabled_skills',
+              { skillIds: Array.from(next), scope: toolScope }).catch(() => {});
+          }
+          return;
+        }
         const next = new Set(disabled);
         next.has(id) ? next.delete(id) : next.add(id);
         setDisabled(next);
-        // 全局持久:落盘 + 广播给所有在跑引擎,关一次所有新对话/新窗口都继承。
+        // 按 scope 持久:落盘 + 广播给所有在跑引擎,关一次该 scope 所有新对话/新窗口都继承。
         if (bridge.available) {
           invokeTauri('set_disabled_connectors',
-            { connectorIds: Array.from(next) }).catch(() => {});
+            { connectorIds: Array.from(next), scope: toolScope }).catch(() => {});
+        }
+      }
+      function toggleProjectSkills() {
+        if (!canMutateToolStore) return;
+        const next = !projectSkillsEnabled;
+        setProjectSkillsEnabled(next);
+        if (bridge.available) {
+          invokeTauri('set_project_skills_enabled', { enabled: next }).catch(() => {});
         }
       }
       const menuState = buildComposerToolMenuState({
         marketplaceTools,
         marketplaceSkills,
         disabledIds: Array.from(disabled),
+        disabledSkillIds: Array.from(disabledSkills),
         activeSkill,
+        scope: toolScope,
         serviceStates: [
-          { id: 'feishu', title: '飞书（Lark）', connected: feishuOn, enabled: feishuEnabled },
-          { id: 'wecom', title: '企业微信', connected: wecomOn, enabled: wecomEnabled },
-          { id: 'dingtalk', title: '钉钉', connected: dingtalkOn, enabled: dingtalkEnabled },
-          { id: 'tmeet', title: '腾讯会议', connected: tmeetOn, enabled: tmeetEnabled },
+          { id: 'feishu', title: t.uiSettingsView.serviceFeishu, connected: feishuOn, enabled: feishuEnabled },
+          { id: 'wecom', title: t.uiSettingsView.serviceWecom, connected: wecomOn, enabled: wecomEnabled },
+          { id: 'dingtalk', title: t.uiSettingsView.serviceDingtalk, connected: dingtalkOn, enabled: dingtalkEnabled },
+          { id: 'tmeet', title: t.uiSettingsView.serviceTmeet, connected: tmeetOn, enabled: tmeetEnabled },
         ],
       });
       const { connectedServices, toolRows, skillRows, enabledCount } = menuState;
+      // 内置技能名称/描述由 composer-tool-menu-logic.js 数据提供，在 UI 边界按当前语言覆盖
+      const localizedSkillRows = skillRows.map(row => (row.kind === 'builtin-skill' && row.skillId === 'visual-design')
+        ? { ...row, title: t.uiSettingsView.visualDesignSkillName, description: t.uiSettingsView.visualDesignSkillDesc }
+        : row);
       const statusBadge = (label, tone = 'green') => {
         const cls = tone === 'blue'
           ? 'text-[#007AFF] dark:text-[#5AC8FA] bg-[#007AFF]/10 dark:bg-[#0A84FF]/15'
@@ -1284,7 +1083,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <span className="min-w-0">
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
           </span>
-          <button onClick={() => toggleTool(row.id)} aria-label={row.id} disabled={!canMutateToolStore}
+          <button onClick={() => toggleTool(row.id, row.kind)} aria-label={row.id} disabled={!canMutateToolStore}
             className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
             <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${row.enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
           </button>
@@ -1300,7 +1099,35 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       );
       return (
         <div className="relative shrink-0">
-          <button ref={triggerRef} data-testid="composer-tool-menu-trigger" onClick={() => setOpen(o => !o)} title={t.composerTools}
+          {triggerVariant === 'pill' ? (
+            <button
+              ref={triggerRef}
+              type="button"
+              data-testid={triggerTestId || 'composer-tool-menu-trigger'}
+              onClick={() => setOpen(o => !o)}
+              title={t.composerTools}
+              aria-expanded={open}
+              className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+            >
+              {triggerLabel && (
+                <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+                  {triggerLabel}
+                </span>
+              )}
+              <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
+                {t.composerTools}
+              </span>
+              {enabledCount > 0 && (
+                <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>
+              )}
+              <ChevronDown
+                size={12}
+                aria-hidden="true"
+                className={`pointer-events-none ml-auto shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </button>
+          ) : (
+          <button ref={triggerRef} data-testid={triggerTestId || 'composer-tool-menu-trigger'} onClick={() => setOpen(o => !o)} title={t.composerTools}
             className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             <Wrench size={compact ? 18 : 13} className="opacity-80" />
             {!compact && t.composerTools}
@@ -1309,16 +1136,46 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               : <span className="min-w-4 h-4 rounded-full bg-[#007AFF] px-1 text-center text-[10px] font-bold leading-4 text-white shrink-0">{enabledCount}</span>)}
             {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
           </button>
+          )}
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             menuProps={{ 'data-testid': 'composer-tool-menu' }}
             desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
                 {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
                 {toolRows.map(switchRow)}
-                {skillRows.length === 0 ? (
+                {localizedSkillRows.length === 0 ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>
-                ) : skillRows.map(row => row.switchable
-                  ? switchRow(row)
-                  : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                ) : (
+                  <>
+                    {localizedSkillRows.map(row => row.switchable
+                      ? switchRow(row)
+                      : readonlyRow(row, row.active ? t.composerSkillInUse : t.composerBuiltinAuto, row.active ? 'green' : 'blue'))}
+                    {/* 该 scope 全部技能被关：空态提示（组合目录为空 → 模型看不到任何技能） */}
+                    {skillRows.filter(row => row.kind === 'skill').length > 0
+                      && skillRows.filter(row => row.kind === 'skill').every(row => !row.enabled) && (
+                      <div className="px-3 pt-1 pb-1 text-[11px] text-gray-400 dark:text-gray-500">{t.composerSkillAllDisabled}</div>
+                    )}
+                  </>
+                )}
+                {toolScope === 'code' && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <div className="px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0">
+                          <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{t.composerProjectSkills}</span>
+                          <span className="block text-[10px] text-gray-400 dark:text-gray-500">{t.composerProjectSkillsDesc}</span>
+                        </span>
+                        <button onClick={toggleProjectSkills} aria-label="project-skills" disabled={!canMutateToolStore}
+                          className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${projectSkillsEnabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
+                          <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${projectSkillsEnabled ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                        </button>
+                      </div>
+                      {projectSkillsEnabled && (
+                        <div className="mt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">{t.composerProjectSkillsWarning}</div>
+                      )}
+                    </div>
+                  </>
+                )}
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
                 <button onClick={() => { setOpen(false); if (onGotoTools) onGotoTools(); }}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
@@ -1491,8 +1348,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
       function applyCandidate(c) {
         if (!c) return;
+        // 优先填充已加载的模型：Ollama/LM Studio 的列表含全部已下载模型，
+        // 选未加载的模型 = 首次推理时由框架 JIT 静默载入内存（可能几十 GB）。
+        const entries = Array.isArray(c.models) && c.models.length
+          ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+          : [];
+        const preferred = entries.find(e => e && e.id && e.loaded === true)
+          || entries.find(e => e && e.id && e.loaded == null);
+        const modelId = preferred ? preferred.id : (c.model || '');
         if (c.base_url) setBaseUrl(c.base_url);
-        if (c.model) { setModel(c.model); if (!name.trim()) setName(c.model); }
+        if (modelId) { setModel(modelId); if (!name.trim()) setName(modelId); }
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
       }
@@ -1510,7 +1375,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           });
           const online = ((result && result.candidates) || []).filter(c => c.status !== 'offline');
           setDetectResult({ candidates: online });
-          if (online.length === 1) applyCandidate(online[0]); // 唯一可用实例直接填充
+          // 唯一可用实例直接填充——但只自动填充"已加载"的模型。Ollama/LM Studio
+          // 的列表接口返回全部已下载模型，JIT 机制下选未加载模型 = 首次推理时
+          // 静默载入内存（可能是几十 GB），必须交给用户显式选择。
+          if (online.length === 1) {
+            const c = online[0];
+            const entries = Array.isArray(c.models) && c.models.length
+              ? c.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+              : (c.model ? [{ id: c.model, loaded: null }] : []);
+            const loadedEntry = entries.find(e => e && e.id && e.loaded === true);
+            if (loadedEntry) applyCandidate({ base_url: c.base_url, model: loadedEntry.id });
+          }
           else if (online.length === 0) {
             // 没探到运行中的实例:看本机是否有预装大模型,有则提示一键启用(走同一 bootstrap)。
             const setup = await bridge.vllm.detectLocalVllmSetup();
@@ -1547,7 +1422,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const modalTitle = initial.__new
         ? (isCodingPlan ? settingsCopy.addProvider(selectedProvider) : t.modelFormAddTitle)
         : (isCodingPlan ? settingsCopy.editProvider(selectedProvider) : t.modelFormEditTitle);
-      const saveName = name.trim() || (isLocalPreset ? settingsCopy.localModelName(model.trim()) : (model.trim() ? model.trim() : selectedProvider));
+      const saveName = showDisplayNameField
+        ? (name.trim() || settingsCopy.localModelName(model.trim()))
+        : (isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider));
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = !!initial.has_secret || credentialState === 'configured' || credentialState === 'env_override';
       const keyStatusText = credentialState === 'env_override' ? t.credEnvOverride
@@ -1600,23 +1477,25 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       function localCandidateRows(result) {
         const candidates = (result && Array.isArray(result.candidates)) ? result.candidates : [];
         return candidates.flatMap(candidate => {
-          const ids = Array.isArray(candidate.models) && candidate.models.length
-            ? candidate.models
-            : (candidate.model ? [candidate.model] : []);
-          return ids.map((modelId, index) => ({
-            key: `${candidate.base_url || 'local'}:${modelId}`,
-            model: modelId,
+          // 新后端 models 为 [{id, loaded}]；兼容旧后端的字符串数组。
+          const entries = Array.isArray(candidate.models) && candidate.models.length
+            ? candidate.models.map(m => (typeof m === 'string' ? { id: m, loaded: null } : m))
+            : (candidate.model ? [{ id: candidate.model, loaded: null }] : []);
+          return entries.map((entry, index) => ({
+            key: `${candidate.base_url || 'local'}:${entry.id}`,
+            model: entry.id,
+            loaded: entry.loaded === undefined ? null : entry.loaded,
             base_url: candidate.base_url || '',
-            provider: candidate.provider || 'vllm',
-            label: candidate.label || 'vLLM',
+            provider: candidate.provider || 'local',
+            label: candidate.label || settingsCopy.localModel,
             max_model_len: index === 0 ? candidate.max_model_len : null,
           })).filter(row => row.model && row.base_url);
-        });
+        }).sort((a, b) => (a.loaded === false ? 1 : 0) - (b.loaded === false ? 1 : 0)); // 已加载/未知的排前，未加载的沉底
       }
       function buildLocalModelPayload(row) {
         return {
           id: makeModelId(),
-          name: `本地 ${row.model}`,
+          name: settingsCopy.localModelName(row.model),
           preset: 'local_vllm',
           context_window_tokens: row.max_model_len || null,
           max_output_tokens: null,
@@ -1637,7 +1516,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           });
           setLocalDetectResult({ candidates: (result && result.candidates) || [] });
         } catch (error) {
-          setLocalDetectResult({ error: String(error || '检测失败') });
+          setLocalDetectResult({ error: String(error || t.uiSettingsView.detectFailed) });
         } finally {
           setLocalDetecting(false);
         }
@@ -1647,7 +1526,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         setPreset('local_vllm');
         setModel('');
         setBaseUrl(defs.baseUrl);
-        setName('本地模型');
+        setName(settingsCopy.localModelName(''));
         setContextWindow('');
         setMaxOutput('');
         setApiKey('');
@@ -1665,7 +1544,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const items = activeProvider ? activeProvider.items : [];
         const known = items.some(item => !item.custom && item.model === model);
         const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
-        const selectedLabel = customModel || !known ? '自定义模型 ID' : ((selectedItem && selectedItem.title) || model);
+        const selectedLabel = customModel || !known ? `${settingsCopy.customModel} ID` : ((selectedItem && selectedItem.title) || model);
         const chooseModel = (item) => {
           if (!item || item.custom) {
             setCustomModel(true);
@@ -1685,7 +1564,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               onClick={() => setProviderModelPickerOpen(open => !open)}
               className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
             >
-              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>模型</span>
+              <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{t.uiSettingsView.modelLabel}</span>
               <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{selectedLabel}</span>
               <ChevronDown
                 size={16}
@@ -1704,8 +1583,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                       className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'}`}
                     >
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.title || item.model || '自定义模型 ID'}</span>
-                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.desc}</span>}
+                        <span className={`block text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
+                        {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{item.custom
+                          ? (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc)))
+                          : (settingsCopy.modelDescriptions[item.desc] || item.desc)}</span>}
                       </span>
                       {active && <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} />}
                     </button>
@@ -1714,10 +1595,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
             )}
             {(customModel || !known) && renderInlineField({
-              label: '模型 ID',
+              label: settingsCopy.modelId,
               value: model,
               onChange: e => setModel(e.target.value),
-              placeholder: isCodingPlan ? '例如 glm-5' : '输入模型 ID',
+              placeholder: isCodingPlan ? t.uiSettingsView.codingPlanModelIdPlaceholder : settingsCopy.modelIdPlaceholder,
             })}
           </>
         );
@@ -1776,13 +1657,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         <div className="space-y-4">
           {catalogGroups.map(group => (
             <section key={group.key}>
-              <div className={catalogSectionTitleClass}>{presetProviderLabel(group.preset, t)}</div>
+              <div className={catalogSectionTitleClass}>{group.providerKind === PROVIDER_KIND_CODING_PLAN ? group.title : presetProviderLabel(group.preset, t)}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
                   const active = preset === group.preset && model === item.model && !item.custom;
-                  const itemTitle = item.custom ? settingsCopy.customModelTitle(presetProviderLabel(group.preset, t)) : item.title;
+                  const itemTitle = item.custom ? (settingsCopy.customModelTitles[group.key] || settingsCopy.customModelTitle(presetProviderLabel(group.preset, t))) : item.title;
                   const itemDescription = item.custom
-                    ? (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))
+                    ? (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc)))
                     : (settingsCopy.modelDescriptions[item.desc] || item.desc);
                   return (
                     <button
@@ -1832,8 +1713,15 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.10]' : 'border-black/[0.10]'}`}>
                     <ProviderIcon preset="local_vllm" isDark={isDark} compact />
                     <span className="min-w-0 flex-1">
-                      <span className={`block text-[15px] leading-5 font-normal truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{row.model}</span>
-                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{row.label} · {row.base_url}</span>
+                      <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>
+                        <span className="truncate">{row.model}</span>
+                        {row.loaded === false && (
+                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>{settingsCopy.modelNotLoadedTag}</span>
+                        )}
+                      </span>
+                      <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
+                        {row.loaded === false ? `${row.label} · ${row.base_url} · ${settingsCopy.modelNotLoadedHint}` : `${row.label} · ${row.base_url}`}
+                      </span>
                     </span>
                     <button type="button" onClick={() => onSave(buildLocalModelPayload(row))}
                       className={actionClass}>{settingsCopy.add}</button>
@@ -2192,6 +2080,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
+      const usesHomebrewDependencyInstaller = !!platformCapabilities.usesHomebrewDependencyInstaller;
       const [activeSection, setActiveSection] = useState(initialSection || 'general');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
@@ -2409,9 +2298,9 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const userModels = visibleSortedModels(savedModels || []);
       const searchOptions = [
         { key: 'bing', label: 'Bing', desc: settingsCopy.searchDescriptions.bing },
-        { key: 'metaso', label: '秘塔', desc: settingsCopy.searchDescriptions.metaso },
-        { key: 'bocha', label: '博查', desc: settingsCopy.searchDescriptions.bocha },
-        { key: 'baidu', label: '百度', desc: settingsCopy.searchDescriptions.baidu },
+        { key: 'metaso', label: t.uiSettingsView.searchProviderMetaso, desc: settingsCopy.searchDescriptions.metaso },
+        { key: 'bocha', label: t.uiSettingsView.searchProviderBocha, desc: settingsCopy.searchDescriptions.bocha },
+        { key: 'baidu', label: t.uiSettingsView.searchProviderBaidu, desc: settingsCopy.searchDescriptions.baidu },
         { key: 'tavily', label: 'Tavily', desc: settingsCopy.searchDescriptions.tavily },
       ];
       const enabledSearchSet = new Set(['bing', ...(enabledSearchProviders || [])]);
@@ -2502,7 +2391,8 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           multiline: false,
         });
       };
-      const renderModelRows = models => models.length ? models.map(m => {
+      const renderModelRows = (models, totalCount) => models.length ? models.map(m => {
+        const total = totalCount != null ? totalCount : models.length;
         const isActive = m.id === activeModelId;
         const isLocal = isLocalModel(m);
         const isReadonly = isReadonlyModel(m);
@@ -2526,7 +2416,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {!isReadonly && <button onClick={() => setEditingModel({ ...m, __scope: isLocal ? 'local' : 'cloud' })} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('blue')}`}>{settingsCopy.edit}</button>}
-              {!isReadonly && models.length > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
+              {!isReadonly && total > 1 && <button onClick={() => setModelDeleteConfirm(m)} className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${actionButton('red')}`}>{settingsCopy.delete}</button>}
             </div>
           </div>
         );
@@ -2593,7 +2483,27 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           <section className="mb-6">
             <SectionTitle>{settingsCopy.modelSection}</SectionTitle>
             <Group>
-              {renderModelRows(userModels)}
+              {(() => {
+                const { preset, custom } = groupModelsForSelector(userModels);
+                const any = preset.length > 0 || custom.length > 0;
+                return (
+                  <>
+                    {!any && renderModelRows([], userModels.length)}
+                    {preset.length > 0 && (
+                      <>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupPreset}</div>
+                        {renderModelRows(preset, userModels.length)}
+                      </>
+                    )}
+                    {custom.length > 0 && (
+                      <>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold ${preset.length > 0 ? `border-t ${isDark ? 'border-white/[0.10]' : 'border-black/[0.12]'} ` : ''}${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.modelGroupCustom}</div>
+                        {renderModelRows(custom, userModels.length)}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               <button data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
                 className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t ${isDark ? 'border-white/[0.10] text-[#0A84FF] hover:bg-white/[0.05]' : 'border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035]'}`}>
                 <Plus size={18} />
@@ -2732,9 +2642,16 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         const checking = !!(bs && bs.depsChecking);
         const installing = !!(bs && bs.depsInstalling);
         const installError = bs && bs.depsInstallError;
+        const installProgress = bs && bs.depsInstallProgress;
         const missing = deps.filter(dep => !dep.installed);
+        const hasInstallableMissing = missing.some(dep => String(dep.install_action || dep.apt || '').trim());
         const checked = deps.length > 0;
         const busy = checking || installing;
+        // 安装中实时进度文案:优先用后端 deps:install_progress 事件(逐包 + brew 输出行),
+        // 解决一键安装全程只有静态「安装中…」像卡死的问题(尤其 libreoffice cask 长尾)。
+        const progressText = (installing && installProgress)
+          ? `${installProgress.package}（${installProgress.current}/${installProgress.total}）${installProgress.detail ? ' ' + installProgress.detail : ''}`
+          : null;
         return (
           <>
             {showSuperPermissionSettings && (
@@ -2747,11 +2664,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
             <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
-                footer={usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote}
+                footer={usesHomebrewDependencyInstaller ? t.depInstallNoteMac : (usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote)}
               >
                 <IOSRow
                   label={checking ? t.depChecking : (!checked ? t.depCheckTitle : (missing.length ? `${missing.length}${t.depMissingSuffix}` : t.depAllOk))}
-                  desc={installing ? t.depInstalling : (installError ? String(installError) : '')}
+                  desc={progressText || (installing ? t.depInstalling : (installError ? String(installError) : ''))}
                 >
                   <button
                     onClick={() => bridge.available && bridge.dependencies.checkDependencies()}
@@ -2760,17 +2677,17 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   >{checking ? t.depChecking : t.depRecheck}</button>
                 </IOSRow>
                 {missing.map(dep => (
-                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={dep.apt || ''}>
+                  <IOSRow key={dep.key} label={t[`dep_${dep.key}`] || dep.key} desc={((dep.hint && (t[`depHint_${dep.hint}`] || dep.hint)) || dep.apt || '').trim()}>
                     <Tag tone="gray">{settingsCopy.missing}</Tag>
                   </IOSRow>
                 ))}
-                {missing.length > 0 && (
+                {hasInstallableMissing && (
                   <IOSRow label={usesBundledDependencyInstaller ? settingsCopy.installMissing : t.depGoInstall}>
                     <button
                       onClick={() => bridge.available && bridge.dependencies.installDependencies()}
                       disabled={!bridge.available || busy}
                       className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-50"
-                    >{installing ? t.depInstalling : t.depInstallBtn}</button>
+                    >{installing ? (progressText || t.depInstalling) : t.depInstallBtn}</button>
                   </IOSRow>
                 )}
               </IOSSection>
@@ -2785,11 +2702,13 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           </IOSRow>
         </IOSSection>
       );
+      const renderProviders = () => <ProvidersSection t={t} isDark={isDark} />;
       const renderContent = () => {
         if (activeSection === 'model') return renderModels();
         if (activeSection === 'search') return renderSearch();
         if (activeSection === 'memory') return renderMemory();
         if (activeSection === 'permissions') return renderPermissions();
+        if (activeSection === 'providers') return renderProviders();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
         return renderGeneral();
@@ -2800,6 +2719,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         search: t.uiSettings.search,
         memory: t.uiSettings.memory,
         permissions: t.uiSettings.permissions,
+        providers: t.uiSettings.providers,
         update: t.uiSettings.update,
         help: t.uiSettings.help,
       }[activeSection] || t.uiSettings.general;
@@ -2932,6 +2852,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
+                {!!platformCapabilities.codexAcpSupported && <SectionButton id="providers" icon={<Globe size={17} />} label={t.uiSettings.providers} />}
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />
@@ -3131,4 +3052,4 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
     // ==========================================
     // 安装工具后新建会话弹出的介绍卡片（纯前端，不发 LLM query，点 chip 才发消息）
 
-export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ModelChip, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };
+export { SCard, SRow, SField, SSegmented, SActionBar, MemorySettingsCard, MODEL_PRESET_DEFS, presetOptionsI18n, presetProviderLabel, ComposerModelSelector, WebAccessModal, ScaledHtmlPreview, ComposerModeMenu, notifyComposerToolsChanged, ComposerToolMenu, ModelFormModal, SettingsView };

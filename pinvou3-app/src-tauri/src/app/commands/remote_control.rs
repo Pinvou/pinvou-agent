@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::remote_control::manager;
+use crate::features::remote_control::{file_access, manager, MAX_TRANSFER_CHUNK_BYTES};
 use crate::features::remote_control::{
     RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
 };
@@ -132,8 +132,8 @@ pub fn web_access_publish_event(
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
-) -> Result<manager::HostFileListing, String> {
-    manager::list_host_files(path)
+) -> Result<file_access::HostFileListing, String> {
+    file_access::list_host_files(path)
 }
 
 /// WebUI navigation owns an independent selected Session. These wrappers
@@ -292,7 +292,7 @@ pub async fn web_access_upload_attachment_chunk(
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_base64)
         .map_err(|error| format!("decode attachment upload chunk: {error}"))?;
-    if data.len() > manager::MAX_ARTIFACT_CHUNK_BYTES {
+    if data.len() > MAX_TRANSFER_CHUNK_BYTES {
         return Err("attachment upload chunk exceeds 256 KiB".into());
     }
     let Some((file_name, bytes)) = manager
@@ -351,6 +351,30 @@ pub fn web_access_discard_attachment(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
     manager.discard_web_attachment(&handle)
+}
+
+/// Read a bounded chunk from an attachment already referenced by a saved
+/// conversation message. The browser never receives or supplies a host path.
+#[tauri::command]
+pub async fn web_access_read_conversation_attachment_chunk(
+    session_id: String,
+    message_index: usize,
+    attachment_index: usize,
+    basename: String,
+    display_text: String,
+    offset: u64,
+    limit: Option<usize>,
+    store: State<'_, SessionStore>,
+) -> Result<file_access::ArtifactChunk, String> {
+    let path = super::files::resolve_conversation_attachment_path(
+        &store,
+        &session_id,
+        message_index,
+        attachment_index,
+        &basename,
+        &display_text,
+    )?;
+    file_access::read_resolved_file_chunk(&path, offset, limit)
 }
 
 /// Materialize a draft Web conversation and admit its first turn as one
@@ -439,6 +463,7 @@ async fn web_access_chat_for_session(
 ) -> Result<(), String> {
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
+    ensure_web_chat_session_supported(store.mode_state(&session_id).multi_agent)?;
     store
         .load(&session_id)
         .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
@@ -501,6 +526,17 @@ async fn web_access_chat_for_session(
     result
 }
 
+/// Web 端只能续写未开启多智能体模式的会话。Web 界面没有专家卡/只读面板，
+/// 放行会让浏览器启动它看不到、也停不掉的子智能体。
+fn ensure_web_chat_session_supported(multi_agent: bool) -> Result<(), String> {
+    if multi_agent {
+        return Err(
+            "multi-agent sessions are desktop-only; continue them in the desktop app".to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// 浏览器本机上传的附件落在短生命周期暂存目录里。引擎会按 `IngestResult.path`
 /// 再次读取文件（图片拷贝进 workspace、超长文本注入路径供 `read_file`），因此
 /// 在把路径交给引擎之前先复制进该会话的 workspace 并改写 path，暂存目录的
@@ -518,7 +554,7 @@ fn stage_uploaded_attachments(
         return Ok(attachments);
     }
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("resolve attachment workspace: {error:#}"))?;
     for attachment in &mut attachments {
         if !std::path::Path::new(&attachment.path).starts_with(&uploads_base) {
@@ -560,7 +596,7 @@ pub async fn web_access_save_session_messages_chunk(
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_base64)
         .map_err(|error| format!("decode Session upload chunk: {error}"))?;
-    if data.len() > manager::MAX_ARTIFACT_CHUNK_BYTES {
+    if data.len() > MAX_TRANSFER_CHUNK_BYTES {
         return Err("Session upload chunk exceeds 256 KiB".into());
     }
     let completed = manager.append_web_session_upload(
@@ -644,8 +680,8 @@ pub fn web_access_read_artifact_chunk(
     offset: u64,
     limit: Option<usize>,
     store: State<'_, SessionStore>,
-) -> Result<manager::ArtifactChunk, String> {
-    manager::read_artifact_chunk(&store, &path, &session_id, offset, limit)
+) -> Result<file_access::ArtifactChunk, String> {
+    file_access::read_artifact_chunk(&store, &path, &session_id, offset, limit)
 }
 
 /// Merge only settings that remain visible and meaningful in WebUI. Hidden
@@ -663,7 +699,7 @@ fn scoped_artifact_path(
     session_id: &str,
     path: &str,
 ) -> Result<String, String> {
-    manager::resolve_session_artifact_path(store, session_id, path)
+    file_access::resolve_session_artifact_path(store, session_id, path)
         .map(|resolved| resolved.to_string_lossy().into_owned())
 }
 
@@ -683,7 +719,7 @@ fn scoped_workflow_project(store: &SessionStore, session_id: &str) -> Result<Str
         .canonicalize()
         .map_err(|error| format!("resolve workflow project: {error}"))?;
     let workspace = store
-        .execution_workspace(session_id)
+        .ledger_root(session_id)
         .map_err(|error| format!("resolve workflow workspace: {error:#}"))?
         .canonicalize()
         .map_err(|error| format!("resolve workflow workspace root: {error}"))?;
@@ -826,4 +862,16 @@ pub async fn web_access_render_artifact_visual(
 ) -> Result<super::artifacts::VisualResult, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
     ensure_web_artifact_response(super::artifacts::render_artifact_visual(resolved).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_web_chat_session_supported;
+
+    #[test]
+    fn web_chat_rejects_desktop_only_multiagent_sessions() {
+        assert!(ensure_web_chat_session_supported(false).is_ok());
+        // 桌面开了多智能体开关的普通会话同样拒绝：Web 看不到也停不掉子智能体。
+        assert!(ensure_web_chat_session_supported(true).is_err());
+    }
 }

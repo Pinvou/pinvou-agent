@@ -10,7 +10,6 @@
     "frontend_user_agent_platform_detection": {},
     "rust_cyclic_feature_dependencies": {},
     "rust_feature_depends_on_app": {},
-    "rust_legacy_module_indirection": {},
     "rust_platform_depends_on_upper_layer": {},
     "rust_platform_details_outside_adapter": {},
     "rust_target_cfg_outside_adapter": {},

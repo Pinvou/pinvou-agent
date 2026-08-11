@@ -125,7 +125,7 @@ fn ensure_release_env() {
     {
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = Vec::new();
-            if let Some(connector_bin) = crate::platform::paths::bundle_connector_bin_dir() {
+            if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
                 dirs.push(connector_bin);
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
@@ -160,6 +160,14 @@ fn ensure_release_env() {
 /// ClientConfig::builder().expect() panic」(见 Cargo.toml rustls 注释)。
 fn install_rustls_provider() {
     drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
+}
+
+/// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
+/// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
+/// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
+#[cfg(any(target_os = "linux", test))]
+fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized: bool) -> bool {
+    main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -208,6 +216,14 @@ pub fn run() {
                     if webview.label() != "main" {
                         return true;
                     }
+                    #[cfg(target_os = "linux")]
+                    if matches!(url.as_str(), "about:blank" | "about:srcdoc") {
+                        let main_origin_initialized = main_navigation_origin
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_some();
+                        return allow_embedded_document_navigation(url, main_origin_initialized);
+                    }
                     let origin = format!(
                         "{}://{}:{}",
                         url.scheme(),
@@ -251,9 +267,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                crate::platform::window_startup::activate_main_window(window);
             }
         }))
         .plugin(
@@ -291,6 +305,9 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                crate::platform::paths::set_runtime_resource_dir(resource_dir);
+            }
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
@@ -301,6 +318,7 @@ pub fn run() {
                 )?;
             }
             startup::mark("setup:plugins_ready");
+            crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
@@ -372,16 +390,21 @@ pub fn run() {
                 // 实际使用 session 相关命令会失败,但聊天能跑
                 SessionStore::boot().expect("session store boot fallback")
             });
-            match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
-            {
-                Ok(pool) => {
-                    handle.manage(pool);
-                    eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
-                }
-                Err(error) => {
-                    panic!("failed to init Codex ACP pool: {error:#}");
-                }
-            }
+            // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
+            // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
+            let code_session_agents =
+                match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
+                {
+                    Ok(pool) => {
+                        let agents = pool.agents().clone();
+                        handle.manage(pool);
+                        eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
+                        agents
+                    }
+                    Err(error) => {
+                        panic!("failed to init Codex ACP pool: {error:#}");
+                    }
+                };
             startup::mark("engine_pool:start");
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
                 std::sync::Arc::new(|app, session_id| {
@@ -415,7 +438,35 @@ pub fn run() {
                 tool_factory,
                 tool_policy,
             ) {
-                Ok(pool) => {
+                Ok(mut pool) => {
+                    // 两个根：执行根（engine cwd/shell）对绑了项目目录的原生代码会话
+                    // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录。
+                    // 解析实现统一下沉在 SessionStore::session_roots，bridge 与
+                    // SessionStore 注入同一份 resolver 闭包，两侧结果一致。
+                    let execution_root_resolver: crate::features::sessions::ExecutionRootResolver =
+                        std::sync::Arc::new({
+                            let agents = code_session_agents.clone();
+                            move |session_id: &str| agents.code_project_workspace(session_id)
+                        });
+                    pool.bridge
+                        .set_execution_root_resolver(execution_root_resolver.clone());
+                    store_for_engine.set_execution_root_resolver(execution_root_resolver);
+                    pool.bridge.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
+                    // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
+                    // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
+                    store_for_engine.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
+                    // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
+                    // bridge 共用同一份 SessionAgentStore 判定）。
+                    remote_control_manager.set_code_session_predicate(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        move |session_id: &str| agents.is_code_session(session_id)
+                    }));
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
                             &pool.bridge,
@@ -448,10 +499,16 @@ pub fn run() {
             }
             startup::mark("engine_pool:done");
 
-            // 技能停用联动:启动时按当前被禁用连接器的 companion_skills 推给底座进程级
-            // 过滤器,让(如公文 MCP 关掉时的)关联技能从首轮 prompt 起就不出现在 ## Skills。
+            // 技能双 scope 治理(skill-scope-governance):启动时
+            //   1. 读一次 disabled_skills.json——触发旧数据迁移(裸数组 / 借道
+            //      disabled_connectors.json 的 `skill:` 条目 → plain scope);
+            //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
+            //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
+            // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
+            // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
-            crate::features::marketplace::skill_marketplace::refresh_disabled_skills();
+            let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
+            deepseek_tui::skills::set_disabled_skills(Vec::new());
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -550,6 +607,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
             commands::startup::report_frontend_startup,
+            commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_status,
@@ -614,6 +672,7 @@ pub fn run() {
             commands::codex::get_acp_agent_status,
             commands::codex::prepare_codex_acp,
             commands::codex::install_codex_homebrew,
+            commands::codex::install_acp_agent,
             commands::codex::login_codex_acp,
             commands::codex::login_acp_agent,
             commands::codex::switch_acp_agent_account,
@@ -631,6 +690,19 @@ pub fn run() {
             commands::codex::respond_codex_acp_permission,
             commands::codex::get_codex_acp_pending_elicitations,
             commands::codex::respond_codex_acp_elicitation,
+            commands::acp_providers::list_acp_providers,
+            commands::acp_providers::save_acp_provider,
+            commands::acp_providers::delete_acp_provider,
+            commands::acp_providers::switch_acp_provider,
+            commands::acp_providers::switch_acp_provider_official,
+            commands::acp_providers::uninstall_acp_agent,
+            commands::acp_providers::cancel_acp_agent_install,
+            commands::acp_providers::logout_acp_agent,
+            commands::acp_providers::get_acp_provider_key,
+            commands::acp_providers::export_acp_providers,
+            commands::acp_providers::import_acp_providers,
+            commands::acp_providers::probe_acp_agent_models,
+            commands::acp_providers::set_codex_acp_session_provider,
             commands::codex::list_codex_acp_sessions,
             commands::codex::create_codex_acp_session,
             commands::codex::list_codex_workspace,
@@ -640,6 +712,8 @@ pub fn run() {
             commands::codex::get_codex_workspace_diff,
             commands::codex::open_codex_workspace_file,
             commands::codex::reveal_codex_workspace_file,
+            commands::codex::open_code_reader,
+            commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
             commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
@@ -674,6 +748,8 @@ pub fn run() {
             commands::sessions::get_active_session,
             commands::sessions::save_session_messages,
             commands::sessions::save_session_artifacts,
+            commands::sessions::save_session_pinvou_scene_events,
+            commands::sessions::get_session_pinvou_scene_events,
             commands::sessions::list_workspace_files,
             commands::runtime::cancel_generation,
             commands::runtime::list_shell_tasks,
@@ -697,6 +773,7 @@ pub fn run() {
             commands::remote_control::web_access_upload_attachment_chunk,
             commands::remote_control::web_access_abort_attachment_upload,
             commands::remote_control::web_access_discard_attachment,
+            commands::remote_control::web_access_read_conversation_attachment_chunk,
             commands::remote_control::web_access_chat,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
@@ -716,6 +793,10 @@ pub fn run() {
             commands::remote_control::web_access_get_gate_report,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
+            commands::connectors::set_disabled_skills,
+            commands::connectors::get_disabled_skills,
+            commands::connectors::set_project_skills_enabled,
+            commands::connectors::get_project_skills_enabled,
             commands::memory::get_memory_profile,
             commands::memory::update_memory_profile,
             commands::memory::clear_memory_profile,
@@ -763,13 +844,23 @@ pub fn run() {
             commands::pet::get_selected_pet,
             commands::pet::set_selected_pet,
             commands::artifacts::open_external_url,
+            commands::artifacts::open_user_external_url,
             commands::files::ingest_file,
+            commands::files::ingest_dropped_file_chunk,
+            commands::files::cancel_dropped_file_upload,
+            commands::files::discard_dropped_attachment,
+            commands::files::resolve_conversation_attachment,
+            commands::files::open_conversation_attachment,
+            commands::files::reveal_conversation_attachment,
             commands::files::detect_system_tools,
             commands::files::save_paste_image,
             commands::interaction::compact_now,
             commands::interaction::get_mode_state,
+            commands::interaction::get_code_permission_prefs,
+            commands::interaction::confirm_code_yolo,
             commands::interaction::set_plan_mode_next,
             commands::interaction::exit_plan_to_yolo,
+            commands::interaction::set_multi_agent_mode,
             commands::interaction::accept_plan,
             commands::interaction::discard_plan,
             commands::interaction::read_skill_body,
@@ -795,9 +886,13 @@ pub fn run() {
             commands::workflows::find_resumable_run,
             commands::workflows::get_session_active_skill,
             commands::workflows::list_session_skill_bindings,
+            // 多智能体执行记录投影（与上方既有调度器无数据交集，见 docs/adr/0006-*）
+            commands::multiagent::list_subagent_transcripts,
+            commands::multiagent::read_subagent_transcript,
             commands::interaction::submit_user_input,
             commands::interaction::add_run_materials,
             commands::interaction::cancel_user_input,
+            commands::interaction::get_pending_user_inputs,
             commands::interaction::restart_engine,
             commands::interaction::summon_pinvou,
             commands::personas::save_session_pinvou_reviews,
@@ -843,6 +938,9 @@ pub fn run() {
             commands::knowledge::kb_collection_add_sources,
             commands::knowledge::kb_index_status,
             commands::knowledge::kb_index_cancel,
+            commands::knowledge::kb_index_failed_files,
+            commands::knowledge::kb_index_resume,
+            commands::knowledge::kb_index_retry_file,
             commands::knowledge::kb_documents,
             commands::knowledge::kb_remove_document,
             commands::knowledge::kb_embed_info,
@@ -851,8 +949,14 @@ pub fn run() {
             commands::knowledge::kb_model_download,
             commands::knowledge::kb_model_cancel,
             commands::knowledge::session_mount_collection,
+            commands::knowledge::session_set_mounted_collections,
+            commands::knowledge::session_add_mounted_collection,
+            commands::knowledge::session_set_mounted_collection_enabled,
+            commands::knowledge::session_remove_mounted_collection,
             commands::knowledge::session_unmount_collection,
             commands::knowledge::session_mounted_collection,
+            commands::knowledge::session_mounted_collections,
+            commands::knowledge::session_mounted_collections_snapshot,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::import_skill_package,
@@ -944,6 +1048,34 @@ mod blocklist_contract {
             "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
         ] {
             assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
+        }
+    }
+}
+
+#[cfg(test)]
+mod navigation_policy_tests {
+    #[test]
+    fn embedded_srcdoc_navigation_is_allowed_without_broadening_schemes() {
+        for allowed in ["about:blank", "about:srcdoc"] {
+            let url = tauri::Url::parse(allowed).unwrap();
+            assert!(super::allow_embedded_document_navigation(&url, true));
+            assert!(
+                !super::allow_embedded_document_navigation(&url, false),
+                "embedded documents must not become the initial main origin"
+            );
+        }
+        for blocked in [
+            "about:config",
+            "about:blank?next=https://example.com",
+            "data:text/html,hello",
+            "https://example.com/",
+            "file:///etc/passwd",
+        ] {
+            let url = tauri::Url::parse(blocked).unwrap();
+            assert!(
+                !super::allow_embedded_document_navigation(&url, true),
+                "must not classify as embedded document: {blocked}"
+            );
         }
     }
 }

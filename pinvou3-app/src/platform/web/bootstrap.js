@@ -33,6 +33,28 @@
     return;
   }
 
+  // invoke 拒绝的 Error 文案会经 bridge addSystemItem 进入界面。文案单一来源是
+  // shared/i18n.js 的 uiPlatformMisc.webClientErrors,由 React 入口按当前语言挂到
+  // window.PinvouWebClientStrings;此处保留中文兜底(纯脚本无法 import ES module)。
+  // 连接状态 message 不进 UI(WebConnectionStatus 统一使用 uiWebConnection 字典),无需本地化。
+  const FALLBACK_ERRORS = {
+    stateNotReady: "远程控制状态尚未就绪，无法处理桌面端事件",
+    unnegotiatedEvent: function (event) { return `桌面端发送了未协商的远程控制事件：${event}`; },
+    rpcFailed: "远程调用失败",
+    incompatibleDesktop: "桌面端版本不支持当前远程控制功能，请先更新桌面端",
+    unsupportedCommand: function (command) { return `当前桌面端尚不支持远程控制功能：${command}`; },
+    commandNotAllowed: function (command) { return `远程控制不允许调用 ${command}`; },
+    invalidRequestId: "远程调用请求 ID 无效",
+    requestInFlight: "远程调用请求正在进行中",
+    invokeTimeout: function (command) { return `远程调用超时：${command}`; },
+  };
+
+  function errorText(key, arg) {
+    const custom = (window.PinvouWebClientStrings || {})[key];
+    const entry = custom !== undefined ? custom : FALLBACK_ERRORS[key];
+    return typeof entry === "function" ? entry(arg) : entry;
+  }
+
   const scriptUrl = document.currentScript && document.currentScript.src
     ? new URL(document.currentScript.src, window.location.href)
     : new URL("./platform/web/bootstrap.js", window.location.href);
@@ -324,12 +346,12 @@
         // the desktop journal to replay from the unchanged cursor after both
         // readiness barriers, including when an older/buggy desktop ignores
         // the state_ready=false phase.
-        throw new Error("远程控制状态尚未就绪，无法处理桌面端事件");
+        throw new Error(errorText("stateNotReady"));
       }
       if (!this.desktopCapabilitiesReady || !this.allowedEvents.has(message.event)) {
         this.closePermanently(
           "incompatible_desktop",
-          `桌面端发送了未协商的远程控制事件：${message.event || "unknown"}`,
+          errorText("unnegotiatedEvent", message.event || "unknown"),
         );
         return;
       }
@@ -359,7 +381,7 @@
       this.pending.delete(message.id);
       window.clearTimeout(entry.timeout);
       if (message.ok === false) {
-        const error = new Error(message.error || "远程调用失败");
+        const error = new Error(message.error || errorText("rpcFailed"));
         error.code = message.error_code || "rpc_failed";
         error.requestId = entry.id;
         entry.reject(error);
@@ -374,7 +396,7 @@
         ? new Set(capabilities.events)
         : null;
       if (!commands || !events || Number(capabilities.protocol_version) !== protocolVersion) {
-        const error = new Error("桌面端版本不支持当前远程控制功能，请先更新桌面端");
+        const error = new Error(errorText("incompatibleDesktop"));
         this.pending.forEach((entry) => {
           window.clearTimeout(entry.timeout);
           entry.reject(error);
@@ -399,7 +421,7 @@
         if (this.allowedCommands.has(entry.command)) return;
         this.pending.delete(id);
         window.clearTimeout(entry.timeout);
-        entry.reject(new Error(`当前桌面端尚不支持远程控制功能：${entry.command}`));
+        entry.reject(new Error(errorText("unsupportedCommand", entry.command)));
       });
       this.flushSubscriptions();
       this.flushPending();
@@ -415,20 +437,20 @@
 
     async invokeWithRequestId(command, args, requestId) {
       await this.policyPromise;
-      if (!this.allowedCommands.has(command)) throw new Error(`远程控制不允许调用 ${command}`);
+      if (!this.allowedCommands.has(command)) throw new Error(errorText("commandNotAllowed", command));
       const id = String(requestId || "").trim();
       if (!/^[A-Za-z0-9_-]{8,256}$/.test(id)) {
-        throw new Error("远程调用请求 ID 无效");
+        throw new Error(errorText("invalidRequestId"));
       }
       if (this.pending.has(id)) {
-        throw new Error("远程调用请求正在进行中");
+        throw new Error(errorText("requestInFlight"));
       }
       return new Promise((resolve, reject) => {
         const entry = {
           id, command, args: args || {}, resolve, reject,
           timeout: window.setTimeout(() => {
             if (!this.pending.delete(id)) return;
-            const error = new Error(`远程调用超时：${command}`);
+            const error = new Error(errorText("invokeTimeout", command));
             error.code = "rpc_timeout";
             error.requestId = id;
             reject(error);

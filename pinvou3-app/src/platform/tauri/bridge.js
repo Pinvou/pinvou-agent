@@ -79,14 +79,33 @@
 
   async function loadKnowledgeEmbedderAfterFirstFrame() {
     startupMark("bridge:knowledge_embedder_async:start");
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: true,
+      startupReady: null,
+      error: null,
+    });
+    notify();
     try {
       var ready = await invoke("kb_model_load_after_first_frame");
-      state.kbModelSetup = Object.assign({}, state.kbModelSetup, { startupReady: !!ready });
+      var modelStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: !!ready,
+        status: modelStatus,
+      });
       notify();
       startupMark("bridge:knowledge_embedder_async:done", "ready=" + !!ready);
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       return !!ready;
     } catch (error) {
+      var failedStatus = await invoke("kb_model_status").catch(function () { return null; });
+      state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+        startupLoading: false,
+        startupReady: false,
+        status: failedStatus,
+        error: String(error),
+      });
+      notify();
       startupMark("bridge:knowledge_embedder_async:error", String(error));
       if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
       console.warn("[knowledge] embedding 后台加载失败", error);
@@ -108,6 +127,9 @@
     return html.replace(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
   }
   function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
     if (!window.marked || !window.DOMPurify) return escapeHtml(text);
     var html = neutralizeRawDangerousTags(marked.parse(text || ""));
     return DOMPurify.sanitize(html, {
@@ -130,6 +152,19 @@
   // return before chat listeners, session loading, polling, or update checks.
   const locationSearch = String((window.location && window.location.search) || "");
   const isPetWindow = /(?:^|[?&])window=pet(?:&|$)/.test(locationSearch);
+  const isDetachedWindow = /(?:^|[?&])detached=1(?:&|$)/.test(locationSearch);
+  function detachedQueryValue(name) {
+    var query = locationSearch.replace(/^\?/, "").split("&");
+    for (var i = 0; i < query.length; i++) {
+      var pair = query[i].split("=");
+      if (pair[0] !== name) continue;
+      try { return decodeURIComponent((pair.slice(1).join("=") || "").replace(/\+/g, " ")); }
+      catch (_) { return pair.slice(1).join("=") || ""; }
+    }
+    return "";
+  }
+  const detachedWindowKind = isDetachedWindow ? (detachedQueryValue("kind") || "monitor") : "";
+  const detachedWindowSessionId = isDetachedWindow ? detachedQueryValue("id") : "";
   if (isPetWindow) {
     window.TauriBridge = {
       available: false,
@@ -174,6 +209,8 @@
     personaEvents: [],
     // Pinvou 召唤检阅时间线(sidecar, 同 personaEvents, 不进 messages/LLM)。每项 {pos, review}。
     pinvouReviews: [],
+    // 专业子模式用户消息标签(sidecar, 不进 messages/LLM)。每项 {pos, scene}。
+    pinvouSceneEvents: [],
     // Pinvou 检阅结果弹窗(不进对话流);null=关闭。一次只一个,裁决/跳过直接操作它的 review、不靠 pos。
     pinvouModal: null,
     // 本 turn 被 write/append/edit 改过的产物 path(去重)。chat:done 时给每个补一张成品卡
@@ -216,6 +253,8 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
+    pendingDraftMultiAgent: false,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -228,6 +267,7 @@
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
     attachments: [],
+    attachmentDragActive: false,
     // token 预算（input_tokens / maxModelLen）
     tokens: { input: 0, max: 32768 },
     // 思考指示器：active 时 React 渲染计时气泡（Braille + 思考中/调用工具 + 秒数）
@@ -260,6 +300,8 @@
     // 知识库挂载: 当前 session 挂载的知识集 id(number)或 null。仿 activePersona 走 buffer,
     // 仅驻内存(后端也只驻内存),重启回到未挂载。名字由前端用知识集列表解析。
     mountedCollection: null,
+    mountedCollections: [],
+    mountedCollectionsRevision: 0,
     // personaPool 只放轻量元信息(loadState),1078 张卡放模块级 personaPoolCache,
     // 不进 notify() 的 JSON 深拷贝(否则每个流式 token 都克隆 ~950KB,卡顿)。
     personaPool: { loadState: "idle" }, // idle | loading | ready | error
@@ -287,8 +329,9 @@
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
     depsChecking: false,
-    depsInstalling: false,    // 一键安装进行中(pkexec apt)
-    depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
+    depsInstalling: false,    // 一键安装进行中(brew/apt/winget)
+    depsInstallError: null,   // 安装失败原因(stderr 透传/取消/包管理器不可用)
+    depsInstallProgress: null, // 安装进度 {package,current,total,detail}(后端 deps:install_progress 事件)
     // MegaCube(GB10) 本地大模型一键引导:首屏检测结果 + 引导执行态
     vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:ready|starting|stopped|failed, ...}
     vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
@@ -318,7 +361,9 @@
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
-      status: null,       // kb_model_status 返回 { installed, downloading, sizeBytes, installedBytes, version }
+      startupLoading: false, // 已安装模型在首帧后的后台加载状态
+      startupReady: null, // null=未知；true=当前进程可用；false=未安装或加载失败
+      status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
       error: null,
     },
@@ -384,6 +429,72 @@
       equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
       shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
       shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
+      skillContentHidden: "(Skill loaded, content hidden)",
+      desktopDoneSyncPending: "⚠️ The conversation finished on desktop, but the authoritative record has not synced yet; you can retry once reconnected.",
+      sessionSyncingTurn: "This chat is still syncing a turn completed elsewhere. Please try again shortly.",
+      targetSessionMissing: "Target chat does not exist",
+      replyContentEmpty: "Reply content is empty",
+      targetSessionSyncing: "The target chat is still syncing a turn completed elsewhere",
+      summonNeedsSession: "Start a conversation first, then summon Pinvou to review.",
+      runHasNoSession: "This run has no chat to open",
+      sessionDataInvalid: "Chat data is invalid",
+      voicePermissionDenied: "Microphone permission was denied. Allow this app to access the microphone in system settings, then try again.",
+      voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use by another app.",
+      voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required recording configuration. Try again; if it still fails, check the microphone settings or update system components.",
+      voiceEmptyResult: "No speech was recognized. Move closer to the microphone and try again.",
+      voiceContextMismatch: "Recognition finished, but the chat had already switched, so the result was not inserted.",
+      voiceTimeout: "Voice input timed out. Please try again.",
+      voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
+      voiceInputFailed: "Voice input failed. Check the microphone and try again.",
+      voiceCancelled: "Voice input cancelled",
+      voiceDeviceTimeout: "Microphone detection timed out; no recording device found. Check the device connection and Windows microphone settings, then try again.",
+      voiceTranscribing: "Transcribing…",
+      voiceRecordingTooShort: "Recording is too short. Please try again.",
+      voiceWrittenBack: "Transcribed text inserted into the input box",
+      voiceCheckingDevice: "Checking microphone…",
+      voiceRequestingPermission: "Requesting microphone permission…",
+      voiceWebviewNoMic: "This WebView does not support microphone capture.",
+      voiceWebviewNoRecording: "This WebView does not support audio recording.",
+      voiceNoDeviceConnect: "No available microphone detected. Connect or enable a recording device, then try again.",
+      voiceRecording: "Recording… tap again to finish",
+      voicePermissionDeniedRetry: "Microphone permission was denied. Tap voice input again and choose Allow in the prompt; if it still fails, check Windows microphone settings.",
+      scheduledDraftInvalid: "The scheduled task draft is missing a name, task description, or schedule rule",
+      scheduledCreateFailed: "Failed to create scheduled task: ",
+      scheduledTaskFallbackName: "Scheduled task",
+      scheduledActionBusy: "Another scheduled task operation is still in progress",
+      scheduledCreateNoId: "Failed to create scheduled task: backend returned no task ID",
+      scheduledChatPrefill: "I want to create a scheduled task: ",
+      workflowBlockedPrefix: "⚙️ Workflow blocked: ",
+      workflowBlockedUnknown: "unknown reason",
+      workflowCompleteArtifact: "🎉 Workflow complete — deliverable generated",
+      workflowActivateFailed: "⚠️ Failed to activate workflow: ",
+      workflowCreateFailed: "⚠️ Failed to create workflow: ",
+      workflowStartFailed: "⚠️ Failed to start workflow: ",
+      workflowNoStoppableRun: "There is no workflow run to stop",
+      workflowSubmitFailed: "⚠️ Submit failed: ",
+      workflowMaterialsAdded: (count, names) => "✅ Added " + count + " material(s) to materials folder: " + names.join(", "),
+      workflowFolderPickerUnavailable: "Cannot open the folder picker in this environment",
+      workflowPickWorkDirTitle: "Choose a working directory",
+      kbPickFolderTitle: "Choose folders to import into the knowledge base",
+      workflowMediaFilterName: "Images and videos",
+      workflowApproveFailed: "⚠️ Approve failed: ",
+      workflowRejectFailed: "⚠️ Reject failed: ",
+      workflowRejectDefaultReason: "Sent back by the user. Please improve and try again.",
+      workflowRerunPrefix: "🔄 Rerun ",
+      workflowRerunFailed: "⚠️ Rerun failed: ",
+      memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
+      attachNeedSession: "⚠️ Start a new chat before adding attachments", attachTooLarge: "Attachment exceeds the 20 MiB limit", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result",
+      planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
+      remoteTurnSyncing: "⚠️ This chat is still syncing a turn finished on another device. Try again shortly.",
+      mountCollectionFailed: "Failed to mount collection: ",
+      metricNotApplicable: "N/A", metricUnavailable: "Not provided",
+      targetKindRemote: "Remote model", targetKindLocal: "Local model", targetKindInvalid: "Config error",
+      betaVersionSuffix: " (Beta)",
+      depsInstallManual: "The missing items cannot be installed in one click. Install them as described in the notes above each missing item, then re-check.",
+      remoteCmdNotAllowed: cmd => "Remote control does not allow this command: " + cmd,
+      remoteDialogDesktop: "Remote control uses the desktop file picker",
+      echoOtherPrefix: "(Other) ",
+      newChatFallbackTitle: "New chat",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -405,6 +516,72 @@
       equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
       shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
       shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
+      skillContentHidden: "（スキルを読み込みました。内容は非表示です）",
+      desktopDoneSyncPending: "⚠️ 会話はデスクトップ側で完了しましたが、権威レコードはまだ同期されていません。接続回復後に再試行できます。",
+      sessionSyncingTurn: "このチャットは別端末で完了したターンを同期中です。しばらくしてから再試行してください",
+      targetSessionMissing: "対象のチャットが存在しません",
+      replyContentEmpty: "返信内容が空です",
+      targetSessionSyncing: "対象のチャットは別端末で完了したターンをまだ同期中です",
+      summonNeedsSession: "先に会話を始めてから Pinvou レビューを召喚してください。",
+      runHasNoSession: "この実行記録には開けるセッションがありません",
+      sessionDataInvalid: "セッションデータが無効です",
+      voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイクアクセスを許可してから再試行してください。",
+      voiceNoDevice: "利用可能なマイクが見つかりません。録音デバイスが有効か、他で使用されていないか確認してください。",
+      voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定やシステムコンポーネントを確認・更新してください。",
+      voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
+      voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
+      voiceTimeout: "音声入力がタイムアウトしました。再試行してください。",
+      voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
+      voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
+      voiceCancelled: "音声入力をキャンセルしました",
+      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続と Windows のマイク設定を確認して再試行してください。",
+      voiceTranscribing: "音声を認識中…",
+      voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
+      voiceWrittenBack: "音声を入力ボックスに書き込みました",
+      voiceCheckingDevice: "マイクデバイスを確認中…",
+      voiceRequestingPermission: "マイクの権限をリクエスト中…",
+      voiceWebviewNoMic: "この WebView はマイク入力に対応していません。",
+      voiceWebviewNoRecording: "この WebView は音声録音に対応していません。",
+      voiceNoDeviceConnect: "利用可能なマイクが見つかりません。録音デバイスを接続または有効にして再試行してください。",
+      voiceRecording: "録音中です。もう一度タップすると終了します",
+      voicePermissionDeniedRetry: "マイクの権限が拒否されています。もう一度音声入力をタップし、許可を選択してください。それでも失敗する場合は Windows のマイク設定を確認してください。",
+      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
+      scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
+      scheduledTaskFallbackName: "スケジュールタスク",
+      scheduledActionBusy: "別のスケジュールタスク操作がまだ実行中です",
+      scheduledCreateNoId: "スケジュールタスクの作成に失敗：バックエンドがタスク ID を返しませんでした",
+      scheduledChatPrefill: "スケジュールタスクを作成したい：",
+      workflowBlockedPrefix: "⚙️ ワークフローが停止：",
+      workflowBlockedUnknown: "原因不明",
+      workflowCompleteArtifact: "🎉 ワークフロー完了、成果物が生成されました",
+      workflowActivateFailed: "⚠️ ワークフローの有効化に失敗: ",
+      workflowCreateFailed: "⚠️ ワークフローの作成に失敗: ",
+      workflowStartFailed: "⚠️ ワークフローの開始に失敗: ",
+      workflowNoStoppableRun: "停止できるワークフローがありません",
+      workflowSubmitFailed: "⚠️ 送信に失敗: ",
+      workflowMaterialsAdded: (count, names) => "✅ 素材を " + count + " 件、付属資料に追加しました：" + names.join("、"),
+      workflowFolderPickerUnavailable: "現在の環境ではフォルダー選択を開けません",
+      workflowPickWorkDirTitle: "作業ディレクトリを選択",
+      kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
+      workflowMediaFilterName: "画像と動画",
+      workflowApproveFailed: "⚠️ 承認に失敗: ",
+      workflowRejectFailed: "⚠️ 差し戻しに失敗: ",
+      workflowRejectDefaultReason: "ユーザーによる差し戻し。改善して再試行してください。",
+      workflowRerunPrefix: "🔄 再実行 ",
+      workflowRerunFailed: "⚠️ 再実行に失敗: ",
+      memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
+      attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachTooLarge: "添付ファイルが 20 MiB の上限を超えています", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした",
+      planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
+      remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
+      mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
+      metricNotApplicable: "対象外", metricUnavailable: "未提供",
+      targetKindRemote: "リモートモデル", targetKindLocal: "ローカルモデル", targetKindInvalid: "設定エラー",
+      betaVersionSuffix: " (ベータ版)",
+      depsInstallManual: "不足している項目はワンクリックでインストールできません。各不足項目の上にある説明に従ってインストールしてから、再検出してください。",
+      remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
+      remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
+      echoOtherPrefix: "(その他) ",
+      newChatFallbackTitle: "新しいチャット",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -426,12 +603,85 @@
       equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
       shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
       shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
+      skillContentHidden: "（技能已加载，内容不展示）",
+      desktopDoneSyncPending: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
+      sessionSyncingTurn: "该会话正在同步另一端完成的回合，请稍后重试",
+      targetSessionMissing: "目标会话不存在",
+      replyContentEmpty: "回复内容为空",
+      targetSessionSyncing: "目标会话仍在同步另一端完成的回合",
+      summonNeedsSession: "先开始一个对话,再召唤 Pinvou 检阅。",
+      runHasNoSession: "该运行记录没有可打开的会话",
+      sessionDataInvalid: "会话数据无效",
+      voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
+      voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
+      voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
+      voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
+      voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
+      voiceTimeout: "本次语音输入超时，请重试。",
+      voiceRecognitionFailed: "语音识别失败，请稍后重试。",
+      voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
+      voiceCancelled: "已取消语音输入",
+      voiceDeviceTimeout: "麦克风检测超时，未发现可用录音设备。请检查设备连接和 Windows 麦克风设置后重试。",
+      voiceTranscribing: "正在识别语音…",
+      voiceRecordingTooShort: "录音时间过短，请重试。",
+      voiceWrittenBack: "语音已写入输入框",
+      voiceCheckingDevice: "正在检测麦克风设备…",
+      voiceRequestingPermission: "正在请求麦克风权限…",
+      voiceWebviewNoMic: "当前 WebView 不支持麦克风采集。",
+      voiceWebviewNoRecording: "当前 WebView 不支持音频录制。",
+      voiceNoDeviceConnect: "未检测到可用麦克风，请连接或启用录音设备后重试。",
+      voiceRecording: "正在录音，再点一次结束",
+      voicePermissionDeniedRetry: "麦克风权限已被拒绝，请再次点击语音输入并在授权提示中选择允许；若仍失败，请检查 Windows 麦克风设置。",
+      scheduledDraftInvalid: "定时任务草稿缺少名称、任务说明或时间规则",
+      scheduledCreateFailed: "定时任务创建失败：",
+      scheduledTaskFallbackName: "定时任务",
+      scheduledActionBusy: "另一个定时任务操作仍在进行中",
+      scheduledCreateNoId: "创建定时任务失败：后端未返回任务 ID",
+      scheduledChatPrefill: "我想创建一个定时任务：",
+      workflowBlockedPrefix: "⚙️ 工作流卡住：",
+      workflowBlockedUnknown: "未知原因",
+      workflowCompleteArtifact: "🎉 工作流完成，成品已生成",
+      workflowActivateFailed: "⚠️ 启用工作流失败: ",
+      workflowCreateFailed: "⚠️ 创建工作流失败: ",
+      workflowStartFailed: "⚠️ 启动工作流失败: ",
+      workflowNoStoppableRun: "当前没有可停止的工作流",
+      workflowSubmitFailed: "⚠️ 提交失败: ",
+      workflowMaterialsAdded: (count, names) => "✅ 已添加 " + count + " 个素材到配套材料：" + names.join("、"),
+      workflowFolderPickerUnavailable: "当前环境无法打开文件夹选择器",
+      workflowPickWorkDirTitle: "选择工作目录",
+      kbPickFolderTitle: "选择要导入知识库的文件夹",
+      workflowMediaFilterName: "图片和视频",
+      workflowApproveFailed: "⚠️ 通过失败: ",
+      workflowRejectFailed: "⚠️ 打回失败: ",
+      workflowRejectDefaultReason: "用户打回，请改进后重试",
+      workflowRerunPrefix: "🔄 重跑 ",
+      workflowRerunFailed: "⚠️ 重跑失败: ",
+      memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
+      attachNeedSession: "⚠️ 请先新建会话再添加附件", attachTooLarge: "附件超过 20 MiB 上限", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果",
+      planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
+      remoteTurnSyncing: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
+      mountCollectionFailed: "挂载知识集失败: ",
+      metricNotApplicable: "不适用", metricUnavailable: "未提供",
+      targetKindRemote: "远端模型", targetKindLocal: "本地模型", targetKindInvalid: "配置异常",
+      betaVersionSuffix: " (内测版)",
+      depsInstallManual: "当前缺失项无法一键安装，请按上方各缺失项的说明手动安装后重新检测。",
+      remoteCmdNotAllowed: cmd => "远程控制不允许调用该命令：" + cmd,
+      remoteDialogDesktop: "远程控制使用桌面端文件选择器",
+      echoOtherPrefix: "(其他) ",
+      newChatFallbackTitle: "新对话",
     },
   };
   function bt(key) {
     var lang = state.settings && state.settings.language;
     var m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
     return m[key] !== undefined ? m[key] : BT_TABLE.zh[key];
+  }
+  // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
+  // 与 web 桥和 main.jsx 的同款判断保持一致。
+  function isDefaultChatTitle(title) {
+    return title === BT_TABLE.zh.newChatFallbackTitle
+      || title === BT_TABLE.en.newChatFallbackTitle
+      || title === BT_TABLE.ja.newChatFallbackTitle;
   }
 
   // ── Per-session 工作集缓冲（多 session 并发）────────────────────
@@ -445,10 +695,101 @@
   var MAX_SCHEDULED_SESSION_BUFFERS = 64;
   var MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
   var suppressNotify = false;
+  function discardManagedAttachment(result) {
+    var sessionId = result && result.__pinvouManagedAttachmentSessionId;
+    if (!sessionId || !result.path) return Promise.resolve();
+    return invoke("discard_dropped_attachment", {
+      sessionId: sessionId,
+      path: result.path,
+    }).catch(function (error) {
+      console.warn("[attachment] failed to discard managed attachment", error);
+    });
+  }
   // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
   var personaPlaceholderTitles = {};
+  var PINVOU_SCENE_EVENTS_STORAGE_PREFIX = "pinvou_scene_events_v1:";
+  function normalizePinvouScene(scene) {
+    scene = String(scene || "").trim();
+    return /^(work:document-writing|work:personal-workbench|design:poster|design:data-visualization)$/.test(scene) ? scene : "";
+  }
+  function pinvouSceneStorageKey(sid) {
+    return PINVOU_SCENE_EVENTS_STORAGE_PREFIX + String(sid || "").trim();
+  }
+  function normalizePinvouSceneEvents(events) {
+    return (Array.isArray(events) ? events : []).map(function (event) {
+      var pos = Number(event && event.pos);
+      var scene = normalizePinvouScene(event && event.scene);
+      if (!Number.isFinite(pos) || pos < 0 || !scene) return null;
+      return { pos: Math.floor(pos), scene: scene };
+    }).filter(Boolean).sort(function (left, right) { return left.pos - right.pos; });
+  }
+  function loadPinvouSceneEventsForSession(sid) {
+    if (!sid || !window.localStorage) return [];
+    try {
+      return normalizePinvouSceneEvents(JSON.parse(window.localStorage.getItem(pinvouSceneStorageKey(sid)) || "[]"));
+    } catch (_) {
+      return [];
+    }
+  }
+  function savePinvouSceneEventsForSession(sid, events) {
+    if (!sid) return;
+    var normalized = normalizePinvouSceneEvents(events);
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(normalized));
+      }
+    } catch (_) {
+      // localStorage 只作旧版本迁移和离线缓存，写失败不影响后端 sidecar。
+    }
+    Promise.resolve().then(function () {
+      return invoke("save_session_pinvou_scene_events", {
+        sessionId: sid,
+        events: normalized,
+      });
+    }).catch(function () {});
+  }
+  async function syncPinvouSceneEventsForSession(sid) {
+    var cached = loadPinvouSceneEventsForSession(sid);
+    if (!sid) return cached;
+    try {
+      var remote = normalizePinvouSceneEvents(
+        await invoke("get_session_pinvou_scene_events", { sessionId: sid })
+      );
+      if (remote.length) {
+        try {
+          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+        } catch (_) {}
+        return remote;
+      }
+      if (cached.length) {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      }
+      return cached;
+    } catch (_) {
+      return cached;
+    }
+  }
+  function recordPinvouSceneForMessage(sid, pos, scene) {
+    scene = normalizePinvouScene(scene);
+    pos = Number(pos);
+    if (!sid || !scene || !Number.isFinite(pos) || pos < 0) return;
+    pos = Math.floor(pos);
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents)
+      .filter(function (event) { return event.pos !== pos; });
+    events.push({ pos: pos, scene: scene });
+    events = normalizePinvouSceneEvents(events);
+    state.pinvouSceneEvents = events;
+    savePinvouSceneEventsForSession(sid, events);
+  }
+  function pinvouSceneForMessagePos(pos) {
+    var events = normalizePinvouSceneEvents(state.pinvouSceneEvents);
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].pos === pos) return events[i].scene;
+    }
+    return "";
+  }
   var artifactTrackerFeature = installBridgeFeature("artifact-tracker", {
     state: state, invoke: invoke, sessionStates: sessionStates,
     notify: function () { return notify.apply(null, arguments); },
@@ -479,6 +820,7 @@
     sessionStates: sessionStates, turnUsageDirty: turnUsageDirty,
     personaPlaceholderTitles: personaPlaceholderTitles,
     renderMarkdown: renderMarkdown, safeConsoleInfo: safeConsoleInfo, bt: bt,
+    isDefaultChatTitle: isDefaultChatTitle,
     notify: function () { return notify.apply(null, arguments); },
     runSyncOnSession: function () { return runSyncOnSession.apply(null, arguments); },
     startThinking: function () { return startThinking.apply(null, arguments); },
@@ -486,9 +828,11 @@
     ensureSessionBufferLoaded: function () { return ensureSessionBufferLoaded.apply(null, arguments); },
     ensureSession: function () { return ensureSession.apply(null, arguments); },
     getBuffer: function () { return getBuffer.apply(null, arguments); },
+    recordPinvouSceneForMessage: recordPinvouSceneForMessage,
     reconcileRemoteTurn: function () { return reconcileRemoteTurn.apply(null, arguments); },
     markRemoteTurn: function () { return markRemoteTurn.apply(null, arguments); },
     clearAttachments: function () { return clearAttachments.apply(null, arguments); },
+    discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
     extractArtifactPath: extractArtifactPath,
@@ -563,6 +907,8 @@
     filterSessionArtifacts: filterSessionArtifacts,
     scheduleShellPoll: function () { return scheduleShellPoll.apply(null, arguments); },
     bt: bt, userMessageDisplayText: userMessageDisplayText,
+    loadPinvouSceneEventsForSession: loadPinvouSceneEventsForSession,
+    syncPinvouSceneEventsForSession: syncPinvouSceneEventsForSession,
     loadMemoryOverview: function () { return loadMemoryOverview.apply(null, arguments); },
     isScheduledRunSession: isScheduledRunSession,
     get currentStreamText() { return currentStreamText; },
@@ -649,7 +995,7 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
@@ -659,6 +1005,7 @@
         : Number(meta && meta.message_count);
       if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
       buf.remoteExpectedAssistantKey = "";
+      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
       buf.remoteTerminalSeen = false;
     }
     buf.remoteTurnActive = true;
@@ -696,6 +1043,13 @@
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
+    // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
+    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
+    // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
+    // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
+    // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
+    var meta = state.sessions.find(function (s) { return s.id === sid; });
+    if (!meta) return;
     var buf = sid === state.activeSessionId ? null : sessionStates[sid];
     var msgs = buf ? buf.messages : state.messages;
     var arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
@@ -703,14 +1057,13 @@
     else state.artifacts = arts;
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
-      var meta = state.sessions.find(function (s) { return s.id === sid; });
-      if (!meta || meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[sid]) {
+      if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {
           var newTitle = text.text.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
-          if (meta) meta.title = newTitle;
+          meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
         }
       }
@@ -736,17 +1089,40 @@
     var expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
       : "";
+    // A committed transcript revision is the backend's canonical identity for
+    // this turn. Prefer it over presentation-derived message equality: native
+    // tools may normalize blocks between streamed events and durable storage
+    // without changing the committed conversation.
+    var expectedCommittedRevision = buf.remoteTerminalSeen
+      ? String(buf.remoteCommittedRevision || "")
+      : "";
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
       : 0;
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        // A reconnect/replay can deliver the commit marker just after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
+          expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
+        }
         try {
           var saved = await invoke("load_session", { id: sid, setActive: false });
           if (!saved || !Array.isArray(saved.messages)) continue;
-          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
-          if (expectedAssistantKey) {
+          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
+          // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
+          // 无字段」导致对账必然失败(每轮误报)。
+          if (expectedCommittedRevision && savedRevision) {
+            if (savedRevision !== expectedCommittedRevision) continue;
+          } else {
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          }
+          if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
@@ -771,7 +1147,8 @@
               resolvedPlanTickets[key].push(String(item.planId));
             });
             var liveChatItems = rawLiveChatItems.filter(function (item) {
-              if (!item || item.type === "user" || item.type === "assistant") return false;
+              if (!item || item.type === "user") return false;
+              if (item.type === "assistant") return item.interruptedDisplayOnly === true;
               if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
               // 后台 Shell 在 chat:done 后仍继续运行；持久化 transcript 只有工具结果文本，
               // 没有 taskId/background/liveOutput，权威重载时必须保留实时卡片并按 toolId 合并。
@@ -825,6 +1202,7 @@
           buf.remoteBaselineMessageCount = null;
           buf.remoteBaselineTrusted = false;
           buf.remoteExpectedAssistantKey = "";
+          buf.remoteCommittedRevision = "";
           buf.deferredRemoteUserEvent = null;
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
@@ -850,9 +1228,9 @@
   var STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection"],
+    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedCollectionsRevision"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -864,7 +1242,7 @@
     memory: ["memory"],
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
-    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"],
+    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
   };
   function snapshotStateSlice(domain) {
     var fields = STATE_SLICE_FIELDS[domain];
@@ -924,7 +1302,7 @@
       snapshot_source: "live",
       session: {
         id: sid,
-        title: meta.title || "新对话",
+        title: meta.title || bt("newChatFallbackTitle"),
         status: ws.busy ? "running" : "idle",
         updated_at: meta.updated_at || "",
         message_count: meta.message_count || msgs.length || chatItems.length || 0,
@@ -980,7 +1358,7 @@
     return subscribe(function () { fn(snapshotStateSlices(domains)); });
   }
 
-  var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });
+  var scheduledFeature = installBridgeFeature("scheduled", { state: state, notify: notify, invoke: invoke, bt: bt, runSyncOnSession: runSyncOnSession, addSystemItem: addSystemItem, rememberScheduledRunOwner: rememberScheduledRunOwner, isScheduledRunTerminal: isScheduledRunTerminal, purgeSessionBuffer: purgeSessionBuffer, createNewSession: createNewSession, prefillComposer: prefillComposer, sessionStates: sessionStates });
   var loadScheduledTaskTemplateSources = scheduledFeature.loadScheduledTaskTemplateSources;
   var persistScheduledTaskTemplateSources = scheduledFeature.persistScheduledTaskTemplateSources;
   var rememberScheduledTaskTemplateSource = scheduledFeature.rememberScheduledTaskTemplateSource;
@@ -1092,14 +1470,19 @@
     return "";
   }
 
+  function isInternalUserMessageProvenance(provenance) {
+    return provenance === "runtime" || provenance === "subagent_handoff";
+  }
+
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
+  // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (userMessageInputProvenance(blocks) === "runtime") return "";
+    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
     return textParts.filter(function (text) {
@@ -1187,7 +1570,9 @@
         var utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          var uitem2 = { type: "user", text: utext, time: "" };
+          var uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          var scene = pinvouSceneForMessagePos(mi);
+          if (scene) uitem2.pinvouScene = scene;
           if (utext.indexOf("以下维度产物还缺") >= 0) uitem2.pinvouTransfer = "悟";
           else if (utext.indexOf("请按下面的检阅意见") >= 0 || utext.indexOf("以下事项我已拍板") >= 0 || utext.indexOf("request_user_input 正式问我") >= 0) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
@@ -1205,7 +1590,7 @@
               addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? "（技能已加载，内容不展示）" : c.content;
+              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -1221,7 +1606,7 @@
           textBuf += b.text;
         } else if (b.type === "thinking") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           var reasoningText = String(b.thinking || b.text || "");
@@ -1233,7 +1618,7 @@
           }
         } else if (b.type === "tool_use") {
           if (textBuf) {
-            addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
           toolMeta[b.id] = { name: b.name, args: b.input };
@@ -1317,7 +1702,7 @@
         }
       }
       if (textBuf) {
-        addChatItem({ type: "assistant", html: renderMarkdown(textBuf), time: "", streaming: false });
+        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
       if (sawPlanTool && (planSnap || todosSnap)) {
@@ -1460,7 +1845,7 @@
   });
 
   var workflowRuntimeFeature = installBridgeFeature("workflow-runtime", {
-    state: state, invoke: invoke, listen: listen, notify: notify,
+    state: state, invoke: invoke, listen: listen, notify: notify, bt: bt,
     refreshHistoryList: refreshHistoryList,
     get itemIdSeq() { return itemIdSeq; },
     set itemIdSeq(value) { itemIdSeq = value; },
@@ -1549,6 +1934,7 @@
   var discardPlan = interactionFeature.discardPlan;
   var exitPlanToYolo = interactionFeature.exitPlanToYolo;
   var setPlanModeNext = interactionFeature.setPlanModeNext;
+  var setMultiAgentMode = interactionFeature.setMultiAgentMode;
   var planStuckReplan = interactionFeature.planStuckReplan;
   var planStuckGo = interactionFeature.planStuckGo;
   var submitUserInput = interactionFeature.submitUserInput;
@@ -1567,7 +1953,7 @@
   var confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   var ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   var neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
-  var artifactsFeature = installBridgeFeature("artifacts", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, basename: basename, isDeliverable: isDeliverable, isAbsPath: isAbsPath, sessionStates: sessionStates, TAURI: TAURI, listen: listen });
+  var artifactsFeature = installBridgeFeature("artifacts", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, basename: basename, isDeliverable: isDeliverable, isAbsPath: isAbsPath, sessionStates: sessionStates, ensureSession: function () { return ensureSession.apply(null, arguments); }, discardManagedAttachment: discardManagedAttachment });
   var artifactInfo = artifactsFeature.artifactInfo;
   var readArtifactText = artifactsFeature.readArtifactText;
   var writeArtifactText = artifactsFeature.writeArtifactText;
@@ -1583,13 +1969,17 @@
   var listDeliverables = artifactsFeature.listDeliverables;
   var listDeliverableIndex = artifactsFeature.listDeliverableIndex;
   var openExternalUrl = artifactsFeature.openExternalUrl;
+  var openUserExternalUrl = artifactsFeature.openUserExternalUrl;
   var addAttachmentByPath = artifactsFeature.addAttachmentByPath;
   var addPasteImage = artifactsFeature.addPasteImage;
   var removeAttachment = artifactsFeature.removeAttachment;
   var clearAttachments = artifactsFeature.clearAttachments;
   var pickAndAttach = artifactsFeature.pickAndAttach;
   var uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
-  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
+  var resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
+  var openConversationAttachment = artifactsFeature.openConversationAttachment;
+  var revealConversationAttachment = artifactsFeature.revealConversationAttachment;
+  var personasFeature = installBridgeFeature("personas", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt, isDefaultChatTitle: isDefaultChatTitle, addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr, ensureSession: ensureSession, personaPlaceholderTitles: personaPlaceholderTitles });
   var loadPersonas = personasFeature.loadPersonas;
   var getPersonas = personasFeature.getPersonas;
   var createPersona = personasFeature.createPersona;
@@ -1600,9 +1990,11 @@
   var unequipPersona = personasFeature.unequipPersona;
   var syncActivePersona = personasFeature.syncActivePersona;
   var mountCollection = personasFeature.mountCollection;
+  var setCollectionEnabled = personasFeature.setCollectionEnabled;
+  var removeCollection = personasFeature.removeCollection;
   var unmountCollection = personasFeature.unmountCollection;
   var syncMountedCollection = personasFeature.syncMountedCollection;
-  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer });
+  var updaterFeature = installBridgeFeature("updater", { state: state, notify: notify, invoke: invoke, refreshHistoryList: refreshHistoryList, listen: listen, publishRemoteLiveSnapshot: publishRemoteLiveSnapshot, getBuffer: getBuffer, bt: bt });
   var loadAppVersion = updaterFeature.loadAppVersion;
   var checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   var checkForUpdate = updaterFeature.checkForUpdate;
@@ -1615,9 +2007,10 @@
     notify: notify,
     invoke: invoke,
     listen: listen,
+    bt: bt,
   });
   // 撕离窗口不是权威主 WebView，不注册桌面 RPC 代理。
-  if (!/(?:^|[?&])detached=1(?:&|$)/.test(locationSearch)) {
+  if (!isDetachedWindow) {
     Promise.resolve(remoteControlFeature.startDesktopProxy()).catch(function (error) {
       console.error("[WebAccess] desktop proxy startup failed", error);
     });
@@ -1626,10 +2019,10 @@
   var startRemoteControl = remoteControlFeature.startRemoteControl;
   var stopRemoteControl = remoteControlFeature.stopRemoteControl;
   var refreshRemoteControlQr = remoteControlFeature.refreshRemoteControlQr;
-  var dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke });
+  var dependenciesFeature = installBridgeFeature("dependencies", { state: state, notify: notify, invoke: invoke, listen: listen, bt: bt });
   var checkDependencies = dependenciesFeature.checkDependencies;
   var installDependencies = dependenciesFeature.installDependencies;
-  var voiceFeature = installBridgeFeature("voice", { state: state, notify: notify, invoke: invoke });
+  var voiceFeature = installBridgeFeature("voice", { state: state, notify: notify, invoke: invoke, bt: bt });
   var startVoiceInput = voiceFeature.startVoiceInput;
   var installVoiceAsr = voiceFeature.installVoiceAsr;
   var cancelVoiceAsrSetup = voiceFeature.cancelVoiceAsrSetup;
@@ -1642,6 +2035,9 @@
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
   var cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
+  var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
+  var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
+  var readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
   var workflowFeature = installBridgeFeature("workflow", { state: state, notify: notify, invoke: invoke, bt: bt, addSystemItem: addSystemItem, dialogOpen: dialogOpen, resetPendingAssistant: resetPendingAssistant, syncModeState: syncModeState, refreshHistoryList: refreshHistoryList, markWorkflowRunStopped: markWorkflowRunStopped, refreshRunState: refreshRunState, resolveRunCard: resolveRunCard, resolveRunCardsForRole: resolveRunCardsForRole });
   var setCurrentPhase = workflowFeature.setCurrentPhase;
   var loadSkills = workflowFeature.loadSkills;
@@ -1663,6 +2059,7 @@
   var pickAndAddMaterials = workflowFeature.pickAndAddMaterials;
   var pickFiles = workflowFeature.pickFiles;
   var pickFolder = workflowFeature.pickFolder;
+  var pickFolders = workflowFeature.pickFolders;
   var pickFeedbackFiles = workflowFeature.pickFeedbackFiles;
   var addMaterialsToSession = workflowFeature.addMaterialsToSession;
   var approveWorkflowGate = workflowFeature.approveWorkflowGate;
@@ -1676,9 +2073,11 @@
     await startupAwait("bridge:load_platform_capabilities", loadPlatformCapabilities);
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
-    loadScheduledTasks().catch(function () {}).then(function () {
-      loadScheduledTaskRecentRuns().catch(function () {});
-    });
+    if (!isDetachedWindow) {
+      loadScheduledTasks().catch(function () {}).then(function () {
+        loadScheduledTaskRecentRuns().catch(function () {});
+      });
+    }
     startupMark("bridge:monitor_polling_deferred", "starts when monitor view becomes active");
     await startupAwait("bridge:load_settings", loadSettings);
     await startupAwait("bridge:load_selected_pet", loadSelectedPet);
@@ -1686,18 +2085,37 @@
     await startupAwait("bridge:load_app_version", loadAppVersion);
     await startupAwait("bridge:load_models", loadModels);
     await startupAwait("bridge:refresh_history", refreshHistoryList);
-    enterDraft(); // 启动落空白草稿页(lazy session:不自动选/建会话)
-    startupMark("bridge:draft_entered");
-    await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
-    loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
-    startupMark("bridge:personas_load_started");
-    pollBackendStatus();
-    setInterval(pollBackendStatus, 10000);
-    reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
-    checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    // 分离会话必须在同一初始化链内绑定目标 id。此前 DetachedShell 的独立 effect
+    // 会与这里的 enterDraft() 并发，慢初始化时已加载的原会话会被重置成空白草稿。
+    if (isDetachedWindow && detachedWindowKind === "session" && detachedWindowSessionId) {
+      await startupAwait("bridge:detached_session", function () {
+        return switchToSession(detachedWindowSessionId);
+      });
+    } else {
+      enterDraft(); // 主窗口及非会话分离视图使用本窗口自己的空白工作集
+      startupMark("bridge:draft_entered");
+    }
+    var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
+    if (needsSessionRuntime) {
+      await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
+    }
+    if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
+      loadPersonas(); // 会话和卡池需要本窗口自己的卡牌投影，fire-and-forget
+      startupMark("bridge:personas_load_started");
+    }
+    if (needsSessionRuntime) {
+      pollBackendStatus();
+      setInterval(pollBackendStatus, 10000);
+    }
+    if (!isDetachedWindow) {
+      reportPendingUpdateResult(); // Windows OTA 升级后反馈,失败保留记录下次再试
+      checkForUpdateSilently(); // fire-and-forget,不阻塞启动
+    }
     startupMark("bridge:background_checks_started");
-    refreshRemoteControlStatus(); // fire-and-forget
-    await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // [2026-06-06] 有进行中的工作流 run 就自动挂回看板
+    if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
+    if (!isDetachedWindow || detachedWindowKind === "workflow") {
+      await startupAwait("bridge:resume_workflow", resumeWorkflowOnBoot); // 工作流窗口需要恢复后端共享 run
+    }
     notify();
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
@@ -1745,6 +2163,8 @@
       downloadKbModel: downloadKbModel,
       cancelKbModel: cancelKbModel,
       mountCollection: mountCollection,
+      setCollectionEnabled: setCollectionEnabled,
+      removeCollection: removeCollection,
       unmountCollection: unmountCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },
@@ -1821,6 +2241,7 @@
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setMultiAgentMode: setMultiAgentMode,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
     // 用户交互
@@ -1860,6 +2281,7 @@
       listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,
+      openUserExternalUrl: openUserExternalUrl,
     },
     attachments: {
       addAttachmentByPath: addAttachmentByPath,
@@ -1868,8 +2290,15 @@
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
       uploadDeviceFiles: uploadDeviceFiles,
+      resolveConversationAttachment: resolveConversationAttachment,
+      openConversationAttachment: openConversationAttachment,
+      revealConversationAttachment: revealConversationAttachment,
     },
     resolutions: { markResolved: markResolved },
+    multiAgent: {
+      listSubagentTranscripts: listMultiAgentSubagents,
+      readSubagentTranscript: readMultiAgentSubagent,
+    },
     workflow: {
       loadSkills: loadSkills,
       activateSkill: activateSkill,
@@ -1898,6 +2327,7 @@
     },
     files: {
       pickFiles: pickFiles,
+      pickFolders: pickFolders,
       pickFeedbackFiles: pickFeedbackFiles,
     },
     personas: {

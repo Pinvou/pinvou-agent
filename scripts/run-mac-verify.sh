@@ -67,12 +67,20 @@ else
     echo "  ⚠ python3 未安装(brew install python@3.13)"
 fi
 
-echo "=== 4. connector CLI 探测(npm 全局,Mac 与 Windows 同路径) ==="
+echo "=== 4. connector CLI 探测(首次使用后由应用管理) ==="
+CONNECTOR_ARCH="$(uname -m)"
+case "$CONNECTOR_ARCH" in
+    arm64)  CONNECTOR_ARCH="aarch64"; CONNECTOR_PLATFORM="darwin-arm64" ;;
+    x86_64) CONNECTOR_PLATFORM="darwin-x64" ;;
+esac
+CONNECTOR_BIN="$HOME/.pinvou3/connectors/$CONNECTOR_PLATFORM/bin"
 for cli in lark-cli wecom-cli dws; do
-    if command -v "$cli" >/dev/null 2>&1; then
-        echo "  ✓ $cli"
+    if [ -x "$CONNECTOR_BIN/$cli" ]; then
+        echo "  ✓ $cli(应用管理 $CONNECTOR_BIN)"
+    elif command -v "$cli" >/dev/null 2>&1; then
+        echo "  ✓ $cli(PATH)"
     else
-        echo "  ⚠ $cli 未安装(npm i -g @larksuite/cli @wecom/cli dingtalk-workspace-cli)"
+        echo "  ⚠ $cli 尚未安装(首次在 Pinvou Agent 工具面板连接时会在线下载并校验)"
     fi
 done
 
@@ -109,15 +117,22 @@ for f in Info.plist entitlements.plist; do
     fi
 done
 
-# macOS 二期语音改走系统 Speech 框架,SFSpeechRecognizer 首次调用需 Info.plist 提供
-# NSSpeechRecognitionUsageDescription(缺则 app 被 macOS 直接 terminate)。此处做静态
-# 断言(CI/headless 友好,无需麦克风/授权),守住二期核心交付不回归。
-# NSMicrophoneUsageDescription 同理:前端录音(WKWebView getUserMedia)首次需此 key。
-for usage_key in NSSpeechRecognitionUsageDescription NSMicrophoneUsageDescription; do
+# 静态断言所有 macOS 隐私用途 key，适合 CI/headless 环境，无需触发系统授权弹窗。
+for usage_key in NSSpeechRecognitionUsageDescription NSMicrophoneUsageDescription NSLocalNetworkUsageDescription; do
     if /usr/libexec/PlistBuddy -c "Print :$usage_key" "$APP_SRC_TAURI/packaging/macos/Info.plist" >/dev/null 2>&1; then
         echo "  ✓ Info.plist 含 $usage_key"
     else
-        echo "  ❌ Info.plist 缺 $usage_key(首次语音/录音会崩溃)" >&2
+        echo "  ❌ Info.plist 缺 $usage_key" >&2
+        VERIFY_FAIL=1
+    fi
+done
+
+for locale in en zh-Hans ja; do
+    strings_file="$APP_SRC_TAURI/resources/platforms/macos/infoplist/$locale.lproj/InfoPlist.strings"
+    if [ -f "$strings_file" ] && plutil -lint "$strings_file" >/dev/null 2>&1; then
+        echo "  ✓ $locale InfoPlist.strings"
+    else
+        echo "  ❌ $locale InfoPlist.strings 缺失或格式错误" >&2
         VERIFY_FAIL=1
     fi
 done
@@ -138,6 +153,24 @@ echo "=== 7. universal 二进制双切片校验 (arm64 + x86_64) ==="
 # 本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
 APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
 if [ -f "$APP_BIN" ]; then
+    APP_BUNDLE="${APP_BIN%/Contents/MacOS/pinvou3-tauri}"
+    BUNDLED_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
+    if /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$BUNDLED_INFO_PLIST" >/dev/null 2>&1; then
+        echo "  ✓ bundle Info.plist 含 NSLocalNetworkUsageDescription"
+    else
+        echo "  ❌ bundle Info.plist 缺 NSLocalNetworkUsageDescription" >&2
+        VERIFY_FAIL=1
+    fi
+    for locale in en zh-Hans ja; do
+        bundled_strings="$APP_BUNDLE/Contents/Resources/$locale.lproj/InfoPlist.strings"
+        if [ -f "$bundled_strings" ] && plutil -lint "$bundled_strings" >/dev/null 2>&1; then
+            echo "  ✓ bundle 含 $locale InfoPlist.strings"
+        else
+            echo "  ❌ bundle 缺 $locale InfoPlist.strings 或格式错误" >&2
+            VERIFY_FAIL=1
+        fi
+    done
+
     LIPO_OUT="$(lipo -info "$APP_BIN" 2>&1 || true)"
     # fat 二进制输出形如 "Architectures in the fat file: ... are: arm64 x86_64"。
     if echo "$LIPO_OUT" | grep -q 'arm64' && echo "$LIPO_OUT" | grep -q 'x86_64'; then

@@ -650,7 +650,7 @@ pub async fn test_model_connection(
     api_key: String,
     model_id: Option<String>,
 ) -> Result<ModelConnectionTestResult, String> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let url = crate::core::model_endpoint::models_probe_url(&base_url);
     let parsed_url = match reqwest::Url::parse(&url) {
         Ok(url) => url,
         Err(e) => {
@@ -678,6 +678,8 @@ pub async fn test_model_connection(
             ));
         }
     };
+    // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
+    let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
     let provided_key = api_key.trim().to_string();
     let key = if provided_key.is_empty() {
@@ -697,7 +699,13 @@ pub async fn test_model_connection(
         provided_key
     };
     if !key.trim().is_empty() {
-        req = req.bearer_auth(key.trim());
+        if is_anthropic {
+            req = req
+                .header("x-api-key", key.trim())
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req.bearer_auth(key.trim());
+        }
     }
     match req.send().await {
         Ok(resp) => Ok(model_connection_http_result(resp.status())),

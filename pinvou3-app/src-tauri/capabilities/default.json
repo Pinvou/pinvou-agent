@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "detached-*",
-    "pet"
+    "pet",
+    "code-reader"
   ],
   "permissions": [
     "core:default",

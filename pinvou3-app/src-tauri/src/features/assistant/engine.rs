@@ -17,22 +17,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::core::ops::{Op, UserInputProvenance};
+use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
-use deepseek_tui::tui::approval::ApprovalMode;
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
 use crate::core::mode_state::{SerializableMode, SessionModeState};
+pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
+use crate::features::assistant::engine_support::{
+    apply_scheduled_turn_policy, maybe_notify_task_completed, persist_successful_tool_artifact,
+    scheduled_tool_should_auto_approve, TurnCompletionTracker,
+};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
     transcript_revision, ChatEngineState, ScheduledEngineState, ScheduledRunProfile,
     ScheduledTokenAccounting, SessionStore,
@@ -53,10 +58,17 @@ const SCHEDULED_TURN_REMINDER: &str =
 pub struct AppEngine {
     pub handle: EngineHandle,
     pub bridge: Pinvou3Bridge,
+    /// 本 engine 绑定的 session id（多引擎并发下 per-session 一个 AppEngine）；
+    /// 发送 op 构造按它取会话策略。headless harness 无 session 概念,置空。
+    pub(crate) session_id: String,
     pub(crate) workspace: PathBuf,
+    /// 启动本引擎时会话是否处于多智能体模式。开关切换会先回收旧引擎，
+    /// 因而该值在一个引擎实例的生命周期内保持稳定。
+    multi_agent_enabled: bool,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
+    turn_shell_tasks: Option<TurnShellTaskRegistry>,
     scheduled_disallowed_tools: Vec<String>,
 }
 
@@ -72,6 +84,21 @@ struct TurnLifecycleState {
     next_reservation_id: u64,
     active_reservation_id: Option<u64>,
     transcript_rules: Vec<TranscriptSanitizationRule>,
+    /// 用户在 turn 已 submit 但尚未收到 TurnStarted 时点了停止。
+    ///
+    /// CodeWhale Engine 在每个新轮次入口**无条件**调
+    /// `reset_cancel_token()`（`core/engine.rs:2664`，在 `TurnStarted`
+    /// 之前），用全新 token 覆盖当前共享 token。若 cancel 恰好在这个窗口
+    /// 调了 `cancel_current()`，取消信号会被重置丢弃。
+    ///
+    /// 此标记由 [`arm_pending_cancel`] 在 cancel 路径设置（仅当 turn 尚未
+    /// started），由事件转发器在收到 `TurnStarted` 后通过
+    /// [`take_pending_cancel`] 原子取出并重新 `cancel_current()`——此时
+    /// `reset_cancel_token()` 已经执行过，cancel 命中的是当前轮次的活跃 token。
+    ///
+    /// [`arm_pending_cancel`]: TurnLifecycle::arm_pending_cancel
+    /// [`take_pending_cancel`]: TurnLifecycle::take_pending_cancel
+    pending_cancel: bool,
 }
 
 /// The durable, user-visible meaning of a submitted engine operation.
@@ -314,6 +341,9 @@ struct TerminalTransition {
 #[derive(Debug)]
 struct StartedTransition {
     admission: Option<TurnAdmission>,
+    /// 本次 Started 是否把轮次从空闲翻成活跃（去重：一轮内的重复 Started
+    /// 不再重复宣告）。
+    newly_active: bool,
 }
 
 pub(crate) fn emit_chat_terminal(
@@ -321,26 +351,40 @@ pub(crate) fn emit_chat_terminal(
     session_id: &str,
     status: TurnOutcomeStatus,
     error: Option<String>,
+    shell_cleanup_failed: bool,
 ) {
+    // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
+    crate::features::assistant::pending_user_input::clear_session(session_id);
     let payload = json!({
         "session_id": session_id,
         "status": format!("{status:?}"),
         "error": error,
+        "shell_cleanup_failed": shell_cleanup_failed,
     });
     let _ = app.emit("chat:done", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+fn emit_turn_started(app: &AppHandle, session_id: &str) {
+    let started_payload = json!({ "session_id": session_id });
+    let _ = app.emit("chat:turn_started", started_payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
 }
 
 fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
     let user_payload = admission.user_payload(session_id);
     let _ = app.emit("chat:user_message", user_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:user_message", user_payload);
-    let started_payload = json!({ "session_id": session_id });
-    let _ = app.emit("chat:turn_started", started_payload.clone());
-    crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+    emit_turn_started(app, session_id);
 }
 
 impl TurnLifecycle {
+    /// 该 session 当前是否有进行中的 turn（reserve 占用或终态收口未完成）。
+    pub(crate) fn is_active(&self) -> bool {
+        let state = self.state.lock();
+        state.active || state.terminal_closing
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();
@@ -357,6 +401,7 @@ impl TurnLifecycle {
             state.reclaimed = false;
             state.admission_emitted = false;
             state.active_reservation_id = Some(reservation_id);
+            state.pending_cancel = false;
             reservation_id
         };
         Ok(TurnReservation::new(self.clone(), reservation_id))
@@ -600,6 +645,7 @@ impl TurnLifecycle {
         }
         let transition = StartedTransition {
             admission: Self::take_admission_locked(&mut state),
+            newly_active,
         };
         drop(state);
         Some(transition)
@@ -617,6 +663,12 @@ impl TurnLifecycle {
         };
         if let Some(admission) = transition.admission {
             emit_turn_admission(app, session_id, admission);
+        } else if transition.newly_active {
+            // 底座自启的续跑轮（如子智能体完成后的父模型汇总轮）没有外部
+            // admission：不发 user_message，但 turn_started 必须照发——否则
+            // 界面显示空闲、停止按钮缺席、再发消息撞"已有运行中轮次"，且与
+            // "停止级联取消"的既定语义冲突（复核 P1）。
+            emit_turn_started(app, session_id);
         }
         true
     }
@@ -741,6 +793,95 @@ impl TurnLifecycle {
         drop(state);
         true
     }
+
+    /// 原子认领一个「reserved 未 submitted」turn 的终态并设置 `terminal_closing`
+    /// 闸门，供需要补发 `chat:done` 的路径（cancel 在 engine 未 spawn 时）使用。
+    ///
+    /// 与 [`invalidate_unsubmitted_reservation`] 的关键区别：本方法认领成功后立即
+    /// 置 `terminal_emitted = true` 与 `terminal_closing = true`，使随后抵达的
+    /// [`reserve`](Self::reserve) 被拒（`active || terminal_closing` → 闸门关闭），
+    /// 直至调用方在发完 `chat:done` 后调用 [`finish_terminal_emission`] 重新打开
+    /// 闸门。这样就消除了「invalidate 返回与 chat:done 发出之间，新一轮 reserve
+    /// 成功，迟到的 chat:done 错误清除新一轮 busy 状态」的跨轮竞态——权威终态路径
+    /// （[`claim_terminal_transition`] / [`claim_reclaimed_transition`]）同样靠这一对
+    /// 字段防止重入。
+    ///
+    /// [`invalidate_unsubmitted_reservation`]: Self::invalidate_unsubmitted_reservation
+    /// [`finish_terminal_emission`]: Self::finish_terminal_emission
+    /// [`claim_terminal_transition`]: Self::claim_terminal_transition
+    /// [`claim_reclaimed_transition`]: Self::claim_reclaimed_transition
+    pub(crate) fn claim_unsubmitted_terminal(&self) -> bool {
+        let _emission = self.emission.lock();
+        let mut state = self.state.lock();
+        if !state.active || state.submitted || state.terminal_emitted {
+            return false;
+        }
+        state.reclaimed = true;
+        if let Some(reservation_id) = state.active_reservation_id.take() {
+            Self::remove_unsubmitted_rule_locked(&mut state, reservation_id);
+        }
+        // 与权威终态路径一致：先发信号期间 `terminal_closing` 关闸，
+        // `terminal_emitted` 保证本轮不会再被任何路径二次认领。
+        state.active = false;
+        state.submitted = false;
+        state.turn_id = None;
+        state.terminal_emitted = true;
+        state.terminal_closing = true;
+        drop(state);
+        true
+    }
+
+    /// 认领一个未提交 turn 的终态并补发 `chat:done`，最后重置闸门。
+    ///
+    /// 给 cancel 在 engine 尚未 spawn（reservation 处于 reserved 未 submitted 阶段）
+    /// 时使用：原子认领（关闸防重入）→ 发 `Interrupted` 终态 → 重开闸门。封装成一
+    /// 个方法是为了让调用方（`EnginePool::cancel`，跨模块）不必直接触碰私有的
+    /// 终态收尾逻辑，与权威终态路径一样自包含「发完即重置」。
+    pub(crate) fn emit_unsubmitted_interrupted_terminal(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> bool {
+        if !self.claim_unsubmitted_terminal() {
+            return false;
+        }
+        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        self.finish_terminal_emission();
+        true
+    }
+
+    /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
+    ///
+    /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
+    /// 未抵达）时设置 `pending_cancel`：
+    /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
+    ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal`）立即发
+    ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
+    ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
+    ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
+    /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，`cancel_current()`
+    ///   直接命中当前活跃 token，无需补打。
+    ///
+    /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
+    /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
+    /// 再 cancel 保证：即使 TurnStarted 在两步之间抵达转发器并消费了标记，
+    /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
+    pub(crate) fn arm_pending_cancel(&self) {
+        let mut state = self.state.lock();
+        if state.submitted && state.turn_id.is_none() && state.active {
+            state.pending_cancel = true;
+        }
+    }
+
+    /// 原子取出并清除 `pending_cancel` 标记。
+    ///
+    /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
+    /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前），
+    /// 重新 `cancel_current()` 命中的正是本轮的活跃 token。
+    pub(crate) fn take_pending_cancel(&self) -> bool {
+        let mut state = self.state.lock();
+        std::mem::take(&mut state.pending_cancel)
+    }
 }
 
 async fn finish_reclaimed_lifecycle_turn(
@@ -750,6 +891,7 @@ async fn finish_reclaimed_lifecycle_turn(
     session_id: &str,
     status: TurnOutcomeStatus,
     error: Option<String>,
+    shell_cleanup_failed: bool,
 ) -> Option<EmittedTerminal> {
     let transition = lifecycle.claim_reclaimed_with_admission(app, session_id)?;
     let mut terminal_status = status;
@@ -801,7 +943,21 @@ async fn finish_reclaimed_lifecycle_turn(
             }
         }
     }
-    emit_chat_terminal(app, session_id, terminal_status, terminal_error);
+    // 时间线必须先于 chat:done 落盘。前端收到终态后会重新读取权威时间线；
+    // 若先 emit 再写文件，后台/恢复会话会读到旧快照并漏掉完成状态与耗时。
+    let status_text = format!("{terminal_status:?}");
+    crate::features::assistant::timing::finish_turn(
+        session_id,
+        &status_text,
+        terminal_error.as_deref(),
+    );
+    emit_chat_terminal(
+        app,
+        session_id,
+        terminal_status,
+        terminal_error,
+        shell_cleanup_failed,
+    );
     lifecycle.finish_terminal_emission();
     Some(transition.terminal)
 }
@@ -826,6 +982,7 @@ impl AppEngine {
         disallowed: Vec<String>,
         turn_lifecycle: Arc<TurnLifecycle>,
         shell_manager: SharedShellManager,
+        turn_shell_tasks: TurnShellTaskRegistry,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
         // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
@@ -836,11 +993,23 @@ impl AppEngine {
         } else {
             None
         };
-        let workspace = scheduled_profile
-            .as_ref()
-            .map(|profile| profile.workspace.clone())
-            .unwrap_or_else(|| bridge.session_workspace(session_id));
-        let mut engine_config = bridge.build_engine_config_for_session_at(session_id, workspace);
+        // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        let multi_agent_enabled = scheduled_profile.is_none()
+            && bridge
+                .session_policy(session_id)
+                .multi_agent_mode_available()
+            && store.mode_state(session_id).multi_agent;
+        let workspace = store
+            .session_roots(session_id)
+            .map(|roots| roots.execution)
+            .unwrap_or_else(|_| bridge.session_workspace(session_id));
+        let mut engine_config = if multi_agent_enabled {
+            // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
+            // 完全一致，普通会话不继承这些限制。
+            bridge.build_engine_config_for_multi_agent(session_id, workspace)
+        } else {
+            bridge.build_engine_config_for_session_at(session_id, workspace)
+        };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
         // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
@@ -849,6 +1018,9 @@ impl AppEngine {
         // 工具门控:连接器开关禁用 +(知识库为空时)隐藏 kb_search/kb_open_source。compute 返回
         // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
         // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
+        //
+        // 该列表来自 compute_disallowed_tools;多智能体会话不改写它——
+        // 工具面与主线持平,workflow 与裸 agent 都不在禁用列表。
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -868,6 +1040,9 @@ impl AppEngine {
             Some(disallowed)
         };
         let dt_config = bridge.build_dt_config();
+        // 多智能体宿主不再改写 Workflow 审批配置："每张图必停"的旧约束已按
+        // 产品定义收缩撤除，只读图按底座默认自动起跑，写入/提权图由底座的
+        // require_approval_for_writes 走普通审批（确认卡只在那时出现）。
 
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
@@ -894,16 +1069,20 @@ impl AppEngine {
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
             shell_manager,
+            turn_shell_tasks.clone(),
         );
 
         Ok((
             Self {
                 handle,
                 bridge,
+                session_id: session_id.to_string(),
                 workspace,
+                multi_agent_enabled,
                 turn_events,
                 scheduled_unattended,
                 turn_lifecycle,
+                turn_shell_tasks: Some(turn_shell_tasks),
                 scheduled_disallowed_tools,
             },
             forwarder,
@@ -930,10 +1109,13 @@ impl AppEngine {
         Ok(Self {
             handle,
             bridge,
+            session_id: String::new(),
             workspace,
+            multi_agent_enabled: false,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
+            turn_shell_tasks: None,
             scheduled_disallowed_tools,
         })
     }
@@ -950,7 +1132,7 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
@@ -969,7 +1151,7 @@ impl AppEngine {
         reservation: TurnReservation,
         input: Option<deepseek_tui::core::ops::UserMessageInput>,
     ) -> Result<()> {
-        let op = self.bridge.build_send_message_op(
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
@@ -977,6 +1159,36 @@ impl AppEngine {
             input,
         )?;
         self.send_reserved_turn_op(op, reservation).await
+    }
+
+    fn build_interactive_send_message_op(
+        &self,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+        input: Option<deepseek_tui::core::ops::UserMessageInput>,
+    ) -> Result<Op> {
+        if self.multi_agent_enabled {
+            self.bridge.build_multi_agent_send_message_op(
+                &self.session_id,
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                &self.workspace,
+                input,
+            )
+        } else {
+            self.bridge.build_send_message_op(
+                &self.session_id,
+                content,
+                mode,
+                persona_reminder,
+                restrict_tools,
+                input,
+            )
+        }
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable
@@ -997,6 +1209,7 @@ impl AppEngine {
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
         let mut op = self.bridge.build_send_message_op(
+            &self.session_id,
             content,
             profile.execution_mode().to_app_mode(),
             Some(SCHEDULED_TURN_REMINDER.to_string()),
@@ -1027,11 +1240,28 @@ impl AppEngine {
         if !activated {
             anyhow::bail!("session_turn_in_progress");
         }
-        let result = self.handle.send(op).await;
-        if result.is_err() {
-            self.turn_lifecycle.on_submission_failed(activated);
+        let shell_scope = match self.turn_shell_tasks.as_ref() {
+            Some(registry) => match registry.prepare_submission().await {
+                Ok(scope) => Some(scope),
+                Err(error) => {
+                    self.turn_lifecycle.on_submission_failed(activated);
+                    return Err(error).context("prepare root-turn shell scope");
+                }
+            },
+            None => None,
+        };
+        match self.handle.send(op).await {
+            Ok(()) => {
+                if let Some(scope) = shell_scope {
+                    scope.commit();
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.turn_lifecycle.on_submission_failed(activated);
+                Err(error)
+            }
         }
-        result
     }
 
     async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {
@@ -1045,8 +1275,20 @@ impl AppEngine {
             _ => anyhow::bail!("reserved turn requires a user-message operation"),
         };
         reservation.prepare_actual_user_content(actual_user_content)?;
+        let shell_scope = match self.turn_shell_tasks.as_ref() {
+            Some(registry) => Some(
+                registry
+                    .prepare_submission()
+                    .await
+                    .context("prepare reserved root-turn shell scope")?,
+            ),
+            None => None,
+        };
         match self.handle.send(op).await {
             Ok(()) => {
+                if let Some(scope) = shell_scope {
+                    scope.commit();
+                }
                 reservation.mark_submitted();
                 Ok(())
             }
@@ -1059,6 +1301,7 @@ impl AppEngine {
         app: &AppHandle,
         store: &SessionStore,
         session_id: &str,
+        shell_cleanup_failed: bool,
     ) -> bool {
         match finish_reclaimed_lifecycle_turn(
             &self.turn_lifecycle,
@@ -1067,6 +1310,7 @@ impl AppEngine {
             session_id,
             TurnOutcomeStatus::Interrupted,
             None,
+            shell_cleanup_failed,
         )
         .await
         {
@@ -1265,6 +1509,18 @@ pub(crate) fn emit_workflow_blocked(
     );
 }
 
+fn tool_call_result_parts(
+    result: std::result::Result<
+        deepseek_tui::tools::spec::ToolResult,
+        deepseek_tui::tools::spec::ToolError,
+    >,
+) -> (String, bool, Option<serde_json::Value>) {
+    match result {
+        Ok(result) => (result.content, result.success, result.metadata),
+        Err(error) => (format!("{error:?}"), false, None),
+    }
+}
+
 pub(crate) async fn apply_harness_action(
     action: crate::features::assistant::harness::HarnessAction,
     app: &AppHandle,
@@ -1436,11 +1692,13 @@ pub(crate) async fn apply_harness_action(
 
 /// 后台 task：持续读 rx_event 转 Tauri emit。
 ///
-/// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`——
-/// 上游 `Op::SendMessage.auto_approve` 不旁路 `await_tool_approval`
-/// （turn_loop.rs:1117 只看 ToolSpec.approval_requirement，不看
-/// session.auto_approve），需要 frontend 端主动发 ApprovalDecision::Approved
-/// 才能解锁工具执行。
+/// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`。
+/// 注意底座语义：`auto_approve = true` 时 `registered_tool_approval_required`
+/// 会直接**旁路**可绕过的 Required 审批、不发事件（turn_loop.rs，非绕过名单仅
+/// rlm_eval / start_mcp_server）。因此本臂对普通会话只在 auto_approve 关闭的
+/// 场景（定时任务按 profile、工作流运行按 `apply_workflow_turn_policy`）收到
+/// 事件；工作流编排图交给用户裁定，工作流宿主的其它副作用工具拒绝，普通会话
+/// 仍沿用既有批准策略。
 ///
 /// Plan ready 触发：监听 `update_plan` 工具结果 + TurnComplete，
 /// 若 active session mode=Plan + 本 turn 调过 update_plan + plan 非空 →
@@ -1465,6 +1723,7 @@ fn spawn_event_forwarder(
     scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
+    turn_shell_tasks: TurnShellTaskRegistry,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -1509,12 +1768,28 @@ fn spawn_event_forwarder(
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
                     // emission gate, so it cannot overtake this pair.
-                    if !turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone()) {
+                    let admitted =
+                        turn_lifecycle.emit_started_admission(&app, &session_id, turn_id.clone());
+                    // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
+                    // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
+                    // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
+                    let pending_cancel = turn_lifecycle.take_pending_cancel();
+                    if !admitted {
                         continue;
+                    }
+                    if pending_cancel {
+                        approve_handle.cancel();
                     }
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
+                        log::error!(
+                            "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
+                            session_id,
+                            turn_id
+                        );
+                    }
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
@@ -1578,10 +1853,7 @@ fn spawn_event_forwarder(
                 }
                 Event::ToolCallComplete { id, name, result } => {
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
-                    let (output, success, metadata) = match result {
-                        Ok(r) => (r.content, true, r.metadata),
-                        Err(e) => (format!("{e:?}"), false, None),
-                    };
+                    let (output, success, metadata) = tool_call_result_parts(result);
                     let background_task_id =
                         if matches!(name.as_str(), "exec_shell" | "task_shell_start")
                             && metadata
@@ -1598,6 +1870,18 @@ fn spawn_event_forwarder(
                         } else {
                             None
                         };
+                    if let (Some(turn_id), Some(task_id)) =
+                        (current_turn_id.as_deref(), background_task_id.as_deref())
+                    {
+                        if !turn_shell_tasks.register_task(turn_id, task_id) {
+                            log::warn!(
+                                "[pinvou3][chat] shell task has no root-turn scope sid={} turn={} task={}",
+                                session_id,
+                                turn_id,
+                                task_id
+                            );
+                        }
+                    }
                     shell_output.tool_completed(&id, background_task_id.as_deref());
                     let tracked_input = tool_inputs
                         .remove(&id)
@@ -1681,6 +1965,10 @@ fn spawn_event_forwarder(
                         "success": success,
                         "metadata": metadata,
                     });
+                    // request_user_input 收口：submit/cancel 已由底座转为工具结果。
+                    if name == "request_user_input" {
+                        crate::features::assistant::pending_user_input::clear(&session_id, &id);
+                    }
                     let _ = app.emit("chat:tool_end", payload.clone());
                     crate::features::remote_control::forward_app_event(
                         &app,
@@ -1700,12 +1988,18 @@ fn spawn_event_forwarder(
                             }
                         });
                     } else {
-                        // 普通对话继续交给前端或远程控制端处理。
+                        // 普通对话继续交给前端或远程控制端处理。登记 pending，
+                        // 供前端 remount 后经 get_pending_user_inputs 恢复确认卡。
                         let payload = json!({
                             "session_id": session_id,
                             "id": id,
                             "questions": request.questions,
                         });
+                        crate::features::assistant::pending_user_input::record(
+                            &session_id,
+                            &id,
+                            payload["questions"].clone(),
+                        );
                         let _ = app.emit("chat:user_input_required", payload.clone());
                         crate::features::remote_control::forward_app_event(
                             &app,
@@ -1808,8 +2102,9 @@ fn spawn_event_forwarder(
                     approval_force_prompt,
                     ..
                 } => {
-                    // 只有无人值守的初始定时执行使用任务保存的批准策略；用户从
-                    // 运行历史进入后继续对话，行为与普通对话一致。
+                    // 多智能体会话与普通对话共用同一套审批语义（ADR-0006）：
+                    // 只有无人值守的初始定时执行使用任务保存的批准策略；
+                    // 其余会话按普通对话处理。
                     let should_approve = if scheduled_profile.is_some()
                         && scheduled_unattended.load(Ordering::Acquire)
                     {
@@ -1856,28 +2151,49 @@ fn spawn_event_forwarder(
                 Event::AgentSpawned { id, prompt, .. } => {
                     agent_roles.insert(id, prompt);
                 }
+                // 台账退役（ADR-0006）：workflow 内部生命周期不再转发，子智能体
+                // 状态一律走 AgentProgress / AgentComplete 与落盘 worker ledger。
+                Event::WorkflowUi { .. } => {}
                 // [edict-obs] SubAgent 每步进展(底座自动发,不靠 prompt 纪律)→ 前端看板。
                 Event::AgentProgress { id, status, .. } => {
                     // 早期事件可能赶在第二发 AgentSpawned(role_id)之前到 —— 兜底用
                     // agent_id 而不是空串,跟 TokenUsage 臂的 fallback 语义一致。
                     let role = agent_roles.get(&id).cloned().unwrap_or_else(|| id.clone());
-                    let _ = app.emit(
-                        "workflow:agent_progress",
-                        json!({
-                            "session_id": session_id,
-                            "agent_id": id,
-                            "role_id": role,
-                            "status": status,
-                        }),
-                    );
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": id,
+                        "role_id": role,
+                        "status": status,
+                    });
+                    let _ = app.emit("workflow:agent_progress", payload);
                 }
                 // [edict-obs] mailbox 信封:工具调用→progress;TokenUsage→账本+审计;
                 // Completed/Failed→审计。审计写盘是同步 IO,但单行 append 微秒级,
                 // 不值得为它 spawn_blocking(forwarder 本身不在 LLM 关键路径上)。
                 Event::SubAgentMailbox { message, .. } => {
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
-                    let ws = execution_workspace.clone();
+                    // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
+                    // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
+                    let ws = bridge.audit_workspace(&session_id, &execution_workspace);
                     match message {
+                        MM::Started { agent_id, .. } => {
+                            if let Some(turn_id) = current_turn_id.as_deref() {
+                                turn_shell_tasks.register_agent(turn_id, &agent_id);
+                            }
+                        }
+                        MM::ChildSpawned {
+                            parent_id,
+                            child_id,
+                        } => {
+                            if !turn_shell_tasks.register_child_agent(&parent_id, &child_id) {
+                                log::warn!(
+                                    "[pinvou3][chat] child agent has no parent shell scope sid={} parent={} child={}",
+                                    session_id,
+                                    parent_id,
+                                    child_id
+                                );
+                            }
+                        }
                         MM::TokenUsage {
                             agent_id,
                             model,
@@ -1926,17 +2242,16 @@ fn spawn_event_forwarder(
                                 .get(&agent_id)
                                 .cloned()
                                 .unwrap_or_else(|| agent_id.clone());
-                            let _ = app.emit(
-                                "workflow:agent_progress",
-                                json!({
-                                    "session_id": session_id,
-                                    "agent_id": agent_id,
-                                    "role_id": role,
-                                    "status": format!("🔧 {tool_name} (step {step})"),
-                                }),
-                            );
+                            let payload = json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "role_id": role,
+                                "status": format!("🔧 {tool_name} (step {step})"),
+                            });
+                            let _ = app.emit("workflow:agent_progress", payload);
                         }
                         MM::Completed { agent_id, summary } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
                             crate::features::assistant::audit::append(
                                 &ws,
@@ -1949,6 +2264,7 @@ fn spawn_event_forwarder(
                             );
                         }
                         MM::Failed { agent_id, error } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
                             let role = agent_roles.get(&agent_id).cloned().unwrap_or_default();
                             crate::features::assistant::audit::append(
                                 &ws,
@@ -1959,6 +2275,14 @@ fn spawn_event_forwarder(
                                     "error": crate::features::assistant::audit::clip(&error),
                                 }),
                             );
+                        }
+                        MM::Cancelled { agent_id } => {
+                            turn_shell_tasks.complete_agent(&agent_id);
+                        }
+                        MM::Interrupted { agent_id, .. } => {
+                            // CodeWhale 当前不保留可原位恢复的 live task；中断后只能基于
+                            // checkpoint 重新派发，因此它对本轮 Shell scope 同样是终态。
+                            turn_shell_tasks.complete_agent(&agent_id);
                         }
                         _ => {}
                     }
@@ -1985,10 +2309,18 @@ fn spawn_event_forwarder(
                         "[harness] subagent {id} complete ({} chars summary, failed={failed})",
                         result.len()
                     );
-                    let _ = app.emit(
-                        "workflow:agent_complete",
-                        json!({ "session_id": session_id, "agent_id": id }),
-                    );
+                    // role/failed 是新增字段:老的工作流看板只认 agent_id,多带两个字段
+                    // 不影响它;多智能体工位看板要靠这两个判断"谁完成了、成没成功",
+                    // 缺了就只能显示一个没有归属的完成信号。
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": id,
+                        "role_id": envelope_role
+                            .clone()
+                            .or_else(|| agent_roles.get(&id).cloned()),
+                        "failed": failed,
+                    });
+                    let _ = app.emit("workflow:agent_complete", payload);
                     let state = store.mode_state(&session_id);
                     if state.active_skill.is_some() {
                         // [C2] 完成→节点关联完全用信封 role（SDAN Result.from）。
@@ -2213,6 +2545,9 @@ fn spawn_event_forwarder(
                     // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
                     ..
                 } => {
+                    let shell_turn_id = current_turn_id.clone();
+                    let shell_interrupted = status == TurnOutcomeStatus::Interrupted;
+                    let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
                     let mut terminal_error = error;
                     if let Some(base_total_tokens) = scheduled_base_total_tokens {
@@ -2315,6 +2650,45 @@ fn spawn_event_forwarder(
                             });
                         }
                     }
+                    // Keep the shell scope cancellable throughout persistence.
+                    // Final cleanup runs before terminal admission is claimed;
+                    // Engine reclaim can therefore still win an await race and
+                    // close the same scope without leaving the UI permanently
+                    // busy. The cleanup itself executes on blocking workers.
+                    if let Some(turn_id) = shell_turn_id.as_deref() {
+                        match turn_shell_tasks
+                            .finalize_turn(turn_id, shell_interrupted)
+                            .await
+                        {
+                            Ok(report) => {
+                                if !report.killed.is_empty() {
+                                    log::info!(
+                                        "[pinvou3][chat] finalized {} interrupted shell task(s) sid={} turn={}",
+                                        report.killed.len(),
+                                        session_id,
+                                        turn_id
+                                    );
+                                }
+                                if let Some(cleanup_error) = report.failure_summary() {
+                                    shell_cleanup_failed = true;
+                                    log::error!(
+                                        "[pinvou3][chat] shell cleanup remained incomplete sid={} turn={}: {}",
+                                        session_id,
+                                        turn_id,
+                                        cleanup_error
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "[pinvou3][chat] failed to finalize shell task scope sid={} turn={}: {error:#}",
+                                    session_id,
+                                    turn_id
+                                );
+                                shell_cleanup_failed = true;
+                            }
+                        }
+                    }
                     // Persistence above can change the authoritative outcome and
                     // may await. Claim only after that result is known, but before
                     // every completion-only side effect below. If reclaim won
@@ -2354,6 +2728,27 @@ fn spawn_event_forwarder(
                         *tracker = TurnPlanTracker::default();
                         (plan_used, plan_snapshot, todos_snapshot)
                     };
+
+                    // 先完成权威时间线，再发 chat:done。前端终态事件会据此重新
+                    // 读取整份时间线，补齐后台运行/页面恢复期间漏掉的本地事件。
+                    let status_text = format!("{terminal_status:?}");
+                    crate::features::assistant::timing::finish_turn_with_usage(
+                        &session_id,
+                        &status_text,
+                        terminal_error.as_deref(),
+                        Some(crate::features::assistant::timing::TurnUsage {
+                            input_tokens: u64::from(usage.input_tokens),
+                            output_tokens: u64::from(usage.output_tokens),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+                            cache_miss_tokens: u64::from(
+                                usage.prompt_cache_miss_tokens.unwrap_or(0),
+                            ),
+                            cache_write_tokens: u64::from(
+                                usage.prompt_cache_write_tokens.unwrap_or(0),
+                            ),
+                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                        }),
+                    );
 
                     {
                         // 多引擎:mode 判据基于本 forwarder 的 session_id,不读全局 active。
@@ -2396,6 +2791,7 @@ fn spawn_event_forwarder(
                             &session_id,
                             terminal_status,
                             terminal_error.clone(),
+                            shell_cleanup_failed,
                         );
                         turn_lifecycle.finish_terminal_emission();
 
@@ -2455,31 +2851,6 @@ fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
-                    let status_text = format!("{terminal_status:?}");
-                    // 落 usage 进 timing_events.jsonl,作为模型耗时/失败/上下文消耗的
-                    // 内部诊断数据源。usage.input/output_tokens 是 u32,
-                    // prompt_cache_*_tokens / reasoning_tokens 是 Option<u32>,
-                    // 统一 unwrap_or(0) + u64 转换落盘。
-                    // [F3] 转发 cache_write_tokens(Anthropic cache-write 按 1.25x 计费)
-                    // 与 reasoning_tokens(DeepSeek V4 思考模型主要成本),否则字段一旦缺
-                    // 持久化就回填不了,影响将来真实 cost 估算。
-                    crate::features::assistant::timing::finish_turn_with_usage(
-                        &session_id,
-                        &status_text,
-                        terminal_error.as_deref(),
-                        Some(crate::features::assistant::timing::TurnUsage {
-                            input_tokens: u64::from(usage.input_tokens),
-                            output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
-                            cache_miss_tokens: u64::from(
-                                usage.prompt_cache_miss_tokens.unwrap_or(0),
-                            ),
-                            cache_write_tokens: u64::from(
-                                usage.prompt_cache_write_tokens.unwrap_or(0),
-                            ),
-                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
-                        }),
-                    );
                     if crate::features::memory::memory_enabled() {
                         if let Some(capture) =
                             crate::features::memory::take_turn_capture(&session_id)
@@ -2639,6 +3010,37 @@ fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
+        let mut shell_cleanup_failed = false;
+        {
+            // The stream can stop before `TurnStarted` bound the provisional
+            // submission scope; close the active scope too, otherwise the next
+            // `prepare_turn` keeps bailing on "scope already active".
+            let finalize = match current_turn_id.as_deref() {
+                Some(turn_id) => turn_shell_tasks.finalize_turn(turn_id, true).await,
+                None => turn_shell_tasks.finalize_active_scope(true).await,
+            };
+            match finalize {
+                Ok(report) => {
+                    if let Some(error) = report.failure_summary() {
+                        shell_cleanup_failed = true;
+                        log::error!(
+                            "[pinvou3][chat] shell cleanup remained incomplete after event stream stop sid={} turn={:?}: {}",
+                            session_id,
+                            current_turn_id,
+                            error
+                        );
+                    }
+                }
+                Err(error) => {
+                    shell_cleanup_failed = true;
+                    log::error!(
+                        "[pinvou3][chat] failed to close shell task scope after event stream stop sid={} turn={:?}: {error:#}",
+                        session_id,
+                        current_turn_id
+                    );
+                }
+            }
+        }
         match finish_reclaimed_lifecycle_turn(
             &turn_lifecycle,
             &app,
@@ -2646,6 +3048,7 @@ fn spawn_event_forwarder(
             &session_id,
             TurnOutcomeStatus::Failed,
             Some(stopped_error.clone()),
+            shell_cleanup_failed,
         )
         .await
         {
@@ -2670,96 +3073,9 @@ fn spawn_event_forwarder(
     })
 }
 
-fn maybe_notify_task_completed(
-    app: &AppHandle,
-    store: &SessionStore,
-    session_id: &str,
-    turn_id: Option<String>,
-    status: TurnOutcomeStatus,
-    error: Option<&str>,
-) {
-    if status != TurnOutcomeStatus::Completed || error.is_some() {
-        return;
-    }
-    if store.mode_state(session_id).active_skill.is_some() {
-        return;
-    }
-    if !crate::platform::notifications::task_completion_enabled() {
-        return;
-    }
-    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
-    let notify_key = format!("{session_id}:{key}");
-    if app
-        .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key))
-        .unwrap_or(true)
-    {
-        crate::platform::notifications::notify_task_completed(app);
-    }
-}
-
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。
 pub fn _force_link() -> Arc<()> {
     Arc::new(())
-}
-
-fn persist_successful_tool_artifact(
-    store: &SessionStore,
-    session_id: &str,
-    workspace: &std::path::Path,
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    output: &str,
-) -> Result<Option<PathBuf>> {
-    if store.scheduled_profile(session_id).is_none() {
-        return Ok(None);
-    }
-    let output_path = artifact_path_from_tool_output(output);
-    let input_path = if is_file_artifact_tool(tool_name) {
-        artifact_path_from_value(tool_input)
-    } else {
-        None
-    };
-    let Some(raw_path) = output_path.or(input_path) else {
-        return Ok(None);
-    };
-    let resolved =
-        crate::platform::path_policy::resolve_artifact_path_in_workspace(&raw_path, workspace);
-    let path = crate::platform::path_policy::validate_user_path(&resolved)
-        .map_err(|error| anyhow::anyhow!(error))?;
-    if !path.is_file() {
-        anyhow::bail!("tool artifact is not an existing file: {}", path.display());
-    }
-    store.append_scheduled_artifact_path(session_id, path.clone())?;
-    Ok(Some(path))
-}
-
-fn is_file_artifact_tool(name: &str) -> bool {
-    ["write_file", "append_file", "edit_file"]
-        .iter()
-        .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
-}
-
-fn artifact_path_from_tool_output(output: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(output).ok()?;
-    let payload = value
-        .get("content")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|item| item.get("text"))
-        .and_then(serde_json::Value::as_str)
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .unwrap_or(value);
-    artifact_path_from_value(&payload)
-}
-
-fn artifact_path_from_value(value: &serde_json::Value) -> Option<String> {
-    ["abs_path", "path", "file_path", "local_path", "filename"]
-        .iter()
-        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -2776,107 +3092,19 @@ mod token_ledger_tests {
     }
 }
 
-/// Lifecycle signal emitted by the single authoritative engine event consumer.
-/// Scheduled-task execution subscribes to this channel instead of competing for
-/// `EngineHandle::rx_event` with the UI forwarder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EngineTurnSignal {
-    Started {
-        turn_id: String,
-    },
-    Terminal {
-        turn_id: String,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    },
-    ForwarderStopped {
-        error: String,
-    },
-}
+#[cfg(test)]
+mod tool_result_projection_tests {
+    use super::tool_call_result_parts;
 
-/// Correlates terminal events with the currently running turn. A fatal
-/// `Event::Error` is advisory until the engine emits its authoritative
-/// `Event::TurnComplete`; the cached error fills a missing terminal error.
-#[derive(Debug, Default)]
-struct TurnCompletionTracker {
-    active_turn_id: Option<String>,
-    pending_fatal_error: Option<String>,
-}
-
-impl TurnCompletionTracker {
-    fn on_started(&mut self, turn_id: String) -> EngineTurnSignal {
-        self.active_turn_id = Some(turn_id.clone());
-        self.pending_fatal_error = None;
-        EngineTurnSignal::Started { turn_id }
+    #[test]
+    fn unsuccessful_tool_result_is_not_promoted_to_success() {
+        let (output, success, metadata) = tool_call_result_parts(Ok(
+            deepseek_tui::tools::spec::ToolResult::error("interrupted"),
+        ));
+        assert_eq!(output, "interrupted");
+        assert!(!success, "chat:tool_end must preserve ToolResult.success");
+        assert!(metadata.is_none());
     }
-
-    fn on_fatal_error(&mut self, error: String) {
-        self.pending_fatal_error = Some(error);
-    }
-
-    fn on_terminal(
-        &mut self,
-        status: TurnOutcomeStatus,
-        error: Option<String>,
-    ) -> Option<EngineTurnSignal> {
-        let error = error.or_else(|| self.pending_fatal_error.take());
-        self.active_turn_id
-            .take()
-            .map(|turn_id| EngineTurnSignal::Terminal {
-                turn_id,
-                status,
-                error,
-            })
-    }
-}
-
-/// Apply the persisted automation policy to the normal bridge-built operation.
-/// The bridge remains the source of hooks, tool restrictions, and provider
-/// details; scheduled execution only overrides fields explicitly owned by the
-/// automation record.
-fn apply_scheduled_turn_policy(
-    op: &mut Op,
-    profile: &ScheduledRunProfile,
-    resolved_route: deepseek_tui::route_runtime::ResolvedRuntimeRoute,
-    compaction_config: deepseek_tui::compaction::CompactionConfig,
-) -> Result<()> {
-    let Op::SendMessage {
-        mode,
-        route,
-        compaction,
-        auto_model,
-        allow_shell,
-        trust_mode,
-        auto_approve,
-        approval_mode,
-        provenance,
-        ..
-    } = op
-    else {
-        anyhow::bail!("scheduled turn requires a SendMessage operation");
-    };
-
-    *mode = profile.execution_mode().to_app_mode();
-    **route = resolved_route;
-    **compaction = compaction_config;
-    *auto_model = false;
-    *allow_shell = profile.allow_shell;
-    *trust_mode = profile.trust_mode;
-    *auto_approve = profile.auto_approve;
-    *approval_mode = if profile.auto_approve {
-        ApprovalMode::Auto
-    } else {
-        ApprovalMode::Never
-    };
-    *provenance = UserInputProvenance::ExternalUser;
-    Ok(())
-}
-
-fn scheduled_tool_should_auto_approve(
-    profile: Option<&ScheduledRunProfile>,
-    approval_force_prompt: bool,
-) -> bool {
-    profile.is_none_or(|profile| profile.auto_approve && !approval_force_prompt)
 }
 
 #[cfg(test)]
@@ -2944,6 +3172,204 @@ mod turn_lifecycle_tests {
         let activated = lifecycle.on_submitted();
         lifecycle.on_submission_failed(activated);
         assert_eq!(lifecycle.finish_once(|| panic!("must remain idle")), None);
+    }
+
+    #[test]
+    fn invalidate_unsubmitted_reservation_returns_true_only_for_reserved_unsubmitted() {
+        // 修复 2 的核心依赖：cancel 在 engine 未 spawn（reservation 仍处于
+        // reserved 未 submitted 阶段）时调用 invalidate，必须返回 true 让调用方
+        // 据此补发 chat:done 终态（否则前端 busy 永不复位）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve → active=true, submitted=false → invalidate 返回 true。
+        // 必须把 reservation 绑定到变量并保持存活到 invalidate 之后，否则 Drop
+        // 会先触发 on_reservation_failed 把 active 复位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle.invalidate_unsubmitted_reservation());
+        // invalidate 已收尾，标记 reservation submitted 以免 Drop 二次清理。
+        reservation.mark_submitted();
+
+        // reserve → on_started_transition（引擎真正接手，设 submitted=true）
+        // → invalidate 必须返回 false：engine 已在跑，cancel 应走 cancel_current
+        // 路径（TurnComplete 终态），不能再由 invalidate 补发，否则会双发 chat:done。
+        let reservation2 = lifecycle.reserve().expect("reserve again");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.invalidate_unsubmitted_reservation());
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_blocks_reserve_until_emission_finishes() {
+        // 跨轮竞态回归（见 claim_unsubmitted_terminal 的文档注释）：cancel 在
+        // engine 未 spawn 时补发 chat:done，必须在「认领 → 发终态」之间关闸，
+        // 否则新一轮 reserve 可抢先成功，迟到的 chat:done 会清掉新一轮 busy。
+        // 这里直接断言闸门语义：claim 成功后、finish 前 reserve 必须被拒；
+        // finish 后（终态已发完）才允许下一轮 reserve。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        let reservation = lifecycle.reserve().expect("reserve");
+        // claim 成功 = 进入「终态发送中」临界区。
+        assert!(lifecycle.claim_unsubmitted_terminal());
+        reservation.mark_submitted();
+
+        // 关键不变量：终态尚未发完（terminal_closing=true）时，下一轮 reserve
+        // 必须失败——否则上一轮迟到的 chat:done 会污染新一轮 busy 状态。
+        assert!(
+            lifecycle.reserve().is_err(),
+            "reserve must be rejected while terminal emission is in flight"
+        );
+
+        // 终态发完，闸门重开，下一轮可正常 reserve。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+
+        // 已 submitted 的 turn 不能再被 claim（engine 已接手，走 cancel_current 路径）。
+        let reservation2 = lifecycle.reserve().expect("reserve");
+        assert!(lifecycle
+            .on_started_transition("turn-submitted".to_string())
+            .is_some());
+        assert!(!lifecycle.claim_unsubmitted_terminal());
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_requires_submitted_reservation() {
+        // 空闲 engine + 未提交 reservation 窗口的回归：会话保留上一轮的空闲
+        // engine 时，cancel 第二阶段若按「engine 是否存在」分流会错误走 pending
+        // 分支。arm_pending_cancel 必须显式要求 submitted——只有消息确实已入队
+        // engine、需要防 reset_cancel_token 覆盖时才 arm；未提交 reservation 应由
+        // cancel 走未提交认领终态路径（emit_unsubmitted_interrupted_terminal）立即
+        // 发 chat:done 使其失效，而不是挂成 pending。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // reserve 后 active=true 但 submitted=false → arm 不得置位。
+        let reservation = lifecycle.reserve().expect("reserve");
+        lifecycle.arm_pending_cancel();
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "must not arm pending_cancel for an unsubmitted reservation"
+        );
+
+        // 走真实 send 路径：handle.send 成功后 mark_submitted → submitted=true。
+        lifecycle.mark_reservation_submitted(reservation.reservation_id);
+        // 已 submitted + active + turn_id=None（TurnStarted 未抵达）→ arm 置位。
+        lifecycle.arm_pending_cancel();
+        assert!(
+            lifecycle.take_pending_cancel(),
+            "pending_cancel must be armed after submission, before TurnStarted"
+        );
+        // 消费 reservation 避免 Drop 副作用。
+        reservation.mark_submitted();
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_invalidates_reservation() {
+        // 修复的核心闭环：空闲 engine 存在时，cancel 对未提交 reservation 走认领
+        // 终态路径，认领后该 reservation 必须失效——后续 send 的 ensure_active
+        // 失败、消息不再提交给 engine，前端 busy 因补发的 chat:done 复位。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let reservation = lifecycle.reserve().expect("reserve");
+
+        // 认领前 reservation 有效。
+        assert!(reservation.ensure_active().is_ok());
+
+        // 认领未提交终态（cancel 第二阶段会走这里）。
+        assert!(
+            lifecycle.claim_unsubmitted_terminal(),
+            "unsubmitted reservation must be claimable"
+        );
+        // claim 已把 active=false，reservation 不再有效——消息不会迟到提交。
+        assert!(
+            reservation.ensure_active().is_err(),
+            "claimed reservation must be invalidated so the pending send fails"
+        );
+        // 防 Drop 二次清理：claim 已收尾，标记 submitted 阻止 on_reservation_failed。
+        reservation.mark_submitted();
+
+        // 终态发完后重开闸门，下一轮可正常 reserve（与权威终态路径一致）。
+        lifecycle.finish_terminal_emission();
+        assert!(lifecycle.reserve().is_ok());
+    }
+
+    #[test]
+    fn pending_cancel_is_armed_only_before_turn_started_and_consumed_once() {
+        // reset_cancel_token 竞态修复的核心不变量：
+        // 1. arm 仅在「active、已 submitted、且 turn_id=None（TurnStarted 未抵达）」
+        //    时置标记（submitted 前置见 arm_pending_cancel_requires_submitted_reservation）；
+        // 2. take 原子取出并清除（防跨轮泄漏）；
+        // 3. 已 started 的 turn 不 arm（cancel_current 直接命中活跃 token）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // --- 场景 A：submit 后、TurnStarted 前 arm → take 返回 true ---
+        lifecycle.on_submitted();
+        lifecycle.arm_pending_cancel();
+        assert!(
+            lifecycle.take_pending_cancel(),
+            "pending_cancel must be armed before TurnStarted"
+        );
+        // take 已消费，再次取返回 false。
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "pending_cancel must be consumed exactly once"
+        );
+
+        // --- 场景 B：TurnStarted 后 arm → 不置标记 ---
+        lifecycle.on_started("turn-1".to_string());
+        lifecycle.arm_pending_cancel();
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "must not arm pending_cancel after TurnStarted"
+        );
+
+        // 清理：结束当前 turn。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn pending_cancel_does_not_leak_across_turns() {
+        // 防跨轮污染：上一轮 arm 但未被消费的标记不能影响下一轮。
+        // reserve() 必须清除 stale pending_cancel。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        lifecycle.on_submitted();
+        lifecycle.arm_pending_cancel();
+        // 模拟 turn 未正常 started 就结束（如 engine spawn 失败）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+
+        // 新一轮 reserve 后，pending_cancel 必须被清除。
+        let _reservation = lifecycle.reserve().expect("reserve");
+        assert!(
+            !lifecycle.take_pending_cancel(),
+            "stale pending_cancel from previous turn must be cleared by reserve"
+        );
+    }
+
+    #[test]
+    fn pending_cancel_survives_until_turn_started_consumes_it() {
+        // 端到端时序模拟：cancel 在 submit 后、TurnStarted 前 arm →
+        // TurnStarted 抵达时 take 消费标记并触发重新 cancel。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // submit（op 入队，turn_lock 已释放，但 Engine 尚未 dequeue）。
+        lifecycle.on_submitted();
+
+        // cancel 路径：arm_pending_cancel（turn_id 仍为 None → 置标记）。
+        lifecycle.arm_pending_cancel();
+
+        // Engine 执行 reset_cancel_token + 发 TurnStarted → 转发器先
+        // on_started_transition（设 turn_id），再 take_pending_cancel。
+        lifecycle.on_started("turn-reset".to_string());
+        let pending = lifecycle.take_pending_cancel();
+        assert!(
+            pending,
+            "pending_cancel must survive until TurnStarted consumes it"
+        );
+
+        // 消费后标记清除，下一轮不受影响。
+        assert!(!lifecycle.take_pending_cancel());
+        assert!(lifecycle.finish_once(|| {}).is_some());
     }
 
     #[test]

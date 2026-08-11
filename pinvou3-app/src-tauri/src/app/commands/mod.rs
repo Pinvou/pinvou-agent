@@ -13,6 +13,7 @@
 //! - `list_sessions()` / `create_session()` / `load_session(id)`
 //! - `delete_session(id)` / `rename_session(id, title)` / `get_active_session()`
 
+pub(crate) mod acp_providers;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod chat;
@@ -26,6 +27,7 @@ pub(crate) mod local_llm;
 pub(crate) mod marketplace;
 pub(crate) mod memory;
 pub(crate) mod monitor;
+pub(crate) mod multiagent;
 pub(crate) mod personas;
 pub(crate) mod pet;
 mod prelude;

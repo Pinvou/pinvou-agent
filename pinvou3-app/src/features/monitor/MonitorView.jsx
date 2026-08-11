@@ -4,6 +4,9 @@ import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { ListRow, ProgressBar, WidgetCard } from '../workflow/WorkflowView.jsx';
 
+// 界面语言 → BCP 47 locale，用于时钟等本地化格式化
+const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
+
 const ClearStatsHold = ({ theme, t, onClear }) => {
       const isDark = theme === 'dark';
       const HOLD_MS = 850;
@@ -241,7 +244,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
       <div className="bg-white/58 dark:bg-[#2C2C2E] rounded-3xl p-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] flex flex-col justify-between transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_36px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_16px_38px_rgba(0,0,0,0.34)]">
         <div>
           <span className="text-[13px] font-bold tracking-[0.02em] text-black/58 dark:text-white/62">{label}</span>
-          <div className="text-[32px] font-bold tracking-[-0.03em] mt-1">{value}<span className="text-[14px] text-black/40 dark:text-white/40 ml-1">{unit}</span></div>
+          <div className="text-[32px] font-bold tracking-[-0.03em] mt-1">{value}{unit && String(value) !== '—' && <span className="text-[14px] text-black/40 dark:text-white/40 ml-1">{unit}</span>}</div>
           <div className="text-[12px] leading-snug font-medium text-black/45 dark:text-white/45 mt-1.5">{hint}</div>
         </div>
         <MonitorSparkline color={color} data={data} />
@@ -512,7 +515,7 @@ const ClearStatsHold = ({ theme, t, onClear }) => {
 
                 <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-[40px] rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/[0.03] dark:ring-white/[0.055]">
                   <div className="flex items-center gap-2 px-4 text-[14px] font-semibold font-mono tracking-wider text-black/70 dark:text-white/70">
-                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {clockNow.toLocaleTimeString('zh-CN', { hour12: false })}
+                    <Clock size={16} className="text-black/40 dark:text-white/40" /> {clockNow.toLocaleTimeString(MONITOR_CLOCK_LOCALE[t.langTag] || 'zh-CN', { hour12: false })}
                   </div>
                 </div>
               </header>

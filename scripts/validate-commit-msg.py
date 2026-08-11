@@ -31,6 +31,7 @@ SUBJECT_RE = re.compile(
 )
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+GITHUB_PR_SUFFIX_RE = re.compile(r" \(#\d+\)$")
 PROHIBITED_DESCRIPTIONS = {"update", "fix bug", "修改代码", "测试"}
 FORBIDDEN_ENDING_PUNCTUATION = set("。.，,；;、！!？?：:")
 DOC_PATH = "docs/Git Commit 信息规范文档.md"
@@ -78,22 +79,25 @@ def validate_text(raw: str, label: str) -> list[str]:
         ]
 
     desc = match.group("desc")
-    normalized_desc = desc.strip().lower()
+    semantic_desc = GITHUB_PR_SUFFIX_RE.sub("", desc)
+    normalized_desc = semantic_desc.strip().lower()
 
-    if desc != desc.strip():
+    if semantic_desc != semantic_desc.strip():
         errors.append(f"{label}: description must not start or end with whitespace")
 
-    if len(desc) > 50:
-        errors.append(f"{label}: description must be 50 characters or fewer, got {len(desc)}")
+    if len(semantic_desc) > 50:
+        errors.append(
+            f"{label}: description must be 50 characters or fewer, got {len(semantic_desc)}"
+        )
 
-    if not CJK_RE.search(desc):
+    if not CJK_RE.search(semantic_desc):
         errors.append(f"{label}: description must use Chinese")
 
-    if desc[-1] in FORBIDDEN_ENDING_PUNCTUATION:
+    if semantic_desc[-1] in FORBIDDEN_ENDING_PUNCTUATION:
         errors.append(f"{label}: description must not end with punctuation")
 
     if normalized_desc in PROHIBITED_DESCRIPTIONS:
-        errors.append(f"{label}: description is too vague: {desc}")
+        errors.append(f"{label}: description is too vague: {semantic_desc}")
 
     return errors
 

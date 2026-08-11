@@ -2172,6 +2172,21 @@ async fn request_llm_memory_review(
         "never_memory": never,
     })
     .to_string();
+    // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
+    // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
+    if preset == ModelPreset::Anthropic {
+        let content = crate::core::model_endpoint::post_anthropic_messages(
+            &client,
+            &base_url,
+            &bridge.memory_api_key(),
+            &model_name,
+            LLM_REVIEW_PROMPT,
+            &user_content,
+            900,
+        )
+        .await?;
+        return parse_llm_memory_review(&content);
+    }
     let mut body = json!({
         "model": model_name,
         "messages": [
@@ -2548,9 +2563,13 @@ fn memory_review_reasoning_dialect(
                 MemoryReviewReasoningDialect::None
             }
         }
-        ModelPreset::OpenaiCompatible | ModelPreset::LocalVllm | ModelPreset::Deepseek => {
-            memory_review_reasoning_dialect_from_base_url(base_url, model)
-        }
+        ModelPreset::OpenaiCompatible
+        | ModelPreset::LocalVllm
+        | ModelPreset::Deepseek
+        | ModelPreset::Openai
+        | ModelPreset::Anthropic
+        | ModelPreset::Gemini
+        | ModelPreset::Xai => memory_review_reasoning_dialect_from_base_url(base_url, model),
     }
 }
 

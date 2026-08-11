@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { ArtifactsPanel } from '../artifacts/ArtifactsPanel.jsx';
 import { AppIcon, DEPT_ORDER, deptColor, deptLabelFor, personaText } from '../personas/Personas.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/SettingsView.jsx';
@@ -20,12 +21,30 @@ import {
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
 import {
+  captureConversationScrollPosition,
   isFetchTool,
   isNearConversationBottom,
   isSearchTool,
+  restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { AttachmentDropOverlay } from '../attachments/AttachmentDropOverlay.jsx';
+import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
+import { splitAttachmentLine } from '../attachments/attachment-message.js';
+import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
+import {
+  assistantItemCopyText,
+  copyClipboardText,
+  fallbackCopyText,
+  readClipboardText,
+} from '../conversation/message-clipboard.js';
+import {
+  extractBalancedJson,
+  parseJsonChain,
+  parseLooseJson,
+} from '../conversation/structured-assistant-content.js';
 import {
   createPinvouModeScopeKey,
   loadPinvouModeState,
@@ -37,14 +56,29 @@ import { createVisualPosterMessageMeta, shouldUseVisualPosterScene } from './vis
 import {
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
+  createPersonalWorkbenchMessageMeta,
+  PERSONAL_WORKBENCH_SCENE_KEY,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
+  shouldUsePersonalWorkbenchScene,
 } from './work-scene-routes.js';
+import {
+  PERSONAL_WORKBENCH_TEMPLATES,
+  findPersonalWorkbenchTemplateDraft,
+  getPersonalWorkbenchTemplate,
+  getPersonalWorkbenchTemplateById,
+  isPersonalWorkbenchTemplateDraftForTemplate,
+} from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  COMPOSER_ICON_BUTTON_CLASS,
+  ComposerKbSelector,
+  ComposerModeChip,
+} from './composer-controls.jsx';
 
-const COMPOSER_ICON_BUTTON_CLASS = 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-transparent text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors border border-transparent';
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
+const MULTI_AGENT_ENABLED = can('multiAgent');
 
 function unifiedConversationUiEnabled() {
   try {
@@ -55,14 +89,38 @@ function unifiedConversationUiEnabled() {
 }
 
 const WORK_MODE_SUBTABS = [
-  { key: 'document-writing', label: '公文写作', Icon: FileText },
+  { key: PERSONAL_WORKBENCH_SCENE_KEY, labelKey: 'personalWorkbench', Icon: Briefcase },
+  { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
 ];
 
 const DESIGN_MODE_SUBTABS = [
-  { key: 'poster', label: '海报', Icon: ImageIcon },
-  { key: 'data-visualization', label: '数据可视化', Icon: BarChart2 },
-  { key: 'ppt', label: 'PPT设计', Icon: Presentation, disabled: true, disabledReason: 'PPT 生成能力修复中' },
+  { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
+  { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
+  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
 ];
+
+function localizeSceneTabs(items, copy) {
+  return items.map(item => ({
+    ...item,
+    label: copy[item.labelKey],
+    disabledReason: item.disabledReasonKey ? copy[item.disabledReasonKey] : undefined,
+  }));
+}
+
+function pinvouSceneDisplay(scene, copy) {
+  switch (scene) {
+    case 'work:document-writing':
+      return { label: copy.documentWriting, Icon: FileText };
+    case 'work:personal-workbench':
+      return { label: copy.personalWorkbench, Icon: Briefcase };
+    case 'design:poster':
+      return { label: copy.poster, Icon: ImageIcon };
+    case 'design:data-visualization':
+      return { label: copy.dataVisualization, Icon: BarChart2 };
+    default:
+      return null;
+  }
+}
 
 const openChatExternalUrl = (url) => {
   if (isWeb) {
@@ -70,7 +128,7 @@ const openChatExternalUrl = (url) => {
     if (opened) opened.opener = null;
     return;
   }
-  invokeTauri('open_external_url', { url }).catch(() => {});
+  invokeTauri('open_user_external_url', { url }).catch(() => {});
 };
 
 const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
@@ -192,137 +250,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const ComposerKbSelector = ({ t, bs, compact }) => {
-      const [open, setOpen] = useState(false);
-      const triggerRef = useRef(null);
-      const [collections, setCollections] = useState(null); // null=未加载
-      const [installed, setInstalled] = useState(null); // embedding 模型是否已装:null=未知(不闪 gate,mock/旧后端当已装)
-      const mountedId = (bs && bs.mountedCollection != null) ? bs.mountedCollection : null;
-
-      const loadList = async () => {
-        if (!bridge.available || !bridge.knowledge.listCollections) { setCollections([]); return; }
-        try { setCollections((await bridge.knowledge.listCollections()) || []); }
-        catch (e) { setCollections([]); }
-      };
-      const refreshInstalled = async () => {
-        if (!bridge.available || !bridge.knowledge.kbModelStatus) { setInstalled(true); return; } // mock/旧后端不 gate
-        try { const m = await bridge.knowledge.kbModelStatus(); setInstalled(m ? !!m.installed : true); }
-        catch (e) { setInstalled(true); }
-      };
-      useEffect(() => { refreshInstalled(); }, []);
-      // 下载部署完成后 bs.kbModelSetup.status.installed 变 true → 立即开门,免重开菜单。
-      const setupInstalled = !!(bs && bs.kbModelSetup && bs.kbModelSetup.status && bs.kbModelSetup.status.installed);
-      useEffect(() => { if (setupInstalled) setInstalled(true); }, [setupInstalled]);
-      // 已挂载但还没列表 → 拉一次用于显示名字。
-      useEffect(() => {
-        if (mountedId != null && collections === null) loadList();
-      }, [mountedId]);
-
-      const mounted = (collections || []).find(c => c.id === mountedId) || null;
-      const mountedName = mounted ? mounted.name : (mountedId != null ? ('#' + mountedId) : null);
-      const active = mountedId != null;
-      const modelMissing = installed === false; // 仅"明确未装"才门控;未知/已装都放行
-
-      function toggle() { const next = !open; setOpen(next); if (next) { refreshInstalled(); if (collections === null) loadList(); } }
-      function pick(id) { if (modelMissing) return; setOpen(false); if (id !== mountedId && bridge.available) bridge.knowledge.mountCollection(id); }
-      function unmount() { setOpen(false); if (bridge.available) bridge.knowledge.unmountCollection(); }
-
-      return (
-        <div className="relative">
-          <button ref={triggerRef} onClick={toggle} title={modelMissing ? t.kbMountNoModel : (active ? mountedName : t.kbMountTitle)}
-            className={`relative shrink-0 flex items-center justify-center transition-colors border ${compact ? 'w-9 h-9 rounded-full' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold'} ${active
-              ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
-              : modelMissing
-                ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
-                : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]')}`}>
-            <BookOpen size={compact ? 18 : 13} className="opacity-70 shrink-0" />
-            {!compact && <span className="max-w-[116px] truncate">{active ? mountedName : t.kbMount}</span>}
-            {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
-            {compact && active && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#1A73E8] dark:bg-[#A8C7FA] ring-2 ring-white dark:ring-[#161618]"></span>}
-          </button>
-          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-64 max-h-[340px] overflow-y-auto bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {modelMissing ? (
-                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNoModel}</div>
-                ) : collections === null ? (
-                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">…</div>
-                ) : collections.length === 0 ? (
-                  <div className="px-3 py-2.5 text-[13px] text-gray-400 dark:text-gray-500">{t.kbMountNone}</div>
-                ) : collections.map(c => (
-                  <button key={c.id} onClick={() => pick(c.id)}
-                    className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <BookOpen size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
-                      <span className="truncate">{c.name}</span>
-                    </span>
-                    {c.id === mountedId
-                      ? <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />
-                      : <span className="text-[11px] text-gray-400 group-hover:text-white/80 shrink-0">{c.docCount}</span>}
-                  </button>
-                ))}
-                {active && (
-                  <>
-                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                    <button onClick={unmount}
-                      className="w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group">
-                      <X size={15} className="text-gray-400 group-hover:text-white/90" />
-                      {t.kbMountRemove}
-                    </button>
-                  </>
-                )}
-          </ComposerPopover>
-        </div>
-      );
-    };
-
-    // [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
-    // (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
-    const ComposerModeChip = ({ t, bs, compact }) => {
-      const [open, setOpen] = useState(false);
-      const triggerRef = useRef(null);
-      const ms = (bs && bs.modeState) || { mode: 'yolo' };
-      const isPlan = ms.mode === 'plan';
-      async function switchTo(target) {
-        setOpen(false);
-        if (!bridge.available) return;
-        if (target === 'plan' && !isPlan) {
-          await bridge.interaction.setPlanModeNext();
-        } else if (target === 'yolo' && isPlan) {
-          if (bs && bs.busy) await bridge.chat.cancelGeneration();
-          await bridge.interaction.exitPlanToYolo();
-        }
-      }
-      const optCls = "w-full flex items-center justify-between px-3 py-2.5 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-[#007AFF] hover:text-white rounded-xl transition-colors group";
-      return (
-        <div className="relative">
-          <button ref={triggerRef} onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
-            className={`${COMPOSER_ICON_BUTTON_CLASS} font-semibold ${isPlan ? 'text-[#1A73E8] dark:text-[#A8C7FA]' : ''}`}>
-            {isPlan
-              ? <ClipboardList size={18} className="shrink-0" />
-              : <Zap size={18} className="shrink-0" />}
-          </button>
-          <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
-            desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                <button onClick={() => switchTo('yolo')} className={optCls}>
-                  <span className="flex flex-col items-start min-w-0">
-                    <span className="font-semibold">{t.modeYolo}</span>
-                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeYoloDesc}</span>
-                  </span>
-                  {!isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
-                </button>
-                <button onClick={() => switchTo('plan')} className={optCls}>
-                  <span className="flex flex-col items-start min-w-0">
-                    <span className="font-semibold">{t.modePlan}</span>
-                    <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modePlanDesc}</span>
-                  </span>
-                  {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
-                </button>
-          </ComposerPopover>
-        </div>
-      );
-    };
-
-    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker' }) => {
+    const SubModePicker = ({ isDark, value, onChange, items, icons, testId = 'mode-subtab-picker', comingSoonLabel = '' }) => {
       const trackRef = useRef(null);
       const buttonRefs = useRef({});
       const [indicator, setIndicator] = useState({ left: 0, width: 20, ready: false });
@@ -330,7 +258,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const updateIndicator = useCallback(() => {
         const track = trackRef.current;
         const button = buttonRefs.current[value];
-        if (!track || !button) return;
+        if (!track || !button) {
+          setIndicator((prev) => (prev.ready ? { left: 0, width: 20, ready: false } : prev));
+          return;
+        }
         const trackRect = track.getBoundingClientRect();
         const buttonRect = button.getBoundingClientRect();
         const width = Math.min(28, Math.max(20, buttonRect.width * 0.32));
@@ -373,7 +304,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   key={item.key}
                   type="button"
                   data-testid={`${testId}-option-${item.key}`}
-                  title={disabled ? (item.disabledReason || '即将上线') : item.label}
+                  title={disabled ? (item.disabledReason || comingSoonLabel) : item.label}
+                  aria-pressed={selected}
                   aria-disabled={disabled ? 'true' : undefined}
                   disabled={disabled}
                   onClick={() => {
@@ -413,11 +345,46 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const SceneModeTag = ({ isDark, scene }) => {
+    const PersonalWorkbenchTemplatePicker = ({ isDark, selectedIndex, onSelect, templates }) => {
+      return (
+        <div
+          data-testid="personal-workbench-template-picker"
+          className="mb-2 flex justify-center px-1"
+        >
+          <div className="flex max-w-full items-center gap-2 overflow-x-auto px-1 py-1">
+            {templates.map((template, index) => {
+              const selected = selectedIndex === index;
+              return (
+                <button
+                  key={template.title}
+                  type="button"
+                  data-testid={`personal-workbench-template-${index}`}
+                  aria-pressed={selected}
+                  onClick={() => onSelect(index)}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors ${
+                    selected
+                      ? isDark
+                        ? 'bg-[#F5F5F7] text-[#1D1D1F]'
+                        : 'bg-[#1D1D1F] text-white'
+                      : isDark
+                        ? 'bg-[#2A2B2D] text-[#C7C7CC] hover:bg-[#333537] hover:text-white'
+                        : 'bg-[#EEF0F2] text-[#3C4043] hover:bg-[#E3E5E8] hover:text-[#1D1D1F]'
+                  }`}
+                >
+                  {template.title}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    const SceneModeTag = ({ isDark, scene, onClear, clearLabel }) => {
       if (!scene) return null;
       const SceneIcon = scene.Icon || Sparkles;
       return (
-        <div className="mb-2 flex justify-start px-1" data-testid="pinvou-scene-tag">
+        <div className="mb-2 flex flex-wrap justify-start gap-2 px-1" data-testid="pinvou-scene-tag">
           <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-sm ${
             isDark
               ? 'bg-[#2A2B2D] text-[#F5F5F7] ring-1 ring-white/10'
@@ -425,6 +392,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           }`}>
             <SceneIcon size={15} className="shrink-0" />
             <span>{scene.label}</span>
+            {onClear && (
+              <button
+                type="button"
+                data-testid="pinvou-scene-tag-clear"
+                aria-label={clearLabel}
+                title={clearLabel}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onClear();
+                }}
+                className={`-mr-1 flex h-5 w-5 items-center justify-center rounded-full transition-colors ${
+                  isDark ? 'text-[#C7C7CC] hover:bg-white/10 hover:text-white' : 'text-[#5F6368] hover:bg-black/10 hover:text-[#1D1D1F]'
+                }`}
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
       );
@@ -433,6 +418,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
+      const chatViewCopy = t.uiChatView;
+      const sceneCopy = chatCopy.sceneModes;
+      const workModeSubtabs = localizeSceneTabs(WORK_MODE_SUBTABS, sceneCopy);
+      const designModeSubtabs = localizeSceneTabs(DESIGN_MODE_SUBTABS, sceneCopy);
       const canInstallLocalAsr = can('localModelSetup') && can('dependencyInstall');
       const initialInput = constrainChatInput(
         bridge.available && bridge.chat && bridge.chat.getComposerDraft
@@ -462,6 +451,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const pinvouModeScopeRef = useRef(initialPinvouModeScope);
       const pinvouModeStateRef = useRef(pinvouModeState);
       const pendingModeScopeMigrationRef = useRef(null);
+      const [personalWorkbenchTemplateId, setPersonalWorkbenchTemplateId] = useState(null);
+      const personalWorkbenchTemplateIdRef = useRef(null);
       const [selectedDesignElement, setSelectedDesignElement] = useState(null);
       const [designChangesByScope, setDesignChangesByScope] = useState({});
       const [designCommand, setDesignCommand] = useState(null);
@@ -545,6 +536,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const scrollRef = useRef(null);
       const autoScrollRef = useRef(true);
       const lastScrollTopRef = useRef(0);
+      const subagentPanelScrollRef = useRef(null);
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
@@ -589,6 +581,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
+      const attachmentDragActive = !!(bs && bs.attachmentDragActive);
       const formatAttachmentError = (error) => {
         const raw = String(error || '');
         if (/under sensitive system dir|crosses sensitive (dir|component)/i.test(raw)) {
@@ -656,15 +649,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });
       }, [designScopeKey, updatePinvouModeState]);
+      const clearPersonalWorkbenchTemplateDraft = useCallback(() => {
+        if (personalWorkbenchTemplateIdRef.current || findPersonalWorkbenchTemplateDraft(inputTextRef.current)) setInputText('');
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
+      }, [setInputText]);
       const handlePinvouModeChange = useCallback((mode) => {
         updatePinvouModeState({ type: 'set-mode', mode });
+        if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
         if (mode !== 'design') setSelectedDesignElement(null);
         if (mode === 'design' && artifactCount > 0) {
           if (latestArtifact && latestArtifact.path) setActiveArtifactPath(latestArtifact.path);
           setArtifactsOpen(true);
           setArtifactsFullscreen(true);
         }
-      }, [artifactCount, latestArtifact, updatePinvouModeState]);
+      }, [artifactCount, clearPersonalWorkbenchTemplateDraft, latestArtifact, updatePinvouModeState]);
       const handleHomeModeChange = useCallback((mode) => {
         if (mode === 'code') {
           if (onSwitchHomeMode) onSwitchHomeMode(mode);
@@ -673,11 +672,52 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         handlePinvouModeChange(mode);
       }, [handlePinvouModeChange, onSwitchHomeMode]);
       const handleWorkSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-work-subtab', subtab });
-      }, [updatePinvouModeState]);
+        const nextSubtab = subtab === pinvouModeStateRef.current.workSubtab ? 'general' : subtab;
+        if (nextSubtab !== PERSONAL_WORKBENCH_SCENE_KEY) clearPersonalWorkbenchTemplateDraft();
+        updatePinvouModeState({
+          type: 'set-work-subtab',
+          subtab: nextSubtab,
+        });
+      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
       const handleDesignSubtabChange = useCallback((subtab) => {
-        updatePinvouModeState({ type: 'set-design-subtab', subtab });
+        updatePinvouModeState({
+          type: 'set-design-subtab',
+          subtab: subtab === pinvouModeStateRef.current.designSubtab ? 'general' : subtab,
+        });
       }, [updatePinvouModeState]);
+      const handleClearActiveScene = useCallback(() => {
+        if (pinvouModeStateRef.current.mode === 'work') {
+          clearPersonalWorkbenchTemplateDraft();
+          updatePinvouModeState({ type: 'set-work-subtab', subtab: 'general' });
+        } else if (pinvouModeStateRef.current.mode === 'design') {
+          updatePinvouModeState({ type: 'set-design-subtab', subtab: 'general' });
+        }
+      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
+      const handlePersonalWorkbenchTemplateSelect = useCallback((index) => {
+        const template = getPersonalWorkbenchTemplate(index);
+        const normalized = template ? template.id : null;
+        personalWorkbenchTemplateIdRef.current = normalized;
+        setPersonalWorkbenchTemplateId(normalized);
+        if (template) {
+          setInputText(template.prompt);
+          window.requestAnimationFrame(() => {
+            if (composerRef.current) {
+              composerRef.current.focus();
+              composerRef.current.selectionStart = composerRef.current.value.length;
+              composerRef.current.selectionEnd = composerRef.current.value.length;
+            }
+          });
+        }
+      }, [setInputText]);
+      const handleComposerInputChange = useCallback((value) => {
+        setInputText(value);
+        const currentTemplate = getPersonalWorkbenchTemplateById(personalWorkbenchTemplateIdRef.current);
+        if (!currentTemplate) return;
+        if (!isPersonalWorkbenchTemplateDraftForTemplate(value, currentTemplate)) {
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        }
+      }, [setInputText]);
       const handleDesignRuntimeStatus = useCallback((status) => {
         updatePinvouModeState({ type: 'set-design-runtime-status', status });
       }, [updatePinvouModeState]);
@@ -741,7 +781,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const changes = Array.isArray(payload && payload.changes) ? payload.changes : [];
         if (!element || !changes.length) return;
         const groupId = `design-group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const groupLabel = payload.groupLabel || 'Edit';
+        const groupLabel = payload.groupLabel || chatViewCopy.designEditGroup;
         changes.forEach((item) => {
           if (!item || String(item.oldValue == null ? '' : item.oldValue) === String(item.newValue == null ? '' : item.newValue)) return;
           const change = createDesignChange({
@@ -758,7 +798,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         });
         setSelectedDesignElement(element);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: element.id });
-      }, [reduceCurrentDesignChanges, updatePinvouModeState]);
+      }, [reduceCurrentDesignChanges, updatePinvouModeState, chatViewCopy]);
       const handleClearDesignChanges = useCallback(() => {
         setDesignCommand({ seq: Date.now(), kind: 'clear' });
         reduceCurrentDesignChanges({ type: 'clear' });
@@ -766,24 +806,27 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }, [reduceCurrentDesignChanges]);
       const visualPosterSceneActive = shouldUseVisualPosterScene(pinvouMode, designSubtab);
       const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
+      const personalWorkbenchSceneActive = shouldUsePersonalWorkbenchScene(pinvouMode, workSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
       const activeScene = pinvouMode === 'work'
-        ? WORK_MODE_SUBTABS.find(item => item.key === workSubtab)
+        ? workModeSubtabs.find(item => item.key === workSubtab)
         : pinvouMode === 'design'
-          ? DESIGN_MODE_SUBTABS.find(item => item.key === designSubtab)
+          ? designModeSubtabs.find(item => item.key === designSubtab)
           : null;
       const composerPlaceholder = pinvouMode === 'design'
         ? selectedDesignElement
-          ? '描述你想怎么调整选中的元素'
+          ? chatViewCopy.placeholderDesignAdjust
           : dataVisualizationSceneActive
-            ? '粘贴数据或描述指标，生成可视化看板'
+            ? chatViewCopy.placeholderDesignDataViz
           : visualPosterSceneActive
-            ? '描述你想生成或调整的视觉海报'
-            : '描述你想怎么调整选中的元素'
+            ? chatViewCopy.placeholderDesignPoster
+            : sceneCopy.designGeneralPlaceholder
         : pinvouMode === 'work'
-          ? documentWritingSceneActive
-            ? '描述公文主题、文种、收发单位和关键要求'
-            : t.placeholder
+          ? personalWorkbenchSceneActive
+            ? chatViewCopy.placeholderPersonalWorkbench
+            : documentWritingSceneActive
+              ? chatViewCopy.placeholderWorkDocument
+              : t.placeholder
         : t.placeholder;
       const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
@@ -806,6 +849,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         tokens: ctxTokens,
         sessionId: bs && bs.activeSessionId,
         timelineEvents: bs && bs.turnTimeline,
+        allowScheduledTaskDraft: isScheduledTaskCreationChat,
       });
       const activeConversationTurn = [...conversationProjection.turns]
         .reverse()
@@ -903,6 +947,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
       const welcomeSessionKeyRef = useRef(null);
+      // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
+      // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
+      const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
+        && !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
@@ -930,6 +978,53 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setArtifactsFullscreen(false);
         setArtifactsOpen(false);
       }, []);
+      // 子智能体只读执行记录面板（Codex 式右侧列，ADR-0006）。任何工作会话可开
+      // （裸 agent 在普通工作对话同样可用）；与产物面板互斥，否则窄窗下聊天列被挤没。
+      // null=关闭；agentId 为空进列表页。selectionRequestId 让“详情→返回列表→
+      // 再点同一张主对话卡”也成为一次新选择，不能只靠相同 agentId 的 prop 变化。
+      const [subagentPanel, setSubagentPanel] = useState(null);
+      useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
+      const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
+        subagentPanelScrollRef.current = captureConversationScrollPosition(
+          scrollRef.current,
+          autoScrollRef.current,
+        );
+      }, []);
+      const closeSubagentPanel = useCallback(() => {
+        rememberScrollBeforeSubagentPanelChange();
+        setSubagentPanel(null);
+      }, [rememberScrollBeforeSubagentPanelChange]);
+      useLayoutEffect(() => {
+        const snapshot = subagentPanelScrollRef.current;
+        if (!snapshot) return;
+        subagentPanelScrollRef.current = null;
+        const el = scrollRef.current;
+        if (!el) return;
+        restoreConversationScrollPosition(el, snapshot);
+        lastScrollTopRef.current = el.scrollTop;
+        if (snapshot.stickToBottom) {
+          autoScrollRef.current = true;
+          setShowScrollBottom(false);
+        }
+      }, [subagentPanel]);
+      useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+        const onOpen = (event) => {
+          const detail = event && event.detail;
+          if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
+          rememberScrollBeforeSubagentPanelChange();
+          setSubagentPanel((current) => ({
+            agentId: (detail && detail.agentId) || null,
+            selectionRequestId: (current?.selectionRequestId || 0) + 1,
+          }));
+          closeArtifactsPanel();
+        };
+        window.addEventListener('pinvou:open-subagent', onOpen);
+        return () => window.removeEventListener('pinvou:open-subagent', onOpen);
+      }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
+      useEffect(() => {
+        if (artifactsVisible) setSubagentPanel(null);
+      }, [artifactsVisible]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
       }, []);
@@ -965,30 +1060,46 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
       ));
-      const canSend = !firstTurnPending && (hasDraftText || hasReadyAttachment);
+      const canSend = !isMultiAgentReadOnly
+        && !firstTurnPending
+        && (hasDraftText || hasReadyAttachment);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
+        const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
+        const templateId = personalWorkbenchTemplateIdRef.current
+          || (matchedPersonalWorkbenchDraft && matchedPersonalWorkbenchDraft.template
+            ? matchedPersonalWorkbenchDraft.template.id
+            : null);
+        const visibleOutgoing = outgoing;
         let meta;
-        if (outgoing) {
-          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(outgoing);
-          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(outgoing);
-          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(outgoing);
+        if (visibleOutgoing || hasReadyAttachment) {
+          const scenePrompt = outgoing || '请根据附件内容继续处理。';
+          if (visualPosterSceneActive) meta = createVisualPosterMessageMeta(scenePrompt);
+          else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
+          else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
+          else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
+          const sceneCopy = t.uiChatScenes[requirements.key];
           if (!canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
             setSceneCapabilityStatus(null);
           } else {
-            setSceneCapabilityStatus({ kind: 'preparing', text: requirements.preparingText });
+            setSceneCapabilityStatus({ kind: 'preparing', text: sceneCopy.preparing });
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
-              if (!prepared.ok) throw new Error(prepared.error || requirements.failureText);
+              if (!prepared.ok) {
+                const missing = prepared.missing && prepared.missing.length
+                  ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
+                  : '';
+                throw new Error(missing || sceneCopy.failure);
+              }
               if (prepared.installed) {
-                setSceneCapabilityStatus({ kind: 'ready', text: requirements.readyText });
+                setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current
                 )), 1800);
@@ -999,7 +1110,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               const message = error && error.message ? error.message : String(error || '');
               setSceneCapabilityStatus({
                 kind: 'error',
-                text: message ? `${requirements.failureText} ${message}` : requirements.failureText,
+                text: message ? `${sceneCopy.failure} ${message}` : sceneCopy.failure,
               });
               return false;
             }
@@ -1009,26 +1120,26 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
         if (!activeSessionId) {
           pendingModeScopeMigrationRef.current = {
-            text: outgoing,
+            text: visibleOutgoing,
             state: pinvouModeStateRef.current,
           };
         }
         try {
-          await bridge.chat.sendMessage(outgoing, meta);
+          await bridge.chat.sendMessage(visibleOutgoing, meta);
         } catch (error) {
           pendingModeScopeMigrationRef.current = null;
           throw error;
         }
         return true;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
       const handleDesignAiSubmit = useCallback((text) => {
         const raw = String(text || '').trim();
         if (!raw) return;
         const elementLabel = selectedDesignElement
-          ? `${selectedDesignElement.tagName || '元素'}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
+          ? `${selectedDesignElement.tagName || chatViewCopy.designElementFallback}${selectedDesignElement.className ? `.${String(selectedDesignElement.className).trim().split(/\s+/)[0]}` : ''}`
           : '';
         const scopedText = selectedDesignElement
-          ? `请针对当前选中的 ${elementLabel || '元素'} 调整：${raw}`
+          ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
         sendChatMessage(scopedText);
       }, [selectedDesignElement, sendChatMessage]);
@@ -1163,18 +1274,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
-        if (!canSend) return;
+        if (isMultiAgentReadOnly || !canSend) return;
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
           return;
         }
         const accepted = await sendChatMessage(constrained.text);
-        if (accepted) setInputText('');
+        if (accepted) {
+          setInputText('');
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        }
       }
 
       function handleKeyDown(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
+        // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
+        if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
           e.preventDefault();
           handleSend();
         }
@@ -1262,6 +1379,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       function handleClearInput() {
         if (!canClearInput) return;
         setInputText('');
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
       }
 
       function handleVoiceCancel() {
@@ -1291,17 +1410,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function blockWebLocalFileDrop(e) {
-        if (!isWeb) return;
-        const types = Array.from((e.dataTransfer && e.dataTransfer.types) || []);
-        if (!types.includes('Files')) return;
-        e.preventDefault();
-        e.stopPropagation();
-      }
-
       return (
         <div ref={rootRef} className="flex-1 flex flex-row w-full h-full min-h-0 relative z-10 animate-in fade-in duration-300">
           <div ref={chatRootRef} className="flex-1 flex flex-col min-w-0 relative h-full">
+            <AttachmentDropOverlay
+              active={attachmentDragActive}
+              dark={isDark}
+              variant={isWeb ? 'web' : 'desktop'}
+              releaseLabel={t.uiAttachments.dropRelease}
+              webTitle={t.uiAttachments.dropWebTitle}
+              webHint={t.uiAttachments.dropWebHint}
+            />
 
           {/* Top Header (浮动) */}
           <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 pointer-events-none">
@@ -1371,18 +1490,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     turns={conversationProjection.turns}
                     now={conversationNow}
                     copy={t.uiConversation}
-                    agentLabel="品悟"
+                    agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(
                       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
-                        <PinvouLogo className="h-5 w-5" title="品悟" />
+                        <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
                       </div>
                     )}
                     renderUser={(item) => (
                       <ChatBubble
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
-                        editable={!busy && item.id === lastUserId}
+                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
                         conversationVariant="unified"
                       />
                     )}
@@ -1395,20 +1515,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       return (
                         <ChatBubble
                           item={item.legacyItem}
+                          sessionId={activeSessionId}
                           theme={theme}
                           t={t}
                           onPrefill={(text) => setInputText(text)}
                           onSend={sendChatMessage}
                           onOpenEditor={onOpenEditor}
                           isLatestArtifact={latestArtifactIds.has(item.legacyItem.id)}
-                          allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                          allowScheduledTaskDraft={isScheduledTaskCreationChat} showAssistantActions={false}
                         />
                       );
                     }}
                     renderToolItem={(item) => item.legacyItem
                       && !isSearchTool(item.tool)
                       && !isFetchTool(item.tool)
-                      ? <ToolCard item={item.legacyItem} theme={theme} t={t} variant="timeline" />
+                      ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} theme={theme} t={t} variant="timeline" />
                       : undefined}
                     onOpenExternal={openChatExternalUrl}
                   />
@@ -1418,11 +1539,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                       <ChatBubble
                         key={item.id}
                         item={item}
+                        sessionId={activeSessionId}
                         theme={theme}
                         t={t}
                         onPrefill={(text) => setInputText(text)}
                         onSend={sendChatMessage}
-                        editable={!busy && item.id === lastUserId}
+                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
                         isLatestArtifact={latestArtifactIds.has(item.id)}
                         allowScheduledTaskDraft={isScheduledTaskCreationChat}
@@ -1467,7 +1589,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                   ))}
               </div>
@@ -1534,8 +1656,17 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={workSubtab}
                   onChange={handleWorkSubtabChange}
-                  items={WORK_MODE_SUBTABS}
+                  items={workModeSubtabs}
                   testId="work-subtab-picker"
+                  comingSoonLabel={chatViewCopy.comingSoon}
+                />
+              )}
+              {personalWorkbenchSceneActive && !conversationStarted && (
+                <PersonalWorkbenchTemplatePicker
+                  isDark={isDark}
+                  selectedIndex={PERSONAL_WORKBENCH_TEMPLATES.findIndex(template => template.id === personalWorkbenchTemplateId)}
+                  onSelect={handlePersonalWorkbenchTemplateSelect}
+                  templates={PERSONAL_WORKBENCH_TEMPLATES}
                 />
               )}
               {pinvouMode === 'design' && !conversationStarted && (
@@ -1543,12 +1674,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   isDark={isDark}
                   value={designSubtab}
                   onChange={handleDesignSubtabChange}
-                  items={DESIGN_MODE_SUBTABS}
+                  items={designModeSubtabs}
                   testId="design-subtab-picker"
+                  comingSoonLabel={chatViewCopy.comingSoon}
                 />
-              )}
-              {!scheduledRunContext && conversationStarted && (
-                <SceneModeTag isDark={isDark} scene={activeScene} />
               )}
             {/* 排队待发消息 chips（生成中继续输入会积压到这里，本轮跑完自动发） */}
             {queued.length > 0 && (
@@ -1620,7 +1749,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             {voiceAsrSetup.open && !canInstallLocalAsr && (
               <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${isDark ? 'bg-[#1E2B3A] text-[#A8C7FA]' : 'bg-[#E8F0FE] text-[#174EA6]'}`}>
                 <span>{chatCopy.asrUnavailable}</span>
-                <button onClick={() => bridge.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
+                <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
             {voiceAsrSetup.open && canInstallLocalAsr && (() => {
@@ -1696,6 +1825,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
                 </div>
               )}
+              {!scheduledRunContext && !conversationStarted && activeScene && (
+                <SceneModeTag
+                  isDark={isDark}
+                  scene={activeScene}
+                  onClear={handleClearActiveScene}
+                  clearLabel={sceneCopy.clear(activeScene.label)}
+                />
+              )}
               <ConversationActivityIndicator
                 turn={activeConversationTurn}
                 now={conversationNow}
@@ -1703,11 +1840,23 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 className="mb-0.5"
                 copy={t.uiConversation}
               />
+              {isMultiAgentReadOnly ? (
+                <div
+                  role="note"
+                  data-testid="multiagent-desktop-only"
+                  className={`min-h-[48px] px-1 py-3 text-[13px] leading-5 ${
+                    isDark ? 'text-[#9AA0A6]' : 'text-[#5F6368]'
+                  }`}
+                >
+                  {t.multiAgentDesktopOnly}
+                </div>
+              ) : (
+                <>
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
                 value={inputText}
-                onChange={e => setInputText(e.target.value)}
+                onChange={e => handleComposerInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 maxLength={CHAT_INPUT_MAX_LENGTH}
@@ -1765,6 +1914,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   );
                 })()}
               </div>
+                </>
+              )}
             </div>
             {ctxTokens && ctxTokens.input > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
@@ -1879,6 +2030,16 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onDesignAiStateChange={updateDesignAiState}
             />
           )}
+          {subagentPanel && (
+            <SubagentTranscriptPanel
+              sessionId={activeSessionId}
+              initialAgentId={subagentPanel.agentId}
+              selectionRequestId={subagentPanel.selectionRequestId}
+              t={t}
+              theme={theme}
+              onClose={closeSubagentPanel}
+            />
+          )}
         </div>
       );
     };
@@ -1886,48 +2047,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // ==========================================
     // Chat Bubble (message rendering)
     // ==========================================
-    function fallbackCopyText(tx) {
-      return new Promise(function (resolve) {
-        var ta = null;
-        try {
-          ta = document.createElement('textarea');
-          ta.value = String(tx || '');
-          ta.setAttribute('readonly', '');
-          ta.style.position = 'fixed';
-          ta.style.left = '-9999px';
-          ta.style.top = '-9999px';
-          ta.style.opacity = '0';
-          document.body.appendChild(ta);
-          ta.focus();
-          ta.select();
-          ta.setSelectionRange(0, ta.value.length);
-          resolve(!!document.execCommand('copy'));
-        } catch (e) {
-          resolve(false);
-        } finally {
-          if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
-        }
-      });
-    }
-
-    function copyClipboardText(tx) {
-      tx = String(tx || '');
-      if (!tx) return Promise.resolve(false);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(tx).then(function () { return true; }).catch(function () {
-          return fallbackCopyText(tx);
-        });
-      }
-      return fallbackCopyText(tx);
-    }
-
-    function readClipboardText() {
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        return navigator.clipboard.readText().catch(function () { return ''; });
-      }
-      return Promise.resolve('');
-    }
-
     const SelectionCopyButton = ({ hostRef, targetRef, theme, t }) => {
       const isDark = theme === 'dark';
       const [selCopy, setSelCopy] = useState({ visible: false, copied: false, text: '', x: 0, y: 0 });
@@ -2146,22 +2265,24 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
           <button type="button" className={menuItemCls(false)} onClick={selectAll}>
-            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg || 'Select all'}</span>
+            <span className="w-4 text-center text-[12px]">A</span><span>{t.selectAllMsg}</span>
           </button>
           <button type="button" disabled={!menu.canCopy} className={menuItemCls(!menu.canCopy)} onClick={copySelected}>
             <Copy size={14} /><span>{t.copyMsg}</span>
           </button>
           <button type="button" className={menuItemCls(false)} onClick={pasteText}>
-            <ClipboardList size={14} /><span>{t.pasteMsg || 'Paste'}</span>
+            <ClipboardList size={14} /><span>{t.pasteMsg}</span>
           </button>
         </div>
       ), document.body);
     };
 
-    const UserBubble = ({ item, theme, editable, t, conversationVariant }) => {
+    const UserBubble = ({ item, sessionId, theme, editable, t, conversationVariant }) => {
       const isDark = theme === 'dark';
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
+      const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
+      const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(item.text);
       const [copied, setCopied] = useState(false);
@@ -2184,7 +2305,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             <div className="max-w-[85%] w-full min-w-0">
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(item.text); } }}
                 className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
@@ -2216,14 +2337,54 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const actBtn = isDark
         ? 'text-[#8E8E8E] hover:text-[#E3E3E3] hover:bg-white/10'
         : 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06]';
+      // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
+      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(item.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
-            <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+            {attachmentNames.length > 0 && (
+              <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
+                {attachmentNames.map((name, index) => {
+                  return (
+                    <ConversationAttachmentBubble
+                      key={`${name}-${index}`}
+                      name={name}
+                      displayText={item.text}
+                      messageIndex={item.messageIndex}
+                      attachmentIndex={index}
+                      sessionId={sessionId}
+                      isDark={isDark}
+                      copyText={copyClipboardText}
+                      labels={{
+                        open: t.attachmentOpen,
+                        download: t.attachmentDownload,
+                        copyAddress: t.attachmentCopyAddress,
+                        copyName: t.attachmentCopyName,
+                        reveal: t.attachmentReveal,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            {bodyText && <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
               unified
                 ? (isDark ? 'bg-[#2A2B2E] text-[#E3E3E3]' : 'bg-[#E9EEF6] text-[#1F1F1F]')
                 : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
-            }`}>{item.text}</div>
+            }`}>
+              {sceneDisplay && (
+                <span
+                  data-testid="user-message-scene-tag"
+                  className={`mr-2 inline-flex align-middle items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-semibold leading-5 ${
+                    isDark ? 'bg-black/35 text-white' : 'bg-black text-white'
+                  }`}
+                >
+                  {SceneIcon && <SceneIcon size={14} className="shrink-0" />}
+                  <span>{sceneDisplay.label}</span>
+                </span>
+              )}
+              {bodyText}
+            </div>}
             {deliveryState && (
               <div data-testid={`message-delivery-${deliveryState}`} title={item.deliveryError || undefined} className={`mt-1 flex items-center gap-1.5 pr-1 text-[11px] ${
                 deliveryState === 'failed' || deliveryState === 'unknown'
@@ -2302,7 +2463,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
     // ③ 卡牌制造专家: 从助手消息渲染后的 html 里抠出 ```persona-card 草稿块 → 解析成卡。
     function htmlUnescape(s) {
-      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
+      return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#(?:39|x27);/gi,"'").replace(/&amp;/g,'&');
+    }
+    function highlightedCodeText(s) {
+      return htmlUnescape(String(s).replace(/<\/?span\b[^>]*>/gi, ''));
     }
     function asDraft(d) {
       if (!d || typeof d !== 'object' || !d.name || !d.body) return null;
@@ -2319,63 +2483,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         paused: !!d.paused,
       };
     }
-    // 模型偶尔给 JSON 末尾多带一个逗号(trailing comma)等小瑕疵 → 严格 JSON.parse 会整段拒掉,
-    // 导致草稿卡解析失败、不出「存入卡牌池」按钮。宽松解析:先严格,失败再去掉对象/数组结尾多余
-    // 逗号重试(去尾逗号对合法 JSON 无副作用)。失败返回 null(不抛)。
-    // 从第一个 { 起按括号配平截取一个完整 JSON 对象(尊重字符串/转义),容忍对象后面多余的 }
-    // 或杂物(模型偶发多打一个右括号、或 ``` 块后还粘了别的字符)。截断(没闭合)则返回 null。
-    function extractBalancedJson(s) {
-      var i = s.indexOf('{');
-      if (i < 0) return null;
-      var depth = 0, inStr = false, esc = false;
-      for (var j = i; j < s.length; j++) {
-        var c = s.charAt(j);
-        if (inStr) {
-          if (esc) esc = false;
-          else if (c === '\\') esc = true;
-          else if (c === '"') inStr = false;
-        } else if (c === '"') inStr = true;
-        else if (c === '{') depth++;
-        else if (c === '}') { depth--; if (depth === 0) return s.slice(i, j + 1); }
-      }
-      return null;
-    }
-    // 一条完整解析链: 严格 → 去尾逗号 → 从首个 { 括号配平截取(+去尾逗号)。失败返回 null。
-    // (名字避开本文件里另一个 tryParseJson —— 那是工具结果视图用的简单版)
-    function parseJsonChain(s) {
-      try { return JSON.parse(s); } catch (e) {}
-      try { return JSON.parse(s.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {} // 去尾逗号
-      var bal = extractBalancedJson(s);                                        // 容忍多余右括号/尾部杂物
-      if (bal) {
-        try { return JSON.parse(bal); } catch (e) {}
-        try { return JSON.parse(bal.replace(/,(\s*[}\]])/g, '$1')); } catch (e) {}
-      }
-      return null;
-    }
-    function parseLooseJson(raw) {
-      var v = parseJsonChain(raw);
-      if (v) return v;
-      // 最后手段: 模型偶尔把本该是普通 " 的地方(数组/对象边界处)打成转义 \",令整段 JSON 非法,
-      // 上面的链全兜不住(实例: card-question 的 options 后两项被写成 \"...\")。去掉多余转义引号
-      // 再走一遍完整链。仅对**已解析失败**的输入生效 —— 合法用了 \" 的 JSON 在 parseJsonChain(raw)
-      // 第一步就成功、走不到这里,故不受影响。
-      var deesc = raw.replace(/\\"/g, '"');
-      return deesc !== raw ? parseJsonChain(deesc) : null;
-    }
     // 扫所有 ```代码块,任何能解析成「含 name+body 的 JSON」的就当卡牌草稿。
     // 不强求 ```persona-card 标签 —— 小模型常打 ```json 或不打标签,放宽识别更鲁棒。
     // 形状校验(name+body)避免把别的 JSON 误判成草稿。明确 persona-card 标签的优先。
     // 返回 { draft, html }:html 是把那段原始 JSON 块抹掉后的版本(用户只看友好草稿卡,不看机器载荷)。
     function parsePersonaDraft(html) {
       if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
       while ((m = re.exec(html))) {
-        var raw = htmlUnescape(m[2]).trim();
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         try {
           var draft = asDraft(parseLooseJson(raw));
           if (!draft) continue;
-          if (/persona-card/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
+          if (/persona-card/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; } // 明确标签优先
           if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
         } catch (e) { /* 非 JSON 块,跳过 */ }
       }
@@ -2384,13 +2505,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     }
     function parseScheduledTaskDraft(html) {
       if (!html || html.indexOf('{') < 0) return { draft: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m, chosen = null, chosenDraft = null;
       while ((m = re.exec(html))) {
-        var raw = htmlUnescape(m[2]).trim();
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         var draft = asScheduledTaskDraft(parseLooseJson(raw));
         if (!draft) continue;
-        if (/scheduled-task-draft/.test(m[1])) { chosen = m[0]; chosenDraft = draft; break; }
+        if (/scheduled-task-draft/i.test(m[1] + m[2])) { chosen = m[0]; chosenDraft = draft; break; }
         if (!chosenDraft) { chosen = m[0]; chosenDraft = draft; }
       }
       if (!chosenDraft) return { draft: null, html: html };
@@ -2399,11 +2520,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
     // 卡牌制造专家追问时,若问题有可选项,会输出一个 ```card-question 块 {question, options[]}。
     // 抠出来 → 渲染成可点击的 iOS 选项卡;点选项即把它作为回答发送。返回 { q, html(抹掉块) }。
     function parseCardQuestion(html) {
-      if (!html || html.indexOf('card-question') < 0) return { q: null, html: html };
-      var re = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
+      if (!html || !/card-question/i.test(html)) return { q: null, html: html };
+      var re = /<pre([^>]*)>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/g, m;
       while ((m = re.exec(html))) {
-        if (!/card-question/.test(m[1])) continue;
-        var raw = htmlUnescape(m[2]).trim();
+        if (!/card-question/i.test(m[1] + m[2])) continue;
+        var raw = highlightedCodeText(m[3]).trim();
         if (raw.charAt(0) !== '{') continue;
         var d = parseLooseJson(raw);
         if (d && d.question && Array.isArray(d.options)) {
@@ -2427,9 +2548,22 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       return html.slice(0, m.index) + '<div style="margin-top:.5em;opacity:.7;font-size:13px">' + (label || '…') + '</div>';
     }
 
-    const ChatBubble = ({ item, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant }) => {
+    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
+      const chatViewCopy = t.uiChatView;
+      // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
+      const memoryStatusLabels = {
+        '已忽略': chatCopy.ignoreOnce,
+        '不再提示': chatCopy.neverAsk,
+        '已记住': chatViewCopy.memStatusRemembered,
+        '已归档': chatViewCopy.memStatusArchived,
+        '已删除': chatViewCopy.memStatusDeleted,
+        '记忆已更新': chatCopy.memoryUpdated,
+        '记忆已归档': chatViewCopy.memStatusArchivedNotice,
+        '记忆已删除': chatViewCopy.memStatusDeletedNotice,
+      };
+      const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
 
@@ -2439,7 +2573,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} theme={theme} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} theme={theme} t={t} />;
       if (item.type === 'user') {
-        return <UserBubble item={item} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
+        return <UserBubble item={item} sessionId={sessionId} theme={theme} editable={editable} t={t} conversationVariant={conversationVariant} />;
       }
 
       if (item.type === 'card_creator_intro') {
@@ -2457,6 +2591,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
         const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
         const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+        const assistantCopyAvailable = !item.streaming
+          && [item.text, item.html].some(value => String(value || '').trim());
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
         const draftSaved = pd.draft && bridge.available && bridge.personas.getPersonas
           && bridge.personas.getPersonas().some(function(c){ return c && c.source === 'user' && c.name === pd.draft.name; });
@@ -2473,7 +2609,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   const href = a.getAttribute('href') || '';
                   if (/^https?:\/\//i.test(href)) {
                     e.preventDefault();
-                    invokeTauri('open_external_url', { url: href }).catch(() => {});
+                    invokeTauri('open_user_external_url', { url: href }).catch(() => {});
                   }
                 }}
                 dangerouslySetInnerHTML={{ __html: cq.html || '' }}
@@ -2507,16 +2643,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : <button onClick={()=> onOpenEditor && onOpenEditor(pd.draft)} className="shrink-0 px-4 h-8 rounded-full text-[13px] font-semibold text-white" style={{ background: isDark ? '#0A84FF' : '#007AFF' }} title={t.cpDraftViewTitle}>{t.cpDraftView}</button>}
                 </div>
               ) : null}
-              {item.time && !item.streaming && (
-                <div className={`text-[11px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</div>
-              )}
+              {showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>
+                <AssistantMessageActions
+                  resolveText={() => assistantItemCopyText(item, { allowScheduledTaskDraft })}
+                  copy={t.uiConversation}
+                />
+                {item.time && <span className={`text-[11px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{item.time}</span>}
+              </AssistantMessageFooter>}
             </div>
           </div>
         );
       }
 
       if (item.type === 'tool') {
-        return <ToolCard item={item} theme={theme} t={t} />;
+        return <ToolCard item={item} sessionId={sessionId} theme={theme} t={t} />;
       }
 
       if (item.type === 'persona_equip') {
@@ -2588,7 +2728,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </span>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-[13px] font-semibold leading-tight">{item.statusLabel || chatCopy.memoryUpdated}</span>
+                    <span className="text-[13px] font-semibold leading-tight">{localizedMemoryStatus(item.statusLabel) || chatCopy.memoryUpdated}</span>
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
                   </div>
                   <div className="mt-1 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.notice}</div>
@@ -2609,9 +2749,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const text = item.text || '';
         const memoryKind = item.kind === 'recent_work' ? 'recent_activity' : item.kind;
         const meta = chatCopy.memoryMeta[memoryKind] || chatCopy.memoryMeta.preference;
-        const localizedStatus = item.statusLabel === '已忽略' ? chatCopy.ignoreOnce
-          : item.statusLabel === '不再提示' ? chatCopy.neverAsk
-          : item.statusLabel;
+        const localizedStatus = localizedMemoryStatus(item.statusLabel);
         return (
           <div className="flex justify-end">
             <div

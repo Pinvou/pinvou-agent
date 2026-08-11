@@ -40,7 +40,7 @@ function injectSource() {
   return `(function(){
     var HTML_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/landing.html';
     var DRAFT_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/poster-draft.html';
-    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button></section></main></body></html>';
+    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button><a id="external-link" href="https://example.com/docs">Docs</a></section></main></body></html>';
     var DRAFT_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Draft Poster</h1><button class="primary">Draft</button></section></main></body></html>';
     var SESSIONS = [{id:'s-design',title:'HTML设计测试',created_at:1,updated_at:9}];
     var MARKET_TOOLS = [
@@ -51,6 +51,12 @@ function injectSource() {
       {id:'visualizer', installed:false}
     ];
     window.__PINVOU_TEST_INSTALLS = [];
+    window.__PINVOU_TEST_CHAT_CALLS = [];
+    window.__PINVOU_TEST_SCENE_SAVES = [];
+    window.__PINVOU_TEST_EXTERNAL_URLS = [];
+    var SCENE_EVENTS = {
+      's-design': [{pos:0,scene:'design:poster'}]
+    };
     var CONV = { 's-design': {
       metadata:{id:'s-design',title:'HTML设计测试'},
       artifacts:[{path:DRAFT_PATH,basename:'poster-draft.html'},{path:HTML_PATH,basename:'landing.html'}],
@@ -69,12 +75,31 @@ function injectSource() {
         case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
+        case 'create_session': {
+          var id = 's-new-' + Date.now();
+          var meta = {id:id,title:'新对话',created_at:Date.now(),updated_at:Date.now(),message_count:0};
+          SESSIONS.unshift(meta);
+          CONV[id] = {metadata:meta,artifacts:[],messages:[]};
+          return Promise.resolve(meta);
+        }
         case 'load_session': return Promise.resolve(CONV[args && args.id] || CONV['s-design']);
+        case 'chat':
+          window.__PINVOU_TEST_CHAT_CALLS.push(args || {});
+          return Promise.resolve(null);
+        case 'save_session_messages':
+          if (args && args.id && CONV[args.id]) CONV[args.id].messages = args.messages || [];
+          return Promise.resolve(null);
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(null);
+        case 'get_session_pinvou_scene_events':
+          return Promise.resolve((SCENE_EVENTS[args && args.sessionId] || []).map(function(event){ return Object.assign({}, event); }));
+        case 'save_session_pinvou_scene_events':
+          SCENE_EVENTS[args && args.sessionId] = (args && args.events || []).map(function(event){ return Object.assign({}, event); });
+          window.__PINVOU_TEST_SCENE_SAVES.push({sessionId:args && args.sessionId,events:SCENE_EVENTS[args && args.sessionId]});
+          return Promise.resolve(null);
         case 'list_workflows': case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
@@ -96,6 +121,9 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'html',size:(args && args.path) === DRAFT_PATH ? DRAFT_CONTENT.length : HTML_CONTENT.length,modified:(args && args.path) === DRAFT_PATH ? 1 : 2});
         case 'read_artifact_text': return Promise.resolve((args && args.path) === DRAFT_PATH ? DRAFT_CONTENT : HTML_CONTENT);
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
+        case 'open_user_external_url':
+          window.__PINVOU_TEST_EXTERNAL_URLS.push(args && args.url);
+          return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -144,13 +172,57 @@ async function clickExactButton(page, text) {
       homeHasCode: !!homeSwitcher && homeSwitcher.textContent.includes('代码'),
       workHasPptDesign: !!document.querySelector('[data-testid="work-subtab-picker-option-ppt-design"]'),
       workHasDataVisualization: !!document.querySelector('[data-testid="work-subtab-picker-option-data-visualization"]'),
+      sceneTag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
     };
   });
   rec('默认只渲染一个工作/设计/代码主入口',
     initial.homeSwitcher && !initial.duplicateSwitcher && initial.homeHasWork && initial.homeHasDesign && initial.homeHasCode &&
-      !initial.workHasPptDesign && !initial.workHasDataVisualization,
+      !initial.workHasPptDesign && !initial.workHasDataVisualization && !initial.sceneTag &&
+      initial.placeholder !== '描述公文主题、文种、收发单位和关键要求',
     JSON.stringify(initial));
+
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  await page.focus('textarea');
+  await page.keyboard.type('发送后气泡标签测试');
+  await page.keyboard.press('Enter');
+  await sleep(900);
+  const sentBubbleScene = await page.evaluate(() => {
+    const chat = window.TauriBridge && window.TauriBridge.state && window.TauriBridge.state.get
+      ? window.TauriBridge.state.get('chat')
+      : {};
+    const sidecars = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith('pinvou_scene_events_v1:')) {
+        sidecars.push({ key, value: JSON.parse(localStorage.getItem(key) || '[]') });
+      }
+    }
+    return {
+      tag: document.querySelector('[data-testid="user-message-scene-tag"]')?.textContent || '',
+      composerTag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+      chatCalls: window.__PINVOU_TEST_CHAT_CALLS || [],
+      sidecars,
+      messageHasScene: !!(chat.messages || []).some((message) =>
+        Object.prototype.hasOwnProperty.call(message || {}, 'pinvouScene')
+      ),
+    };
+  });
+  rec('发送后专业子模式显示为用户气泡只读标签且不污染 messages',
+    sentBubbleScene.tag.includes('公文写作') &&
+      !sentBubbleScene.composerTag &&
+      sentBubbleScene.chatCalls.length === 1 &&
+      /公文写作场景路由/.test(sentBubbleScene.chatCalls[0].message || '') &&
+      sentBubbleScene.sidecars.some(entry =>
+        entry.value.some(item => item.pos === 0 && item.scene === 'work:document-writing')
+      ) &&
+      !sentBubbleScene.messageHasScene,
+    JSON.stringify(sentBubbleScene));
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: 'networkidle0' });
+  await sleep(1500);
 
   await page.evaluate(() => {
     window.__PINVOU_TEST_SENT_MESSAGES = [];
@@ -161,12 +233,240 @@ async function clickExactButton(page, text) {
       };
     }
   });
-  const workDocumentPlaceholder = await page.evaluate(() => {
+  await page.focus('textarea');
+  await page.keyboard.type('普通工作问题');
+  await page.keyboard.press('Enter');
+  await sleep(250);
+  const workGeneralPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
+    };
+  });
+  rec('工作 general 发送不注入专业场景 meta',
+    workGeneralPayload &&
+      workGeneralPayload.text === '普通工作问题' &&
+      !workGeneralPayload.scene &&
+      !workGeneralPayload.requiredSkill &&
+      !workGeneralPayload.requiredTool,
+    JSON.stringify(workGeneralPayload));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(250);
+  const personalWorkbenchState = await page.evaluate(() => {
     const textarea = document.querySelector('textarea');
-    return textarea && textarea.getAttribute('placeholder');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      textareaValue: textarea && textarea.value,
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      templatePicker: !!document.querySelector('[data-testid="personal-workbench-template-picker"]'),
+      templateLabels: [...document.querySelectorAll('button[data-testid^="personal-workbench-template-"]')]
+        .map(node => (node.textContent || '').trim()),
+    };
+  });
+  await page.focus('textarea');
+  await page.keyboard.type('运动');
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalSceneOnlyPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+      userBubbleText: [...document.querySelectorAll('[data-testid="chat-message-user"], .chat-message-user')]
+        .map(node => node.textContent || '')
+        .join('\n'),
+    };
+  });
+  rec('个人工作台自由输入走默认专家隐藏 prompt 且界面只显示用户文本',
+    personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
+      personalWorkbenchState.templatePicker &&
+      personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
+      personalWorkbenchState.sceneTag.includes('个人工作台') &&
+      personalWorkbenchState.textareaValue === '' &&
+      personalSceneOnlyPayload &&
+      personalSceneOnlyPayload.text === '运动' &&
+      personalSceneOnlyPayload.scene === 'work:personal-workbench' &&
+      !personalSceneOnlyPayload.templateId &&
+      !personalSceneOnlyPayload.templateTitle &&
+      /个人数字工作台/.test(personalSceneOnlyPayload.payload || '') &&
+      /用户需求：\n运动/.test(personalSceneOnlyPayload.payload || '') &&
+      !/个人数字工作台/.test(personalSceneOnlyPayload.userBubbleText || '') &&
+      personalSceneOnlyPayload.textareaAfterSend === '',
+    JSON.stringify({ personalWorkbenchState, personalSceneOnlyPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  const longCustomWorkbenchPrompt = '我要做一个适合自由职业者使用的客户项目管理工作台，需要能管理客户、合同、收款节点、待办事项、沟通记录、项目风险、交付物清单和月度复盘，还要支持移动端查看，数据全部存在本地，并且界面需要像现代 iOS 工具应用一样清爽。';
+  await page.evaluate((prompt) => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, prompt);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }, longCustomWorkbenchPrompt);
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalTemplateReplacedPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+    };
+  });
+  rec('个人工作台模板被整段替换后按自由输入处理',
+    personalTemplateReplacedPayload &&
+      personalTemplateReplacedPayload.text === longCustomWorkbenchPrompt &&
+      personalTemplateReplacedPayload.scene === 'work:personal-workbench' &&
+      !personalTemplateReplacedPayload.templateId &&
+      !personalTemplateReplacedPayload.templateTitle &&
+      /个人数字工作台/.test(personalTemplateReplacedPayload.payload || '') &&
+      personalTemplateReplacedPayload.payload.includes(`用户需求：\n${longCustomWorkbenchPrompt}`) &&
+      personalTemplateReplacedPayload.textareaAfterSend === '',
+    JSON.stringify(personalTemplateReplacedPayload));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  const personalTemplateSelected = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      templateTag: document.querySelector('[data-testid="pinvou-scene-template-tag"]')?.textContent || '',
+      hasPromptInTextarea: /真实时薪计算器|localStorage/.test(textarea && textarea.value || ''),
+    };
+  });
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const templateDraftClearedOnSceneSwitch = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
+    };
+  });
+  rec('从个人工作台模板切到其他工作场景会清理模板草稿',
+    templateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
+      templateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      templateDraftClearedOnSceneSwitch.textareaValue === '' &&
+      !templateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
+    JSON.stringify(templateDraftClearedOnSceneSwitch));
+
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(200);
+  await page.evaluate((prompt) => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, prompt);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }, personalTemplateSelected.textareaValue);
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const restoredTemplateDraftClearedOnSceneSwitch = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      textareaValue: textarea && textarea.value,
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      sceneTag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      hasPersonalTemplatePrompt: /真实时薪计算器|个人账本|视觉要求/.test(textarea && textarea.value || ''),
+    };
+  });
+  rec('恢复的个人工作台模板草稿即使没有选中 ref 也会在切换场景时清理',
+    restoredTemplateDraftClearedOnSceneSwitch.sceneTag.includes('公文写作') &&
+      restoredTemplateDraftClearedOnSceneSwitch.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      restoredTemplateDraftClearedOnSceneSwitch.textareaValue === '' &&
+      !restoredTemplateDraftClearedOnSceneSwitch.hasPersonalTemplatePrompt,
+    JSON.stringify(restoredTemplateDraftClearedOnSceneSwitch));
+
+  await page.click('[data-testid="work-subtab-picker-option-personal-workbench"]');
+  await sleep(200);
+  await page.click('[data-testid="personal-workbench-template-1"]');
+  await sleep(200);
+  await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, `${textarea.value}\n\n用户补充需求：暗色模式`);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.keyboard.press('Enter');
+  await sleep(350);
+  const personalPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      templateId: sent.meta && sent.meta.pinvouTemplateId,
+      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      textareaAfterSend: document.querySelector('textarea')?.value || '',
+      templateTagAfterSend: !!document.querySelector('[data-testid="pinvou-scene-template-tag"]'),
+    };
+  });
+  rec('个人工作台模板把完整 prompt 写入输入框并直接发送当前文本',
+    personalWorkbenchState.placeholder === '选择模板后可编辑完整提示词' &&
+      personalWorkbenchState.templatePicker &&
+      personalWorkbenchState.templateLabels.join('|') === '生活记录|个人账本|学习计划|任务看板|求职管理|旅行计划|运动打卡' &&
+      personalWorkbenchState.sceneTag.includes('个人工作台') &&
+      personalWorkbenchState.textareaValue === '' &&
+      personalTemplateSelected.sceneTag.includes('个人工作台') &&
+      personalTemplateSelected.templateTag === '' &&
+      personalTemplateSelected.hasPromptInTextarea &&
+      personalPayload &&
+      /请制作一个名为「个人账本」/.test(personalPayload.text || '') &&
+      /用户补充需求：暗色模式/.test(personalPayload.text || '') &&
+      personalPayload.scene === 'work:personal-workbench' &&
+      personalPayload.templateId === 'personal-ledger' &&
+      personalPayload.templateTitle === '个人账本' &&
+      !personalPayload.payload &&
+      personalPayload.textareaAfterSend === '' &&
+      !personalPayload.templateTagAfterSend,
+    JSON.stringify({ personalWorkbenchState, personalTemplateSelected, personalPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  const selectedWorkScene = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      clear: !!document.querySelector('[data-testid="pinvou-scene-tag-clear"]'),
+    };
   });
   await page.focus('textarea');
   await page.keyboard.type('写一份项目验收通知');
+  await page.click('[data-testid="pinvou-scene-tag-clear"]');
+  await sleep(250);
+  const clearedWorkScene = await page.evaluate(() => ({
+    tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+    text: document.querySelector('textarea')?.value || '',
+  }));
+  rec('工作子模式以标签显示并可取消且保留草稿',
+    selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
+      selectedWorkScene.tag.includes('公文写作') &&
+      selectedWorkScene.clear &&
+      !clearedWorkScene.tag &&
+      clearedWorkScene.text === '写一份项目验收通知',
+    JSON.stringify({ selectedWorkScene, clearedWorkScene }));
+
+  await page.click('[data-testid="work-subtab-picker-option-document-writing"]');
+  await sleep(250);
+  await page.focus('textarea');
   await page.keyboard.press('Enter');
   await sleep(700);
   const documentPayload = await page.evaluate(() => {
@@ -182,7 +482,7 @@ async function clickExactButton(page, text) {
     };
   });
   rec('工作-公文写作自动准备并强制路由到 government-writing + gongwen',
-    workDocumentPlaceholder === '描述公文主题、文种、收发单位和关键要求' &&
+    selectedWorkScene.placeholder === '描述公文主题、文种、收发单位和关键要求' &&
       documentPayload &&
       documentPayload.text === '写一份项目验收通知' &&
       documentPayload.scene === 'work:document-writing' &&
@@ -192,11 +492,42 @@ async function clickExactButton(page, text) {
       /公文写作场景路由/.test(documentPayload.payload || '') &&
       /government-writing/.test(documentPayload.payload || '') &&
       /gongwen/.test(documentPayload.payload || ''),
-    JSON.stringify({ workDocumentPlaceholder, documentPayload }));
+    JSON.stringify({ selectedWorkScene, documentPayload }));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
   await clickExactButton(page, '设计');
   await sleep(250);
+  const designGeneralState = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: !!document.querySelector('[data-testid="pinvou-scene-tag"]'),
+    };
+  });
+  await page.focus('textarea');
+  await page.keyboard.type('把当前页面调得更高级');
+  await page.keyboard.press('Enter');
+  await sleep(250);
+  const designGeneralPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      designScene: sent.meta && sent.meta.pinvouDesignScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+    };
+  });
+  rec('设计 general 保持设计语境但不注入子场景 meta',
+    designGeneralState.placeholder === '描述你想生成或调整的内容' &&
+      !designGeneralState.tag &&
+      designGeneralPayload &&
+      designGeneralPayload.text === '把当前页面调得更高级' &&
+      !designGeneralPayload.scene &&
+      !designGeneralPayload.designScene &&
+      !designGeneralPayload.requiredSkill,
+    JSON.stringify({ designGeneralState, designGeneralPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
   await page.click('[data-testid="design-subtab-picker-option-data-visualization"]');
   await sleep(250);
   const designDataPlaceholder = await page.evaluate(() => {
@@ -299,6 +630,17 @@ async function clickExactButton(page, text) {
       directPreview.toggleText === '编辑模式' &&
       directPreview.toggleTitle === '进入编辑模式：放大预览并编辑选中元素',
     JSON.stringify(directPreview));
+  await page.evaluate(() => {
+    const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
+    const link = frame && frame.contentDocument && frame.contentDocument.querySelector('#external-link');
+    if (link) link.click();
+  });
+  await sleep(100);
+  const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
+  rec('产物 HTML 外链由宿主交给系统浏览器命令且 iframe 不跳转',
+    externalPreviewLinks.length === 1
+      && externalPreviewLinks[0] === 'https://example.com/docs',
+    JSON.stringify(externalPreviewLinks));
   await page.click('[data-testid="artifact-switcher-button"]');
   await sleep(150);
   const artifactMenu = await page.evaluate(() => ({
@@ -338,19 +680,22 @@ async function clickExactButton(page, text) {
     const homeSwitcher = document.querySelector('[data-testid="home-mode-switcher"]');
     const designPicker = document.querySelector('[data-testid="design-subtab-picker"]');
     const sceneTag = document.querySelector('[data-testid="pinvou-scene-tag"]');
+    const userSceneTag = document.querySelector('[data-testid="user-message-scene-tag"]');
     return {
       statusHidden: !document.querySelector('[data-testid="design-mode-status"]'),
       placeholder: textarea && textarea.getAttribute('placeholder'),
       homeSwitcher: !!homeSwitcher,
       designPicker: !!designPicker,
       sceneTag: sceneTag && sceneTag.textContent,
+      userSceneTag: userSceneTag && userSceneTag.textContent,
     };
   });
-  rec('非空会话隐藏完整场景入口并展示当前场景标签',
+  rec('非空会话从共享 sidecar 恢复历史消息只读标签',
     design.statusHidden &&
       !design.homeSwitcher &&
       !design.designPicker &&
-      /海报/.test(design.sceneTag || '') &&
+      !design.sceneTag &&
+      /海报/.test(design.userSceneTag || '') &&
       design.placeholder === '描述你想生成或调整的视觉海报',
     JSON.stringify(design));
 

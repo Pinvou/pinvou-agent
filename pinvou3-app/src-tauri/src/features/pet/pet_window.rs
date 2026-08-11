@@ -561,7 +561,7 @@ pub async fn get_pet_scale() -> Result<f64, String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScaleAnchor {
+pub(crate) enum ScaleAnchor {
     BottomCenter,
     BottomLeft,
     BottomRight,
@@ -570,7 +570,7 @@ enum ScaleAnchor {
     TopRight,
 }
 
-fn resized_position(
+pub(super) fn resized_position(
     position: (i32, i32),
     old_size: (u32, u32),
     new_size: (u32, u32),
@@ -661,43 +661,10 @@ fn window_edge_anchor(
 }
 
 fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), anchor: ScaleAnchor) {
-    let before = win.inner_size().ok().zip(win.inner_position().ok());
-    let work_area = win.current_monitor().ok().flatten().map(|monitor| {
-        let area = monitor.work_area();
-        (
-            area.position.x,
-            area.position.y,
-            area.size.width,
-            area.size.height,
-        )
-    });
-    let sf = win.scale_factor().unwrap_or(1.0);
-    let (nw, nh) = (
-        (logical_size.0 * sf).round() as u32,
-        (logical_size.1 * sf).round() as u32,
-    );
-    let _ = win.set_size(tauri::PhysicalSize::new(nw, nh));
-    // 诊断:X11 的 resize 异步生效,这里的回读多为旧值(GB10 实测会拿到上一个
-    // 状态的尺寸),只能当观测信号,绝不能拿来做定位数学——定位一律用请求值,
-    // 请求值已经过 pet_window_effective_size 与真实钳制对齐。
-    if let Ok(size) = win.inner_size() {
-        if (size.width, size.height) != (nw, nh) {
-            eprintln!(
-                "[pet resize] requested {nw}x{nh} readback {}x{} (async, stale ok)",
-                size.width, size.height
-            );
-        }
-    }
-    if let Some((size, pos)) = before {
-        let (nx, ny) = resized_position(
-            (pos.x, pos.y),
-            (size.width, size.height),
-            (nw, nh),
-            anchor,
-            work_area,
-        );
-        let _ = win.set_position(tauri::PhysicalPosition::new(nx, ny));
-    }
+    // 平台差异(是否原子提交、坐标系)收敛在 platform::resize_pet_window:macOS 用
+    // 单次 setFrame:display: 把尺寸与原点一并提交,消除气泡展开时人物向左上方
+    // 闪现一帧的中间合成帧;其他平台退化为既有的 set_size → set_position 两步。
+    super::platform::resize_pet_window(win, logical_size, anchor);
 }
 
 /// 人物锚点靠近工作区左/上边时,窗口左上角会被算成负坐标(活动卡展开且人物

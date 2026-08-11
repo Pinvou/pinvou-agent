@@ -8,7 +8,7 @@
 
 ### 1. 开发与 PR 公约
 
-- 新任务首次开发、创建 PR 前及合并前安全同步最新 `origin/main`，并将 submodule 对齐父仓 gitlink；同一任务的持续开发和评审期间不因主线日常更新反复同步。
+- 新任务首次开发及创建 PR 前安全同步最新 `origin/main`，并将 submodule 对齐父仓 gitlink；同一任务的持续开发和评审期间不因主线日常更新反复同步。合并前由 Merge Queue 在最新 `main` 组合提交上运行适用门禁；仅真实冲突或队列集成失败需要改分支时手工 rebase。
 - 处理冲突时保全双方可共存的功能和用户改动；涉及行为取舍或无法证明等价时不得擅自选择，必须向用户说明选项和影响。
 - 提交信息采用 `<type>(<scope>): <中文描述>`（`scope` 可省略）并带有效 `Signed-off-by`；具体格式和 DCO 要求遵循 `CONTRIBUTING.md` 与提交规范。
 - PR 必须以目标分支的实际差异为依据，正文简洁说明背景、变更、实际验证和已知风险；Agent 创建的 PR 默认使用中文，外部贡献者可按 `CONTRIBUTING.md` 使用中文或英文。
@@ -49,7 +49,15 @@ Pinvou Agent 按“业务功能优先、平台适配次之”组织：
 - 业务逻辑留在 `features/`；只有跨功能复用的低层能力才能进入全局 `platform/`。依赖保持 `app → features → platform/core`，不得反向依赖。
 - React 不判断 user agent 或直接访问 Tauri 全局对象；通过 `get_platform_capabilities` 和 `can(capability)` 消费语义化能力。
 - OS 差异使用 `cfg(target_os)` 和明确接口；不支持的能力显式返回 unsupported，不得静默借用其他平台实现。
+- 平台条件编译或实现细节确需留在适配层外时，必须使用架构守卫支持的显式例外，在文件头写明具体理由并补充覆盖该场景的测试；例外不得仅用于绕过模块迁移。
 - 构建统一走项目 npm 命令，不直接运行 `npx tauri build/bundle`。改动后运行 `python3 scripts/architecture-guard.py` 及影响范围内的测试。
+
+#### 模块化开发公约
+
+- 模块边界按职责、状态所有权、变化原因、依赖方向和独立测试能力划分，不以文件行数或仓库总代码量判定模块化质量。
+- 新增或修改功能时应落入职责明确的 `feature`、`platform` 或 `core` 模块；不得把无关职责继续堆入现有模块，跨模块协作应通过窄而稳定的接口完成。
+- 发现职责混杂、状态耦合、反向依赖或难以独立测试时，应按行为边界渐进拆分，并在每批变更中保持现有行为和公开接口兼容。
+- 不得为了满足度量指标机械拆分文件、压缩代码，或牺牲命名、注释、错误处理和可读性；文件大小只能作为评审线索，不能作为合规门禁。
 
 ### 4. 社区版开发公约
 
@@ -65,7 +73,7 @@ Pinvou Agent 按“业务功能优先、平台适配次之”组织：
 
 - `pinvou3-app/`：Tauri 2 + React/Vite 桌面应用与 Engine wrapper。
 - `CodeWhale/`：Pinvou/CodeWhale submodule，改动遵循“CodeWhale 与 fork 边界”。
-- 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge）。
+- 运行时数据在 `~/.pinvou3/`（sessions / settings.json / bundle / knowledge / connectors）。
 - bundle 扩展源码在 `pinvou3-app/src-tauri/resources/common/bundle/`，编译进应用并释放到 `~/.pinvou3/bundle/`。
 - 开发启动使用 `./pinvou3-app/run-dev.sh`。
 - 版本号以根目录 `VERSION` 为单一来源；修改后运行 `node scripts/sync-version.mjs`，CI 使用 `--check` 校验一致性。

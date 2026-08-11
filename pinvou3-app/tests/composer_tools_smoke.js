@@ -37,7 +37,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-composer-tools-'))
 
 function injectSource() {
   return `(function(){
-    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[]};
+    const state=window.__COMPOSER_TOOLS_TEST__={calls:[],disabled:[],disabledSkills:[]};
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);
@@ -63,6 +63,8 @@ function injectSource() {
         ]);
         case 'get_disabled_connectors': return Promise.resolve(state.disabled);
         case 'set_disabled_connectors': state.disabled=(args&&args.connectorIds)||[]; return Promise.resolve(null);
+        case 'get_disabled_skills': return Promise.resolve(state.disabledSkills);
+        case 'set_disabled_skills': state.disabledSkills=(args&&args.skillIds)||[]; return Promise.resolve(null);
         case 'feishu_skills_state': case 'wecom_skills_state': case 'dingtalk_skills_state': case 'tmeet_skills_state': return Promise.resolve({connected:false,enabled:true});
         default: return Promise.resolve(null);
       }
@@ -106,8 +108,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   await page.evaluate(() => document.querySelector('button[aria-label="skill:visualizer"]').click());
   await sleep(150);
-  const disabled = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabled);
-  rec('关闭独立技能调用 set_disabled_connectors(skill:<id>)', disabled.includes('skill:visualizer'), JSON.stringify(disabled));
+  const disabledSkills = await page.evaluate(() => window.__COMPOSER_TOOLS_TEST__.disabledSkills);
+  rec('关闭独立技能调用 set_disabled_skills(裸 id)', disabledSkills.includes('visualizer') && !disabledSkills.some(id => id.startsWith('skill:')), JSON.stringify(disabledSkills));
 
   rec('页面无未处理 JavaScript 异常', errors.length === 0, errors.slice(0, 2).join(' | '));
 

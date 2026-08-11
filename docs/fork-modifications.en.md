@@ -8,11 +8,11 @@
 | Item | Value |
 |---|---|
 | Upstream | `Hmbown/CodeWhale` tag `v0.9.0`, commit `d167c07c96282411956ea7f35ddb8227afa1402f` |
-| Public release | `Pinvou/CodeWhale` tag `pinvou-v0.9.0-r2` |
-| Pinned commit | `cb93e0f4466d60e306252ed08bbbe214f2def752` |
+| Public release | `Pinvou/CodeWhale` tag `pinvou-v0.9.0-r4` |
+| Pinned commit | `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | Maintenance branch | `pinvou3-clean` |
-| Organization | 6 long-lived product themes, 4 follow-up behavior/maintenance commits, and 3 public baseline/security commits |
-| Diff from upstream tag | 4,045 insertions, 550 deletions, 57 files |
+| Organization | 6 long-lived product themes, 11 follow-up behavior/maintenance commits, and 3 public baseline/security commits |
+| Diff from upstream tag | 4,839 insertions, 616 deletions, 58 files |
 
 The delta exceeds the 1,500-line soft limit and has therefore received a mandatory boundary review. The retained code owns behavior that cannot be reconstructed safely in the desktop wrapper: task persistence, workflow completion, prompt-source sealing, and engine-level safety. Shell rendering and platform-specific desktop behavior remain in the parent repository and do not add fork drift.
 
@@ -24,11 +24,11 @@ Exposes the upstream bin-first crate as a library for the desktop host. It expor
 
 ### T2 — Tool surface and execution safety
 
-Defines the Pinvou tool surface, write-size limits, truncated-argument guidance, wildcard tool restrictions, and fail-closed handling for dangerous commands and required approvals. `append_file` emits a bounded inline unified diff with byte-summary, oversized-file, and non-UTF-8 fallbacks. Result-oriented golden and safety tests protect the behavior.
+Defines the Pinvou tool surface, write-size limits, truncated-argument guidance, wildcard tool restrictions, and fail-closed handling for dangerous commands and required approvals. Session-scoped `hidden_tools` may release entries from the fixed Pinvou hidden list but cannot hide tools outside it; the `tool_search` gate remains fixed. `append_file` emits a bounded inline unified diff with byte-summary, oversized-file, and non-UTF-8 fallbacks. Result-oriented golden and safety tests protect the behavior.
 
 ### T3 — Sealed prompts and one context source
 
-Lets the app own the static prompt composer, accepts only explicitly injected project instructions, loads Skills from the Pinvou runtime bundle, filters disabled Skills, and keeps internal reminders out of the working set.
+Lets the app own the static prompt composer, accepts only explicitly injected project instructions, and discovers Skills only from the explicit `EngineConfig.skills_dir` root. The current app injects the Pinvou runtime bundle and filters disabled Skills; CodeWhale no longer adds an implicit bundle fallback. Internal reminders stay out of the working set.
 
 ### T4 — Scheduled execution and history lifecycle
 
@@ -36,7 +36,7 @@ Keeps a stable conversation identity for each automation, persists run links, an
 
 ### T5 — Host orchestration and workflow completion
 
-Adds host-provided tools and hard allowlists across execution modes, structured subagent outputs, safe declared file persistence, authoritative completion/failure envelopes, bulk cancellation, and cancellable OAuth login.
+Adds host-provided tools and hard allowlists across execution modes, structured subagent outputs, safe declared file persistence, authoritative completion/failure envelopes, reliable nested-agent lineage and exactly-once terminal mailbox delivery, bulk cancellation, and cancellable OAuth login. `ChildSpawned` is published when ownership is accepted, while the single `Started` event remains tied to actual execution after the launch gate.
 
 ### T6 — Host routing and shared automation APIs
 
@@ -50,7 +50,7 @@ The three public baseline/security commits add:
 - `PINVOU_FORK.md` and the README fork notice;
 - removal of one internal project-name comment without changing behavior.
 
-They do not introduce a seventh product theme. The `cb93e0f44` follow-up extends T2 with `append_file` inline diffs.
+They do not introduce a seventh product theme. The `cb93e0f44` follow-up extends T2 with `append_file` inline diffs; the four commits ending at `9a31dcdfa` extend T5 with reliable Agent mailbox lifecycle handling. The three commits ending at `03e9e1027` update the existing T2/T3 boundaries with bounded session tool visibility and a single explicit Skill root.
 
 ## Verification
 
@@ -66,6 +66,6 @@ The parent repository additionally verifies that:
 - `.gitmodules` uses `https://github.com/Pinvou/CodeWhale.git`;
 - no floating submodule branch is configured;
 - the gitlink commit is publicly reachable;
-- `pinvou-v0.9.0-r2^{}` equals the pinned gitlink.
+- `pinvou-v0.9.0-r4^{}` equals the pinned gitlink.
 
 For any future gitlink or fork-behavior change, update this inventory, the Chinese source-of-truth inventory, fingerprints, and result-oriented tests in the same PR.

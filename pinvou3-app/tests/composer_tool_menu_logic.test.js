@@ -41,7 +41,7 @@ assert.strictEqual(visualizer.enabled, true);
 
 state = buildComposerToolMenuState({
   marketplaceSkills: [{ id: 'visualizer', title: '数据分析可视化', installed: true }],
-  disabledIds: ['skill:visualizer'],
+  disabledSkillIds: ['visualizer'],
 });
 visualizer = state.skillRows.find(row => row.id === 'skill:visualizer');
 assert.strictEqual(visualizer.enabled, false);
@@ -68,5 +68,40 @@ state = buildComposerToolMenuState({
 assert.strictEqual(state.connectedServices.length, 1);
 assert.strictEqual(state.connectedServices[0].id, 'feishu');
 assert.strictEqual(state.enabledCount, 2); // feishu + builtin visual-design
+
+// skill 双 scope 治理后:code scope 技能行可写(独立双 scope 开关),计入启用数
+state = buildComposerToolMenuState({
+  scope: 'code',
+  marketplaceTools: [{ id: 'weather', name: '高德天气', installed: true }],
+  marketplaceSkills: [{ id: 'visualizer', title: '数据分析可视化', installed: true }],
+});
+visualizer = state.skillRows.find(row => row.id === 'skill:visualizer');
+assert.ok(visualizer);
+assert.strictEqual(visualizer.switchable, true);
+assert.strictEqual(visualizer.unavailable, false);
+const builtinInCode = state.skillRows.find(row => row.id === 'builtin-skill:visual-design');
+assert.ok(builtinInCode);
+assert.strictEqual(builtinInCode.unavailable, false);
+assert.strictEqual(state.enabledCount, 3); // weather + visualizer + builtin
+
+// code scope 全禁状态:disabledSkillIds 覆盖全部已装技能
+state = buildComposerToolMenuState({
+  scope: 'code',
+  marketplaceSkills: [{ id: 'visualizer', title: '数据分析可视化', installed: true }],
+  disabledSkillIds: ['visualizer'],
+});
+visualizer = state.skillRows.find(row => row.id === 'skill:visualizer');
+assert.strictEqual(visualizer.enabled, false);
+assert.strictEqual(visualizer.switchable, true, '全禁状态下开关仍可写(恢复能力)');
+assert.strictEqual(state.enabledCount, 1); // 仅 builtin
+
+// 未传 scope 时行为与 plain 一致(回归保护)
+state = buildComposerToolMenuState({
+  marketplaceSkills: [{ id: 'visualizer', title: '数据分析可视化', installed: true }],
+});
+visualizer = state.skillRows.find(row => row.id === 'skill:visualizer');
+assert.strictEqual(visualizer.switchable, true);
+assert.strictEqual(visualizer.unavailable, false);
+assert.strictEqual(state.enabledCount, 2); // visualizer + builtin visual-design
 
 console.log('composer_tool_menu_logic: ok');

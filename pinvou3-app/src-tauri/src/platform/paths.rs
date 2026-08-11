@@ -6,6 +6,9 @@
 //! `PINVOU3_HOME` 环境变量可整体重定位（主要用于测试）。
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static RUNTIME_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// 用户家目录 `$HOME`，是 pinvou3-app 的 engine workspace 根。
 /// AI 通过相对路径访问 → 落在家目录下；通过绝对路径访问 → trust_mode 放行
@@ -53,18 +56,75 @@ pub fn bundle_mcp_json() -> PathBuf {
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
-pub fn bundle_connectors_dir() -> PathBuf {
-    bundle_root().join("connectors")
+pub fn managed_connectors_dir() -> PathBuf {
+    pinvou3_home().join("connectors")
 }
-pub fn bundle_connector_bin_dir() -> Option<PathBuf> {
-    bundle_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
+pub fn managed_connector_bin_dir() -> Option<PathBuf> {
+    managed_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
 }
-pub fn bundle_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
-    if os == "linux" && arch == "aarch64" {
-        Some(bundle_connectors_dir().join("linux-arm64").join("bin"))
-    } else {
-        None
+pub fn managed_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
+    connector_platform_dir(os, arch)
+        .map(|platform| managed_connectors_dir().join(platform).join("bin"))
+}
+
+/// 支持按需下载安装连接器 CLI 的平台目录名。目录名同时用于选择编译期锁文件，
+/// 以及运行时落盘到 `~/.pinvou3/connectors/<platform>/bin/`。
+pub fn connector_platform_dir(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("windows", "x86_64") => Some("windows-x64"),
+        _ => None,
     }
+}
+
+/// Tauri 的真实 resource_dir。由 setup 在任何前端命令可执行前写入一次；
+/// Linux/macOS 的连接器 npm 命令用它定位随包 Node 与 npm CLI。
+pub fn set_runtime_resource_dir(path: PathBuf) {
+    let _ = RUNTIME_RESOURCE_DIR.set(path);
+}
+
+pub fn runtime_resource_dir() -> Option<PathBuf> {
+    RUNTIME_RESOURCE_DIR
+        .get()
+        .cloned()
+        .or_else(|| std::env::var_os("PINVOU3_RESOURCE_DIR").map(PathBuf::from))
+}
+
+pub fn bundled_connector_node() -> Option<PathBuf> {
+    let (path, _) = bundled_connector_runtime_paths_for(
+        &runtime_resource_dir()?,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
+    path.is_file().then_some(path)
+}
+
+pub fn bundled_connector_npm_cli() -> Option<PathBuf> {
+    let (_, path) = bundled_connector_runtime_paths_for(
+        &runtime_resource_dir()?,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
+    path.is_file().then_some(path)
+}
+
+fn bundled_connector_runtime_paths_for(
+    resource_dir: &std::path::Path,
+    os: &str,
+    arch: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    let root = resource_dir.join("runtime/codex-bridge/node");
+    let node = match (os, arch) {
+        ("linux", "aarch64" | "x86_64") => root.join("bin/node"),
+        ("macos", "aarch64") => root.join("darwin-arm64/bin/node"),
+        ("macos", "x86_64") => root.join("darwin-x64/bin/node"),
+        _ => return None,
+    };
+    let npm = root.join("lib/node_modules/npm/bin/npm-cli.js");
+    Some((node, npm))
 }
 /// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
 pub fn bundle_present_artifact_server() -> PathBuf {
@@ -276,6 +336,13 @@ pub fn session_workspace_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("workspace")
 }
 
+/// `~/.pinvou3/sessions/<session_id>/skills/` —— 该会话按 scope 物化的技能组合目录
+/// （skill 双 scope 治理：见 `features/assistant/skill_materialization.rs`）。
+/// 会话私有目录随会话删除一起清理，无需单独清理逻辑。
+pub fn session_skills_dir(session_id: &str) -> PathBuf {
+    sessions_root().join(session_id).join("skills")
+}
+
 /// `~/.pinvou3/sessions/<session_id>/instructions.md` —— 每个 session 独立的
 /// Legacy `~/.pinvou3/sessions/<sid>/instructions.md` 路径。
 ///
@@ -300,6 +367,15 @@ pub fn session_persona_events(session_id: &str) -> PathBuf {
 /// rerenderFromMessages 里插回。Boss 要主 AI 看审阅,走「转交」按钮发成 Boss 消息。
 pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("pinvou_reviews.json")
+}
+
+/// `~/.pinvou3/sessions/<session_id>/pinvou_scene_events.json` —— 用户消息的
+/// 专业场景展示标签（每条 `{pos, scene}`）。与 persona/review sidecar 一样独立于
+/// messages，避免把纯 UI 元数据注入 LLM 上下文，同时允许桌面端与 WebUI 共享恢复。
+pub fn session_pinvou_scene_events(session_id: &str) -> PathBuf {
+    sessions_root()
+        .join(session_id)
+        .join("pinvou_scene_events.json")
 }
 
 /// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` —— 每轮对话端到端耗时
@@ -448,26 +524,69 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn connector_bin_dir_is_linux_arm64_only() {
+    fn connector_bin_dir_covers_all_on_demand_platforms() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-connector-path-test");
         let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-connector-path-test");
+        let expected = |platform: &str| Some(root.join("connectors").join(platform).join("bin"));
         assert_eq!(
-            bundle_connector_bin_dir_for("linux", "aarch64"),
-            Some(
-                root.join("bundle")
-                    .join("connectors")
-                    .join("linux-arm64")
-                    .join("bin")
-            )
+            managed_connector_bin_dir_for("linux", "aarch64"),
+            expected("linux-arm64")
         );
-        assert_eq!(bundle_connector_bin_dir_for("windows", "x86_64"), None);
-        assert_eq!(bundle_connector_bin_dir_for("linux", "x86_64"), None);
+        assert_eq!(
+            managed_connector_bin_dir_for("linux", "x86_64"),
+            expected("linux-x64")
+        );
+        assert_eq!(
+            managed_connector_bin_dir_for("macos", "aarch64"),
+            expected("darwin-arm64")
+        );
+        assert_eq!(
+            managed_connector_bin_dir_for("macos", "x86_64"),
+            expected("darwin-x64")
+        );
+        assert_eq!(
+            managed_connector_bin_dir_for("windows", "x86_64"),
+            expected("windows-x64")
+        );
+        assert_eq!(managed_connector_bin_dir_for("windows", "aarch64"), None);
+        assert_eq!(managed_connector_bin_dir_for("freebsd", "x86_64"), None);
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
+    }
+
+    #[test]
+    fn connector_runtime_paths_cover_packaged_linux_and_macos_layouts() {
+        let resource = PathBuf::from("/opt/pinvou/resources");
+        let npm = resource.join("runtime/codex-bridge/node/lib/node_modules/npm/bin/npm-cli.js");
+        assert_eq!(
+            bundled_connector_runtime_paths_for(&resource, "linux", "x86_64"),
+            Some((
+                resource.join("runtime/codex-bridge/node/bin/node"),
+                npm.clone()
+            ))
+        );
+        assert_eq!(
+            bundled_connector_runtime_paths_for(&resource, "macos", "aarch64"),
+            Some((
+                resource.join("runtime/codex-bridge/node/darwin-arm64/bin/node"),
+                npm.clone()
+            ))
+        );
+        assert_eq!(
+            bundled_connector_runtime_paths_for(&resource, "macos", "x86_64"),
+            Some((
+                resource.join("runtime/codex-bridge/node/darwin-x64/bin/node"),
+                npm
+            ))
+        );
+        assert_eq!(
+            bundled_connector_runtime_paths_for(&resource, "windows", "x86_64"),
+            None
+        );
     }
 
     /// session artifacts 路径必须落在 ~/.pinvou3/sessions/<id>/artifacts/ 下。

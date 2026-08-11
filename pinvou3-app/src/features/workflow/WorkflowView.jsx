@@ -1,7 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
+import { Paperclip } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCompactViewport } from '../../hooks/useViewport.js';
 import { can, isWeb } from '../../shared/platform.js';
+import { dict } from '../../shared/i18n.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { ScaledHtmlPreview } from '../settings/SettingsView.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
@@ -60,12 +64,12 @@ const WidgetCard = ({ title, children, theme }) => {
     // [工作流分离 Stage D] 角色卡定义(id/名/描述/色/头像)和泳道布局不再前端硬编码——
     // 全部住在各工作流 workflow.json 的 ui 块里,由后端 list_workflows(模板页)/
     // get_workflow_state(run.ui,看板)下发。加新工作流前端零改动。
-    // 4 主态 chip
+    // 4 主态 chip（文案在 i18n uiWorkflow.states，按当前语言取）
     const UI_STATES = {
-      PENDING:      { label: '等待中',   emoji: '💤', color: '#9ca3af', accent: '#81c784' },
-      EXECUTING:    { label: '执行中',   emoji: '⚡', color: '#ffb74d', accent: '#4fc3f7' },
-      GATE_PENDING: { label: '等待确认', emoji: '🔔', color: '#f06292', accent: '#f06292' },
-      COMPLETED:    { label: '已完成',   emoji: '✅', color: '#aed581', accent: '#aed581' },
+      PENDING:      { emoji: '💤', color: '#9ca3af', accent: '#81c784' },
+      EXECUTING:    { emoji: '⚡', color: '#ffb74d', accent: '#4fc3f7' },
+      GATE_PENDING: { emoji: '🔔', color: '#f06292', accent: '#f06292' },
+      COMPLETED:    { emoji: '✅', color: '#aed581', accent: '#aed581' },
     };
     function toUiState(raw) {
       switch (raw) {
@@ -85,7 +89,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // - [B2 E1] 尚书省派单后出现差事节点(id 含 ~,静态部门角色从 run 消失):
     //   被取代的静态泳道在原位置换成按 wave 分层的"第N批"泳道;
     //   差事卡复用所属部(bu)的头像/配色,标题用差事名。
-    function layoutForRun(ui, agents) {
+    function layoutForRun(ui, agents, t) {
       const defsSrc = (ui && ui.agentDefs) || [];
       const byId = {};
       defsSrc.forEach(a => { byId[a.id] = a; });
@@ -106,7 +110,7 @@ const WidgetCard = ({ title, children, theme }) => {
           defs.push({ id, name: a.name || id, color: base.color, avatar: base.avatar });
         });
         Object.keys(waves).map(Number).sort((x, y) => x - y).forEach(w => {
-          lanes.push({ lane: laneNo++, title: '第' + w + '批', agents: waves[w] });
+          lanes.push({ lane: laneNo++, title: (t || dict.zh).uiWorkflow.waveBatch(w), agents: waves[w] });
         });
         wavesDone = true;
       };
@@ -125,54 +129,35 @@ const WidgetCard = ({ title, children, theme }) => {
       return { defs, lanes };
     }
 
-    function formatWorkflowLogRecord(record) {
+    function formatWorkflowLogRecord(record, t) {
       if (record == null) return '';
       if (typeof record === 'string') return record;
       if (typeof record !== 'object') return String(record);
-      const eventLabels = {
-        agent_failed: '❌ Agent 执行失败',
-        agent_failure_terminal: '🛑 失败已达终态',
-        agent_retry_scheduled: '🔄 已安排自动重试',
-        runtime_failure: '❌ 运行时失败',
-        scheduler_failure: '❌ 调度器失败',
-        failure_state: '🛑 当前失败状态',
-        dispatch: '▶️ 开始派发',
-        complete: '✅ 执行完成',
-        gate_fail: '⚠️ 交付检查未通过',
-        gate_pass: '✅ 交付检查通过',
-        rollback: '↩️ 工作流回滚',
-      };
-      const categoryLabels = {
-        model_auth: '模型鉴权',
-        permission: '工具权限',
-        timeout: '超时',
-        rate_limit: '限流',
-        tool: '工具调用',
-        network: '网络',
-        model: '模型服务',
-      };
+      const logLabels = (t || dict.zh).uiWorkflow.log;
+      const eventLabels = logLabels.events;
+      const categoryLabels = logLabels.categories;
       const timestamp = record.timestamp || record.ts || '';
       const event = record.event || record.kind || 'log';
       const head = `${timestamp ? '[' + timestamp + '] ' : ''}${eventLabels[event] || event}`;
       const context = [];
-      if (record.role_id) context.push('角色: ' + record.role_id);
-      if (record.agent_id) context.push('Agent: ' + record.agent_id);
-      if (record.stage) context.push('阶段: ' + record.stage);
-      if (record.category && record.category !== 'unknown') context.push('类型: ' + (categoryLabels[record.category] || record.category));
-      if (record.attempt) context.push('重试: ' + record.attempt + '/' + (record.max_retries || '?'));
+      if (record.role_id) context.push(logLabels.role + ': ' + record.role_id);
+      if (record.agent_id) context.push(logLabels.agent + ': ' + record.agent_id);
+      if (record.stage) context.push(logLabels.stage + ': ' + record.stage);
+      if (record.category && record.category !== 'unknown') context.push(logLabels.category + ': ' + (categoryLabels[record.category] || record.category));
+      if (record.attempt) context.push(logLabels.retry + ': ' + record.attempt + '/' + (record.max_retries || '?'));
       const lines = [head + (context.length ? ' · ' + context.join(' · ') : '')];
-      if (record.reason) lines.push('原因: ' + record.reason);
-      if (record.detail && record.detail !== record.reason) lines.push('详情: ' + record.detail);
+      if (record.reason) lines.push(logLabels.reason + ': ' + record.reason);
+      if (record.detail && record.detail !== record.reason) lines.push(logLabels.detail + ': ' + record.detail);
       return lines.join('\n');
     }
 
-    function workflowLogText(raw) {
+    function workflowLogText(raw, t) {
       if (raw == null) return '';
       if (typeof raw === 'string') return raw;
-      if (Array.isArray(raw)) return raw.map(formatWorkflowLogRecord).filter(Boolean).join('\n\n');
+      if (Array.isArray(raw)) return raw.map(r => formatWorkflowLogRecord(r, t)).filter(Boolean).join('\n\n');
       if (raw.lines && Array.isArray(raw.lines)) return raw.lines.join('\n');
       if (raw.text) return String(raw.text);
-      return formatWorkflowLogRecord(raw);
+      return formatWorkflowLogRecord(raw, t);
     }
 
     // Agent 头像。
@@ -260,10 +245,10 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // [per_page] fan-out chip 网格：把一个 per_page 节点展开成 N 个 SubAgent 实时状态格子。
-    const FanoutGrid = ({ fanout, isDark }) => {
+    const FanoutGrid = ({ fanout, isDark, t }) => {
       if (!fanout || !fanout.pages || !fanout.pages.length) return null;
       const COLORS = {
-        running:  { bg: '#1A73E8', fg: '#fff', label: '写' },
+        running:  { bg: '#1A73E8', fg: '#fff', label: t.uiWorkflow.fanoutRunning },
         done:     { bg: isDark ? '#1E3A2A' : '#137333', fg: '#fff', label: '✓' },
         retrying: { bg: '#E8710A', fg: '#fff', label: '↻' },
         queued:   { bg: isDark ? '#3C4043' : '#DADCE0', fg: isDark ? '#9AA0A6' : '#5F6368', label: '·' },
@@ -274,7 +259,7 @@ const WidgetCard = ({ title, children, theme }) => {
       return (
         <div className="mt-2 w-full">
           <div className={`text-[10px] mb-1 text-center ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>
-            {doneN}/{pages.length} 页完成 · {runN} 个 SubAgent 在写
+            {t.uiWorkflow.fanoutProgress(doneN, pages.length, runN)}
           </div>
           <div className="flex flex-wrap gap-1 justify-center">
             {pages.map(p => {
@@ -294,7 +279,7 @@ const WidgetCard = ({ title, children, theme }) => {
       );
     };
 
-    const AgentCard = ({ agent, status, failureReason, waitingFor, fanout, progress, tokens, theme, onApprove, onRetry, onClick }) => {
+    const AgentCard = ({ agent, status, failureReason, waitingFor, fanout, progress, tokens, theme, onApprove, onRetry, onClick, t }) => {
       const isDark = theme === 'dark';
       const st = status || 'pending';
       const uiState = toUiState(st);
@@ -312,13 +297,7 @@ const WidgetCard = ({ title, children, theme }) => {
         ? (isActive ? 'border-white/10' : isDone ? 'border-[#81C995]/20' : isFailed ? 'border-[#F28B82]/30' : 'border-white/5')
         : (isActive ? 'border-[#1A73E8]/20' : isDone ? 'border-[#137333]/10' : isFailed ? 'border-[#C5221F]/15' : 'border-black/5');
 
-      const statusLabels = {
-        pending: '待机休息', ready: '准备就绪', running: '正在工作…',
-        reviewing: '品悟评审中', gate_waiting: '等待你确认', gate_approval: '等待你确认', waiting_human: '等待你确认',
-        completed: '已完成', complete: '已完成', failed: '执行失败', stale: '需要重跑', skipped: '已跳过',
-        blocked: '已阻塞', 'blocked-upstream': '上游阻塞',
-        stopped: '已停止',
-      };
+      const statusLabels = t.uiWorkflow.statusLabels;
       const statusEmoji = {
         pending: '💤', ready: '🟢', running: '⚡', reviewing: '🔍',
         gate_waiting: '🔔', gate_approval: '🔔', waiting_human: '🔔', completed: '✅', complete: '✅',
@@ -326,7 +305,7 @@ const WidgetCard = ({ title, children, theme }) => {
         stopped: '⏹️',
       };
       const waitingLabel = (waitingFor && waitingFor.length > 0 && (isSleeping || isBlocked))
-        ? '等待 ' + waitingFor.map(id => AGENT_NAME_MAP[id] || id).join('、') + ' 交付'
+        ? t.uiWorkflow.waitingFor(waitingFor.map(id => AGENT_NAME_MAP[id] || id).join(t.uiWorkflow.listSep))
         : null;
       const uiInfo = uiState ? UI_STATES[uiState] : null;
 
@@ -337,7 +316,7 @@ const WidgetCard = ({ title, children, theme }) => {
           {uiInfo && (
             <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded-full font-medium tracking-wide"
                  style={{ background: uiInfo.color + '22', color: uiInfo.color }}>
-              {uiInfo.label}
+              {t.uiWorkflow.states[uiState]}
             </div>
           )}
           <div className={`mb-2 transition-transform duration-700 ${isActive ? 'scale-105' : ''}`}>
@@ -356,7 +335,7 @@ const WidgetCard = ({ title, children, theme }) => {
             : (isDark ? 'bg-white/5 text-[#5F6368]' : 'bg-black/5 text-[#9AA0A6]')
           }`}>
             <span>{statusEmoji[st] || '💤'}</span>
-            <span>{statusLabels[st] || '待机'}</span>
+            <span>{statusLabels[st] || t.uiWorkflow.idle}</span>
           </div>
           {(isFailed || isBlocked) && failureReason ? (
             <div data-testid={`workflow-agent-error-${agent.id}`} title={failureReason}
@@ -373,20 +352,20 @@ const WidgetCard = ({ title, children, theme }) => {
           ) : null}
           {tokens ? (
             <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>
-              ⬡ {((tokens.input + tokens.output) / 1000).toFixed(1)}k tok · {tokens.calls} 次调用
+              ⬡ {((tokens.input + tokens.output) / 1000).toFixed(1)}k tok · {t.uiWorkflow.callsText(tokens.calls)}
             </div>
           ) : null}
-          <FanoutGrid fanout={fanout} isDark={isDark} />
+          <FanoutGrid fanout={fanout} isDark={isDark} t={t} />
           {isWaiting && onApprove && (
             <button onClick={(e) => { e.stopPropagation(); onApprove(agent.id); }}
               className="mt-2 text-[11px] px-4 py-1 rounded-full font-medium bg-[#1A73E8] text-white hover:bg-[#1557B0] transition-colors">
-              确认通过
+              {t.uiWorkflow.cardApprove}
             </button>
           )}
           {(isFailed || st === 'stale' || isBlocked) && onRetry && (
             <button onClick={(e) => { e.stopPropagation(); onRetry(agent.id); }}
               className="mt-2 text-[11px] px-4 py-1 rounded-full font-medium bg-[#C5221F] text-white hover:bg-[#A50E0E] transition-colors">
-              🔄 重跑
+              {t.uiWorkflow.rerun}
             </button>
           )}
         </div>
@@ -395,10 +374,10 @@ const WidgetCard = ({ title, children, theme }) => {
 
     // 自上而下 路由图：层层向下，符合古代权力分布(皇上→太子→三省→六部→回奏)。
     // 卡片居中；卡片之间按【实际路由依赖】用曲线相连——无明确路由的卡片不连线。
-    const AgentPipelineView = ({ ui, agents, agentStates, agentErrors, agentDeps, fanout, progress, tokens, theme, onApprove, onRetry, onCardClick }) => {
+    const AgentPipelineView = ({ ui, agents, agentStates, agentErrors, agentDeps, fanout, progress, tokens, theme, onApprove, onRetry, onCardClick, t }) => {
       const isDark = theme === 'dark';
       // 布局全按 run.ui(workflow.json)+ 实际 agents 算;差事动态分批在 layoutForRun 内处理。
-      const { defs, lanes } = layoutForRun(ui, agents);
+      const { defs, lanes } = layoutForRun(ui, agents, t);
       const containerRef = useRef(null);
       const cardRefs = useRef({});
       const [edges, setEdges] = useState([]);
@@ -471,7 +450,7 @@ const WidgetCard = ({ title, children, theme }) => {
                           fanout={(fanout || {})[rid]}
                           progress={(progress || {})[rid]}
                           tokens={(tokens || {})[rid]}
-                          theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} />
+                          theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} t={t} />
                       </div>
                     );
                   })}
@@ -505,7 +484,7 @@ const WidgetCard = ({ title, children, theme }) => {
                         fanout={(fanout || {})[rid]}
                         progress={(progress || {})[rid]}
                         tokens={(tokens || {})[rid]}
-                        theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} />
+                        theme={theme} onApprove={onApprove} onRetry={onRetry} onClick={onCardClick} t={t} />
                     </div>
                   );
                 })}
@@ -519,7 +498,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // —— 右侧角色详情抽屉 ——
     // [2026-06-07] 通用文件预览浮层:产出文件/产物点文件名内联看,不再甩浏览器。
     // json 自动 parse+缩进+解 \u 转义;md→markdown、html→iframe、text/json→<pre>;其余给外部打开兜底。
-    const FilePreviewModal = ({ path, sessionId, theme, onClose }) => {
+    const FilePreviewModal = ({ path, sessionId, theme, onClose, t }) => {
       const isDark = theme === 'dark';
       const [pv, setPv] = useState({ loading: true });
       useEffect(() => {
@@ -558,21 +537,21 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
               <span className={`text-[14px] font-medium truncate ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} title={path}>{base}</span>
               <div className="flex items-center gap-2">
-                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{isWeb ? '↓ 下载' : '↗ 外部'}</button>}
+                {(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-2 py-1 text-[12px] rounded ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}>{isWeb ? t.uiWorkflow.download : t.uiWorkflow.openExternal}</button>}
                 <button onClick={onClose} className={`w-7 h-7 rounded-full flex items-center justify-center ${isDark ? 'hover:bg-[#333537] text-[#C4C7C5]' : 'hover:bg-[#F0F4F9] text-[#444746]'}`}>✕</button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 min-w-0">
-              {pv.loading ? <div className={`text-[13px] ${dim}`}>加载中…</div>
-                : pv.missing ? <div className={`text-[13px] ${dim}`}>文件不存在或已被删除</div>
-                : pv.error ? <div className="text-[13px] text-[#F28B82]">读取失败: {pv.error}</div>
+              {pv.loading ? <div className={`text-[13px] ${dim}`}>{t.uiWorkflow.loading}</div>
+                : pv.missing ? <div className={`text-[13px] ${dim}`}>{t.uiWorkflow.fileMissing}</div>
+                : pv.error ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.readFailed(pv.error)}</div>
                 : pv.kind === 'md' ? <div className={`msg-md text-[14px] leading-relaxed ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(pv.text || '') }} />
-                : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} />
+                : pv.kind === 'html' ? <ScaledHtmlPreview html={pv.text || ''} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
                 : (pv.kind === 'json' || pv.kind === 'text') ? <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{pv.text}</pre>
-                : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">图片读取失败: {pv.imgErr}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
+                : pv.kind === 'image' ? (pv.imgErr ? <div className="text-[13px] text-[#F28B82]">{t.uiWorkflow.imageReadFailed(pv.imgErr)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={pv.dataUrl} alt={base} />)
                 : pv.visual && pv.visual.mode === 'html' ? <iframe sandbox="allow-same-origin" className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(pv.visual.html || '') + OFFICE_HTML_STYLE} />
                 : pv.visual && pv.visual.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(pv.visual.images || []).map((src, i) => <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />)}</div>
-                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>此类型暂不支持预览</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{isWeb ? '↓ 下载产物' : '↗ 外部打开'}</button>}</div>}
+                : <div><p className={`text-[13px] mb-2 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.uiWorkflow.previewUnsupported}</p>{(!isWeb || can('artifactDownload')) && <button onClick={() => bridge.artifacts.openArtifactExternal(path, sessionId)} className={`px-3 py-1.5 rounded-full text-[13px] ${isDark ? 'bg-[#A8C7FA] text-[#062E6F]' : 'bg-[#0B57D0] text-white'}`}>{isWeb ? t.uiWorkflow.downloadArtifact : t.uiWorkflow.openExternalArtifact}</button>}</div>}
             </div>
           </div>
         </div>
@@ -580,7 +559,7 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // 🏛️ 最终奏折：三省六部办差完毕、太子准奏后展开的结案呈报(回奏 final_report.md)。代入感拉满。
-    const ImperialMemorialModal = ({ projectDir, sessionId, theme, onClose }) => {
+    const ImperialMemorialModal = ({ projectDir, sessionId, theme, onClose, t }) => {
       const [st, setSt] = useState({ loading: true, text: '', error: null });
       const [closing, setClosing] = useState(false);
       // 御赐宝箱:两层——products=真成品(题目命名的最终报告+二进制成品),装箱;
@@ -633,17 +612,17 @@ const WidgetCard = ({ title, children, theme }) => {
               style={{ background: 'linear-gradient(180deg,#f7eed8 0%,#f0e1bf 100%)', color: '#3a2a18', border: '1px solid #b8893f', boxShadow: '0 24px 70px rgba(0,0,0,.55)',
                 animation: `memorial-paper-${closing ? 'close' : 'open'} ${ease}` }}>
               <div className="relative px-8 pt-6 pb-3 text-center shrink-0">
-                <div style={{ color: '#8a1c1c', letterSpacing: '8px' }} className="text-[22px] font-semibold">奏　折</div>
-                <div style={{ color: '#7a5a2a' }} className="text-[12px] mt-1">三省六部办差完毕 · 回奏呈报</div>
+                <div style={{ color: '#8a1c1c', letterSpacing: '8px' }} className="text-[22px] font-semibold">{t.uiWorkflow.memorialTitle}</div>
+                <div style={{ color: '#7a5a2a' }} className="text-[12px] mt-1">{t.uiWorkflow.memorialSubtitle}</div>
                 <div style={{ position: 'absolute', top: '12px', right: '22px', color: '#b21e1e', border: '3px double #b21e1e', borderRadius: '6px', padding: '5px 9px', fontWeight: 700, fontSize: '19px', letterSpacing: '3px', fontFamily: 'serif',
-                  animation: closing ? 'none' : 'memorial-stamp .5s cubic-bezier(.3,1.4,.5,1) .55s both', transform: 'rotate(-14deg)', opacity: .82 }}>准奏</div>
+                  animation: closing ? 'none' : 'memorial-stamp .5s cubic-bezier(.3,1.4,.5,1) .55s both', transform: 'rotate(-14deg)', opacity: .82 }}>{t.uiWorkflow.memorialStamp}</div>
               </div>
               <div style={{ borderTop: '1px solid #c9a96a' }}></div>
               <div className="flex-1 overflow-y-auto custom-scrollbar px-8 py-5 min-w-0">
-                {st.loading ? <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">展卷中…</div>
-                  : st.error ? <div className="text-[13px] text-center py-10" style={{ color: '#8a1c1c' }}>奏折读取失败：{st.error}</div>
+                {st.loading ? <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">{t.uiWorkflow.memorialLoading}</div>
+                  : st.error ? <div className="text-[13px] text-center py-10" style={{ color: '#8a1c1c' }}>{t.uiWorkflow.memorialReadFailed(st.error)}</div>
                   : st.text ? <div className="msg-md light-code text-[14px] leading-[1.9]" style={{ color: '#3a2a18' }} dangerouslySetInnerHTML={{ __html: bridge.rendering.renderMarkdown(st.text) }} />
-                  : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">尚无回奏内容</div>}
+                  : <div style={{ color: '#7a5a2a' }} className="text-[13px] text-center py-10">{t.uiWorkflow.memorialEmpty}</div>}
               </div>
               {deliv.products.length > 0 && (
                 <div className="shrink-0 px-8 pt-2 pb-1 text-center" style={{ borderTop: '1px dashed #c9a96a' }}>
@@ -652,12 +631,12 @@ const WidgetCard = ({ title, children, theme }) => {
                       {deliv.products.concat(deliv.papers).map((f, i) => {
                         const isProduct = i < deliv.products.length;
                         const ext = (String(f.name).split('.').pop() || '').toLowerCase();
-                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? '表格' : ext === 'pdf' ? 'PDF'
-                          : (ext === 'html' || ext === 'htm') ? '网页' : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? '图' : '文书';
+                        const chip = (ext === 'pptx' || ext === 'ppt') ? 'PPT' : ext === 'xlsx' ? t.uiWorkflow.chipTable : ext === 'pdf' ? 'PDF'
+                          : (ext === 'html' || ext === 'htm') ? t.uiWorkflow.chipWeb : (ext === 'png' || ext === 'jpg' || ext === 'jpeg') ? t.uiWorkflow.chipImage : t.uiWorkflow.chipDoc;
                         const sz = f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
                         if (isWeb && !can('artifactDownload')) return null;
                         return (
-                          <button key={f.path} onClick={() => bridge.artifacts.openArtifactExternal(f.path)} title={'打开:' + (f.title || f.name)}
+                          <button key={f.path} onClick={() => bridge.artifacts.openArtifactExternal(f.path)} title={t.uiWorkflow.openTitle(f.title || f.name)}
                             style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                               animation: `chest-item-pop .45s cubic-bezier(.3,1.4,.5,1) ${i * 0.09}s both` }}>
                             {/* 展开的小卷轴(斜 45° 视角):两端轴杆 + 中间纸面写标题 */}
@@ -668,7 +647,7 @@ const WidgetCard = ({ title, children, theme }) => {
                                   background: 'linear-gradient(90deg,#e8d9b4 0%,#f7eed8 12%,#f7eed8 88%,#e8d9b4 100%)',
                                   borderTop: '1px solid #c9a96a', borderBottom: '1px solid #c9a96a', position: 'relative' }}>
                                   {isProduct && <div style={{ position: 'absolute', top: '3px', right: '4px', color: '#b21e1e', border: '1.5px solid #b21e1e',
-                                    borderRadius: '3px', padding: '0 3px', fontSize: '9px', fontFamily: 'serif', opacity: .85, transform: 'rotate(-8deg)' }}>成品</div>}
+                                    borderRadius: '3px', padding: '0 3px', fontSize: '9px', fontFamily: 'serif', opacity: .85, transform: 'rotate(-8deg)' }}>{t.uiWorkflow.productBadge}</div>}
                                   <div className="text-[12px] leading-[1.5] font-medium" style={{ color: '#3a2a18',
                                     display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                                     maxHeight: '54px', wordBreak: 'break-all' }}>{f.title || f.name}</div>
@@ -683,24 +662,24 @@ const WidgetCard = ({ title, children, theme }) => {
                     </div>
                   )}
                   {/* 宝箱(白浪选的钥匙孔款):点击开箱,金光迸出、成品弹出 */}
-                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? '收箱' : '点击开箱'}
+                  <button onClick={() => setChestOpen((o) => !o)} title={chestOpen ? t.uiWorkflow.chestClose : t.uiWorkflow.chestOpenTitle}
                     className="relative inline-block" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                     {chestOpen && <div style={{ position: 'absolute', left: '50%', top: '-14px', width: '170px', height: '64px',
                       background: 'radial-gradient(ellipse at 50% 100%, rgba(255,200,60,.7) 0%, rgba(255,200,60,0) 70%)',
                       animation: 'chest-glow .5s ease both', pointerEvents: 'none', zIndex: 0 }}></div>}
-                    <img src="avatars/chengpin_chest.png" alt="成品箱"
+                    <img src="avatars/chengpin_chest.png" alt={t.uiWorkflow.chestAlt}
                       style={{ width: '118px', display: 'block', borderRadius: '8px', position: 'relative', zIndex: 1,
                         boxShadow: '0 4px 12px rgba(58,42,24,.3)',
                         animation: chestOpen ? 'chest-open-bounce .5s cubic-bezier(.34,1.45,.6,1) both' : 'none' }} />
                     <div className="text-[10px] mt-0.5" style={{ color: '#7a5a2a' }}>
-                      {chestOpen ? '▲ 收箱' : `▼ 点击开箱 · 文书 ${deliv.products.length + deliv.papers.length} 件`}
+                      {chestOpen ? t.uiWorkflow.chestCollapse : t.uiWorkflow.chestExpand(deliv.products.length + deliv.papers.length)}
                     </div>
                   </button>
                 </div>
               )}
               <div className="shrink-0 text-center py-3" style={{ borderTop: '1px solid #c9a96a' }}>
-                <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>钦　此</div>
-                <button onClick={requestClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>朕已阅 · 收卷</button>
+                <div className="text-[15px]" style={{ color: '#8a1c1c', letterSpacing: '6px' }}>{t.uiWorkflow.memorialEnd}</div>
+                <button onClick={requestClose} className="mt-2 px-5 py-1.5 rounded-full text-[13px]" style={{ background: '#8a1c1c', color: '#f7eed6' }}>{t.uiWorkflow.memorialClose}</button>
               </div>
             </div>
             <div style={roller(true)}></div>
@@ -713,7 +692,7 @@ const WidgetCard = ({ title, children, theme }) => {
     // [2026-06-07 #18/#20] 生图引擎面板：客户选 provider + 填自己的 key（不用白浪的）。
     // (ImageProviderPanel 已随 legacy-ppt-workflow 工作流 2026-06-11 存档下线:仅 illustrator 角色用)
 
-    const CardDrawer = ({ roleId, projectDir, sessionId, failureReason, theme, onClose }) => {
+    const CardDrawer = ({ roleId, projectDir, sessionId, failureReason, theme, onClose, t }) => {
       const isDark = theme === 'dark';
       const [info, setInfo] = useState({ loading: false, error: null, data: null });
       const [outputs, setOutputs] = useState({ loading: false, error: null, data: null });
@@ -747,15 +726,6 @@ const WidgetCard = ({ title, children, theme }) => {
           return { path, basename: base };
         });
       };
-      const fileExt = (name) => (String(name).split('.').pop() || '').toLowerCase();
-      const fileIcon = (name) => {
-        const e = fileExt(name);
-        if (['md', 'markdown', 'txt'].includes(e)) return '📄';
-        if (['html', 'htm'].includes(e)) return '🌐';
-        if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(e)) return '🖼️';
-        if (['json', 'yaml', 'yml'].includes(e)) return '🔢';
-        return '📎';
-      };
       const verdictStyle = (v) => {
         const s = String(v || '').toLowerCase();
         if (['pass', 'passed', 'approve', 'approved', 'ok'].includes(s)) return isDark ? 'bg-[#1E3A2A] text-[#93D5A6]' : 'bg-[#E6F4EA] text-[#137333]';
@@ -772,7 +742,7 @@ const WidgetCard = ({ title, children, theme }) => {
       const dimCls = isDark ? 'text-[#8E8E8E]' : 'text-[#757575]';
       const secHeadCls = `text-[12px] font-semibold mb-2 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`;
       const StateLine = ({ st, empty }) => {
-        if (st.loading) return <div className={`text-[13px] ${dimCls}`}>加载中…</div>;
+        if (st.loading) return <div className={`text-[13px] ${dimCls}`}>{t.uiWorkflow.loading}</div>;
         if (st.error) return <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>⚠️ {st.error}</div>;
         if (empty) return <div className={`text-[13px] ${dimCls}`}>{empty}</div>;
         return null;
@@ -783,7 +753,7 @@ const WidgetCard = ({ title, children, theme }) => {
       }) : [];
       const gd = gate.data || {};
       const findings = Array.isArray(gd.findings) ? gd.findings : [];
-      const tail = workflowLogText(logs.data);
+      const tail = workflowLogText(logs.data, t);
       const meta = (info.data && info.data.registry_meta) || {};
       const promptMd = (info.data && info.data.prompt_md) || '';
       const inputSection = (() => { const m = promptMd.match(/##\s*你的输入[\s\S]*?(?=\n##\s|$)/); return m ? m[0].replace(/##\s*你的输入\s*/, '').trim() : ''; })();
@@ -801,21 +771,21 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
               {failureReason && (
                 <section data-testid="workflow-failure-reason">
-                  <div className={`text-[12px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>❌ 最近失败原因</div>
+                  <div className={`text-[12px] font-semibold mb-2 ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.uiWorkflow.recentFailure}</div>
                   <pre className={`text-[12px] leading-relaxed whitespace-pre-wrap break-words font-mono rounded-[12px] p-3 border ${isDark ? 'border-[#F28B82]/30 bg-[#2A1A1A] text-[#F28B82]' : 'border-[#C5221F]/20 bg-[#FFF5F5] text-[#A50E0E]'}`}>{failureReason}</pre>
                 </section>
               )}
               <section>
-                <div className={secHeadCls}>🛠 角色说明</div>
-                <StateLine st={info} empty={!info.loading && !info.error && !info.data ? '暂无角色信息' : null} />
+                <div className={secHeadCls}>{t.uiWorkflow.roleInfo}</div>
+                <StateLine st={info} empty={!info.loading && !info.error && !info.data ? t.uiWorkflow.noRoleInfo : null} />
                 {info.data && (
                   <div className="space-y-3 text-[13px]">
                     <div className={bodyCls}>
-                      <span className={dimCls}>名称：</span>{meta.name || roleId}
+                      <span className={dimCls}>{t.uiWorkflow.nameLabel}</span>{meta.name || roleId}
                       <span className={dimCls}> · max_steps {meta.max_steps != null ? meta.max_steps : '—'} · gate {meta.gate || '—'}{meta.timeout_secs ? ' · timeout ' + meta.timeout_secs + 's' : ''}</span>
                     </div>
                     <div>
-                      <div className={`${dimCls} mb-1`}>🔧 工具</div>
+                      <div className={`${dimCls} mb-1`}>{t.uiWorkflow.tools}</div>
                       <div className="flex flex-wrap gap-1">
                         {(meta.tools || []).length ? (meta.tools).map((t, i) => (
                           <span key={i} className={`text-[11px] px-1.5 py-0.5 rounded font-mono ${isDark ? 'bg-[#333537] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>{t}</span>
@@ -824,13 +794,13 @@ const WidgetCard = ({ title, children, theme }) => {
                     </div>
                     {inputSection && (
                       <div>
-                        <div className={`${dimCls} mb-1`}>⬇ 输入要求</div>
+                        <div className={`${dimCls} mb-1`}>{t.uiWorkflow.inputReq}</div>
                         <div className={`${bodyCls} whitespace-pre-wrap text-[12px] leading-relaxed`}>{inputSection}</div>
                       </div>
                     )}
                     <div>
-                      <div className={`${dimCls} mb-1`}>⬆ 输出</div>
-                      <div className={bodyCls}>{(meta.outputs || []).join('、') || '—'}</div>
+                      <div className={`${dimCls} mb-1`}>{t.uiWorkflow.outputLabel}</div>
+                      <div className={bodyCls}>{(meta.outputs || []).join(t.uiWorkflow.listSep) || '—'}</div>
                       {meta.output_schema && (
                         <ul className="mt-1 space-y-0.5">
                           {Object.keys(meta.output_schema).map((k, i) => (
@@ -844,7 +814,7 @@ const WidgetCard = ({ title, children, theme }) => {
                     </div>
                     {promptMd && (
                       <details>
-                        <summary className={`cursor-pointer text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>📜 查看完整提示词</summary>
+                        <summary className={`cursor-pointer text-[12px] ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.viewFullPrompt}</summary>
                         <pre className={`mt-2 text-[11px] whitespace-pre-wrap break-words font-mono max-h-[300px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border ${isDark ? 'border-white/10 bg-[#131314] text-[#C4C7C5]' : 'border-black/10 bg-[#F8FAFC] text-[#444746]'}`}>{promptMd}</pre>
                       </details>
                     )}
@@ -852,16 +822,16 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </section>
               <section>
-                <div className={secHeadCls}>📄 产出文件</div>
-                <StateLine st={outputs} empty={!outputs.loading && !outputs.error && files.length === 0 ? '暂无产出' : null} />
+                <div className={secHeadCls}>{t.uiWorkflow.outputFiles}</div>
+                <StateLine st={outputs} empty={!outputs.loading && !outputs.error && files.length === 0 ? t.uiWorkflow.noOutputs : null} />
                 {files.length > 0 && (
                   <div className="space-y-1">
                     {files.map((f, i) => (
                       <div key={i} title={f.path || f.basename} className={`flex items-center gap-2 px-2.5 py-2 rounded-[12px] border ${isDark ? 'border-white/10 bg-[#131314]' : 'border-black/10 bg-[#F8FAFC]'}`}>
-                        <span className="shrink-0">{fileIcon(f.basename)}</span>
-                        <span onClick={() => f.path && setPreviewPath(f.path)} title="点击预览" className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || '(未命名)'}</span>
+                        <FileTypeIcon name={f.basename} className="h-4 w-4 shrink-0" />
+                        <span onClick={() => f.path && setPreviewPath(f.path)} title={t.uiWorkflow.clickPreview} className={`flex-1 truncate text-[13px] cursor-pointer hover:underline ${titleCls}`}>{f.basename || t.uiWorkflow.unnamed}</span>
                         {f.path && (
-                          <button title="外部打开" onClick={() => bridge.available && bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
+                          <button title={t.uiWorkflow.openExternalTitle} onClick={() => bridge.available && bridge.artifacts.openArtifactExternal && bridge.artifacts.openArtifactExternal(f.path)} className={`shrink-0 text-[13px] ${dimCls} hover:opacity-80`}>↗</button>
                         )}
                       </div>
                     ))}
@@ -869,8 +839,8 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </section>
               <section>
-                <div className={secHeadCls}>📋 评审结果</div>
-                <StateLine st={gate} empty={!gate.loading && !gate.error && !gd.verdict && findings.length === 0 ? '尚无评审记录' : null} />
+                <div className={secHeadCls}>{t.uiWorkflow.reviewResult}</div>
+                <StateLine st={gate} empty={!gate.loading && !gate.error && !gd.verdict && findings.length === 0 ? t.uiWorkflow.noReview : null} />
                 {!gate.loading && !gate.error && (gd.verdict || findings.length > 0) && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -890,21 +860,21 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </section>
               <section>
-                <div className={secHeadCls}>📋 运行日志（尾 60 条）</div>
-                <StateLine st={logs} empty={!logs.loading && !logs.error && !tail ? '暂无日志' : null} />
+                <div className={secHeadCls}>{t.uiWorkflow.runLogs(60)}</div>
+                <StateLine st={logs} empty={!logs.loading && !logs.error && !tail ? t.uiWorkflow.noLogs : null} />
                 {!logs.loading && !logs.error && tail && (
                   <pre className={`text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono max-h-[320px] overflow-y-auto custom-scrollbar rounded-[12px] p-3 border ${isDark ? 'border-white/10 bg-[#131314] text-[#C4C7C5]' : 'border-black/10 bg-[#F8FAFC] text-[#444746]'}`}>{tail}</pre>
                 )}
               </section>
             </div>
           </div>
-          {previewPath && <FilePreviewModal path={previewPath} sessionId={sessionId} theme={theme} onClose={() => setPreviewPath(null)} />}
+          {previewPath && <FilePreviewModal path={previewPath} sessionId={sessionId} theme={theme} onClose={() => setPreviewPath(null)} t={t} />}
         </div>
       );
     };
 
     // —— 底部交互区：问答卡 / gate 卡 / 系统卡 ——
-    const WfUserInputCard = ({ card, theme }) => {
+    const WfUserInputCard = ({ card, theme, t }) => {
       const isDark = theme === 'dark';
       const questions = card.questions || [];
       const [answers, setAnswers] = useState(() => questions.map(() => null));
@@ -924,7 +894,7 @@ const WidgetCard = ({ title, children, theme }) => {
       }
       function setOther(qi, val) {
         const ot = otherText.slice(); ot[qi] = val; setOtherText(ot);
-        const next = answers.slice(); next[qi] = val.trim() ? { id: questions[qi].id, label: '其他', value: val.trim() } : null; setAnswers(next);
+        const next = answers.slice(); next[qi] = val.trim() ? { id: questions[qi].id, kind: 'other', label: t.uiToolRender.other, value: val.trim() } : null; setAnswers(next);
       }
       function submit() { if (locked) return; if (!answers.every(a => a != null)) return; bridge.workflow.submitWorkflowUserInput(card.cardId, card.toolCallId, answers); }
       const canSubmit = answers.length > 0 && answers.every(a => a != null);
@@ -932,14 +902,14 @@ const WidgetCard = ({ title, children, theme }) => {
         const cancelled = card.cardState === 'cancelled';
         return (
           <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🤔 AI 想问你几个问题</div>
-            <div className={`text-[13px] ${cancelled ? (isDark ? 'text-[#8E8E8E]' : 'text-[#757575]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{cancelled ? '✕ 已取消' : '✓ 已提交'}</div>
+            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.aiQuestions}</div>
+            <div className={`text-[13px] ${cancelled ? (isDark ? 'text-[#8E8E8E]' : 'text-[#757575]') : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')}`}>{cancelled ? t.uiWorkflow.cancelled : t.uiWorkflow.submitted}</div>
           </div>
         );
       }
       return (
         <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#A8C7FA]/30' : 'bg-white border-[#0B57D0]/20'}`}>
-          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🤔 AI 想问你几个问题</div>
+          <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.aiQuestions}</div>
           {/* [2026-06-06] 素材上传：选文件 → 拷进当前 run 配套材料/ → 再选「已补充」让审计员重扫 */}
           <div className="mb-3 flex items-center flex-wrap gap-2">
             {(!isWeb || can('hostFilePicker')) && <button disabled={matState.busy}
@@ -949,14 +919,14 @@ const WidgetCard = ({ title, children, theme }) => {
                 catch (e) { setMatState({ busy: false, names: matState.names }); }
               }}
               className={`px-3 py-1.5 rounded-[10px] text-[13px] border transition-colors disabled:opacity-50 ${isDark ? 'border-[#A8C7FA]/40 text-[#A8C7FA] hover:bg-[#A8C7FA]/10' : 'border-[#0B57D0]/30 text-[#0B57D0] hover:bg-[#0B57D0]/5'}`}>
-              {matState.busy ? '上传中…' : '📎 上传素材文件'}
+              {matState.busy ? t.uiWorkflow.uploading : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{t.uiWorkflow.uploadMaterials}</span>}
             </button>}
-            {matState.names.length > 0 && <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>已上传 {matState.names.length} 个：{matState.names.join('、')}</span>}
+            {matState.names.length > 0 && <span className={`text-[12px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>{t.uiWorkflow.uploaded(matState.names.length)}{matState.names.join(t.uiWorkflow.listSep)}</span>}
           </div>
           <div className="space-y-4">
             {questions.map((q, qi) => (
               <div key={q.id || qi}>
-                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || ('Q' + (qi + 1))}</div>
+                <div className={`text-[12px] font-semibold ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{q.header || t.uiWorkflow.questionHeader(qi + 1)}</div>
                 <div className={`text-[13px] mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{q.question || ''}</div>
                 <div className="flex flex-col gap-1.5">
                   {(q.options || []).map((opt, oi) => {
@@ -970,11 +940,11 @@ const WidgetCard = ({ title, children, theme }) => {
                     );
                   })}
                   <button onClick={() => toggleOther(qi)}
-                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi] && answers[qi].label === '其他' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
-                    <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>💬 其他(自己写)</div>
+                    className={`text-left px-3 py-2 rounded-[12px] border transition-colors ${answers[qi]?.kind === 'other' ? (isDark ? 'border-[#A8C7FA] bg-[#A8C7FA]/10' : 'border-[#0B57D0] bg-[#0B57D0]/5') : (isDark ? 'border-white/10 hover:bg-[#282A2C]' : 'border-black/10 hover:bg-[#E8EDF2]')}`}>
+                    <div className={`text-[13px] font-medium ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.uiWorkflow.otherOption}</div>
                   </button>
                   {otherOpen[qi] && (
-                    <textarea rows="2" value={otherText[qi]} onChange={e => setOther(qi, e.target.value)} placeholder="写下你想说的..."
+                    <textarea rows="2" value={otherText[qi]} onChange={e => setOther(qi, e.target.value)} placeholder={t.uiWorkflow.otherPlaceholder}
                       className={`w-full rounded-[10px] p-2 text-[13px] outline-none border ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
                   )}
                 </div>
@@ -982,13 +952,13 @@ const WidgetCard = ({ title, children, theme }) => {
             ))}
           </div>
           <div className="flex justify-end mt-3">
-            <button disabled={!canSubmit} onClick={submit} className={`${cardBtnCls(isDark, 'primary')} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>提交</button>
+            <button disabled={!canSubmit} onClick={submit} className={`${cardBtnCls(isDark, 'primary')} ${canSubmit ? '' : 'opacity-50 cursor-not-allowed'}`}>{t.uiWorkflow.submit}</button>
           </div>
         </div>
       );
     };
 
-    const GateApprovalCard = ({ card, theme }) => {
+    const GateApprovalCard = ({ card, theme, t }) => {
       const isDark = theme === 'dark';
       const findings = card.findings || [];
       const locked = !!card.resolved;
@@ -1004,14 +974,14 @@ const WidgetCard = ({ title, children, theme }) => {
         const approved = card.cardState === 'approved';
         return (
           <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · 产出待确认</div>
-            <div className={`text-[13px] ${approved ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{approved ? '✓ 已通过' : '✕ 已打回'}</div>
+            <div className={`text-[14px] font-semibold mb-1 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
+            <div className={`text-[13px] ${approved ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]') : (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')}`}>{approved ? t.uiWorkflow.approved : t.uiWorkflow.rejected}</div>
           </div>
         );
       }
       return (
         <div className={`rounded-[16px] border p-4 ${isDark ? 'bg-[#1E1F20] border-[#F9A825]/30' : 'bg-white border-[#F9A825]/30'}`}>
-          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · 产出待确认</div>
+          <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>🟠 {card.roleName || card.roleId} · {t.uiWorkflow.pendingConfirm}</div>
           {findings.length > 0 ? (
             <ul className="space-y-1 mb-3">
               {findings.map((f, i) => (
@@ -1019,23 +989,23 @@ const WidgetCard = ({ title, children, theme }) => {
               ))}
             </ul>
           ) : (
-            <div className={`text-[13px] mb-3 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>无评审备注</div>
+            <div className={`text-[13px] mb-3 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.noReviewNotes}</div>
           )}
           {rejecting && (
-            <textarea rows="2" value={reason} autoFocus onChange={e => setReason(e.target.value)} placeholder="打回原因(可选)…"
+            <textarea rows="2" value={reason} autoFocus onChange={e => setReason(e.target.value)} placeholder={t.uiWorkflow.rejectPlaceholder}
               className={`w-full rounded-[10px] p-2 text-[13px] outline-none border mb-2 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
           )}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button className={cardBtnCls(isDark)} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>📄 查看产出</button>
+            <button className={cardBtnCls(isDark)} onClick={() => card.roleId && bridge.workflow.selectWorkflowRole(card.roleId)}>{t.uiWorkflow.viewOutputs}</button>
             {rejecting ? (
               <React.Fragment>
-                <button className={cardBtnCls(isDark)} onClick={() => { setRejecting(false); setReason(''); }}>取消</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>✕ 确认打回</button>
+                <button className={cardBtnCls(isDark)} onClick={() => { setRejecting(false); setReason(''); }}>{t.uiWorkflow.cancel}</button>
+                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.rejectWorkflowGate(card.cardId, card.roleId, reason.trim())}>{t.uiWorkflow.confirmReject}</button>
               </React.Fragment>
             ) : (
               <React.Fragment>
-                <button className={cardBtnCls(isDark)} onClick={() => setRejecting(true)}>✕ 打回</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>✓ 通过</button>
+                <button className={cardBtnCls(isDark)} onClick={() => setRejecting(true)}>{t.uiWorkflow.reject}</button>
+                <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.workflow.approveWorkflowGate(card.cardId, card.roleId)}>{t.uiWorkflow.gateApprove}</button>
               </React.Fragment>
             )}
           </div>
@@ -1054,9 +1024,9 @@ const WidgetCard = ({ title, children, theme }) => {
             return (
               <div key={card.cardId || i} style={stackStyle} className="transition-transform hover:translate-y-[-2px]">
                 {card.kind === 'user_input' ? (
-                  <WfUserInputCard card={card} theme={theme} />
+                  <WfUserInputCard card={card} theme={theme} t={t} />
                 ) : card.kind === 'gate' ? (
-                  <GateApprovalCard card={card} theme={theme} />
+                  <GateApprovalCard card={card} theme={theme} t={t} />
                 ) : card.kind === 'system' ? (
                   <div className={`rounded-[12px] border px-3 py-2 text-[13px] flex items-center gap-2 ${isDark ? 'bg-[#1E1F20] border-white/10 text-[#C4C7C5]' : 'bg-white border-black/10 text-[#444746]'}`}><span>⚙️</span><span className="flex-1">{card.text || ''}</span></div>
                 ) : card.kind === 'artifact' ? (
@@ -1064,8 +1034,8 @@ const WidgetCard = ({ title, children, theme }) => {
                     <div className={`text-[14px] font-semibold mb-2 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{card.text || t.uiWorkflow.completed}</div>
                     <div className={`text-[12px] mb-3 break-all ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{card.path}</div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button className={cardBtnCls(isDark)} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>📁 打开所在文件夹</button>
-                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>▶ 打开成品</button>
+                      <button className={cardBtnCls(isDark)} onClick={() => bridge.artifacts.openContainingFolder(card.path)}>{t.uiWorkflow.openFolder}</button>
+                      <button className={cardBtnCls(isDark, 'primary')} onClick={() => bridge.artifacts.openArtifactExternal(card.path)}>{t.uiWorkflow.openProduct}</button>
                     </div>
                   </div>
                 ) : null}
@@ -1077,7 +1047,7 @@ const WidgetCard = ({ title, children, theme }) => {
     };
 
     // —— 新建任务模态 ——
-    const NewTaskModal = ({ theme, onClose, onStarted, workflow, initialBrief = '' }) => {
+    const NewTaskModal = ({ theme, onClose, onStarted, workflow, initialBrief = '', t }) => {
       const isDark = theme === 'dark';
       // [工作流分离 Stage D] 表单形态全由该工作流 workflow.json 的 ui 块决定:
       // ui.scenarioOptions 有值 → 场景下拉;ui.attachments → 附件区。
@@ -1098,7 +1068,7 @@ const WidgetCard = ({ title, children, theme }) => {
         try {
           const paths = await bridge.files.pickFiles();
           if (paths && paths.length) setFiles(prev => { const seen = new Set(prev); return prev.concat(paths.filter(p => !seen.has(p))); });
-        } catch (e) { setError('选文件失败: ' + String((e && e.message) || e)); }
+        } catch (e) { setError(t.uiWorkflow.pickFailed(String((e && e.message) || e))); }
         finally { setPicking(false); }
       }
       async function start() {
@@ -1113,13 +1083,13 @@ const WidgetCard = ({ title, children, theme }) => {
             }
             onStarted(res); onClose();
           }
-          else { setError('启动失败,请重试'); setStarting(false); }
+          else { setError(t.uiWorkflow.startFailed); setStarting(false); }
         } catch (e) { setError(String((e && e.message) || e)); setStarting(false); }
       }
       const briefEmpty = briefText.trim().length === 0;
-      const titleText = wfUi.newTaskTitle || ('新建「' + ((workflow && workflow.name) || '工作流') + '」任务');
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      const titleText = wfUi.newTaskTitle || t.uiWorkflow.newTaskTitle((workflow && workflow.name) || t.uiWorkflow.workflow);
+      const modal = (
+        <div data-testid="workflow-new-task-modal" className="fixed inset-0 z-50 flex items-center justify-center p-6">
           <div className="absolute inset-0 bg-black/60" onClick={() => { if (!starting) onClose(); }}></div>
           <div className={`relative w-[560px] max-w-[92vw] flex flex-col rounded-[16px] overflow-hidden shadow-2xl ${isDark ? 'bg-[#1E1F20]' : 'bg-white'}`}>
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-white/10' : 'border-black/10'}`}>
@@ -1129,7 +1099,7 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className="px-4 py-4 space-y-4">
               {SCENARIOS.length > 0 && (
                 <div>
-                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>场景</label>
+                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.scenario}</label>
                   <select value={scenario} onChange={e => setScenario(e.target.value)} disabled={starting}
                     style={{
                       appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
@@ -1143,41 +1113,47 @@ const WidgetCard = ({ title, children, theme }) => {
                 </div>
               )}
               <div>
-                <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{wfUi.briefLabel || '初始需求'}</label>
+                <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{wfUi.briefLabel || t.uiWorkflow.briefLabel}</label>
                 <textarea rows="5" value={briefText} onChange={e => setBriefText(e.target.value)} disabled={starting} placeholder={wfUi.briefPlaceholder || ''}
                   className={`w-full rounded-[10px] p-2 text-[13px] outline-none border resize-y disabled:opacity-50 ${isDark ? 'bg-[#131314] border-white/10 text-[#E3E3E3]' : 'bg-white border-black/10 text-[#1F1F1F]'}`} />
-                {briefEmpty && <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>留空也能开始,但写清楚 AI 办得更准。</div>}
+                {briefEmpty && <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{t.uiWorkflow.briefHint}</div>}
               </div>
               {wfUi.attachments && (!isWeb || can('hostFilePicker')) && (
                 <div>
-                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>附件(可选)</label>
-                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>{picking ? '选择中…' : (isWeb ? '📎 选择桌面端文件' : '📎 上传附件')}</button>
+                  <label className={`block text-[12px] font-semibold mb-1.5 ${isDark ? 'text-[#A8C7FA]' : 'text-[#0B57D0]'}`}>{t.uiWorkflow.attachments}</label>
+                  <button onClick={pickAttachments} disabled={picking || starting} className={`${cardBtnCls(isDark)} disabled:opacity-40`}>
+                    {picking ? t.uiWorkflow.picking : <span className="inline-flex items-center gap-1.5"><Paperclip size={14} />{isWeb ? t.uiWorkflow.pickDesktopFiles : t.uiWorkflow.uploadAttachments}</span>}
+                  </button>
                   {files.length > 0 && (
                     <div className="mt-2 space-y-1">
                       {files.map(p => (
                         <div key={p} className={`flex items-center justify-between text-[12px] rounded px-2 py-1 ${isDark ? 'bg-[#131314] text-[#C4C7C5]' : 'bg-[#F0F4F9] text-[#444746]'}`}>
-                          <span className="truncate pr-2">📄 {baseName(p)}</span>
+                          <span className="flex min-w-0 items-center gap-1.5 pr-2">
+                            <FileTypeIcon name={baseName(p)} className="h-4 w-4 shrink-0" />
+                            <span className="truncate">{baseName(p)}</span>
+                          </span>
                           <button onClick={() => setFiles(prev => prev.filter(x => x !== p))} disabled={starting} className="shrink-0 opacity-60 hover:opacity-100">✕</button>
                         </div>
                       ))}
                     </div>
                   )}
-                  <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{isWeb ? '从桌面主机选择的文件会作为素材交给六部参考。' : '上传的文件会作为素材交给六部参考。'}</div>
+                  <div className={`mt-1 text-[12px] ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{isWeb ? t.uiWorkflow.attachHintWeb : t.uiWorkflow.attachHint}</div>
                 </div>
               )}
               {error && <div className={`text-[13px] ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>⚠️ {error}</div>}
             </div>
             <div className={`flex items-center justify-end gap-2 px-4 py-3 border-t ${isDark ? 'border-white/10' : 'border-black/10'}`}>
-              <button onClick={onClose} disabled={starting} className={`${cardBtnCls(isDark)} disabled:opacity-40 disabled:cursor-not-allowed`}>取消</button>
-              <button onClick={start} disabled={starting} className={`${cardBtnCls(isDark, 'primary')} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? '启动中…' : '开始'}</button>
+              <button onClick={onClose} disabled={starting} className={`${cardBtnCls(isDark)} disabled:opacity-40 disabled:cursor-not-allowed`}>{t.uiWorkflow.cancel}</button>
+              <button onClick={start} disabled={starting} className={`${cardBtnCls(isDark, 'primary')} ${starting ? 'opacity-60 cursor-not-allowed' : ''}`}>{starting ? t.uiWorkflow.starting : t.uiWorkflow.start}</button>
             </div>
           </div>
         </div>
       );
+      return typeof document === 'undefined' ? modal : createPortal(modal, document.body);
     };
 
     // —— 工作流模板卡（未启动时显示）——
-    const TemplateCard = ({ theme, onOpen, title, badge, desc, banner }) => {
+    const TemplateCard = ({ theme, onOpen, title, badge, desc, banner, t }) => {
       const isDark = theme === 'dark';
       return (
         <button
@@ -1207,21 +1183,21 @@ const WidgetCard = ({ title, children, theme }) => {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <h3 className={`truncate text-[21px] font-semibold tracking-tight ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{title}</h3>
-                <p className={`mt-2 line-clamp-3 text-[14px] font-medium leading-5 ${isDark ? 'text-[#8E8E93]' : 'text-[#6E6E73]'}`}>{desc || '选择模板后创建一个新的工作流任务。'}</p>
+                <p className={`mt-2 line-clamp-3 text-[14px] font-medium leading-5 ${isDark ? 'text-[#8E8E93]' : 'text-[#6E6E73]'}`}>{desc || t.uiWorkflow.templateDesc}</p>
               </div>
               <span className={`shrink-0 rounded-full px-4 py-1.5 text-[13px] font-bold ${
                 isDark ? 'bg-[#0A84FF] text-white' : 'bg-[#007AFF] text-white'
               }`}>
-                打开
+                {t.uiWorkflow.open}
               </span>
             </div>
 
             <div className="mt-auto flex items-center gap-2 pt-5">
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
-                工作流模板
+                {t.uiWorkflow.templateBadge}
               </span>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isDark ? 'bg-white/10 text-[#C7C7CC]' : 'bg-[#F2F2F7] text-[#6E6E73]'}`}>
-                专家团队
+                {t.uiWorkflow.expertTeam}
               </span>
             </div>
           </div>
@@ -1282,7 +1258,7 @@ const WidgetCard = ({ title, children, theme }) => {
                   const tpl = (wf.ui && wf.ui.template) || {};
                   // banner 头图:workflow.json 的 ui.template.banner 优先;三省六部内置朝堂图兜底。
                   const banner = tpl.banner || (wf.id === 'sansheng-liubu' ? 'assets/sansheng-banner.png' : null);
-                  return <TemplateCard key={wf.id} theme={theme} banner={banner}
+                  return <TemplateCard key={wf.id} theme={theme} banner={banner} t={t}
                     title={tpl.title || wf.name || wf.id} badge={tpl.badge || ''} desc={tpl.desc || ''}
                     onOpen={() => {
                       setNewTaskWorkflow(wf);
@@ -1297,16 +1273,16 @@ const WidgetCard = ({ title, children, theme }) => {
                 )}
               </div>
             </div>
-            {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief}
+            {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} t={t}
               onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
           </div>
         );
       }
 
-      const statusText = run.status === 'complete' ? '✅ 已完成'
-        : run.status === 'stopped' ? '⏹ 已停止'
-        : run.status === 'blocked' ? '⚫ 阻塞'
-        : run.active ? '🔵 运行中' : '未开始（点"新建任务"启动）';
+      const statusText = run.status === 'complete' ? t.uiWorkflow.runComplete
+        : run.status === 'stopped' ? t.uiWorkflow.runStopped
+        : run.status === 'blocked' ? t.uiWorkflow.runBlocked
+        : run.active ? t.uiWorkflow.runRunning : t.uiWorkflow.runIdle;
       // run.agents{rid→{status,depends_on}} → swim-lane 需要的 agentStates/agentDeps
       const agentStates = {}, agentErrors = {}, agentDeps = {};
       Object.keys(run.agents || {}).forEach((rid) => {
@@ -1341,7 +1317,7 @@ const WidgetCard = ({ title, children, theme }) => {
       };
       const stopAndRestart = async () => {
         if (stopping || !bridge.workflow.stopWorkflowTask) return;
-        if (!window.confirm('停止后，当前任务不会再继续派发。已生成的文件会保留，你可以修改原需求后重新开始。')) return;
+        if (!window.confirm(t.uiWorkflow.stopConfirm)) return;
         setStopping(true);
         try {
           const result = await bridge.workflow.stopWorkflowTask('user_stopped_for_restart');
@@ -1359,27 +1335,27 @@ const WidgetCard = ({ title, children, theme }) => {
           <div className="w-full max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 md:px-10 pt-8 pb-4">
             <div>
               <h1 className={`text-[32px] font-normal tracking-tight ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{(run.ui && run.ui.header) || (runWorkflow && runWorkflow.ui && runWorkflow.ui.header) || t.uiWorkflow.workflow}</h1>
-              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · 卡片流</p>
+              <p className={`text-[13px] mt-1 ${isDark ? 'text-[#8E8E8E]' : 'text-[#757575]'}`}>{statusText} · {t.uiWorkflow.cardFlow}</p>
             </div>
             <div className="flex items-center gap-2">
               {/* 回奏已完成的 run 常驻奏折入口(自动弹窗只在完成瞬间触发一次,事后/刷新后从这里看) */}
               {memorialRoleId && memorialDone && (
-                <button onClick={() => setMemorialOpen(true)} className={cardBtnCls(isDark)}>📜 奏折</button>
+                <button onClick={() => setMemorialOpen(true)} className={cardBtnCls(isDark)}>{t.uiWorkflow.memorialBtn}</button>
               )}
               {run.status === 'stopped' ? (
-                <button onClick={() => openRestart(restartBrief)} className={cardBtnCls(isDark, 'primary')}>✏️ 修改需求并重新开始</button>
+                <button onClick={() => openRestart(restartBrief)} className={cardBtnCls(isDark, 'primary')}>{t.uiWorkflow.editAndRestart}</button>
               ) : run.status !== 'complete' ? (
                 <button data-testid="workflow-stop-restart" onClick={stopAndRestart} disabled={stopping}
-                  className={`${cardBtnCls(isDark)} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? '停止中…' : '⏹ 停止并修改'}</button>
+                  className={`${cardBtnCls(isDark)} ${stopping ? 'opacity-50 cursor-not-allowed' : ''}`}>{stopping ? t.uiWorkflow.stopping : t.uiWorkflow.stopAndEdit}</button>
               ) : null}
-              <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls(isDark)}>← 模板页</button>
+              <button onClick={() => { setOpened(false); setExited(true); }} className={cardBtnCls(isDark)}>{t.uiWorkflow.backToTemplates}</button>
               {/* 看板内新建 = 跟当前看板同工作流(开机自动恢复直接进看板时没经过模板卡,
                   必须在这里按 run 反查工作流对象,否则表单回落错) */}
-              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>+ 新建任务</button>
+              <button onClick={() => { setRestartBrief(''); setNewTaskWorkflow(runWorkflow || workflows[0] || null); setShowNewTask(true); }} className={cardBtnCls(isDark, 'primary')}>{t.uiWorkflow.newTask}</button>
             </div>
           </div>
           <div className="flex-1 overflow-auto custom-scrollbar px-6 md:px-10 pb-4">
-            <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentErrors={agentErrors} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme}
+            <AgentPipelineView ui={run.ui || (runWorkflow && runWorkflow.ui) || null} agents={run.agents || {}} agentStates={agentStates} agentErrors={agentErrors} agentDeps={agentDeps} fanout={fanout} progress={progress} tokens={tokens} theme={theme} t={t}
               onApprove={approveRole} onRetry={retryRole} onCardClick={(rid) => bridge.workflow.selectWorkflowRole(rid)} />
           </div>
           {(run.cards || []).some(c => !c.resolved) && (
@@ -1387,9 +1363,9 @@ const WidgetCard = ({ title, children, theme }) => {
               <InteractionArea cards={run.cards || []} sessionId={run.sessionId} theme={theme} t={t} />
             </div>
           )}
-          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} sessionId={run.sessionId} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}
-          {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} onClose={() => setMemorialOpen(false)} />}
-          {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
+          {run.selectedRole && <CardDrawer roleId={run.selectedRole} projectDir={run.projectDir} sessionId={run.sessionId} failureReason={(run.agents[run.selectedRole] || {}).error || ''} theme={theme} t={t} onClose={() => bridge.workflow.closeWorkflowDrawer()} />}
+          {memorialOpen && <ImperialMemorialModal projectDir={run.projectDir} theme={theme} t={t} onClose={() => setMemorialOpen(false)} />}
+          {showNewTask && <NewTaskModal theme={theme} workflow={newTaskWorkflow} initialBrief={restartBrief} t={t} onClose={() => setShowNewTask(false)} onStarted={() => { setExited(false); setOpened(true); }} />}
         </div>
       );
     };

@@ -1,15 +1,15 @@
 # CodeWhale Fork Maintenance Policy
 
-> Last updated: 2026-07-30
-> Released baseline: `pinvou-v0.9.0-r2@cb93e0f4`
+> Last updated: 2026-08-07
+> Released baseline: `pinvou-v0.9.0-r4@03e9e102`
 > Detailed inventory: [`fork-modifications.en.md`](fork-modifications.en.md)
 
 ## 1. Baseline and ownership
 
 - Upstream: [`Hmbown/CodeWhale`](https://github.com/Hmbown/CodeWhale), tag `v0.9.0`, commit `d167c07c96282411956ea7f35ddb8227afa1402f`.
 - Public fork: [`Pinvou/CodeWhale`](https://github.com/Pinvou/CodeWhale).
-- Maintenance branch: `pinvou3-clean`, currently at `cb93e0f4466d60e306252ed08bbbe214f2def752`.
-- Pinvou Agent pins the immutable tag `pinvou-v0.9.0-r2`, which dereferences to that commit.
+- Maintenance branch: `pinvou3-clean`, currently at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624`.
+- Pinvou Agent pins the immutable tag `pinvou-v0.9.0-r4`, which dereferences to that commit.
 - `.gitmodules` intentionally has no `branch` entry. A parent-repository checkout must never move merely because the maintenance branch moved.
 
 The fork is maintained as six long-lived themes:

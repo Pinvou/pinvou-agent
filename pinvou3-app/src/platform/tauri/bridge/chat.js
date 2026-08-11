@@ -13,15 +13,18 @@
     var renderMarkdown = context.renderMarkdown;
     var safeConsoleInfo = context.safeConsoleInfo;
     var bt = context.bt;
+    var isDefaultChatTitle = context.isDefaultChatTitle;
     var runSyncOnSession = context.runSyncOnSession;
     var startThinking = context.startThinking;
     var stopThinking = context.stopThinking;
     var ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     var ensureSession = context.ensureSession;
     var getBuffer = context.getBuffer;
+    var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
     var clearAttachments = context.clearAttachments;
+    var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
     var extractArtifactPath = context.extractArtifactPath;
@@ -179,6 +182,16 @@
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates[sid] && sessionStates[sid].busy);
   }
+  function formatAttachmentDisplayText(text, attachments) {
+    var names = (attachments || []).map(function (attachment) {
+      return typeof attachment === "string" ? attachment : attachment && attachment.basename;
+    }).filter(Boolean).map(String);
+    if (!names.length) return String(text || "");
+    var attachmentLine = "📎 " + JSON.stringify(names);
+    return String(text || "").trim()
+      ? String(text) + "\n\n" + attachmentLine
+      : attachmentLine;
+  }
   // 桌宠窗口靠全局事件感知回合起止。turn_start 补齐"发送 → 首 token"的空窗
   // (chat:delta 之前引擎在思考,宠物不该干站着);turn_end 只兜 invoke 直接失败
   // 这种不会有 chat:done 的路径。JS emit 是全局广播,宠物窗口 listen 收得到。
@@ -207,30 +220,39 @@
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     var turnOwnerBuffer = getBuffer(sid);
     var submittedMessage = null;
+    var submittedMessagePos = -1;
     var submittedUserItemId = 0;
     var submittedStreamId = 0;
     if (turnOwnerBuffer && turnOwnerBuffer.remoteTurnActive) {
-      return Promise.reject(new Error("该会话正在同步另一端完成的回合，请稍后重试"));
+      return Promise.reject(new Error(bt("sessionSyncingTurn")));
     }
     if (turnOwnerBuffer) {
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
+      turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
-      var uitem = { type: "user", text: displayText, time: timeStr() };
+      var uitem = {
+        type: "user",
+        text: displayText,
+        time: timeStr(),
+        messageIndex: state.messages.length,
+      };
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
+      if (meta && meta.pinvouScene) uitem.pinvouScene = meta.pinvouScene; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
       submittedUserItemId = uitem.id;
       submittedMessage = { role: "user", content: [{ type: "text", text: displayText }] };
+      submittedMessagePos = state.messages.length;
       state.messages.push(submittedMessage);
       state.busy = true;
       startThinking();
       context.currentStreamText = "";
       context.currentStreamId = ++context.itemIdSeq;
       submittedStreamId = context.currentStreamId;
-      state.chatItems.push({ id: context.currentStreamId, type: "assistant", html: "", time: timeStr(), streaming: true });
+      state.chatItems.push({ id: context.currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     });
     notify();
     emitPetEvent("pet:turn_start", sid);
@@ -238,6 +260,11 @@
     return invoke("chat", { message: text, attachments: attachmentsPayload, sessionId: sid, restrictTools: !!restrictTools })
       .then(function () {
         if (turnOwnerBuffer) turnOwnerBuffer.deferredRemoteUserEvent = null;
+        if (meta && meta.pinvouScene) {
+          runSyncOnSession(sid, function () {
+            recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
+          });
+        }
         return true;
       })
       .catch(function (err) {
@@ -279,8 +306,9 @@
       clientMessageId: clientMessageId || null,
     }).catch(function () { /* 没开远控时静默跳过 */ });
   }
-  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 把【整个队列】合并成一条
-  // 一次性发出(Claude 式:排队的全部一起扔进下一轮,而不是一条条串行)。
+  // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
+  // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
+  // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
@@ -292,22 +320,19 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
-    var items = q.splice(0, q.length);
-    // 发给模型用 \n\n 分隔(让它清楚是几条独立消息);气泡显示用单换行 \n(紧凑,不空行)
-    var text = items.map(function (i) { return i.text; }).filter(Boolean).join("\n\n");
-    var displayText = items.map(function (i) { return i.displayText; }).filter(Boolean).join("\n");
-    var attachments = [];
-    items.forEach(function (i) { if (i.attachments && i.attachments.length) attachments = attachments.concat(i.attachments); });
-    var meta = items.length === 1 ? items[0].meta : null; // 单条(如转交)保留 meta;合并多条不标
-    var restrictTools = items.some(function (i) { return !!i.restrictTools; });
+    var item = q.shift();
+    var attachments = item.attachments || [];
+    var displayText = item.displayText == null
+      ? formatAttachmentDisplayText(item.text, attachments)
+      : item.displayText;
     notify();
-    doSendFor(sid, text, displayText, attachments, meta, restrictTools, true)
+    doSendFor(sid, item.text, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         var retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
-        Array.prototype.unshift.apply(retryQueue, items);
+        retryQueue.unshift(item);
         notify();
       });
   }
@@ -315,10 +340,10 @@
   async function sendMessageToSession(sessionId, text, meta) {
     var sid = String(sessionId || "").trim();
     var content = String(text || "").trim();
-    if (!sid) throw new Error("目标会话不存在");
-    if (!content) throw new Error("回复内容为空");
+    if (!sid) throw new Error(bt("targetSessionMissing"));
+    if (!content) throw new Error(bt("replyContentEmpty"));
     var exists = state.sessions.some(function (session) { return String(session.id) === sid; });
-    if (!exists) throw new Error("目标会话不存在");
+    if (!exists) throw new Error(bt("targetSessionMissing"));
 
     await ensureSessionBufferLoaded(sid);
     var targetBuffer = getBuffer(sid);
@@ -339,7 +364,7 @@
       return { accepted: true, queued: true };
     }
     if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      throw new Error("目标会话仍在同步另一端完成的回合");
+      throw new Error(bt("targetSessionSyncing"));
     }
     targetBuffer = getBuffer(sid);
     if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
@@ -377,14 +402,17 @@
 
     if (!state.activeSessionId) {
       await ensureSession(); // 草稿态首条消息 → 物化 session(命名靠下方 persistSession auto-title)
-      if (!state.activeSessionId) return;
+      if (!state.activeSessionId) {
+        // 物化中止（如草稿态多智能体开关落盘失败）：把输入放回输入框，
+        // 不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
+        prefillComposer(text);
+        return;
+      }
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
-    var displayText = readyAttachments.length > 0
-      ? text + (text ? "\n\n" : "") + "📎 " + readyAttachments.map(function (a) { return a.basename; }).join(" · ")
-      : text;
+    var displayText = formatAttachmentDisplayText(text, readyAttachments);
     var attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
     function consumeUiTurnState() {
       var consumed = {
@@ -442,7 +470,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem("⚠️ 该会话仍在同步另一端完成的回合，请稍后重试");
+      addSystemItem(bt("remoteTurnSyncing"));
       return;
     }
     if (state.activeSessionId !== sid) return;
@@ -481,6 +509,10 @@
   }
   // 撤销一条待发消息(点 chip 的 ✕)。
   function removeQueued(id) {
+    var removed = state.queued.find(function (q) { return q.id === id; });
+    if (removed && removed.attachments) {
+      removed.attachments.forEach(discardManagedAttachment);
+    }
     state.queued = state.queued.filter(function (q) { return q.id !== id; });
     notify();
   }
@@ -489,7 +521,7 @@
   // 设计 docs/品悟v4-常驻检阅助手设计.md。纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是 §6 后续增强。
   async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem("先开始一个对话,再召唤 Pinvou 检阅。"); return; }
+    if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     var sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
@@ -626,7 +658,7 @@
       try { await invoke("save_session_artifacts", { id: state.activeSessionId, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch (_) {}
       // Auto-title
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
-      if (meta && (meta.title === "新对话" || meta.title === "New chat" || personaPlaceholderTitles[state.activeSessionId])) {
+      if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
         var firstUser = state.messages.find(function (m) { return m.role === "user"; });
         var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
         if (text && text.text) {

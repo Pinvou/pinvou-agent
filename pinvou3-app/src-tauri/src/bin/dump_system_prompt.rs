@@ -43,9 +43,9 @@ fn main() -> Result<()> {
         //   verbosity: None = GUI 不用 concise 输出模式(与 bridge Op::SendMessage 一致)。
         context_window_override: None,
         verbosity: None,
-        // v0.8.65 上游新增(C5):skills 扫描 CodeWhale-only 开关。pinvou3 #41 已把扫描
-        // 收窄成只 ~/.pinvou3/bundle/skills(技能市场私有区,两 mode 行为一致),此值无
-        // 实际影响,取 false(Compatible)。
+        // CodeWhale r4 后技能发现只使用显式 EngineConfig.skills_dir；当前 app 注入
+        // ~/.pinvou3/bundle/skills(技能市场私有区,两 mode 行为一致)。底座不再追加
+        // 其他根，因此此兼容扫描开关无实际影响，取 false。
         skills_scan_codewhale_only: false,
     };
 
