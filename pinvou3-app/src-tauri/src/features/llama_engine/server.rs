@@ -322,6 +322,13 @@ async fn watch_running(
         emit_state(&app, "starting", None);
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // 重启窗口内的 stop()：pid 已清空、新进程未 spawn，kill 无从下手。
+        // 这里补查停止标志，避免停止请求在自愈流程中被吞掉。
+        if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+            transition_stopped(&app, "已停止".to_string());
+            return;
+        }
+
         let (model_id, device) = {
             let guard = lock_runtime();
             (guard.active_model.clone(), guard.device)
@@ -358,6 +365,14 @@ async fn watch_running(
         });
         match wait_until_healthy_or_exit(&mut new_child, new_port).await {
             HealthOutcome::Healthy => {
+                if STOP_REQUESTED.swap(false, Ordering::SeqCst) {
+                    // 就绪期间收到了停止请求（重启窗口边界）：杀掉刚就绪的进程。
+                    let _ = new_child.kill().await;
+                    let _ = new_child.wait().await;
+                    let _ = stderr_task.await;
+                    transition_stopped(&app, "已停止".to_string());
+                    return;
+                }
                 mark_running();
                 emit_state(&app, "running", None);
             }
