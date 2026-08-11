@@ -8,6 +8,11 @@ mod python_dependencies;
 pub mod skill_marketplace;
 pub mod skill_scope;
 
+#[cfg(test)]
+pub(crate) fn fail_next_python_dependency_download_for_test() {
+    python_dependencies::fail_next_download_for_test();
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -1314,13 +1319,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
         }
 
-        // 状态事务提交后再删 keyring/env secret；事务失败时旧注册仍能继续使用旧凭据。
-        // 删除失败不阻断已提交卸载，重新安装并填写 key 会覆盖残留值。
-        for (target, key) in secret_targets {
-            let reference = mcp_secret_reference(tool_id, &target, &key);
-            let _ = self.credential_store.delete(&reference);
-            std::env::remove_var(mcp_secret_env_var(&key));
-        }
+        // 状态事务提交后统一清理 keyring、scope 与 companion skill；事务失败时旧注册及
+        // 配套能力都保持原样。清理失败不反向破坏已提交的主状态。
+        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
 
         // 依赖环境与 wheel 缓存按仍安装的 MCP 做引用清理。清理失败不回滚已完成的卸载，
         // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
@@ -1346,7 +1347,31 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         python_dependencies::prune_unused(&self.active_python_locks_from_committed_state())
     }
 
+    /// 完成工具注册移除后的领域清理。普通卸载与启动修复失败必须共用同一语义，
+    /// 否则 companion skill 会在 MCP 已不可用时继续进入会话提示。
+    fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
+        for (target, key) in secret_targets {
+            let reference = mcp_secret_reference(tool_id, target, key);
+            let _ = self.credential_store.delete(&reference);
+            std::env::remove_var(mcp_secret_env_var(key));
+        }
+        remove_connector_from_disabled_scopes(tool_id);
+        let unavailable: std::collections::HashSet<String> =
+            self.unavailable_companion_skills().into_iter().collect();
+        for skill_id in self.companion_skills(tool_id) {
+            if !unavailable.contains(&skill_id) {
+                continue;
+            }
+            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
+            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+        }
+    }
+
     fn mark_tool_uninstalled_locked(&self, tool_id: &str) -> Result<(), String> {
+        let secret_targets = self
+            .load_manifest(tool_id)
+            .map(|manifest| manifest_secret_targets(&manifest))
+            .unwrap_or_default();
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
@@ -1355,7 +1380,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             self.save_installed(&installed)
         })();
         match result {
-            Ok(()) => transaction.commit(),
+            Ok(()) => {
+                transaction.commit()?;
+                self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+                Ok(())
+            }
             Err(error) => {
                 transaction
                     .rollback()
@@ -1421,7 +1450,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     #[cfg(test)]
-    fn repair_installed_python_tools_with_python(
+    pub(crate) fn repair_installed_python_tools_with_python(
         &self,
         python_command: &str,
     ) -> Result<Vec<String>, String> {
@@ -1452,6 +1481,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
+    }
+
+    /// 仅由未安装连接器声明的 companion skills。物化层以此防御物理目录清理失败或
+    /// 异常退出留下的残留；若多个连接器共享技能，只要任一已安装就仍可使用。
+    pub fn unavailable_companion_skills(&self) -> Vec<String> {
+        let installed: std::collections::HashSet<String> =
+            self.installed_ids().into_iter().collect();
+        let mut declared = std::collections::HashSet::new();
+        let mut active = std::collections::HashSet::new();
+        for manifest in self.available_tools() {
+            for skill_id in manifest.companion_skills {
+                declared.insert(skill_id.clone());
+                if installed.contains(&manifest.id) {
+                    active.insert(skill_id);
+                }
+            }
+        }
+        declared.difference(&active).cloned().collect()
     }
 
     pub fn oauth_remote_server_name(&self, tool_id: &str) -> Option<String> {
@@ -3274,6 +3321,100 @@ mod tests {
                 .installed_ids()
                 .contains(&"legacy-retry".to_string()));
             assert_eq!(read_mcp_json()["servers"]["legacy-retry"]["args"][0], "-I");
+        });
+    }
+
+    #[test]
+    fn failed_legacy_repair_cleans_companion_state_and_reinstall_restores_it() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("legacy-gongwen", "gongwen_fixture", &version);
+            let manifest_path = crate::platform::paths::bundle_mcp_servers_dir()
+                .join("legacy-gongwen")
+                .join("manifest.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            manifest["companion_skills"] = serde_json::json!(["government-writing"]);
+            write_json_pretty(&manifest_path, &manifest).unwrap();
+            write_legacy_python_state("legacy-gongwen");
+
+            let skills = skill_marketplace::SkillMarketplaceManager::new();
+            skills.install("government-writing").unwrap();
+            save_disabled_connectors_for(ConnectorScope::Plain, &["legacy-gongwen".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Code, &["legacy-gongwen".to_string()]);
+            skill_scope::save_disabled_skills_for(
+                ConnectorScope::Plain,
+                &["government-writing".to_string()],
+            );
+            skill_scope::save_disabled_skills_for(
+                ConnectorScope::Code,
+                &["government-writing".to_string()],
+            );
+
+            python_dependencies::fail_next_download_for_test();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(!manager
+                .installed_ids()
+                .contains(&"legacy-gongwen".to_string()));
+            assert!(read_mcp_json()["servers"].get("legacy-gongwen").is_none());
+            assert!(!crate::platform::paths::bundle_skills_dir()
+                .join("government-writing")
+                .exists());
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+            assert!(skill_scope::load_disabled_skills_for(ConnectorScope::Plain).is_empty());
+            assert!(skill_scope::load_disabled_skills_for(ConnectorScope::Code).is_empty());
+
+            manager
+                .install_with_python("legacy-gongwen", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            skills.install("government-writing").unwrap();
+            skill_scope::sync_code_scope_after_skill_install("government-writing");
+            sync_code_scope_after_install("legacy-gongwen");
+            assert!(manager
+                .installed_ids()
+                .contains(&"legacy-gongwen".to_string()));
+            assert!(crate::platform::paths::bundle_skills_dir()
+                .join("government-writing")
+                .join("SKILL.md")
+                .is_file());
+        });
+    }
+
+    #[test]
+    fn shared_companion_remains_available_while_any_connector_is_installed() {
+        with_temp_home(|| {
+            for tool_id in ["connector-a", "connector-b"] {
+                write_tool_manifest(
+                    tool_id,
+                    &serde_json::json!({
+                        "id": tool_id,
+                        "name": tool_id,
+                        "description": "fixture",
+                        "version": "1",
+                        "icon": "x",
+                        "category": "c",
+                        "mcp_tools": [],
+                        "command": "node",
+                        "args": ["server.js"],
+                        "companion_skills": ["shared-skill"]
+                    })
+                    .to_string(),
+                );
+            }
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            write_installed_ids(&["connector-a".to_string()]);
+            assert!(manager.unavailable_companion_skills().is_empty());
+
+            write_installed_ids(&[]);
+            assert_eq!(
+                manager.unavailable_companion_skills(),
+                vec!["shared-skill".to_string()]
+            );
         });
     }
 

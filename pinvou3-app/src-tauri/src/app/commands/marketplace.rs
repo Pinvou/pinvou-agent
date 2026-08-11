@@ -431,7 +431,6 @@ pub fn uninstall_marketplace_tool(
 
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
     let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let companions = mgr.companion_skills(tool_id); // 卸前先取(manifest 不删,卸后也能读,保险先读)
     if let Some(server_name) = mgr.oauth_remote_server_name(tool_id) {
         match marketplace_oauth_server_from_mcp_config(&server_name)? {
             Some(server) => {
@@ -446,15 +445,6 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
         }
     }
     mgr.uninstall(tool_id)?;
-    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
-    // 联动:删配套技能(best-effort,删不掉不影响 MCP 卸载)。
-    for sid in companions {
-        let _ = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .uninstall(&sid);
-        // 已卸载技能从两个 scope 禁用集清除残留。
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(&sid);
-    }
     Ok(())
 }
 // ---------------------------------------------------------------------------

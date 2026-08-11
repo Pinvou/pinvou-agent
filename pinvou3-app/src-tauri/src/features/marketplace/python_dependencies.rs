@@ -25,7 +25,7 @@ static FAIL_NEXT_DOWNLOAD: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
-pub(super) fn fail_next_download_for_test() {
+pub(crate) fn fail_next_download_for_test() {
     FAIL_NEXT_DOWNLOAD.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 

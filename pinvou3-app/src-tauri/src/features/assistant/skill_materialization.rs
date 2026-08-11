@@ -133,6 +133,9 @@ fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String> {
             names.insert(sid);
         }
     }
+    // 未安装连接器的 companion 即使因文件占用/异常退出残留在 bundle/skills，也不能
+    // 进入组合目录。若多个连接器共享同一技能，只要任一仍安装，marketplace 会保留它。
+    names.extend(market.unavailable_companion_skills());
     names
 }
 
@@ -328,6 +331,9 @@ mod tests {
                 "---\nname: government-writing\n---\n# GW\n",
             )
             .unwrap();
+            MarketplaceManager::new()
+                .install("gongwen", &std::collections::HashMap::new())
+                .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
             crate::features::marketplace::save_disabled_connectors(&["gongwen".to_string()]);
@@ -344,6 +350,40 @@ mod tests {
                 enabled.iter().any(|(n, _)| n == "government-writing"),
                 "启用公文 MCP 后关联技能应恢复"
             );
+        });
+    }
+
+    #[test]
+    fn companion_materialization_tracks_connector_installation_despite_residual_directory() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "fixture-connector",
+                r#"{"id":"fixture-connector","name":"Fixture","description":"d","version":"1.0.0","icon":"x","category":"c","mcp_tools":[],"command":"node","args":["server.js"],"companion_skills":["government-writing"]}"#,
+            );
+            let manager = MarketplaceManager::new();
+            let skills = SkillMarketplaceManager::new();
+            manager
+                .install("fixture-connector", &std::collections::HashMap::new())
+                .unwrap();
+            skills.install("government-writing").unwrap();
+
+            let session_id = "companion-installation-session";
+            materialize_session_skills(session_id, ConnectorScope::Plain, None).unwrap();
+            let session_skill = paths::session_skills_dir(session_id).join("government-writing");
+            assert!(session_skill.join("SKILL.md").is_file());
+
+            manager.uninstall("fixture-connector").unwrap();
+            // Simulate a file-lock/crash residue after the domain cleanup. Materialization must
+            // still use installed connector state as the authority instead of directory presence.
+            skills.install("government-writing").unwrap();
+            rewrite_session_skills(session_id, ConnectorScope::Plain, None);
+            assert!(!session_skill.exists());
+
+            manager
+                .install("fixture-connector", &std::collections::HashMap::new())
+                .unwrap();
+            rewrite_session_skills(session_id, ConnectorScope::Plain, None);
+            assert!(session_skill.join("SKILL.md").is_file());
         });
     }
 
