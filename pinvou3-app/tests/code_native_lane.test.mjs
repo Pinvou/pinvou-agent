@@ -194,8 +194,8 @@ try {
   assert.equal(hydratedInput.resolved, true, '历史 request_user_input 还原为已处理卡');
 
   // ── hydrate 还原用户已选答案：单选 + 多选（multi_select 不塌缩）────
-  const lane4b = createNativeLane();
-  hydrateNativeLane(lane4b, {
+  const lane4d = createNativeLane();
+  hydrateNativeLane(lane4d, {
     messages: [
       {
         role: 'assistant',
@@ -220,7 +220,7 @@ try {
       },
     ],
   }, []);
-  const restoredInput = lane4b.items.find(item => item.type === 'user_input');
+  const restoredInput = lane4d.items.find(item => item.type === 'user_input');
   assert.equal(restoredInput.resolved, true);
   assert.deepEqual(
     restoredInput.restoredAnswers,
