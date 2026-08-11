@@ -24,7 +24,9 @@
 }
 
 .pet-card--light { background: #ffffff; }
-.pet-card--dark { background: #131314; }
+/* 暗态背景由 .dark 祖先限定,与 light 类共存——使 JSX 可静态同时挂载两类
+   (参照 base.css 的 .dark .dark-code 同款约定),消除 isDark 三元式。 */
+.dark .pet-card--dark { background: #131314; }
 
 .pet-card:hover {
   transform: translateY(-2px);
@@ -200,7 +202,9 @@
   color: #B06000;
 }
 
-.pet-card-flag--dark {
+/* 暗态色由 .dark 祖先限定,与明态 .pet-card-flag 共存(同 .dark .dark-code 约定),
+   JSX 静态同时挂载以消除 isDark 三元式。 */
+.dark .pet-card-flag--dark {
   background: #3A2E1A;
   color: #F9D67A;
 }
@@ -221,7 +225,8 @@
   color: #B06000;
 }
 
-.pet-card-error--dark {
+/* 暗态色由 .dark 祖先限定(同 .dark .dark-code 约定),JSX 静态同时挂载以消除 isDark 三元式。 */
+.dark .pet-card-error--dark {
   background: #3A2E1A;
   color: #F9D67A;
 }

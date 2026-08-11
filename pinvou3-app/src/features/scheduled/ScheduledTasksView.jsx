@@ -195,8 +195,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         : null;
       const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} role="listbox" aria-label={ariaLabel} aria-multiselectable={multiple || undefined}
-          className={`fixed z-[1000] overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 ${isDark ? 'border-[#3A3B3E] bg-[#242528]' : 'border-[#DFE1E5] bg-white'}`}
-          style={{ ...effectiveMenuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          className={`fixed z-[1000] overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 border-[#DFE1E5] bg-white dark:border-[#3A3B3E] dark:bg-[#242528]`}
+          style={{ ...effectiveMenuStyle, // isDark dynamic-value: 保留 — boxShadow 复杂多停 + effectiveMenuStyle 运行时定位
+            boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           {(options || []).map(option => {
             const active = multiple ? selectedValues.includes(option.value) : option.value === value;
             const lastRequiredSelection = multiple && active && selectedValues.length <= minSelected;
@@ -215,7 +216,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   else nextValues.add(option.value);
                   onChange((options || []).filter(item => nextValues.has(item.value)).map(item => item.value));
                 }}
-                className={`w-full min-h-9 rounded-[8px] px-3 py-2 flex items-center gap-3 text-left text-[14px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${active ? (isDark ? 'bg-[#364A66] text-[#D2E3FC]' : 'bg-[#E8F0FE] text-[#174EA6]') : (isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#202124] hover:bg-[#F1F3F4]')}`}>
+                className={`w-full min-h-9 rounded-[8px] px-3 py-2 flex items-center gap-3 text-left text-[14px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${active ? 'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#364A66] dark:text-[#D2E3FC]' : 'text-[#202124] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]'}`}>
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
                 <Check size={15} className={`shrink-0 ${active ? 'opacity-100' : 'opacity-0'}`} />
               </button>
@@ -241,9 +242,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           <button type="button" value={serializedValue} data-testid={testId}
             aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
             onClick={(event) => open ? closeMenu() : openMenu(event.currentTarget)}
-            className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 ${isDark ? 'text-[#E3E3E3] hover:bg-[#2B2C2F]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}>
+            className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]`}>
             <span className="truncate">{displayLabel || emptyLabel}</span>
-            <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-[#9AA0A6]' : 'text-[#73777D]'}`} />
+            <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} text-[#73777D] dark:text-[#9AA0A6]`} />
           </button>
           {menu}
         </div>
@@ -253,7 +254,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
     // iOS 风滚轮列:CSS scroll-snap 提供惯性 + 逐格吸附,滚动停稳(130ms 静默)后提交居中项。
     const WHEEL_ITEM_H = 32;
     const WHEEL_VISIBLE_H = 160;
-    const WheelColumn = ({ values, value, onChange, ariaLabel, testId, isDark }) => {
+    const WheelColumn = ({ values, value, onChange, ariaLabel, testId }) => {
       const listRef = useRef(null);
       const settleRef = useRef(null);
       useEffect(() => {
@@ -288,7 +289,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           {values.map(item => (
             <button key={item} type="button" role="option" aria-selected={item === value} data-value={item}
               onClick={() => pick(item)}
-              className={`w-full text-center text-[15px] tabular-nums transition-colors duration-150 ${item === value ? (isDark ? 'font-semibold text-[#E3E3E3]' : 'font-semibold text-[#1F1F1F]') : (isDark ? 'text-[#777B82] hover:text-[#B9BCC1]' : 'text-[#A0A3A8] hover:text-[#5F6368]')}`}
+              className={`w-full text-center text-[15px] tabular-nums transition-colors duration-150 ${item === value ? 'font-semibold text-[#1F1F1F] dark:text-[#E3E3E3]' : 'text-[#A0A3A8] hover:text-[#5F6368] dark:text-[#777B82] dark:hover:text-[#B9BCC1]'}`}
               style={{ height: WHEEL_ITEM_H, lineHeight: `${WHEEL_ITEM_H}px`, scrollSnapAlign: 'center' }}>
               {item}
             </button>
@@ -347,23 +348,24 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         };
       }, [open]);
 
+      // isDark dynamic-value: 保留 — surface 供 linear-gradient(模板插值)用;boxShadow 复杂多停保留。
       const surface = isDark ? '#242528' : '#FFFFFF';
       const wheel = open && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} data-testid={`${testId}-wheel`} role="dialog" aria-label={ariaLabel}
-          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 ${isDark ? 'border-[#3A3B3E]' : 'border-[#DFE1E5]'}`}
-          style={{ ...menuStyle, background: surface, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
+          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 border-[#DFE1E5] bg-[#FFFFFF] dark:border-[#3A3B3E] dark:bg-[#242528]`}
+          style={{ ...menuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           <style>{'[data-wheel-col]::-webkit-scrollbar{display:none}'}</style>
-          <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] ${isDark ? 'bg-white/[0.08]' : 'bg-black/[0.05]'}`}
+          <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] bg-black/[0.05] dark:bg-white/[0.08]`}
             style={{ top: 8 + (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2, height: WHEEL_ITEM_H }} />
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 top-1 z-10 h-11 rounded-t-[12px]"
             style={{ background: `linear-gradient(${surface}, transparent)` }} />
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 bottom-1 z-10 h-11 rounded-b-[12px]"
             style={{ background: `linear-gradient(transparent, ${surface})` }} />
           <WheelColumn values={hours} value={hour} onChange={next => onChange(`${next}:${minute}`)}
-            ariaLabel={hourAriaLabel} testId={`${testId}-hour`} isDark={isDark} />
-          <span className={`self-center text-[15px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>:</span>
+            ariaLabel={hourAriaLabel} testId={`${testId}-hour`} />
+          <span className={`self-center text-[15px] font-semibold text-[#1F1F1F] dark:text-[#E3E3E3]`}>:</span>
           <WheelColumn values={minutes} value={minute} onChange={next => onChange(`${hour}:${next}`)}
-            ariaLabel={minuteAriaLabel} testId={`${testId}-minute`} isDark={isDark} />
+            ariaLabel={minuteAriaLabel} testId={`${testId}-minute`} />
         </div>,
         document.body
       ) : null;
@@ -375,7 +377,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               if (!valid) onChange('08:00');
               setOpen(current => !current);
             }}
-            className={`w-[88px] cursor-pointer bg-transparent text-right font-medium outline-none placeholder:text-gray-400 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`} />
+            className={`w-[88px] cursor-pointer bg-transparent text-right font-medium outline-none placeholder:text-gray-400 text-[#1F1F1F] dark:text-[#E3E3E3]`} />
           {wheel}
         </span>
       );
@@ -390,7 +392,6 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const loading = !!appState.scheduledTaskLoading;
       const busyAction = appState.scheduledTaskBusyAction || null;
       const error = appState.scheduledTaskError || null;
-      const isDark = theme === 'dark';
       const scheduledCopy = t.uiScheduled;
       const modelManageAction = can('modelManagement') && onGotoModelSettings
         ? { label: t.manageModels, onClick: onGotoModelSettings }
@@ -486,8 +487,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       }));
       const selected = tasks.find(task => task.id === effectiveSelectedId) || null;
       const detail = selectedDetail && selected && selectedDetail.id === selected.id ? selectedDetail : selected;
-      const accent = isDark ? '#0A84FF' : '#007AFF';
-      const bodyText = isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]';
+      const bodyText = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
       const fmtDateTime = (value) => {
         if (!value) return scheduledCopy.notScheduled;
         const d = new Date(value);
@@ -528,7 +528,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           <>
             <span>{schedule} · </span>
             <span data-testid="scheduled-task-next-run"
-              className={`font-semibold ${isDark ? 'text-[#7CB7F0]' : 'text-[#1769B0]'}`}>
+              className={`font-semibold text-[#1769B0] dark:text-[#7CB7F0]`}>
               {scheduledCopy.nextRun(exact, remaining)}
             </span>
           </>
@@ -992,11 +992,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         ? createScheduleEditor.days
         : [createScheduleEditor && createScheduleEditor.day || 'MO'];
 
-      const iosSeparator = isDark ? 'border-[#545458]/50' : 'border-[#3C3C43]/20';
-      const iosInsetSurface = isDark ? 'bg-[#2C2C2E]' : 'bg-[#F2F2F7]';
-      const iosHistorySurface = isDark ? 'bg-[#2C2C2E]' : 'bg-[#F5F5F7]';
-      const mutedValue = isDark ? 'text-[#EBEBF5]/60' : 'text-[#3C3C43]/60';
-      const pressedRow = isDark ? 'active:bg-[#3A3A3C]' : 'active:bg-[#E5E5EA]';
+      const iosSeparator = 'border-[#3C3C43]/20 dark:border-[#545458]/50';
+      const iosInsetSurface = 'bg-[#F2F2F7] dark:bg-[#2C2C2E]';
+      const iosHistorySurface = 'bg-[#F5F5F7] dark:bg-[#2C2C2E]';
+      const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+      const pressedRow = 'active:bg-[#E5E5EA] dark:active:bg-[#3A3A3C]';
       const modalPortalTarget = typeof document !== 'undefined' ? document.body : null;
       const renderModal = node => modalPortalTarget ? createPortal(node, modalPortalTarget) : node;
 
@@ -1010,7 +1010,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             aria-pressed={checked}
             aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
             className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
-              checked ? 'bg-[#34C759]' : (isDark ? 'bg-[#4A4B50]' : 'bg-[#D8DADD]')
+              checked ? 'bg-[#34C759]' : 'bg-[#D8DADD] dark:bg-[#4A4B50]'
             }`}
           >
             <span
@@ -1028,25 +1028,25 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
           return {
             Icon: template.icon || Clock,
             className: task.status === 'active'
-              ? (isDark ? 'bg-[#12351D] text-[#32D74B]' : 'bg-[#E9F8EE] text-[#188038]')
-              : (isDark ? 'bg-[#2C2C2E] text-[#8E8E93]' : 'bg-[#F5F5F7] text-[#86868B]'),
+              ? 'bg-[#E9F8EE] text-[#188038] dark:bg-[#12351D] dark:text-[#32D74B]'
+              : 'bg-[#F5F5F7] text-[#86868B] dark:bg-[#2C2C2E] dark:text-[#8E8E93]',
           };
         }
         const name = String(task.name || '');
         if (/周报|报告|数据|统计/.test(name)) {
-          return { Icon: FileChartLine, className: isDark ? 'bg-[#2C2333] text-[#D5A8FF]' : 'bg-[#F7EFFF] text-[#AF52DE]' };
+          return { Icon: FileChartLine, className: 'bg-[#F7EFFF] text-[#AF52DE] dark:bg-[#2C2333] dark:text-[#D5A8FF]' };
         }
         if (/早报|简报|新闻/.test(name)) {
-          return { Icon: Newspaper, className: isDark ? 'bg-[#122E45] text-[#7CB7F0]' : 'bg-blue-50 text-[#007AFF]' };
+          return { Icon: Newspaper, className: 'bg-blue-50 text-[#007AFF] dark:bg-[#122E45] dark:text-[#7CB7F0]' };
         }
         if (/督办|事项|待办|跟进/.test(name)) {
-          return { Icon: ClipboardCheck, className: isDark ? 'bg-[#12351D] text-[#32D74B]' : 'bg-[#E9F8EE] text-[#188038]' };
+          return { Icon: ClipboardCheck, className: 'bg-[#E9F8EE] text-[#188038] dark:bg-[#12351D] dark:text-[#32D74B]' };
         }
-        return { Icon: Clock, className: isDark ? 'bg-[#2C2C2E] text-[#8E8E93]' : 'bg-[#F5F5F7] text-[#86868B]' };
+        return { Icon: Clock, className: 'bg-[#F5F5F7] text-[#86868B] dark:bg-[#2C2C2E] dark:text-[#8E8E93]' };
       };
 
       const FilterTabs = () => (
-        <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 ${isDark ? 'bg-[#767680]/24' : 'bg-[#767680]/12'}`}>
+        <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/12 dark:bg-[#767680]/24`}>
           {[
             ['all', scheduledCopy.filterAll],
             ['active', scheduledCopy.filterActive],
@@ -1056,7 +1056,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               aria-pressed={taskFilter === value}
               className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
                 taskFilter === value
-                  ? (isDark ? 'bg-[#636366] text-white shadow-sm' : 'bg-white text-black shadow-sm')
+                  ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
                   : `${mutedValue}`
               }`}>
               {label}
@@ -1074,7 +1074,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <ScheduledSelect value={editor.repeat} options={repeatOptions}
                   onChange={value => onEdit('repeat', value)}
                   testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
-                <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
+                <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
               </div>
             </div>
           </div>
@@ -1097,7 +1097,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     onChange={values => onEdit('days', values)} multiple minSelected={1}
                     onClose={onCloseWeekly}
                     testId={`${prefix}-day`} ariaLabel={scheduledCopy.chooseDate} theme={theme} minWidth={190} emptyLabel={scheduledCopy.choose} separator={scheduledCopy.daySeparator} />
-                  <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
+                  <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
                 </div>
               </div>
             </div>
@@ -1119,7 +1119,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]">
           <form aria-labelledby="scheduled-create-dialog-title"
             data-testid="scheduled-create-dialog" onSubmit={submitCustomTask}
-            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[480px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}>
+            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[480px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`}>
             <div className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
               <div className="min-w-0">
                 <h2 id="scheduled-create-dialog-title" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
@@ -1128,7 +1128,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
               <button type="button" data-testid="scheduled-create-close" disabled={!!busyAction}
                 onClick={() => setCreateForm(null)}
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-[#C7C7CC] dark:hover:bg-[#3A3A3C]`}
                 aria-label={scheduledCopy.closeCreate}>
                 <X size={18} />
               </button>
@@ -1143,7 +1143,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <input data-testid="scheduled-create-name" value={createForm.name}
                   onChange={event => setCreateForm(current => ({...current, name: event.target.value}))}
                   placeholder={scheduledCopy.taskNamePlaceholder}
-                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
               </label>
 
               <label className="block">
@@ -1151,7 +1151,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <textarea data-testid="scheduled-create-prompt" value={createForm.prompt}
                   onChange={event => setCreateForm(current => ({...current, prompt: event.target.value}))}
                   placeholder={scheduledCopy.taskPromptPlaceholder} rows="3"
-                  className={`min-h-[112px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+                  className={`min-h-[112px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
               </label>
 
               <div data-testid="scheduled-create-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
@@ -1166,7 +1166,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
 
             </div>
 
-            <div className={`flex shrink-0 justify-end gap-3 border-t px-6 py-4 ${iosSeparator} ${isDark ? 'bg-[#1C1C1E]/95' : 'bg-white/95'} backdrop-blur-xl`}>
+            <div className={`flex shrink-0 justify-end gap-3 border-t px-6 py-4 ${iosSeparator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`}>
               <button type="submit" data-testid="scheduled-create-submit"
                 disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
                 className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
@@ -1228,7 +1228,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
         const { Icon, className } = taskIconMeta(task);
         return (
           <div key={task.id} className="task-item" data-status={task.status === 'active' ? 'active' : 'paused'}>
-            <div className={`list-row group flex cursor-pointer items-center justify-between p-4 pl-5 transition-colors ${isDark ? 'hover:bg-white/5 active:bg-[#2C2C2E]' : 'hover:bg-gray-50/50 active:bg-[#F0F0F2]'}`}>
+            <div className={`list-row group flex cursor-pointer items-center justify-between p-4 pl-5 transition-colors hover:bg-gray-50/50 active:bg-[#F0F0F2] dark:hover:bg-white/5 dark:active:bg-[#2C2C2E]`}>
               <button
                 type="button"
                 onClick={() => selectTask(task.id)}
@@ -1243,19 +1243,18 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   <span className={`block truncate text-[15px] font-semibold leading-5 ${bodyText}`}>{task.name}</span>
                   <span data-testid="scheduled-task-summary" className={`mt-0.5 flex min-w-0 items-center text-[13px] leading-5 ${mutedValue}`}>
                     <span className="truncate">{task.status === 'active' ? taskSummary(task) : (task.scheduleLabel || taskSummary(task))}</span>
-                    <span className={`mx-2 ${isDark ? 'text-[#48484A]' : 'text-[#D1D1D6]'}`}>|</span>
+                    <span className={`mx-2 text-[#D1D1D6] dark:text-[#48484A]`}>|</span>
                     <span className={`inline-flex shrink-0 items-center ${task.status === 'active' ? 'text-[#34C759]' : 'text-[#FF9500]'}`}>
                       <span className="mr-1.5 h-1.5 w-1.5 rounded-full" style={{ background: task.status === 'active' ? '#34C759' : '#FF9500' }} />
                       {taskListStatusLabel(task.status)}
                     </span>
                     {task.isRunning && (
                       <span data-testid="scheduled-task-running" aria-label={scheduledCopy.running}
-                        className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2"
-                        style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                        className="ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                     )}
                     {task.hasUnreadRuns && (
                       <span data-testid="scheduled-task-unread" aria-label={scheduledCopy.unread}
-                        className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                        className="ml-2 h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                     )}
                   </span>
                 </span>
@@ -1265,7 +1264,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </div>
             </div>
             {index !== list.length - 1 && (
-              <div className={`ml-[76px] h-px ${isDark ? 'bg-[#48484A]/70' : 'bg-gray-100'}`} />
+              <div className={`ml-[76px] h-px bg-gray-100 dark:bg-[#48484A]/70`} />
             )}
           </div>
         );
@@ -1277,9 +1276,9 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
             <FilterTabs />
           </div>
-          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] ${isDark ? 'border-white/15 bg-[#1C1C1E]' : 'border-black/5 bg-white'}`}>
+          <div className={`overflow-hidden rounded-[20px] border shadow-[0_2px_10px_rgba(0,0,0,0.02),0_8px_32px_rgba(0,0,0,0.04)] border-black/5 bg-white dark:border-white/15 dark:bg-[#1C1C1E]`}>
             {error && (
-              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] ${isDark ? 'bg-[#3A2424] text-[#F2B8B5]' : 'bg-[#FCE8E6] text-[#A50E0E]'}`}>
+              <div role="alert" data-testid="scheduled-error" className={`m-3 flex items-start gap-2 rounded-[12px] px-3 py-2 text-[13px] bg-[#FCE8E6] text-[#A50E0E] dark:bg-[#3A2424] dark:text-[#F2B8B5]`}>
                 <span className="min-w-0 flex-1">{error}</span>
                 <button type="button" onClick={() => bridge?.dismissScheduledTaskError?.()}
                   aria-label={scheduledCopy.closeError} className="mt-[-2px] rounded-full p-1 opacity-65 transition-opacity hover:opacity-100">
@@ -1307,7 +1306,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
             role="dialog"
             aria-modal="true"
             aria-labelledby="scheduled-detail-title-heading"
-            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] ${isDark ? 'bg-[#1C1C1E]' : 'bg-white'}`}
+            className={`mx-4 flex max-h-[calc(100vh-48px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`}
           >
             <div data-testid="scheduled-detail-toolbar" className="flex shrink-0 items-start justify-between gap-4 px-6 pb-4 pt-6">
               <div className="min-w-0">
@@ -1315,7 +1314,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   <h2 id="scheduled-detail-title-heading" className={`truncate text-[22px] font-semibold leading-7 ${bodyText}`}>
                     {scheduledCopy.editTask}
                   </h2>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${selected.status === 'active' ? (isDark ? 'bg-[#163820] text-[#7EE787]' : 'bg-[#E9F8EE] text-[#188038]') : (isDark ? 'bg-[#34353A] text-[#C6C8CE]' : 'bg-[#EEF0F3] text-[#5F6368]')}`}>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${selected.status === 'active' ? 'bg-[#E9F8EE] text-[#188038] dark:bg-[#163820] dark:text-[#7EE787]' : 'bg-[#EEF0F3] text-[#5F6368] dark:bg-[#34353A] dark:text-[#C6C8CE]'}`}>
                     {statusLabel(selected.status)}
                   </span>
                 </div>
@@ -1328,7 +1327,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               <div className="flex shrink-0 items-center gap-2">
                 <button type="button" data-testid="scheduled-detail-close" disabled={!!busyAction}
                   onClick={() => selectTask(null)}
-                  className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] text-[#C7C7CC] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD]'}`}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors disabled:opacity-40 bg-[#E9E9EB] text-[#6E6E73] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-[#C7C7CC] dark:hover:bg-[#3A3A3C]`}
                   aria-label={scheduledCopy.closeDetail}>
                   <X size={18} />
                 </button>
@@ -1341,7 +1340,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <input data-testid="scheduled-live-title" value={detailForm.name}
                   onChange={e => editTextField('name', e.target.value)} onBlur={() => finishTextField('name')}
                   aria-label={scheduledCopy.taskNameAria}
-                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+                  className={`min-h-12 w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
               </label>
 
               <label data-testid="scheduled-detail-prompt" className="block">
@@ -1349,7 +1348,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 <textarea data-testid="scheduled-live-prompt" value={detailForm.prompt}
                   onChange={e => editTextField('prompt', e.target.value)} onBlur={() => finishTextField('prompt')}
                   rows="5" aria-label={scheduledCopy.taskPromptAria} placeholder={scheduledCopy.taskPromptPlaceholder}
-                  className={`min-h-[132px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 ${isDark ? 'bg-[#2C2C2E] text-white placeholder:text-[#EBEBF5]/30' : 'bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B]'}`} />
+                  className={`min-h-[132px] w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30`} />
               </label>
 
               <div data-testid="scheduled-detail-settings" className={`overflow-visible rounded-[16px] ${iosInsetSurface}`}>
@@ -1360,7 +1359,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                       <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
                         onChange={value => editModel(value)}
                         testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} footerAction={modelManageAction} />
-                      <ChevronRight className={`h-3.5 w-3.5 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#C5C5C7]'}`} />
+                      <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
                     </div>
                   </div>
                 </div>
@@ -1401,13 +1400,13 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   onClick={() => runTaskNow(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${canOpenTaskFolder ? `border-b ${iosSeparator}` : ''} ${pressedRow}`}>
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.runNow}</span>
-                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                  <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
                 <button type="button" data-testid="scheduled-open-folder"
                   onClick={() => bridge && bridge.artifacts.openScheduledTaskFolder && bridge.artifacts.openScheduledTaskFolder(selected.id)}
                   className={`flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-[15px] transition-colors ${pressedRow}`}>
                   <span className={`font-medium ${bodyText}`}>{scheduledCopy.openFolder}</span>
-                  <ChevronRight className={`h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />
+                  <ChevronRight className={`h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />
                 </button>
               </div>
 
@@ -1418,7 +1417,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 </div>
                 <div data-testid="scheduled-run-history-list" className={`overflow-hidden rounded-[12px] ${iosHistorySurface}`}>
                   {runs.length ? (
-                    <div className={`divide-y ${isDark ? 'divide-[#545458]/50' : 'divide-[#3C3C43]/10'}`}>
+                    <div className={`divide-y divide-[#3C3C43]/10 dark:divide-[#545458]/50`}>
                       {runs.map(item => (
                         <button key={item.id} type="button" disabled={!item.sessionId} onClick={() => openRunChat(item)}
                           data-testid="scheduled-run-row"
@@ -1428,11 +1427,10 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                           <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center">
                             {['queued', 'running'].includes(item.status) ? (
                               <span data-testid="scheduled-run-running" aria-label={scheduledCopy.runInProgress}
-                                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2"
-                                style={{ borderColor: accent, borderTopColor: 'transparent' }} />
+                                className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[#007AFF] border-t-transparent dark:border-[#0A84FF]" />
                             ) : item.unread ? (
                               <span data-testid="scheduled-run-unread" aria-label={scheduledCopy.unread}
-                                className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: accent }} />
+                                className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
                             ) : (
                               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: item.status === 'failed' ? '#FF3B30' : '#8E8E93' }} />
                             )}
@@ -1448,7 +1446,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                               {fmtDateTime(item.scheduledFor || item.createdAt)}
                             </span>
                           </span>
-                          {item.sessionId && <ChevronRight className={`mt-1 h-4 w-4 shrink-0 ${isDark ? 'text-[#EBEBF5]/30' : 'text-[#3C3C43]/30'}`} />}
+                          {item.sessionId && <ChevronRight className={`mt-1 h-4 w-4 shrink-0 text-[#3C3C43]/30 dark:text-[#EBEBF5]/30`} />}
                         </button>
                       ))}
                     </div>
@@ -1459,11 +1457,11 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
               </section>
             </div>
 
-            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-6 py-4 ${iosSeparator} ${isDark ? 'bg-[#1C1C1E]/95' : 'bg-white/95'} backdrop-blur-xl`}>
+            <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-6 py-4 ${iosSeparator} bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl`}>
               <button type="button" data-testid="scheduled-detail-delete"
                 onClick={(event) => requestDeleteTask(event, selected)}
                 disabled={!!busyAction}
-                className={`h-11 rounded-full px-6 text-[15px] font-medium text-[#FF3B30] transition-colors disabled:opacity-40 ${isDark ? 'bg-[#2C2C2E] hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] hover:bg-[#DADADD]'}`}>
+                className={`h-11 rounded-full px-6 text-[15px] font-medium text-[#FF3B30] transition-colors disabled:opacity-40 bg-[#E9E9EB] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:hover:bg-[#3A3A3C]`}>
                 {scheduledCopy.delete}
               </button>
               <div className="flex flex-wrap justify-end gap-3">
@@ -1482,7 +1480,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
       const deleteTarget = deleteConfirmTask;
 
       return (
-        <div data-testid="scheduled-page" aria-busy={!!busyAction} className={`relative z-10 flex min-h-0 w-full flex-1 overflow-hidden bg-transparent ${isDark ? 'text-white' : 'text-black'}`}>
+        <div data-testid="scheduled-page" aria-busy={!!busyAction} className={`relative z-10 flex min-h-0 w-full flex-1 overflow-hidden bg-transparent text-black dark:text-white`}>
           {tasks[0] && (
             <button
               type="button"
@@ -1501,7 +1499,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                   <button type="button"
                     onClick={startChatCreation}
                     data-testid="scheduled-create-from-chat"
-                    className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${isDark ? 'bg-[#2C2C2E] text-white hover:bg-[#3A3A3C]' : 'bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD]'}`}>
+                    className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]`}>
                     <MessageCircle size={14} className="mr-2 opacity-70" />
                     {scheduledCopy.createFromChat}
                   </button>
@@ -1537,7 +1535,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                 aria-labelledby="scheduled-delete-title"
                 aria-describedby="scheduled-delete-description"
                 data-testid="scheduled-detail-delete-confirmation"
-                className={`relative w-full max-w-[270px] overflow-hidden rounded-[14px] border shadow-[0_20px_60px_rgba(0,0,0,0.28)] ${iosSeparator} ${isDark ? 'bg-[#2C2C2E]' : 'bg-white'}`}
+                className={`relative w-full max-w-[270px] overflow-hidden rounded-[14px] border shadow-[0_20px_60px_rgba(0,0,0,0.28)] ${iosSeparator} bg-white dark:bg-[#2C2C2E]`}
               >
                 <div className={`px-5 pb-4 pt-5 text-center border-b ${iosSeparator}`}>
                   <h3 id="scheduled-delete-title" className={`text-[15px] font-semibold leading-5 ${bodyText}`}>
@@ -1547,7 +1545,7 @@ import weeklyReviewImage from '../../assets/scheduled/weekly-review.jpg';
                     {scheduledCopy.deleteDescription(deleteTarget.name)}
                   </p>
                 </div>
-                <div className={`grid grid-cols-2 divide-x ${isDark ? 'divide-[#545458]/50' : 'divide-[#3C3C43]/16'}`}>
+                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/16 dark:divide-[#545458]/50`}>
                   <button type="button" data-testid="scheduled-detail-delete-cancel"
                     onClick={(event) => cancelDeleteTask(event)}
                     disabled={!!busyAction}

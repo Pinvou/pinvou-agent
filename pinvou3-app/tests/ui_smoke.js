@@ -305,11 +305,18 @@ async function expand(page) {
       }
       content.innerHTML = render(markdown);
       fixture.appendChild(wrapper);
+      // 生产 CSS 自 #166 起 rescope 为 `.dark .dark-code ...`（需 .dark 祖先），
+      // 与应用真实主题结构一致：暗态由 <html class="dark"> 决定（main.jsx / DetachedShell.jsx）。
+      // 暗色样本必须在采样期间给 documentElement 加 .dark，亮态必须确保无 .dark，
+      // 否则 computed style 会算到错的分支。采样后还原，避免污染后续检查。
+      const root = document.documentElement;
+      const hadDark = root.classList.contains('dark');
+      if (mode === 'dark') root.classList.add('dark'); else root.classList.remove('dark');
       const pre = content.querySelector('pre[data-language-id="json"]');
       const stringToken = pre && pre.querySelector('.hljs-string');
       const attrToken = pre && pre.querySelector('.hljs-attr');
       const addition = content.querySelector('.language-diff .hljs-addition');
-      return {
+      const result = {
         languageId: pre && pre.dataset.languageId,
         stringColor: stringToken && getComputedStyle(stringToken).color,
         attrColor: attrToken && getComputedStyle(attrToken).color,
@@ -317,6 +324,8 @@ async function expand(page) {
         label: pre && getComputedStyle(pre, '::before').content,
         diffBackground: addition && getComputedStyle(addition).backgroundColor,
       };
+      if (hadDark) root.classList.add('dark'); else root.classList.remove('dark');
+      return result;
     }
 
     const lightNested = addSample('light', 'nested');

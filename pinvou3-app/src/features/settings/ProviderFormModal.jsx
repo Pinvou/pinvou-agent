@@ -112,7 +112,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
   );
 }
 
-export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSaved }) {
+export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || '');
   // Kimi Agent 默认走 Kimi 原生协议（Kimi Code 官方文档的专用类型）；
@@ -293,11 +293,7 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
     }
   };
 
-  const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-none transition-colors ${
-    isDark
-      ? 'bg-white/[0.06] text-[#E8EAED] border border-white/[0.09] focus:border-[#64B5F6]/50'
-      : 'bg-[#F0F4F9] text-[#1F1F1F] border border-black/[0.06] focus:border-[#0B57D0]/50'
-  }`;
+  const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-none transition-colors bg-[#F0F4F9] text-[#1F1F1F] border border-black/[0.06] focus:border-[#0B57D0]/50 dark:bg-white/[0.06] dark:text-[#E8EAED] dark:border-white/[0.09] dark:focus:border-[#64B5F6]/50`;
 
   return (
     <div
@@ -309,9 +305,7 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
     >
       <div
         onClick={event => event.stopPropagation()}
-        className={`relative w-[min(480px,calc(100vw-24px))] max-h-[calc(100vh-48px)] overflow-y-auto custom-scrollbar rounded-[24px] p-6 ${
-          isDark ? 'bg-[#1E1F20] text-[#E8EAED]' : 'bg-white text-[#1F1F1F]'
-        }`}
+        className={`relative w-[min(480px,calc(100vw-24px))] max-h-[calc(100vh-48px)] overflow-y-auto custom-scrollbar rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}
       >
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-[17px] font-semibold">
@@ -388,9 +382,7 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
                   className={`h-9 px-3.5 rounded-full text-[12px] font-semibold transition-colors ${
                     wireApi === option.key
                       ? 'bg-[#007AFF] text-white'
-                      : isDark
-                        ? 'bg-white/[0.08] text-[#C7C7CC]'
-                        : 'bg-[#F0F4F9] text-[#5F6368]'
+                      : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/[0.08] dark:text-[#C7C7CC]'
                   }`}
                 >
                   {option.label}
@@ -502,7 +494,7 @@ export function ProviderFormModal({ agent, copy, isDark, initial, onClose, onSav
           </div>
         )}
 
-        <div className={`rounded-xl px-3 py-2.5 text-[12px] leading-relaxed ${isDark ? 'bg-amber-500/[0.08] text-amber-200/80' : 'bg-amber-500/[0.1] text-amber-800'}`}>
+        <div className={`rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/[0.1] text-amber-800 dark:bg-amber-500/[0.08] dark:text-amber-200/80`}>
           {copy.thirdPartyWarning}
         </div>
 
