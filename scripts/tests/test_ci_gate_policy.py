@@ -89,6 +89,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("Ready PR 定向浏览器 smoke", frontend)
         self.assertIn("Merge Queue 完整浏览器 smoke", frontend)
         self.assertIn("select-frontend-smokes.mjs", frontend)
+        self.assertIn("npm run test:browser-smoke", frontend)
         self.assertEqual(frontend.count("npm run test:markdown"), 0)
 
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):

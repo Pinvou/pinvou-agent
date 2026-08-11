@@ -147,14 +147,90 @@ pub(crate) fn install_script_command(unix_url: &str, windows_url: &str) -> tokio
         let mut command = HiddenTokioCommand::new("powershell");
         command
             .args(["-NoProfile", "-NonInteractive", "-Command"])
-            .arg(format!("irm {windows_url} | iex"));
+            // 先下载校验内容再执行：claude.ai 等官方站点会对非浏览器客户端
+            // 间歇返回 Cloudflare 验证页（HTML/JS），直接 iex 会变成莫名其妙的
+            // 解析错误且 stderr 为空；校验到 HTML 就给出可操作的中文错误。
+            // 注意不能匹配任意 `<` 开头：kimi 官方脚本第一行是 `<#`（PowerShell
+            // 块注释），`^\s*<` 会把它误判成验证页导致 kimi 永远装不上（实测）。
+            // 只匹配真实 HTML 文档特征（Cloudflare 页以 <!DOCTYPE html> 开头）。
+            .arg(format!(
+                "$s = irm {windows_url}; if ($s -match '^\\s*<(html|!doctype|head|body|script)') {{ throw '官方站点返回了验证页而非安装脚本（可能是网络拦截或频控），请稍后重试' }}; iex $s"
+            ));
+        // Windows 开发机常见 PATH 顺序：Git for Windows 的 usr/bin 排在 System32
+        // 前面，官方安装脚本调 tar 会命中 MSYS tar——盘符路径（C:\...）被当成
+        // 「远程主机:路径」语法而失败（实测报错 Cannot execute remote shell）。
+        // 把 System32 提到 PATH 最前，保证脚本拿到 Windows 原生工具。
+        let system32 = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+            .join("System32");
+        let mut sanitized_path = system32.into_os_string();
+        if let Some(existing) = std::env::var_os("PATH") {
+            sanitized_path.push(";");
+            sanitized_path.push(existing);
+        }
+        command.env("PATH", sanitized_path);
         command
     } else {
         let mut command = HiddenTokioCommand::new("sh");
         command
             .arg("-c")
             .arg(format!("curl -fsSL {unix_url} | bash"));
+        // Unix 上把安装进程放进**独立进程组**（组长 pid = 子进程 pid）：取消时
+        // 按组杀（kill -9 -pgid）才能真正终止 curl | bash 派生的子进程，否则
+        // 子 shell 孤儿化继续安装（评审中危项）。tokio 的 process_group 是
+        // inherent 方法，无需 import。
+        #[cfg(unix)]
+        {
+            command.process_group(0);
+        }
         command
+    }
+}
+
+/// Unix 上把（tokio）命令设为独立进程组组长（组长 pid = 子进程 pid）：
+/// 取消安装时按组杀（kill -9 -pgid）能连 curl | bash / npm 派生的子进程
+/// 一起终止，不孤儿化（评审中危项）。Windows no-op（taskkill /T 已杀整树）。
+pub(crate) fn tokio_process_group_leader(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    {
+        // tokio 的 process_group 是 inherent 方法，无需 import。
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+/// `tokio_process_group_leader` 的 std 版本（spawn_blocking 场景，如 Homebrew）。
+pub(crate) fn std_process_group_leader(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+/// 按 pid 杀进程树：Windows 用 taskkill 杀整棵树（脚本会再起子 shell，单杀
+/// 父进程会留下继续运行的子进程）；其他平台按进程组杀（负 pid）——安装进程
+/// 以 `process_group(0)` 独立成组，`kill -9 -pgid` 连 curl | bash / npm 派生
+/// 的子进程一起终止，不孤儿化（评审中危项）。
+pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<Output> {
+    let pid_arg = pid.to_string();
+    if crate::platform::capabilities::is_windows() {
+        external_command(Path::new("taskkill"))
+            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+            .output()
+    } else {
+        let group_arg = format!("-{pid_arg}");
+        external_command(Path::new("kill"))
+            .args(["-9", group_arg.as_str()])
+            .output()
     }
 }
 

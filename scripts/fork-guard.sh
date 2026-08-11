@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# v0.9.0 clean re-fork guard:按 6 个长期主题守指纹与行为。
+# CodeWhale v0.9.5 clean re-fork guard: seven published commits across five themes.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
+EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
+EXPECTED_HEAD="2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd"
+EXPECTED_COMMITS=7
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -14,96 +17,83 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 1 层:v0.9.0 主题指纹校验 ──"
-# 格式:主题|说明|文件(相对仓库根)|grep -F 固定串
+bold "── 第 0 层：v0.9.5 基线与五主题公开拓扑 ──"
+actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
+if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
+  green "  ✓ CodeWhale gitlink 指向公开基线 $EXPECTED_HEAD"
+else
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
+  fail=1
+fi
+
+if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
+  green "  ✓ 维护基线继承官方 v0.9.5"
+else
+  red "  ✗ 维护基线不继承官方 v0.9.5 commit $EXPECTED_UPSTREAM"
+  fail=1
+fi
+
+commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
+if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
+  green "  ✓ v0.9.5 之上 7 个公开提交"
+else
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开登记为 $EXPECTED_COMMITS"
+  fail=1
+fi
+
+bold "── 第 1 层：五主题与父仓指纹 ──"
+# 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
-  "T1|library facade 存在               |CodeWhale/crates/tui/src/lib.rs|pub mod core;"
-  "T1|宿主额外工具入口                   |CodeWhale/crates/tui/src/core/engine.rs|pub extra_tools: ExtraTools"
+  "T1|v0.9.5 library 只公开宿主入口       |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
+  "T1|宿主可重载 Fleet roster             |CodeWhale/crates/tui/src/lib.rs|pub use fleet::roster::FleetRoster;"
+  "T1|Fleet roster 宿主入口回归           |CodeWhale/crates/tui/src/lib.rs|fn forkguard_host_can_load_workspace_fleet_roster"
+  "T1|宿主只读 live worker 投影          |CodeWhale/crates/tui/src/tools/subagent/mod.rs|pub fn read_persisted_agent_worker_records("
+  "T1|只读 worker 不触发重启回收回归      |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_readonly_worker_projection_preserves_live_status"
+  "T1|宿主显式 route limits               |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
+  "T1|embedding route wire alias 回归      |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_embedding_route_limits_preserve_wire_alias"
+  "T1|运行时会话快照不推断工具崩溃        |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_runtime_session_snapshot_preserves_in_flight_tool_call"
+  "T1|显式重启恢复可观测且幂等            |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save"
 
-  "T2|写文件 64KB 上限                  |CodeWhale/crates/tui/src/tools/file.rs|WRITE_FILE_MAX_CONTENT_BYTES"
-  "T2|append_file 内联 diff              |CodeWhale/crates/tui/src/tools/file.rs|fn forkguard_append_file_emits_inline_diff"
-  "T2|截断参数修复提示                   |CodeWhale/crates/tui/src/core/engine/dispatch.rs|truncated_args_hint"
-  "T2|工具黑名单结果 golden              |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|fn forkguard_blocklist_golden"
-  "T2|deferred 激活面 golden             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_yolo_no_deferred_activator_first_class"
-  "T2|会话隐藏集可收窄固定名单           |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_hidden_tools_injectable"
-  "T2|会话隐藏集不可扩大固定名单         |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_hidden_tools_cannot_expand_compile_time_blocklist"
-  "T2|tool_search gate 不可注入          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_search_always_gated"
-  "T2|disallowed_tools 前缀规则          |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|rule.strip_suffix('*')"
-  "T2|Dangerous 命令全模式阻断           |CodeWhale/crates/tui/src/tools/shell.rs|Dangerous commands are BLOCKED in ALL modes"
-  "T3|项目上下文仅走 inline              |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_pinvou3_uses_only_inline_project_context"
-  "T3|密封静态 prompt composer           |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override"
-  "T3|instructions 不受 4KB fragment 截断|CodeWhale/crates/tui/src/prompts.rs|fn forkguard_permissions_fragment_preserves_instructions_beyond_default_fragment_cap"
-  "T3|skill 发现仅使用显式注入根         |CodeWhale/crates/tui/src/skills/mod.rs|fn forkguard_skill_discovery_is_single_root_engine_config_skills_dir"
-  "T3|hidden_tools 按会话注入            |CodeWhale/crates/tui/src/tools/pinvou3_blocklist.rs|pub fn is_pinvou3_hidden_for_session"
-  "T3|停用 skill 不进入目录              |CodeWhale/crates/tui/src/skills/mod.rs|if is_skill_disabled(&skill.name)"
-  "T3|内部提醒不污染 Working Set         |CodeWhale/crates/tui/src/working_set.rs|fn strip_leading_system_reminder(text: &str) -> &str"
+  "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
+  "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
+  "T2|宿主工具覆盖全部运行模式            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_extra_tools_register_in_all_modes"
+  "T2|File 写入 64 KiB 上限               |CodeWhale/crates/tui/src/tools/file.rs|const WRITE_FILE_MAX_CONTENT_BYTES: usize = 64 * 1024;"
+  "T2|写入上限落盘前拒绝回归              |CodeWhale/crates/tui/src/tools/file/tests/tools.rs|async fn forkguard_file_content_caps_reject_before_writing"
+  "T2|多行危险命令分段阻断回归            |CodeWhale/crates/tui/src/command_safety.rs|fn forkguard_multiline_still_blocks_destructive_segments"
 
-  "T4|automation 透传模型                |CodeWhale/crates/tui/src/automation_manager.rs|model: automation.model.clone()"
-  "T4|稳定 conversation key              |CodeWhale/crates/tui/src/task_manager.rs|pub conversation_key: Option<String>"
-  "T4|task schema v4                     |CodeWhale/crates/tui/src/task_manager.rs|const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;"
-  "T4|小时调度稳定锚点                   |CodeWhale/crates/tui/src/automation_manager.rs|fn forkguard_hourly_rrule_without_explicit_time_keeps_creation_phase"
-  "T4|漏跑跳过且同任务不重叠             |CodeWhale/crates/tui/src/automation_manager.rs|fn forkguard_scheduler_skips_offline_misfires_without_backfill"
-  "T4|终态运行保留                       |CodeWhale/crates/tui/src/automation_manager.rs|terminal_run_prune_candidates"
-  "T4|终态 task 级联删除                 |CodeWhale/crates/tui/src/task_manager.rs|delete_terminal_task"
-  "T4|强制审批不可被 auto approve 绕过   |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|registered_tool_approval_force_prompt"
+  "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
+  "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
+  "T3|disabled Skill 不可见且不可加载      |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_disabled_skill_is_neither_rendered_nor_loadable"
+  "T3|内部 reminder 不污染 Working Set    |CodeWhale/crates/tui/src/working_set.rs|fn forkguard_working_set_ignores_leading_system_reminder_paths"
 
-  "T5|宿主工具硬白名单                   |CodeWhale/crates/tui/src/core/engine.rs|pub tool_whitelist: Option<HashSet<String>>"
-  "T5|standalone exec 配置字段完整        |CodeWhale/crates/tui/src/main.rs|extra_tools: crate::core::engine::ExtraTools::default()"
-  "T5|宿主额外工具覆盖全部模式           |CodeWhale/crates/tui/src/core/engine/tool_setup.rs|fn append_host_extra_tools"
-  "T5|宿主额外工具全模式回归             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_extra_tools_register_in_all_modes"
-  "T5|SpawnSubAgent 工作流契约            |CodeWhale/crates/tui/src/core/ops.rs|expects_file_output: bool"
-  "T5|结构化产出提交工具                 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|const SUBMIT_OUTPUT_TOOL: &str = \"submit_output\";"
-  "T5|结构化产出安全路径回归             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
-  "T5|Custom 显式写工具真实落盘          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_custom_explicit_write_tool_can_persist_file_without_tool_escalation"
-  "T5|文件产出失败保留工具错误           |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_missing_file_output_reports_last_tool_error"
-  "T5|宿主取消全部后台 agent             |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
-  "T5|批量取消行为回归                   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cancel_all_running_aborts_every_live_agent"
-  "T5|Agent mailbox 可靠父子谱系         |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_spawn_wires_lineage_and_exactly_once_terminal_mail"
-  "T5|Agent 显式取消可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_explicit_cancel_publishes_reliable_terminal_mail"
-  "T5|Agent 手工中断可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_manual_interrupt_publishes_reliable_terminal_mail"
-  "T5|Agent 自动回收可靠终态             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cleanup_auto_cancels_stale_running_agent_and_releases_slot"
-  "T5|Agent 协作取消终态去重             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_cooperative_cancel_publishes_exactly_one_cancelled_terminal_mail"
-  "T5|Agent 非法 Running 终态归一        |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn running_task_result_is_normalized_before_mailbox_and_manager_commit"
-  "T5|OAuth 登录可取消                   |CodeWhale/crates/tui/src/mcp/oauth.rs|pub async fn perform_oauth_login_for_server_with_cancel"
+  "T4|Automation 使用稳定 conversation key|CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
+  "T4|离线漏跑不补跑                      |CodeWhale/crates/tui/src/automation_manager.rs|fn forkguard_scheduler_skips_offline_misfires_without_backfill"
+  "T4|同一 Automation 不重叠              |CodeWhale/crates/tui/src/automation_manager.rs|fn forkguard_scheduler_does_not_overlap_active_automation_run"
+  "T4|Pinvou 历史 v3/v4 schema 窄兼容     |CodeWhale/crates/tui/src/task_manager.rs|const PINVOU_LEGACY_TASK_SCHEMA_VERSIONS"
+  "T4|conversation/thread 跨 worker 持久化|CodeWhale/crates/tui/src/task_manager.rs|async fn forkguard_conversation_key_and_created_thread_survive_worker_boundary"
 
-  "T6|opaque runtime route 对宿主公开    |CodeWhale/crates/tui/src/route_runtime.rs|pub struct ResolvedRuntimeRoute"
-  "T6|宿主路由解析入口                   |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route("
-  "T6|宿主显式 route limits 入口         |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
-  "T6|显式 output 覆盖未知模型 4K fallback|CodeWhale/crates/tui/src/route_budget.rs|fn forkguard_explicit_route_output_limit_beats_unknown_model_name_fallback"
-  "T6|automation reconcile shared API    |CodeWhale/crates/tui/src/automation_manager.rs|pub async fn reconcile_run_statuses_shared("
+  "T5|三省六部文件产出契约                |CodeWhale/crates/tui/src/core/ops.rs|expects_file_output: bool"
+  "T5|宿主产物注册为有界写入声明          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_write_files_become_bounded_claims"
+  "T5|三省六部批量取消                    |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
+  "T5|旧 action allowlist 映射 canonical  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill"
+  "T5|结构化 schema 递归校验              |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_validates_nested_required_fields"
+  "T5|结构化产出只写声明安全路径          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
+  "T5|结构化产出根由宿主显式绑定          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_output_root_is_explicit_and_claim_bounded"
+  "T5|结构化产出拒绝符号链接组件          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_rejects_symlink_components"
+  "T5|信任模式仍拒绝写入链接逃逸          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_write_claim_rejects_symlink_even_in_trust_mode"
 
-  "CI|公开 fork 全目标编译门禁           |CodeWhale/.github/workflows/pinvou-fork-ci.yml|cargo check --workspace --all-targets --locked"
-  "CI|父仓固定公开 CodeWhale 标签         |scripts/verify-public-submodule.sh|PINVOU_CODEWHALE_TAG=\"pinvou-v0.9.0-r4\""
-
-  "APP|消息携带 resolved route            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|resolve_runtime_route_for_model"
-  "APP|部署级 route profile               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn route_limits_for_model("
-  "APP|128K/256K Compact 结果式回归       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
-  "APP|兼容引擎显式 limits 结果式回归     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_openai_compatible_route_uses_declared_limits"
-  "APP|手动压缩携带同源 route             |pinvou3-app/src-tauri/src/features/assistant/engine.rs|send(Op::CompactContext {"
-  "APP|定时任务使用 shared run API        |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
-  "APP|敏感目录 hard deny 为 exit 2       |pinvou3-app/src-tauri/resources/common/bundle/deny_sensitive_paths.sh|hard-deny 必须 **exit 2**"
-  "APP|静态层 composer 仍由 app 安装      |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|set_static_prompt_composer_override"
-  "APP|会话隐藏集保持固定名单缺省         |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|hidden_tools: None"
-  "APP|内置技能写入 bundle 单一来源        |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name"
-  "APP|前端终端跨分片解析状态             |pinvou3-app/src/platform/tauri/bridge/terminal.js|function terminalParserState(item, stream)"
-  "APP|前端终端跨分片 UI 回归             |pinvou3-app/tests/ui_smoke.js|terminal parser preserves CRLF and ANSI state across live chunks"
-  "APP|后台终态输出 tail 对账             |pinvou3-app/src/platform/tauri/bridge/terminal.js|function reconcileBackgroundTerminalOutput(previous, payload)"
-  "APP|后台终态 stdout/stderr UI 回归      |pinvou3-app/tests/ui_smoke.js|background shell terminal event reconciles final stdout and stderr tails"
-  "APP|session 级 ShellManager 复用        |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|struct SessionShellManagers"
-  "APP|ShellManager 非消费式输出观察器     |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|struct ShellOutputMonitor"
-  "APP|Shell 输出拥塞合并无丢失回归        |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn assigns_new_job_by_command_and_coalesces_all_unseen_output"
-  "APP|Shell 中文跨快照边界回归            |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn holds_incomplete_utf8_replacement_until_a_stable_snapshot"
-  "APP|Shell 后台终态持续观察回归          |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn reports_detached_completion_after_the_engine_tool_has_returned"
-  "APP|turn 权威终态抢占门                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|pub(crate) fn claim_terminal"
-  "APP|Engine 回收终态去重                 |pinvou3-app/src-tauri/src/features/assistant/engine.rs|finish_reclaimed_lifecycle_turn"
-  "APP|主停止级联当前 turn 后台 Shell      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|pub(crate) fn request_cancel"
-  "APP|中断轮次 Shell 基线差集回归         |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn forkguard_interrupted_turn_preserves_preexisting_and_old_agent_jobs"
-  "APP|停止与后台 task id 登记竞态回归     |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn task_registered_after_stop_is_reclaimed_by_supervisor"
-  "APP|提交前 Shell scope 生命周期回归    |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn cancellation_before_turn_binding_still_kills_the_scope_job"
-  "APP|提交取消安全回滚回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn provisional_submission_scope_is_abandoned_when_guard_drops"
-  "APP|Agent 子谱系归属回归              |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn reliable_child_lineage_is_not_overwritten_by_the_current_turn"
-  "APP|失败 Shell scope 有界保留回归      |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn failed_scope_tombstones_are_bounded"
-  "APP|断流未绑定 scope 回收回归          |pinvou3-app/src-tauri/src/features/assistant/turn_shell_tasks.rs|fn unbound_scope_is_reclaimed_when_the_stream_stops_before_turn_started"
+  "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
+  "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
+  "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|subagent_state_root,"
+  "APP|三省六部动态产物最小写入声明        |pinvou3-app/src-tauri/src/features/assistant/harness.rs|fn forkguard_dynamic_workflow_role_claims_only_its_declared_output"
+  "APP|resolved route 由宿主统一解析        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
+  "APP|128K/256K compaction 合约            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
+  "APP|定时任务复用 shared run API          |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
+  "APP|多智能体面板只读 live worker         |pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs|read_persisted_agent_worker_records(workspace)"
+  "APP|静态 prompt composer 由 app 安装     |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|set_static_prompt_composer_override"
+  "APP|运行时会话读取不修复在途工具调用      |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call"
+  "APP|进程启动显式恢复中断工具调用且幂等    |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
+  "APP|仅进程启动入口触发工具历史恢复        |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
 )
 
 for fp in "${fingerprints[@]}"; do
@@ -123,17 +113,17 @@ if [[ $FAST_ONLY -eq 1 ]]; then
 fi
 
 echo
-bold "── 第 2 层:CodeWhale forkguard 回归 ──"
-( cd "$TUI" && cargo test -p codewhale-tui forkguard_ --lib -- --test-threads=1 ) || fail=1
+bold "── 第 2 层：CodeWhale forkguard 回归 ──"
+( cd "$TUI" && cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
 
 echo
-bold "── 第 2 层:pinvou3-app forkguard 回归 ──"
-( cd "$APP" && cargo test -p pinvou3-tauri forkguard_ --lib -- --test-threads=1 ) || fail=1
+bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
+( cd "$APP" && cargo test --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then
-  green "✅ fork-guard 全过 — 6 个 v0.9.0 fork 主题完好。"
+  green "✅ fork-guard 全过：5 个 v0.9.5 fork 主题完好。"
 else
-  red "❌ fork-guard 失败 — 对照 docs/fork-modifications.md 排查。"
+  red "❌ fork-guard 失败：请对照 docs/fork-modifications.md 排查。"
 fi
 exit $fail

@@ -1515,6 +1515,8 @@ pub(crate) async fn apply_harness_action(
             role_name,
             prompt,
             allowed_tools,
+            write_files,
+            project_dir,
             max_steps,
             output_schema,
             expects_file_output,
@@ -1540,8 +1542,10 @@ pub(crate) async fn apply_harness_action(
                 prompt,
                 role_id,
                 allowed_tools,
+                write_files,
                 max_steps,
                 output_schema,
+                structured_output_root: Some(project_dir),
                 expects_file_output,
             };
             if let Err(e) = handle.send(op).await {
@@ -1582,8 +1586,10 @@ pub(crate) async fn apply_harness_action(
                     prompt: t.prompt,
                     role_id: t.agent_role, // "slide_writer#p01" → 回到 AgentComplete.role
                     allowed_tools: t.allowed_tools,
+                    write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
+                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
                 };
                 if let Err(e) = handle.send(op).await {
@@ -1834,7 +1840,7 @@ fn spawn_event_forwarder(
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
                     let (output, success, metadata) = tool_call_result_parts(result);
                     let background_task_id =
-                        if matches!(name.as_str(), "exec_shell" | "task_shell_start")
+                        if matches!(name.as_str(), "exec_shell" | "task_shell_start" | "Bash")
                             && metadata
                                 .as_ref()
                                 .and_then(|value| value.get("status"))
@@ -1872,6 +1878,7 @@ fn spawn_event_forwarder(
                             let artifact_session_id = session_id.clone();
                             let artifact_workspace = profile.workspace.clone();
                             let artifact_name = name.clone();
+                            let artifact_input = tracked_input.clone();
                             let artifact_output = output.clone();
                             match tokio::task::spawn_blocking(move || {
                                 persist_successful_tool_artifact(
@@ -1879,7 +1886,7 @@ fn spawn_event_forwarder(
                                     &artifact_session_id,
                                     &artifact_workspace,
                                     &artifact_name,
-                                    &tracked_input,
+                                    &artifact_input,
                                     &artifact_output,
                                 )
                             })
@@ -1895,7 +1902,12 @@ fn spawn_event_forwarder(
                             }
                         }
                     }
-                    crate::features::memory::record_turn_tool_complete(&session_id, &name, success);
+                    crate::features::memory::record_turn_tool_complete(
+                        &session_id,
+                        &name,
+                        &tracked_input,
+                        success,
+                    );
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
                     if success
                         && (name == "update_plan"
@@ -2175,7 +2187,7 @@ fn spawn_event_forwarder(
                         }
                         MM::TokenUsage {
                             agent_id,
-                            model,
+                            route,
                             usage,
                             ..
                         } => {
@@ -2194,7 +2206,7 @@ fn spawn_event_forwarder(
                                     "session_id": session_id,
                                     "role_id": role,
                                     "agent_id": agent_id,
-                                    "model": model,
+                                    "model": route.model,
                                     "input_tokens_total": input_total,
                                     "output_tokens_total": output_total,
                                     "calls": calls,
@@ -2372,8 +2384,10 @@ fn spawn_event_forwarder(
                                                 prompt: t.prompt,
                                                 role_id: t.agent_role,
                                                 allowed_tools: t.allowed_tools,
+                                                write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
+                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
@@ -2442,8 +2456,10 @@ fn spawn_event_forwarder(
                                                 prompt: t.prompt,
                                                 role_id: t.agent_role,
                                                 allowed_tools: t.allowed_tools,
+                                                write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
+                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
@@ -3697,7 +3713,6 @@ mod scheduled_turn_tests {
             auto_approve: true,
             approval_mode: ApprovalMode::Auto,
             translation_enabled: false,
-            show_thinking: false,
             allowed_tools: None,
             dynamic_tools: Vec::new(),
             hook_executor: None,
@@ -3883,6 +3898,25 @@ mod scheduled_turn_tests {
             std::fs::canonicalize(&report).expect("canonical report")
         );
 
+        let appendix = workspace.join("appendix.md");
+        std::fs::write(&appendix, "patched appendix").expect("patched artifact file");
+        persist_successful_tool_artifact(
+            &store,
+            &scheduled.metadata.id,
+            &workspace,
+            "File",
+            &serde_json::json!({
+                "action": "patch",
+                "patch": "*** Begin Patch\n*** Update File: report.md\n*** Add File: appendix.md\n*** Delete File: deleted.md\n*** End Patch"
+            }),
+            &serde_json::json!({
+                "files_applied": 2,
+                "touched_files": ["report.md", "appendix.md", "deleted.md"]
+            })
+            .to_string(),
+        )
+        .expect("persist canonical patch artifacts");
+
         drop(store);
         let reopened = crate::features::sessions::SessionStore::boot().expect("reopen store");
         let paths: Vec<_> = reopened
@@ -3892,7 +3926,13 @@ mod scheduled_turn_tests {
             .into_iter()
             .map(|artifact| artifact.storage_path)
             .collect();
-        assert_eq!(paths, vec![persisted]);
+        assert_eq!(
+            paths,
+            vec![
+                persisted,
+                std::fs::canonicalize(&appendix).expect("canonical appendix")
+            ]
+        );
 
         match previous {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

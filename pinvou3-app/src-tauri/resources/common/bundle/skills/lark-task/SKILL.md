@@ -10,7 +10,7 @@ metadata:
 
 # task (v2)
 
-**CRITICAL — 开始前 MUST 先用 `read_file` 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
+**CRITICAL — 开始前 MUST 先用 `File(action="read")` 读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
 
 > **搜索 vs 列表**：有真实查询关键字（任务名/清单名/片段）才用 `+search` / `+tasklist-search`；只有范围条件（“今年以来”“已完成”“我关注的”“由我创建”）时用列表型——任务用 `+get-related-tasks`（与我相关/我关注/我创建）或 `+get-my-tasks`（分配给我），清单用原生 `tasklists.list` 后本地筛选。**不要把时间范围词当 query**。
 > **用户身份识别**：在用户身份（user identity）场景下，如果用户提到了“我”（例如“分配给我”、“由我创建”），请默认获取当前登录用户的 `open_id` 作为对应的参数值（可用 `lark-cli whoami` 获取）。

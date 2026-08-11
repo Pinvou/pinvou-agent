@@ -45,13 +45,15 @@ fn skill_source_dirs() -> Vec<PathBuf> {
     vec![paths::user_skills_dir(), paths::bundle_skills_dir()]
 }
 
-/// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序）。
+/// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
+/// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
 /// 仅当项目级 skills 开关开启且 scope 为 code 时使用（§2.4：项目内文本是
 /// prompt-injection 面，显式开启才扫描；fork #41 已砍断 workspace 并集发现，
 /// 这里在 app 侧按同一来源顺序补上，经组合目录通道物化）。
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
+        ".pinvou/skills",
         "skills",
         ".opencode/skills",
         ".claude/skills",
@@ -550,6 +552,23 @@ mod tests {
                 "visualizer",
                 "project version",
             );
+            // .pinvou/skills 优先级仅次于 .agents/skills：
+            // 同名时覆盖 .claude（低优先级约定目录），被 .agents 覆盖。
+            write_skill(
+                &project.join(".pinvou").join("skills"),
+                "pinvou-skill",
+                "pinvou version",
+            );
+            write_skill(
+                &project.join(".claude").join("skills"),
+                "pinvou-skill",
+                "claude version",
+            );
+            write_skill(
+                &project.join(".pinvou").join("skills"),
+                "visualizer",
+                "pinvou version",
+            );
 
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
             // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
@@ -575,6 +594,20 @@ mod tests {
                 src,
                 &project.join(".agents").join("skills").join("visualizer"),
                 "项目 .agents/skills 应覆盖市场同名技能"
+            );
+            // .pinvou/skills 仅次于 .agents/skills：覆盖 .claude 同名，
+            // 但被 .agents 同名覆盖。
+            let (_, src) = enabled.iter().find(|(n, _)| n == "pinvou-skill").unwrap();
+            assert_eq!(
+                src,
+                &project.join(".pinvou").join("skills").join("pinvou-skill"),
+                "项目 .pinvou/skills 应覆盖 .claude 同名技能"
+            );
+            let (_, src) = enabled.iter().find(|(n, _)| n == "visualizer").unwrap();
+            assert_eq!(
+                src,
+                &project.join(".agents").join("skills").join("visualizer"),
+                ".agents/skills 优先级应高于 .pinvou/skills（同名仍取 .agents）"
             );
 
             // plain scope 不受项目开关影响

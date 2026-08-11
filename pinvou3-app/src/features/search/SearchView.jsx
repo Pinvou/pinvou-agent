@@ -16,7 +16,6 @@ import { sessionRoute } from '../../shared/session-management.js';
 // 无搜索词:右侧显示所选日期的对话;有搜索词:右侧按日期分组显示全部匹配项,
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
 export const SearchView = ({ theme, history, t, language, archived = [], showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
-  const isDark = theme === 'dark';
   const [query, setQuery] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
@@ -174,18 +173,18 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
         <div
           key={chat.id}
           onClick={() => toggleSelect(chat.id)}
-          className={`flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+          className="flex items-center gap-3 px-4 py-[10px] cursor-pointer rounded-[16px] transition-colors hover:bg-[#F0F4F9] dark:hover:bg-[#1E1F20]"
         >
           <span className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
             selected
               ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-              : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
+              : 'border-[#C4C7C5] dark:border-[#5F6368]'
           }`}>
             {selected && <Check size={13} />}
           </span>
-          {chat.pinned && <PinIcon size={12} className={`shrink-0 rotate-45 ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`} />}
-          <span className={`flex-1 min-w-0 truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.titleContent || chat.title}</span>
-          <span className={`text-[13px] shrink-0 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{chat.date}</span>
+          {chat.pinned && <PinIcon size={12} className="shrink-0 rotate-45 text-[#8A8F94] dark:text-[#9AA0A6]" />}
+          <span className="flex-1 min-w-0 truncate text-[15px] text-[#1F1F1F] dark:text-[#E3E3E3]">{chat.titleContent || chat.title}</span>
+          <span className="text-[13px] shrink-0 text-[#444746] dark:text-[#C4C7C5]">{chat.date}</span>
         </div>
       );
     }
@@ -195,25 +194,25 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
       return (
         <div
           key={chat.id}
-          className={`flex items-center gap-2 px-4 py-[12px] rounded-[16px] transition-colors ${isDark ? 'hover:bg-[#1E1F20]' : 'hover:bg-[#F0F4F9]'}`}
+          className="flex items-center gap-2 px-4 py-[12px] rounded-[16px] transition-colors hover:bg-[#F0F4F9] dark:hover:bg-[#1E1F20]"
         >
           <span className="flex-1 min-w-0 pr-2">
-            <span className={`block truncate text-[15px] ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{chat.titleContent || chat.title}</span>
-            <span className={`block truncate text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+            <span className="block truncate text-[15px] text-[#1F1F1F] dark:text-[#E3E3E3]">{chat.titleContent || chat.title}</span>
+            <span className="block truncate text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">
               {t.searchArchivedAt(formatSessionDate(s.archived_at || s.updated_at || s.created_at, language))}
             </span>
           </span>
           <button
             type="button"
             onClick={() => onRestoreArchived && onRestoreArchived(chat.id)}
-            className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
+            className="shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors bg-[#D3E3FD] text-[#041E49] dark:bg-[#A8C7FA]"
           >
             {t.searchRestore}
           </button>
           <button
             type="button"
             onClick={() => setArchivedDeleteConfirm(s)}
-            className={`shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+            className="shrink-0 h-8 px-3 rounded-full text-[13px] font-medium transition-colors text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]"
           >
             {t.cpDelete}
           </button>
@@ -247,7 +246,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
   };
 
   const renderDateHeader = (key) => (
-    <div className={`px-4 pt-4 pb-1 text-[13px] font-medium ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+    <div className="px-4 pt-4 pb-1 text-[13px] font-medium text-[#8A8F94] dark:text-[#9AA0A6]">
       {formatDateGroupLabel(key, language)}
     </div>
   );
@@ -258,15 +257,15 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
         <div className="max-w-[960px] w-full mx-auto flex flex-col flex-1 min-h-0 relative">
 
           {/* Centered Search Bar */}
-          <div className={`shrink-0 flex items-center gap-3 px-6 py-4 rounded-full mb-4 transition-colors ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-[#F0F4F9] text-[#1F1F1F]'}`}>
-            <Search size={22} className={isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'} />
+          <div className="shrink-0 flex items-center gap-3 px-6 py-4 rounded-full mb-4 transition-colors bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
+            <Search size={22} className="text-[#444746] dark:text-[#C4C7C5]" />
             <input
               ref={inputRef}
               type="text"
               placeholder={t.searchPlaceholder}
               value={query}
               onChange={e => setQuery(e.target.value)}
-              className={`flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] ${isDark ? 'placeholder:text-[#C4C7C5]' : 'placeholder:text-[#444746]'}`}
+              className="flex-1 bg-transparent border-none outline-none text-[16px] placeholder:text-[16px] placeholder:text-[#444746] dark:placeholder:text-[#C4C7C5]"
             />
             {query ? (
               <button
@@ -274,7 +273,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 aria-label={t.clearSearch}
                 title={t.clearSearch}
                 onClick={() => { setQuery(''); inputRef.current && inputRef.current.focus(); }}
-                className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#333537]' : 'text-[#444746] hover:bg-[#DDE3EA]'}`}
+                className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#444746] hover:bg-[#DDE3EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537]"
               >
                 <X size={16} />
               </button>
@@ -287,19 +286,19 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
               <button
                 type="button"
                 onClick={toggleSelectAll}
-                className={`h-8 px-2 flex items-center gap-2 rounded-full text-[13px] transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]'}`}
+                className="h-8 px-2 flex items-center gap-2 rounded-full text-[13px] transition-colors text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]"
               >
                 <span className={`w-4 h-4 shrink-0 rounded-full border flex items-center justify-center transition-colors ${
                   allVisibleSelected
                     ? 'bg-[#0B57D0] border-[#0B57D0] text-white'
-                    : (isDark ? 'border-[#5F6368]' : 'border-[#C4C7C5]')
+                    : 'border-[#C4C7C5] dark:border-[#5F6368]'
                 }`}>
                   {allVisibleSelected && <Check size={11} />}
                 </span>
                 <span>{t.searchSelectAll} · {t.searchSelectedCount(selectedIds.size)}</span>
               </button>
             ) : (
-              <div className={`flex items-center gap-0.5 p-0.5 rounded-full ${isDark ? 'bg-[#1E1F20]' : 'bg-[#F0F4F9]'}`}>
+              <div className="flex items-center gap-0.5 p-0.5 rounded-full bg-[#F0F4F9] dark:bg-[#1E1F20]">
                 {[{ key: false, label: t.searchPanelChats }, { key: true, label: `${t.searchArchivedEntry} (${archivedList.length})` }].map(tab => (
                   <button
                     key={String(tab.key)}
@@ -307,8 +306,8 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     onClick={() => switchPanel(tab.key)}
                     className={`h-7 px-3 rounded-full text-[13px] font-medium transition-colors ${
                       showArchived === tab.key
-                        ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-white text-[#1F1F1F] shadow-sm')
-                        : (isDark ? 'text-[#C4C7C5]' : 'text-[#444746]')
+                        ? 'bg-white text-[#1F1F1F] shadow-sm dark:bg-[#A8C7FA] dark:text-[#041E49]'
+                        : 'text-[#444746] dark:text-[#C4C7C5]'
                     }`}
                   >
                     {tab.label}
@@ -325,15 +324,15 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     onClick={() => setFilterOpen(v => !v)}
                     className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       filterOpen || listFilter !== 'all' || listSort !== 'pinned_first'
-                        ? (isDark ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#444746]')
-                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                        ? 'bg-[#E1E5EA] text-[#444746] dark:bg-[#333537] dark:text-[#E3E3E3]'
+                        : 'text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]'
                     }`}
                   >
                     <Filter size={15} />
                   </button>
                   {filterOpen && (
-                    <div className={`absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl ${isDark ? 'border-white/10 bg-[#202124]' : 'border-black/10 bg-white'}`}>
-                      <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                    <div className="absolute right-0 top-9 z-50 w-44 overflow-hidden rounded-2xl border p-1.5 shadow-xl border-black/10 bg-white dark:border-white/10 dark:bg-[#202124]">
+                      <div className="px-2.5 pb-1 pt-1 text-[11px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]">
                         {t.sidebarTaskFilter}
                       </div>
                       {searchFilterOptions.map(option => (
@@ -341,14 +340,14 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                           key={option.id}
                           type="button"
                           onClick={() => setListFilter(option.id)}
-                          className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                          className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]"
                         >
                           <span className="w-4 shrink-0">{listFilter === option.id && <Check size={13} />}</span>
                           <span className="truncate">{option.label}</span>
                         </button>
                       ))}
-                      <div className={`my-1 h-px ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />
-                      <div className={`px-2.5 pb-1 pt-1 text-[11px] font-semibold ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>
+                      <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
+                      <div className="px-2.5 pb-1 pt-1 text-[11px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]">
                         {t.sidebarTaskSort}
                       </div>
                       {searchSortOptions.map(option => (
@@ -356,7 +355,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                           key={option.id}
                           type="button"
                           onClick={() => setListSort(option.id)}
-                          className={`w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors ${isDark ? 'text-[#E3E3E3] hover:bg-[#303134]' : 'text-[#1F1F1F] hover:bg-[#F1F3F4]'}`}
+                          className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-xl text-left text-[13px] leading-5 transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]"
                         >
                           <span className="w-4 shrink-0">{listSort === option.id && <Check size={13} />}</span>
                           <span className="truncate">{option.label}</span>
@@ -371,8 +370,8 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}
                 className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors ${
                   batchMode
-                    ? (isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]')
-                    : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                    ? 'bg-[#D3E3FD] text-[#041E49] dark:bg-[#A8C7FA]'
+                    : 'text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]'
                 }`}
               >
                 {batchMode ? t.searchBatchDone : t.searchBatchManage}
@@ -389,12 +388,12 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                 onClick={() => handlePickDate('all')}
                 className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
                   activeDate === 'all'
-                    ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
-                    : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                    ? 'bg-[#F0F4F9] text-[#1F1F1F] font-medium dark:bg-[#1E1F20] dark:text-[#E3E3E3]'
+                    : 'text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]'
                 }`}
               >
                 <span className="truncate">{t.searchDateAll}</span>
-                <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{railTotal}</span>
+                <span className="shrink-0 text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">{railTotal}</span>
               </button>
               {railGroups.map(g => {
                 const active = g.key === activeDate;
@@ -405,12 +404,12 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     onClick={() => handlePickDate(g.key)}
                     className={`w-full h-9 px-3 shrink-0 flex items-center justify-between gap-2 rounded-[12px] text-[13px] transition-colors ${
                       active
-                        ? (isDark ? 'bg-[#1E1F20] text-[#E3E3E3] font-medium' : 'bg-[#F0F4F9] text-[#1F1F1F] font-medium')
-                        : (isDark ? 'text-[#C4C7C5] hover:bg-[#1E1F20]' : 'text-[#444746] hover:bg-[#F0F4F9]')
+                        ? 'bg-[#F0F4F9] text-[#1F1F1F] font-medium dark:bg-[#1E1F20] dark:text-[#E3E3E3]'
+                        : 'text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#1E1F20]'
                     }`}
                   >
                     <span className="truncate">{formatDateGroupLabel(g.key, language)}</span>
-                    <span className={`shrink-0 text-[12px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>{g.rows.length}</span>
+                    <span className="shrink-0 text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">{g.rows.length}</span>
                   </button>
                 );
               })}
@@ -419,7 +418,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
             {/* 对话列表:「对话|已收纳」共用日期分组渲染,仅行项目不同 */}
             <div ref={listRef} className="relative flex-1 min-w-0 overflow-y-auto custom-scrollbar">
               {showArchived && archivedList.length === 0 && !searching ? (
-                <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                <div className="px-4 py-10 text-center text-[14px] text-[#8A8F94] dark:text-[#9AA0A6]">
                   {t.searchArchivedEmpty}
                 </div>
               ) : searching ? (
@@ -429,7 +428,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     {g.rows.map(renderChatRow)}
                   </div>
                 )) : (
-                  <div className={`px-4 py-10 text-center text-[14px] ${isDark ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+                  <div className="px-4 py-10 text-center text-[14px] text-[#8A8F94] dark:text-[#9AA0A6]">
                     {t.searchNoResults}
                   </div>
                 )
@@ -453,19 +452,19 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
 
           {/* 批量操作条:多选模式下吸附底部(在线=收纳/删除,已收纳=恢复/删除) */}
           {batchMode && (
-            <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 pl-4 pr-2 py-2 rounded-full shadow-xl border ${isDark ? 'bg-[#202124] border-white/10' : 'bg-white border-black/10'}`}>
-              <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 pl-4 pr-2 py-2 rounded-full shadow-xl border bg-white border-black/10 dark:bg-[#202124] dark:border-white/10">
+              <span className="text-[13px] whitespace-nowrap text-[#444746] dark:text-[#C4C7C5]">
                 {t.searchSelectedCount(selectedIds.size)}
               </span>
               {batchDeleteConfirming ? (
                 <span className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                  <span className={`text-[13px] whitespace-nowrap ${isDark ? 'text-[#F28B82]' : 'text-[#C5221F]'}`}>{t.riDelQ}</span>
+                  <span className="text-[13px] whitespace-nowrap text-[#C5221F] dark:text-[#F28B82]">{t.riDelQ}</span>
                   <button
                     type="button"
                     title={t.riDelConfirm}
                     disabled={selectedIds.size === 0}
                     onClick={runBatchDelete}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+                    className="w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]"
                   >
                     <Check size={15} />
                   </button>
@@ -473,7 +472,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     type="button"
                     title={t.cpCancel}
                     onClick={() => setBatchDeleteConfirming(false)}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-[#C4C7C5] hover:bg-[#444746]' : 'text-[#5F6368] hover:bg-[#D3D7DB]'}`}
+                    className="w-8 h-8 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"
                   >
                     <X size={14} />
                   </button>
@@ -484,7 +483,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     type="button"
                     disabled={selectedIds.size === 0}
                     onClick={showArchived ? runBatchRestore : runBatchArchive}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'bg-[#A8C7FA] text-[#041E49]' : 'bg-[#D3E3FD] text-[#041E49]'}`}
+                    className="h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 bg-[#D3E3FD] text-[#041E49] dark:bg-[#A8C7FA]"
                   >
                     {showArchived ? t.searchRestore : t.archiveSession}
                   </button>
@@ -492,7 +491,7 @@ export const SearchView = ({ theme, history, t, language, archived = [], showArc
                     type="button"
                     disabled={selectedIds.size === 0}
                     onClick={() => setBatchDeleteConfirming(true)}
-                    className={`h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 ${isDark ? 'text-[#F28B82] hover:bg-[#5c2b29]' : 'text-[#C5221F] hover:bg-[#FAD2CF]'}`}
+                    className="h-8 px-3 rounded-full text-[13px] font-medium transition-colors disabled:opacity-40 text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]"
                   >
                     {t.cpDelete}
                   </button>

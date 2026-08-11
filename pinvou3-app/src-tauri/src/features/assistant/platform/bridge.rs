@@ -433,8 +433,8 @@ impl Pinvou3Bridge {
     }
 
     /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
-    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回,
-    /// 与历史"plain 原样返回"逐字节等价;有差量则逐项并入 disallowed。
+    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回；
+    /// 有差量则逐项并入 disallowed。
     /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
     ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
@@ -456,14 +456,17 @@ impl Pinvou3Bridge {
             }
         }
         // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
+        // ⚠️ 顺序约束：先于下方 connector retain——若未来某模式的 extra_hidden
+        // 恰好含 plain scope 连接器工具名，会被 retain 误删；当前 code 档案的
+        // extra_hidden（mcp_pinvou3_present_artifact）与连接器禁用集无交集，无实际
+        // 影响，但新增 extra_hidden 条目时应避开连接器全名（或先做 retain 再追加）。
         for hidden in resolved.extra_hidden_tools {
             if !tools.iter().any(|tool| tool == hidden) {
                 tools.push(hidden.clone());
             }
         }
         // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
-        // （scope 来自档案 connectors.scope；plain 差量为空时以下全为空操作，
-        // 与历史"plain 原样返回"逐字节等价）。
+        // （scope 来自档案 connectors.scope；plain 不执行连接器 scope 替换）。
         if resolved.connector_scope != marketplace::ConnectorScope::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
             let scoped_connector =
@@ -475,6 +478,10 @@ impl Pinvou3Bridge {
                 }
             }
             // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
+            // ⚠️ 设计耦合：load_skill 空目录检查绑定在「scope 非 plain」分支内——
+            // 新增 scope=plain 但需要该检查的模式会静默漏掉（当前仅 plain/code，
+            // code 恒走此分支，行为正确）。如需解耦，应把 load_skill 检查移出
+            // scope 分支，改由独立差量（如档案 tools.exclude 或独立标志）驱动。
             if crate::features::assistant::skill_materialization::session_skills_is_empty(
                 session_id,
             ) {
@@ -883,10 +890,8 @@ impl Pinvou3Bridge {
     }
 
     /// env > prefs.advanced > 24576 (24K)。
-    /// 24K 而非 64K:系统 prompt 强制"大产物分块写"(write_file skeleton ≤8KB →
-    /// append_file chunks ≤16KB/次,见 bundle/instructions.md §4 + Pinvou 审查 >20KB
-    /// 单写判 CRITICAL),且 thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ 3-5K tokens。
-    /// 24K 覆盖该上限 + 弱模型偶尔超写到 ~24KB 的 margin;同时把输入预算从 189K(74%)
+    /// 24K 而非 64K:thinking 关闭后单次回复通常显著低于该上限；24K 仍覆盖
+    /// 弱模型偶尔输出较大工具参数的 margin,同时把输入预算从 189K(74%)
     /// 抬到 230K(90%),让自动压缩更晚触发。64K 是 ~4x 设计上限的过度预留。
     pub fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
@@ -1023,9 +1028,11 @@ impl Pinvou3Bridge {
             notes_path: _,
             mcp_config_path: _,
             skills_dir: _,
+            plugin_registry: _,
             instructions: _,
             project_context_pack_enabled: _,
-            max_steps: _,
+            // advanced.max_steps 显式配置时覆盖；未配置则复用底座默认值。
+            max_steps: default_max_steps,
             max_subagents: _,
             snapshots_enabled: _,
             memory_enabled: _,
@@ -1046,28 +1053,21 @@ impl Pinvou3Bridge {
             mut runtime_services,
             subagent_model_overrides,
             goal_objective,
+            goal_max_continuations,
             workshop,
             snapshots_max_workspace_bytes,
             search_provider: _, // pinvou3 显式构造 (见下),由 prefs.search 翻译
             search_api_key: _,
-            // —— v0.8.47 上游新增字段,透传 default ——
-            show_thinking,
             goal_state,
-            tools_always_load,
+            mut tools_always_load,
             prefer_bwrap,
-            // pinvou3-fork 自定义:tool_whitelist 通用白名单机制。监工废弃后(2026-06-15)
-            // 已无人设值,普通 + workflow session 均 None(不限),机制保留待用。
-            tool_whitelist: _,
             // pinvou3-fork 自定义:会话初始思考开关(显式构造见下)
             reasoning_effort: _,
             // —— v0.8.49 上游新增字段,透传 default ——
-            allowed_tools,
+            allowed_tools: _,
             tools,
             // —— v0.8.51 上游新增字段 ——
             speech_output_dir,
-            // [pinvou3-fork] hidden_tools：能力档案 include 通道按会话注入，
-            // 仅在 build_engine_config_for_session_at 设置（headless 保持 None）。
-            hidden_tools: _,
             hook_executor: _, // pinvou3 注入敏感目录防火墙 + CLI 环境 hook
             // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
             //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
@@ -1089,6 +1089,7 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            max_tool_calls,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1105,8 +1106,9 @@ impl Pinvou3Bridge {
             exec_policy_engine,
             extra_tools,
             fleet_roster,
-            moraine_fallback,
             terminal_chrome_enabled,
+            advisor_config,
+            subagent_state_root,
         } = EngineConfig::default();
 
         // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
@@ -1114,6 +1116,11 @@ impl Pinvou3Bridge {
         // shell_env。必须共享同一个实例，不能只填前者。
         let hook_executor = self.build_hook_executor();
         runtime_services.hook_executor = Some(hook_executor.clone());
+        tools_always_load.extend(
+            crate::features::assistant::tool_policy::PINVOU3_ALWAYS_LOADED_TOOLS
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
 
         EngineConfig {
             // pinvou3 覆盖
@@ -1124,9 +1131,11 @@ impl Pinvou3Bridge {
             notes_path: paths::notes_path(),
             mcp_config_path: paths::mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
+            plugin_registry: None,
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(100),
+            // 主 agent 的默认预算由 CodeWhale 维护；Pinvou 只翻译显式用户配置。
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
             // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
@@ -1213,6 +1222,7 @@ impl Pinvou3Bridge {
                         allow: Vec::new(),
                         deny: Vec::new(),
                         proxy: Vec::new(),
+                        proxy_fake_ip_cidrs: Vec::new(),
                         audit: false,
                     },
                     None,
@@ -1223,6 +1233,7 @@ impl Pinvou3Bridge {
             runtime_services,
             subagent_model_overrides,
             goal_objective,
+            goal_max_continuations,
             workshop,
             snapshots_max_workspace_bytes,
             // pinvou3 search 后端: prefs 翻译。
@@ -1237,21 +1248,17 @@ impl Pinvou3Bridge {
                 prefs::SearchProvider::Tavily => deepseek_tui::config::SearchProvider::Tavily,
             },
             search_api_key: self.search_api_key(),
-            // v0.8.47 上游新增,透传 default
-            show_thinking,
             goal_state,
             tools_always_load,
             prefer_bwrap,
-            // tool_whitelist 通用机制保留但不再设值:对话型监工(品悟)白名单已废弃,
-            // SubAgent 角色工具由 agent_registry.json 约束。
-            tool_whitelist: None,
             // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
             // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
             // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
             reasoning_effort: self.request_reasoning_effort().map(str::to_string),
-            // v0.8.49 上游新增,透传 default
-            allowed_tools,
+            // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
+            // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
+            allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             tools,
             // v0.8.51 上游新增,透传 default
             speech_output_dir,
@@ -1279,10 +1286,7 @@ impl Pinvou3Bridge {
                     Some(n)
                 }
             },
-            // [pinvou3-fork] hidden_tools：headless 单引擎路径不按会话注入
-            // （None = 底座回退常量）；按会话注入在
-            // `build_engine_config_for_session_at`（能力档案 include 通道）。
-            hidden_tools: None,
+            max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
@@ -1303,8 +1307,9 @@ impl Pinvou3Bridge {
             exec_policy_engine,
             extra_tools,
             fleet_roster,
-            moraine_fallback,
             terminal_chrome_enabled,
+            advisor_config,
+            subagent_state_root,
         }
     }
 
@@ -1334,27 +1339,6 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
-        // 能力档案 include 通道（fork ②）：
-        // hidden_tools = 底座隐藏常量 − 档案 tools.include，按会话注入。
-        // 取数统一走 resolve()（单真相源，评审 ①b）；仅当 include 非空时注入
-        // Some（空 → None → 底座回退常量，与现状逐字节等价，plain 零影响）。
-        //
-        // ⚠️ 生效语义（U-7，与 disallowed 通道不同）：hidden 集在 **spawn 时
-        // 定型**、运行期不变（v1 档案是设计期产物）——档案变更仅 respawn 生效，
-        // 无热刷通道（`set_disallowed_all` 只覆盖 disallowed，不覆盖 hidden）。
-        // 两通道在 spawn 时的叠加顺序：disallowed 在 catalog 构建后硬删
-        // （filter_tool_catalog_for_gates），hidden 在 catalog 构建时贴 defer
-        // 标签——互不重叠，顺序无影响。
-        let resolved = self.session_policy(session_id).resolve();
-        if !resolved.tool_include.is_empty() {
-            cfg.hidden_tools = Some(
-                deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS
-                    .iter()
-                    .filter(|name| !resolved.tool_include.iter().any(|inc| inc == *name))
-                    .map(|name| name.to_string())
-                    .collect(),
-            );
-        }
         cfg
     }
 
@@ -1411,7 +1395,7 @@ impl Pinvou3Bridge {
             .min(max_concurrent)
             .min(cfg.max_subagents);
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
-        cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::fleet::roster::FleetRoster::load(
+        cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
             &cfg.workspace,
         ));
@@ -1577,6 +1561,7 @@ impl Pinvou3Bridge {
             hooks,
             default_timeout_secs: Some(5),
             working_dir: None,
+            problems: Vec::new(),
         }
     }
 
@@ -1805,8 +1790,6 @@ impl Pinvou3Bridge {
             auto_approve,
             approval_mode,
             translation_enabled: false,
-            // v0.8.47 上游新增;pinvou3 reasoning_effort=off 故无实际影响,取默认。
-            show_thinking: true,
             // v0.8.49 上游新增。Some(空表) = 本轮零工具:底座 filter_tool_catalog_for_gates
             // 直接从发给模型的 schema 里 retain 掉全部工具,模型根本看不到 write_file /
             // present_artifact 等。卡牌制造专家等"纯对话元卡"用它,从工具层杜绝小模型误走
@@ -1816,7 +1799,7 @@ impl Pinvou3Bridge {
             allowed_tools: if restrict_tools {
                 Some(Vec::new())
             } else {
-                None
+                Some(crate::features::assistant::tool_policy::allowed_tool_names())
             },
             // 底座会用这里的值覆盖 Engine 级 hook_executor；必须每轮显式携带，
             // 否则 ToolCallBefore 防火墙会在第一条消息时被 None 清掉。
@@ -2319,7 +2302,7 @@ mod tests {
         let plain = vec!["kb_search".to_string()];
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            plain
+            [plain.clone(), vec!["Git".to_string()]].concat()
         );
 
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
@@ -2348,7 +2331,7 @@ mod tests {
         }
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            plain
+            [plain.clone(), vec!["Git".to_string()]].concat()
         );
     }
 
@@ -2422,9 +2405,9 @@ mod tests {
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // 普通会话不整形:原样返回传入的全局禁用集(全局禁用集由 EnginePool 按 plain scope 计算)。
+        // 普通会话保留 plain scope 禁用集，并隐藏代码专用 Git。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(shaped, tools);
+        assert_eq!(shaped, [tools, vec!["Git".to_string()]].concat());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2722,7 +2705,10 @@ mod tests {
                 output_tokens: Some(24_576),
             })
         );
-        assert_eq!(config.compaction.token_threshold, 45_648);
+        assert_eq!(
+            config.compaction.token_threshold, 56_570,
+            "未知远端 OpenAI-compatible alias 应沿用底座 8K 保守输出预留"
+        );
     }
 
     /// 实际会用的云端大窗口模型(不探测 → probed=None,window 走 catalog/名字 hint)。
@@ -2857,7 +2843,7 @@ mod tests {
     }
 
     /// gating: 纯对话元卡(restrict_tools=true)→ 本轮 allowed_tools=Some(空表)=零工具;
-    /// 普通卡 / 未加持(false)→ None=不限制。这是卡牌制造专家"只产可收藏的内联卡、绝不
+    /// 普通卡 / 未加持(false)→ Pinvou 基础白名单。这是卡牌制造专家"只产可收藏的内联卡、绝不
     /// 写文件"的**工具层**强制手段(底座从 schema 删工具),不靠模型自觉遵守 prompt。
     #[test]
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
@@ -2882,13 +2868,13 @@ mod tests {
         );
         assert_eq!(
             allowed(false),
-            None,
-            "普通卡 / 未加持不限制工具,沿用 engine 全量工具表"
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
         );
     }
 
     /// R-2:逐轮工具白名单对 code 会话同样生效——op 链路不感知会话类型,
-    /// `restrict_tools=true` 时空白名单把工具挡在模型视野外;false 时行为与现状一致。
+    /// `restrict_tools=true` 时空白名单把工具挡在模型视野外;false 时恢复 Pinvou 白名单。
     /// 前端入口见 CodexAcpView.jsx `restrictTools` 注释(S-1 分化时按策略驱动)。
     #[test]
     fn build_send_message_op_restrict_tools_also_applies_to_code_sessions() {
@@ -2916,8 +2902,8 @@ mod tests {
         );
         assert_eq!(
             allowed(false),
-            None,
-            "code 会话未限制时沿用 engine 全量工具表(行为不变)"
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
     }
 
@@ -3002,6 +2988,25 @@ mod tests {
             "subagent_api_timeout 必须 300s。上游默认 120s 是为 DeepSeek 云端 API 设计, \
              本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。 \
              300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。"
+        );
+    }
+
+    #[test]
+    fn engine_config_reuses_base_max_steps_default_and_respects_override() {
+        let mut bridge = fixture_bridge();
+        let base_default = EngineConfig::default().max_steps;
+
+        assert_eq!(
+            bridge.build_engine_config().max_steps,
+            base_default,
+            "未显式配置时，主 agent 必须复用 CodeWhale 的 max_steps 默认值"
+        );
+
+        bridge.prefs.advanced.max_steps = Some(321);
+        assert_eq!(
+            bridge.build_engine_config().max_steps,
+            321,
+            "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
         );
     }
 
@@ -3356,7 +3361,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_shell_receives_filtered_shell_env_from_runtime_services() {
-        use deepseek_tui::tools::shell::ExecShellTool;
+        use deepseek_tui::tools::shell::BashTool;
         use deepseek_tui::tools::spec::ToolSpec;
         use deepseek_tui::tools::ToolContext;
         use serde_json::json;
@@ -3377,7 +3382,7 @@ mod tests {
         bridge.bundle.shell_env_sh = script;
         let config = bridge.build_engine_config();
         let context = ToolContext::new(&workspace).with_runtime_services(config.runtime_services);
-        let result = ExecShellTool
+        let result = BashTool::new("Bash")
             .execute(
                 json!({
                     "command": "printf '%s|%s' \"${XDG_RUNTIME_DIR-unset}\" \"${OPENAI_API_KEY-unset}\""
@@ -3533,7 +3538,7 @@ mod tests {
             .plan_reminder()
             .expect("plan reminder exists");
         assert!(
-            !plan.contains("append_file") && !plan.contains("write_file"),
+            !plan.contains("write_file"),
             "Plan reminder 不该含写文件/分块内容: {plan}"
         );
     }
@@ -3569,18 +3574,16 @@ mod tests {
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// D-2 行为不变断言:整形按策略数据驱动。plain 会话逐字节原样返回(不移除、
-    /// 不追加);code 会话按策略追加两个隐藏工具且幂等不重复(连接器 scope 切换
+    /// D-2 行为断言:整形按策略数据驱动。plain 会话追加代码专用 Git；
+    /// code 会话按策略追加隐藏工具且幂等不重复(连接器 scope 切换
     /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
     #[test]
     fn shape_disallowed_tools_follows_session_policy() {
         let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
         let mut bridge = fixture_bridge();
-        // 未注入 predicate → plain:原样返回。
-        assert_eq!(
-            bridge.shape_disallowed_tools("sess-plain", tools.clone()),
-            tools
-        );
+        // 未注入 predicate → plain:保留原禁用项，并隐藏代码专用 Git。
+        let plain = bridge.shape_disallowed_tools("sess-plain", tools.clone());
+        assert_eq!(plain, [tools.clone(), vec!["Git".to_string()]].concat());
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
         }));
@@ -4359,7 +4362,7 @@ mod tests {
 
         // 专家池卡片使用 exp-* profile；不得播种旧版非 exp 默认角色文件。
         // 底座自带的内置成员（verifier 等）也保持可用。
-        let agents_dir = workspace.join(deepseek_tui::fleet::profile::WORKSPACE_AGENT_PROFILE_DIR);
+        let agents_dir = workspace.join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR);
         let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
             .map(|entries| {
                 entries
@@ -4438,8 +4441,9 @@ mod tests {
         assert_eq!(mode, AppMode::Yolo, "会话模式原样透传，不被多智能体改写");
         assert_eq!(multi_mode, mode);
         assert_eq!(
-            allowed_tools, None,
-            "完整工具面：不得再为多智能体收紧单工具白名单"
+            allowed_tools,
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "普通会话使用 Pinvou 基础白名单"
         );
         assert_eq!(multi_allowed_tools, allowed_tools);
         let has_hook = |executor: &Option<Arc<HookExecutor>>, name: &str| {

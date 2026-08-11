@@ -27,7 +27,7 @@
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
-    var extractArtifactPath = context.extractArtifactPath;
+    var extractArtifactPaths = context.extractArtifactPaths;
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
@@ -91,9 +91,9 @@
     if (!bn) return false;
     for (var i = state.chatItems.length - 1; i >= 0; i--) {
       var it = state.chatItems[i];
-      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
-        var ap = extractArtifactPath(it.args);
-        if (ap && basename(ap) === bn) return false;
+      if (it.type === "tool" && context.fileMutationAction(it.name, it.args)) {
+        var changedPaths = extractArtifactPaths(it.args);
+        if (changedPaths.some(function (ap) { return basename(ap) === bn; })) return false;
       }
       if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;
@@ -107,6 +107,12 @@
     }
     addChatItem(item);
     notify();
+  }
+  function addAuthoritySyncNotice(text) {
+    if (state.chatItems.some(function (item) {
+      return item && item.authoritySyncNotice;
+    })) return;
+    addSystemItem(text, { authoritySyncNotice: true });
   }
   function compactPruneRollupText(count) {
     return bt("compactDone") + bt("compactAuto") + " " +
@@ -222,9 +228,12 @@
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
+      turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice && !item.authoritySyncNotice;
+      });
       var uitem = {
         type: "user",
         text: displayText,
@@ -461,7 +470,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem(bt("remoteTurnSyncing"));
+      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
       return;
     }
     if (state.activeSessionId !== sid) return;
@@ -672,6 +681,7 @@
       hasChatItemForTool: hasChatItemForTool,
       isDuplicateArtifactCard: isDuplicateArtifactCard,
       addSystemItem: addSystemItem,
+      addAuthoritySyncNotice: addAuthoritySyncNotice,
       compactPruneRollupText: compactPruneRollupText,
       removeCompactionStartItem: removeCompactionStartItem,
       addOrMergePruneCompaction: addOrMergePruneCompaction,

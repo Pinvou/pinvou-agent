@@ -8,6 +8,7 @@
     var notify = context.notify;
     var bt = context.bt;
     var addSystemItem = context.addSystemItem;
+    var addAuthoritySyncNotice = context.addAuthoritySyncNotice;
     var addChatItem = context.addChatItem;
     var timeStr = context.timeStr;
     var runSyncOnSession = context.runSyncOnSession;
@@ -87,6 +88,9 @@
   // 时它是 no-op 直通,sid !== active 时它 swap-load-fn-save 回 sid 的 buffer。
   function runOnSession(sid, fn) { runSyncOnSession(sid || state.activeSessionId, fn); }
   function addSystemItemFor(sid, text) { runOnSession(sid, function () { addSystemItem(text); }); }
+  function addAuthoritySyncNoticeFor(sid, text) {
+    runOnSession(sid, function () { addAuthoritySyncNotice(text); });
+  }
   function patchItemByIdFor(sid, id, patch) { runOnSession(sid, function () { patchItemById(id, patch); }); }
 
 
@@ -122,7 +126,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, bt("remoteTurnSyncing"));
+      addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -131,6 +135,7 @@
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
       planBuffer.remoteTerminalSeen = false;
+      planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     var echoEntry = null;
@@ -293,7 +298,7 @@
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
-    await sendMessage("请用 update_plan 工具输出完整方案,不要直接调写工具。");
+    await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
     patchItemById(itemId, { resolved: true }); notify();
@@ -329,6 +334,25 @@
     if (state.busy || !state.activeSessionId) return;
     newText = (newText || "").trim();
     if (!newText) return;
+    var sid = state.activeSessionId;
+    var editBuffer = getBuffer(sid);
+    // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
+    // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
+    if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
+      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
+      notify();
+      return;
+    }
+    // await 期间可能切会话或开始新回合,二次确认(与 web bridge 对齐)。
+    if (state.activeSessionId !== sid || state.busy) return;
+    // 编辑=新一轮:接管本地回合并清零 remote 对账状态,避免失败对账
+    // 状态下跨回合串用(与 web bridge 的 editLastTurn 对齐)。
+    if (editBuffer) {
+      editBuffer.localTurnOwned = true;
+      editBuffer.remoteTurnActive = false;
+      editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
+    }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {

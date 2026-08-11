@@ -4,9 +4,10 @@ import { tryGetCurrentTauriWindow } from '../platform/tauri/client.js';
 
 const appWindow = tryGetCurrentTauriWindow();
 export const TitleBar = ({ theme, t, sidebarOpen = true }) => {
-  const isDark = theme === 'dark';
-  const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/10';
-  const titleBarBg = isDark ? (sidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]';
+  const hoverBg = 'hover:bg-black/10 dark:hover:bg-white/10';
+  // 明暗同形:明态固定 #F0F4F9;暗态视侧栏开合在 #1E1F20 / #131314 间切,
+  // 二者均为暗态专属,以 dark: 前缀静态挂载,sidebarOpen 仅决定暗态取哪一组。
+  const titleBarBg = `bg-[#F0F4F9] dark:${sidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]'}`;
   // macOS 顶栏走系统原生实现:窗口带 decorations + titleBarStyle=Overlay
   // (见 src-tauri/config/platforms/macos/tauri.conf.json),系统红绿灯悬浮在内容区左上角,
   // 此时不再渲染 Windows 风格三键,并为红绿灯留出左侧空间。
@@ -31,7 +32,7 @@ export const TitleBar = ({ theme, t, sidebarOpen = true }) => {
   }, []);
   return (
     <div data-tauri-drag-region
-      className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+      className={`h-9 shrink-0 flex items-center justify-between select-none ${titleBarBg} text-[#1F1F1F] dark:text-[#E3E3E3]`}>
       <div data-tauri-drag-region className={`flex items-center gap-2 ${nativeControls === true ? 'pl-[76px] pr-3' : 'px-3'} text-[13px] font-medium pointer-events-none`}>
         <PinvouLogo className="h-[18px] w-[18px] select-none" />
         {t.appTitle}

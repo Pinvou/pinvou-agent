@@ -44,7 +44,6 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   artifact,
   initialText,
   initialInfo,
-  isDark,
   t,
   onSaved,
   onReloaded,
@@ -319,8 +318,8 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
     <div ref={rootRef} className="relative min-h-[420px]">
       {showStatus ? (
         <div className={`absolute right-2 top-2 z-20 rounded-full border px-3 py-1 text-[12px] shadow-sm ${saveState === 'error'
-          ? (isDark ? 'border-[#5F2120] bg-[#2B1716] text-[#F28B82]' : 'border-[#F4C7C3] bg-[#FCE8E6] text-[#C5221F]')
-          : (isDark ? 'border-white/10 bg-[#202124] text-[#C4C7C5]' : 'border-black/10 bg-white text-[#5F6368]')}`}>
+          ? 'border-[#F4C7C3] bg-[#FCE8E6] text-[#C5221F] dark:border-[#5F2120] dark:bg-[#2B1716] dark:text-[#F28B82]'
+          : 'border-black/10 bg-white text-[#5F6368] dark:border-white/10 dark:bg-[#202124] dark:text-[#C4C7C5]'}`}>
           {status}{errorText ? `: ${errorText}` : ''}
         </div>
       ) : null}
@@ -335,7 +334,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
         onBlur={() => { saveNow(); }}
         onMouseUp={updateSelection}
         onKeyUp={updateSelection}
-        className={`msg-md min-h-[420px] rounded-lg px-1 py-1 text-[14px] leading-relaxed outline-none focus:ring-2 focus:ring-[#A8C7FA]/60 ${isDark ? 'dark-code text-[#E3E3E3]' : 'light-code text-[#1F1F1F]'}`}
+        className="msg-md light-code dark-code min-h-[420px] rounded-lg px-1 py-1 text-[14px] leading-relaxed outline-none focus:ring-2 focus:ring-[#A8C7FA]/60 text-[#1F1F1F] dark:text-[#E3E3E3]"
       />
 
       {selectionUi ? (
@@ -346,11 +345,11 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
         >
           {!aiInputOpen ? (
             <button type="button" onMouseDown={openAiInput}
-              className={`h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] ${isDark ? 'border-white/10 bg-[#1C1C1E] text-[#F2F2F7]' : 'border-black/10 bg-white text-[#1C1C1E]'}`}>
+              className="h-9 rounded-full border px-3 shadow-[0_8px_24px_rgba(0,0,0,0.16)] inline-flex items-center gap-1.5 text-[13px] font-medium transition-transform duration-150 ease-out hover:scale-[1.02] active:scale-[0.98] border-black/10 bg-white text-[#1C1C1E] dark:border-white/10 dark:bg-[#1C1C1E] dark:text-[#F2F2F7]">
               <Sparkles size={15} /> {t.apMdAiEdit}
             </button>
           ) : (
-            <div className={`w-[316px] max-w-[calc(100vw-24px)] h-11 rounded-[22px] border shadow-[0_12px_32px_rgba(0,0,0,0.18)] flex items-center gap-1.5 px-2.5 ${isDark ? 'border-white/10 bg-[#1C1C1E]' : 'border-black/10 bg-white'}`}>
+            <div className="w-[316px] max-w-[calc(100vw-24px)] h-11 rounded-[22px] border shadow-[0_12px_32px_rgba(0,0,0,0.18)] flex items-center gap-1.5 px-2.5 border-black/10 bg-white dark:border-white/10 dark:bg-[#1C1C1E]">
               <input
                 id="md-selection-ai-input"
                 name="pinvou-md-ai-instruction"
@@ -365,14 +364,14 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                   if (e.key === 'Escape') clearAiUi();
                 }}
                 placeholder={t.apMdAiInstructionPlaceholder}
-                className={`min-w-0 flex-1 bg-transparent outline-none text-[13px] leading-5 ${isDark ? 'text-[#F2F2F7] placeholder:text-[#8E8E93]' : 'text-[#1C1C1E] placeholder:text-[#8E8E93]'}`}
+                className="min-w-0 flex-1 bg-transparent outline-none text-[13px] leading-5 text-[#1C1C1E] placeholder:text-[#8E8E93] dark:text-[#F2F2F7]"
               />
               <button type="button" onClick={submitAiEdit}
-                className={`shrink-0 w-8 h-8 rounded-full inline-flex items-center justify-center transition-colors ${isDark ? 'bg-[#0A84FF] text-white hover:bg-[#409CFF]' : 'bg-[#007AFF] text-white hover:bg-[#006EE6]'}`}>
+                className="shrink-0 w-8 h-8 rounded-full inline-flex items-center justify-center transition-colors bg-[#007AFF] text-white hover:bg-[#006EE6] dark:bg-[#0A84FF] dark:hover:bg-[#409CFF]">
                 <Check size={17} />
               </button>
               <button type="button" onClick={clearAiUi}
-                className={`shrink-0 w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors ${isDark ? 'text-[#D1D1D6] hover:bg-white/10' : 'text-[#6E6E73] hover:bg-black/5'}`}>
+                className="shrink-0 w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors text-[#6E6E73] hover:bg-black/5 dark:text-[#D1D1D6] dark:hover:bg-white/10">
                 <X size={14} />
               </button>
             </div>

@@ -808,7 +808,9 @@
   var untrackArtifact = artifactTrackerFeature.untrackArtifact;
   var findPresentedArtifact = artifactTrackerFeature.findPresentedArtifact;
   var reconcileArtifacts = artifactTrackerFeature.reconcileArtifacts;
+  var extractArtifactPaths = artifactTrackerFeature.extractArtifactPaths;
   var extractArtifactPath = artifactTrackerFeature.extractArtifactPath;
+  var fileMutationAction = artifactTrackerFeature.fileMutationAction;
   var isPresentArtifactTool = artifactTrackerFeature.isPresentArtifactTool;
   var parseToolResultPayload = artifactTrackerFeature.parseToolResultPayload;
   var artifactPathFromToolOutput = artifactTrackerFeature.artifactPathFromToolOutput;
@@ -835,7 +837,8 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
-    extractArtifactPath: extractArtifactPath,
+    extractArtifactPaths: extractArtifactPaths,
+    fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
     autoCreateScheduledTaskDraft: function () { return autoCreateScheduledTaskDraft.apply(null, arguments); },
     get currentStreamText() { return currentStreamText; },
@@ -855,6 +858,7 @@
   var hasChatItemForTool = chatFeature.hasChatItemForTool;
   var isDuplicateArtifactCard = chatFeature.isDuplicateArtifactCard;
   var addSystemItem = chatFeature.addSystemItem;
+  var addAuthoritySyncNotice = chatFeature.addAuthoritySyncNotice;
   var compactPruneRollupText = chatFeature.compactPruneRollupText;
   var removeCompactionStartItem = chatFeature.removeCompactionStartItem;
   var addOrMergePruneCompaction = chatFeature.addOrMergePruneCompaction;
@@ -995,7 +999,7 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
@@ -1005,6 +1009,7 @@
         : Number(meta && meta.message_count);
       if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
       buf.remoteExpectedAssistantKey = "";
+      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
       buf.remoteTerminalSeen = false;
     }
     buf.remoteTurnActive = true;
@@ -1088,17 +1093,40 @@
     var expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
       : "";
+    // A committed transcript revision is the backend's canonical identity for
+    // this turn. Prefer it over presentation-derived message equality: native
+    // tools may normalize blocks between streamed events and durable storage
+    // without changing the committed conversation.
+    var expectedCommittedRevision = buf.remoteTerminalSeen
+      ? String(buf.remoteCommittedRevision || "")
+      : "";
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
       : 0;
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        // A reconnect/replay can deliver the commit marker just after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
+          expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
+        }
         try {
           var saved = await invoke("load_session", { id: sid, setActive: false });
           if (!saved || !Array.isArray(saved.messages)) continue;
-          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
-          if (expectedAssistantKey) {
+          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
+          // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
+          // 无字段」导致对账必然失败(每轮误报)。
+          if (expectedCommittedRevision && savedRevision) {
+            if (savedRevision !== expectedCommittedRevision) continue;
+          } else {
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          }
+          if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
@@ -1178,6 +1206,7 @@
           buf.remoteBaselineMessageCount = null;
           buf.remoteBaselineTrusted = false;
           buf.remoteExpectedAssistantKey = "";
+          buf.remoteCommittedRevision = "";
           buf.deferredRemoteUserEvent = null;
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
@@ -1509,14 +1538,14 @@
       if (!Array.isArray(dc)) continue;
       for (var dj = 0; dj < dc.length; dj++) {
         var db = dc[dj];
-        if (db.type === "tool_use" && (db.name === "write_file" || db.name === "append_file" || db.name === "edit_file")) {
-          var dap = extractArtifactPath(db.input);
-          if (dap) {
+        var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
+        if (dbMutation) {
+          extractArtifactPaths(db.input).forEach(function (dap) {
             lastDirtyArtifactId[dap] = db.id;
             // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
             // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
-            if (db.name !== "edit_file" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          }
+            if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
+          });
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
           var pres = resultById[db.id];
@@ -1602,10 +1631,14 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
+              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
+              // tool_result，不能按历史恢复为 submitted。跳过，等
+              // chat:user_input_required 事件渲染可交互的 active 卡。
+              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
-                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
+                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
+                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
               });
             }
             continue;
@@ -1654,14 +1687,14 @@
               }
             }
           }
-          // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
+          // 还原"自动续卡":File.write/File.edit 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if (b.name === "write_file" || b.name === "append_file" || b.name === "edit_file") {
+          if (fileMutationAction(b.name, b.input)) {
             var wres = resultById[b.id];
-            var wap = extractArtifactPath(b.input);
-            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+            extractArtifactPaths(b.input).forEach(function (wap) {
+              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
@@ -1672,7 +1705,7 @@
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
-            }
+            });
           }
         }
       }
@@ -1758,7 +1791,8 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
-    addChatItem: addChatItem, addSystemItem: addSystemItem, timeStr: timeStr,
+    addChatItem: addChatItem, addSystemItem: addSystemItem,
+    addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,
     toolCallAlreadyFinished: toolCallAlreadyFinished,
     hasChatItemForTool: hasChatItemForTool,
@@ -1781,7 +1815,8 @@
     artifactPathFromToolOutput: artifactPathFromToolOutput,
     shouldUseToolOutputAsArtifact: shouldUseToolOutputAsArtifact,
     presentArtifactAbsPath: presentArtifactAbsPath,
-    extractArtifactPath: extractArtifactPath, markTurnDirtyArtifact: markTurnDirtyArtifact,
+    extractArtifactPaths: extractArtifactPaths, fileMutationAction: fileMutationAction,
+    markTurnDirtyArtifact: markTurnDirtyArtifact,
     trackArtifact: trackArtifact, untrackArtifact: untrackArtifact,
     findPresentedArtifact: findPresentedArtifact, isDeliverable: isDeliverable,
     noteArtifactChange: noteArtifactChange,
@@ -1870,7 +1905,8 @@
 
   var interactionFeature = installBridgeFeature("interaction", {
     state: state, invoke: invoke, notify: notify, bt: bt,
-    addSystemItem: addSystemItem, addChatItem: addChatItem, timeStr: timeStr,
+    addSystemItem: addSystemItem, addAuthoritySyncNotice: addAuthoritySyncNotice,
+    addChatItem: addChatItem, timeStr: timeStr,
     runSyncOnSession: runSyncOnSession,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant,

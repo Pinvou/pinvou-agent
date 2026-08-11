@@ -154,6 +154,7 @@ fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordi
 pub async fn install_marketplace_tool(
     tool_id: String,
     config: Option<std::collections::HashMap<String, String>>,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
     let install_tool_id = tool_id.clone();
@@ -194,14 +195,23 @@ pub async fn install_marketplace_tool(
                     .install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
+                continue;
             }
+            // 新装的 companion 技能默认加入 code 禁用集（外部能力显式开启，
+            // 与独立技能安装 install_marketplace_skill_sync 同语义）。
+            crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&sid);
         }
         // 代码会话的 code scope 已初始化时,新装的连接器默认仍关闭(显式开启)。
         crate::features::marketplace::sync_code_scope_after_install(&tool_id);
-        Ok(())
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("任务执行失败: {e}"))?
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
+    // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
+    // 治理事件驱动时机 §2.3.2）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(())
 }
 
 pub(super) fn marketplace_oauth_error_result(

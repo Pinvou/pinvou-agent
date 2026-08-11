@@ -4,7 +4,6 @@ import { RefreshCw, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
 export const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
-  const isDark = theme === 'dark';
   const logic = window.UpdateNoticeLogic;
   const isPreview = !bridge.available && logic.previewEnabled(window.location);
   const updateInfo = logic.updateInfoFor(bs, { preview: isPreview });
@@ -37,41 +36,25 @@ export const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
   };
 
   return (
-    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 ${
-      isDark
-        ? 'bg-[#1c1c21]/85 border-white/[0.06] text-gray-200 shadow-2xl'
-        : 'bg-white/85 border-gray-200/60 text-gray-800'
-    }`}>
+    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`}>
       <div className="flex items-center gap-3 mb-3">
-        <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 ${
-          isDark
-            ? 'bg-gradient-to-br from-[#2c2c35] to-[#1a1a20] border-white/[0.08]'
-            : 'bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80'
-        }`}>
+        <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-gradient-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/[0.08]`}>
           <PinvouLogo className="h-6 w-6" />
         </div>
 
         <div className="flex flex-col justify-center flex-1 min-w-0">
           <div className="flex items-center justify-between">
-            <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 ${
-              isDark ? 'text-gray-100' : 'text-gray-900'
-            }`}>{t.newVersionFound}</span>
+            <span className={`text-[13px] font-semibold tracking-wide transition-colors duration-300 text-gray-900 dark:text-gray-100`}>{t.newVersionFound}</span>
             <button
               type="button"
               onClick={() => setClosed(true)}
-              className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none ${
-                isDark
-                  ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.08]'
-                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-              }`}
+              className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/[0.08]`}
               title={t.winClose}
             >
               <X size={14} />
             </button>
           </div>
-          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 ${
-            isDark ? 'text-gray-400 bg-black/20' : 'text-gray-500 bg-gray-100'
-          }`}>PINVOU v{vm.version}</span>
+          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-black/20`}>PINVOU v{vm.version}</span>
         </div>
       </div>
 
@@ -84,11 +67,7 @@ export const UpdateNoticeButton = ({ theme, bs, t, onShowChangelog }) => {
           type="button"
           data-update-notes-button="true"
           onClick={handleShowChangelog}
-          className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] ${
-            isDark
-              ? 'bg-white/[0.06] hover:bg-white/[0.1] text-gray-200'
-              : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-          }`}
+          className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-white/[0.06] dark:hover:bg-white/[0.1] dark:text-gray-200`}
         >
           {t.updateNotes}
         </button>

@@ -1,7 +1,7 @@
 
 # docs +update（更新飞书云文档）
 
-> **前置条件（MUST READ）：** 生成文档内容前，必须先用 `read_file` 工具读取以下文件，缺一不可：
+> **前置条件（MUST READ）：** 生成文档内容前，必须先用 `File(action="read")` 读取以下文件，缺一不可：
 > 1. [`lark-doc-xml.md`](lark-doc-xml.md) — XML 语法规则（使用 Markdown 格式时改读 [`lark-doc-md.md`](lark-doc-md.md)）
 > 2. [`lark-doc-update-workflow.md`](style/lark-doc-update-workflow.md) — 改写增强工作流（Code-Act Loop、并行执行策略）
 >

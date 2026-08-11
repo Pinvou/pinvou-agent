@@ -1,4 +1,3 @@
-.githooks/* text eol=lf
 scripts/validate-commit-msg.py text eol=lf
 # Shell 脚本必须 LF:core.autocrlf=true 的 Windows checkout 会把 .sh 转成 CRLF,
 # 严格模式的 bash 读到 \r 直接失败(fork-guard.sh 等 PR 门控脚本跑不起来)。

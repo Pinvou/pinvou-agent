@@ -7,7 +7,7 @@ Their original licenses remain in effect.
 
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
-| CodeWhale | `pinvou-v0.9.0-r1` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
+| CodeWhale | `pinvou-v0.9.0-r4` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
 | DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
 | Lark CLI and skills | 1.0.65 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
 | WeCom CLI and skills | 0.1.9 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
@@ -18,6 +18,7 @@ Their original licenses remain in effect.
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
 | Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 | Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
+| cc-switch (provider preset data) | Public preset list (trimmed 2026-08-05) | Base URL / protocol presets in `pinvou3-app/src/features/settings/acp-provider-catalog.js` | MIT | https://github.com/farion1231/cc-switch |
 
 Vendored script attribution:
 

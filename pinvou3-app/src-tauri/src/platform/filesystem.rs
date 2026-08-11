@@ -6,6 +6,20 @@ pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) 
     replace_file_atomically_impl(tmp, target, backup)
 }
 
+/// 以 0600 权限创建（或截断）文件：写入含明文密钥的 CLI 配置时**直接**以
+/// 0600 创建，避免「先按默认 umask 0644 写、再收紧」的暴露窗口（复审低危 4）；
+/// Windows 无 POSIX 权限概念，忽略权限位。
+pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 #[cfg(windows)]
 fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
     std::fs::rename(target, backup)?;

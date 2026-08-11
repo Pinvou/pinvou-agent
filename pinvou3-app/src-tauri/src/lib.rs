@@ -267,9 +267,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                crate::platform::window_startup::activate_main_window(window);
             }
         }))
         .plugin(
@@ -320,6 +318,7 @@ pub fn run() {
                 )?;
             }
             startup::mark("setup:plugins_ready");
+            crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
             // 给 main 窗口 webview 挂 permission-request:只放行 UserMedia(麦克风/摄像头)
@@ -359,7 +358,7 @@ pub fn run() {
             // 必须先 boot 这个，engine forwarder 需要它跟踪 active session 的 mode_state
             // 以便 TurnComplete 时判定是否 emit chat:plan_ready。
             startup::mark("session_store:start");
-            let session_store = match SessionStore::boot() {
+            let session_store = match SessionStore::boot_for_process_startup() {
                 Ok(store) => {
                     store.load_skill_bindings();
                     store.load_session_models();
@@ -389,7 +388,7 @@ pub fn run() {
             let store_for_engine = session_store.unwrap_or_else(|| {
                 // store boot 失败时退化用一份临时 store（让 engine 至少能起来）；
                 // 实际使用 session 相关命令会失败,但聊天能跑
-                SessionStore::boot().expect("session store boot fallback")
+                SessionStore::boot_for_process_startup().expect("session store boot fallback")
             });
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
@@ -608,6 +607,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
             commands::startup::report_frontend_startup,
+            commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_status,
@@ -689,6 +689,19 @@ pub fn run() {
             commands::codex::respond_codex_acp_permission,
             commands::codex::get_codex_acp_pending_elicitations,
             commands::codex::respond_codex_acp_elicitation,
+            commands::acp_providers::list_acp_providers,
+            commands::acp_providers::save_acp_provider,
+            commands::acp_providers::delete_acp_provider,
+            commands::acp_providers::switch_acp_provider,
+            commands::acp_providers::switch_acp_provider_official,
+            commands::acp_providers::uninstall_acp_agent,
+            commands::acp_providers::cancel_acp_agent_install,
+            commands::acp_providers::logout_acp_agent,
+            commands::acp_providers::get_acp_provider_key,
+            commands::acp_providers::export_acp_providers,
+            commands::acp_providers::import_acp_providers,
+            commands::acp_providers::probe_acp_agent_models,
+            commands::acp_providers::set_codex_acp_session_provider,
             commands::codex::list_codex_acp_sessions,
             commands::codex::create_codex_acp_session,
             commands::codex::list_codex_workspace,
@@ -974,66 +987,55 @@ pub fn run() {
 }
 
 #[cfg(test)]
-mod blocklist_contract {
-    use deepseek_tui::tools::pinvou3_blocklist::{is_pinvou3_hidden, PINVOU3_HIDDEN_TOOLS};
+mod tool_allowlist_contract {
+    use crate::features::assistant::tool_policy::{
+        is_pinvou3_allowed, PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS,
+    };
 
-    /// L2-4: pinvou3 L1.5 blocklist 关键不变量——防止上游 rebase 或重构时
-    /// 误把整块隐藏清单删掉/改名，导致 LLM schema 重新膨胀。
+    /// Pinvou 只允许产品需要的 canonical 工具家族；动态 MCP 工具限制在标准命名空间。
     #[test]
-    fn pinvou3_blocklist_hides_state_tools() {
-        // 数量下限——fork 维护时一旦掉到 60 以下就要 review 是否漏砍
-        assert!(
-            PINVOU3_HIDDEN_TOOLS.len() >= 60,
-            "blocklist 数量 {} < 60,可能整块被误删",
-            PINVOU3_HIDDEN_TOOLS.len()
-        );
+    fn pinvou3_allowlist_uses_canonical_families_and_dynamic_mcp_namespace() {
+        for core in [
+            "Bash",
+            "File",
+            "Git",
+            "Web",
+            "agent",
+            "load_skill",
+            "todo_write",
+            "tool_search",
+            "request_user_input",
+            "revert_turn",
+            "kb_search",
+            "kb_open_source",
+            "mcp_weather_get_weather",
+        ] {
+            assert!(is_pinvou3_allowed(core), "核心工具 {core} 应在白名单");
+        }
 
-        // 类别代表性工具必须在内（每个类别至少一个 sentinel，整类被漏砍
-        // 立刻 fail）
-        for sentinel in [
-            "task_create",          // durable task
-            "tool_agent",           // subagent spawn 工具隐藏(spawn 单一走 agent_open)
-            "rlm_eval",             // RLM
-            "pr_attempt_record",    // PR 跟踪
-            "create_goal",          // goal 状态管理
-            "git_log",              // git 类
-            "apply_patch",          // patch/fim
-            "pandoc_convert",       // 附件预处理（移到 bridge）
-            "todo_write",           // legacy todo alias
-            "exec_shell_cancel",    // 异步 shell 变体
-            "automation_create",    // automation 持久化
-            "github_issue_context", // github 集成
-            "web.run",              // 旧 web_run
+        for excluded in [
+            "Run",
+            "tasks",
+            "automation",
+            "github",
+            "rlm",
+            // work_update 是 v0.9.5 隐藏的 replay 别名，模型目录里只有 canonical
+            // `todo_write`；别名写进白名单是死条目，且会让进度工具整体不可见。
+            "work_update",
+            "checklist_write",
+            "update_plan",
         ] {
             assert!(
-                is_pinvou3_hidden(sentinel),
-                "类别代表工具 {sentinel} 应该被隐藏,但不在 blocklist"
+                !is_pinvou3_allowed(excluded),
+                "非 Pinvou 工具家族 {excluded} 不应进入白名单"
             );
         }
 
-        // 核心工具必须可见（误把 read_file 砍了 = AI 啥都干不了）
-        for core in [
-            "read_file",
-            "write_file",
-            "append_file",
-            "edit_file",
-            "exec_shell",
-            "web_search",
-            "checklist_write",
-            "update_plan",
-            "list_dir",
-            "request_user_input",
-            "exec_shell_wait",
-            // git_status/git_diff/diagnostics 已于 2026-07-03 纯办公定位决策砍入 blocklist（放弃代码辅助），不再要求可见
-            "revert_turn",
-            "agent_open",     // subagent spawn(单一 spawn 入口)
-            "agent_eval",     // subagent 收结果
-            "agent_close",    // subagent 释放 session
-            "kb_search",      // Agentic RAG: app 注入的本地知识检索工具,必须对模型可见
-            "kb_open_source", // 只按受控 source_ref 展开知识文档 chunk,禁止退回二进制 read_file
-        ] {
-            assert!(!is_pinvou3_hidden(core), "核心工具 {core} 不应该被隐藏");
-        }
+        assert_eq!(
+            PINVOU3_ALWAYS_LOADED_TOOLS,
+            &["request_user_input", "image_analyze"]
+        );
+        assert!(PINVOU3_ALLOWED_TOOLS.contains(&"mcp_*"));
     }
 }
 

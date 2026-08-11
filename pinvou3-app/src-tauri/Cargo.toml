@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.7.6"
+version = "0.8.0"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -112,7 +112,7 @@ msg_parser = "0.3.0"
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
 # 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 # 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
 walkdir = "2"
 
@@ -184,6 +184,9 @@ fastembed = { version = "4", optional = true }
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
+# Tauri 的 show/set_focus 是两条独立主循环消息；隐藏启动窗口在 release 下可能
+# 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
+gtk = "0.18"
 webkit2gtk = "2.0"
 # 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
 # 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。
@@ -277,3 +280,9 @@ overflow-checks = true
 # 依赖在 dev 下也做轻量优化(否则全 debug 编译,运行太慢影响本地调试体验)。
 [profile.dev.package."*"]
 opt-level = 2
+
+# codewhale-tui 在 dev 依赖 O2 + 默认 256 codegen-units 下触发 rustc/LLVM 栈溢出
+# 崩溃(SIGBUS,MachineLateinstrsCleanup 递归,rustc 1.96/1.97 稳定复现);
+# 单独降 opt-level 绕过,dev 调试性能影响可忽略(上游 v0.9.0 无此问题,属升级引入的构建回归)。
+[profile.dev.package.codewhale-tui]
+opt-level = 1

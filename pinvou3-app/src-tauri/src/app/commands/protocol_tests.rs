@@ -419,7 +419,11 @@ command_protocol!(
     "timeline.rs",
     ["get_session_timeline", "get_session_stats"]
 );
-command_protocol!(startup_protocol, "startup.rs", ["report_frontend_startup"]);
+command_protocol!(
+    startup_protocol,
+    "startup.rs",
+    ["report_frontend_startup", "reveal_startup_window"]
+);
 command_protocol!(
     updater_protocol,
     "updater.rs",

@@ -13,6 +13,10 @@ version = 2
 # 真漏洞(anyhow RUSTSEC-2026-0190、crossbeam-epoch RUSTSEC-2026-0204)已通过 cargo update
 # 修掉(anyhow 1.0.104 / crossbeam-epoch 0.9.20),不再命中。
 ignore = [
+    # GTK3 bindings 已停止维护，但 Tauri 2.11 的 Linux runtime 仍固定使用 gtk 0.18。
+    # 本应用仅新增同版本直接依赖，以便在 GTK 主线程原子执行主窗口 show/deiconify/present；
+    # 等 Tauri 提供 GTK4 runtime 后移除此依赖与例外。
+    "RUSTSEC-2024-0415",
     # quick-xml DoS/ReDoS(解析恶意 XML 的二次复杂度/内存耗尽)。本仓 quick-xml 原经
     # calamine 0.26(→0.31.0)与 plist/tauri(→0.39.4)传递引入;均已只读解析用户提供的
     # xlsx/plist,非网络面 XML 输入,风险中等。

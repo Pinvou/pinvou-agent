@@ -804,6 +804,7 @@
       remoteBaselineMessageCount: null,
       remoteBaselineTrusted: false,
       remoteExpectedAssistantKey: "",
+      remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
       modeState: { mode: "yolo" },
@@ -1081,6 +1082,7 @@
       buf.remoteBaselineMessageCount = null;
       buf.remoteBaselineTrusted = false;
       buf.remoteExpectedAssistantKey = "";
+      buf.remoteCommittedRevision = "";
       buf.deferredRemoteUserEvent = null;
     }
     buf.stream = {
@@ -1222,7 +1224,7 @@
     }
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
-  function markRemoteTurn(sid, buf) {
+  function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
     if (!buf.remoteTurnActive) {
       var meta = state.sessions.find(function (session) { return session.id === sid; });
@@ -1232,6 +1234,7 @@
         : Number(meta && meta.message_count);
       if (!Number.isFinite(buf.remoteBaselineMessageCount)) buf.remoteBaselineMessageCount = null;
       buf.remoteExpectedAssistantKey = "";
+      if (!preserveCommittedRevision) buf.remoteCommittedRevision = "";
       buf.remoteTerminalSeen = false;
     }
     buf.remoteTurnActive = true;
@@ -1304,10 +1307,17 @@
     if (authoritativeTranscriptSyncs[sid]) return authoritativeTranscriptSyncs[sid];
     // chat:done 与远端 load_session 分属两条异步通道。尤其是 WebUI 刚创建的
     // Session，第一份可读快照可能仍停在本轮 user，若立即拿它重建展示层，会把
-    // 已完整显示的流式 assistant 气泡一闪覆盖掉。以终态前的本地工作集作为
-    // authority barrier：消息数不能倒退，且最后一条 assistant 必须已进入快照。
+    // 已完整显示的流式 assistant 气泡一闪覆盖掉。优先用后端已提交 revision
+    // 建立 authority barrier；旧桌面端未提供 revision 时，才回退到消息数与
+    // 最后一条 assistant 的展示身份校验。
     var expectedAssistantKey = buf.remoteTerminalSeen
       ? String(buf.remoteExpectedAssistantKey || "")
+      : "";
+    // The committed revision identifies the canonical terminal transcript.
+    // Streamed/native-tool blocks may be normalized before persistence, so a
+    // presentation-derived message key is only a fallback for older desktops.
+    var expectedCommittedRevision = buf.remoteTerminalSeen
+      ? String(buf.remoteCommittedRevision || "")
       : "";
     var minimumTerminalMessageCount = expectedAssistantKey && Array.isArray(buf.messages)
       ? buf.messages.length
@@ -1315,11 +1325,27 @@
     var sync = (async function () {
       for (var attempt = 0; attempt < 6; attempt++) {
         if (attempt) await new Promise(function (resolve) { setTimeout(resolve, 250); });
+        // Relay replay may deliver the commit marker immediately after done,
+        // and a newer turn's commit can land while this retry window is open.
+        // Re-read the live revision every attempt so a bumped expected value
+        // converges instead of comparing a stale one (which would report a
+        // false unsynced warning and block queued sends until the next event).
+        if (buf.remoteTerminalSeen) {
+          expectedCommittedRevision = String(buf.remoteCommittedRevision || "");
+        }
         try {
           var saved = await loadSessionForClient(sid, false);
           if (!saved || !Array.isArray(saved.messages)) continue;
-          if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
-          if (expectedAssistantKey) {
+          var savedRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
+          // 仅当快照确实携带 revision 时才用严格相等作为权威屏障;旧后端/旧契约
+          // 不含该字段时降级到消息数与 assistant 身份校验,避免「期望非空但快照
+          // 无字段」导致对账必然失败(每轮误报)。
+          if (expectedCommittedRevision && savedRevision) {
+            if (savedRevision !== expectedCommittedRevision) continue;
+          } else {
+            if (minimumTerminalMessageCount && saved.messages.length < minimumTerminalMessageCount) continue;
+          }
+          if ((!expectedCommittedRevision || !savedRevision) && expectedAssistantKey) {
             var hasExpectedAssistant = saved.messages.some(function (message) {
               return message && message.role === "assistant" &&
                 hydratedMessageKey(message, isScheduledRunSession(sid)) === expectedAssistantKey;
@@ -1406,6 +1432,7 @@
           buf.remoteBaselineMessageCount = null;
           buf.remoteBaselineTrusted = false;
           buf.remoteExpectedAssistantKey = "";
+          buf.remoteCommittedRevision = "";
           buf.deferredRemoteUserEvent = null;
           buf.busy = false;
           if (sid === state.activeSessionId) saveWorkingSetTo(buf);
@@ -2270,9 +2297,8 @@
     if (!bn) return false;
     for (var i = state.chatItems.length - 1; i >= 0; i--) {
       var it = state.chatItems[i];
-      if (it.type === "tool" && (it.name === "write_file" || it.name === "append_file" || it.name === "edit_file")) {
-        var ap = extractArtifactPath(it.args);
-        if (ap && basename(ap) === bn) return false;
+      if (it.type === "tool" && fileMutationAction(it.name, it.args)) {
+        if (extractArtifactPaths(it.args).some(function (ap) { return basename(ap) === bn; })) return false;
       }
       if (it.type === "user") return false;
       if (it.type === "artifact_card" && basename(it.path) === bn) return true;
@@ -2286,6 +2312,12 @@
     }
     addChatItem(item);
     notify();
+  }
+  function addAuthoritySyncNotice(text) {
+    if (state.chatItems.some(function (item) {
+      return item && item.authoritySyncNotice;
+    })) return;
+    addSystemItem(text, { authoritySyncNotice: true });
   }
   function compactPruneRollupText(count) {
     return bt("compactDone") + bt("compactAuto") + " " +
@@ -3242,14 +3274,14 @@
       if (!Array.isArray(dc)) continue;
       for (var dj = 0; dj < dc.length; dj++) {
         var db = dc[dj];
-        if (db.type === "tool_use" && (db.name === "write_file" || db.name === "append_file" || db.name === "edit_file")) {
-          var dap = extractArtifactPath(db.input);
-          if (dap) {
+        var dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
+        if (dbMutation) {
+          extractArtifactPaths(db.input).forEach(function (dap) {
             lastDirtyArtifactId[dap] = db.id;
             // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
             // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
-            if (db.name !== "edit_file" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          }
+            if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
+          });
         } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
           var pap = extractArtifactPath(db.input);
           var pres = resultById[db.id];
@@ -3338,10 +3370,14 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
+              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
+              // tool_result，不能按历史恢复为 submitted。跳过，等
+              // chat:user_input_required 事件渲染可交互的 active 卡。
+              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
-                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
+                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
+                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
               });
             }
             continue;
@@ -3390,14 +3426,14 @@
               }
             }
           }
-          // 还原"自动续卡":write_file/append_file 改的文件之前 present 过 → 续一张
+          // 还原"自动续卡":File.write/File.edit 改的文件之前 present 过 → 续一张
           // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
           // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if (b.name === "write_file" || b.name === "append_file" || b.name === "edit_file") {
+          if (fileMutationAction(b.name, b.input)) {
             var wres = resultById[b.id];
-            var wap = extractArtifactPath(b.input);
-            // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-            if (!(wres && wres.is_error) && wap && lastDirtyArtifactId[wap] === b.id) {
+            extractArtifactPaths(b.input).forEach(function (wap) {
+              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
               var wprev = findPresentedArtifact(wap);
               if (wprev) {
                 addChatItem({
@@ -3408,7 +3444,7 @@
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
                 addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
-            }
+            });
           }
         }
       }
@@ -3441,7 +3477,7 @@
   }
 
   function isShellExecutionTool(name) {
-    return name === "exec_shell" || name === "task_shell_start" || name === "shell";
+    return name === "exec_shell" || name === "task_shell_start" || name === "shell" || name === "Bash";
   }
 
   function utf8Length(text) {
@@ -3736,7 +3772,7 @@
     if (state.artifacts.length !== before) notify();
   }
   // 自动续卡支撑:这个文件之前是否被 present_artifact 展示过(同 basename)。
-  // 已 present 过 = 用户已确认是成品,后续 write_file/append_file 修改它就自动
+  // 已 present 过 = 用户已确认是成品,后续 File.write/File.edit 修改它就自动
   // 再弹一张成品卡 —— 不靠 agent 第二次主动调(Qwen3.6 迭代后常漏)。信息直接
   // 从 chatItems 里的成品卡推导,无需单独 per-session map(chatItems 已按 session
   // 隔离 + rerender 重建)。返回最近一张同名成品卡(取 title/description 复用)。
@@ -3777,13 +3813,47 @@
       }
     } catch (e) { /* workspace 不存在(新 session)等,忽略 */ }
   }
-  // write_file / append_file 的 args 里提取产物路径
-  function extractArtifactPath(args) {
-    if (!args) return null;
+  function pushArtifactPath(paths, path) {
+    if (typeof path !== "string" || !path.trim()) return;
+    path = path.trim();
+    if (paths.indexOf(path) < 0) paths.push(path);
+  }
+  function extractArtifactPaths(args) {
+    if (!args) return [];
     if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch (e) { return null; }
+      try { args = JSON.parse(args); } catch (e) { return []; }
     }
-    return args.path || args.file_path || args.filename || null;
+    var paths = [];
+    pushArtifactPath(paths, args.path || args.file_path || args.filename);
+    [args.replace, args.changes].forEach(function (changes) {
+      if (!Array.isArray(changes)) return;
+      changes.forEach(function (change) {
+        if (change && typeof change === "object") pushArtifactPath(paths, change.path || change.file_path || change.filename);
+      });
+    });
+    String(args.patch || "").split(/\r?\n/).forEach(function (line) {
+      var custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
+      if (custom) { pushArtifactPath(paths, custom[1]); return; }
+      var unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
+      if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
+    });
+    return paths;
+  }
+  function extractArtifactPath(args) {
+    return extractArtifactPaths(args)[0] || null;
+  }
+
+  function fileMutationAction(name, args) {
+    if (typeof args === "string") {
+      try { args = JSON.parse(args); } catch (_) { args = null; }
+    }
+    if (String(name || "").toLowerCase() === "file") {
+      var action = String(args && args.action || "").toLowerCase();
+      return action === "write" || action === "edit" || action === "patch" ? action : null;
+    }
+    if (name === "write_file") return "write";
+    if (name === "edit_file") return "edit";
+    return null;
   }
 
   // ── Plan markdown 拼接（accept 时发给后端，与 main.js 对齐）────────
@@ -3845,9 +3915,12 @@
       turnOwnerBuffer.localTurnOwned = true;
       turnOwnerBuffer.remoteTurnActive = false;
       turnOwnerBuffer.remoteTerminalSeen = false;
+      turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice && !item.authoritySyncNotice;
+      });
       var uitem = {
         type: "user",
         text: displayText,
@@ -4086,6 +4159,7 @@
     buffer.localTurnOwned = true;
     buffer.remoteTurnActive = false;
     buffer.remoteTerminalSeen = false;
+    buffer.remoteCommittedRevision = "";
     buffer.busy = true;
     buffer.thinking = {
       active: true,
@@ -4321,7 +4395,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -4634,7 +4708,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -5054,15 +5131,15 @@
       }
     }
 
-    // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
-    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
-      var ap = extractArtifactPath(meta.args);
-      if (ap) {
+    var mutationAction = meta && fileMutationAction(meta.name, meta.args);
+    if (p.success && mutationAction) {
+      extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
-        if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
+        if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
@@ -5071,7 +5148,7 @@
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
-      }
+      });
     }
 
     // 兜底：Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡，给两条出路
@@ -5104,7 +5181,14 @@
       return;
     }
     var doneBuffer = sid ? getBuffer(sid) : null;
-    if (doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    var completedLocalTurn = !!(
+      doneBuffer && doneBuffer.localTurnOwned && !isScheduledRunSession(sid)
+    );
+    if (doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed precedes chat:done. Preserve its revision when a
+      // reconnecting client first materializes the turn at the terminal tail.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
@@ -5168,7 +5252,7 @@
       currentStreamText = "";
       currentStreamId = 0;
     });
-    if (doneBuffer) {
+    if (doneBuffer && !completedLocalTurn) {
       // Rust has already committed the final transcript before chat:done. Keep
       // both UIs behind a short authority barrier until that snapshot is loaded.
       var finalAssistantMessage = null;
@@ -5187,17 +5271,31 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    } else if (completedLocalTurn) {
+      // A local turn is already authoritative in this desktop process. Saved
+      // transcript verification remains best-effort and must not lock the next
+      // local message behind a cross-client synchronization state.
+      doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = false;
+      doneBuffer.remoteTerminalSeen = false;
+      doneBuffer.remoteBaselineMessageCount = null;
+      doneBuffer.remoteBaselineTrusted = false;
+      doneBuffer.remoteExpectedAssistantKey = "";
+      doneBuffer.remoteCommittedRevision = "";
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = await reconcileRemoteTurn(sid);
+      var reconciled = completedLocalTurn ? true : await reconcileRemoteTurn(sid);
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem(bt("remoteDoneUnsynced"));
+          addAuthoritySyncNotice(bt("remoteDoneUnsynced"));
         });
       }
       notify();
@@ -6508,7 +6606,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, bt("turnSyncRetry"));
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -6517,6 +6615,7 @@
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
       planBuffer.remoteTerminalSeen = false;
+      planBuffer.remoteCommittedRevision = "";
     }
     if (itemId) patchItemByIdFor(sid, itemId, { cardState: "approved", statusLabel: bt("approved"), resolved: true });
     var echoEntry = null;
@@ -6630,7 +6729,7 @@
   // plan-stuck / fallback / execution-stuck 卡片动作
   async function planStuckReplan(itemId) {
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
-    await sendMessage("请用 update_plan 工具输出完整方案,不要直接调写工具。");
+    await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
     patchItemById(itemId, { resolved: true }); notify();
@@ -6669,7 +6768,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -6690,6 +6789,7 @@
       editBuffer.localTurnOwned = true;
       editBuffer.remoteTurnActive = false;
       editBuffer.remoteTerminalSeen = false;
+      editBuffer.remoteCommittedRevision = "";
     }
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;

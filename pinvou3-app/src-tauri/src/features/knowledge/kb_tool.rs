@@ -64,7 +64,7 @@ pub(crate) fn build_kb_context_block(
         "在已启用知识集{title}中检索到以下相关片段(按相关度稳定排序)。请**严格基于这些片段**作答\
          并注明来源文件;若片段足够就直接回答,不要继续打开源文件。若上下文不足,可再次\
          `kb_search`,或用结果中的 `source_ref` 调用 `kb_open_source` 查看相邻片段。对于\
-         XLSX/DOCX/PPTX 等二进制来源,禁止调用 `read_file` 或用 `exec_shell` 全量展开。\n\n"
+         XLSX/DOCX/PPTX 等二进制来源,禁止调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。\n\n"
     );
     let mut spent = 0usize;
     for (i, scoped) in hits.iter().enumerate() {
@@ -289,7 +289,7 @@ impl ToolSpec for KbOpenSourceTool {
     fn description(&self) -> &str {
         "查看 `kb_search` 返回的某个本地知识来源的相邻内容。只接受检索结果中的 `source_ref`,\
          不接受文件路径;默认从命中 chunk 的前一块开始返回 3 块。对于 XLSX/DOCX/PPTX 等\
-         来源使用本工具,不要调用 `read_file` 或用 shell 全量展开。需要定位其他内容时先再次\
+         来源使用本工具,不要调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。需要定位其他内容时先再次\
          调用 `kb_search`,再打开它返回的新 `source_ref`。"
     }
 
@@ -443,7 +443,7 @@ mod tests {
         assert!(block.contains("CPU 峰值温度 78℃"));
         assert!(block.contains("TDP 28W"));
         assert!(block.contains("kb_open_source"));
-        assert!(block.contains("禁止调用 `read_file`"));
+        assert!(block.contains("禁止调用 `File(action=\"read\")`"));
 
         let none = build_kb_context_block(&[], &hits);
         assert!(none.contains("《知识库》"));

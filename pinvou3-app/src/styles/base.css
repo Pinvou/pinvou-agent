@@ -4,14 +4,29 @@
     .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.5); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    /* 移动 Web 的应用自身负责滚动。禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
+    /* 隐藏 WebView2/Chromium 给 type=password 输入框自带的「显示密码」眼睛：
+       应用内各表单均提供自己的显隐按钮，原生眼睛与之重复。 */
+    input[type="password"]::-ms-reveal,
+    input[type="password"]::-ms-clear {
+      display: none;
+    }
+    /* 应用自身负责滚动：各视图自带滚动容器，文档本身不可滚动。
+       macOS 触摸板滑动到滚动边界继续划时会产生 rubber-band，把整个
+       WebView 内容（除原生红绿灯）拖出空白；overscroll-behavior 阻断
+       滚动链传播到 document。桌面与 Web 通用，移动紧凑视口在此基础上
+       额外钉死宽高并固定 body（见下方 compact-web-viewport 规则）。 */
+    html,
+    html body,
+    html #root {
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    /* 移动 Web 的紧凑视口：宽度/高度钉死视口，禁止 iOS Safari 聚焦输入框时再平移整份文档。 */
     html.compact-web-viewport,
     html.compact-web-viewport body,
     html.compact-web-viewport #root {
       width: 100%;
       height: 100%;
-      overflow: hidden;
-      overscroll-behavior: none;
     }
     html.compact-web-viewport body {
       position: fixed;
@@ -37,16 +52,18 @@
     .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
     .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
-    /* Dark theme code blocks */
-    .dark-code .msg-md :not(pre) > code,
-    .msg-md.dark-code :not(pre) > code,
-    .persona-body.dark-code :not(pre) > code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
-    .dark-code .msg-md pre,
-    .msg-md.dark-code pre,
-    .persona-body.dark-code pre { background:#16181d; color:#E3E3E3; }
-    .dark-code .msg-md pre > code,
-    .msg-md.dark-code pre > code,
-    .persona-body.dark-code pre > code { background:transparent; color:inherit; }
+    /* Dark theme code blocks — scoped under .dark so both light-code+dark-code
+       classes can coexist on one element (dark-code wins via specificity in dark mode).
+       Enables isDark-free JSX: className="light-code dark-code ..." */
+    .dark .dark-code .msg-md :not(pre) > code,
+    .dark .msg-md.dark-code :not(pre) > code,
+    .dark .persona-body.dark-code :not(pre) > code { background:rgba(255,255,255,0.08); color:#E3E3E3; }
+    .dark .dark-code .msg-md pre,
+    .dark .msg-md.dark-code pre,
+    .dark .persona-body.dark-code pre { background:#16181d; color:#E3E3E3; }
+    .dark .dark-code .msg-md pre > code,
+    .dark .msg-md.dark-code pre > code,
+    .dark .persona-body.dark-code pre > code { background:transparent; color:inherit; }
     /* Light theme code blocks */
     .light-code .msg-md :not(pre) > code,
     .msg-md.light-code :not(pre) > code,
@@ -161,9 +178,9 @@
       --pinvou-hl-deletion-bg:rgba(255,129,130,.16);
       --pinvou-hl-quote-bg:rgba(84,174,255,.09);
     }
-    .dark-code .msg-md,
-    .msg-md.dark-code,
-    .persona-body.dark-code,
+    .dark .dark-code .msg-md,
+    .dark .msg-md.dark-code,
+    .dark .persona-body.dark-code,
     .dark .codex-markdown,
     .dark .code-viewer-body {
       --pinvou-code-border:rgba(240,246,252,.16);

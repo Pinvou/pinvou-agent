@@ -108,7 +108,7 @@ impl Language {
                 "## Language\n\n\
                  Respond in English by default, and mirror the language of the \
                  user's latest message. Keep code, file paths, tool names \
-                 (e.g. `read_file`, `exec_shell`), environment variables, \
+                 (e.g. `File`, `Bash`), environment variables, \
                  command-line flags, and URLs verbatim — only natural-language \
                  prose follows the language rule.",
             ),

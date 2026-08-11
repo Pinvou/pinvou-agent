@@ -364,6 +364,17 @@ pub async fn create_session(
     Ok(metadata)
 }
 
+/// Desktop `load_session` response: same shape as `SavedSession` plus the
+/// authoritative transcript revision, mirroring the Web download path
+/// (`WebSavedSession`). The frontend reconciles remote turns by this
+/// committed revision instead of presentation-derived message equality.
+#[derive(Debug, Serialize)]
+pub struct DesktopSavedSession {
+    #[serde(flatten)]
+    session: SavedSession,
+    transcript_revision: String,
+}
+
 /// 加载指定 session 的完整对话（含 messages）。
 /// 前端切换历史时调用 → 用返回的 messages 重渲染对话区。
 #[tauri::command]
@@ -371,7 +382,7 @@ pub async fn load_session(
     id: String,
     set_active: Option<bool>,
     store: State<'_, SessionStore>,
-) -> Result<SavedSession, String> {
+) -> Result<DesktopSavedSession, String> {
     let session = store
         .load(&id)
         .map_err(|e| format!("load_session({id}): {e:?}"))?;
@@ -381,7 +392,12 @@ pub async fn load_session(
     // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
     // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
     // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
-    Ok(session)
+    let revision = crate::features::sessions::transcript_revision(&session.messages)
+        .map_err(|e| format!("load_session({id}) revision: {e:?}"))?;
+    Ok(DesktopSavedSession {
+        session,
+        transcript_revision: revision,
+    })
 }
 
 /// 删除 session（含 artifacts 目录）。按 SessionKind 分发：定时运行会话联动
@@ -499,7 +515,7 @@ pub async fn save_session_messages(
         .map_err(|e| format!("save_session_messages({id}): {e:?}"))
 }
 
-/// 落盘 session 的产物 paths 列表。前端跟踪 write_file / append_file 调用后调用,
+/// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
 /// 跟 save_session_messages 一起落 (TurnComplete 时)。重启/切换 session 后,
 /// 从 SavedSession.artifacts 重建前端产物列表。
 #[tauri::command]
@@ -687,3 +703,61 @@ pub(super) fn list_workspace_files_for_session(
     Ok(out)
 }
 use super::prelude::*;
+
+#[cfg(test)]
+mod desktop_saved_session_contract_tests {
+    use super::*;
+    use crate::features::sessions::transcript_revision;
+
+    /// Desktop `load_session` must expose `transcript_revision` at the top
+    /// level (snake_case, flatten with the rest of `SavedSession`), otherwise
+    /// the bridge reconcile falls into the every-turn-misreport path.
+    #[test]
+    fn desktop_load_session_response_contract() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-desktop-session-contract-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &root);
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let session = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session");
+        let revision = transcript_revision(&session.messages).expect("transcript revision");
+
+        let response = DesktopSavedSession {
+            session,
+            transcript_revision: revision.clone(),
+        };
+        let value = serde_json::to_value(&response).expect("serialize DesktopSavedSession");
+
+        // 顶层必须带 snake_case 的 transcript_revision(WebSavedSession 同契约)。
+        assert_eq!(
+            value.get("transcript_revision").and_then(|v| v.as_str()),
+            Some(revision.as_str()),
+            "load_session 响应必须携带 transcript_revision 字段"
+        );
+        // SavedSession 其余字段通过 flatten 保留在顶层,不得嵌套丢失。
+        assert!(
+            value.get("messages").is_some(),
+            "flatten 后 messages 必须仍在顶层"
+        );
+        assert!(
+            value.get("metadata").is_some(),
+            "flatten 后 metadata 必须仍在顶层"
+        );
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

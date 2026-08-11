@@ -18,6 +18,7 @@
     var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
     var hasChatItemForTool = context.hasChatItemForTool;
     var addSystemItem = context.addSystemItem;
+    var addAuthoritySyncNotice = context.addAuthoritySyncNotice;
     var timeStr = context.timeStr;
     var flushPendingTextBlock = context.flushPendingTextBlock;
     var flushAssistantMessageToHistory = context.flushAssistantMessageToHistory;
@@ -42,7 +43,8 @@
     var artifactPathFromToolOutput = context.artifactPathFromToolOutput;
     var shouldUseToolOutputAsArtifact = context.shouldUseToolOutputAsArtifact;
     var presentArtifactAbsPath = context.presentArtifactAbsPath;
-    var extractArtifactPath = context.extractArtifactPath;
+    var extractArtifactPaths = context.extractArtifactPaths;
+    var fileMutationAction = context.fileMutationAction;
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
@@ -337,7 +339,10 @@
     var committedBuffer = getBuffer(sid);
     if (!committedBuffer) return;
     var revision = String(payload.transcript_revision || payload.transcriptRevision || "");
-    if (revision) committedBuffer.sessionRevision = revision;
+    if (revision) {
+      committedBuffer.sessionRevision = revision;
+      committedBuffer.remoteCommittedRevision = revision;
+    }
     if (committedBuffer.remoteTerminalSeen && !isBusyFor(sid)) {
       reconcileRemoteTurn(sid).then(function (ready) {
         if (ready) flushQueued(sid);
@@ -552,7 +557,7 @@
 
     var backgroundTaskId = p.metadata && p.metadata.backgrounded === true &&
       p.metadata.status === "Running" && p.metadata.task_id;
-    if (meta && meta.name === "exec_shell" && backgroundTaskId) {
+    if (meta && (meta.name === "exec_shell" || meta.name === "Bash") && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
       delete context.toolMeta[p.id];
       context.currentStreamText = ""; context.currentStreamId = 0;
@@ -654,15 +659,15 @@
       addChatItem({ type: "careful_blocked", args: meta && meta.args, metadata: md, time: timeStr() });
     }
 
-    // write_file/append_file/edit_file 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
-    // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
+    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // 改成记账+去重:AI 一个 turn 会 edit 多次,实时续会刷出一堆卡;且 edit
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
-    if (p.success && meta && (meta.name === "write_file" || meta.name === "append_file" || meta.name === "edit_file")) {
-      var ap = extractArtifactPath(meta.args);
-      if (ap) {
+    var mutationAction = meta && fileMutationAction(meta.name, meta.args);
+    if (p.success && mutationAction) {
+      extractArtifactPaths(meta.args).forEach(function (ap) {
         // 面板只收「成品」:成品型扩展名(自动当成品)或之前 present_artifact 过的文件;
         // 中间草稿(content_p1.txt / *_params.json 等)不进面板。edit_file 只改已有不新建。
-        if (meta.name !== "edit_file" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
+        if (mutationAction !== "edit" && (isDeliverable(ap) || findPresentedArtifact(ap))) trackArtifact(ap);
         // 产物(present 过的成品 或 write/append 写进产物列表的)被写/改 → turn 结束补卡。
         // 不再要求 present 过:AI 经常写完产物忘了 present_artifact → 没成品卡 = 没召唤入口。
         // 按 basename 比对:disk watcher(artifact:disk)写盘后抢先用**绝对**路径 trackArtifact
@@ -671,7 +676,7 @@
         var _apbn = basename(ap);
         var isArtifact = !!findPresentedArtifact(ap) || state.artifacts.some(function (a) { return basename(a.path) === _apbn; });
         if (isArtifact) markTurnDirtyArtifact(ap);
-      }
+      });
     }
 
     // 兜底：Plan 模式下 AI 调了被白名单/sandbox 拦的工具 → 弹兜底卡，给两条出路
@@ -713,7 +718,15 @@
     });
     var doneBuffer = sid ? getBuffer(sid) : null;
     var requiresAuthorityReconcile = !isScheduledRunSession(sid);
-    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) markRemoteTurn(sid, doneBuffer);
+    var completedLocalTurn = !!(
+      requiresAuthorityReconcile && doneBuffer && doneBuffer.localTurnOwned
+    );
+    if (requiresAuthorityReconcile && doneBuffer && !doneBuffer.localTurnOwned) {
+      // transcript_committed is emitted before chat:done. A client that joins
+      // at the terminal tail may not have seen an earlier turn event, so keep
+      // the already received revision while initializing remote-turn state.
+      markRemoteTurn(sid, doneBuffer, true);
+    }
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       var error = e.payload && e.payload.error;
@@ -770,7 +783,7 @@
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
-    if (requiresAuthorityReconcile && doneBuffer) {
+    if (requiresAuthorityReconcile && doneBuffer && !completedLocalTurn) {
       var finalAssistantMessage = null;
       for (var doneMessageIndex = doneBuffer.messages.length - 1; doneMessageIndex >= 0; doneMessageIndex--) {
         if (doneBuffer.messages[doneMessageIndex] && doneBuffer.messages[doneMessageIndex].role === "assistant") {
@@ -787,18 +800,35 @@
       doneBuffer.remoteTerminalSeen = true;
       doneBuffer.busy = false;
       if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
+    } else if (completedLocalTurn) {
+      // The desktop owns this turn and Rust has already persisted its terminal
+      // transcript before emitting chat:done. Do not convert a completed local
+      // turn into a remote authority gate: a best-effort readback failure must
+      // never block the user's next local message.
+      doneBuffer.deferredRemoteUserEvent = null;
+      doneBuffer.localTurnOwned = false;
+      doneBuffer.remoteTurnActive = false;
+      doneBuffer.remoteTerminalSeen = false;
+      doneBuffer.remoteBaselineMessageCount = null;
+      doneBuffer.remoteBaselineTrusted = false;
+      doneBuffer.remoteExpectedAssistantKey = "";
+      doneBuffer.remoteCommittedRevision = "";
+      doneBuffer.busy = false;
+      if (sid === state.activeSessionId) saveWorkingSetTo(doneBuffer);
     }
     notify();
     refreshAuthoritativeTurnTimeline(sid);
     // 异步收尾(按 sid 路由,active/后台通用)
     (async function () {
       await persistMessagesFor(sid);
-      var reconciled = requiresAuthorityReconcile ? await reconcileRemoteTurn(sid) : true;
+      var reconciled = requiresAuthorityReconcile && !completedLocalTurn
+        ? await reconcileRemoteTurn(sid)
+        : true;
       if (reconciled) await persistMessagesFor(sid);
       await refreshHistoryList();
       if (!reconciled) {
         runSyncOnSession(sid, function () {
-          addSystemItem(bt("desktopDoneSyncPending"));
+          addAuthoritySyncNotice(bt("desktopDoneSyncPending"));
         });
       }
       notify();

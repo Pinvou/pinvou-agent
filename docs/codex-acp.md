@@ -99,16 +99,59 @@ Codex 自己上报的 `/skills`、`/mcp` 等命令可直接在输入框使用。
 Codex 继续复用用户自己的 `HOME` 和 `~/.codex`，所以登录态、Codex 全局配置、
 原生 skills、MCP 与 Codex 自身会话记忆仍由 Codex 管理。Pinvou 不把自身记忆注入 Codex。
 
+## Provider 管理（第三方中转）
+
+三个 ACP Agent（Codex / Claude Code / Kimi）支持配置第三方中转 Provider：
+预设/自定义 base URL、wire 协议（Anthropic 兼容 / OpenAI 兼容）、模型与 API key，
+一键切换或恢复官方登录。入口：设置 →「Provider 管理」；服务失败横幅也提供
+「管理 Provider」深链；会话 composer 可选「会话 Provider」固定本会话使用的中转。
+**切换是本机级操作**：会影响所有使用该 CLI 的入口（终端、IDE 插件），不仅是
+Pinvou 的「代码」模式。设置页「生效中配置」区展示 CLI 配置文件当前实际生效的
+base URL / 模型（不含密钥），以便与终端/插件中的行为核对。
+
+### 涉及的文件
+
+| Agent | 文件 | 写入内容 |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` |
+| Codex | `~/.codex/config.toml` | `model_providers.<id>`（`env_key="OPENAI_API_KEY"`）+ 顶层 `model_provider` / `model` |
+| Kimi | `~/.kimi-code/config.toml` | `providers.<id>` + `models.<id>-main` + `default_model` |
+
+- App 自己的记录在 `~/.pinvou3/acp-providers.json`（按 Agent 分键，版本化，原子写）。
+- API key 只存系统凭据库（keyring，service `pinvou3-acp-provider-key`），
+  JSON/日志/仓库均无明文；**导出功能除外**——导出文件含明文 key，请勿分享。
+- Codex 的 config.toml 无明文 key 字段：key 由 Pinvou 在 spawn Codex 子进程时注入
+  `OPENAI_API_KEY`（仅当进程 env 未设置时）。认证探测以 config.toml 存在指向有效
+  表且 `env_key` 非空的 `model_provider` 判定已认证。
+- 环境变量优先于配置文件：`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等已设置时，
+  切换 Provider 可能不生效，界面会显式警告。
+
+### 回退语义
+
+- 「恢复官方登录」只删除本功能写入的键/表（claude 的三个 env 键；codex/kimi 的
+  `pv-*` 块与指向它们的顶层字段），**保留用户其他配置**。
+- 每次受管写入前将原文件备份为 `<file>.pinvou3-bak`（仅首次）；TOML/JSON 文件
+  不可解析时**拒绝覆盖**并明确报错。
+- 切换后该 Agent 的运行中会话会被安全重启，新会话使用新凭据。
+- 会话级 Provider 解析优先级：会话选项 > 全局当前 Provider > 官方登录。
+
+### 安全提示
+
+- 第三方中转会把你的请求与密钥发送到填写的地址；只使用可信中转。
+- 导入/导出是本地 JSON 交换：导入会做结构/URL 校验，id 冲突自动重建；
+  导出前强警告明文 key。
+
 ## 发布
 
 Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手动运行：
 
 ```bash
-./pinvou3-app/scripts/prepare-codex-acp-runtime.sh
+./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh
 ```
 
-脚本会把当前 Linux 架构的应用隔离 Node 与精简 `codex-acp` Bridge 放到
-`resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
+脚本会把当前平台架构的应用隔离 Node 与包含 `codex-acp`、`claude-agent-acp`
+适配器的精简 Bridge 放到 `resources/platforms/<os>/codex-bridge/`。项目统一构建
+入口也会自动准备该目录。
 生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
 系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
 安装脚本。npm 全局来源的旧版经用户确认后用 `npm install -g @openai/codex@latest`
