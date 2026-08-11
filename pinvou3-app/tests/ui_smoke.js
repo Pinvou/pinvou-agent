@@ -534,12 +534,18 @@ async function expand(page) {
     const reasoningRect = reasoning?.getBoundingClientRect();
     const planRect = plan?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
+    reasoningToggle?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const reasoningCollapsed = controlledState(reasoningToggle);
     const commandClipped = Boolean(commandTitle && commandTitle.scrollWidth > commandTitle.clientWidth
       && commandButton.scrollWidth <= commandButton.clientWidth + 1);
     const commandBefore = controlledState(commandButton);
     commandButton?.click();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const commandAfter = controlledState(commandButton);
+    commandButton?.click();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const commandCollapsed = controlledState(commandButton);
     return {
       found: Boolean(turn && reasoning && plan && summary && commandButton && commandTitle),
       turnIds: [...document.querySelectorAll('[data-conversation-turn]')]
@@ -553,7 +559,15 @@ async function expand(page) {
         && reasoningRect.bottom <= planRect.top + 1
         && planRect.bottom <= summaryRect.top + 1),
       commandClipped,
-      accessibility: { summaryState, reasoningBefore, reasoningAfter, commandBefore, commandAfter },
+      accessibility: {
+        summaryState,
+        reasoningBefore,
+        reasoningAfter,
+        reasoningCollapsed,
+        commandBefore,
+        commandAfter,
+        commandCollapsed,
+      },
     };
   });
   rec('①a-3c Codex 流式超长命令保持在工具卡内',
@@ -569,13 +583,23 @@ async function expand(page) {
     unifiedA11y.summaryState?.expanded === 'true'
       && unifiedA11y.summaryState?.detailsPresent
       && unifiedA11y.reasoningBefore?.expanded === 'false'
+      && !unifiedA11y.reasoningBefore?.controls
       && !unifiedA11y.reasoningBefore?.detailsPresent
       && unifiedA11y.reasoningAfter?.expanded === 'true'
+      && Boolean(unifiedA11y.reasoningAfter?.controls)
       && unifiedA11y.reasoningAfter?.detailsPresent
+      && unifiedA11y.reasoningCollapsed?.expanded === 'false'
+      && !unifiedA11y.reasoningCollapsed?.controls
+      && !unifiedA11y.reasoningCollapsed?.detailsPresent
       && unifiedA11y.commandBefore?.expanded === 'false'
+      && !unifiedA11y.commandBefore?.controls
       && !unifiedA11y.commandBefore?.detailsPresent
       && unifiedA11y.commandAfter?.expanded === 'true'
-      && unifiedA11y.commandAfter?.detailsPresent,
+      && Boolean(unifiedA11y.commandAfter?.controls)
+      && unifiedA11y.commandAfter?.detailsPresent
+      && unifiedA11y.commandCollapsed?.expanded === 'false'
+      && !unifiedA11y.commandCollapsed?.controls
+      && !unifiedA11y.commandCollapsed?.detailsPresent,
     JSON.stringify(unifiedA11y));
 
   await page.evaluate(async () => {
@@ -605,6 +629,7 @@ async function expand(page) {
       controls,
       expandedBefore,
       detailsBefore,
+      controlsAfter: summary?.getAttribute('aria-controls') || '',
       expandedAfter: summary?.getAttribute('aria-expanded') || '',
       detailsAfter: Boolean(controls && document.getElementById(controls)),
     };
@@ -616,8 +641,10 @@ async function expand(page) {
     JSON.stringify(codexCompletedOverflow));
   rec('①a-3d-1 统一工具组折叠状态与详情 DOM 一致',
     codexCompletedOverflow.expandedBefore === 'true'
+      && Boolean(codexCompletedOverflow.controls)
       && codexCompletedOverflow.detailsBefore
       && codexCompletedOverflow.expandedAfter === 'false'
+      && !codexCompletedOverflow.controlsAfter
       && !codexCompletedOverflow.detailsAfter,
     JSON.stringify(codexCompletedOverflow));
 
@@ -1569,6 +1596,9 @@ async function expand(page) {
     reasoningToggle?.click();
     await settle();
     const reasoningAfter = state(reasoningToggle);
+    reasoningToggle?.click();
+    await settle();
+    const reasoningCollapsed = state(reasoningToggle);
 
     const summary = document.querySelector('[data-testid="conversation-tool-group-summary"]');
     const groupBefore = state(summary);
@@ -1581,15 +1611,24 @@ async function expand(page) {
     compactToggle?.click();
     await settle();
     const compactAfter = state(compactToggle);
+    compactToggle?.click();
+    await settle();
+    const compactCollapsed = state(compactToggle);
+    summary?.click();
+    await settle();
+    const groupCollapsed = state(summary);
     const controls = [reasoningAfter.controls, groupAfter.controls, compactAfter.controls].filter(Boolean);
     return {
       found: Boolean(reasoningToggle && summary && compactToggle),
       reasoningBefore,
       reasoningAfter,
+      reasoningCollapsed,
       groupBefore,
       groupAfter,
+      groupCollapsed,
       compactBefore,
       compactAfter,
+      compactCollapsed,
       uniqueControls: controls.length === 3 && new Set(controls).size === controls.length,
     };
   });
@@ -1597,17 +1636,32 @@ async function expand(page) {
     legacyConversationA11y.found
       && legacyConversationA11y.uniqueControls
       && legacyConversationA11y.reasoningBefore.expanded === 'false'
+      && !legacyConversationA11y.reasoningBefore.controls
       && !legacyConversationA11y.reasoningBefore.detailsPresent
       && legacyConversationA11y.reasoningAfter.expanded === 'true'
+      && Boolean(legacyConversationA11y.reasoningAfter.controls)
       && legacyConversationA11y.reasoningAfter.detailsPresent
+      && legacyConversationA11y.reasoningCollapsed.expanded === 'false'
+      && !legacyConversationA11y.reasoningCollapsed.controls
+      && !legacyConversationA11y.reasoningCollapsed.detailsPresent
       && legacyConversationA11y.groupBefore.expanded === 'false'
+      && !legacyConversationA11y.groupBefore.controls
       && !legacyConversationA11y.groupBefore.detailsPresent
       && legacyConversationA11y.groupAfter.expanded === 'true'
+      && Boolean(legacyConversationA11y.groupAfter.controls)
       && legacyConversationA11y.groupAfter.detailsPresent
+      && legacyConversationA11y.groupCollapsed.expanded === 'false'
+      && !legacyConversationA11y.groupCollapsed.controls
+      && !legacyConversationA11y.groupCollapsed.detailsPresent
       && legacyConversationA11y.compactBefore.expanded === 'false'
+      && !legacyConversationA11y.compactBefore.controls
       && !legacyConversationA11y.compactBefore.detailsPresent
       && legacyConversationA11y.compactAfter.expanded === 'true'
-      && legacyConversationA11y.compactAfter.detailsPresent,
+      && Boolean(legacyConversationA11y.compactAfter.controls)
+      && legacyConversationA11y.compactAfter.detailsPresent
+      && legacyConversationA11y.compactCollapsed.expanded === 'false'
+      && !legacyConversationA11y.compactCollapsed.controls
+      && !legacyConversationA11y.compactCollapsed.detailsPresent,
     JSON.stringify(legacyConversationA11y));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));

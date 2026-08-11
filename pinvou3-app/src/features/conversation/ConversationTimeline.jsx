@@ -255,7 +255,7 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId 
     <button type="button" onClick={onToggle}
       data-testid="conversation-compact-item-toggle"
       aria-expanded={controlsId ? Boolean(open) : undefined}
-      aria-controls={controlsId || undefined}
+      aria-controls={controlsId && open ? controlsId : undefined}
       className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
       <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       <span className="min-w-0 flex-1">
@@ -534,7 +534,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
       <button type="button" onClick={() => setOpen(value => !value)}
         data-testid="conversation-tool-group-summary"
         aria-expanded={hasDetails ? Boolean(expanded) : undefined}
-        aria-controls={hasDetails ? detailsId : undefined}
+        aria-controls={hasDetails && expanded ? detailsId : undefined}
         className="w-full min-w-0 h-9 overflow-hidden px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${failed ? 'bg-red-500' : running ? 'bg-blue-500 animate-pulse' : 'bg-gray-300 dark:bg-gray-600'}`} />
         <span className="min-w-0 flex-1 truncate">{summary}</span>
@@ -573,7 +573,7 @@ function ReasoningItem({ item, now, copy }) {
       <button type="button" onClick={() => setOpen(value => !value)}
         data-testid="conversation-reasoning-toggle"
         aria-expanded={hasDetails ? Boolean(open) : undefined}
-        aria-controls={hasDetails ? detailsId : undefined}
+        aria-controls={hasDetails && open ? detailsId : undefined}
         className="w-full h-9 px-1 flex items-center gap-2 text-left text-[12px] text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
         <span className={`w-1.5 h-1.5 rounded-full bg-violet-500 ${running ? 'animate-pulse' : ''}`} />
         <span>{statusText}{duration ? ` · ${duration}` : ''}</span>
