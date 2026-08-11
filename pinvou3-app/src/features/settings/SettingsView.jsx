@@ -1013,6 +1013,13 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         window.addEventListener('pinvou:tools-changed', onChanged);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', onChanged); };
       }, []);
+      // 项目技能帮助弹窗 Esc 关闭（与项目其他 modal 惯例一致，仅弹窗打开时挂监听）
+      useEffect(() => {
+        if (!projectSkillsHelp) return undefined;
+        const onKey = event => { if (event.key === 'Escape') setProjectSkillsHelp(false); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [projectSkillsHelp]);
       function toggleTool(id, kind) {
         if (!canMutateToolStore) return;
         // 技能行走独立双 scope 开关（disabled_skills.json）；工具/服务行走连接器开关。
