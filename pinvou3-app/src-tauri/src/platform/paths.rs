@@ -157,6 +157,21 @@ pub fn python_command() -> String {
     crate::platform::os::python_command()
 }
 
+/// 锁定 Python 依赖只能由应用随包解释器加载。Windows 上拒绝
+/// `PINVOU3_PYTHON` 与系统 Python，避免用户 site/sitecustomize 补齐漏锁依赖。
+pub fn managed_python_command() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return crate::platform::os::windows::bundled_python_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .ok_or_else(|| "随包 Python 运行时缺失，无法安全加载 MCP 锁定依赖".to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(python_command())
+    }
+}
+
 pub fn user_root() -> PathBuf {
     pinvou3_home().join("user")
 }
@@ -457,6 +472,31 @@ pub(crate) mod tests {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn managed_python_rejects_pinvou3_python_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_PYTHON");
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-managed-python-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let ambient = root.join("python.exe");
+        std::fs::write(&ambient, b"ambient").unwrap();
+        std::env::set_var("PINVOU3_PYTHON", &ambient);
+
+        assert_eq!(python_command(), ambient.to_string_lossy());
+        assert!(managed_python_command().is_err());
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_PYTHON", value),
+            None => std::env::remove_var("PINVOU3_PYTHON"),
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1,4 +1,8 @@
-"""Run a Python MCP server with its managed dependency directory."""
+"""Run a Python MCP server with its managed dependency directory.
+
+The parent command invokes this file with ``-I -S`` so ambient user-site,
+PYTHONPATH, and sitecustomize code cannot participate in dependency loading.
+"""
 
 from __future__ import annotations
 

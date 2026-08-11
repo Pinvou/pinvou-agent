@@ -20,6 +20,14 @@ const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_WHEEL_ENTRIES: usize = 50_000;
 const COMPLETE_MARKER: &str = "environment.json";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static FAIL_NEXT_DOWNLOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(super) fn fail_next_download_for_test() {
+    FAIL_NEXT_DOWNLOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PythonDependencyLock {
@@ -50,6 +58,7 @@ pub(crate) struct PythonWheel {
 #[derive(Debug)]
 pub(super) struct InstalledPythonEnvironment {
     pub site_packages: PathBuf,
+    pub python_command: String,
     /// 从依赖环境就绪一直持有到 Marketplace 完成 mcp.json/installed.json 注册，
     /// 防止并发卸载把尚未登记引用的新环境清理掉。
     _install_guard: std::sync::MutexGuard<'static, ()>,
@@ -79,6 +88,7 @@ pub(super) fn ensure_installed(
     {
         return Ok(Some(InstalledPythonEnvironment {
             site_packages,
+            python_command: python_command.to_string(),
             _install_guard: install_guard,
         }));
     }
@@ -122,6 +132,7 @@ pub(super) fn ensure_installed(
     result?;
     Ok(Some(InstalledPythonEnvironment {
         site_packages: destination.join("site-packages"),
+        python_command: python_command.to_string(),
         _install_guard: install_guard,
     }))
 }
@@ -310,6 +321,10 @@ fn write_marker(
 }
 
 fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_DOWNLOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(format!("测试注入：下载 Python 依赖 {} 失败", wheel.name));
+    }
     if sha256_file(destination).is_ok_and(|actual| actual == wheel.sha256) {
         return Ok(());
     }
@@ -444,6 +459,7 @@ fn verify_environment(
     let (major, minor) = parse_python_version(&target.python)?;
     let code = "import importlib,sys; expected=(int(sys.argv[1]),int(sys.argv[2])); assert sys.version_info[:2] == expected, f'expected Python {expected[0]}.{expected[1]}, got {sys.version_info[0]}.{sys.version_info[1]}'; sys.path.insert(0,sys.argv[3]); [importlib.import_module(name) for name in sys.argv[4:]]";
     let output = Command::new(python_command)
+        .args(["-I", "-S"])
         .arg("-c")
         .arg(code)
         .arg(major.to_string())
@@ -740,11 +756,13 @@ mod tests {
             .iter()
             .map(|value| value.as_str().unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(args[0], "-I");
+        assert_eq!(args[1], "-S");
         assert_eq!(
-            Path::new(args[0]),
+            Path::new(args[2]),
             crate::platform::paths::bundle_mcp_python_runner()
         );
-        assert_eq!(Path::new(args[1]), gongwen_site_packages);
+        assert_eq!(Path::new(args[3]), gongwen_site_packages);
 
         let mut child = Command::new(command)
             .args(args)

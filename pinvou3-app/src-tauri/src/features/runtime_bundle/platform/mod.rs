@@ -446,8 +446,17 @@ impl Pinvou3Bundle {
         if mcp_secret_migration_ok {
             self.write_mcp_servers()?;
         }
+        // 旧安装的 Python MCP 仍可能直接 `python server.py`，没有受管依赖环境。
+        // 在任何引擎读取 mcp.json 前完成迁移；下载/校验失败会原子撤销该工具注册，
+        // 前端随即可通过普通“安装”入口重试，不能继续显示为已安装可用。
+        let repair_errors = crate::features::marketplace::MarketplaceManager::new()
+            .repair_installed_python_tools()
+            .map_err(std::io::Error::other)?;
+        for error in repair_errors {
+            eprintln!("[pinvou3-app] {error}");
+        }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
-        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
+        // 放在事务恢复/旧态迁移之后，避免崩溃日志回滚覆盖刚写入的内置条目。
         self.ensure_builtin_mcp_servers()?;
         // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
         // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
