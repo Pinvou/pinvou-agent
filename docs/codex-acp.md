@@ -146,11 +146,12 @@ base URL / 模型（不含密钥），以便与终端/插件中的行为核对�
 Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手动运行：
 
 ```bash
-./pinvou3-app/scripts/prepare-codex-acp-runtime.sh
+./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh
 ```
 
-脚本会把当前 Linux 架构的应用隔离 Node 与精简 `codex-acp` Bridge 放到
-`resources/platforms/linux/codex-bridge/`。项目统一构建入口也会自动准备该目录。
+脚本会把当前平台架构的应用隔离 Node 与包含 `codex-acp`、`claude-agent-acp`
+适配器的精简 Bridge 放到 `resources/platforms/<os>/codex-bridge/`。项目统一构建
+入口也会自动准备该目录。
 生成物由 `.gitignore` 排除，不进入源码仓库；Bridge 不包含 Codex CLI。正式包不依赖
 系统 Node/npm 来运行 ACP Bridge；系统 Codex 缺失时由应用经用户确认运行 OpenAI 官方
 安装脚本。npm 全局来源的旧版经用户确认后用 `npm install -g @openai/codex@latest`
