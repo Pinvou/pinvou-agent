@@ -1036,6 +1036,45 @@
     notify();
   });
 
+  // 本地多模态引擎下载进度（engine_download → engine_extract → model_download →
+  // model_verify → done / cancelled）
+  listen("llama-engine:progress", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    if (p.stage === "done" || p.stage === "cancelled") {
+      state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, {
+        downloading: false,
+        downloadingItem: null,
+        progress: null,
+      });
+    } else {
+      state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, {
+        downloading: true,
+        downloadingItem: p.item || state.llamaEngineSetup.downloadingItem,
+        progress: p,
+      });
+    }
+    notify();
+  });
+
+  // 本地多模态引擎生命周期状态（starting / running / stopped，含崩溃自愈）
+  listen("llama-engine:state", function (e) {
+    var p = e && e.payload;
+    if (!p) return;
+    state.llamaEngineSetup = Object.assign({}, state.llamaEngineSetup, {
+      starting: p.phase === "starting",
+      status: Object.assign({}, state.llamaEngineSetup.status, {
+        phase: p.phase,
+        port: p.port,
+        pid: p.pid,
+        device: p.device,
+        activeModel: p.model,
+        error: p.error,
+      }),
+    });
+    notify();
+  });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};

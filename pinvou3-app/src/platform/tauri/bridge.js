@@ -358,6 +358,15 @@
       progress: null,     // { stage:'ffmpeg'|'model'|'cancelling'|'cancelled'|'done', downloaded, total }
       error: null,
     },
+    // 本地多模态引擎（llama-server）：一键下载引擎/模型 + 启动/停止本地视觉服务
+    llamaEngineSetup: {
+      status: null,       // llama_engine_status 返回 { engineInstalled, engineTag, models[], phase, port, pid, device, error }
+      downloading: false, // 下载中（引擎或模型）
+      downloadingItem: null, // 'engine' | 'model' | 'mmproj'
+      starting: false,    // 启动中（避免重复点击）
+      progress: null,     // { stage, item, modelId, downloaded, total }
+      error: null,
+    },
     // 知识库 embedding 模型按需下载引导（知识库页未装模型时显 gate）
     kbModelSetup: {
       downloading: false, // 下载/部署中
@@ -1235,6 +1244,7 @@
     chat: ["activeSkill", "artifacts", "artifactChange", "attachmentDragActive", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedCollectionsRevision"],
+    llamaEngine: ["llamaEngineSetup"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskDraft", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
@@ -2043,6 +2053,13 @@
   var knowledgeModelFeature = installBridgeFeature("knowledge-model", { state: state, notify: notify, invoke: invoke });
   var downloadKbModel = knowledgeModelFeature.downloadKbModel;
   var cancelKbModel = knowledgeModelFeature.cancelKbModel;
+  var llamaEngineFeature = installBridgeFeature("llama-engine", { state: state, notify: notify, invoke: invoke });
+  var llamaEngineRefreshStatus = llamaEngineFeature.refreshStatus;
+  var llamaEngineInstallEngine = llamaEngineFeature.installEngine;
+  var llamaEngineInstallModel = llamaEngineFeature.installModel;
+  var llamaEngineCancelDownload = llamaEngineFeature.cancelDownload;
+  var llamaEngineStart = llamaEngineFeature.startEngine;
+  var llamaEngineStop = llamaEngineFeature.stopEngine;
 
   var multiAgentFeature = installBridgeFeature("multiagent", { state: state, notify: notify, invoke: invoke, listen: listen });
   var listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2177,6 +2194,14 @@
       unmountCollection: unmountCollection,
       listCollections: function () { return invoke("kb_collection_list"); },
       kbModelStatus: function () { return invoke("kb_model_status"); },
+    },
+    llamaEngine: {
+      refreshStatus: llamaEngineRefreshStatus,
+      installEngine: llamaEngineInstallEngine,
+      installModel: llamaEngineInstallModel,
+      cancelDownload: llamaEngineCancelDownload,
+      startEngine: llamaEngineStart,
+      stopEngine: llamaEngineStop,
     },
     scheduled: {
       loadScheduledTasks: loadScheduledTasks,

@@ -68,7 +68,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'llamaEngine',
 ];
 
 function emitPetEvent(ev, name, payload) {
