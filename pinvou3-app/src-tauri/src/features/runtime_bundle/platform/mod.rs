@@ -133,6 +133,32 @@ pub fn instructions_md() -> &'static str {
     })
 }
 
+/// Windows/cmd 下的 shell 方言提示（方案①，方言指令）。
+///
+/// 背景：`exec_shell` 在 Windows 恒经 cmd.exe 执行（底座 shell.rs `cfg(windows)`
+/// 分支），而模型按 bash 方言生成命令（训练语料 Linux 主导）——`\"` 转义、
+/// `ls`/`cat` 等命令名在 cmd 下全部错位。本段把执行环境事实升级为行为指令。
+///
+/// 仅 Windows 注入：Linux/macOS 执行层是 sh，bash 方言天然正确，注入反而添乱。
+/// 固定值（编译期 cfg 决定）→ 不破 prefix-cache。由
+/// `Bridge::build_session_system_prompt` 在拼装末尾追加（两模式统一生效）。
+#[cfg(windows)]
+pub fn shell_dialect_hint() -> &'static str {
+    r#"
+
+【命令规范】当前 shell 为 cmd.exe(Windows),命令书写遵循 cmd 规则:
+- 命令名用 Windows 版:dir(非 ls)、type(非 cat)、findstr(非 grep)、del(非 rm)、copy(非 cp)、fc(非 diff);
+- 无 bash 转义:\ 是普通字符," 是引号开关(不成对吞参数),参数内引号用 "";转义符是 ^;
+- 不支持 $() 命令替换、单引号包裹、heredoc(<<EOF);变量用 %VAR%(如 %USERPROFILE%);
+- 多行命令用 & 连接或行尾 ^ 续行(cmd 支持多行)。"#
+}
+
+/// 非 Windows：无方言差异，返回空。
+#[cfg(not(windows))]
+pub fn shell_dialect_hint() -> &'static str {
+    ""
+}
+
 /// 代码模式层（品悟原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
 /// 工作区占位）+ ## 代码场景纪律 增量段，两段以空行分隔。
 /// 底座 `CORE_EXECUTION_PROFILE_PROMPT` 不复制进文件，由 [`instructions_code_md`]

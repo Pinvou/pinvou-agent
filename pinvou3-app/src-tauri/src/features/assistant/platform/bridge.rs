@@ -370,6 +370,10 @@ impl Pinvou3Bridge {
             rendered.push_str("\n\n");
             rendered.push_str(block);
         }
+        // [pinvou3] Windows/cmd 方言提示（方案①）：exec_shell 在 Windows 恒经
+        // cmd.exe 执行，模型按 bash 方言生成命令会引号/命令名错位。固定值
+        // （编译期 cfg 决定）→ 不破 prefix-cache；非 Windows 返回空，零影响。
+        rendered.push_str(crate::features::runtime_bundle::platform::shell_dialect_hint());
         rendered
     }
 
