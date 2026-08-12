@@ -367,6 +367,9 @@
       buf.loadedFromDisk = true;
       return;
     }
+    // 下载挂起期间后台回合可能已开始（busy 置位、直播流写入中）：此时用磁盘
+    // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
+    if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
     try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch (e) { buf.personaEvents = []; }
     try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch (e) { buf.pinvouReviews = []; }
@@ -398,16 +401,27 @@
   }
   // 在指定 session 的工作集上跑一段【同步】逻辑。sid 是 active → 直接跑(零行为变化);
   // 否则临时切到该 buffer 跑完再切回(期间不 notify)。
+  // 整表覆盖式刷新：并发调用（list_changed 事件、chat:done 收尾、归档/改名等操作）
+  // 乱序返回时旧列表会覆盖新列表（如刚删除的会话复活、改名被回退）。用请求序号
+  // 做后发者胜（审计）。
+  var historyListSeq = 0;
   async function refreshHistoryList() {
+    var seq = ++historyListSeq;
     try {
-      state.sessions = await invoke("list_sessions");
+      var sessions = await invoke("list_sessions");
+      if (seq !== historyListSeq) return;
+      state.sessions = sessions;
     } catch (e) {
+      if (seq !== historyListSeq) return;
       console.warn("list_sessions failed", e);
       state.sessions = [];
     }
     try {
-      state.archivedSessions = await invoke("list_archived_sessions");
+      var archivedSessions = await invoke("list_archived_sessions");
+      if (seq !== historyListSeq) return;
+      state.archivedSessions = archivedSessions;
     } catch (e) {
+      if (seq !== historyListSeq) return;
       state.archivedSessions = state.archivedSessions || [];
     }
     notify();
@@ -446,75 +460,97 @@
 
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
+  // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
+  // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
+  // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
+  var ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
-    // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
-    try {
-      var meta = await invoke("create_session");
-      // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
-      // 不能把 await 前的已发送文本带入新 session。
-      var composerDraft = state.composerDraft || "";
-      // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
-      // 清：switchActiveTo 会把寄存意图当作已消费。
-      var pendingMultiAgent = state.pendingDraftMultiAgent === true;
-      state.pendingDraftMultiAgent = false;
-      switchActiveTo(meta.id, { fresh: true });
-      // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
-      // 跟随迁移；这不是用户主动切换到另一个已有会话。
-      state.composerDraft = composerDraft;
-      sessionStates[meta.id].composerDraft = composerDraft;
-      if (pendingMultiAgent) {
-        try {
-          await invoke("set_multi_agent_mode", { sessionId: meta.id, enabled: true });
-        } catch (toggleError) {
-          // 开关落盘失败不得让首条消息静默退化成普通对话（复核 P1）：
-          // 中止物化——删掉刚建的空会话、回到草稿并保留开关意图，等用户
-          // 处理环境或权限问题后重试。调用方以 activeSessionId 为空判定
-          // 中止，不发送本条消息。
-          try {
-            await invoke("delete_session", { id: meta.id });
-          } catch (cleanupError) {
-            // 空会话残留可手动删除，不掩盖主错误。
-          }
-          enterDraft();
-          state.pendingDraftMultiAgent = true;
-          state.modeState = {
-            mode: (state.modeState && state.modeState.mode) || "yolo",
-            multiAgent: true,
-          };
-          addSystemItem(bt("switchModeFailed") + toggleError);
-          await refreshHistoryList();
-          notify();
+    if (ensureSessionInFlight) return ensureSessionInFlight;
+    var p = (async function () {
+      // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
+      try {
+        var meta = await invoke("create_session");
+        // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
+        // 不能把 await 前的已发送文本带入新 session。
+        var composerDraft = state.composerDraft || "";
+        // create_session 等待期间用户可能已退出草稿（切到既有会话或再进草稿）：
+        // 物化不得劫持 active（审计 F1），新会话登记为后台 buffer 等下次切换，
+        // 调用方按 null 处理不发送本条消息。离开草稿的寄存开关意图一并作废。
+        if (state.activeSessionId) {
+          state.pendingDraftMultiAgent = false;
+          sessionStates[meta.id] = freshBuffer();
+          sessionStates[meta.id].loadedFromDisk = true;
           return null;
         }
-      }
-      await refreshHistoryList();
-      await syncModeState();
-      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
-      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-      // 该会话自己的 per-session 记录，全局默认不受影响）。
-      var laneDefault = state.modeDefaults
-        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
-      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-      if (laneDefault === "plan") {
-        try {
-          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
-          applyAuthoritativeModeState(meta.id, laneModeState);
-        } catch (laneModeError) {
-          runSyncOnSession(meta.id, function () {
-            addSystemItem(bt("switchModeFailed") + laneModeError);
-          });
+        // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
+        // 清：switchActiveTo 会把寄存意图当作已消费。
+        var pendingMultiAgent = state.pendingDraftMultiAgent === true;
+        state.pendingDraftMultiAgent = false;
+        switchActiveTo(meta.id, { fresh: true });
+        // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
+        // 跟随迁移；这不是用户主动切换到另一个已有会话。
+        state.composerDraft = composerDraft;
+        sessionStates[meta.id].composerDraft = composerDraft;
+        if (pendingMultiAgent) {
+          try {
+            await invoke("set_multi_agent_mode", { sessionId: meta.id, enabled: true });
+          } catch (toggleError) {
+            // 开关落盘失败不得让首条消息静默退化成普通对话（复核 P1）：
+            // 中止物化——删掉刚建的空会话、回到草稿并保留开关意图，等用户
+            // 处理环境或权限问题后重试。调用方以 activeSessionId 为空判定
+            // 中止，不发送本条消息。
+            try {
+              await invoke("delete_session", { id: meta.id });
+            } catch (cleanupError) {
+              // 空会话残留可手动删除，不掩盖主错误。
+            }
+            enterDraft();
+            state.pendingDraftMultiAgent = true;
+            state.modeState = {
+              mode: (state.modeState && state.modeState.mode) || "yolo",
+              multiAgent: true,
+            };
+            addSystemItem(bt("switchModeFailed") + toggleError);
+            await refreshHistoryList();
+            notify();
+            return null;
+          }
         }
+        await refreshHistoryList();
+        await syncModeState();
+        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        var laneDefault = state.modeDefaults
+          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+        // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+        if (laneDefault === "plan") {
+          try {
+            var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            applyAuthoritativeModeState(meta.id, laneModeState);
+          } catch (laneModeError) {
+            runSyncOnSession(meta.id, function () {
+              addSystemItem(bt("switchModeFailed") + laneModeError);
+            });
+          }
+        }
+        await syncActivePersona();
+        await syncMountedCollection();
+        notify();
+        return state.activeSessionId;
+      } catch (e) {
+        addSystemItem(bt("newChatFailed") + e);
+        return null;
       }
-      await syncActivePersona();
-      await syncMountedCollection();
-      notify();
-      return state.activeSessionId;
-    } catch (e) {
-      addSystemItem(bt("newChatFailed") + e);
-      return null;
-    }
+    })();
+    ensureSessionInFlight = p;
+    p.then(
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; },
+      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; }
+    );
+    return p;
   }
 
   function reportSessionSwitchFailure(error, errorScope) {
@@ -1072,7 +1108,9 @@
         return true;
       } catch (e) {
         state.scheduledTaskRecentRuns = previousRuns;
-        if (wasViewingRun) {
+        // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+        // await 期间切到别的会话时不得劫持 active（审计）。
+        if (wasViewingRun && state.activeSessionId === null) {
           // active 与 scheduledRunContext 必须成对回滚,否则会落到
           // 「active 有值但 context 空」的错位态(界面回任务列表却仍持有会话)。
           state.activeSessionId = id;
@@ -1099,7 +1137,9 @@
     } catch (e) {
       state.sessions.splice(idx, 0, s);
       state.archivedSessions = (state.archivedSessions || []).filter(function (x) { return x.id !== id; });
-      if (wasActive) {
+      // 回滚 active 仅当用户没有新导航（leaveSessionView 已置 null）：
+      // await 期间切到别的会话时不得劫持 active（审计）。
+      if (wasActive && state.activeSessionId === null) {
         state.activeSessionId = id;
         loadWorkingSetFrom(getBuffer(id));
       }
