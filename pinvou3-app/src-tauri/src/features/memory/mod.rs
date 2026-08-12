@@ -4427,7 +4427,15 @@ fn read_text_recovering_unlocked_with(
             io::ErrorKind::InvalidData,
             "authoritative memory file is invalid",
         ),
-        Err(error) => error,
+        Err(error) => {
+            // A transient read failure on an existing authoritative file (e.g.
+            // an antivirus scan lock on Windows) must not trigger recovery:
+            // promoting a stale backup would overwrite the still-valid target.
+            if error.kind() != io::ErrorKind::NotFound && path.is_file() {
+                return Err(error);
+            }
+            error
+        }
     };
     let Some(parent) = path.parent() else {
         return Err(current_error);
@@ -4672,6 +4680,37 @@ mod tests {
         assert!(restored.contains("\"revision\":7"));
         assert!(!backup.exists());
         assert!(!replacement.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transient_read_error_keeps_authoritative_target_untouched() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = recovery_test_root("transient-read-guard");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let authoritative = "{\"version\":1,\"revision\":9,\"identity\":{\"call_name\":\"权威\",\"assistant_alias\":\"品悟\"}}\n";
+        fs::write(&target, authoritative).unwrap();
+        fs::write(
+            &backup,
+            "{\"version\":1,\"revision\":1,\"identity\":{\"call_name\":\"旧值\",\"assistant_alias\":\"品悟\"}}\n",
+        )
+        .unwrap();
+
+        // Simulate a transient read failure (e.g. an antivirus lock on
+        // Windows): the authoritative file exists but cannot be read right now.
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        });
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(result.is_err());
+        // The authoritative target must be preserved, never overwritten by a
+        // stale backup, and the backup stays as a candidate.
+        assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
+        assert!(backup.exists());
         let _ = fs::remove_dir_all(root);
     }
 

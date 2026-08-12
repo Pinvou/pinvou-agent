@@ -175,6 +175,16 @@ where
             if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(&backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && path.exists()
+            {
+                // A target that still exists (e.g. a directory occupying its
+                // path) is a permanent failure: recovery can never promote a
+                // candidate over it, so the staged tmp/backup are garbage. A
+                // truly missing target keeps its candidates for
+                // recover_interrupted_artifact_write.
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
             }
             Err(error.into_io_error())
         }
