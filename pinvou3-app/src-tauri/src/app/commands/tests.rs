@@ -801,6 +801,54 @@ fn write_artifact_text_cleans_temp_file_on_error() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+#[test]
+fn artifact_public_read_prefers_newer_cross_pid_backup_group() {
+    let root =
+        std::env::temp_dir().join(format!("pinvou3-artifact-cross-pid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("note.md");
+    let older_temp = root.join(".note.md.tmp-9001-100");
+    let newer_temp = root.join(".note.md.tmp-12-300");
+    let newer_backup = root.join(".note.md.bak-12-300");
+    std::fs::write(&older_temp, "uncommitted older temp").unwrap();
+    std::fs::write(&newer_temp, "uncommitted newer replacement").unwrap();
+    std::fs::write(&newer_backup, "authoritative backup").unwrap();
+
+    let restored = read_artifact_text_impl(target.to_str().unwrap()).unwrap();
+
+    assert_eq!(restored, "authoritative backup");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), restored);
+    assert!(!older_temp.exists());
+    assert!(!newer_temp.exists());
+    assert!(!newer_backup.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_public_read_uses_metadata_when_tokens_are_not_parseable() {
+    let root = std::env::temp_dir().join(format!(
+        "pinvou3-artifact-token-fallback-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("note.md");
+    let older_backup = root.join(".note.md.bak-invalid-old");
+    let newer_backup = root.join(".note.md.bak-invalid-new");
+    std::fs::write(&older_backup, "older authority").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&newer_backup, "newer authority").unwrap();
+
+    assert_eq!(
+        read_artifact_text_impl(target.to_str().unwrap()).unwrap(),
+        "newer authority"
+    );
+    assert!(!older_backup.exists());
+    assert!(!newer_backup.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[cfg(windows)]
 #[test]
 fn artifact_read_recovers_an_occupied_1177_layout_after_release() {

@@ -2,6 +2,7 @@
 //!
 //! The structured files are the source of truth. `runtime/<session_id>.md` is
 //! only a prompt cache consumed through `InstructionSource::File`.
+// architecture-guard: allow-target-cfg -- 记忆持久化测试需用 Windows 独占句柄覆盖 ReplaceFileW 恢复路径
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -382,6 +383,19 @@ pub struct PreferenceFile {
     pub scope: String,
     #[serde(default)]
     pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopicMutation<T> {
+    pub value: T,
+    pub cleanup_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TopicMigrationJournal {
+    authority_file: String,
+    authority_hash: String,
+    stale_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1188,31 +1202,80 @@ pub fn archive_recent_work(id: &str) -> io::Result<bool> {
     Ok(changed)
 }
 
+fn resolve_topic_authorities<T: Clone>(
+    records: Vec<(PathBuf, T)>,
+    topic: impl Fn(&T) -> &str,
+    id: impl Fn(&T) -> &str,
+) -> io::Result<Vec<T>> {
+    let mut grouped = BTreeMap::<String, Vec<(PathBuf, T)>>::new();
+    for (path, item) in records {
+        grouped
+            .entry(topic(&item).to_string())
+            .or_default()
+            .push((path, item));
+    }
+    let mut authorities = Vec::new();
+    for (_, mut group) in grouped {
+        group.sort_by_key(|(path, item)| {
+            let canonical = path.file_name().and_then(|value| value.to_str())
+                == Some(format!("{}.json", id(item)).as_str());
+            let modified = fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            (canonical, modified, path.clone())
+        });
+        let (authority_path, authority) = group
+            .pop()
+            .expect("topic groups are constructed from at least one record");
+        for (duplicate, _) in group {
+            fs::remove_file(&duplicate).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "memory_topic_cleanup_required:{}:{}",
+                        duplicate.display(),
+                        error
+                    ),
+                )
+            })?;
+        }
+        debug_assert!(authority_path.is_file());
+        authorities.push(authority);
+    }
+    Ok(authorities)
+}
+
 pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    load_work_context_unlocked()
+}
+
+fn load_work_context_unlocked() -> io::Result<Vec<WorkContextFile>> {
     let dir = work_context_dir();
-    recover_directory_json_files::<WorkContextFile>(&dir)?;
+    recover_directory_json_files_unlocked::<WorkContextFile>(&dir)?;
+    reconcile_topic_migration_journals_unlocked::<WorkContextFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
-    let mut by_topic: BTreeMap<String, WorkContextFile> = BTreeMap::new();
+    let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let raw = read_text_recovering(&path, |raw| {
+        let raw = read_text_recovering_unlocked(&path, &|raw| {
             serde_json::from_str::<WorkContextFile>(raw).is_ok()
         })?;
         let mut item = serde_json::from_str::<WorkContextFile>(&raw).map_err(invalid_data)?;
         normalize_work_context(&mut item);
         if !item.topic.is_empty() && !item.text.is_empty() {
-            by_topic.insert(item.topic.clone(), item);
+            records.push((path, item));
         }
     }
-    Ok(by_topic.into_values().collect())
+    resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)
 }
 
 fn upsert_work_context_unlocked(
@@ -1253,16 +1316,265 @@ fn upsert_work_context_locked(
     upsert_work_context_unlocked(suggestion, confidence)
 }
 
+fn commit_topic_migration_unlocked<T>(
+    new_path: &Path,
+    value: &T,
+    stale_paths: &[PathBuf],
+    validate: impl Fn(&T) -> bool,
+) -> io::Result<TopicMutation<T>>
+where
+    T: Clone + Serialize + serde::de::DeserializeOwned,
+{
+    let journal_path = topic_migration_journal_path(new_path)?;
+    commit_topic_migration_unlocked_with(
+        &journal_path,
+        new_path,
+        value,
+        stale_paths,
+        validate,
+        write_json_atomic_unlocked,
+        |path| fs::remove_file(path),
+    )
+}
+
+fn commit_topic_migration_unlocked_with<T, W, R>(
+    journal_path: &Path,
+    new_path: &Path,
+    value: &T,
+    stale_paths: &[PathBuf],
+    validate: impl Fn(&T) -> bool,
+    write: W,
+    mut remove: R,
+) -> io::Result<TopicMutation<T>>
+where
+    T: Clone + Serialize + serde::de::DeserializeOwned,
+    W: FnOnce(&Path, &T) -> io::Result<()>,
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    let authority_file = new_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid authority filename"))?
+        .to_string();
+    let stale_files = stale_paths
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let authority_json = serde_json::to_string_pretty(value).map_err(invalid_data)? + "\n";
+    let journal = TopicMigrationJournal {
+        authority_file,
+        authority_hash: stable_id_with_prefix("authority", &authority_json),
+        stale_files,
+    };
+    write_topic_migration_journal_unlocked(journal_path, &journal)?;
+    write(new_path, value)?;
+    let raw = fs::read_to_string(new_path)?;
+    let committed = serde_json::from_str::<T>(&raw).map_err(invalid_data)?;
+    if !validate(&committed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "new memory topic authority failed post-commit validation",
+        ));
+    }
+
+    let mut cleanup_failures = Vec::new();
+    for stale in stale_paths {
+        if stale == new_path || !stale.exists() {
+            continue;
+        }
+        if let Err(error) = remove(stale) {
+            cleanup_failures.push(format!("{}: {error}", stale.display()));
+        }
+    }
+    if cleanup_failures.is_empty() {
+        if let Err(error) = remove(journal_path) {
+            cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+        }
+    }
+    Ok(TopicMutation {
+        value: value.clone(),
+        cleanup_warning: (!cleanup_failures.is_empty()).then(|| cleanup_failures.join("; ")),
+    })
+}
+
+fn topic_migration_journal_path(new_path: &Path) -> io::Result<PathBuf> {
+    let parent = new_path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "topic path has no parent"))?;
+    let name = new_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid topic filename"))?;
+    Ok(parent.join(format!(".topic-migration-{name}.journal")))
+}
+
+fn write_topic_migration_journal_unlocked(
+    journal_path: &Path,
+    journal: &TopicMigrationJournal,
+) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static JOURNAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let parent = journal_path.parent().unwrap_or_else(|| Path::new("."));
+    let sequence = JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let staging = parent.join(format!(
+        ".topic-journal-stage-{}-{sequence}.bin",
+        std::process::id()
+    ));
+    let backup = parent.join(format!(
+        ".topic-journal-backup-{}-{sequence}.bin",
+        std::process::id()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)?;
+        serde_json::to_writer_pretty(&mut file, journal).map_err(invalid_data)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        drop(file);
+        match crate::platform::filesystem::replace_file_atomically(&staging, journal_path, &backup)
+        {
+            Ok(crate::platform::filesystem::ReplaceState::Committed) => Ok(()),
+            Ok(state) => Err(io::Error::other(format!(
+                "unexpected journal replacement state: {state:?}"
+            ))),
+            Err(error) => Err(error.into_io_error()),
+        }
+    })();
+    if result.is_err() {
+        // The new authority is not written until the journal succeeds, so
+        // these staging paths can never be required to recover user data.
+        let _ = fs::remove_file(staging);
+        let _ = fs::remove_file(backup);
+    }
+    result
+}
+
+fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+) -> io::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let journal_path = entry?.path();
+        let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(".topic-migration-") || !name.ends_with(".journal") {
+            continue;
+        }
+        let journal = fs::read_to_string(&journal_path).and_then(|raw| {
+            serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
+        })?;
+        if !is_plain_filename(&journal.authority_file)
+            || journal
+                .stale_files
+                .iter()
+                .any(|name| !is_plain_filename(name))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid memory topic migration journal path",
+            ));
+        }
+        let authority = dir.join(&journal.authority_file);
+        let authority_valid = fs::read_to_string(&authority).is_ok_and(|raw| {
+            serde_json::from_str::<T>(&raw).is_ok()
+                && stable_id_with_prefix("authority", &raw) == journal.authority_hash
+        });
+        if !authority_valid {
+            fs::remove_file(&journal_path)?;
+            continue;
+        }
+        for stale_name in &journal.stale_files {
+            let stale = dir.join(stale_name);
+            if stale == authority || !stale.exists() {
+                continue;
+            }
+            fs::remove_file(&stale).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "memory_topic_cleanup_required:{}:{}",
+                        stale.display(),
+                        error
+                    ),
+                )
+            })?;
+        }
+        fs::remove_file(&journal_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "memory_topic_cleanup_required:{}:{}",
+                    journal_path.display(),
+                    error
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn is_plain_filename(value: &str) -> bool {
+    !value.is_empty()
+        && Path::new(value).components().count() == 1
+        && matches!(
+            Path::new(value).components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+}
+
+fn work_context_stale_paths_unlocked(
+    dir: &Path,
+    new_path: &Path,
+    old_topic: &str,
+    new_topic: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let mut stale = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(stale),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let same_topic = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<WorkContextFile>(&raw).ok())
+            .map(|item| {
+                let topic = normalize_work_context_topic(&item.topic);
+                topic == old_topic || topic == new_topic
+            })
+            .unwrap_or(false);
+        if same_topic {
+            stale.push(path);
+        }
+    }
+    Ok(stale)
+}
+
 pub fn update_work_context(
     id: &str,
     patch: MemoryTextPatch,
-) -> io::Result<Option<WorkContextFile>> {
+) -> io::Result<Option<TopicMutation<WorkContextFile>>> {
     let _guard = write_lock().lock();
+    let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(None);
     }
-    let items = load_work_context()?;
+    let items = load_work_context_unlocked()?;
     let Some(existing) = items
         .into_iter()
         .find(|item| clean_id(&item.id) == id || clean_id(&item.topic) == id)
@@ -1296,11 +1608,18 @@ pub fn update_work_context(
     fs::create_dir_all(&dir)?;
     let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
-    if old_path != new_path && old_path.exists() {
-        let _ = fs::remove_file(old_path);
+    let mut stale_paths =
+        work_context_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
+    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+        stale_paths.push(old_path);
     }
-    write_json_atomic(&new_path, &updated)?;
-    Ok(Some(updated))
+    let mutation =
+        commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
+            committed.id == updated.id
+                && committed.topic == updated.topic
+                && committed.text == updated.text
+        })?;
+    Ok(Some(mutation))
 }
 
 pub fn delete_work_context(id: &str) -> io::Result<bool> {
@@ -3696,13 +4015,49 @@ pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
     load_preferences()
 }
 
-pub fn update_preference(id: &str, patch: MemoryTextPatch) -> io::Result<Option<PreferenceFile>> {
+fn preference_stale_paths_unlocked(
+    dir: &Path,
+    new_path: &Path,
+    old_topic: &str,
+    new_topic: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let mut stale = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(stale),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let same_topic = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
+            .map(|item| {
+                let topic = normalize_preference_topic(&item.topic);
+                topic == old_topic || topic == new_topic
+            })
+            .unwrap_or(false);
+        if same_topic {
+            stale.push(path);
+        }
+    }
+    Ok(stale)
+}
+
+pub fn update_preference(
+    id: &str,
+    patch: MemoryTextPatch,
+) -> io::Result<Option<TopicMutation<PreferenceFile>>> {
     let _guard = write_lock().lock();
+    let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(None);
     }
-    let prefs = load_preferences()?;
+    let prefs = load_preferences_unlocked()?;
     let Some(existing) = prefs.into_iter().find(|pref| clean_id(&pref.id) == id) else {
         return Ok(None);
     };
@@ -3740,27 +4095,18 @@ pub fn update_preference(id: &str, patch: MemoryTextPatch) -> io::Result<Option<
     fs::create_dir_all(&dir)?;
     let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
-    if old_path != new_path && old_path.exists() {
-        let _ = fs::remove_file(old_path);
+    let mut stale_paths =
+        preference_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
+    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+        stale_paths.push(old_path);
     }
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path == new_path || path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let same_topic = fs::read_to_string(&path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
-                .map(|pref| normalize_preference_topic(&pref.topic) == topic)
-                .unwrap_or(false);
-            if same_topic {
-                let _ = fs::remove_file(path);
-            }
-        }
-    }
-    write_json_atomic(&new_path, &updated)?;
-    Ok(Some(updated))
+    let mutation =
+        commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
+            committed.id == updated.id
+                && committed.topic == updated.topic
+                && committed.text == updated.text
+        })?;
+    Ok(Some(mutation))
 }
 
 pub fn delete_preference(id: &str) -> io::Result<bool> {
@@ -3801,21 +4147,27 @@ pub fn delete_preference(id: &str) -> io::Result<bool> {
 }
 
 fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    load_preferences_unlocked()
+}
+
+fn load_preferences_unlocked() -> io::Result<Vec<PreferenceFile>> {
     let dir = paths::user_memory_preferences_dir();
-    recover_directory_json_files::<PreferenceFile>(&dir)?;
+    recover_directory_json_files_unlocked::<PreferenceFile>(&dir)?;
+    reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
-    let mut by_topic: BTreeMap<String, PreferenceFile> = BTreeMap::new();
+    let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let raw = read_text_recovering(&path, |raw| {
+        let raw = read_text_recovering_unlocked(&path, &|raw| {
             serde_json::from_str::<PreferenceFile>(raw).is_ok()
         })?;
         let mut pref = serde_json::from_str::<PreferenceFile>(&raw).map_err(invalid_data)?;
@@ -3831,10 +4183,10 @@ fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
         pref.scope = clean_scalar(&pref.scope);
         pref.text = clean_scalar(&pref.text);
         if !pref.text.is_empty() && !looks_like_profile_preference_text(&pref.text) {
-            by_topic.insert(pref.topic.clone(), pref);
+            records.push((path, pref));
         }
     }
-    let mut out = by_topic.into_values().collect::<Vec<_>>();
+    let mut out = resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)?;
     out.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.text.cmp(&b.text)));
     Ok(out)
 }
@@ -3928,12 +4280,32 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     write_text_atomic(path, &(text + "\n"))
 }
 
+fn write_json_atomic_unlocked<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let text = serde_json::to_string_pretty(value).map_err(invalid_data)?;
+    write_text_atomic_unlocked(path, &(text + "\n"))
+}
+
 fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    write_text_atomic_unlocked(path, text)
+}
+
+fn write_text_atomic_unlocked(path: &Path, text: &str) -> io::Result<()> {
+    write_text_atomic_unlocked_with(
+        path,
+        text,
+        crate::platform::filesystem::replace_file_atomically,
+    )
+}
+
+fn write_text_atomic_unlocked_with<F>(path: &Path, text: &str, replace: F) -> io::Result<()>
+where
+    F: FnOnce(&Path, &Path, &Path) -> crate::platform::filesystem::ReplaceResult,
+{
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let _lifecycle = file_lifecycle_lock().lock();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -3958,7 +4330,7 @@ fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(error);
     }
-    match crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup) {
+    match replace(&tmp, path, &backup) {
         Ok(crate::platform::filesystem::ReplaceState::Committed) => Ok(()),
         Ok(state) => Err(io::Error::other(format!(
             "unexpected successful replacement state: {state:?}"
@@ -4131,6 +4503,12 @@ fn cleanup_recovery_candidates(path: &Path) {
 
 fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(dir: &Path) -> io::Result<()> {
     let _lifecycle = file_lifecycle_lock().lock();
+    recover_directory_json_files_unlocked::<T>(dir)
+}
+
+fn recover_directory_json_files_unlocked<T: for<'de> Deserialize<'de>>(
+    dir: &Path,
+) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -4242,6 +4620,300 @@ mod tests {
         assert!(restored.contains("\"revision\":7"));
         assert!(!backup.exists());
         assert!(!replacement.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn preference_fixture(id: &str, topic: &str, text: &str) -> PreferenceFile {
+        PreferenceFile {
+            id: id.to_string(),
+            topic: topic.to_string(),
+            scope: "unconditional".to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn topic_migration_staging_failure_preserves_old_authority() {
+        let root = recovery_test_root("topic-stage-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &new,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |_, _| Err(io::Error::new(io::ErrorKind::Other, "staging failpoint")),
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("staging failpoint"));
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&old_path).unwrap())
+                .unwrap()
+                .text,
+            "old value"
+        );
+        assert!(!new_path.exists());
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!journal.exists());
+        assert!(old_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn topic_migration_cleanup_failure_returns_warning_and_retries() {
+        let root = recovery_test_root("topic-cleanup-retry");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let mutation = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &new,
+            std::slice::from_ref(&old_path),
+            |value| value.id == "new",
+            |path, value| write_json_atomic_unlocked(path, value),
+            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "occupied")),
+        )
+        .unwrap();
+
+        assert_eq!(mutation.value.text, "new value");
+        assert!(mutation
+            .cleanup_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("occupied")));
+        assert!(old_path.exists());
+        assert!(new_path.exists());
+        assert!(journal.exists());
+
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!old_path.exists());
+        assert!(new_path.exists());
+        assert!(!journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
+        let home = IsolatedPinvouHome::new("topic-public-updates");
+        let preference_dir = paths::user_memory_preferences_dir();
+        let context_dir = work_context_dir();
+        fs::create_dir_all(&preference_dir).unwrap();
+        fs::create_dir_all(&context_dir).unwrap();
+        let old_preference_id = stable_id_with_prefix("pref", "answer_style");
+        let old_preference_path = preference_dir.join(format!("{old_preference_id}.json"));
+        write_json_atomic(
+            &old_preference_path,
+            &preference_fixture(&old_preference_id, "answer_style", "old preference"),
+        )
+        .unwrap();
+        let old_context_id = stable_id_with_prefix("ctx", "role_domain");
+        let old_context_path = context_dir.join(format!("{old_context_id}.json"));
+        write_json_atomic(
+            &old_context_path,
+            &WorkContextFile {
+                id: old_context_id.clone(),
+                kind: "work_context".to_string(),
+                topic: "role_domain".to_string(),
+                text: "old context".to_string(),
+                source: "test".to_string(),
+                confidence: 1.0,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+
+        let preference = update_preference(
+            &old_preference_id,
+            MemoryTextPatch {
+                topic: Some("workflow_preference".to_string()),
+                text: Some("new preference".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let context = update_work_context(
+            &old_context_id,
+            MemoryTextPatch {
+                topic: Some("project_context".to_string()),
+                text: Some("new context".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(preference.cleanup_warning.is_none());
+        assert_eq!(preference.value.topic, "workflow_preference");
+        assert!(context.cleanup_warning.is_none());
+        assert_eq!(context.value.topic, "project_context");
+        assert!(!old_preference_path.exists());
+        assert!(!old_context_path.exists());
+        assert_eq!(list_preferences().unwrap().len(), 1);
+        assert_eq!(load_work_context().unwrap().len(), 1);
+        drop(home);
+    }
+
+    #[test]
+    fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
+        let home = IsolatedPinvouHome::new("topic-concurrent-overview");
+        let dir = paths::user_memory_preferences_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        let old_path = dir.join("old.json");
+        let new_path = dir.join("new.json");
+        write_json_atomic(&old_path, &old).unwrap();
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_ready = ready.clone();
+        let writer_release = release.clone();
+        let writer = std::thread::spawn(move || {
+            let _lifecycle = file_lifecycle_lock().lock();
+            let journal = topic_migration_journal_path(&new_path).unwrap();
+            commit_topic_migration_unlocked_with(
+                &journal,
+                &new_path,
+                &new,
+                std::slice::from_ref(&old_path),
+                |_| true,
+                |path, value| {
+                    write_json_atomic_unlocked(path, value)?;
+                    writer_ready.wait();
+                    writer_release.wait();
+                    Ok(())
+                },
+                |path| fs::remove_file(path),
+            )
+            .unwrap();
+        });
+        ready.wait();
+        let (sent, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || sent.send(list_preferences()).unwrap());
+        assert!(received
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_err());
+        release.wait();
+        writer.join().unwrap();
+        let visible = received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        reader.join().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].text, "new value");
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_replacefile_failure_keeps_old_authority() {
+        let root = recovery_test_root("topic-replacefile-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let prior_new = preference_fixture("new", "workflow_preference", "prior value");
+        let expected = preference_fixture("new", "workflow_preference", "expected value");
+        write_json_atomic(&old_path, &old).unwrap();
+        write_json_atomic(&new_path, &prior_new).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &expected,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |path, value| {
+                let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+                write_text_atomic_unlocked_with(path, &text, |tmp, target, backup| {
+                    crate::platform::filesystem::replace_file_atomically_with(
+                        tmp,
+                        target,
+                        backup,
+                        |_, _, _| Err(io::Error::from_raw_os_error(1175)),
+                    )
+                })
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("RolledBack"));
+        assert!(old_path.exists());
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&new_path).unwrap())
+                .unwrap()
+                .text,
+            "prior value"
+        );
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(old_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_promotion_failure_recovers_before_old_cleanup() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let root = recovery_test_root("topic-promotion-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let expected = preference_fixture("new", "workflow_preference", "expected value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &expected,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |path, value| {
+                let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+                write_text_atomic_unlocked_with(path, &text, |tmp, target, backup| {
+                    let occupied = fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(tmp)
+                        .unwrap();
+                    let result =
+                        crate::platform::filesystem::replace_file_atomically(tmp, target, backup);
+                    drop(occupied);
+                    result
+                })
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("RecoveryRequired"));
+        assert!(old_path.exists());
+        assert!(!new_path.exists());
+        recover_directory_json_files_unlocked::<PreferenceFile>(&root).unwrap();
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!old_path.exists());
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&new_path).unwrap())
+                .unwrap()
+                .text,
+            "expected value"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4425,7 +5097,8 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(updated.text, "Use detailed answers");
+        assert_eq!(updated.value.text, "Use detailed answers");
+        assert!(updated.cleanup_warning.is_none());
         assert_eq!(list_preferences().unwrap()[0].text, "Use detailed answers");
         assert!(render_memory_block().is_err());
 

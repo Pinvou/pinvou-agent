@@ -589,8 +589,19 @@ pub async fn update_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::PreferenceFile>>, String> {
-    let item = crate::features::memory::update_preference(&id, patch)
+    let mutation = crate::features::memory::update_preference(&id, patch)
         .map_err(|e| format!("update preference: {e}"))?;
+    let mut persistence_warnings = Vec::new();
+    let item = mutation.map(|mutation| {
+        if let Some(detail) = mutation.cleanup_warning {
+            persistence_warnings.push(memory_warning(
+                "memory_topic_cleanup_required",
+                "preferences",
+                detail,
+            ));
+        }
+        mutation.value
+    });
     if let (Some(sid), Some(item)) = (
         resolve_memory_session_id(session_id.clone(), &store),
         item.as_ref(),
@@ -606,11 +617,12 @@ pub async fn update_memory_preference(
             }],
         );
     }
-    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    persistence_warnings.append(&mut warnings);
     Ok(MemoryWriteState {
         value: item,
         runtime,
-        warnings,
+        warnings: persistence_warnings,
     })
 }
 
@@ -622,8 +634,19 @@ pub async fn update_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::WorkContextFile>>, String> {
-    let item = crate::features::memory::update_work_context(&id, patch)
+    let mutation = crate::features::memory::update_work_context(&id, patch)
         .map_err(|e| format!("update work context: {e}"))?;
+    let mut persistence_warnings = Vec::new();
+    let item = mutation.map(|mutation| {
+        if let Some(detail) = mutation.cleanup_warning {
+            persistence_warnings.push(memory_warning(
+                "memory_topic_cleanup_required",
+                "work_context",
+                detail,
+            ));
+        }
+        mutation.value
+    });
     if let (Some(sid), Some(item)) = (
         resolve_memory_session_id(session_id.clone(), &store),
         item.as_ref(),
@@ -639,11 +662,12 @@ pub async fn update_work_context_memory(
             }],
         );
     }
-    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    persistence_warnings.append(&mut warnings);
     Ok(MemoryWriteState {
         value: item,
         runtime,
-        warnings,
+        warnings: persistence_warnings,
     })
 }
 
@@ -823,5 +847,14 @@ mod tests {
         assert_eq!(value["code"], "runtime_refresh_failed");
         assert_eq!(value["source"], "runtime");
         assert!(value["detail"].as_str().unwrap().contains("occupied"));
+
+        let cleanup = serde_json::to_value(memory_warning(
+            "memory_topic_cleanup_required",
+            "preferences",
+            "old topic file is occupied",
+        ))
+        .unwrap();
+        assert_eq!(cleanup["code"], "memory_topic_cleanup_required");
+        assert_eq!(cleanup["source"], "preferences");
     }
 }

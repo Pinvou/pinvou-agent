@@ -2332,6 +2332,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         ? settingsCopy.memoryLoadFailed
         : memoryWarningCode === 'runtime_refresh_failed'
           ? settingsCopy.memoryRuntimeRefreshFailed
+          : memoryWarningCode === 'memory_topic_cleanup_required'
+            ? settingsCopy.memoryTopicCleanupRequired
           : memoryWarningCode === 'snapshot_refresh_failed'
             ? settingsCopy.memorySnapshotRefreshFailed
             : settingsCopy.memorySourceUnavailable;

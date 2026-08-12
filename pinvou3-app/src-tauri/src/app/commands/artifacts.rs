@@ -218,30 +218,37 @@ fn recover_interrupted_artifact_write(path: &std::path::Path) -> std::io::Result
     }
 
     if path.is_file() {
-        for (_, (tmp, backup)) in candidates {
-            if let Some(tmp) = tmp {
-                let _ = std::fs::remove_file(tmp);
-            }
-            if let Some(backup) = backup {
-                let _ = std::fs::remove_file(backup);
-            }
-        }
+        cleanup_artifact_recovery_candidates(candidates.values());
         return Ok(());
     }
 
-    for (token, (tmp, backup)) in candidates.into_iter().rev() {
+    let mut ordered = candidates
+        .iter()
+        .map(|(token, (tmp, backup))| {
+            (
+                artifact_recovery_sort_key(token, tmp.as_deref(), backup.as_deref()),
+                token.clone(),
+                tmp.clone(),
+                backup.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|(key, _, _, _)| *key);
+    for (_, token, tmp, backup) in ordered.into_iter().rev() {
         let replacement = tmp.unwrap_or_else(|| parent.join(format!("{tmp_prefix}{token}")));
         let backup = backup.unwrap_or_else(|| parent.join(format!("{bak_prefix}{token}")));
         match crate::platform::filesystem::recover_interrupted_replace(&replacement, path, &backup)
         {
-            Ok(crate::platform::filesystem::ReplaceState::Committed) => return Ok(()),
+            Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+                cleanup_artifact_recovery_candidates(candidates.values());
+                return Ok(());
+            }
             Ok(_) => unreachable!("recovery success is always committed"),
             Err(error)
                 if error.state() == crate::platform::filesystem::ReplaceState::RolledBack
                     && path.is_file() =>
             {
-                let _ = std::fs::remove_file(replacement);
-                let _ = std::fs::remove_file(backup);
+                cleanup_artifact_recovery_candidates(candidates.values());
                 return Ok(());
             }
             Err(error)
@@ -253,6 +260,48 @@ fn recover_interrupted_artifact_write(path: &std::path::Path) -> std::io::Result
         }
     }
     Ok(())
+}
+
+fn artifact_recovery_sort_key(
+    token: &str,
+    tmp: Option<&std::path::Path>,
+    backup: Option<&std::path::Path>,
+) -> (bool, u128) {
+    let timestamp = token
+        .rsplit_once('-')
+        .and_then(|(_, nanos)| nanos.parse::<u128>().ok())
+        .or_else(|| {
+            [backup, tmp]
+                .into_iter()
+                .flatten()
+                .filter_map(|path| {
+                    std::fs::metadata(path)
+                        .and_then(|value| value.modified())
+                        .ok()
+                })
+                .filter_map(|modified| {
+                    modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|duration| duration.as_nanos())
+                })
+                .max()
+        })
+        .unwrap_or_default();
+    (backup.is_some(), timestamp)
+}
+
+fn cleanup_artifact_recovery_candidates<'a>(
+    candidates: impl Iterator<Item = &'a (Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
+) {
+    for (tmp, backup) in candidates {
+        if let Some(tmp) = tmp {
+            let _ = std::fs::remove_file(tmp);
+        }
+        if let Some(backup) = backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
 }
 
 /// 题目转安全文件名:去掉路径分隔/非法字符,截长,空了给兜底。
