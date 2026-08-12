@@ -609,37 +609,53 @@ const REASONING_EFFORT_TIERS = {
 };
 
 // OpenAI 官方 API 里底座 `apply_openai_reasoning_effort` 只对 reasoning 家族
-// 模型注入档位；其余 OpenAI 兼容模型（含 gpt-5.4-mini 等非 reasoning 系）无档位。
+// 模型注入档位。这里只特判品悟目录实际收录的 reasoning 家族模型（gpt-5.5 与
+// gpt-5.6-sol/terra/luna）；其余 gpt-5.x codex / 日期快照 / pro 等已下线或
+// 未收录，不做特判避免死代码。
+const OPENAI_REASONING_FAMILY = new Set([
+  'gpt-5.5',
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+]);
+
 function isOpenaiReasoningFamilyModel(model) {
   const lower = String((model && model.model) || '').trim().toLowerCase();
-  if (!lower) return false;
-  return /^gpt-5\.5(\b|-)/.test(lower)
-    || /^gpt-5\.6(\b|-)/.test(lower)
-    || /^gpt-5-codex(\b|-)/.test(lower)
-    || /^gpt-5\.[123]-codex(\b|-)/.test(lower)
-    || /^codex-gpt-5/.test(lower)
-    || /^chatgpt-gpt-5/.test(lower);
+  return OPENAI_REASONING_FAMILY.has(lower);
 }
 
-// 品悟 provider 判定（对齐 bridge.rs `provider()`：vendor 优先 + preset 兜底）。
+// 品悟 provider 判定（对齐 bridge.rs `provider()`：base_url(deepseek) 优先，
+// vendor 优先 + preset 兜底）。
 //
-// 与 Rust `provider()` 存在 4 处结构性差异，均为前端「只暴露底座有实际档位
-// 区别的 provider」的刻意裁剪，不改变行为：
-// 1. base_url 推断：Rust 先按 `is_official_deepseek_base_url(base_url)` 判定
-//    official deepseek；前端不解析 base_url，靠 vendor/preset 覆盖同一结论。
-//    已知缺口：`openai_compatible` + 无 vendor 但 base_url 指向 api.deepseek.com
-//    的手工模型，Rust 会判为 deepseek（注入档位）而前端返回 null（无档位 UI）。
-// 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端
-//    返回 null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
-// 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入
-//    "openai"（wire route 身份）；前端对 qwen/tencent/gemini/google 返回
-//    null（底座无档位），仅 openai vendor 的 gpt-5.x reasoning 家族返回
-//    "openai"，与底座的 `model_is_openai_reasoning_family` 过滤等价
-//    （Rust `provider()` 不做该过滤，由底座 `apply_openai_reasoning_effort` 收口）。
-// 4. 判定优先级：Rust 是 base_url → env(DEEPSEEK_PROVIDER) → vendor → preset；
-//    前端无 env/base_url 概念，直接 vendor 优先 + preset 兜底，结果一致。
+// 与 Rust `provider()` 的结构性差异（均为前端「只暴露底座有实际档位区别的
+// provider」的刻意裁剪）：
+// 1. env(DEEPSEEK_PROVIDER)：Rust 支持环境变量覆盖 provider；前端无 env 概念
+//    （GUI 场景极少使用该 env，视为等价）。
+// 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端返回
+//    null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
+// 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入 "openai"
+//    （wire route 身份）；前端对 qwen/tencent/gemini/google 返回 null（底座无档位），
+//    仅 openai vendor 的 reasoning 家族返回 "openai"（对齐底座
+//    `model_is_openai_reasoning_family`）。
+// 4. zai/moonshot 路由级档位：底座按「精确 first-party base_url + 模型名」判定
+//    tiered effort（zai GLM-5.2/5.3、moonshot K3）；前端按模型名近似细分（见
+//    reasoningEffortTiersForModel），不解析 zai/moonshot base_url。对兼容网关
+//    误配同型号时，底座会 fail-closed（不注入），最多表现为选了档位无效果。
+// 对齐 bridge.rs `is_official_deepseek_base_url`：官方 DeepSeek 端点判定
+// （trim 尾斜杠 + /beta + /v1，小写比较）。
+function isOfficialDeepseekBaseUrl(baseUrl) {
+  const normalized = String(baseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/beta$/, '')
+    .replace(/\/v1$/, '')
+    .toLowerCase();
+  return normalized === 'https://api.deepseek.com' || normalized === 'https://api.deepseeki.com';
+}
+
 function reasoningProviderForModel(model) {
   if (!model) return null;
+  // 对齐 Rust provider() 优先级：官方 deepseek base_url 优先（即使 preset 是
+  // openai_compatible 且无 vendor，只要指向官方 deepseek 端点即按 deepseek 暴露档位）。
+  if (isOfficialDeepseekBaseUrl(model.base_url)) return 'deepseek';
   const vendor = (model.vendor || '').trim().toLowerCase();
   const preset = model.preset || '';
   if (preset === 'local_vllm') return 'vllm';
@@ -669,9 +685,23 @@ function reasoningProviderForModel(model) {
 }
 
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
+// 路由/模型级细分（仅品悟目录收录的模型）：底座对 first-party 的 zai GLM-5.2
+// 提供 tiered effort（off/high/max），对 moonshot K3（kimi-k3 / k3，always-thinking）
+// 提供 low/high/max（off 归一为 low）；其余按 provider 档位表。按模型名近似判定，
+// 与底座 `is_exact_zai_tiered_effort_route` / K3 路由在 first-party 预设模型上一致。
 function reasoningEffortTiersForModel(model) {
   const provider = reasoningProviderForModel(model);
-  return provider ? (REASONING_EFFORT_TIERS[provider] || null) : null;
+  if (!provider) return null;
+  const tiers = REASONING_EFFORT_TIERS[provider];
+  if (!tiers) return null;
+  const modelName = String((model && model.model) || '').trim().toLowerCase();
+  if (provider === 'zai' && modelName === 'glm-5.2') {
+    return ['off', 'high', 'max'];
+  }
+  if (provider === 'moonshot' && (modelName === 'kimi-k3' || modelName === 'k3')) {
+    return ['low', 'high', 'max'];
+  }
+  return tiers;
 }
 
 // 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。

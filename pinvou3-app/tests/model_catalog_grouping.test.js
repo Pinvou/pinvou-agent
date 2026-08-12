@@ -188,23 +188,26 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.deepStrictEqual(tiers(deepseek), ['off', 'low', 'high', 'max']);
   const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3' };
-  assert.deepStrictEqual(tiers(moonshot), ['off', 'high']);
+  assert.deepStrictEqual(tiers(moonshot), ['low', 'high', 'max']);
+  const moonshotNonK3 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k2.6' };
+  assert.deepStrictEqual(tiers(moonshotNonK3), ['off', 'high']);
+  const zai52 = { preset: 'glm', vendor: 'glm', model: 'GLM-5.2' };
+  assert.deepStrictEqual(tiers(zai52), ['off', 'high', 'max']);
+  const zaiTurbo = { preset: 'glm', vendor: 'glm', model: 'glm-5-turbo' };
+  assert.deepStrictEqual(tiers(zaiTurbo), ['off', 'high']);
+  const kimiCodeK3 = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3' };
+  assert.deepStrictEqual(tiers(kimiCodeK3), ['low', 'high', 'max']);
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
   assert.deepStrictEqual(tiers(vllm), ['off', 'low', 'medium', 'high']);
   const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
   assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
   const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
   assert.deepStrictEqual(tiers(openai56), ['off', 'low', 'medium', 'high', 'max']);
-  // 底座白名单内的 codex 变体（含 gpt-5.3-codex / 5.5 后缀）都应提供切换
-  const openai53 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.3-codex' };
-  assert.deepStrictEqual(tiers(openai53), ['off', 'low', 'medium', 'high', 'max']);
-  const codex55 = { preset: 'openai', vendor: 'openai', model: 'codex-gpt-5.5' };
-  assert.deepStrictEqual(tiers(codex55), ['off', 'low', 'medium', 'high', 'max']);
-  const gpt55Codex = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5-codex-preview' };
-  assert.deepStrictEqual(tiers(gpt55Codex), ['off', 'low', 'medium', 'high', 'max']);
-  // 大小写归一：大写模型名同样识别
-  const openaiUpper = { preset: 'openai', vendor: 'openai', model: 'GPT-5.3-CODEX' };
-  assert.deepStrictEqual(tiers(openaiUpper), ['off', 'low', 'medium', 'high', 'max']);
+  // 品悟目录收录的 reasoning 家族模型（gpt-5.5 / gpt-5.6-sol/terra/luna）提供切换
+  const openai55 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5' };
+  assert.deepStrictEqual(tiers(openai55), ['off', 'low', 'medium', 'high', 'max']);
+  const openai56Sol = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-sol' };
+  assert.deepStrictEqual(tiers(openai56Sol), ['off', 'low', 'medium', 'high', 'max']);
   // OpenAI 非 reasoning 系（gpt-5.4-mini）与 xai/qwen/gemini/自定义兼容不提供切换
   const openaiMini = { preset: 'openai', vendor: 'openai', model: 'gpt-5.4-mini' };
   assert.strictEqual(reasoningEffortTiersForModel(openaiMini), null);
@@ -216,6 +219,9 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(gemini), null);
   const custom = { preset: 'openai_compatible', model: 'my-model' };
   assert.strictEqual(reasoningEffortTiersForModel(custom), null);
+  // 官方 deepseek base_url 推断：openai_compatible 且无 vendor，但 base_url 指向官方端点 → deepseek 档位
+  const deepseekByUrl = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1' };
+  assert.deepStrictEqual(tiers(deepseekByUrl), ['off', 'low', 'high', 'max']);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {
