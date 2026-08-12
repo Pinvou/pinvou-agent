@@ -980,7 +980,12 @@
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
     var draftComposer = realId ? "" : (state.composerDraft || "");
-    saveWorkingSetTo(getBuffer(realId));
+    // 进入时就把【当前完整工作集】落进 restoreBuffer：realId 为 null（草稿态）
+    // 时也要保存——草稿态可能已含乐观的 modeState（如刚打开的多智能体开关）、
+    // 未发送文本，finally 里不能拿全新 freshBuffer 覆盖（否则开关状态被后台
+    // 会话事件冲掉，表现为"打开开关后被正在运行的对话覆盖成关"）。
+    var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+    saveWorkingSetTo(restoreBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
     var prev = suppressNotify; suppressNotify = true;
@@ -989,11 +994,8 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
-      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
-      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净工作集，
-      // 但要保留用户正在输入的未发送文本。
-      var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+      // 恢复的是进入时的同一工作集对象（草稿态下保留乐观 modeState /
+      // 未发送文本），不是全新 buffer。
       if (!realId) restoreBuffer.composerDraft = draftComposer;
       loadWorkingSetFrom(restoreBuffer);
     }

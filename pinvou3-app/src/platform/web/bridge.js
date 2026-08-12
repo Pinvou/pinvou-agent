@@ -6275,15 +6275,31 @@
   }
 
   // ── Mode state ───────────────────────────────────────────────────
+  // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
+  // sid 仍是 active，否则把结果定向写回 sid 自己的 buffer，不污染当前显示。
+  // 另加请求序号：同一会话内并发读取乱序返回时，旧响应不得覆盖新响应
+  // （A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；tauri 版 epoch 对齐）。
+  var modeSyncSeq = 0;
   async function syncModeState() {
-    if (!state.activeSessionId) {
+    var sid = state.activeSessionId;
+    if (!sid) {
       state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
+    var seq = ++modeSyncSeq;
     try {
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
+      if (seq !== modeSyncSeq) return; // 已有更新的读取发起，本响应陈旧
+      if (state.activeSessionId !== sid) {
+        runSyncOnSession(sid, function () {
+          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+        });
+        return;
+      }
       state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
+      if (seq !== modeSyncSeq) return;
+      if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
