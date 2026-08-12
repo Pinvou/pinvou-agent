@@ -2775,41 +2775,63 @@ mod tests {
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
     }
 
-    /// PR #210 守卫（第三轮评审修正 2026-08-11）：bridge boot 的 env 注入源头
-    /// （`wire_boot_env`）不得重新注入输出上限 env。lib.rs `release_env_defaults_guard`
-    /// 只覆盖 run() 的 release env 注入路径；若未来有人在 boot 路径直接 set_var
+    /// PR #210 守卫（第四轮评审修正 2026-08-12）：bridge boot 的 env 注入结果
+    /// 不得包含输出上限 env。lib.rs `release_env_defaults_guard` 只覆盖 run() 的
+    /// release env 注入路径；若未来有人在 boot 路径直接 set_var
     /// `DEEPSEEK_MAX_OUTPUT_TOKENS`，那边的守卫抓不到——故把 boot 的 env 写入收口到
-    /// `wire_boot_env` 单一源头，这里锁死该源头。
+    /// `wire_boot_env` 单一源头，并在**隔离 PINVOU3_HOME + HOME 下实际执行
+    /// `Pinvou3Bridge::boot()`** 后断言最终 env 状态：无论注入发生在 boot 哪一行，
+    /// 只要重新注入 24576，守卫即失败。
     ///
-    /// 不直接跑 `Pinvou3Bridge::boot()`：boot 会 mutate PINVOU3_HOME（写盘到隔离 home
-    /// + 全量解包 bundle），成本高且与既有单测约定冲突（见
-    /// `engine_config_workspace_follows_bridge_field` 注释）。
+    /// 第四轮评审此前指出：旧版守卫只直接调用 `wire_boot_env` helper，wire_boot_env
+    /// 不是由类型/编译器强制的唯一 env 写入口，未来若有人在 boot 其他位置直接
+    /// set_var、重建旧 helper 或调用其他 helper，该测试仍会通过。本版改为跑真实
+    /// boot：boot 在隔离临时目录下执行（bundle 解包 / settings 写入 / legacy 清扫全落
+    /// 隔离目录，不触碰真实 `~/.pinvou3` 与 `$HOME` 文件），断言 boot 后进程 env 无
+    /// 这两个 key 且 `PINVOU3_SESSION_ARTIFACTS` 正常写入。
     #[test]
     fn forkguard_boot_env_must_not_pin_global_output_cap() {
+        // 需要写 PINVOU3_HOME / HOME（隔离目录），锁 + 恢复这两者与目标 key。
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MAX_OUTPUT_TOKENS",
             "PINVOU3_MAX_OUTPUT_TOKENS",
             "PINVOU3_SESSION_ARTIFACTS",
+            "PINVOU3_HOME",
+            "HOME",
         ]);
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
 
-        let artifacts = std::env::temp_dir().join("pinvou3-boot-env-guard-artifacts");
-        super::Pinvou3Bridge::wire_boot_env(&artifacts);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-boot-env-guard-{}",
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建隔离 home");
+        std::env::set_var("PINVOU3_HOME", &root);
+        std::env::set_var("HOME", &root);
 
-        assert_eq!(
-            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
-            Ok(artifacts.to_str().expect("artifacts 目录路径必须是 UTF-8")),
-            "boot 注入源头仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
-        );
+        let bridge =
+            super::Pinvou3Bridge::boot().expect("隔离 PINVOU3_HOME + HOME 下 boot 必须成功");
+
         assert!(
             std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
-            "boot 注入源头（wire_boot_env）不得注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端输出上限）"
+            "boot 执行后不得注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端输出上限）"
         );
         assert!(
             std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
-            "boot 注入源头（wire_boot_env）不得注入 PINVOU3_MAX_OUTPUT_TOKENS"
+            "boot 执行后不得注入 PINVOU3_MAX_OUTPUT_TOKENS"
         );
+        // boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）。
+        let artifacts = paths::default_session_artifacts_dir();
+        assert_eq!(
+            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
+            Ok(artifacts.to_str().expect("隔离 home 路径必须是 UTF-8")),
+            "boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
+        );
+
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible

@@ -1150,17 +1150,22 @@ mod release_env_defaults_guard {
     /// 进程 env 全量快照：ensure_release_env 会 set RELEASE_ENV_DEFAULTS、重写 PATH、
     /// Linux 上还会 set GDK_BACKEND 等 UI env——只有全量快照才能完整还原，且不随
     /// 各常量表增删漂移。
-    struct EnvSnapshot(std::collections::HashMap<String, Option<String>>);
+    ///
+    /// 第四轮评审修正（2026-08-12）：此前用 `String` + `std::env::vars()`——`vars()`
+    /// 对任何非 UTF-8 的合法环境变量值（POSIX 允许任意字节）会直接 panic，且 Drop 中
+    /// 的二次枚举同样 panic；测试断言失败展开 panic 期间再 panic 会中止整个测试进程。
+    /// 现改用 `OsString` + `vars_os()`，非 UTF-8 环境变量也能完整快照/还原。
+    struct EnvSnapshot(std::collections::HashMap<std::ffi::OsString, Option<std::ffi::OsString>>);
 
     impl EnvSnapshot {
         fn take() -> Self {
             let mut map = std::collections::HashMap::new();
-            for (k, v) in std::env::vars() {
+            for (k, v) in std::env::vars_os() {
                 map.insert(k, Some(v));
             }
             // 显式记录"当前不存在"的 key，还原时统一按快照恢复原状（set / remove）。
             for key in ["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"] {
-                map.entry(key.to_string()).or_insert(None);
+                map.entry(std::ffi::OsString::from(key)).or_insert(None);
             }
             Self(map)
         }
@@ -1176,8 +1181,8 @@ mod release_env_defaults_guard {
             }
             // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
             // UI env 等）——全部移除，回到快照状态，杜绝后续测试的顺序依赖。
-            let keep: std::collections::HashSet<&String> = self.0.keys().collect();
-            let stale: Vec<String> = std::env::vars()
+            let keep: std::collections::HashSet<&std::ffi::OsString> = self.0.keys().collect();
+            let stale: Vec<std::ffi::OsString> = std::env::vars_os()
                 .map(|(k, _)| k)
                 .filter(|k| !keep.contains(k))
                 .collect();
