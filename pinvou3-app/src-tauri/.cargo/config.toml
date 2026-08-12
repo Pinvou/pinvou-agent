@@ -27,9 +27,9 @@
 # codewhale-tui 会在 MachineLateinstrsCleanup 递归中栈溢出,崩溃为 SIGBUS
 # (rustc 1.96/1.97 stable 稳定复现,上游 v0.9.0 无此问题)。
 # 处理:不降 opt-level(保证依赖正常优化),而是加大编译器自身线程栈。
-# RUST_MIN_STACK 是 rustc 创建 codegen worker 线程时的默认栈大小(rust-lang/rust
-# #160535 已把该默认值提到 16 MiB;此处为当前 stable 提前注入同值)。
-# 通过 cargo 配置 [env] 注入,对 cargo 启动的全部 rustc 子进程生效,无需改
-# 每个开发者/CI 的环境变量;仅影响构建期编译器进程,不进入产物运行时。
-[env]
-RUST_MIN_STACK = "16777216"
+# 通过 rustc-wrapper 只在编译期 rustc 进程注入 RUST_MIN_STACK=16MiB
+# (wrapper 见 scripts/rustc-stack-wrapper):不经过 wrapper 的
+# cargo run / cargo test 目标进程不会继承该变量,运行时线程栈语义不变。
+# 与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
+[build]
+rustc-wrapper = "scripts/rustc-stack-wrapper"
