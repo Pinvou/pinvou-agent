@@ -1218,7 +1218,7 @@ fn resolve_topic_authorities<T: Clone>(
     records: Vec<(PathBuf, T)>,
     topic: impl Fn(&T) -> &str,
     id: impl Fn(&T) -> &str,
-) -> io::Result<Vec<T>> {
+) -> (Vec<T>, Vec<String>) {
     let mut grouped = BTreeMap::<String, Vec<(PathBuf, T)>>::new();
     for (path, item) in records {
         grouped
@@ -1227,6 +1227,7 @@ fn resolve_topic_authorities<T: Clone>(
             .push((path, item));
     }
     let mut authorities = Vec::new();
+    let mut cleanup_failures = Vec::new();
     for (_, mut group) in grouped {
         group.sort_by_key(|(path, item)| {
             let canonical = path.file_name().and_then(|value| value.to_str())
@@ -1240,21 +1241,19 @@ fn resolve_topic_authorities<T: Clone>(
             .pop()
             .expect("topic groups are constructed from at least one record");
         for (duplicate, _) in group {
-            fs::remove_file(&duplicate).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "memory_topic_cleanup_required:{}:{}",
-                        duplicate.display(),
-                        error
-                    ),
-                )
-            })?;
+            // A duplicate that cannot be removed right now (e.g. an open
+            // handle on Windows) must not fail the whole load: keep it on
+            // disk so the next read retries, and surface a cleanup warning
+            // instead of a hard error — mirroring the soft handling in
+            // reconcile_topic_migration_journals_unlocked.
+            if let Err(error) = fs::remove_file(&duplicate) {
+                cleanup_failures.push(format!("{}: {error}", duplicate.display()));
+            }
         }
         debug_assert!(authority_path.is_file());
         authorities.push(authority);
     }
-    Ok(authorities)
+    (authorities, cleanup_failures)
 }
 
 pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
@@ -1303,9 +1302,16 @@ fn load_work_context_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<WorkCon
             records.push((path, item));
         }
     }
+    let (value, authority_cleanup_failures) =
+        resolve_topic_authorities(records, |item| &item.topic, |item| &item.id);
+    let mut cleanup_parts = Vec::new();
+    if let Some(base) = reconciliation.cleanup_warning {
+        cleanup_parts.push(base);
+    }
+    cleanup_parts.extend(authority_cleanup_failures);
     Ok(TopicRead {
-        value: resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)?,
-        cleanup_warning: reconciliation.cleanup_warning,
+        value,
+        cleanup_warning: (!cleanup_parts.is_empty()).then(|| cleanup_parts.join("; ")),
     })
 }
 
@@ -1505,19 +1511,27 @@ fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
         if !name.starts_with(".topic-migration-") || !name.ends_with(".journal") {
             continue;
         }
-        let journal = fs::read_to_string(&journal_path).and_then(|raw| {
+        let journal = match fs::read_to_string(&journal_path).and_then(|raw| {
             serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
-        })?;
+        }) {
+            Ok(journal) => journal,
+            Err(_) => {
+                // An unparsable journal (truncated write or disk corruption)
+                // must not permanently block loading preferences / work
+                // context. Quarantine it so the next read stops tripping over
+                // it while keeping the bytes for diagnosis.
+                quarantine_unparsable_journal(&journal_path);
+                continue;
+            }
+        };
         if !is_plain_filename(&journal.authority_file)
             || journal
                 .stale_files
                 .iter()
                 .any(|name| !is_plain_filename(name))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid memory topic migration journal path",
-            ));
+            quarantine_unparsable_journal(&journal_path);
+            continue;
         }
         let authority = dir.join(&journal.authority_file);
         let authority_valid = fs::read_to_string(&authority).is_ok_and(|raw| {
@@ -1559,6 +1573,19 @@ fn is_plain_filename(value: &str) -> bool {
             Path::new(value).components().next(),
             Some(std::path::Component::Normal(_))
         )
+}
+
+fn quarantine_unparsable_journal(journal_path: &Path) {
+    let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let quarantined = journal_path.with_file_name(format!("{name}.corrupt-{}", std::process::id()));
+    if let Err(error) = fs::rename(journal_path, quarantined) {
+        // Rename can fail if the file is momentarily locked (e.g. Windows);
+        // the journal then stays in place and is skipped again on the next
+        // read without blocking the load.
+        let _ = error;
+    }
 }
 
 fn work_context_stale_paths_unlocked(
@@ -4235,11 +4262,17 @@ fn load_preferences_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<Preferen
             records.push((path, pref));
         }
     }
-    let mut out = resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)?;
+    let (mut out, authority_cleanup_failures) =
+        resolve_topic_authorities(records, |item| &item.topic, |item| &item.id);
     out.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.text.cmp(&b.text)));
+    let mut cleanup_parts = Vec::new();
+    if let Some(base) = reconciliation.cleanup_warning {
+        cleanup_parts.push(base);
+    }
+    cleanup_parts.extend(authority_cleanup_failures);
     Ok(TopicRead {
         value: out,
-        cleanup_warning: reconciliation.cleanup_warning,
+        cleanup_warning: (!cleanup_parts.is_empty()).then(|| cleanup_parts.join("; ")),
     })
 }
 
@@ -4391,6 +4424,17 @@ where
             if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
                 let _ = fs::remove_file(&tmp);
                 let _ = fs::remove_file(&backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && path.exists()
+            {
+                // A target that still exists (e.g. a directory occupying its
+                // path) is a permanent failure: recovery can never promote a
+                // candidate over it, so the staged tmp/backup are garbage. A
+                // truly missing target keeps its candidates for
+                // read_text_recovering_unlocked_with — matching the artifact
+                // write path.
+                let _ = fs::remove_file(&tmp);
+                let _ = fs::remove_file(&backup);
             }
             Err(error.into_io_error())
         }
@@ -4431,7 +4475,16 @@ fn read_text_recovering_unlocked_with(
             // A transient read failure on an existing authoritative file (e.g.
             // an antivirus scan lock on Windows) must not trigger recovery:
             // promoting a stale backup would overwrite the still-valid target.
-            if error.kind() != io::ErrorKind::NotFound && path.is_file() {
+            // Deterministic errors (e.g. invalid UTF-8 → InvalidData) still
+            // fall through to recovery so a corrupted authoritative file can
+            // self-heal from a valid backup candidate.
+            let transient = matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::Interrupted
+            );
+            if transient && path.is_file() {
                 return Err(error);
             }
             error
@@ -4532,6 +4585,15 @@ fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> 
             if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
                 let _ = fs::remove_file(replacement);
                 let _ = fs::remove_file(backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && target.exists()
+            {
+                // A permanently blocked target (e.g. a directory occupying its
+                // path) can never accept a promoted candidate: drop the staged
+                // recover-* files instead of leaking one pair per failed read.
+                // A truly missing target keeps them for a later attempt.
+                let _ = fs::remove_file(replacement);
+                let _ = fs::remove_file(backup);
             }
             Err(error.into_io_error())
         }
@@ -4553,7 +4615,9 @@ fn cleanup_recovery_candidates(path: &Path) {
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or_default();
-            if candidate == path.with_extension("bak") || name.starts_with(&format!("{stem}.tmp-"))
+            if candidate == path.with_extension("bak")
+                || name.starts_with(&format!("{stem}.tmp-"))
+                || name.starts_with(&format!("{stem}.recover-"))
             {
                 let _ = fs::remove_file(candidate);
             }
@@ -4701,16 +4765,117 @@ mod tests {
         // Simulate a transient read failure (e.g. an antivirus lock on
         // Windows): the authoritative file exists but cannot be read right now.
         fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_to_string(&target).is_err();
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if !unreadable {
+            // Running as root (or on a filesystem that ignores mode bits)
+            // bypasses the permission check, so the guard cannot be exercised
+            // this way; skip instead of failing spuriously.
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
         let result = read_text_recovering(&target, |raw| {
             serde_json::from_str::<MemoryProfile>(raw).is_ok()
         });
-        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         assert!(result.is_err());
         // The authoritative target must be preserved, never overwritten by a
         // stale backup, and the backup stays as a candidate.
         assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
         assert!(backup.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_write_cleans_tmp_backup_on_permanently_occupied_target() {
+        let root = recovery_test_root("dir-occupied");
+        let target = root.join("profile.json");
+        // A directory occupying the target path is a permanent failure: the
+        // replacement can never be promoted, so the staged tmp/backup must be
+        // cleaned instead of leaking — mirroring the artifact write path
+        // (write_artifact_text_cleans_temp_file_on_error).
+        fs::create_dir(&target).unwrap();
+
+        let result = write_text_atomic_unlocked_with(&target, "new", |_, _, _| {
+            Err(crate::platform::filesystem::ReplaceError::new(
+                crate::platform::filesystem::ReplaceState::RecoveryRequired,
+                io::Error::new(io::ErrorKind::AlreadyExists, "target is a directory"),
+            ))
+        });
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("profile.json.tmp-") || name == "profile.json.bak"
+                    })
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staged tmp/backup must be cleaned: {leftovers:?}"
+        );
+        assert!(target.is_dir());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_promote_cleans_staged_recover_files_on_permanent_failure() {
+        let root = recovery_test_root("recover-cleanup");
+        let target = root.join("profile.json");
+        let candidate = target.with_extension("tmp-1-1-1");
+        fs::write(&candidate, "{\"version\":1}").unwrap();
+        // Directory occupies the target: promotion can never succeed, so the
+        // staged recover-*/recover-bak files must be dropped instead of
+        // leaking one pair per failed read.
+        fs::create_dir(&target).unwrap();
+
+        let result = promote_recovery_candidate(&candidate, &target, b"{\"version\":1}");
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("profile.json.recover-"))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "recover-* staging must be cleaned: {leftovers:?}"
+        );
+        // The original candidate stays for a later attempt and is re-scanned
+        // by the next read.
+        assert!(candidate.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corrupted_authoritative_file_self_heals_from_backup() {
+        let root = recovery_test_root("corrupt-self-heal");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let authoritative = "{\"version\":1,\"revision\":9,\"identity\":{\"call_name\":\"权威\",\"assistant_alias\":\"品悟\"}}\n";
+        // The authoritative file is deterministically corrupted (invalid
+        // UTF-8) while a valid older backup exists. The deterministic error
+        // must still fall through to recovery so the file self-heals.
+        fs::write(&target, b"\xff\xfe not utf8").unwrap();
+        fs::write(&backup, authoritative).unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        })
+        .unwrap();
+        assert_eq!(restored, authoritative);
+        assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
         let _ = fs::remove_dir_all(root);
     }
 

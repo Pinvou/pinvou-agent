@@ -69,7 +69,9 @@ const cleanupWarning = { code: 'memory_topic_cleanup_required', source: 'prefere
 response = command => command === 'update_memory_preference'
   ? { value: { id: 'pref-new', text: 'detailed' }, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }, cleanupWarning] }
   : overview({ preferences: [{ id: 'pref-new', text: 'detailed' }], warnings: [{ code: 'snapshot_refresh_failed' }, cleanupWarning] });
+rejectOverview = true;
 await api.updateMemoryItem('preference', 'pref-old', { topic: 'workflow_preference', text: 'detailed' });
+rejectOverview = false;
 assert.deepEqual(state.memory.preferences.map(item => item.id), ['pref-new'], 'topic update must remove both old and returned ids');
 assert.equal(state.memory.preferences[0].text, 'detailed', 'committed update must apply before overview refresh');
 assert.equal(state.memory.warnings[0].code, 'memory_topic_cleanup_required');
@@ -93,9 +95,12 @@ response = command => command === 'delete_memory_preference'
 rejectOverview = true;
 await api.deleteMemoryPreference('pref-new');
 assert.deepEqual(state.memory.preferences, [], 'committed delete must survive overview failure');
+rejectOverview = false;
 
 response = command => command === 'confirm_pending_memory'
   ? { value: { id: 'pending-1', action: 'confirmed' }, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }] }
   : overview();
+rejectOverview = true;
 await api.confirmMemoryCandidate('pending-1');
 assert.deepEqual(state.memory.pending, [], 'committed confirmation must survive overview failure');
+rejectOverview = false;

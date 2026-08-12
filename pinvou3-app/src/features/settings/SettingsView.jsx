@@ -185,6 +185,13 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             call_name: draft.call_name,
             assistant_alias: draft.assistant_alias,
           });
+          setProfileSaveError('');
+        } catch (error) {
+          // The bridge already surfaced the error into state.memory.error with
+          // generic "load failed" copy; track a dedicated save error so the UI
+          // shows the accurate "save failed" message instead and consumes the
+          // rejection.
+          setProfileSaveError(String(error));
         } finally {
           setSaving(false);
         }
@@ -2355,6 +2362,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [memoryEditor, setMemoryEditor] = useState(null);
       const [memorySaving, setMemorySaving] = useState(false);
       const [memoryEditorError, setMemoryEditorError] = useState('');
+      const [profileSaveError, setProfileSaveError] = useState('');
       const [memoryDeleteConfirm, setMemoryDeleteConfirm] = useState(null);
       const openMemoryItemViewer = item => {
         setMemoryEditor({
@@ -2583,7 +2591,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </IOSSection>
           {memoryEnabled && (
             <>
-              {memoryError && (
+              {profileSaveError ? (
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                  {settingsCopy.memorySaveFailed}
+                </div>
+              ) : memoryError && (
                 <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
                   {memoryErrorMessage}
                 </div>

@@ -926,7 +926,11 @@ fn artifact_writes_never_expose_partial_utf8_to_concurrent_readers() {
     let old_for_reader = old.clone();
     let new_for_reader = new.clone();
     let reader = std::thread::spawn(move || {
-        while reader_running.load(Ordering::Acquire) {
+        // Bound the loop so a writer panic cannot leave the reader spinning
+        // forever and hang the test runner.
+        let mut spins = 0;
+        while reader_running.load(Ordering::Acquire) && spins < 1_000_000 {
+            spins += 1;
             if let Ok(value) = std::fs::read_to_string(&reader_path) {
                 assert!(value == old_for_reader || value == new_for_reader);
             }
