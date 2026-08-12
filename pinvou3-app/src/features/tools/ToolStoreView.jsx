@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
@@ -632,10 +632,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const ov = (storeData.skills || {})[s.backendId || s.id];
         return ov ? { ...s, ...ov } : s;
       };
-      const localizeCategory = (c) => {
-        const label = (storeData.categories || {})[c.id];
-        return label ? { ...c, label } : c;
-      };
       const localizeCollection = (c) => {
         const ov = (storeData.featuredCollections || {})[c.id];
         return ov ? { ...c, ...ov } : c;
@@ -658,6 +654,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
       const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
       const [viewMode, setViewMode] = useState('card'); // 'card'(卡片视图) | 'list'(列表视图)
+      const [groupBy, setGroupBy] = useState('type'); // 列表视图主维度:'type'(按类型) | 'business'(按业务)
       const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
       const isCard = viewMode === 'card';
@@ -854,12 +851,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       }, [externalAuthAvailable]);
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
-      const CAT_BY_ID = { 1: 'life', 2: 'finance', 3: 'collab', 4: 'docs', 5: 'docs', 6: 'docs', 7: 'collab', 8: 'collab', 9: 'collab', 10: 'collab', 11: 'dev', 12: 'dev', 13: 'finance', 14: 'docs', 99: 'collab' };
+      // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
       const tools = tsToolsData.map(baseTool => localizeTool(baseTool, t)).map(t => {
         const authState = t.oauthMcp && t.backendId ? toolAuthStates[t.backendId] : null;
         return {
           ...t,
-          category: CAT_BY_ID[t.id] || t.category,
           logoSrc: THIRD_PARTY_TOOL_LOGOS[t.backendId] || THIRD_PARTY_TOOL_LOGOS[t.id] || null,
           installed: t.feishuCli
             ? feishuConnected
@@ -914,17 +910,29 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const searching = searchQuery.trim() !== '';
       const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
       const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
-      const visibleCategories = tsCategories.map(localizeCategory).filter(cat => cat.id === 'all' || listItems.some(tool => (
-        isLaunchedTool(tool)
-        && tool.category === cat.id
-      )));
+      // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
+      // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
+      const bundleMcpIds = Object.values(skillToMcp);
+      const typeGroupOf = tool => getToolTypeGroup(tool, bundleMcpIds);
+      const catLabel = id => (storeData.categories || {})[id] || (tsCategories.find(c => c.id === id) || {}).label || id;
+      const typeLabel = id => ((storeCopy.typeGroups || {})[id]) || id;
+      const primaryGroupOf = groupBy === 'type' ? typeGroupOf : getToolBusinessGroup;
+      const sectionGroupOf = groupBy === 'type' ? getToolBusinessGroup : typeGroupOf;
+      const sectionOrder = groupBy === 'type' ? [...TOOL_BUSINESS_GROUPS, 'skill'] : TOOL_TYPE_GROUPS;
+      const sectionLabelOf = groupBy === 'type' ? catLabel : typeLabel;
+      // 二级筛选 chips:第一项恒为「全部」,其余只展示当前列表里有内容的组。
+      const groupChips = [{ id: 'all', label: catLabel('all') },
+        ...(groupBy === 'type' ? TOOL_TYPE_GROUPS : TOOL_BUSINESS_GROUPS)
+          .map(id => ({ id, label: groupBy === 'type' ? typeLabel(id) : catLabel(id) }))
+          .filter(chip => listItems.some(tool => primaryGroupOf(tool) === chip.id))];
       const PIN = ['government-writing', 'pptx', 'visualizer'];
       const filteredTools = sourceItems.filter(tool => {
-        if (!isLaunchedTool(tool)) return false;
+        // 即将上线占位卡(无 backendId)在「我的工具」外可见,可检索、进分区,操作按钮自身置灰。
+        if (!isLaunchedTool(tool) && installedOnly) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
         if (installedOnly && !isCard) return matchesSearch && tool.installed;
-        const matchesCategory = searching || isCard || activeCategory === 'all' || tool.category === activeCategory;
+        const matchesCategory = searching || isCard || activeCategory === 'all' || primaryGroupOf(tool) === activeCategory;
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
         if (isCard && !searching) { const r = x => { const i = PIN.indexOf(x.backendId); return i === -1 ? 99 : i; }; if (r(a) !== r(b)) return r(a) - r(b); }
@@ -935,11 +943,27 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (!a.installed && b.installed) return 1;
         return 0;
       });
+      // 分区:仅列表视图非搜索/非「我的工具」时分区;搜索与我的工具保持平铺。组内沿用 filteredTools 排序。
+      const sectioned = !isCard && !installedOnly && !searching;
+      const listSections = [];
+      if (sectioned) {
+        const buckets = new Map();
+        filteredTools.forEach(tool => {
+          const key = sectionGroupOf(tool);
+          if (!buckets.has(key)) buckets.set(key, []);
+          buckets.get(key).push(tool);
+        });
+        sectionOrder.forEach(key => {
+          if (buckets.has(key)) listSections.push({ id: key, label: sectionLabelOf(key), items: buckets.get(key) });
+          buckets.delete(key);
+        });
+        buckets.forEach((items, key) => listSections.push({ id: key, label: sectionLabelOf(key), items }));
+      }
       useEffect(() => {
-        if (!isCard && !installedOnly && !searching && activeCategory !== 'all' && !visibleCategories.some(cat => cat.id === activeCategory)) {
+        if (!isCard && !installedOnly && !searching && activeCategory !== 'all' && !groupChips.some(chip => chip.id === activeCategory)) {
           setActiveCategory('all');
         }
-      }, [activeCategory, installedOnly, isCard, searching, visibleCategories]);
+      }, [activeCategory, installedOnly, isCard, searching, groupChips]);
 
       // 从后端加载已安装状态
       const loadBackendState = async () => {
@@ -1789,21 +1813,36 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       </div>
                     )}
                     {!isCard && !installedOnly && (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
-                        {visibleCategories.map((cat) => {
-                          const isActive = activeCategory === cat.id;
-                          return (
-                            <button
-                              key={cat.id}
-                              onClick={() => { setActiveCategory(cat.id); setInstalledOnly(false); }}
-                              className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
-                                ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
-                                : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
-                            >
-                              {cat.label}
+                      <div className="flex flex-col gap-3">
+                        {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
+                        <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
+                          {[{ key: 'type', label: storeCopy.groupByType }, { key: 'business', label: storeCopy.groupByBusiness }].map(seg => (
+                            <button key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); setInstalledOnly(false); }}
+                              className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                                groupBy === seg.key
+                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
+                                  : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
+                              }`}>
+                              {seg.label}
                             </button>
-                          );
-                        })}
+                          ))}
+                        </div>
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
+                          {groupChips.map((chip) => {
+                            const isActive = activeCategory === chip.id;
+                            return (
+                              <button
+                                key={chip.id}
+                                onClick={() => { setActiveCategory(chip.id); setInstalledOnly(false); }}
+                                className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
+                                  ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
+                                  : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
+                              >
+                                {chip.label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1876,35 +1915,47 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       })}
                     </div>
                     ) : (
-                    <div key="tool-store-list-grid" className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7">
-                      {filteredTools.map((tool) => (
-                        <div
-                          key={`list-${tool.id}`}
-                          onClick={() => setSelectedTool(tool)}
-                          className="group flex items-center gap-4 py-3 cursor-pointer px-3 border-b border-slate-100 dark:border-white/5 last:border-0"
-                        >
-                          <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
-                            <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
-                            <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
-                            <div className="flex items-center gap-2 mt-1.5">
-                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
-                              {tool.internal ? (
-                                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">{storeCopy.internalDirect}</span>
-                              ) : tool.authRequired && (
-                                <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
-                                  <Zap size={10} /> {storeCopy.keyRequired}
-                                </span>
-                              )}
+                    <div key="tool-store-list-grid" className={sectioned ? 'pb-7 space-y-8' : 'grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7'}>
+                      {(sectioned ? listSections : [{ id: 'flat', label: null, items: filteredTools }]).map((section) => (
+                        <div key={`section-${section.id}`}>
+                          {section.label && (
+                            <div className="flex items-baseline gap-2 mb-2 px-3">
+                              <h3 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">{section.label}</h3>
+                              <span className="text-[12px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{section.items.length}</span>
                             </div>
-                          </div>
-                          <div className="flex flex-col items-center justify-center gap-1 pl-2">
-                            {(() => {
-                              const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
-                              return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
-                                ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />
-                                : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />;
-                            })()}
+                          )}
+                          <div className={sectioned ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'contents'}>
+                            {section.items.map((tool) => (
+                              <div
+                                key={`list-${tool.id}`}
+                                onClick={() => setSelectedTool(tool)}
+                                className="group flex items-center gap-4 py-3 cursor-pointer px-3 border-b border-slate-100 dark:border-white/5 last:border-0"
+                              >
+                                <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
+                                <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
+                                  <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
+                                  <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
+                                  <div className="flex items-center gap-2 mt-1.5">
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
+                                    {tool.internal ? (
+                                      <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">{storeCopy.internalDirect}</span>
+                                    ) : tool.authRequired && (
+                                      <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
+                                        <Zap size={10} /> {storeCopy.keyRequired}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex flex-col items-center justify-center gap-1 pl-2">
+                                  {(() => {
+                                    const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
+                                    return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
+                                      ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />
+                                      : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />;
+                                  })()}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       ))}
