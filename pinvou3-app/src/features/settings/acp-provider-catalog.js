@@ -39,7 +39,7 @@ export const ACP_PROVIDER_PRESETS = [
 ];
 
 // 表单 model 字段的官方在列模型建议（datalist，可自由输入其他模型名）。
-// 截至 2026-08-05 各厂商官方文档在列：
+// 截至 2026-08-11 各厂商官方文档在列：
 export const ACP_MODEL_PRESETS = [
   // Anthropic（platform.claude.com）
   'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5',
