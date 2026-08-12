@@ -65,7 +65,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 
-- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`unavailable_tools()`（模式缺席的编译期常量——code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。能力面分化是编译期常量（能力档案 JSON + 统一解析器已退役，见 `docs/capability-governance.md`）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
 - 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
 
@@ -215,7 +215,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
   scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
   按 `policy.connector_scope()` 取 code scope 禁用集替换 plain scope 的（非连接器
-  禁用如 `kb_search` 保留），并按 `policy.extra_hidden_tools()` 恒隐藏
+  禁用如 `kb_search` 保留），并按 `policy.unavailable_tools()` 恒隐藏
   `present_artifact`；`load_skill` 按该会话组合目录是否为空动态决定（§8.6）。
 
 ### 8.4 远程端过滤原生代码会话事件
@@ -284,7 +284,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   `.pinvou/skills` 为 pinvou3 自有约定）在**策略开关默认关**
   下经同一物化通道拷入组合目录；开启路径有注入风险警告（项目内文本是
   prompt-injection 面）。catalogue 显示组合目录路径而非 bundle 内部结构。
-- 详细设计、验收矩阵与遗留见 `docs/skill-scope-governance-改动说明.md`。
+- 治理机制的当前形态见 `docs/capability-governance.md`。
 
 ### 8.7 权限默认值与两层持久化（2026-08-06）
 
@@ -337,13 +337,12 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
    建议逐步上提为 `code_sessions` / `CodeView`，两条链路分别做 adapter/hook。
 2. CI 增强：正式 `rust-test` 目前 skipped（Windows 只 `--no-run`），建议加
    `ci:full-rust` 让完整测试成为该 head 的正式 check。
-3. 代码会话工具/技能 profile（审阅建议②，恢复登记）：代码会话当前继承全集
+3. 代码会话工具/技能分化（审阅建议②，已定论）：代码会话当前继承全集
    工具，已落地的隔离有——连接器工具按 scope 整形（§8.3）、隐藏
    `present_artifact`、skill 双 scope 治理（§8.6：组合目录过滤 catalogue +
    `load_skill` 按目录空否放行），且上述差异已收编进 `SessionPolicy` 策略对象
-   （§3.6，profile 的载体与挂载点）。skill 维度已由
-   `docs/skill-scope-governance-改动说明.md` 落地（原 X-1 标记项关闭）；其余
-   工具维度的 profile 化（如代码会话专用工具面）待后续评审一并实施。
+   （§3.6）。工具面进一步分化的形态已定为**编译期常量**（能力档案 JSON 方案
+   评审后退役，见 `docs/capability-governance.md`），原 X-1 标记项关闭。
 
 ## 11. 过程产物
 

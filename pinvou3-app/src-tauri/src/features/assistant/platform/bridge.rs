@@ -455,15 +455,13 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）解析结果**差量驱动**——
-    /// 档案差量（exclude / extra_hidden / connector_scope）为空时原样返回；
-    /// 有差量则逐项并入 disallowed。
-    /// spawn 初值与全局热刷都经此整形。不按模式分支（模式知识在策略对象内）。
+    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）并入模式差量——
+    /// 无差量时原样返回。spawn 初值与全局热刷都经此整形。
     ///
     /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
-    /// - 档案 `tools.exclude`：基础集上再藏（所有模式）；
-    /// - 档案 `tools.extra_hidden`：模式固有隐藏（所有模式;code:产物卡）;
-    /// - 档案 `connectors.scope` 非 plain 时:连接器工具改用该 scope 的禁用集
+    /// - 模式缺席工具（编译期常量 `SessionPolicy::unavailable_tools`；code:
+    ///   产物卡）——"该模式架构上无此能力"，非用户偏好;
+    /// - 连接器禁用集 scope 非 plain 时改用该 scope 的禁用集
     ///   ——两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;
     ///   非连接器禁用(kb_search 等)仍保留;
     /// - `load_skill` 按**该会话组合目录是否为空**动态决定（V-5 联动,非 plain
@@ -471,29 +469,22 @@ impl Pinvou3Bridge {
     ///   技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录检查是磁盘 I/O,
     ///   策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
-        let resolved = self.session_policy(session_id).resolve();
-        // 档案 tools.exclude：基础集上再藏（设计期声明，所有模式）。
-        for excluded in resolved.tool_exclude {
-            if !tools.iter().any(|tool| tool == excluded) {
-                tools.push(excluded.clone());
-            }
-        }
-        // 模式固有隐藏（档案 tools.extra_hidden）：并入 disallowed（所有模式）。
-        // ⚠️ 顺序约束：先于下方 connector retain——若未来某模式的 extra_hidden
-        // 恰好含 plain scope 连接器工具名，会被 retain 误删；当前 code 档案的
-        // extra_hidden（mcp_pinvou3_present_artifact）与连接器禁用集无交集，无实际
-        // 影响，但新增 extra_hidden 条目时应避开连接器全名（或先做 retain 再追加）。
-        for hidden in resolved.extra_hidden_tools {
-            if !tools.iter().any(|tool| tool == hidden) {
-                tools.push(hidden.clone());
+        let policy = self.session_policy(session_id);
+        // 模式缺席工具（编译期常量）：并入 disallowed（所有模式）。
+        // ⚠️ 顺序约束：先于下方 connector retain——缺席名单应避开连接器全名
+        // （当前 code 的 mcp_pinvou3_present_artifact 与连接器禁用集无交集），
+        // 否则会被 retain 误删；新增条目时同样注意（或先做 retain 再追加）。
+        for name in policy.unavailable_tools() {
+            if !tools.iter().any(|tool| tool == name) {
+                tools.push((*name).to_string());
             }
         }
         // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
-        // （scope 来自档案 connectors.scope；plain 不执行连接器 scope 替换）。
-        if resolved.connector_scope != marketplace::ConnectorScope::Plain {
+        // （scope 由会话模式决定；plain 不执行连接器 scope 替换）。
+        if policy.connector_scope() != marketplace::ConnectorScope::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
             let scoped_connector =
-                crate::features::marketplace::disabled_tool_names_for(resolved.connector_scope);
+                crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
             tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
             for blocked in scoped_connector {
                 if !tools.iter().any(|tool| tool == &blocked) {
@@ -2385,11 +2376,11 @@ mod tests {
     #[test]
     fn code_session_tool_shaping_hides_present_artifact_only_for_code_sessions() {
         let mut bridge = fixture_bridge();
-        // 未注入 predicate：一律按非代码会话处理。
+        // 未注入 predicate：一律按非代码会话处理；plain 无模式差量。
         let plain = vec!["kb_search".to_string()];
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            [plain.clone(), vec!["Git".to_string()]].concat()
+            plain.clone()
         );
 
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
@@ -2418,7 +2409,7 @@ mod tests {
         }
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
-            [plain.clone(), vec!["Git".to_string()]].concat()
+            plain.clone()
         );
     }
 
@@ -2492,9 +2483,9 @@ mod tests {
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // 普通会话保留 plain scope 禁用集，并隐藏代码专用 Git。
+        // 普通会话保留 plain scope 禁用集，无模式差量（Git 已放开）。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(shaped, [tools, vec!["Git".to_string()]].concat());
+        assert_eq!(shaped, tools);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3817,37 +3808,43 @@ mod tests {
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// D-2 行为断言:整形按策略数据驱动。plain 会话追加代码专用 Git；
-    /// code 会话按策略追加隐藏工具且幂等不重复(连接器 scope 切换
+    /// D-2 行为断言:整形按策略数据驱动。plain 会话无模式差量（Git 已放开）；
+    /// code 会话按策略追加缺席工具且幂等不重复(连接器 scope 切换
     /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
     #[test]
     fn shape_disallowed_tools_follows_session_policy() {
         let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
         let mut bridge = fixture_bridge();
-        // 未注入 predicate → plain:保留原禁用项，并隐藏代码专用 Git。
+        // 未注入 predicate → plain:保留原禁用项，无模式差量追加。
         let plain = bridge.shape_disallowed_tools("sess-plain", tools.clone());
-        assert_eq!(plain, [tools.clone(), vec!["Git".to_string()]].concat());
+        assert_eq!(plain, tools.clone());
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
         }));
-        // code:按策略追加隐藏工具,保留非连接器禁用项,且不重复。
+        // code:按策略追加缺席工具,保留非连接器禁用项,且不重复。
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         for kept in &tools {
             assert!(shaped.contains(kept), "非连接器禁用项应保留: {shaped:?}");
         }
-        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+        for unavailable in SessionPolicy::for_mode(SessionMode::Code).unavailable_tools() {
             assert_eq!(
-                shaped.iter().filter(|tool| *tool == hidden).count(),
+                shaped
+                    .iter()
+                    .filter(|tool| tool.as_str() == *unavailable)
+                    .count(),
                 1,
-                "策略隐藏工具应恰好出现一次: {hidden}"
+                "模式缺席工具应恰好出现一次: {unavailable}"
             );
         }
         let twice = bridge.shape_disallowed_tools("sess-code", shaped);
-        for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
+        for unavailable in SessionPolicy::for_mode(SessionMode::Code).unavailable_tools() {
             assert_eq!(
-                twice.iter().filter(|tool| *tool == hidden).count(),
+                twice
+                    .iter()
+                    .filter(|tool| tool.as_str() == *unavailable)
+                    .count(),
                 1,
-                "整形应幂等(不重复追加): {hidden}"
+                "整形应幂等(不重复追加): {unavailable}"
             );
         }
     }
