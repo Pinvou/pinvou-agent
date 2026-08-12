@@ -116,9 +116,9 @@ fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     let (env_section, rest) = INSTRUCTIONS_WORK_MD
         .split_once("\n\n")
         .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段");
-    let (browser_section, artifact_rule) = rest
-        .split_once("\n\n")
-        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段 + 空行 + 成品条段");
+    let (browser_section, artifact_rule) = rest.split_once("\n\n").expect(
+        "instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段 + 空行 + 成品条段",
+    );
     (env_section, browser_section, artifact_rule)
 }
 
@@ -813,7 +813,9 @@ impl Pinvou3Bundle {
             .is_none()
             && paths::bundled_chrome_devtools_mcp_bin().is_none()
         {
-            missing.push("内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)");
+            missing.push(
+                "内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)",
+            );
         }
         if paths::bundled_connector_node().is_none() && find_system_node().is_none() {
             missing.push("node 运行时不可用");
@@ -1122,7 +1124,10 @@ mod tests {
             msg.contains("chrome-devtools-mcp"),
             "应点名缺失的运行时: {msg}"
         );
-        assert!(msg.contains("mcp_browser_"), "应指明缺失的是浏览器工具: {msg}");
+        assert!(
+            msg.contains("mcp_browser_"),
+            "应指明缺失的是浏览器工具: {msg}"
+        );
         cleanup(&tmp);
     }
 
