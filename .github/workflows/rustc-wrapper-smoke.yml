@@ -45,6 +45,6 @@ jobs:
           mkdir -p .cargo
           cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/.cargo/config.toml" .cargo/config.toml
           cp -R "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts" scripts
-          cargo check 2>&1 | tee cargo-check.log
+          CARGO_TERM_COLOR=never cargo check 2>&1 | tee cargo-check.log
           # wrapper 必须被真正调用:日志应包含编译动作(cargo check 输出 Checking)
           grep -q "Checking wrapper_smoke" cargo-check.log
