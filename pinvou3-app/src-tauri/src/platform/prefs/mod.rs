@@ -189,7 +189,9 @@ impl SavedModel {
                     | "none"
                     | "false"
                     | "low"
+                    | "minimum"
                     | "minimal"
+                    | "light"
                     | "medium"
                     | "mid"
                     | "high"
@@ -198,6 +200,7 @@ impl SavedModel {
                     | "max"
                     | "maximum"
                     | "xhigh"
+                    | "ultra"
                     | "ultracode"
             );
             if !valid {
@@ -1001,7 +1004,9 @@ mod tests {
             "none",
             "false",
             "low",
+            "minimum",
             "minimal",
+            "light",
             "medium",
             "mid",
             "high",
@@ -1010,6 +1015,7 @@ mod tests {
             "max",
             "maximum",
             "xhigh",
+            "ultra",
             "ultracode",
         ] {
             let mut m = base.clone();
