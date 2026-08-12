@@ -1,9 +1,10 @@
 /**
- * 子代理全量审计产出的同类竞态回归测试（PR #250 延续）：
+ * 子代理全量审计产出的同类竞态回归测试（PR #250 系列，域 D / PR #258）：
  * 陈旧读取覆盖 / await 后写入漂移 / 并发重入——修复后的行为快照。
- * 覆盖 tauri memory/personas/workflow/settings 四个可单测 feature；
- * sessions.js（ensureSession/refreshHistoryList/archiveSession）内部依赖
- * 太重（sessionStates/switchActiveTo 等），由代码审查 + 既有套件保证。
+ * 覆盖 tauri memory/personas 两个可单测 feature 的跨会话竞态；
+ * workflow/settings 域由后续拆分 PR 另行覆盖。sessions.js
+ * （ensureSession/refreshHistoryList/archiveSession）内部依赖太重
+ * （sessionStates/switchActiveTo 等），由代码审查 + 既有套件保证。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,12 +15,6 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
-
-function deferred() {
-  let resolve, reject;
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
 
 /** 通用 feature 装载器：vm 加载 IIFE(window) 形态的桥 feature 文件。 */
 function loadFeature(fileName, state, contextOverrides) {
@@ -159,5 +154,18 @@ test('unequipPersona 切走后卸下播报不写进别的会话', async () => {
   assert.equal(rt.state.chatItems.length, 0, '不得在切走后的会话插入卸下系统消息');
 });
 
-// ── workflow.js：openDemo 陈旧覆盖 / stopWorkflowTask 覆盖新 run ────
+test('equipPersona rename 挂起期间切走：不插卡/不写挂件/不记事件', async () => {
+  const rt = loadPersonasFeature();
+  const equip = rt.defer('equip_persona');
+  const rename = rt.defer('rename_session');
+  const p = rt.api.equipPersona('persona-x');       // A 会话发起，标题默认 → 走 rename 分支
+  equip.resolve({ id: 'persona-x', name: '专家X' });
+  await new Promise(r => setTimeout(r, 0));          // 推进微任务：equip 恢复并挂起在 rename
+  rt.state.activeSessionId = 'chat-b';               // rename 挂起期间切走
+  rename.resolve({});
+  await p;
+  assert.equal(rt.state.activePersona, null, '不得把加持写进切走后的会话');
+  assert.equal(rt.state.personaEvents.length, 0, '不得在切走后的会话记 persona 事件');
+  assert.equal(rt.state.chatItems.length, 0, '不得在切走后的会话插入加持卡');
+});
 
