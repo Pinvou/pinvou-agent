@@ -2084,9 +2084,15 @@
 
     function poll(attempt) {
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
+        // 任务已被删除时不再回填：陈旧轮询响应会把已删任务以 fallback 名
+        // 复活回侧边栏（审计 R1）。任务不在列表即收工，不 merge、不续排。
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
+        });
+        if (!task) {
+          stop();
+          return;
+        }
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -6292,12 +6298,18 @@
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
+  // （审计 b）。请求序号后发者胜（与 tauri settings 侧一致）。
+  var modelsLoadSeq = 0;
   async function loadModels() {
+    var seq = ++modelsLoadSeq;
     try {
       var v = await invoke("list_models");
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
     } catch (e) {
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = []; state.activeModelId = null;
     }
     notify();

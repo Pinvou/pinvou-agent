@@ -202,7 +202,7 @@
       try {
         await invoke("web_access_disable");
       } catch (error) {
-        if (seq !== webAccessIntentSeq) throw error;
+        if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
         state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error) });
         notify();
         throw error;

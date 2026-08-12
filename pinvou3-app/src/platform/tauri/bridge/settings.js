@@ -190,6 +190,9 @@
     vllmDetectSeq++; // 引导完成：作废在途的陈旧检测读取（审计）
     state.vllmBootstrapping = false;
     notify();
+    // 作废在途读取会中断 autoPoll 续排链（被作废的检测不再续排定时器），
+    // 引导完成后主动重检一次，让引擎就绪状态及时收敛（审计补充）。
+    detectLocalVllmSetup({ autoPoll: true }).catch(function () {});
   }
   // 点「跳过」:仅本次会话内不再弹(不写持久标记,下次启动若仍未配好会再次友好提示)。
   function dismissVllmSetup() {
