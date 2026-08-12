@@ -2539,7 +2539,19 @@ Object.assign(dict.ja.uiToolStore, { storeData: {
   },
 } });
 
-// 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
+// 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
+Object.assign(dict.zh.uiToolStore, {
+  groupByType:'按类型', groupByBusiness:'按业务',
+  typeGroups:{ bundle:'工具包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+});
+Object.assign(dict.en.uiToolStore, {
+  groupByType:'By Type', groupByBusiness:'By Domain',
+  typeGroups:{ bundle:'Tool Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+});
+Object.assign(dict.ja.uiToolStore, {
+  groupByType:'タイプ別', groupByBusiness:'業務別',
+  typeGroups:{ bundle:'ツールパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
+});
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 dict.zh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
