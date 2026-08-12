@@ -595,6 +595,16 @@ pub fn run() {
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
+            // 浏览器功能：工作模式中 Agent 操作专用有头 Chrome（CDP 截图流 → 侧边栏 Tab）。
+            // manage 注入单例 + 启动监听任务：MCP wrapper 首次被模型调用时自启 Chrome，
+            // 监听任务检测到 cdp-port.json 有效即接入并通知前端显示浏览器 Tab。
+            {
+                let mgr = features::browser::BrowserManager::new();
+                mgr.bind_app(app.handle().clone());
+                app.manage(mgr);
+                features::browser::BrowserManager::spawn_watch(app.handle().clone());
+            }
+
             startup::mark("setup:done");
             Ok(())
         })
@@ -608,6 +618,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::browser::browser_ensure_started,
+            commands::browser::browser_stop,
+            commands::browser::browser_status,
+            commands::browser::browser_navigate,
+            commands::browser::browser_back,
+            commands::browser::browser_forward,
+            commands::browser::browser_reload,
+            commands::browser::browser_input,
+            commands::browser::browser_list_tabs,
+            commands::browser::browser_create_tab,
+            commands::browser::browser_close_tab,
+            commands::browser::browser_activate_tab,
             commands::startup::report_frontend_startup,
             commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,

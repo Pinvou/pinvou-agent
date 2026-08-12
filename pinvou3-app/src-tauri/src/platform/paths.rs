@@ -134,6 +134,36 @@ pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
 
+// --- 浏览器功能（features/browser）路径 ---
+
+/// `~/.pinvou3/browser/` —— 专用有头 Chrome 的状态目录（端口文件/profile/启动锁）。
+pub fn browser_home() -> PathBuf {
+    pinvou3_home().join("browser")
+}
+/// CDP 端口协调文件：{ port, pid, owner: "app"|"mcp", started_at }。
+/// Rust BrowserManager 与 MCP wrapper（browser-wrapper.mjs）通过它幂等协调同一实例。
+pub fn browser_cdp_port_json() -> PathBuf {
+    browser_home().join("cdp-port.json")
+}
+/// 专用 Chrome 的独立 user-data-dir（与用户日常浏览器隔离）。
+pub fn browser_profile_dir() -> PathBuf {
+    browser_home().join("profile")
+}
+/// 浏览器启动独占锁（node 的 `openSync(lock, 'wx')` 与 Rust `create_new` 同语义）。
+pub fn browser_start_lock() -> PathBuf {
+    browser_home().join("start.lock")
+}
+/// 浏览器 MCP wrapper 脚本（编译期内嵌，释放到 `~/.pinvou3/bundle/mcp-servers/`）。
+pub fn bundle_browser_wrapper() -> PathBuf {
+    bundle_mcp_servers_dir().join("browser-wrapper.mjs")
+}
+/// vendor 的 chrome-devtools-mcp 入口（随安装包 resource_dir 分发）。
+pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
+    let res = runtime_resource_dir()?;
+    let bin = res.join("runtime/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
+    bin.is_file().then_some(bin)
+}
+
 /// `~/.pinvou3/web-template` —— 三省六部「网页类」差事的预置脚手架(Vite + React +
 /// vite-plugin-singlefile,含预装 node_modules,离线可 `npm run build` 出单文件 HTML)。
 /// 工部(gongbu)角色提示词硬编码此路径:`cp -r ~/.pinvou3/web-template deliverables/<站名>`。

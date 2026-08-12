@@ -259,6 +259,11 @@ pub fn install_prompt_overrides() {
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
+/// 浏览器 MCP wrapper(零依赖 node stdio):与 Rust BrowserManager 协调专用有头 Chrome,
+/// 再以 `--browser-url` 托管 vendor 的 chrome-devtools-mcp。编译期内嵌同 present_artifact。
+pub const BROWSER_WRAPPER_MJS: &str =
+    include_str!("../../../../resources/common/bundle/mcp-servers/browser-wrapper.mjs");
+
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
 const WEATHER_SERVER_PY: &str =
     include_str!("../../../../../resources/mcp-servers/weather/server.py");
@@ -731,8 +736,59 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
+        // 浏览器 MCP（工作模式 Agent 操作有头 Chrome）：仅当 vendor 的 chrome-devtools-mcp
+        // 与 node 运行时都可用时注册；否则跳过（dev 环境未跑 vendor 脚本 / 无 node），
+        // 并清掉可能残留的旧条目。
+        self.ensure_browser_mcp_entry(servers)?;
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
+    }
+
+    /// upsert `browser` MCP server 条目。前置条件：
+    /// 1. vendor 的 chrome-devtools-mcp 入口存在（打包资源，或 `PINVOU3_CDMCP_BIN` 覆盖）；
+    /// 2. node 运行时可用（随包捆绑 node 优先，回退系统 PATH node）；
+    /// 3. wrapper 脚本已释放到 `~/.pinvou3/bundle/mcp-servers/`。
+    /// 任一不满足 → 删除 `browser` 条目（避免底座拉起失败刷日志）。
+    fn ensure_browser_mcp_entry(
+        &self,
+        servers: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> std::io::Result<()> {
+        let mcp_bin = std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(paths::bundled_chrome_devtools_mcp_bin);
+        let Some(mcp_bin) = mcp_bin else {
+            servers.remove("browser");
+            return Ok(());
+        };
+        let node = paths::bundled_connector_node().or_else(find_system_node);
+        let Some(node) = node else {
+            servers.remove("browser");
+            return Ok(());
+        };
+        let wrapper = paths::bundle_browser_wrapper();
+        if !wrapper.is_file() {
+            servers.remove("browser");
+            return Ok(());
+        }
+        servers.insert(
+            "browser".to_string(),
+            serde_json::json!({
+                "command": node,
+                "args": [
+                    wrapper.to_string_lossy(),
+                    mcp_bin.to_string_lossy(),
+                    paths::browser_cdp_port_json().to_string_lossy(),
+                    paths::browser_profile_dir().to_string_lossy(),
+                ],
+                "env": {
+                    // 离线双保险（wrapper 也自带这些参数/env）
+                    "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+                    "CI": "1"
+                }
+            }),
+        );
+        Ok(())
     }
 
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
@@ -852,8 +908,29 @@ impl Pinvou3Bundle {
         std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
         std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
         std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
+        // 浏览器 MCP wrapper(零依赖 node,stdin/stdout 是 MCP 协议;wrapper 由 node 直接执行,
+        // 不依赖可执行位,chmod 无害)
+        let wrapper = paths::bundle_browser_wrapper();
+        std::fs::write(&wrapper, BROWSER_WRAPPER_MJS)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&wrapper)?.permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&wrapper, perm)?;
+        }
         Ok(())
     }
+}
+
+/// 浏览器 MCP 的 node 运行时回退：随包捆绑 node 不可用（dev 模式）时，找系统 PATH node。
+fn find_system_node() -> Option<std::path::PathBuf> {
+    let bin = if cfg!(windows) { "node.exe" } else { "node" };
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(bin))
+            .find(|c| c.is_file())
+    })
 }
 
 #[cfg(test)]

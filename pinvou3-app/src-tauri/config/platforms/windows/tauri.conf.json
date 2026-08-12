@@ -2,6 +2,9 @@
   "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "targets": ["msi", "nsis"],
+    "resources": {
+      "resources/platforms/windows/chrome-devtools-mcp/": "runtime/chrome-devtools-mcp"
+    },
     "windows": {
       "nsis": {
         "installMode": "perMachine",

@@ -16,6 +16,7 @@ import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { KnowledgeView } from '../features/knowledge/KnowledgeView.jsx';
+import { BrowserView } from '../features/browser/BrowserView.jsx';
 import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
@@ -149,6 +150,31 @@ function workspaceDisplayName(path) {
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
       const [activeTheme, setActiveTheme] = useState('dark');
+      // 浏览器 Tab：仅"工作模式中模型实际调用浏览器能力"后出现（Rust 端 emit browser:activated），
+      // 未调用时不渲染、不加载。
+      const [browserActive, setBrowserActive] = useState(false);
+      useEffect(() => {
+        let disposed = false;
+        const unlisteners = [];
+        tauriEvents.listen('browser:activated', () => {
+          if (disposed) return;
+          setBrowserActive(true);
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        tauriEvents.listen('browser:stopped', () => {
+          if (disposed) return;
+          setBrowserActive(false);
+        }).then(unlisten => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        }).catch(() => {});
+        return () => {
+          disposed = true;
+          unlisteners.forEach(u => u && u());
+        };
+      }, []);
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
@@ -1576,12 +1602,12 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings', 'browser'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1825,6 +1851,15 @@ function workspaceDisplayName(path) {
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
+              {browserActive && (
+                <NavItem
+                  icon={<Globe size={18} />} label={t.browser}
+                  active={currentView === 'browser'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => navigateFromScheduledRun('browser')}
+                />
+              )}
               {!isSidebarOpen && (
                 <NavItem
                   icon={<MessageSquare size={18} />} label={t.currentChat}
@@ -2086,6 +2121,7 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
+            {browserActive && currentView === 'browser' && <BrowserView theme={activeTheme} t={t} />}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
@@ -2307,6 +2343,8 @@ function workspaceDisplayName(path) {
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
               { key: 'search', label: t.searchChats, icon: <Search size={18} />,
                 active: currentView === 'search', onClick: () => mobileNavigate('search') },
+              ...(browserActive ? [{ key: 'browser', label: t.browser, icon: <Globe size={18} />,
+                active: currentView === 'browser', onClick: () => mobileNavigate('browser') }] : []),
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),

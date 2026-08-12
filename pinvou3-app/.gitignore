@@ -17,6 +17,10 @@ src-tauri/resources/platforms/macos/codex-bridge/acp/
 src-tauri/resources/platforms/macos/codex-bridge/manifest.json
 src-tauri/resources/platforms/macos/.codex-bridge-build.*/
 
+# chrome-devtools-mcp 由 scripts/tauri/chrome-devtools-mcp.js 构建期 vendor(自包含构建,~13MB)。
+# 构建机下载 → 三平台 overlay 打进 runtime/chrome-devtools-mcp;dev 下资源缺失时 MCP 条目自动跳过。
+src-tauri/resources/platforms/*/chrome-devtools-mcp/
+
 # OS
 .DS_Store
 Thumbs.db

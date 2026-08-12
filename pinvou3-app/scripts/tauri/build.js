@@ -6,6 +6,7 @@ const {
   prepareWindowsCodexBridge,
   WINDOWS_BRIDGE_CONFIG_PATH,
 } = require("./codex-bridge.js");
+const { prepareChromeDevtoolsMcp } = require("./chrome-devtools-mcp.js");
 const {
   APP_ROOT,
   platformArchitectureConfigPath,
@@ -153,6 +154,7 @@ function main() {
   if (hasTauriBuildCommand) {
     prepareWebTemplate();
     prepareCodexBridge();
+    prepareChromeDevtoolsMcp();
     prepareWindowsCodexBridge(windowsBridgeOptions);
     if (process.platform === "win32") {
       additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
@@ -187,6 +189,7 @@ if (require.main === module) {
 module.exports = {
   configSpecs,
   main,
+  prepareChromeDevtoolsMcp,
   prepareCodexBridge,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
