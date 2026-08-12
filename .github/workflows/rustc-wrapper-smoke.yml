@@ -1,15 +1,20 @@
 name: rustc-wrapper-smoke
 
-# 验证 .cargo/config.toml [build] rustc-wrapper 在三端都能被 Cargo 执行:
-# - Unix(macos/ubuntu):shebang + sh 分支
-# - Windows:Rust std 对 .cmd 程序名的 cmd /C 处理
+# 验证 .cargo/config.toml [build] rustc-wrapper 在 Unix 与 Windows 都能被
+# Cargo 执行:
+# - Unix(macos/ubuntu):config.toml 指向 scripts/rustc-stack-wrapper
+#   (带 shebang 的 sh 脚本,execve 直接可执行)
+# - Windows:cargo 执行 wrapper 需要 .cmd 后缀才能走 cmd /C,由本 workflow
+#   注入 RUSTC_WRAPPER 环境变量指向 scripts/rustc-stack-wrapper.cmd
+#   (环境变量优先级高于 config.toml 的 rustc-wrapper 键)
 # 用最小 crate 继承仓库 wrapper 配置跑 cargo check(秒级,不编译全图),
-# 防止 wrapper 在某个平台不可执行(如 Windows os error 193)导致
-# 所有 Cargo build/check/test/run 全断。
+# 防止 wrapper 在某个平台不可执行(如 Windows os error 193 / Unix ENOEXEC)
+# 导致所有 Cargo build/check/test/run 全断。
 on:
   pull_request:
     paths:
       - 'pinvou3-app/src-tauri/.cargo/config.toml'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd'
   merge_group:
   push:
@@ -45,6 +50,12 @@ jobs:
           mkdir -p .cargo
           cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/.cargo/config.toml" .cargo/config.toml
           cp -R "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts" scripts
+          # Windows:config.toml 的 rustc-wrapper 指向无扩展名 sh(Unix 专用),
+          # cargo 用 CreateProcess 执行无扩展名只试 .exe → os error 193。
+          # 用 RUSTC_WRAPPER 环境变量(优先级高于 config.toml)覆盖为 .cmd 版。
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export RUSTC_WRAPPER="$tmp/scripts/rustc-stack-wrapper.cmd"
+          fi
           CARGO_TERM_COLOR=never cargo check 2>&1 | tee cargo-check.log
           # wrapper 必须被真正调用:日志应包含编译动作(cargo check 输出 Checking)
           grep -q "Checking wrapper_smoke" cargo-check.log

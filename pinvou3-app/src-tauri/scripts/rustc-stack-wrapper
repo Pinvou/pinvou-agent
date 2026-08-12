@@ -1,0 +1,20 @@
+#!/bin/sh
+# 仅为 rustc 编译进程注入更大的默认线程栈,规避构建期 rustc/LLVM 栈溢出。
+#
+# 背景:dev 默认对依赖开 O2 + 256 codegen-units 时,rustc/LLVM 编译
+# codewhale-tui 会在 MachineLateinstrsCleanup 递归中栈溢出,崩溃为
+# SIGBUS(rustc 1.96/1.97 stable 稳定复现;std 线程默认栈三端均为 2 MiB,
+# macOS 已实测触发,Linux 同源风险)。
+#
+# 通过 .cargo/config.toml [build] rustc-wrapper 接入,只包装编译期
+# rustc 调用;cargo run / cargo test 启动的应用与测试进程不经过本脚本,
+# 不会继承 RUST_MIN_STACK,默认线程栈语义(约 2 MiB)不变。
+# 与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
+#
+# 注意:本文件是 Unix(sh)版本。Windows 上 Cargo 需要 .cmd 后缀才能走
+# cmd /C(见 rustc-stack-wrapper.cmd);本地 Windows 开发请在
+# .cargo/config.local.toml 覆盖 rustc-wrapper 指向 .cmd 版本:
+#   [build]
+#   rustc-wrapper = "scripts/rustc-stack-wrapper.cmd"
+export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+exec "$@"

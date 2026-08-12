@@ -29,8 +29,15 @@
 # macOS 已实测触发,Linux/Windows 同源风险)。
 # 处理:不降 opt-level(保证依赖正常优化),而是加大编译器自身线程栈。
 # 通过 rustc-wrapper 只在编译期 rustc 进程注入 RUST_MIN_STACK=16MiB
-# (wrapper 见 scripts/rustc-stack-wrapper.cmd,sh/cmd 双分支,三端可执行):
+# (wrapper 见 scripts/rustc-stack-wrapper,Unix sh 版):
 # 不经过 wrapper 的 cargo run / cargo test 目标进程不会继承该变量,
 # 运行时线程栈语义不变。与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
+#
+# Windows:Cargo 执行 wrapper 需要 .cmd 后缀才能走 cmd /C(见
+# scripts/rustc-stack-wrapper.cmd),所以本地 Windows 开发请在
+# .cargo/config.local.toml 覆盖:
+#   [build]
+#   rustc-wrapper = "scripts/rustc-stack-wrapper.cmd"
+# CI 的 Windows job 通过 RUSTC_WRAPPER 环境变量注入同一路径。
 [build]
-rustc-wrapper = "scripts/rustc-stack-wrapper.cmd"
+rustc-wrapper = "scripts/rustc-stack-wrapper"
