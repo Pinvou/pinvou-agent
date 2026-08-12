@@ -238,6 +238,11 @@ pub fn super_permission_turn_reminder() -> &'static str {
     "当前系统不支持 Linux sudo 超级权限开关。需要管理员权限时,请使用系统提供的管理员方式执行,不要尝试 sudo/apt/systemctl/pkexec。"
 }
 
+/// 非三大桌面平台不支持专用有头 Chrome（移动端无独立浏览器进程语义）。
+pub fn chrome_candidates() -> Vec<&'static str> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

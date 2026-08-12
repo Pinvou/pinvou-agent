@@ -23,14 +23,17 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -146,9 +149,26 @@ function writePortFile(port, owner) {
     mkdirSync(dirname(CDP_PORT_JSON), { recursive: true });
     const tmp = CDP_PORT_JSON + '.tmp';
     writeFileSync(tmp, JSON.stringify({ port, pid: process.pid, owner, started_at: Date.now() }));
+    // 收紧端口文件权限：CDP 无鉴权，同机其他本地用户不应能读到端口坐标。
+    try {
+      chmodSync(tmp, 0o600);
+    } catch {
+      /* Windows 无 chmod 语义，忽略 */
+    }
     renameSync(tmp, CDP_PORT_JSON); // 原子替换
   } catch (e) {
     log('写端口文件失败:', e.message);
+  }
+}
+
+/// 启动锁 stale 判定：mtime 超过 60s 视为持有者崩溃/被杀后的残留（与 Rust 侧
+/// `lock_file_stale` 同语义，双方都可在等锁时抢占删除，避免永久死锁）。
+function lockFileStale(lockPath) {
+  try {
+    const st = statSync(lockPath);
+    return Date.now() - st.mtimeMs > 60_000;
+  } catch {
+    return false;
   }
 }
 
@@ -252,6 +272,16 @@ async function main() {
         try {
           lockFd = openSync(lockPath, 'wx');
         } catch {
+          // stale 锁（持有者崩溃/被杀后残留 >60s）：抢占删除后重试。
+          if (lockFileStale(lockPath)) {
+            log('启动锁 stale，抢占删除');
+            try {
+              unlinkSync(lockPath);
+            } catch {
+              /* ignore */
+            }
+            continue;
+          }
           const pf = readPortFile();
           if (pf?.port && probeCdp(pf.port, 1000)) {
             port = pf.port;
@@ -260,6 +290,14 @@ async function main() {
             await sleep(300);
           }
         }
+      }
+    }
+    // 记录持有者 pid（诊断 + 与 Rust 侧 stale 判定一致）。
+    if (lockFd != null) {
+      try {
+        writeSync(lockFd, String(process.pid));
+      } catch {
+        /* ignore */
       }
     }
     if (!chromeReady && lockFd != null) {
@@ -291,7 +329,13 @@ async function main() {
   if (chromeReady) {
     log('使用 Chrome CDP 端口:', port);
   } else {
-    log('浏览器不可用，MCP 工具将报错（品悟打开浏览器 Tab 或重试后恢复）');
+    // Chrome 不可用（未找到 / 启动失败 / CDP 未就绪）：直接退出。
+    // chrome-devtools-mcp 启动时会同步连接 `--browser-url`，连不上会抛错退出，
+    // 工具根本不会注册——与其以端口 0 误导 spawn，不如干净退出并给出可读日志；
+    // 引擎对非 required server 的启动失败是非致命的，品悟 BrowserManager 之后
+    // 兜底拉起 Chrome，下次会话重试即恢复。
+    log('浏览器不可用：未找到 Chrome 或 CDP 未就绪，退出（品悟会兜底启动 Chrome，重试后恢复）');
+    process.exit(1);
   }
 
   // 托管官方 chrome-devtools-mcp：stdio 继承（MCP 协议），stderr 日志透传

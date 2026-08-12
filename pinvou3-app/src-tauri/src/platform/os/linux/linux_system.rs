@@ -219,3 +219,16 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
         "/usr/local/bin/nvidia-smi",
     ]
 }
+
+/// 专用有头 Chrome 的可执行候选（Linux 以 PATH 命令名为主）。
+/// 与 `browser-wrapper.mjs` 的 linux 候选保持一致（漂移时两侧同步）。
+pub fn chrome_candidates() -> Vec<&'static str> {
+    vec![
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+        "microsoft-edge",
+    ]
+}

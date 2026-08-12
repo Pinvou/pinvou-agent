@@ -736,59 +736,86 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
-        // 浏览器 MCP（工作模式 Agent 操作有头 Chrome）：仅当 vendor 的 chrome-devtools-mcp
-        // 与 node 运行时都可用时注册；否则跳过（dev 环境未跑 vendor 脚本 / 无 node），
-        // 并清掉可能残留的旧条目。
-        self.ensure_browser_mcp_entry(servers)?;
+        // 浏览器 MCP（工作模式 Agent 操作有头 Chrome）**不注册到全局 mcp.json**：
+        // 门控语义是「只有工作模式会话暴露 browser 工具」。全局条目统一删除
+        // （含历史残留），由 `work_mode_mcp_config_path` 在 assistant 引擎会话
+        // 启动时注入到会话专用 mcp 文件（`~/.pinvou3/browser/mcp.work.json`）。
+        servers.remove("browser");
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
     }
 
-    /// upsert `browser` MCP server 条目。前置条件：
+    /// 生成 `browser` MCP server 条目（不写盘，由 [`Self::work_mode_mcp_config_path`]
+    /// 注入工作模式会话专用 mcp.json）。前置条件：
     /// 1. vendor 的 chrome-devtools-mcp 入口存在（打包资源，或 `PINVOU3_CDMCP_BIN` 覆盖）；
     /// 2. node 运行时可用（随包捆绑 node 优先，回退系统 PATH node）；
     /// 3. wrapper 脚本已释放到 `~/.pinvou3/bundle/mcp-servers/`。
-    /// 任一不满足 → 删除 `browser` 条目（避免底座拉起失败刷日志）。
-    fn ensure_browser_mcp_entry(
-        &self,
-        servers: &mut serde_json::Map<String, serde_json::Value>,
-    ) -> std::io::Result<()> {
+    /// 任一不满足 → None（工作模式会话回退全局配置，模型拿不到浏览器工具）。
+    pub fn browser_mcp_entry(&self) -> Option<serde_json::Value> {
         let mcp_bin = std::env::var_os("PINVOU3_CDMCP_BIN")
             .map(std::path::PathBuf::from)
             .filter(|p| p.is_file())
-            .or_else(paths::bundled_chrome_devtools_mcp_bin);
-        let Some(mcp_bin) = mcp_bin else {
-            servers.remove("browser");
-            return Ok(());
-        };
-        let node = paths::bundled_connector_node().or_else(find_system_node);
-        let Some(node) = node else {
-            servers.remove("browser");
-            return Ok(());
-        };
+            .or_else(paths::bundled_chrome_devtools_mcp_bin)?;
+        let node = paths::bundled_connector_node().or_else(find_system_node)?;
         let wrapper = paths::bundle_browser_wrapper();
         if !wrapper.is_file() {
-            servers.remove("browser");
-            return Ok(());
+            return None;
         }
-        servers.insert(
-            "browser".to_string(),
-            serde_json::json!({
-                "command": node,
-                "args": [
-                    wrapper.to_string_lossy(),
-                    mcp_bin.to_string_lossy(),
-                    paths::browser_cdp_port_json().to_string_lossy(),
-                    paths::browser_profile_dir().to_string_lossy(),
-                ],
-                "env": {
-                    // 离线双保险（wrapper 也自带这些参数/env）
-                    "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
-                    "CI": "1"
-                }
-            }),
-        );
-        Ok(())
+        Some(serde_json::json!({
+            "command": node,
+            "args": [
+                wrapper.to_string_lossy(),
+                mcp_bin.to_string_lossy(),
+                paths::browser_cdp_port_json().to_string_lossy(),
+                paths::browser_profile_dir().to_string_lossy(),
+            ],
+            "env": {
+                // 离线双保险（wrapper 也自带这些参数/env）
+                "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+                "CI": "1"
+            }
+        }))
+    }
+
+    /// 工作模式（assistant 引擎）会话的 mcp 配置路径：
+    /// 全局 mcp.json + browser 条目（条件满足时），原子写到
+    /// `~/.pinvou3/browser/mcp.work.json` 后返回该路径；条件不满足时直接返回
+    /// 全局 mcp.json（无 browser 工具）。多工作模式会话并发重建同一文件，
+    /// 内容确定、tmp+rename 幂等。
+    pub fn work_mode_mcp_config_path(&self) -> PathBuf {
+        let base = self.mcp_json.clone();
+        let Some(browser_entry) = self.browser_mcp_entry() else {
+            return base;
+        };
+        let work_path = paths::browser_work_mcp_json();
+        let mcp: serde_json::Value = std::fs::read_to_string(&base)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut obj = mcp;
+        if obj.get("servers").and_then(|s| s.as_object()).is_none() {
+            obj.as_object_mut()
+                .unwrap()
+                .insert("servers".into(), serde_json::json!({}));
+        }
+        obj["servers"]
+            .as_object_mut()
+            .unwrap()
+            .insert("browser".to_string(), browser_entry);
+        if let Some(parent) = work_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = work_path.with_extension("json.rust-tmp");
+        if std::fs::write(&tmp, serde_json::to_string_pretty(&obj).unwrap_or_default()).is_ok()
+            && std::fs::rename(&tmp, &work_path).is_ok()
+        {
+            work_path
+        } else {
+            // 写失败降级：仍返回专用路径会让引擎拉到旧文件或缺文件，
+            // 不如直接退回全局配置（无 browser 工具，功能侧降级而非报错）。
+            let _ = std::fs::remove_file(&tmp);
+            base
+        }
     }
 
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
@@ -1651,5 +1678,72 @@ mod tests {
     fn cleanup(dir: &str) {
         std::env::remove_var("PINVOU3_HOME");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 浏览器 MCP 门控（ADR：只有工作模式会话暴露 browser 工具）：
+    /// 1. 全局 mcp.json 永不注册 browser 条目（含历史残留清理）；
+    /// 2. 前置条件不满足时 `work_mode_mcp_config_path` 回落全局路径；
+    /// 3. 条件满足时生成「全局 + browser」的会话专用文件且保留 marketplace 条目。
+    #[test]
+    fn browser_mcp_entry_is_gated_to_work_mode_config() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        std::env::remove_var("PINVOU3_CDMCP_BIN");
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+
+        // 1) 全局 mcp.json：历史残留的 browser 条目被清理，永不注册。
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{"browser":{"command":"/old/browser"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+        )
+        .unwrap();
+        bundle.ensure_builtin_mcp_servers().unwrap();
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        assert!(
+            !mcp["servers"].as_object().unwrap().contains_key("browser"),
+            "全局 mcp.json 不应有 browser 条目"
+        );
+
+        // 2) 前置条件不满足（无 vendor 入口）→ 回落全局 mcp.json，不写会话专用文件。
+        assert_eq!(
+            bundle.work_mode_mcp_config_path(),
+            bundle.mcp_json,
+            "条件不满足应直接返回全局 mcp.json"
+        );
+
+        // 3) 条件满足（伪造 vendor 入口 + wrapper 就位 + PATH node）→ 生成会话专用文件。
+        let fake_bin = std::path::PathBuf::from(&tmp).join("fake-cdmcp-entry.js");
+        std::fs::write(&fake_bin, "#!/usr/bin/env node\n").unwrap();
+        std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin);
+        let wrapper = paths::bundle_browser_wrapper();
+        std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        std::fs::write(&wrapper, "#!/usr/bin/env node\n").unwrap();
+        let work_path = bundle.work_mode_mcp_config_path();
+        assert_ne!(
+            work_path, bundle.mcp_json,
+            "条件满足应返回会话专用 mcp 文件"
+        );
+        let work: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&work_path).unwrap()).unwrap();
+        let servers = work["servers"].as_object().unwrap();
+        assert!(
+            servers.contains_key("browser"),
+            "会话专用文件应含 browser 条目"
+        );
+        assert!(
+            servers.contains_key("weather"),
+            "marketplace 条目 weather 应保留"
+        );
+        let args = servers["browser"]["args"].as_array().unwrap();
+        assert!(
+            args[0].as_str().unwrap().ends_with("browser-wrapper.mjs"),
+            "browser 条目应以 wrapper 为入口"
+        );
+
+        cleanup(&tmp);
     }
 }

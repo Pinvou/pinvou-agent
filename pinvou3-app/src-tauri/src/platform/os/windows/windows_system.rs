@@ -435,6 +435,17 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
+/// 专用有头 Chrome 的可执行候选（Windows 常见安装路径 + PATH `chrome`）。
+/// 与 `browser-wrapper.mjs` 的 win32 候选保持一致（wrapper 另有 LOCALAPPDATA
+/// 用户级安装路径，Rust 侧暂以静态路径为准）。
+pub fn chrome_candidates() -> Vec<&'static str> {
+    vec![
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "chrome",
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

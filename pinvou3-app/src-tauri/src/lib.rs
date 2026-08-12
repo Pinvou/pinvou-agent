@@ -1002,6 +1002,18 @@ pub fn run() {
     let mut resumed_reported = false;
     app.run(move |_app, event| match event {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
+        tauri::RunEvent::Exit => {
+            startup::mark("tauri:event_loop:exit");
+            // 浏览器：主进程退出时清理专用有头 Chrome（无论谁启动的，经 CDP
+            // Browser.close 优雅关闭；app 自启实例兜底 kill）。spawn 尽力而为，
+            // 事件循环即将结束，若未及完成由下次启动的端口探测/复用自愈。
+            let app = _app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(mgr) = app.try_state::<features::browser::BrowserManager>() {
+                    let _ = mgr.stop().await;
+                }
+            });
+        }
         tauri::RunEvent::Resumed if !resumed_reported => {
             resumed_reported = true;
             startup::mark("tauri:event_loop:first_resumed");

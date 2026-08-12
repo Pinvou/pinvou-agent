@@ -27,10 +27,7 @@ pub async fn browser_status(mgr: State<'_, BrowserManager>) -> Result<Value, Str
 }
 
 #[tauri::command]
-pub async fn browser_navigate(
-    url: String,
-    mgr: State<'_, BrowserManager>,
-) -> Result<(), String> {
+pub async fn browser_navigate(url: String, mgr: State<'_, BrowserManager>) -> Result<(), String> {
     mgr.navigate(url).await
 }
 
@@ -50,10 +47,7 @@ pub async fn browser_reload(mgr: State<'_, BrowserManager>) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn browser_input(
-    payload: Value,
-    mgr: State<'_, BrowserManager>,
-) -> Result<(), String> {
+pub async fn browser_input(payload: Value, mgr: State<'_, BrowserManager>) -> Result<(), String> {
     mgr.input_event(payload).await
 }
 
@@ -63,10 +57,7 @@ pub async fn browser_list_tabs(mgr: State<'_, BrowserManager>) -> Result<Vec<Tab
 }
 
 #[tauri::command]
-pub async fn browser_create_tab(
-    url: String,
-    mgr: State<'_, BrowserManager>,
-) -> Result<(), String> {
+pub async fn browser_create_tab(url: String, mgr: State<'_, BrowserManager>) -> Result<(), String> {
     mgr.create_tab(url).await
 }
 

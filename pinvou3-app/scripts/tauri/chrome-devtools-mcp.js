@@ -23,6 +23,18 @@ const MARKER_NAME = ".vendor-version.json";
 
 const PLATFORM_DIR = { darwin: "macos", linux: "linux", win32: "windows" };
 
+// 被 git 跟踪的占位 .gitkeep（.gitignore 只忽略 build/、marker 与 npm 包 README）：
+// vendor 重建（rmSync 整个目录）后必须重写，保证 CI 的 Tauri 资源布局测试
+// （tauri_platform_layout / tauri_effective_config）通过资源存在性断言。
+const GITKEEP = `本目录由 pinvou3-app/scripts/tauri/chrome-devtools-mcp.js 构建期 vendor：
+npm registry 官方 chrome-devtools-mcp（Apache-2.0，sha512 硬编码校验），
+产物 build/（rollup 自包含，约 13MB）+ .vendor-version.json，随安装包经
+resource overlay 分发到 runtime/chrome-devtools-mcp。
+
+本 .gitkeep 被 git 跟踪，保证 CI 的 Tauri 资源布局测试通过资源存在性断言；
+构建产物被 .gitignore 忽略。开发环境未跑 vendor 时，浏览器 MCP 条目自动跳过注册。
+`;
+
 function outputRoot(platform = process.platform) {
   const dir = PLATFORM_DIR[platform];
   if (!dir) throw new Error(`不支持的平台: ${platform}`);
@@ -88,6 +100,9 @@ function prepareChromeDevtoolsMcp({ platform = process.platform } = {}) {
     fs.rmSync(root, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(root), { recursive: true });
     fs.renameSync(unpacked, root);
+    // 4.5) 重写被 git 跟踪的占位 .gitkeep（rmSync 已删掉旧文件；CI 资源布局
+    //      测试依赖目录在 checkout 上存在，占位文件不可缺失）。
+    fs.writeFileSync(path.join(root, ".gitkeep"), GITKEEP);
     // 5) 自包含冒烟：当前 node 直接跑 --help（不装任何依赖，验证零依赖可离线跑）
     const entry = path.join(root, "build", "src", "bin", "chrome-devtools-mcp.js");
     if (!fs.existsSync(entry)) throw new Error("解压后缺少 build/src/bin/chrome-devtools-mcp.js");

@@ -155,6 +155,17 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
+/// 专用有头 Chrome 的可执行候选（macOS 以应用内可执行文件绝对路径为主）。
+/// 与 `browser-wrapper.mjs` 的 darwin 候选保持一致（漂移时两侧同步）。
+pub fn chrome_candidates() -> Vec<&'static str> {
+    vec![
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+}
+
 pub fn libreoffice_tool_path() -> PathBuf {
     if command_exists("soffice") {
         PathBuf::from("soffice")

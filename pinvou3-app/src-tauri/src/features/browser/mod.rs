@@ -5,12 +5,17 @@
 //! `~/.pinvou3/browser/cdp-port.json` + 独占锁幂等协调同一 Chrome 实例：
 //! - 谁先启动谁写端口文件；另一方检测到端口有效则直接复用（Chrome 同一
 //!   `--user-data-dir` 只允许一个实例，协调必须可靠）；
-//! - wrapper 退出时只清理自己启动的实例；本模块 stop() 清理 app 启动的实例；
-//!   品悟退出时无论 owner 是谁都清理（主进程语义）。
+//! - wrapper 退出时只清理自己启动的实例；本模块 stop() 经 CDP `Browser.close`
+//!   优雅关闭（对 wrapper 启动的实例同样有效），品悟退出时兜底清理（主进程语义）。
 //!
 //! 截图流：`Page.startScreencast`（JPEG 帧）→ 事件 `Page.screencastFrame` → 每帧
-//! `screencastFrameAck`（防止帧堆积）→ 转发给前端（emit `browser:frame`）+ 远端
-//! WebUI（`forward_app_event`）。交互坐标以帧 metadata 的 viewport CSS 像素为基准。
+//! `screencastFrameAck`（帧号原样回传，防止帧堆积）→ 转发给前端（emit
+//! `browser:frame`）。交互坐标以帧 metadata 的 viewport CSS 像素为基准。
+//!
+//! 端范围：**本期仅桌面端**。`browser:*` 事件仅本地 `emit`，不转发远端 WebUI
+//! （relay 的 `access-policy.json` 白名单不含任何 `browser:*` 事件/命令，
+//! 转发只会被拒绝并刷日志）——web/移动端暂不提供浏览器 Tab 与交互
+//! （"三端共享"为后续迭代项，勿在文档中宣称已支持）。
 
 mod cdp;
 
@@ -22,7 +27,6 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::features::remote_control::forward_app_event;
 use crate::platform::paths;
 
 pub use cdp::CdpSession;
@@ -71,31 +75,58 @@ impl BrowserManager {
     /// 监听 `cdp-port.json`：检测到有效端口（MCP wrapper 或本模块启动的 Chrome）且品悟
     /// 尚未接入时，自动 `ensure_started` 并 emit `browser:activated` —— 前端据此在
     /// "工作模式 + 模型实际调用浏览器能力"时显示浏览器 Tab（不调用则永不出现/加载）。
+    ///
+    /// 另承担崩溃恢复：已接入但 CDP 失联（Chrome 崩溃/被杀）时重置状态并 emit
+    /// `browser:stopped`，让前端隐藏 Tab、下次调用自动重新拉起。
     pub fn spawn_watch(app: AppHandle) {
         tokio::spawn(async move {
             let mut last_activated = false;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
+                let mgr = app.state::<BrowserManager>();
+                // 1) 已接入但 Chrome 失联（崩溃/被杀）→ 重置状态并通知前端。
+                {
+                    let mut inner = mgr.inner.lock().await;
+                    if inner.session.is_some() {
+                        let port = inner
+                            .port
+                            .or_else(|| inner.session.as_ref().map(|s| s.port()))
+                            .unwrap_or(0);
+                        if !probe_cdp(port, Duration::from_millis(800)).await {
+                            eprintln!("[browser] Chrome 失联（端口 {port}），重置浏览器状态");
+                            if let Some(task) = inner.loop_task.take() {
+                                task.abort();
+                            }
+                            if let Some(mut child) = inner.child.take() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            inner.port = None;
+                            inner.session = None;
+                            inner.active_session = None;
+                            last_activated = false;
+                            let _ = app.emit("browser:stopped", json!({}));
+                            // Chrome 已死：端口文件失效，清掉让下次启动干净重建。
+                            let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+                        }
+                        continue;
+                    }
+                }
+                // 2) 未接入：端口文件有效则接入并激活 Tab。
                 let Some(port) = port_file() else {
                     continue;
                 };
                 if !probe_cdp(port, Duration::from_millis(800)).await {
                     continue;
                 }
-                let mgr = app.state::<BrowserManager>();
-                {
-                    let inner = mgr.inner.lock().await;
-                    if inner.session.is_some() {
-                        if !last_activated {
-                            last_activated = true;
-                            let _ = app.emit("browser:activated", json!({}));
-                        }
-                        continue;
-                    }
-                }
                 if mgr.ensure_started().await.is_ok() {
-                    let _ = app.emit("browser:activated", json!({}));
-                    last_activated = true;
+                    if !last_activated {
+                        let _ = app.emit("browser:activated", json!({}));
+                        last_activated = true;
+                    }
+                } else {
+                    // 接入失败（如 Chrome 恰好在退出）静默重试：端口文件仍有效时下次再试。
+                    eprintln!("[browser] 接入 Chrome 失败，稍后重试");
                 }
             }
         });
@@ -118,8 +149,9 @@ impl BrowserManager {
         let (port, spawned_child) = self.acquire_or_start_chrome().await?;
 
         // 2) 连接 CDP
-        let connected =
-            cdp::connect(port).await.map_err(|e| format!("CDP 连接失败: {e:#}"))?;
+        let connected = cdp::connect(port)
+            .await
+            .map_err(|e| format!("CDP 连接失败: {e:#}"))?;
         let session = connected.session;
 
         // 3) attach 第一个页面 target
@@ -161,27 +193,43 @@ impl BrowserManager {
         Ok(())
     }
 
-    /// 停止浏览器：停 screencast、杀 Chrome、清理状态文件。
+    /// 停止浏览器：停 screencast、优雅关闭 Chrome（CDP `Browser.close` 对 wrapper
+    /// 启动的实例同样有效；失败则回退 kill 自启子进程）、清理协调文件并通知前端
+    /// （emit `browser:stopped`，前端据此隐藏浏览器 Tab）。
     pub async fn stop(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
-        if let (Some(session), Some(sid)) =
-            (inner.session.as_ref(), inner.active_session.as_ref())
+        if let (Some(session), Some(sid)) = (inner.session.as_ref(), inner.active_session.as_ref())
         {
-            let _ = session.call(Some(sid), "Page.stopScreencast", json!({})).await;
+            let _ = session
+                .call(Some(sid), "Page.stopScreencast", json!({}))
+                .await;
         }
+        // 优先经 CDP 优雅关闭整个 Chrome（browser 级 Browser.close）——对 wrapper
+        // 启动的实例（无子进程句柄）也生效；CDP 不可用时回退 kill 自启子进程。
+        let closed_via_cdp = match inner.session.as_ref() {
+            Some(s) => s.call(None, "Browser.close", json!({})).await.is_ok(),
+            None => false,
+        };
         if let Some(mut child) = inner.child.take() {
-            let _ = child.kill();
+            if !closed_via_cdp {
+                let _ = child.kill();
+            }
             let _ = child.wait();
         }
-        // 无论 owner 是谁，品悟是主进程：清理协调文件（Chrome 若为 wrapper 启动，
-        // 其退出时也会兜底清理；双删幂等）。
+        // Chrome 已关（close/kill 至少一条路径生效）：协调文件双删幂等（wrapper 的
+        // chromeChild exit 兜底也会清）。
         let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+        let _ = std::fs::remove_file(paths::browser_start_lock());
         if let Some(task) = inner.loop_task.take() {
             task.abort();
         }
         inner.port = None;
         inner.session = None;
         inner.active_session = None;
+        // 通知前端隐藏浏览器 Tab（main.jsx / BrowserView 监听 browser:stopped）。
+        if let Some(app) = self.app.lock().clone() {
+            let _ = app.emit("browser:stopped", json!({}));
+        }
         Ok(())
     }
 
@@ -199,7 +247,11 @@ impl BrowserManager {
                 .call(Some(sid), "Page.getNavigationHistory", json!({}))
                 .await
             {
-                let entries = v.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
+                let entries = v
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let current = v.get("currentIndex").and_then(Value::as_u64).unwrap_or(0);
                 let url = entries
                     .get(current as usize)
@@ -216,19 +268,29 @@ impl BrowserManager {
     /// 标签页列表（实时枚举 page 类型 target 并 attach）。
     pub async fn list_tabs(&self) -> Result<Vec<TabInfo>, String> {
         let inner = self.inner.lock().await;
-        let session = inner.session.as_ref().ok_or_else(|| "浏览器未启动".to_string())?;
+        let session = inner
+            .session
+            .as_ref()
+            .ok_or_else(|| "浏览器未启动".to_string())?;
         list_page_tabs(session).await
     }
 
     /// 新建标签页并激活（截图流切换到新页）。
     pub async fn create_tab(&self, url: String) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
-        let session = inner.session.as_ref().ok_or_else(|| "浏览器未启动".to_string())?;
+        let session = inner
+            .session
+            .as_ref()
+            .ok_or_else(|| "浏览器未启动".to_string())?;
         let v = session
             .call(None, "Target.createTarget", json!({ "url": url }))
             .await
             .map_err(|e| format!("Target.createTarget 失败: {e}"))?;
-        let target_id = v.get("targetId").and_then(Value::as_str).unwrap_or("").to_string();
+        let target_id = v
+            .get("targetId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let sid = session
             .call(
                 None,
@@ -251,7 +313,10 @@ impl BrowserManager {
     /// 关闭标签页（若关的是激活页，自动切回第一个剩余页）。
     pub async fn close_tab(&self, target_id: String) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
-        let session = inner.session.clone().ok_or_else(|| "浏览器未启动".to_string())?;
+        let session = inner
+            .session
+            .clone()
+            .ok_or_else(|| "浏览器未启动".to_string())?;
         session
             .call(None, "Target.closeTarget", json!({ "targetId": target_id }))
             .await
@@ -262,7 +327,9 @@ impl BrowserManager {
                 switch_screencast_locked(&mut inner, &first.session_id).await?;
             }
         } else if let Some(sid) = inner.active_session.take() {
-            let _ = session.call(Some(&sid), "Page.stopScreencast", json!({})).await;
+            let _ = session
+                .call(Some(&sid), "Page.stopScreencast", json!({}))
+                .await;
         }
         Ok(())
     }
@@ -306,13 +373,20 @@ impl BrowserManager {
             .call(Some(&sid), "Page.getNavigationHistory", json!({}))
             .await
             .map_err(|e| format!("getNavigationHistory 失败: {e}"))?;
-        let entries = v.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
+        let entries = v
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let current = v.get("currentIndex").and_then(Value::as_u64).unwrap_or(0);
         let target = current as i64 + delta;
         if target < 0 || target >= entries.len() as i64 {
             return Ok(());
         }
-        let entry_id = entries[target as usize].get("id").and_then(Value::as_u64).unwrap_or(0);
+        let entry_id = entries[target as usize]
+            .get("id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         session
             .call(
                 Some(&sid),
@@ -347,8 +421,14 @@ impl BrowserManager {
             "click" => {
                 let x = payload.get("x").and_then(Value::as_f64).unwrap_or(0.0);
                 let y = payload.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-                let button = payload.get("button").and_then(Value::as_str).unwrap_or("left");
-                let click_count = payload.get("clickCount").and_then(Value::as_u64).unwrap_or(1);
+                let button = payload
+                    .get("button")
+                    .and_then(Value::as_str)
+                    .unwrap_or("left");
+                let click_count = payload
+                    .get("clickCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1);
                 session
                     .call(
                         Some(&sid),
@@ -459,29 +539,61 @@ impl BrowserManager {
             return Ok((port, None));
         }
 
-        // 2) 拿独占锁（与 wrapper 的 `openSync(lock,'wx')` 同语义）
-        std::fs::create_dir_all(paths::browser_home()).map_err(|e| format!("创建浏览器目录失败: {e}"))?;
+        // 2) 拿独占锁（与 wrapper 的 `openSync(lock,'wx')` 同语义）。
+        //    锁文件内容首行为持有者 pid；mtime 超过 60s 视为 stale（持有者崩溃/
+        //    被 kill 后残留），可抢占删除，避免永久死锁。
+        std::fs::create_dir_all(paths::browser_home())
+            .map_err(|e| format!("创建浏览器目录失败: {e}"))?;
         let lock_path = paths::browser_start_lock();
-        let lock_file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+        let lock_file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
             Ok(f) => f,
             Err(_) => {
-                // 锁被占：等待持有者完成（最多 20s），期间若端口已可用则复用
+                // 锁被占：等待持有者完成（最多 20s），期间若端口已可用则复用；
+                // 锁文件 stale（持有者已死）时抢占删除后重试。
                 let deadline = std::time::Instant::now() + Duration::from_secs(20);
                 loop {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     if let Some(port) = live_port().await {
                         return Ok((port, None));
                     }
-                    if std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_path).is_ok() {
+                    if std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&lock_path)
+                        .is_ok()
+                    {
                         break;
+                    }
+                    if lock_file_stale(&lock_path) {
+                        eprintln!("[browser] 启动锁 stale，抢占删除");
+                        let _ = std::fs::remove_file(&lock_path);
+                        continue;
                     }
                     if std::time::Instant::now() >= deadline {
                         return Err("等待浏览器启动锁超时".to_string());
                     }
                 }
-                std::fs::OpenOptions::new().write(true).open(&lock_path).map_err(|e| format!("打开锁文件失败: {e}"))?
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&lock_path)
+                    .map_err(|e| format!("打开锁文件失败: {e}"))?
             }
         };
+        // 记录持有者 pid（诊断 + 供 stale 判定）。
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&lock_path)
+                .map_err(|e| format!("写锁文件失败: {e}"))?;
+            let _ = writeln!(f, "{}", std::process::id());
+            let _ = f.flush();
+        }
 
         // 3) 持锁：二次确认 → 自启
         let result: Result<(u16, Option<Child>), String> = async {
@@ -516,9 +628,16 @@ async fn run_event_loop(
     use cdp::CdpEvent;
     while let Some(ev) = events.recv().await {
         match ev {
-            CdpEvent::Event { session_id, method, params } => match method.as_str() {
+            CdpEvent::Event {
+                session_id,
+                method,
+                params,
+            } => match method.as_str() {
                 "Page.screencastFrame" => {
-                    let frame_sid = params.get("sessionId").and_then(Value::as_str).unwrap_or("");
+                    // CDP 帧号是 integer（`Page.screencastFrame` 事件 params.sessionId）。
+                    // 必须按数字原样回传 `Page.screencastFrameAck`，否则 Chrome 参数
+                    // 校验失败、截图流握手失效（帧堆积后停止推流）。
+                    let frame_sid = params.get("sessionId").and_then(Value::as_u64).unwrap_or(0);
                     let _ = session
                         .call(
                             session_id.as_deref(),
@@ -530,18 +649,18 @@ async fn run_event_loop(
                     let metadata = params.get("metadata").cloned().unwrap_or(json!({}));
                     let payload = json!({ "data": data, "metadata": metadata, "tab": session_id });
                     let _ = app.emit("browser:frame", &payload);
-                    forward_app_event(&app, "browser:frame", payload);
                 }
                 "Page.frameNavigated" => {
-                    let url = params.pointer("/frame/url").and_then(Value::as_str).unwrap_or("");
+                    let url = params
+                        .pointer("/frame/url")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     let payload = json!({ "url": url, "tab": session_id });
                     let _ = app.emit("browser:navigation", &payload);
-                    forward_app_event(&app, "browser:navigation", payload);
                 }
                 "Target.targetCreated" | "Target.targetDestroyed" => {
                     let payload = json!({ "event": method, "params": params });
                     let _ = app.emit("browser:tabs-changed", &payload);
-                    forward_app_event(&app, "browser:tabs-changed", payload);
                 }
                 _ => {}
             },
@@ -555,8 +674,14 @@ async fn run_event_loop(
 // ---------------------------------------------------------------------------
 
 fn active_locked(inner: &Inner) -> Result<(&CdpSession, String), String> {
-    let session = inner.session.as_ref().ok_or_else(|| "浏览器未启动".to_string())?;
-    let sid = inner.active_session.clone().ok_or_else(|| "没有激活的标签页".to_string())?;
+    let session = inner
+        .session
+        .as_ref()
+        .ok_or_else(|| "浏览器未启动".to_string())?;
+    let sid = inner
+        .active_session
+        .clone()
+        .ok_or_else(|| "没有激活的标签页".to_string())?;
     Ok((session.as_ref(), sid))
 }
 
@@ -569,7 +694,10 @@ async fn attach_first_page(session: &CdpSession) -> Result<String, String> {
     if let Some(infos) = targets.get("targetInfos").and_then(Value::as_array) {
         for info in infos {
             if info.get("type").and_then(Value::as_str) == Some("page") {
-                page_id = info.get("targetId").and_then(Value::as_str).map(String::from);
+                page_id = info
+                    .get("targetId")
+                    .and_then(Value::as_str)
+                    .map(String::from);
                 break;
             }
         }
@@ -581,7 +709,10 @@ async fn attach_first_page(session: &CdpSession) -> Result<String, String> {
                 .call(None, "Target.createTarget", json!({ "url": "about:blank" }))
                 .await
                 .map_err(|e| format!("Target.createTarget 失败: {e}"))?;
-            v.get("targetId").and_then(Value::as_str).unwrap_or("").to_string()
+            v.get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
         }
     };
     let sid = session
@@ -619,7 +750,11 @@ async fn list_page_tabs(session: &CdpSession) -> Result<Vec<TabInfo>, String> {
             if info.get("type").and_then(Value::as_str) != Some("page") {
                 continue;
             }
-            let target_id = info.get("targetId").and_then(Value::as_str).unwrap_or("").to_string();
+            let target_id = info
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let sid = match session
                 .call(
                     None,
@@ -628,14 +763,26 @@ async fn list_page_tabs(session: &CdpSession) -> Result<Vec<TabInfo>, String> {
                 )
                 .await
             {
-                Ok(v) => v.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string(),
+                Ok(v) => v
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 Err(_) => continue,
             };
             tabs.push(TabInfo {
                 target_id,
                 session_id: sid,
-                title: info.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
-                url: info.get("url").and_then(Value::as_str).unwrap_or("").to_string(),
+                title: info
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                url: info
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             });
         }
     }
@@ -644,10 +791,15 @@ async fn list_page_tabs(session: &CdpSession) -> Result<Vec<TabInfo>, String> {
 
 /// 切换截图流到指定 session：停旧流 → 启新流。
 async fn switch_screencast_locked(inner: &mut Inner, sid: &str) -> Result<(), String> {
-    let session = inner.session.as_ref().ok_or_else(|| "浏览器未启动".to_string())?;
+    let session = inner
+        .session
+        .as_ref()
+        .ok_or_else(|| "浏览器未启动".to_string())?;
     if let Some(old) = inner.active_session.as_deref() {
         if old != sid {
-            let _ = session.call(Some(old), "Page.stopScreencast", json!({})).await;
+            let _ = session
+                .call(Some(old), "Page.stopScreencast", json!({}))
+                .await;
         }
     }
     session
@@ -671,23 +823,9 @@ async fn switch_screencast_locked(inner: &mut Inner, sid: &str) -> Result<(), St
 // ---------------------------------------------------------------------------
 
 fn find_chrome() -> Option<PathBuf> {
-    let candidates: &[&str] = if cfg!(target_os = "macos") {
-        &[
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ]
-    } else if cfg!(target_os = "windows") {
-        &[
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            "chrome",
-        ]
-    } else {
-        &["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "microsoft-edge"]
-    };
-    for c in candidates {
+    // 平台候选表下沉到 platform::os 适配层（macos/linux/windows/unsupported 各一份），
+    // 此处只做通用探测：绝对路径直接判存在，命令名经 PATH 解析。
+    for c in crate::platform::os::chrome_candidates() {
         let p = Path::new(c);
         if p.is_absolute() && p.exists() {
             return Some(p.to_path_buf());
@@ -718,7 +856,10 @@ async fn pick_free_port() -> Result<u16, String> {
     use rand::Rng;
     let base = 9222 + rand::rng().random_range(0..3000);
     for port in base..(base + 200) {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
             return Ok(port);
         }
     }
@@ -746,7 +887,9 @@ fn start_chrome(chrome: &Path, port: u16) -> Result<Child, String> {
         "--window-size=1280,800",
         "about:blank",
     ]);
-    cmd.stdout(Stdio::null()).stderr(Stdio::null()).stdin(Stdio::null());
+    cmd.stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
     cmd.spawn().map_err(|e| format!("启动 Chrome 失败: {e}"))
 }
 
@@ -754,6 +897,22 @@ fn port_file() -> Option<u16> {
     let raw = std::fs::read_to_string(paths::browser_cdp_port_json()).ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     v.get("port").and_then(Value::as_u64).map(|p| p as u16)
+}
+
+/// 启动锁是否 stale：mtime 超过 60s 即视为持有者崩溃/被杀后的残留。
+/// 锁持有者正常持有不超过 ~35s（等锁 20s + CDP 探测 15s），60s 判定足够宽松，
+/// 不会误抢正常持锁者；残留锁则被抢占删除，避免双方永久死锁。
+fn lock_file_stale(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    modified
+        .elapsed()
+        .map(|age| age > Duration::from_secs(60))
+        .unwrap_or(false)
 }
 
 fn write_port_file(port: u16, owner: &str) -> Result<(), String> {
@@ -765,7 +924,8 @@ fn write_port_file(port: u16, owner: &str) -> Result<(), String> {
         "owner": owner,
         "started_at": chrono::Utc::now().timestamp_millis(),
     });
-    let tmp = path.with_extension("json.tmp");
+    // tmp 名与 wrapper 的 `CDP_PORT_JSON + '.tmp'` 区分，避免双侧并发写同一 tmp 互相覆盖。
+    let tmp = path.with_extension("json.rust-tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&data).unwrap())
         .map_err(|e| format!("写端口文件失败: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("落盘端口文件失败: {e}"))

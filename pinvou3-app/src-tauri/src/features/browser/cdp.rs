@@ -48,6 +48,9 @@ pub struct CdpSession {
 
 impl CdpSession {
     /// 向指定 session（或 browser 级）发送命令并等待响应。
+    ///
+    /// 带超时兜底：WebSocket 断开后读循环会立即唤醒在途调用，但断连之后新发起的
+    /// 调用没有读循环消费响应，必须靠本超时返回错误，避免持有方永久挂起。
     pub async fn call(
         &self,
         session_id: Option<&str>,
@@ -72,8 +75,16 @@ impl CdpSession {
             .await
             .map_err(|e| format!("CDP 发送失败: {e}"))?;
         drop(write);
-        rx.await
-            .map_err(|_| "CDP 响应超时（连接已关闭）".to_string())?
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Err(_) => {
+                // 超时：从 pending 摘除，避免条目泄漏。
+                self.pending.lock().await.remove(&id);
+                return Err("CDP 响应超时（30s）".to_string());
+            }
+            Ok(Err(_)) => return Err("CDP 响应超时（连接已关闭）".to_string()),
+            Ok(Ok(r)) => r,
+        };
+        response
     }
 
     pub fn port(&self) -> u16 {
@@ -155,7 +166,16 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
                 let _ = events_tx.send(ev);
             }
         }
+        // WebSocket 已关闭：唤醒所有在途请求，避免持有 inner 锁的调用永久挂起
+        // （Chrome 崩溃/被 kill 时 manager 靠这些错误感知并走恢复路径）。
+        let mut pending = session_clone.pending.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err("CDP 连接已关闭".to_string()));
+        }
     });
 
-    Ok(Connected { session, events: events_rx })
+    Ok(Connected {
+        session,
+        events: events_rx,
+    })
 }

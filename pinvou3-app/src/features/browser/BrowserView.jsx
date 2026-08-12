@@ -184,10 +184,23 @@ export function BrowserView({ theme, t }) {
       const img = imgRef.current;
       if (!img || !img.naturalWidth) return null;
       const rect = img.getBoundingClientRect();
-      const scaleX = img.naturalWidth / rect.width;
-      const scaleY = img.naturalHeight / rect.height;
-      let x = (clientX - rect.left) * scaleX;
-      let y = (clientY - rect.top) * scaleY;
+      // `<img>` 是 object-contain 等比缩放：getBoundingClientRect 返回整盒，
+      // 宽高比不一致时上下/左右有 letterbox 黑边。必须按实际绘制区换算，
+      // 绘制区之外的点击/移动不映射进页面坐标。
+      const aspect = img.naturalWidth / img.naturalHeight;
+      let drawnW = rect.width;
+      let drawnH = drawnW / aspect;
+      if (drawnH > rect.height) {
+        drawnH = rect.height;
+        drawnW = drawnH * aspect;
+      }
+      const offsetX = rect.left + (rect.width - drawnW) / 2;
+      const offsetY = rect.top + (rect.height - drawnH) / 2;
+      const px = clientX - offsetX;
+      const py = clientY - offsetY;
+      if (px < 0 || py < 0 || px > drawnW || py > drawnH) return null; // 黑边内
+      let x = (px / drawnW) * img.naturalWidth;
+      let y = (py / drawnH) * img.naturalHeight;
       // 页面缩放（pageScaleFactor≠1）时坐标换算到 CSS 像素
       const p = frameMeta && frameMeta.pageScaleFactor;
       if (p && p > 0 && p !== 1) {
@@ -209,6 +222,9 @@ export function BrowserView({ theme, t }) {
 
   const onFrameClick = useCallback(
     (e) => {
+      // 点击画面即聚焦键盘容器（容器挂 onKeyDown，img 本身不可聚焦）。
+      const host = imgRef.current && imgRef.current.parentElement;
+      if (host && host.focus) host.focus();
       const p = frameToViewport(e.clientX, e.clientY);
       if (!p) return;
       sendInput({ type: 'click', x: p.x, y: p.y, button: 'left', clickCount: 1 });
@@ -358,8 +374,19 @@ export function BrowserView({ theme, t }) {
         </div>
       )}
 
-      {/* 画面 */}
-      <div className="relative min-h-0 flex-1 overflow-hidden" style={{ background: isDark ? '#101113' : '#F4F5F6' }}>
+      {/* 画面：容器可聚焦并挂键盘转发（img 本身不可聚焦）。点击画面时聚焦容器，
+          之后按键经 onFrameKeyDown → CDP Input 域转发到页面。 */}
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden"
+        style={{ background: isDark ? '#101113' : '#F4F5F6' }}
+        tabIndex={0}
+        onKeyDown={onFrameKeyDown}
+        onFocus={(e) => {
+          // 忽略 chrome-devtools 工具栏等自身聚焦，只处理画面容器焦点。
+          if (e.target !== e.currentTarget) return;
+          e.preventDefault();
+        }}
+      >
         {!running && (
           <div className="flex h-full items-center justify-center p-6 text-center text-[13px]" style={{ color: isDark ? '#9A9A9A' : '#777' }}>
             {error ? (

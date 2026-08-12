@@ -1126,7 +1126,11 @@ impl Pinvou3Bridge {
             allow_shell: self.allow_shell(),
             trust_mode: true,
             notes_path: paths::notes_path(),
-            mcp_config_path: paths::mcp_config_path(),
+            // 工作模式门控：browser MCP 工具只对 assistant 引擎（工作模式）会话暴露。
+            // 全局 mcp.json 不含 browser 条目；此处生成「全局 + browser」的会话专用
+            // 配置文件（条件不满足时直接回落全局配置）。codex ACP 等外部 Agent 不走
+            // 本路径，天然拿不到浏览器工具。
+            mcp_config_path: self.bundle.work_mode_mcp_config_path(),
             skills_dir: self.bundle.skills_dir.clone(),
             plugin_registry: None,
             instructions: self.instructions(),
