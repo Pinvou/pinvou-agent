@@ -50,15 +50,51 @@
   }
 
   // ── Mode state ───────────────────────────────────────────────────
+  // 会话级读取。必须防住的竞态：
+  // 1. await 挂起期间用户切走：响应返回后不能写当前 active 会话的显示（否则
+  //    上一个会话的开关/模式状态会串台到新会话，表现为"在一个对话打开开关，
+  //    所有对话都开"）。校验发起时的 sid 仍是 active，否则把结果定向写回
+  //    sid 自己的 buffer，不碰当前显示。
+  // 2. 多智能体开关翻转/模式切换的本地权威改写：乐观翻转已把新状态显示出来
+  //    （后端尚未落盘），或权威写回已完成，此时在途的 get_mode_state 只会
+  //    拿到旧值，把用户刚打开（或关闭）的开关覆盖回去。防法：per-session
+  //    epoch——每次本地权威改写 bump 对应会话的 revision，读取发起时捕获、
+  //    返回后校验，epoch 变了即丢弃陈旧读取，权威值由对应操作写回。
+  //    只看瞬时 in-flight 集合识别不了"toggle 已完成（集合已清空）、旧读取
+  //    才返回"的顺序（审计意见），epoch 一并覆盖在途与已完成两种顺序。
+  var modeStateEpochs = {};
+  function bumpModeStateEpoch(sid) {
+    if (!sid) return;
+    modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
+  }
   async function syncModeState() {
-    if (!state.activeSessionId) {
+    var sid = state.activeSessionId;
+    if (!sid) {
       state.modeState = { mode: "yolo", multiAgent: false };
       return;
     }
+    if (multiAgentToggleInFlight.has(sid)) return;
+    var epoch = modeStateEpochs[sid] || 0;
     try {
+      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
+      // 计算）；发起瞬间 activeSessionId === sid，await 返回后按 sid 校验归属。
       var ms = await invoke("get_mode_state", { sessionId: state.activeSessionId });
+      // 响应返回后校验 epoch：期间任何本地权威改写（开关翻转、plan/模式切换）
+      // 都会使该读取成为陈旧值，丢弃——权威值由对应操作写回。此检查覆盖
+      // 两种返回顺序：改写仍在途（原 in-flight 闸场景）与改写已完成（旧读取
+      // 最后返回的顺序，in-flight 集合已清空、仅靠集合识别不了）。
+      if ((modeStateEpochs[sid] || 0) !== epoch) return;
+      if (state.activeSessionId !== sid) {
+        runSyncOnSession(sid, function () {
+          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+        });
+        return;
+      }
       state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
     } catch (e) {
+      // get 失败同样不得用默认值覆盖已发生的权威改写。
+      if ((modeStateEpochs[sid] || 0) !== epoch) return;
+      if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
     }
   }
@@ -150,6 +186,7 @@
         displayMessage: displayEcho,
       });
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
+      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
       runOnSession(sid, function () { applyModeFromState(st); });
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
@@ -170,6 +207,7 @@
       if (concurrentTurn && planBuffer) markRemoteTurn(sid, planBuffer);
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
+        bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
         runOnSession(sid, function () { applyModeFromState(currentMode); });
       } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
@@ -187,6 +225,7 @@
     notify();
     try {
       var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
+      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
       runOnSession(sid, function () { applyModeFromState(st); });
       patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
     } catch (e) {
@@ -211,6 +250,7 @@
       if (planNotActive) {
         try {
           var currentMode = await invoke("get_mode_state", { sessionId: sid });
+          bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
           runOnSession(sid, function () { applyModeFromState(currentMode); });
         } catch (_) {}
       }
@@ -220,10 +260,15 @@
   }
   async function exitPlanToYolo() {
     if (!state.activeSessionId) return;
+    var sid = state.activeSessionId;
     try {
+      // invoke 形状保持原样（协议指纹按文本计算，不因捕获 sid 而改写）。
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
+      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
+      // 写回必须定向触发会话：await 期间用户可能已切走，直接写全局 modeState
+      // 会把 A 会话的模式串到 B 会话显示——syncModeState 串台的写入镜像面。
+      runOnSession(sid, function () { applyModeFromState(st); });
+    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
@@ -269,6 +314,10 @@
       // 等返回再翻拨杆会像"点了没反应"。先翻显示并 notify，成功后用后端
       // 权威状态复核；失败回滚显示并提示。in-flight 闸已挡并发重入。
       var previousMultiAgent = !!(state.modeState && state.modeState.multiAgent);
+      // 翻转即刻 bump 该会话 epoch：让在途的 get_mode_state 读取（syncModeState）
+      // 全部作废，无论其响应在 toggle 进行中还是完成后返回——陈旧读取一律
+      // 丢弃，权威值由下方 set_multi_agent_mode 返回后写回（审计意见）。
+      bumpModeStateEpoch(sid);
       state.modeState = {
         mode: (state.modeState && state.modeState.mode) || "yolo",
         multiAgent: !!enabled,
