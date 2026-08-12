@@ -1449,7 +1449,9 @@
     var ans;
     try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
     if (!Array.isArray(ans)) return null;
-    var byId = {};
+    // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+    // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+    var byId = Object.create(null);
     ans.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
     var out = [];
     for (var qi = 0; qi < questions.length; qi++) {

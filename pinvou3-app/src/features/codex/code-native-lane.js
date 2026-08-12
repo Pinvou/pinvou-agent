@@ -78,7 +78,9 @@ function parseNativeUserAnswers(content, questions) {
   let ans;
   try { ans = JSON.parse(toolResultText(content)).answers; } catch { return null; }
   if (!Array.isArray(ans)) return null;
-  const byId = {};
+  // 用无原型对象：question id 仅被后端校验非空，constructor/toString/__proto__ 是合法输入，
+  // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+  const byId = Object.create(null);
   ans.forEach(a => { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
   const out = [];
   for (const q of questions) {

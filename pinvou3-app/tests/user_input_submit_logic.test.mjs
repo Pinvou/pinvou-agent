@@ -207,6 +207,31 @@ function makeContext(initialState) {
   assert.equal(ctx.buffers['session-A'].chatItems[0].cardState, 'cancelled', '取消结果写回 A');
 }
 
+// ── 特殊 question id（constructor/toString/__proto__）不触发原型链 TypeError ──
+// request_user_input 的 question id 后端仅校验非空，模型生成这些保留属性名是合法输入。
+// 修复前 `(byId[a.id] = byId[a.id] || []).push(a)` 会命中 Object.prototype 继承属性
+// （byId['constructor'] 是 Object 构造器、byId['toString'] 是函数、byId['__proto__']
+// 是原型对象，均无 .push），提交路径抛 TypeError 且 restoredAnswers 丢失（复核 P1）。
+{
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    const ctx = makeContext({ activeSessionId: 'session-1' });
+    ctx.state.chatItems = [{ id: 'card-s', type: 'user_input', toolCallId: 'call-s', questions: [{ id: specialId, header: '选择' }] }];
+    const feature = installInteraction(ctx);
+    await feature.submitUserInput(
+      'card-s',
+      'call-s',
+      [{ id: specialId, label: 'A', value: 'A' }],
+      [{ id: specialId, header: '选择' }],
+    );
+    const card = ctx.state.chatItems[0];
+    assert.equal(card.resolved, true, `特殊 id "${specialId}" 提交不得抛错`);
+    assert.equal(card.cardState, 'submitted');
+    assert.deepEqual(card.restoredAnswers, [{ id: specialId, label: 'A', value: 'A' }], `restoredAnswers 写入特殊 id "${specialId}"`);
+    const echo = ctx.state.chatItems.find(item => item.type === 'user');
+    assert.ok(echo && echo.text === `✓ 选择: A`, `特殊 id "${specialId}" 摘要正常`);
+  }
+}
+
 // ── parseUserAnswers：两个 bridge 多选不塌缩 ────────────────────────
 // parseUserAnswers 是 bridge 主文件闭包内函数，用括号配平提取函数体到 vm 执行。
 function extractFunction(source, name) {
@@ -232,6 +257,188 @@ function loadParseUserAnswers(bridgeSource) {
   vm.runInContext(code, ctx);
   // vm 跨 realm 对象原型不同，deepEqual 会因引用不等失败，统一 JSON 规范化后断言。
   return (content, questions) => JSON.parse(JSON.stringify(ctx.parseUserAnswers(content, questions)));
+}
+
+// ── web bridge：submitUserInput/cancelUserInput 行为契约 ─────────────
+// 评审 P2-2：此前只执行 Tauri interaction.js 的提交链路，Web 侧仅覆盖
+// parseUserAnswers。这里提取 web/bridge.js 闭包内的提交函数，用与 interaction
+// 侧相同的 mock 环境（buffer swap + sid 定向）跑同一套行为契约：单选/多选摘要、
+// 切会话竞态、取消定向、特殊 id 提交。
+function makeWebContext(initialState) {
+  const buffers = {};
+  const state = Object.assign({ activeSessionId: null, chatItems: [], messages: [] }, initialState);
+  const runOnSessionCalls = [];
+  const context = {
+    state,
+    buffers,
+    runOnSessionCalls,
+    invoke: async () => ({}),
+    notify() {},
+    runOnSession(sid, fn) {
+      runOnSessionCalls.push(sid);
+      if (!sid || sid === state.activeSessionId) { fn(); return; }
+      const bg = buffers[sid];
+      if (!bg) return;
+      const realChatItems = state.chatItems;
+      const realMessages = state.messages;
+      const realId = state.activeSessionId;
+      state.chatItems = bg.chatItems;
+      state.messages = bg.messages;
+      state.activeSessionId = sid;
+      try { fn(); }
+      finally {
+        bg.chatItems = state.chatItems;
+        bg.messages = state.messages;
+        state.chatItems = realChatItems;
+        state.messages = realMessages;
+        state.activeSessionId = realId;
+      }
+    },
+    patchItemByIdFor(sid, itemId, patch) {
+      context.runOnSession(sid, () => {
+        const item = state.chatItems.find(candidate => candidate.id === itemId);
+        if (item) Object.assign(item, patch);
+      });
+    },
+    pushUserEcho(text, persist) {
+      state.chatItems.push({ type: 'user', text, persist });
+    },
+    flushAssistantMessageToHistory() {},
+  };
+  return context;
+}
+
+function loadWebUserInputActions(bridgeSource) {
+  const ctx = {};
+  vm.createContext(ctx);
+  // web bridge 的提交函数带 async 前缀，extractFunction 按 `function name(` 定位会
+  // 丢掉 async，导致 vm 里 await 非法；检测源码前缀后补回。
+  const asyncOf = name => bridgeSource.includes(`async function ${name}(`) ? 'async ' : '';
+  const code = [
+    asyncOf('submitUserInput') + extractFunction(bridgeSource, 'submitUserInput'),
+    asyncOf('cancelUserInput') + extractFunction(bridgeSource, 'cancelUserInput'),
+    'this.submitUserInput = submitUserInput;',
+    'this.cancelUserInput = cancelUserInput;',
+  ].join('\n');
+  vm.runInContext(code, ctx);
+  return ctx;
+}
+
+const webBridgeSource = read('src', 'platform', 'web', 'bridge.js');
+const webActions = loadWebUserInputActions(webBridgeSource);
+
+// ── Web 单选提交：摘要与 restoredAnswers ───────────────────────────
+{
+  const ctx = makeWebContext({ activeSessionId: 'session-1' });
+  Object.assign(webActions, ctx);
+  ctx.state.chatItems = [{ id: 'wcard-1', type: 'user_input', toolCallId: 'call-1', questions: [{ id: 'q1', header: '语言' }] }];
+  await webActions.submitUserInput(
+    'wcard-1',
+    'call-1',
+    [{ id: 'q1', label: 'Python', value: 'Python' }],
+    [{ id: 'q1', header: '语言' }],
+  );
+  const card = ctx.state.chatItems[0];
+  assert.equal(card.resolved, true, 'web 单选提交 resolved');
+  assert.equal(card.cardState, 'submitted');
+  assert.deepEqual(card.restoredAnswers, [{ id: 'q1', label: 'Python', value: 'Python' }], 'web 单选 restoredAnswers');
+  assert.ok(ctx.state.chatItems.some(item => item.type === 'user' && item.text === '✓ 语言: Python'), 'web 单选摘要按题头拼接');
+}
+
+// ── Web 多选提交：单题选两项，摘要不越界、restoredAnswers 全量 ─────
+{
+  const ctx = makeWebContext({ activeSessionId: 'session-1' });
+  Object.assign(webActions, ctx);
+  ctx.state.chatItems = [{ id: 'wcard-2', type: 'user_input', toolCallId: 'call-2', questions: [{ id: 'q1', header: '技能' }] }];
+  await webActions.submitUserInput(
+    'wcard-2',
+    'call-2',
+    [
+      { id: 'q1', label: '前端', value: '前端' },
+      { id: 'q1', label: '运维', value: '运维' },
+    ],
+    [{ id: 'q1', header: '技能' }],
+  );
+  const card = ctx.state.chatItems[0];
+  assert.equal(card.resolved, true, 'web 多选提交不得因摘要越界抛错');
+  assert.deepEqual(card.restoredAnswers, [
+    { id: 'q1', label: '前端', value: '前端' },
+    { id: 'q1', label: '运维', value: '运维' },
+  ], 'web 多选答案全量保存，不塌缩');
+  const echo = ctx.state.chatItems.find(item => item.type === 'user');
+  assert.ok(echo && echo.text === '✓ 技能: 前端 · 运维', `web 多选摘要按题分组：实际 "${echo && echo.text}"`);
+}
+
+// ── Web 切会话竞态：invoke 挂起期间切换 activeSessionId，写入仍落触发会话 ──
+{
+  const ctx = makeWebContext({ activeSessionId: 'session-A' });
+  Object.assign(webActions, ctx);
+  ctx.buffers['session-A'] = { chatItems: [{ id: 'wcard-A', type: 'user_input', toolCallId: 'call-A', questions: [{ id: 'q1', header: '语言' }] }], messages: [] };
+  ctx.buffers['session-B'] = { chatItems: [{ id: 'wcard-B', type: 'user_input', toolCallId: 'call-B', questions: [{ id: 'q1', header: '语言' }] }], messages: [] };
+  ctx.state.chatItems = ctx.buffers['session-A'].chatItems;
+  ctx.state.messages = ctx.buffers['session-A'].messages;
+
+  let resolveInvoke;
+  const gate = new Promise(resolve => { resolveInvoke = resolve; });
+  ctx.invoke = async () => { await gate; return {}; };
+  const pending = webActions.submitUserInput(
+    'wcard-A',
+    'call-A',
+    [{ id: 'q1', label: 'Python', value: 'Python' }],
+    [{ id: 'q1', header: '语言' }],
+  );
+  ctx.state.activeSessionId = 'session-B';
+  ctx.state.chatItems = ctx.buffers['session-B'].chatItems;
+  ctx.state.messages = ctx.buffers['session-B'].messages;
+  resolveInvoke();
+  await pending;
+
+  assert.ok(ctx.runOnSessionCalls.every(sid => sid === 'session-A'), 'web 切会话后 UI 写入全部定向到触发会话 A');
+  const cardA = ctx.buffers['session-A'].chatItems[0];
+  assert.equal(cardA.resolved, true, 'web A 的卡收到提交结果');
+  assert.equal(cardA.cardState, 'submitted');
+  assert.deepEqual(cardA.restoredAnswers, [{ id: 'q1', label: 'Python', value: 'Python' }], 'web restoredAnswers 写回 A');
+  assert.ok(ctx.buffers['session-A'].chatItems.some(item => item.type === 'user'), 'web echo 落在 A');
+  const cardB = ctx.buffers['session-B'].chatItems[0];
+  assert.equal(cardB.resolved, undefined, 'web B 的卡不受污染');
+  assert.equal(ctx.buffers['session-B'].chatItems.some(item => item.type === 'user'), false, 'web B 不出现 echo');
+}
+
+// ── Web cancelUserInput：同样定向到触发会话 ────────────────────────
+{
+  const ctx = makeWebContext({ activeSessionId: 'session-A' });
+  Object.assign(webActions, ctx);
+  ctx.buffers['session-A'] = { chatItems: [{ id: 'wcard-A', type: 'user_input', toolCallId: 'call-A' }], messages: [] };
+  ctx.state.chatItems = ctx.buffers['session-A'].chatItems;
+  ctx.state.messages = ctx.buffers['session-A'].messages;
+  let resolveInvoke;
+  const gate = new Promise(resolve => { resolveInvoke = resolve; });
+  ctx.invoke = async () => { await gate; };
+  const pending = webActions.cancelUserInput('wcard-A', 'call-A');
+  ctx.state.activeSessionId = 'session-B';
+  resolveInvoke();
+  await pending;
+  assert.ok(ctx.runOnSessionCalls.every(sid => sid === 'session-A'), 'web 取消定向到触发会话');
+  assert.equal(ctx.buffers['session-A'].chatItems[0].cardState, 'cancelled', 'web 取消结果写回 A');
+}
+
+// ── Web 特殊 question id 提交：不触发原型链 TypeError ──────────────
+{
+  const ctx = makeWebContext({ activeSessionId: 'session-1' });
+  Object.assign(webActions, ctx);
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    ctx.state.chatItems = [{ id: 'wcard-s', type: 'user_input', toolCallId: 'call-s', questions: [{ id: specialId, header: '选择' }] }];
+    await webActions.submitUserInput(
+      'wcard-s',
+      'call-s',
+      [{ id: specialId, label: 'A', value: 'A' }],
+      [{ id: specialId, header: '选择' }],
+    );
+    const card = ctx.state.chatItems[0];
+    assert.equal(card.resolved, true, `web 特殊 id "${specialId}" 提交不得抛错`);
+    assert.equal(card.cardState, 'submitted');
+    assert.deepEqual(card.restoredAnswers, [{ id: specialId, label: 'A', value: 'A' }], `web restoredAnswers 写入特殊 id "${specialId}"`);
+  }
 }
 
 for (const [label, bridgeSource] of [
@@ -263,6 +470,15 @@ for (const [label, bridgeSource] of [
   // 非法 JSON / 非数组 → null。
   assert.equal(parseUserAnswers('not json', questions), null, `${label} 非法 JSON 返回 null`);
   assert.equal(parseUserAnswers(JSON.stringify({ answers: 'x' }), questions), null, `${label} 非数组返回 null`);
+  // 特殊 question id（constructor/toString/__proto__）不得命中 Object.prototype 继承属性。
+  // 修复前 byId 是普通 {}，byId['constructor'] 取到 Object 构造器后 .push 抛 TypeError（复核 P1）。
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    const special = parseUserAnswers(
+      JSON.stringify({ answers: [{ id: specialId, label: 'A', value: 'A' }] }),
+      [{ id: specialId, header: '选择' }],
+    );
+    assert.deepEqual(special, [{ id: specialId, label: 'A', value: 'A' }], `${label} parseUserAnswers 特殊 id "${specialId}" 不抛错且分组正常`);
+  }
 }
 
 console.log('user_input_submit_logic: all assertions passed');

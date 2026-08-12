@@ -404,7 +404,9 @@
       await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: sid });
       // 摘要按 question 分组拼接：answers 是按选项展开的（multi_select 时同一题多条），
       // 不能按 answers 索引一一对应 questions（会越界抛 TypeError，复核 P1）。
-      var byId = {};
+      // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+      // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+      var byId = Object.create(null);
       answers.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
       var summary = questions.map(function (q, qi) {
         var list = byId[q.id];

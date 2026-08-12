@@ -231,6 +231,39 @@ try {
     ],
     '单选/多选答案按 id 全量还原，multi_select 不塌缩为最后一项',
   );
+
+  // ── hydrate 特殊 question id（constructor/toString/__proto__）不抛错 ──
+  // question id 后端仅校验非空，这些保留属性名是合法输入；parseNativeUserAnswers
+  // 用 Object.create(null) 分组后不得命中 Object.prototype（复核 P1）。
+  for (const specialId of ['constructor', 'toString', '__proto__']) {
+    const lane4s = createNativeLane();
+    hydrateNativeLane(lane4s, {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use', id: 'cs', name: 'request_user_input',
+            input: { questions: [{ id: specialId, header: '选择', question: '选？', options: [{ label: 'A', description: '' }] }] },
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result', tool_use_id: 'cs', is_error: false,
+            content: JSON.stringify({ answers: [{ id: specialId, label: 'A', value: 'A' }] }),
+          }],
+        },
+      ],
+    }, []);
+    const restoredSpecial = lane4s.items.find(item => item.type === 'user_input');
+    assert.equal(restoredSpecial.resolved, true, `特殊 id "${specialId}" hydrate 不得抛错`);
+    assert.deepEqual(
+      restoredSpecial.restoredAnswers,
+      [{ id: specialId, label: 'A', value: 'A' }],
+      `特殊 id "${specialId}" 答案按 id 还原`,
+    );
+  }
+
   const hydratedReasoning = lane4.items.find(item => item.type === 'reasoning');
   assert.equal(hydratedReasoning.text, '先想目录结构');
   assert.equal(
