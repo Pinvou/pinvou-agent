@@ -837,6 +837,7 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
+    userMessageDisplayText: userMessageDisplayText,
     extractArtifactPaths: extractArtifactPaths,
     fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
@@ -1478,7 +1479,8 @@
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
   }
 
   function isInternalRuntimeEnvelopeText(value) {
@@ -1801,6 +1803,9 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
+    // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
+    // 避免 live/restore 两处守卫实现漂移。
+    isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
     addChatItem: addChatItem, addSystemItem: addSystemItem,
     addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,

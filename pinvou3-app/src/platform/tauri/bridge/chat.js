@@ -27,6 +27,7 @@
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
+    var userMessageDisplayText = context.userMessageDisplayText;
     var extractArtifactPaths = context.extractArtifactPaths;
     var parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     var autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
@@ -660,9 +661,10 @@
       var meta = state.sessions.find(function (s) { return s.id === state.activeSessionId; });
       if (meta && (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[state.activeSessionId])) {
         var firstUser = state.messages.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进 sidebar。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], false) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: state.activeSessionId, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[state.activeSessionId]; // 已被对话内容命名,卸下占位标记

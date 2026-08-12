@@ -238,11 +238,7 @@
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
-  function isInternalRuntimeUserMessage(value) {
-    var text = String(value || "").trim();
-    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
-      /<\/codewhale:runtime_event>\s*$/i.test(text);
-  }
+  var isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
 
   function applyRemoteUserMessageEvent(e, force) {
     var payload = e && e.payload || {};

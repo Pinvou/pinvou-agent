@@ -175,6 +175,9 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:user_message': {
       const content = String(p.content || '');
       if (!content) return false;
+      // 内部运行时信封（subagent handoff / background shell 完成等）：与 bridge 实时
+      // 路径一致不上屏；后续 transcript 重载同样会被 hydrate 过滤，两条路径行为对齐。
+      if (isInternalRuntimeEnvelopeText(content)) return false;
       // accept_plan 的用户回声（本地/远端批准都会广播）：先把命中的 active 方案卡
       // 置为已批准（对齐 bridge chat-events.js 的 action === "accept_plan" 处理），
       // 再走普通用户消息去重/插入。
@@ -488,6 +491,36 @@ function messageText(blocks) {
     .trim();
 }
 
+// 与 platform/{tauri,web}/bridge.js 的 userMessageDisplayText 判定保持一致：
+// CodeWhale 内部运行时信封（subagent handoff / background shell 完成等）以
+// role=user 持久化供父模型上下文使用，展示层不得渲染为用户气泡。
+// 本模块是独立 ESM 车道，无法引用 bridge 闭包函数，故自包含等价实现。
+function isInternalRuntimeEnvelopeText(value) {
+  const text = String(value || '').trim();
+  return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text)
+    && /<\/codewhale:runtime_event>\s*$/i.test(text);
+}
+
+function userMessageInputProvenance(blocks) {
+  for (const block of blocks || []) {
+    if (!block || block.type !== 'text') continue;
+    const text = String(block.text || '').trim();
+    if (text.indexOf('<turn_meta>') !== 0) continue;
+    const match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+    if (match && match[1]) return match[1].toLowerCase();
+  }
+  return '';
+}
+
+function isInternalUserMessage(blocks) {
+  const textBlocks = Array.isArray(blocks) ? blocks : [];
+  if (textBlocks.some(block => block && block.type === 'text' && isInternalRuntimeEnvelopeText(block.text))) {
+    return true;
+  }
+  const provenance = userMessageInputProvenance(textBlocks);
+  return provenance === 'runtime' || provenance === 'subagent_handoff' || provenance === 'shell_completion';
+}
+
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
 /// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /
 /// plan 工具的历史方案卡；persona、成品卡等主聊天专属形态不在代码会话出现，不做还原）。
@@ -527,6 +560,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       ? raw
       : (typeof raw === 'string' && raw ? [{ type: 'text', text: raw }] : []);
     if (role === 'user') {
+      if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
       const text = messageText(blocks);
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text, time: '' });
       for (const block of blocks) {

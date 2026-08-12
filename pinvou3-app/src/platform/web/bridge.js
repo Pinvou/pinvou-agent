@@ -1288,9 +1288,10 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进 sidebar。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], false) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -3214,14 +3215,11 @@
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
   }
-
-  function isInternalRuntimeEnvelopeText(value) {
-    var text = String(value || "").trim();
-    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
-      /<\/codewhale:runtime_event>\s*$/i.test(text);
-  }
+  // isInternalRuntimeUserMessage（下方 live 路径同一判定）与本函数等价：
+  // 历史重载与实时事件两条展示路径共用同一信封判定，避免两处实现漂移。
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
   // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
@@ -3231,7 +3229,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (textParts.some(isInternalRuntimeEnvelopeText)) return "";
+    if (textParts.some(isInternalRuntimeUserMessage)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 

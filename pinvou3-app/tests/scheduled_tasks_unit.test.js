@@ -890,6 +890,10 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
             { type: "text", text: shellCompletionText },
             { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
           ] },
+          // 无信封、仅 turn_meta 的 shell_completion：白名单必须单独兜住（遗留双行/裁剪会话形态）。
+          { role: "user", content: [
+            { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
+          ] },
           { role: "assistant", content: [{ type: "text", text: "parent final answer" }] },
         ],
         artifacts: [],
@@ -908,6 +912,7 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       "internal shell completion payload",
       "codewhale:runtime_event",
       "Current workspace:",
+      "Input provenance: shell_completion",
     ].forEach(function (hiddenText) {
       assert.ok(!visible.includes(hiddenText),
         bridgeKind + " must hide internal payload: " + hiddenText);
@@ -920,6 +925,8 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       bridgeKind + " must preserve shell completion context");
     assert.ok(raw.includes("subagent_handoff (non-authoritative)"),
       bridgeKind + " must preserve current provenance metadata");
+    assert.ok(raw.includes("shell_completion (non-authoritative)"),
+      bridgeKind + " must preserve shell_completion provenance metadata");
   }
 }
 

@@ -148,6 +148,61 @@ try {
   hydrateNativeLane(lane4, { messages: [] }, []);
   assert.equal(lane4.busy, true, '已有 live turn 时 hydration 不得清 busy');
 
+  // ── hydration + live：内部运行时信封不上屏（对齐 bridge 过滤）─────
+  const laneEnvelope = createNativeLane();
+  hydrateNativeLane(laneEnvelope, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实用户提问' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: [
+            '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+            'This is an internal runtime event, not user input.',
+            'child completion summary',
+            '<codewhale:subagent.done>{"agent_id":"a1","status":"completed"}</codewhale:subagent.done>',
+            '</codewhale:runtime_event>',
+          ].join('\n') },
+          { type: 'text', text: '<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: [
+            '<codewhale:runtime_event kind="background_shell_completion" visibility="internal">',
+            'internal shell completion payload',
+            '</codewhale:runtime_event>',
+          ].join('\n') },
+          { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+        ],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: '父智能体汇总' }] },
+    ],
+  }, []);
+  assert.ok(laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('真实用户提问')),
+    '真实用户消息仍渲染');
+  assert.ok(!laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('child completion summary')),
+    'hydrate 必须隐藏 subagent 交接信封');
+  assert.ok(!laneEnvelope.items.some(item => item.type === 'user' && item.text.includes('internal shell completion payload')),
+    'hydrate 必须隐藏 shell 完成信封');
+  assert.ok(!JSON.stringify(laneEnvelope.items).includes('codewhale:runtime_event'),
+    'hydrate 内部信封 XML 不得进入 lane 展示');
+
+  // live 实时路径同样不上屏。
+  const laneLiveEnvelope = createNativeLane();
+  const liveChanged = applyNativeChatEvent(laneLiveEnvelope, 'chat:user_message', {
+    session_id: 's-env',
+    content: [
+      '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+      'live child completion',
+      '</codewhale:runtime_event>',
+    ].join('\n'),
+  });
+  assert.equal(liveChanged, false, 'live 内部信封不产生可视变化');
+  assert.equal(laneLiveEnvelope.items.some(item => item.type === 'user'), false,
+    'live 内部信封不得 push 用户气泡');
+
   // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
   // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时
   // tool_use 尚无对应 tool_result，不能按历史恢复为 submitted（会误标并挡住
