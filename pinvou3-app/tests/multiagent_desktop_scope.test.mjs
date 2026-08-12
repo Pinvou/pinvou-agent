@@ -73,8 +73,17 @@ test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根',
   const builderEnd = bridge.indexOf('pub fn ', builderStart + 10);
   const multiAgentBuilder = bridge.slice(builderStart, builderEnd);
 
-  assert.match(codex, /multiAgent|set_multi_agent_mode/);
-  assert.match(codex, /SubagentTranscriptPanel|ToolCard/);
+  // 逐 token 断言，避免"或"正则把删除一半的实现伪装成通过（P2 审计修复）。
+  assert.match(codex, /set_multi_agent_mode/, 'Code 车道必须能经会话命令切换多智能体开关');
+  assert.match(codex, /SubagentTranscriptPanel/, 'Code 车道必须挂载只读执行记录面板');
+  assert.match(codex, /ToolCard/, 'Code 车道必须能渲染专家/委派工具卡');
+  // 产品开关不得改写普通 Engine 的 subagents_enabled（#162 复审 P1：整体关闭会
+  // 误伤原生 Code 会话的底座 agent/agents/*/workflow 能力）。
+  assert.doesNotMatch(
+    bridge,
+    /subagents_enabled\s*&=\s*self\.session_policy/,
+    '不得把产品入口收缩当成禁用底座委派能力的开关',
+  );
   assert.match(
     policy,
     /pub fn multi_agent_mode_available\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,

@@ -1580,31 +1580,40 @@ export function CodexAcpView({
   }, []);
 
   /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，多智能体最后）。
+  /// 任一步失败即整体失败：清空暂存并上抛，由 sendNative 外层 catch 兜住（会话已创建，
+  /// 保留半份暂存会在下次创建会话时把过期的部分选择悄悄应用，形成孤儿暂存）。
   async function applyNativeDraftControls(sessionId) {
     const staged = nativeDraftControls;
     const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
     const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return;
-    if (staged.modelId) {
-      await invoke('set_session_model', { sessionId, modelId: staged.modelId });
+    try {
+      if (staged.modelId) {
+        await invoke('set_session_model', { sessionId, modelId: staged.modelId });
+      }
+      if (staged.mountedId != null) {
+        await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
+      }
+      // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
+      // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
+      if (staged.mode === 'plan') {
+        await invoke('set_plan_mode_next', { sessionId });
+      } else if (staged.mode === 'yolo') {
+        await invoke('exit_plan_to_yolo', { sessionId });
+      }
+      if (hasMultiAgentSelection) {
+        await invoke('set_multi_agent_mode', {
+          sessionId,
+          enabled: Boolean(staged.multiAgent),
+        });
+      }
+      setNativeDraftControls({});
+    } catch (err) {
+      // 会话已经创建且部分配置可能已生效：清空暂存避免未来复用过期选择，
+      // 错误继续上抛，由 sendNative 的 catch 提示用户并恢复输入框文本。
+      setNativeDraftControls({});
+      throw err;
     }
-    if (staged.mountedId != null) {
-      await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
-    }
-    // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
-    // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
-    if (staged.mode === 'plan') {
-      await invoke('set_plan_mode_next', { sessionId });
-    } else if (staged.mode === 'yolo') {
-      await invoke('exit_plan_to_yolo', { sessionId });
-    }
-    if (hasMultiAgentSelection) {
-      await invoke('set_multi_agent_mode', {
-        sessionId,
-        enabled: Boolean(staged.multiAgent),
-      });
-    }
-    setNativeDraftControls({});
   }
 
   /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
@@ -1626,16 +1635,21 @@ export function CodexAcpView({
       return;
     }
     if (busy || working) return;
+    const targetSessionId = activeId;
     const previous = nativeMultiAgentEnabled;
     setError('');
     setWorking(true);
     setConfigApplying('multiagent');
     setNativeControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
     try {
-      await invoke('set_multi_agent_mode', { sessionId: activeId, enabled: Boolean(enabled) });
-      await refreshNativeControls(activeId);
+      await invoke('set_multi_agent_mode', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
     } catch (err) {
-      setNativeControls(current => ({ ...current, multiAgent: previous }));
+      // 请求期间可能已切换会话：只有仍是目标会话时才回滚旧值，否则交给
+      // 新会话自身的 refresh 覆盖，避免把上一会话的值串写进当前会话。
+      if (targetSessionId === activeIdRef.current) {
+        setNativeControls(current => ({ ...current, multiAgent: previous }));
+      }
       showError(err);
     } finally {
       setWorking(false);
