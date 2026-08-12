@@ -239,7 +239,7 @@ pub fn super_permission_turn_reminder() -> &'static str {
 }
 
 /// 非三大桌面平台不支持专用有头 Chrome（移动端无独立浏览器进程语义）。
-pub fn chrome_candidates() -> Vec<&'static str> {
+pub fn chrome_candidates() -> Vec<String> {
     Vec::new()
 }
 

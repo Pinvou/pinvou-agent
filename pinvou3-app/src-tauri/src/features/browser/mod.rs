@@ -178,6 +178,19 @@ impl BrowserManager {
             if inner.session.is_some() && inner.active_session.is_some() {
                 return Ok(());
             }
+            // session 仍在但 active_session 为空（最后标签页被关闭后）：
+            // 复用现有连接重新激活一个页面，而不是重开第二条 WebSocket——
+            // 重开会泄漏旧读循环/事件循环任务（无 close/abort 即永久运行），
+            // 且两条连接同时收 browser 级 Target 事件会让前端收到重复通知。
+            if inner.session.is_some() {
+                let session = inner.session.clone().expect("session is_some 已检查");
+                // 不持 inner 锁做网络 await（attach 走 CDP 调用）；之后重新拿锁恢复截图流。
+                drop(inner);
+                let sid = attach_first_page(&session).await?;
+                let mut inner = self.inner.lock().await;
+                switch_screencast_locked(&mut inner, &sid).await?;
+                return Ok(());
+            }
         }
 
         // single-flight：整个启动序列持 start_mtx，并发调用者在此等待后复用
@@ -306,10 +319,15 @@ impl BrowserManager {
         if let Some(session) = inner.session.take() {
             let _ = session.close().await;
         }
-        // Chrome 已关（close/kill 至少一条路径生效）：协调文件双删幂等（wrapper 的
-        // chromeChild exit 兜底也会清）。
+        // Chrome 已关（close/kill 至少一条路径生效）：删端口文件（wrapper 的
+        // chromeChild exit 兜底也会清）。start.lock **只删 stale 残留**：活跃持有者
+        // （wrapper 正在启动中）的锁不可删，否则第三方启动者可并发进入、对同一
+        // profile 双启 Chrome（一个死在单实例锁上，15s 探测失败）。持有者正常
+        // 启动完成后会自删锁；崩溃残留由 60s stale 判定兜底。
         let _ = std::fs::remove_file(paths::browser_cdp_port_json());
-        let _ = std::fs::remove_file(paths::browser_start_lock());
+        if lock_file_stale(&paths::browser_start_lock()) {
+            let _ = std::fs::remove_file(paths::browser_start_lock());
+        }
         if let Some(task) = inner.loop_task.take() {
             task.abort();
         }
@@ -323,6 +341,47 @@ impl BrowserManager {
             let _ = app.emit("browser:stopped", json!({}));
         }
         Ok(())
+    }
+
+    /// 主进程退出时的同步兜底清理：**不依赖 async runtime**，直接 kill 本模块
+    /// 自启的 Chrome 并清理协调文件。`RunEvent::Exit` 时 async `spawn` 的 stop()
+    /// 与 teardown 竞态、几乎不会执行到（两次 CDP 调用各至多 30s），必须在此
+    /// 同步截断自启进程；wrapper 启动的实例由 wrapper 自身的 chromeChild exit
+    /// 兜底清理（`cleanup()` SIGTERM + 清端口文件），本方法对 wrapper 实例无句柄
+    /// 可 kill，靠 Chrome 单实例 profile 锁与下次启动的端口探测/复用自愈。
+    ///
+    /// 锁竞争：若启动/停止序列正持 inner 锁（罕见，退出瞬间），try_lock 失败则
+    /// 放弃同步清理，交由 spawn 的 stop() 尽力而为。
+    pub fn shutdown_on_exit(&self) {
+        let Ok(mut inner) = self.inner.try_lock() else {
+            eprintln!("[browser] 退出时 inner 锁被占用，跳过同步清理");
+            return;
+        };
+        // 同步 kill 自启 Chrome（std-only，无 await）：与 stop() 的 CDP 优雅路径
+        // 不同，这里不依赖事件循环仍在运行。
+        if let Some(mut child) = inner.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(task) = inner.loop_task.take() {
+            task.abort();
+        }
+        if let Some(task) = inner.reader_task.take() {
+            task.abort();
+        }
+        if let Some(session) = inner.session.take() {
+            // 尽力关闭 WS 截断读循环（close 无超时兜底，此处同步环境只做尽力）。
+            let session = Arc::clone(&session);
+            tauri::async_runtime::spawn(async move { session.close().await });
+        }
+        inner.port = None;
+        inner.active_session = None;
+        self.activated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // 协调文件：本模块自启实例已 kill（端口文件失效）；start.lock 是否删除
+        // 取决于持有者——残留由下次启动的 stale 判定清理，这里不强行删（可能
+        // 正被 wrapper 持有）。
+        let _ = std::fs::remove_file(paths::browser_cdp_port_json());
     }
 
     /// 查询状态（前端挂载/轮询用）。
@@ -927,13 +986,13 @@ fn find_chrome() -> Option<PathBuf> {
     // 平台候选表下沉到 platform::os 适配层（macos/linux/windows/unsupported 各一份），
     // 此处只做通用探测：绝对路径直接判存在，命令名经 PATH 解析。
     for c in crate::platform::os::chrome_candidates() {
-        let p = Path::new(c);
+        let p = Path::new(&c);
         if p.is_absolute() && p.exists() {
             return Some(p.to_path_buf());
         }
         if let Ok(paths) = std::env::var("PATH") {
             for dir in std::env::split_paths(&paths) {
-                let cand = dir.join(c);
+                let cand = dir.join(&c);
                 if cand.is_file() {
                     return Some(cand);
                 }

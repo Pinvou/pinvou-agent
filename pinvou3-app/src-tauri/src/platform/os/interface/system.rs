@@ -149,7 +149,9 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
 
 /// 浏览器功能专用有头 Chrome 的可执行候选（绝对路径或 PATH 命令名）。
 /// 由各平台实现（macos/linux/windows/unsupported），消费方做存在性/`which` 探测。
-pub fn chrome_candidates() -> Vec<&'static str> {
+/// 返回 `String` 而非 `&'static str`：Windows 用户级安装路径（LOCALAPPDATA）是
+/// 运行时环境变量，无法静态表达。
+pub fn chrome_candidates() -> Vec<String> {
     super::super::platform::chrome_candidates()
 }
 

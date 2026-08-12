@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
@@ -119,13 +120,19 @@ pub struct Connected {
 /// 连接 Chrome 的 browser 级 CDP 端点，返回会话与事件接收端。
 pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     let version_url = format!("http://127.0.0.1:{port}/json/version");
-    let body = reqwest::get(&version_url)
+    // 全路径带超时：Chrome 可能"接受 TCP 但永不响应"（wedged / SIGSTOP），
+    // 若此处无界等待，ensure_started 持 start_mtx 会把整个浏览器生命周期冻结
+    // （stop()/watch 自动接入/后续 ensure_started 全部被卡住）。reqwest 默认
+    // client 无超时，WS 握手同样无超时，必须显式包 timeout。
+    let body = tokio::time::timeout(Duration::from_secs(10), reqwest::get(&version_url))
         .await
+        .map_err(|_| anyhow!("CDP 版本端点请求超时（10s）"))?
         .context("GET /json/version")?
         .error_for_status()
         .context("CDP 版本端点非 2xx")?
         .text()
-        .await?;
+        .await
+        .context("读取 /json/version")?;
     let version: Value = serde_json::from_str(&body).context("解析 /json/version")?;
     let ws_url = version
         .get("webSocketDebuggerUrl")
@@ -133,9 +140,13 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
         .ok_or_else(|| anyhow!("CDP 响应缺少 webSocketDebuggerUrl"))?;
 
     let config = WebSocketConfig::default();
-    let (ws, _resp) = connect_async_with_config(ws_url, Some(config), false)
-        .await
-        .context("连接 browser CDP WebSocket")?;
+    let (ws, _resp) = tokio::time::timeout(
+        Duration::from_secs(10),
+        connect_async_with_config(ws_url, Some(config), false),
+    )
+    .await
+    .map_err(|_| anyhow!("CDP WebSocket 连接超时（10s）"))?
+    .context("连接 browser CDP WebSocket")?;
     let (write, mut read) = ws.split();
 
     // 有界事件通道：screencast 帧密集（数十帧/秒），前端消费慢时丢弃旧帧而不是

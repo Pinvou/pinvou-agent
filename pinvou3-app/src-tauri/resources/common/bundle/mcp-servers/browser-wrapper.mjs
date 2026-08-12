@@ -187,7 +187,11 @@ const LAST_ERROR_JSON = join(dirname(CDP_PORT_JSON), 'last-error.json');
 function writeLastError(reason) {
   try {
     mkdirSync(dirname(LAST_ERROR_JSON), { recursive: true });
-    writeFileSync(LAST_ERROR_JSON, JSON.stringify({ reason, at: Date.now() }));
+    // at 用 **秒**（与 Rust 侧 `browser_unavailability_reason` 的
+    // `duration_since(UNIX_EPOCH).as_secs()` 同单位）：若写毫秒（Date.now()），
+    // Rust 侧 `now.saturating_sub(at)` 恒为 0，「24h 内新鲜才注入」门禁成死代码，
+    // 过期失败原因会无限期注入。
+    writeFileSync(LAST_ERROR_JSON, JSON.stringify({ reason, at: Math.floor(Date.now() / 1000) }));
   } catch {
     /* 写失败不影响主流程 */
   }
@@ -293,6 +297,7 @@ async function main() {
       while (Date.now() < deadline && !chromeReady) {
         try {
           lockFd = openSync(lockPath, 'wx');
+          break; // 拿到锁：结束等待（后续不再重新尝试 openSync）
         } catch {
           // stale 锁（持有者崩溃/被杀后残留 >60s）：抢占删除后重试。
           if (lockFileStale(lockPath)) {

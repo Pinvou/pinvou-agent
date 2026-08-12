@@ -1004,9 +1004,16 @@ pub fn run() {
         tauri::RunEvent::Ready => startup::mark("tauri:event_loop:ready"),
         tauri::RunEvent::Exit => {
             startup::mark("tauri:event_loop:exit");
-            // 浏览器：主进程退出时清理专用有头 Chrome（无论谁启动的，经 CDP
-            // Browser.close 优雅关闭；app 自启实例兜底 kill）。spawn 尽力而为，
-            // 事件循环即将结束，若未及完成由下次启动的端口探测/复用自愈。
+            // 浏览器：主进程退出时清理专用有头 Chrome。
+            // 先同步兜底：kill 本模块自启的 Chrome + 清协调文件（std-only，
+            // 不依赖 async runtime，teardown 竞态下必然执行——async spawn 的
+            // stop() 与退出竞态几乎跑不完两次 CDP 调用）。
+            if let Some(mgr) = _app.try_state::<features::browser::BrowserManager>() {
+                mgr.shutdown_on_exit();
+            }
+            // 再尽力而为经 CDP Browser.close 优雅关闭（对 wrapper 启动的实例
+            // 同样有效；事件循环即将结束，未及完成由下次启动的端口探测/复用
+            // 与 wrapper chromeChild exit 兜底自愈）。
             let app = _app.clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(mgr) = app.try_state::<features::browser::BrowserManager>() {

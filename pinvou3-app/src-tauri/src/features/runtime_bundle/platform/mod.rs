@@ -857,13 +857,13 @@ impl Pinvou3Bundle {
     /// 与 `features::browser::find_chrome` 同语义的轻量版（本模块不依赖 browser feature）。
     fn chrome_candidate_exists() -> Option<PathBuf> {
         for c in crate::platform::os::chrome_candidates() {
-            let p = PathBuf::from(c);
+            let p = PathBuf::from(&c);
             if p.is_absolute() && p.exists() {
                 return Some(p);
             }
             if let Ok(path_var) = std::env::var("PATH") {
                 for dir in std::env::split_paths(&path_var) {
-                    let cand = dir.join(c);
+                    let cand = dir.join(&c);
                     if cand.is_file() {
                         return Some(cand);
                     }

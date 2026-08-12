@@ -59,10 +59,19 @@ export function BrowserView({ theme, t }) {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
     refreshStatus();
     refreshTabs();
     const unsubs = [];
-    listenTauri('browser:frame', (e) => {
+    // 退订竞态守卫：listenTauri 的 promise 可能在组件卸载后才 resolve，
+    // 此时 push 进已失效的 unsubs 会让监听器永不退订（高频 browser:frame
+    // 会以帧率在已卸载组件上持续 setState）。与 main.jsx 的 browser 监听
+    // 采用同款 disposed 模式。
+    const guard = (p) => p.then((u) => {
+      if (disposed) u && u();
+      else unsubs.push(u);
+    }).catch(() => {});
+    guard(listenTauri('browser:frame', (e) => {
       // rAF 节流：只渲染最新帧
       pendingFrame.current = e.payload;
       if (!rafId.current) {
@@ -76,23 +85,24 @@ export function BrowserView({ theme, t }) {
           }
         });
       }
-    }).then((u) => unsubs.push(u));
-    listenTauri('browser:navigation', (e) => {
+    }));
+    guard(listenTauri('browser:navigation', (e) => {
       if (e.payload && e.payload.url) {
         setUrl(e.payload.url);
         setUrlInput(e.payload.url);
       }
-    }).then((u) => unsubs.push(u));
-    listenTauri('browser:tabs-changed', () => refreshTabs()).then((u) => unsubs.push(u));
-    listenTauri('browser:activated', () => {
+    }));
+    guard(listenTauri('browser:tabs-changed', () => refreshTabs()));
+    guard(listenTauri('browser:activated', () => {
       refreshStatus();
       refreshTabs();
-    }).then((u) => unsubs.push(u));
-    listenTauri('browser:stopped', () => {
+    }));
+    guard(listenTauri('browser:stopped', () => {
       setRunning(false);
       setFrameData(null);
-    }).then((u) => unsubs.push(u));
+    }));
     return () => {
+      disposed = true;
       unsubs.forEach((u) => u && u());
       if (rafId.current) cancelAnimationFrame(rafId.current);
     };
@@ -137,10 +147,14 @@ export function BrowserView({ theme, t }) {
     try {
       await invokeTauri('browser_create_tab', { url: HOME_URL });
       refreshTabs();
+      // 新标签页激活后刷新 URL/activeTab 状态：Rust 侧 create_tab 不 emit
+      // browser:navigation（about:blank 无 frameNavigated），不刷新则地址栏
+      // 停留在旧页、"在系统浏览器打开"会拿到上一个标签页的 URL。
+      refreshStatus();
     } catch (e) {
       setError(typeof e === 'string' ? e : String(e));
     }
-  }, [refreshTabs]);
+  }, [refreshTabs, refreshStatus]);
 
   const closeTab = useCallback(
     async (targetId) => {
@@ -161,11 +175,15 @@ export function BrowserView({ theme, t }) {
         await invokeTauri('browser_activate_tab', { sessionId });
         activeSessionRef.current = sessionId;
         setActiveSession(sessionId);
+        // 刷新 URL/导航状态：Rust 侧 activate_tab 只切截图流、不 emit
+        // browser:navigation，不刷新则地址栏显示旧页 URL、openExternal
+        // 可能把上一标签页的 URL 发给系统浏览器。
+        refreshStatus();
       } catch (e) {
         setError(typeof e === 'string' ? e : String(e));
       }
     },
-    []
+    [refreshStatus]
   );
 
   const stopBrowser = useCallback(async () => {
