@@ -64,18 +64,34 @@ response = overview({ preferences: [] });
 await api.loadMemoryOverview();
 assert.deepEqual(state.memory.preferences, [], 'successful empty source must replace stale content');
 
+state.memory.preferences = [{ id: 'pref-old', text: 'concise' }];
+const cleanupWarning = { code: 'memory_topic_cleanup_required', source: 'preferences', detail: 'occupied' };
 response = command => command === 'update_memory_preference'
-  ? { value: { id: 'pref-2', text: 'detailed' }, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }] }
-  : overview();
-rejectOverview = true;
-await api.updateMemoryItem('preference', 'pref-2', { text: 'detailed' });
+  ? { value: { id: 'pref-new', text: 'detailed' }, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }, cleanupWarning] }
+  : overview({ preferences: [{ id: 'pref-new', text: 'detailed' }], warnings: [{ code: 'snapshot_refresh_failed' }, cleanupWarning] });
+await api.updateMemoryItem('preference', 'pref-old', { topic: 'workflow_preference', text: 'detailed' });
+assert.deepEqual(state.memory.preferences.map(item => item.id), ['pref-new'], 'topic update must remove both old and returned ids');
 assert.equal(state.memory.preferences[0].text, 'detailed', 'committed update must apply before overview refresh');
-assert.equal(state.memory.warnings[0].code, 'runtime_refresh_failed');
+assert.equal(state.memory.warnings[0].code, 'memory_topic_cleanup_required');
+
+state.memory.work_context = [{ id: 'ctx-old', text: 'old context' }];
+const contextCleanupWarning = { code: 'memory_topic_cleanup_required', source: 'work_context', detail: 'occupied' };
+response = command => command === 'update_work_context_memory'
+  ? { value: { id: 'ctx-new', text: 'new context' }, runtime: null, warnings: [contextCleanupWarning] }
+  : overview({
+      preferences: [{ id: 'pref-new', text: 'detailed' }],
+      work_context: [{ id: 'ctx-new', text: 'new context' }],
+      warnings: [contextCleanupWarning],
+    });
+await api.updateMemoryItem('work_context', 'ctx-old', { topic: 'project_context', text: 'new context' });
+assert.deepEqual(state.memory.work_context.map(item => item.id), ['ctx-new']);
+assert.equal(state.memory.warnings[0].code, 'memory_topic_cleanup_required');
 
 response = command => command === 'delete_memory_preference'
   ? { value: true, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }] }
   : overview();
-await api.deleteMemoryPreference('pref-2');
+rejectOverview = true;
+await api.deleteMemoryPreference('pref-new');
 assert.deepEqual(state.memory.preferences, [], 'committed delete must survive overview failure');
 
 response = command => command === 'confirm_pending_memory'

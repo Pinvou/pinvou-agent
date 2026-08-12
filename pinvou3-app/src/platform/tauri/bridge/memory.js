@@ -132,9 +132,17 @@
       never: sourceValue("never", overview && Array.isArray(overview.never) ? overview.never : [], []),
       runtime: sourceValue("runtime", overview && overview.runtime || null, null),
       snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", ""),
-      warnings: overview && Array.isArray(overview.warnings) ? overview.warnings : [],
+      warnings: orderedMemoryWarnings(overview && overview.warnings),
       sources: sourceStates,
     };
+  }
+  function orderedMemoryWarnings(warnings) {
+    var items = Array.isArray(warnings) ? warnings : [];
+    return items.filter(function (warning) {
+      return warning && warning.code === "memory_topic_cleanup_required";
+    }).concat(items.filter(function (warning) {
+      return !warning || warning.code !== "memory_topic_cleanup_required";
+    }));
   }
   function applyMemoryProfileState(result) {
     if (!result || !result.profile) return;
@@ -143,7 +151,7 @@
       error: null,
       profile: result.profile,
       runtime: result.runtime || null,
-      warnings: Array.isArray(result.warnings) ? result.warnings : [],
+      warnings: orderedMemoryWarnings(result.warnings),
     });
   }
   function applyMemoryWriteState(result, update) {
@@ -152,15 +160,17 @@
       loading: false,
       error: null,
       runtime: result.runtime || null,
-      warnings: Array.isArray(result.warnings) ? result.warnings : [],
+      warnings: orderedMemoryWarnings(result.warnings),
     });
     if (update) update(next, result.value);
     state.memory = next;
     notify();
   }
-  function upsertMemoryValue(items, value) {
+  function upsertMemoryValue(items, value, replacedId) {
     if (!value) return items || [];
-    var next = (items || []).filter(function (item) { return item && item.id !== value.id; });
+    var next = (items || []).filter(function (item) {
+      return item && item.id !== value.id && item.id !== replacedId;
+    });
     next.push(value);
     return next;
   }
@@ -254,7 +264,7 @@
       applyMemoryWriteState(res, function (next, value) {
         if (!value) return;
         var source = kind === "preference" ? "preferences" : kind;
-        next[source] = upsertMemoryValue(next[source], value);
+        next[source] = upsertMemoryValue(next[source], value, id);
       });
       await loadMemoryOverview();
       return res && res.value;

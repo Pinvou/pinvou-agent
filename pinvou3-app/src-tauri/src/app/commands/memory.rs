@@ -159,6 +159,38 @@ fn load_memory_source<T: Default>(
     }
 }
 
+fn load_topic_memory_source<T: Default>(
+    source: &str,
+    result: std::io::Result<crate::features::memory::TopicRead<T>>,
+    warnings: &mut Vec<MemoryWarning>,
+    sources: &mut BTreeMap<String, MemorySourceStatus>,
+) -> T {
+    match result {
+        Ok(read) => {
+            let code = read
+                .cleanup_warning
+                .as_ref()
+                .map(|_| "memory_topic_cleanup_required".to_string());
+            if let Some(detail) = read.cleanup_warning {
+                warnings.push(memory_warning(
+                    "memory_topic_cleanup_required",
+                    source,
+                    detail,
+                ));
+            }
+            sources.insert(
+                source.to_string(),
+                MemorySourceStatus {
+                    available: true,
+                    code,
+                },
+            );
+            read.value
+        }
+        Err(error) => load_memory_source(source, Err(error), warnings, sources),
+    }
+}
+
 #[tauri::command]
 pub async fn get_memory_profile(
     session_id: Option<String>,
@@ -233,15 +265,15 @@ pub async fn get_memory_overview(
         &mut warnings,
         &mut sources,
     );
-    let preferences = load_memory_source(
+    let preferences = load_topic_memory_source(
         "preferences",
-        crate::features::memory::list_preferences(),
+        crate::features::memory::list_preferences_with_cleanup(),
         &mut warnings,
         &mut sources,
     );
-    let work_context = load_memory_source(
+    let work_context = load_topic_memory_source(
         "work_context",
-        crate::features::memory::load_work_context(),
+        crate::features::memory::load_work_context_with_cleanup(),
         &mut warnings,
         &mut sources,
     );
@@ -834,6 +866,25 @@ mod tests {
         );
         assert_eq!(warnings[0].code, "memory_source_unavailable");
         assert_eq!(warnings[0].source, "pending");
+
+        let pending: Vec<String> = load_topic_memory_source(
+            "preferences",
+            Ok(crate::features::memory::TopicRead {
+                value: vec!["new".to_string()],
+                cleanup_warning: Some("old topic file is occupied".to_string()),
+            }),
+            &mut warnings,
+            &mut sources,
+        );
+        assert_eq!(pending, ["new"]);
+        assert!(sources["preferences"].available);
+        assert_eq!(
+            sources["preferences"].code.as_deref(),
+            Some("memory_topic_cleanup_required")
+        );
+        assert!(warnings.iter().any(|warning| {
+            warning.code == "memory_topic_cleanup_required" && warning.source == "preferences"
+        }));
     }
 
     #[test]

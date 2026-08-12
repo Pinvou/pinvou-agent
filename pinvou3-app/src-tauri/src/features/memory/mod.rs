@@ -4,7 +4,7 @@
 //! only a prompt cache consumed through `InstructionSource::File`.
 // architecture-guard: allow-target-cfg -- 记忆持久化测试需用 Windows 独占句柄覆盖 ReplaceFileW 恢复路径
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as IoWrite};
@@ -391,11 +391,23 @@ pub struct TopicMutation<T> {
     pub cleanup_warning: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TopicRead<T> {
+    pub value: T,
+    pub cleanup_warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TopicMigrationJournal {
     authority_file: String,
     authority_hash: String,
     stale_files: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct TopicReconciliation {
+    hidden_files: BTreeSet<PathBuf>,
+    cleanup_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1246,23 +1258,39 @@ fn resolve_topic_authorities<T: Clone>(
 }
 
 pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
+    load_work_context_with_cleanup().map(|result| result.value)
+}
+
+pub fn load_work_context_with_cleanup() -> io::Result<TopicRead<Vec<WorkContextFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
-    load_work_context_unlocked()
+    load_work_context_with_cleanup_unlocked()
 }
 
 fn load_work_context_unlocked() -> io::Result<Vec<WorkContextFile>> {
+    load_work_context_with_cleanup_unlocked().map(|result| result.value)
+}
+
+fn load_work_context_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<WorkContextFile>>> {
     let dir = work_context_dir();
     recover_directory_json_files_unlocked::<WorkContextFile>(&dir)?;
-    reconcile_topic_migration_journals_unlocked::<WorkContextFile>(&dir)?;
+    let reconciliation = reconcile_topic_migration_journals_unlocked::<WorkContextFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicRead {
+                value: Vec::new(),
+                cleanup_warning: reconciliation.cleanup_warning,
+            });
+        }
         Err(err) => return Err(err),
     };
     let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+        if reconciliation.hidden_files.contains(&path) {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
@@ -1275,7 +1303,10 @@ fn load_work_context_unlocked() -> io::Result<Vec<WorkContextFile>> {
             records.push((path, item));
         }
     }
-    resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)
+    Ok(TopicRead {
+        value: resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)?,
+        cleanup_warning: reconciliation.cleanup_warning,
+    })
 }
 
 fn upsert_work_context_unlocked(
@@ -1456,12 +1487,16 @@ fn write_topic_migration_journal_unlocked(
 
 fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
     dir: &Path,
-) -> io::Result<()> {
+) -> io::Result<TopicReconciliation> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicReconciliation::default());
+        }
         Err(error) => return Err(error),
     };
+    let mut hidden_files = BTreeSet::new();
+    let mut cleanup_failures = Vec::new();
     for entry in entries {
         let journal_path = entry?.path();
         let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
@@ -1493,34 +1528,28 @@ fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
             fs::remove_file(&journal_path)?;
             continue;
         }
+        let mut journal_cleanup_pending = false;
         for stale_name in &journal.stale_files {
             let stale = dir.join(stale_name);
             if stale == authority || !stale.exists() {
                 continue;
             }
-            fs::remove_file(&stale).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "memory_topic_cleanup_required:{}:{}",
-                        stale.display(),
-                        error
-                    ),
-                )
-            })?;
+            if let Err(error) = fs::remove_file(&stale) {
+                journal_cleanup_pending = true;
+                hidden_files.insert(stale.clone());
+                cleanup_failures.push(format!("{}: {error}", stale.display()));
+            }
         }
-        fs::remove_file(&journal_path).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "memory_topic_cleanup_required:{}:{}",
-                    journal_path.display(),
-                    error
-                ),
-            )
-        })?;
+        if !journal_cleanup_pending {
+            if let Err(error) = fs::remove_file(&journal_path) {
+                cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            }
+        }
     }
-    Ok(())
+    Ok(TopicReconciliation {
+        hidden_files,
+        cleanup_warning: (!cleanup_failures.is_empty()).then(|| cleanup_failures.join("; ")),
+    })
 }
 
 fn is_plain_filename(value: &str) -> bool {
@@ -4015,6 +4044,10 @@ pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
     load_preferences()
 }
 
+pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+    load_preferences_with_cleanup()
+}
+
 fn preference_stale_paths_unlocked(
     dir: &Path,
     new_path: &Path,
@@ -4147,23 +4180,39 @@ pub fn delete_preference(id: &str) -> io::Result<bool> {
 }
 
 fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences_with_cleanup().map(|result| result.value)
+}
+
+fn load_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
-    load_preferences_unlocked()
+    load_preferences_with_cleanup_unlocked()
 }
 
 fn load_preferences_unlocked() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences_with_cleanup_unlocked().map(|result| result.value)
+}
+
+fn load_preferences_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let dir = paths::user_memory_preferences_dir();
     recover_directory_json_files_unlocked::<PreferenceFile>(&dir)?;
-    reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&dir)?;
+    let reconciliation = reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicRead {
+                value: Vec::new(),
+                cleanup_warning: reconciliation.cleanup_warning,
+            });
+        }
         Err(err) => return Err(err),
     };
     let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+        if reconciliation.hidden_files.contains(&path) {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
@@ -4188,7 +4237,10 @@ fn load_preferences_unlocked() -> io::Result<Vec<PreferenceFile>> {
     }
     let mut out = resolve_topic_authorities(records, |item| &item.topic, |item| &item.id)?;
     out.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.text.cmp(&b.text)));
-    Ok(out)
+    Ok(TopicRead {
+        value: out,
+        cleanup_warning: reconciliation.cleanup_warning,
+    })
 }
 
 fn looks_like_profile_preference_text(text: &str) -> bool {
@@ -4815,6 +4867,126 @@ mod tests {
         reader.join().unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].text, "new value");
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let home = IsolatedPinvouHome::new("preference-pending-cleanup");
+        let dir = paths::user_memory_preferences_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old_id = stable_id_with_prefix("pref", "answer_style");
+        let old_path = dir.join(format!("{old_id}.json"));
+        write_json_atomic(
+            &old_path,
+            &preference_fixture(&old_id, "answer_style", "old preference"),
+        )
+        .unwrap();
+        let occupied = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old_path)
+            .unwrap();
+
+        let updated = update_preference(
+            &old_id,
+            MemoryTextPatch {
+                topic: Some("workflow_preference".to_string()),
+                text: Some("new preference".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(updated.cleanup_warning.is_some());
+        let new_id = updated.value.id.clone();
+
+        for _ in 0..2 {
+            let read = list_preferences_with_cleanup().unwrap();
+            assert!(read.cleanup_warning.is_some());
+            assert_eq!(read.value.len(), 1);
+            assert_eq!(read.value[0].id, new_id);
+            assert_ne!(read.value[0].id, old_id);
+        }
+        assert!(old_path.exists());
+
+        drop(occupied);
+        let read = list_preferences_with_cleanup().unwrap();
+        assert!(read.cleanup_warning.is_none());
+        assert_eq!(read.value.len(), 1);
+        assert_eq!(read.value[0].id, new_id);
+        assert!(!old_path.exists());
+        assert!(fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".topic-migration-")
+        }));
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_work_context_pending_cleanup_stays_available_and_hides_stale_id() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let home = IsolatedPinvouHome::new("work-context-pending-cleanup");
+        let dir = work_context_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old_id = stable_id_with_prefix("ctx", "role_domain");
+        let old_path = dir.join(format!("{old_id}.json"));
+        write_json_atomic(
+            &old_path,
+            &WorkContextFile {
+                id: old_id.clone(),
+                kind: "work_context".to_string(),
+                topic: "role_domain".to_string(),
+                text: "old context".to_string(),
+                source: "test".to_string(),
+                confidence: 1.0,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        let occupied = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old_path)
+            .unwrap();
+
+        let updated = update_work_context(
+            &old_id,
+            MemoryTextPatch {
+                topic: Some("project_context".to_string()),
+                text: Some("new context".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(updated.cleanup_warning.is_some());
+        let new_id = updated.value.id.clone();
+
+        for _ in 0..2 {
+            let read = load_work_context_with_cleanup().unwrap();
+            assert!(read.cleanup_warning.is_some());
+            assert_eq!(read.value.len(), 1);
+            assert_eq!(read.value[0].id, new_id);
+            assert_ne!(read.value[0].id, old_id);
+        }
+        assert!(old_path.exists());
+
+        drop(occupied);
+        let read = load_work_context_with_cleanup().unwrap();
+        assert!(read.cleanup_warning.is_none());
+        assert_eq!(read.value.len(), 1);
+        assert_eq!(read.value[0].id, new_id);
+        assert!(!old_path.exists());
         drop(home);
     }
 
