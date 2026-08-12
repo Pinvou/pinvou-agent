@@ -87,6 +87,10 @@
     try {
       var snap = await invoke("get_workflow_state", { sessionId: sessionId });
       if (!snap || !snap.roles || Object.keys(snap.roles).length === 0) return false;
+      // await 期间用户可能已启动/切到别的 run：旧快照不得覆盖新 run
+      // （审计；web 版同守卫）。
+      var currentRun = state.workflow.run;
+      if (currentRun && currentRun.active && currentRun.sessionId && currentRun.sessionId !== sessionId) return false;
       state.workflow.run = {
         active: true, sessionId: sessionId, projectDir: snap.project_dir || null,
         scenario: snap.scenario || null,
@@ -137,7 +141,9 @@
     try {
       var sid = state.workflow.run.sessionId; if (!sid) return;
       var snap = await invoke("get_workflow_state", { sessionId: sid });
-      if (snap && snap.roles) mergeFullState(snap);
+      // await 期间用户可能已启动新 run：旧 run 的快照不得 merge 进新 run
+      // （审计；web 版同守卫）。
+      if (snap && snap.roles && state.workflow.run.sessionId === sid) mergeFullState(snap);
     } catch (e) { console.warn("refreshRunState failed", e); }
   }
 

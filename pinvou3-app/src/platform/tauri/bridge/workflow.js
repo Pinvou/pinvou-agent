@@ -42,16 +42,24 @@
     notify();
   }
   async function activateSkill(name) {
+    // 入口捕获触发会话：await 期间用户可能已切走，响应后不得无条件劫持
+    // activeSessionId（审计；与 web 版对齐）。已切走则只登记 bindings。
+    var sid = state.activeSessionId;
     try {
       var res = await invoke("start_skill_session", { name: name });
       var skill = res.skill || {};
       var meta = res.session || res.metadata || {};
-      state.activeSessionId = meta.id || state.activeSessionId;
-      state.messages = []; state.chatItems = []; resetPendingAssistant();
-      state.workflow.activeSkillName = skill.name || name;
-      state.workflow.phases = skill.phases || [];
-      state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
-      state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
+      // 仅当会话未被切走时才劫持 activeSessionId：`!sid` 分支会在入口无会话、
+      // await 期间用户新建聊天会话时仍无条件劫持（审计补丁）——统一收敛为等值
+      // 比较（入口 sid 为 null 且响应时仍为 null 时劫持，原语义不变）。
+      if (state.activeSessionId === sid) {
+        state.activeSessionId = meta.id || state.activeSessionId;
+        state.messages = []; state.chatItems = []; resetPendingAssistant();
+        state.workflow.activeSkillName = skill.name || name;
+        state.workflow.phases = skill.phases || [];
+        state.workflow.currentPhaseId = skill.current_phase_id || (skill.phases && skill.phases[0] && skill.phases[0].id) || null;
+        state.workflow.reachedPhaseIds = state.workflow.currentPhaseId ? [state.workflow.currentPhaseId] : [];
+      }
       if (meta.id) state.workflow.bindings[meta.id] = skill.name || name;
       await refreshHistoryList();
       await syncModeState();
@@ -60,10 +68,15 @@
     } catch (e) { addSystemItem(bt("workflowActivateFailed") + e); notify(); return null; }
   }
   async function deactivateSkill() {
-    if (state.activeSessionId) {
+    // 入口捕获触发会话：await 期间用户可能已切走，解绑与全局清空不得
+    // 作用于别的会话（否则 B 的激活技能显示被清掉，审计 R2）。
+    var sid = state.activeSessionId;
+    if (sid) {
+      // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
       try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
-      delete state.workflow.bindings[state.activeSessionId];
     }
+    if (sid && state.activeSessionId !== sid) return;
+    if (sid) delete state.workflow.bindings[sid];
     state.workflow.activeSkillName = null;
     state.workflow.phases = [];
     state.workflow.currentPhaseId = null;
@@ -75,12 +88,16 @@
     notify();
     try {
       var d = await invoke("read_skill_demo", { name: name });
+      // await 期间用户可能已关闭弹窗或改开别的 demo：陈旧响应不得把已关闭
+      // 的弹窗重新弹开、也不得覆盖别的 demo 内容（审计 R3）。
+      if (!state.workflow.demo || state.workflow.demo.name !== name) return;
       state.workflow.demo = {
         open: true, name: name, loading: false,
         kind: d.file_kind, path: d.file_path, content: d.content,
         error: null, description: d.description, duration: d.duration,
       };
     } catch (e) {
+      if (!state.workflow.demo || state.workflow.demo.name !== name) return;
       state.workflow.demo = { open: true, name: name, loading: false, kind: null, content: null, error: String(e) };
     }
     notify();
@@ -114,7 +131,12 @@
       sessionId: sid,
       reason: reason || "user_stopped",
     });
-    markWorkflowRunStopped();
+    // stop_workflow 等待期间用户可能已启动新 run（project_started 整体替换
+    // run 对象）：此时不得把新 run 标记为 stopped（审计 R4），否则新 run 的
+    // 事件会被 stopped 闸全部吞掉、看板冻结而实际仍在跑。
+    if (state.workflow.run.sessionId === sid) {
+      markWorkflowRunStopped();
+    }
     notify();
     return result || {};
   }
@@ -194,8 +216,12 @@
   // cardId 可为 null:看板 agent 卡上的"确认通过"只有 roleId(刷新后内存 gate 卡已清空)。
   // 批准只需 roleId + sessionId,绝不依赖前端那张内存卡是否存在(那正是"按钮点了没反应"的 bug)。
   async function approveWorkflowGate(cardId, roleId) {
+    // 入口捕获触发 run：await 期间可能已启动新 run（project_started 整体替换
+    // run 对象），批准结果不得落到新 run 的卡片上（审计）。
+    var runSid = state.workflow.run.sessionId;
     try {
       await invoke("approve_workflow_gate", { roleId: roleId, sessionId: state.workflow.run.sessionId });
+      if (state.workflow.run.sessionId !== runSid) return;
       if (cardId) resolveRunCard(cardId, "approved");
       resolveRunCardsForRole(roleId, "approved");
       await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
@@ -203,8 +229,10 @@
     } catch (e) { addSystemItem(bt("workflowApproveFailed") + e); }
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
+    var runSid = state.workflow.run.sessionId;
     try {
       await invoke("reject_workflow_gate", { roleId: roleId, reason: reason || bt("workflowRejectDefaultReason"), sessionId: state.workflow.run.sessionId });
+      if (state.workflow.run.sessionId !== runSid) return;
       if (cardId) resolveRunCard(cardId, "rejected");
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
