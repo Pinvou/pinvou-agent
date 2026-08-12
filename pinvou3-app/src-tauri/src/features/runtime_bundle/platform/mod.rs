@@ -737,10 +737,23 @@ impl Pinvou3Bundle {
             }),
         );
         // 浏览器 MCP（工作模式 Agent 操作有头 Chrome）**不注册到全局 mcp.json**：
-        // 门控语义是「只有工作模式会话暴露 browser 工具」。全局条目统一删除
-        // （含历史残留），由 `work_mode_mcp_config_path` 在 assistant 引擎会话
-        // 启动时注入到会话专用 mcp 文件（`~/.pinvou3/browser/mcp.work.json`）。
-        servers.remove("browser");
+        // 门控语义是「只有工作模式会话暴露 browser 工具」。仅清理本应用历史残留
+        // 的 browser 条目（command 指向 browser-wrapper.mjs）；用户自配的同名 MCP
+        // server（如 playwright-mcp）不属于本应用，必须保留——无条件删除会在每次
+        // 启动时静默摧毁用户配置。browser 条目由 `work_mode_mcp_config_path` 在
+        // assistant 引擎会话启动时注入会话专用 mcp 文件
+        // （`~/.pinvou3/browser/mcp.work.json`）。
+        let remove_browser_residue = match servers.get("browser") {
+            Some(entry) => entry
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .map(|cmd| cmd.ends_with("browser-wrapper.mjs"))
+                .unwrap_or(false),
+            None => false,
+        };
+        if remove_browser_residue {
+            servers.remove("browser");
+        }
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
     }
@@ -805,7 +818,8 @@ impl Pinvou3Bundle {
         if let Some(parent) = work_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let tmp = work_path.with_extension("json.rust-tmp");
+        // tmp 名带 pid：多会话并发重建同一文件时互不覆盖（rename 原子落位）。
+        let tmp = work_path.with_extension(format!("json.rust-tmp-{}", std::process::id()));
         if std::fs::write(&tmp, serde_json::to_string_pretty(&obj).unwrap_or_default()).is_ok()
             && std::fs::rename(&tmp, &work_path).is_ok()
         {
@@ -1694,7 +1708,8 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
         std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
 
-        // 1) 全局 mcp.json：历史残留的 browser 条目被清理，永不注册。
+        // 1) 全局 mcp.json：用户自配的 browser server（command 非本应用 wrapper）
+        //    必须原样保留，仅清理本应用历史残留（command 指向 browser-wrapper.mjs）。
         std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"browser":{"command":"/old/browser"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
@@ -1704,8 +1719,26 @@ mod tests {
         let mcp: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
         assert!(
-            !mcp["servers"].as_object().unwrap().contains_key("browser"),
-            "全局 mcp.json 不应有 browser 条目"
+            mcp["servers"].as_object().unwrap().contains_key("browser"),
+            "用户自配 browser server 不应被删除"
+        );
+        assert_eq!(
+            mcp["servers"]["browser"]["command"], "/old/browser",
+            "用户自配 browser server 内容应原样保留"
+        );
+
+        // 1b) 本应用历史残留（command 指向 wrapper）→ 清理，全局永不注册。
+        std::fs::write(
+            &bundle.mcp_json,
+            r#"{"servers":{"browser":{"command":"/x/browser-wrapper.mjs"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+        )
+        .unwrap();
+        bundle.ensure_builtin_mcp_servers().unwrap();
+        let mcp2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
+        assert!(
+            !mcp2["servers"].as_object().unwrap().contains_key("browser"),
+            "本应用历史残留的 browser 条目应被清理"
         );
 
         // 2) 前置条件不满足（无 vendor 入口）→ 回落全局 mcp.json，不写会话专用文件。

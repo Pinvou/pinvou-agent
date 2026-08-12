@@ -1,4 +1,5 @@
-//! 浏览器 Tauri 命令：前端（桌面/Web/移动三端统一）经 invoke 驱动 BrowserManager。
+//! 浏览器 Tauri 命令：前端（本期仅桌面端，浏览器 Tab 仅桌面渲染）经 invoke 驱动
+//! BrowserManager。
 //!
 //! 事件（后端 → 前端）：
 //! - `browser:frame`       截图流 JPEG 帧（base64 data + metadata + tab）

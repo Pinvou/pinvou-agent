@@ -69,12 +69,24 @@ impl CdpSession {
             msg["sessionId"] = json!(sid);
         }
         let frame = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-        let mut write = self.write.lock().await;
-        write
-            .send(WsMessage::Text(frame.into()))
-            .await
-            .map_err(|e| format!("CDP 发送失败: {e}"))?;
-        drop(write);
+        // 发送路径同样带超时：Chrome 进程存活但停止读取（wedged/半开 TCP）时，
+        // 写锁 + send 若无限等待会令所有后续 call 永久挂起（响应 30s 超时名存实亡）。
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut write = self.write.lock().await;
+            write.send(WsMessage::Text(frame.into())).await
+        })
+        .await;
+        let send_result = match sent {
+            Err(_) => Err("CDP 发送超时（30s）".to_string()),
+            Ok(Err(e)) => Err(format!("CDP 发送失败: {e}")),
+            Ok(Ok(())) => Ok(()),
+        };
+        if let Err(e) = send_result {
+            // 发送失败：摘除 pending 条目，避免条目泄漏（断连后 read 循环已退出，
+            // 不会再清理此后插入的条目）。
+            self.pending.lock().await.remove(&id);
+            return Err(e);
+        }
         let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
             Err(_) => {
                 // 超时：从 pending 摘除，避免条目泄漏。
@@ -95,7 +107,7 @@ impl CdpSession {
 /// 建立连接的结果：会话 + 事件接收端。
 pub struct Connected {
     pub session: Arc<CdpSession>,
-    pub events: mpsc::UnboundedReceiver<CdpEvent>,
+    pub events: mpsc::Receiver<CdpEvent>,
 }
 
 /// 连接 Chrome 的 browser 级 CDP 端点，返回会话与事件接收端。
@@ -120,7 +132,9 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
         .context("连接 browser CDP WebSocket")?;
     let (write, mut read) = ws.split();
 
-    let (events_tx, events_rx) = mpsc::unbounded_channel();
+    // 有界事件通道：screencast 帧密集（数十帧/秒），前端消费慢时丢弃旧帧而不是
+    // 无界堆积内存膨胀（前端 rAF 节流本来只取最新帧）。
+    let (events_tx, events_rx) = mpsc::channel(128);
     let session = Arc::new(CdpSession {
         port,
         write: Mutex::new(write),

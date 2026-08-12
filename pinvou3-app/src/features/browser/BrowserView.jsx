@@ -253,8 +253,23 @@ export function BrowserView({ theme, t }) {
     [frameToViewport, sendInput]
   );
 
+  const onCompositionEnd = useCallback(
+    (e) => {
+      // IME 组合确认：组合中的 keydown（keyCode 229 / key==='Process'）不转发，
+      // 确认文本经 insertText 整体送入页面（任意 unicode 安全，中文输入法可用；
+      // 与 Chrome DevTools 前端同做法）。
+      const text = e.data || '';
+      if (text) sendInput({ type: 'insertText', text });
+    },
+    [sendInput]
+  );
+
   const onFrameKeyDown = useCallback(
     (e) => {
+      // IME 组合输入中的 keydown（isComposing / keyCode 229 / key==='Process'）
+      // 不转发；文本由 onCompositionEnd 统一发送。
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
       const keyMap = {
         Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
         Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
@@ -268,12 +283,15 @@ export function BrowserView({ theme, t }) {
       };
       const m = keyMap[e.key];
       if (!m) {
-        // 可打印字符走 insertText（IME 级，任意 unicode 安全）
-        if (e.key && e.key.length === 1) {
+        // 可打印字符走 insertText（IME 级，任意 unicode 安全）；带修饰键的
+        // 组合（Ctrl/Cmd/Alt+字母等）不转发，避免把 'c'/'v' 插入页面污染内容，
+        // 同时保留宿主 WebView 原生快捷键。
+        if (e.key && e.key.length === 1 && !hasModifier) {
           sendInput({ type: 'insertText', text: e.key });
         }
         return;
       }
+      if (hasModifier) return; // Ctrl+Enter/Tab 等组合不转发，保留宿主行为
       e.preventDefault();
       sendInput({ type: 'key', key: m.key, code: m.code, keyCode: m.keyCode, text: e.key.length === 1 ? e.key : '' });
     },
@@ -381,6 +399,7 @@ export function BrowserView({ theme, t }) {
         style={{ background: isDark ? '#101113' : '#F4F5F6' }}
         tabIndex={0}
         onKeyDown={onFrameKeyDown}
+        onCompositionEnd={onCompositionEnd}
         onFocus={(e) => {
           // 忽略 chrome-devtools 工具栏等自身聚焦，只处理画面容器焦点。
           if (e.target !== e.currentTarget) return;

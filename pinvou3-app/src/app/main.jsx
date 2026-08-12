@@ -175,6 +175,13 @@ function workspaceDisplayName(path) {
           unlisteners.forEach(u => u && u());
         };
       }, []);
+      // 浏览器停止/崩溃后视图回退：browser:stopped 已把 browserActive 置 false，
+      // 若用户正停在 browser 视图则回到 chat（侧栏入口已消失，避免空白视图滞留）。
+      useEffect(() => {
+        if (!browserActive && currentView === 'browser') {
+          setCurrentView('chat');
+        }
+      }, [browserActive, currentView]);
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
       const codexAcpSupported = !!platformCapabilities.codexAcpSupported;
@@ -546,7 +553,7 @@ function workspaceDisplayName(path) {
         // monitor/settings 拽走。
         if (bs.activeSessionId !== activeChat) {
           setActiveChat(bs.activeSessionId);
-          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled') {
+          if (bs.activeSessionId && currentView !== 'codex' && currentView !== 'monitor' && currentView !== 'settings' && currentView !== 'search' && currentView !== 'scheduled' && currentView !== 'browser') {
             setCurrentView('chat');
           }
         }

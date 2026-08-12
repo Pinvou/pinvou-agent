@@ -153,6 +153,19 @@ pub fn chrome_candidates() -> Vec<&'static str> {
     super::super::platform::chrome_candidates()
 }
 
+/// 收紧文件权限为仅当前用户可读写（browser 端口文件等无鉴权敏感文件的落盘路径）。
+/// Unix 侧 chmod 0o600（与 browser-wrapper.mjs 一致）；Windows 无 POSIX 权限语义为 no-op。
+/// 平台差异必须在适配层实现，消费方（features）不得直接写 `#[cfg(unix)]`。
+#[cfg(unix)]
+pub fn make_private_file(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+/// 非 Unix 平台 no-op（Windows 无 POSIX 权限语义）。
+#[cfg(not(unix))]
+pub fn make_private_file(_path: &Path) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

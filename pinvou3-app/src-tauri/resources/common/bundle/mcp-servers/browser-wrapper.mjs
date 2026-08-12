@@ -335,6 +335,9 @@ async function main() {
     // 引擎对非 required server 的启动失败是非致命的，品悟 BrowserManager 之后
     // 兜底拉起 Chrome，下次会话重试即恢复。
     log('浏览器不可用：未找到 Chrome 或 CDP 未就绪，退出（品悟会兜底启动 Chrome，重试后恢复）');
+    // 本包装可能已启动 Chrome 但 CDP 未就绪：退出前清理自启实例，避免孤儿进程
+    // 占住 profile 单实例锁导致后续所有启动尝试失败。
+    cleanup();
     process.exit(1);
   }
 

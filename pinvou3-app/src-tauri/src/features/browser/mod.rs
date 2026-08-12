@@ -56,6 +56,10 @@ struct Inner {
 /// 浏览器管理器（Tauri State 注入，单例）。
 pub struct BrowserManager {
     inner: tokio::sync::Mutex<Inner>,
+    /// 启动临界区互斥：串行化整个启动序列（协调 Chrome → CDP 连接 → attach →
+    /// startScreencast → 事件循环），避免 watch 轮询与 Tauri 命令并发进入产生
+    /// 双事件循环/双截图流/句柄丢失（single-flight）。
+    start_mtx: tokio::sync::Mutex<()>,
     app: parking_lot::Mutex<Option<AppHandle>>,
 }
 
@@ -63,6 +67,7 @@ impl BrowserManager {
     pub fn new() -> Self {
         Self {
             inner: tokio::sync::Mutex::new(Inner::default()),
+            start_mtx: tokio::sync::Mutex::new(()),
             app: parking_lot::Mutex::new(None),
         }
     }
@@ -145,51 +150,75 @@ impl BrowserManager {
             }
         }
 
+        // single-flight：整个启动序列持 start_mtx，并发调用者在此等待后复用
+        // 已完成的状态，而不是各自再启动一遍（双事件循环/双截图流/句柄丢失）。
+        let _start_guard = self.start_mtx.lock().await;
+        {
+            let inner = self.inner.lock().await;
+            if inner.session.is_some() && inner.active_session.is_some() {
+                return Ok(());
+            }
+        }
+
         // 1) 协调启动 Chrome（复用端口文件或自启）
-        let (port, spawned_child) = self.acquire_or_start_chrome().await?;
+        let (port, mut spawned_child) = self.acquire_or_start_chrome().await?;
 
-        // 2) 连接 CDP
-        let connected = cdp::connect(port)
-            .await
-            .map_err(|e| format!("CDP 连接失败: {e:#}"))?;
-        let session = connected.session;
+        // 2-5) 连接 CDP / attach / 启域 / 截图流 / 事件循环。任一步失败时清理
+        //     自启的 Chrome（若有），避免孤儿进程占住 profile 单实例锁。
+        let boot: Result<(), String> = async {
+            let connected = cdp::connect(port)
+                .await
+                .map_err(|e| format!("CDP 连接失败: {e:#}"))?;
+            let session = connected.session;
 
-        // 3) attach 第一个页面 target
-        let session_id = attach_first_page(&session).await?;
+            let session_id = attach_first_page(&session).await?;
 
-        // 4) 启用页面域 + 开始截图流
-        session
-            .call(Some(&session_id), "Page.enable", json!({}))
-            .await
-            .map_err(|e| format!("Page.enable 失败: {e}"))?;
-        session
-            .call(
-                Some(&session_id),
-                "Page.startScreencast",
-                json!({
-                    "format": "jpeg",
-                    "quality": 70,
-                    "everyNthFrame": 1,
-                    "maxWidth": 1280
-                }),
-            )
-            .await
-            .map_err(|e| format!("Page.startScreencast 失败: {e}"))?;
+            session
+                .call(Some(&session_id), "Page.enable", json!({}))
+                .await
+                .map_err(|e| format!("Page.enable 失败: {e}"))?;
+            session
+                .call(
+                    Some(&session_id),
+                    "Page.startScreencast",
+                    json!({
+                        "format": "jpeg",
+                        "quality": 70,
+                        "everyNthFrame": 1,
+                        "maxWidth": 1280
+                    }),
+                )
+                .await
+                .map_err(|e| format!("Page.startScreencast 失败: {e}"))?;
 
-        // 5) 启动事件循环
-        let app = self
-            .app
-            .lock()
-            .clone()
-            .ok_or_else(|| "BrowserManager 未绑定 AppHandle".to_string())?;
-        let loop_task = tokio::spawn(run_event_loop(app, Arc::clone(&session), connected.events));
+            let app = self
+                .app
+                .lock()
+                .clone()
+                .ok_or_else(|| "BrowserManager 未绑定 AppHandle".to_string())?;
+            let loop_task =
+                tokio::spawn(run_event_loop(app, Arc::clone(&session), connected.events));
 
-        let mut inner = self.inner.lock().await;
-        inner.port = Some(port);
-        inner.child = spawned_child;
-        inner.session = Some(session);
-        inner.active_session = Some(session_id);
-        inner.loop_task = Some(loop_task);
+            let mut inner = self.inner.lock().await;
+            inner.port = Some(port);
+            inner.child = spawned_child.take();
+            inner.session = Some(session);
+            inner.active_session = Some(session_id);
+            inner.loop_task = Some(loop_task);
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = &boot {
+            // 启动失败：kill 自启的 Chrome，并清掉可能已写入的端口文件（若指向
+            // 半死实例，watch 会反复尝试接入失败；清掉让下次启动干净重建）。
+            if let Some(mut child) = spawned_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+            return Err(e.clone());
+        }
         Ok(())
     }
 
@@ -604,6 +633,12 @@ impl BrowserManager {
             let chrome = find_chrome().ok_or_else(|| "未找到 Chrome/Chromium".to_string())?;
             let child = start_chrome(&chrome, port)?;
             if !probe_cdp(port, Duration::from_secs(15)).await {
+                // Chrome 已 spawn 但 CDP 未就绪：先杀掉再报错，避免孤儿 Chrome
+                // 占住 profile 单实例锁导致后续所有启动尝试反复失败（需手动杀进程
+                // 才能恢复）。
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err("Chrome 已启动但 CDP 未就绪".to_string());
             }
             write_port_file(port, "app")?;
@@ -623,7 +658,7 @@ impl BrowserManager {
 async fn run_event_loop(
     app: AppHandle,
     session: Arc<CdpSession>,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<cdp::CdpEvent>,
+    mut events: tokio::sync::mpsc::Receiver<cdp::CdpEvent>,
 ) {
     use cdp::CdpEvent;
     while let Some(ev) = events.recv().await {
@@ -924,9 +959,13 @@ fn write_port_file(port: u16, owner: &str) -> Result<(), String> {
         "owner": owner,
         "started_at": chrono::Utc::now().timestamp_millis(),
     });
-    // tmp 名与 wrapper 的 `CDP_PORT_JSON + '.tmp'` 区分，避免双侧并发写同一 tmp 互相覆盖。
-    let tmp = path.with_extension("json.rust-tmp");
+    // tmp 名带 pid：多进程（app 实例/wrapper）并发写同一端口文件时互不覆盖
+    // （wrapper 侧用 `.tmp`，见 browser-wrapper.mjs）。
+    let tmp = path.with_extension(format!("json.rust-tmp-{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(&data).unwrap())
         .map_err(|e| format!("写端口文件失败: {e}"))?;
+    // CDP 无鉴权：收紧端口文件权限，同机其他本地用户不应能读到端口坐标
+    // （与 wrapper 的 chmod 0o600 一致；平台差异在 platform::os 适配层实现）。
+    crate::platform::os::make_private_file(&tmp);
     std::fs::rename(&tmp, &path).map_err(|e| format!("落盘端口文件失败: {e}"))
 }
