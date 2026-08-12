@@ -6456,18 +6456,26 @@
     var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
     pending.forEach(upsertPendingMemoryCandidate);
   }
+  // 记忆是会话级数据：加载必须带归属+序号校验（与 tauri memory.js 对齐，
+  // 审计）。await 挂起期间切会话或再次加载，旧响应不得覆盖当前显示，
+  // 也不得把上一个会话的 pending 候选卡 rehydrate 进当前对话流。
+  var memoryOverviewSeq = 0;
   async function loadMemoryOverview(options) {
     if (!invoke) return null;
     options = options || {};
+    var sid = state.activeSessionId;
+    var seq = ++memoryOverviewSeq;
     state.memory = Object.assign({}, state.memory, { loading: true, error: null });
     notify();
     try {
       var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return null;
       applyMemoryOverview(overview);
       if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
       notify();
       return overview;
     } catch (e) {
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return null;
       state.memory = Object.assign({}, state.memory, { loading: false, error: String(e) });
       notify();
       return null;

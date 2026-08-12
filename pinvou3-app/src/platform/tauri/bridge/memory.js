@@ -155,18 +155,28 @@
     var pending = overview && Array.isArray(overview.pending) ? overview.pending : [];
     pending.forEach(upsertPendingMemoryCandidate);
   }
+  // 记忆是会话级数据(profile/preferences/pending 均按 session 存储)。加载
+  // 必须带归属+序号校验：await 挂起期间切会话或再次加载，旧响应返回后不得
+  // 覆盖当前显示的会话记忆，也不得把上一个会话的 pending 候选卡 rehydrate
+  // 进当前对话流(串台)。任何新加载都会递增序号使在途读取作废(审计)。
+  var memoryOverviewSeq = 0;
   async function loadMemoryOverview(options) {
     if (!invoke) return null;
     options = options || {};
+    var sid = state.activeSessionId;
+    var seq = ++memoryOverviewSeq;
     state.memory = Object.assign({}, state.memory, { loading: true, error: null });
     notify();
     try {
+      // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
       var overview = await invoke("get_memory_overview", { sessionId: state.activeSessionId });
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return null;
       applyMemoryOverview(overview);
       if (options.rehydratePending) rehydratePendingMemoryCandidates(overview);
       notify();
       return overview;
     } catch (e) {
+      if (sid !== state.activeSessionId || seq !== memoryOverviewSeq) return null;
       state.memory = Object.assign({}, state.memory, { loading: false, error: String(e) });
       notify();
       return null;
