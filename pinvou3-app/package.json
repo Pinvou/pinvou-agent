@@ -119,7 +119,7 @@
     "vite": "^8.1.4"
   },
   "dependencies": {
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.13",
     "highlight.js": "^11.11.1",
     "marked": "^13.0.3",
     "react": "^18.3.1",
