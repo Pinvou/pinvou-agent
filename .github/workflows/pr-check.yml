@@ -451,6 +451,11 @@ jobs:
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
       RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+      # clippy 编译依赖(codewhale-tui)时同样可能触发 rustc/LLVM 栈溢出
+      # (v0.9.5 升级后 O2 同源风险,与闭源 pinvou3 pr-check 保持一致)。
+      # 正式入口按平台注入 RUSTC_WRAPPER(见 config.toml 注释);必须用
+      # ${{ github.workspace }} 绝对路径,避免 Cargo 按进程 cwd 双拼解析。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
