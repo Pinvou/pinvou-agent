@@ -1138,12 +1138,6 @@ impl EnginePool {
             .multi_agent_mode_available()
     }
 
-    /// Resolve the Engine execution workspace, including a project-bound
-    /// native Code session. Delegated-agent state does not use this accessor.
-    pub(crate) fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
-        self.bridge.session_workspace(session_id)
-    }
-
     /// Resolve the session-owned delegated-agent state and expert-roster root.
     /// For project-bound Code sessions this is distinct from the execution root.
     pub(crate) fn session_state_root(

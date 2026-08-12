@@ -4587,6 +4587,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// scheduled 会话由 SessionStore::session_roots 解析为"两个根都是该
+    /// automation 的共享 workspace"（sessions/mod.rs 契约）。此处验证 EngineConfig
+    /// 消费该 roots 时执行根与状态根同源，且不额外创建会话私有状态根
+    /// （审计补测：scheduled 语义在 EngineConfig 层保持）。
+    #[test]
+    fn scheduled_roots_keep_shared_automation_workspace_in_engine_config() {
+        let bridge = fixture_bridge();
+        let automation = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-automation-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = SessionRoots {
+            execution: automation.clone(),
+            ledger: automation.clone(),
+        };
+
+        let ordinary = bridge.build_engine_config_for_session_roots("sched-run", roots.clone());
+        assert_eq!(ordinary.workspace, automation);
+        assert_eq!(
+            ordinary.subagent_state_root.as_deref(),
+            Some(automation.as_path()),
+            "scheduled 会话的执行根与状态根必须同源（共享 automation workspace）"
+        );
+
+        let multi_agent = bridge.build_engine_config_for_multi_agent("sched-run", roots);
+        assert_eq!(multi_agent.workspace, automation);
+        assert_eq!(
+            multi_agent.subagent_state_root.as_deref(),
+            Some(automation.as_path())
+        );
+
+        let _ = std::fs::remove_dir_all(automation);
+    }
+
     /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
