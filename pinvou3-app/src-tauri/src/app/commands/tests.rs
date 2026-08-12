@@ -1,4 +1,5 @@
 // 本文件为命令层测试,借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;跨 await 持有无竞争者,不会死锁。
+// architecture-guard: allow-target-cfg -- artifact 调用链回归需用 Windows 独占句柄模拟 ReplaceFileW 1177 布局
 #![allow(clippy::await_holding_lock)]
 
 use super::prelude::*;
@@ -798,6 +799,98 @@ fn write_artifact_text_cleans_temp_file_on_error() {
         "temp files left behind: {leftovers:?}"
     );
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_read_recovers_an_occupied_1177_layout_after_release() {
+    use std::cell::RefCell;
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let _home = test_pinvou_home("pinvou3-artifact-1177-recovery");
+    let md = session_artifact_path("s1", "note.md");
+    std::fs::write(&md, "old").unwrap();
+    let occupied = RefCell::new(None);
+
+    let error = atomic_write_utf8_unlocked_with(&md, "new", |replacement, target, backup| {
+        crate::platform::filesystem::replace_file_atomically_with(
+            replacement,
+            target,
+            backup,
+            |target, _, backup| {
+                std::fs::rename(target, backup)?;
+                *occupied.borrow_mut() = Some(
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(backup)?,
+                );
+                Err(std::io::Error::from_raw_os_error(1177))
+            },
+        )
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("RecoveryRequired"));
+    assert!(!md.exists());
+    let leftovers_while_occupied: Vec<_> = std::fs::read_dir(md.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
+        })
+        .collect();
+    assert_eq!(leftovers_while_occupied.len(), 2);
+
+    drop(occupied.borrow_mut().take());
+    assert_eq!(
+        read_artifact_text_impl(md.to_str().unwrap()).unwrap(),
+        "old"
+    );
+    let leftovers_after_recovery: Vec<_> = std::fs::read_dir(md.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
+        })
+        .collect();
+    assert!(leftovers_after_recovery.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_writes_never_expose_partial_utf8_to_concurrent_readers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let _home = test_pinvou_home("pinvou3-artifact-concurrent-read");
+    let md = session_artifact_path("s1", "note.md");
+    let old = "a".repeat(32 * 1024);
+    let new = "b".repeat(32 * 1024);
+    std::fs::write(&md, &old).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let reader_running = Arc::clone(&running);
+    let reader_path = md.clone();
+    let old_for_reader = old.clone();
+    let new_for_reader = new.clone();
+    let reader = std::thread::spawn(move || {
+        while reader_running.load(Ordering::Acquire) {
+            if let Ok(value) = std::fs::read_to_string(&reader_path) {
+                assert!(value == old_for_reader || value == new_for_reader);
+            }
+        }
+    });
+
+    for index in 0..16 {
+        let content = if index % 2 == 0 { &new } else { &old };
+        write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
+    }
+    running.store(false, Ordering::Release);
+    reader.join().unwrap();
 }
 
 /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——

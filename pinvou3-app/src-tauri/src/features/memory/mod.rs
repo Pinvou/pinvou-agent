@@ -3944,7 +3944,7 @@ fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
         .as_nanos();
     let tmp = path.with_extension(format!("tmp-{}-{timestamp}-{sequence}", std::process::id()));
     let backup = path.with_extension("bak");
-    let result = (|| {
+    let stage_result = (|| -> io::Result<()> {
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -3952,12 +3952,25 @@ fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)
+        Ok(())
     })();
-    if result.is_err() && path.is_file() {
+    if let Err(error) = stage_result {
         let _ = fs::remove_file(&tmp);
+        return Err(error);
     }
-    result
+    match crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => Ok(()),
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = fs::remove_file(&tmp);
+                let _ = fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
 }
 
 fn json_lines_are_valid<T: for<'de> Deserialize<'de>>(raw: &str) -> bool {
@@ -4002,7 +4015,7 @@ fn read_text_recovering_unlocked_with(
     let mut candidates = Vec::new();
     let backup = path.with_extension("bak");
     if backup.is_file() {
-        candidates.push(backup);
+        candidates.push((true, backup));
     }
     if let Ok(entries) = fs::read_dir(parent) {
         for entry in entries.flatten() {
@@ -4013,17 +4026,23 @@ fn read_text_recovering_unlocked_with(
             let is_regular_file = fs::symlink_metadata(&candidate)
                 .is_ok_and(|metadata| metadata.file_type().is_file());
             if is_regular_file && name.starts_with(&format!("{file_stem}.tmp-")) {
-                candidates.push(candidate);
+                candidates.push((false, candidate));
             }
         }
     }
-    candidates.sort_by_key(|candidate| {
-        fs::metadata(candidate)
-            .and_then(|metadata| metadata.modified())
-            .ok()
+    // A ReplaceFileW 1177 backup is the old authority under its documented
+    // alternate name. Prefer it over a replacement candidate; otherwise use
+    // the newest valid completed temporary file.
+    candidates.sort_by_key(|(is_backup, candidate)| {
+        (
+            *is_backup,
+            fs::metadata(candidate)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
     });
     candidates.reverse();
-    for candidate in candidates {
+    for (_, candidate) in candidates {
         let Ok(raw) = fs::read_to_string(&candidate) else {
             continue;
         };
@@ -4054,7 +4073,7 @@ fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> 
     let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let replacement = target.with_extension(format!("recover-{}-{sequence}", std::process::id()));
     let backup = target.with_extension("recover-bak");
-    let result = (|| {
+    let stage_result = (|| -> io::Result<()> {
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -4062,15 +4081,29 @@ fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> 
         output.write_all(bytes)?;
         output.sync_all()?;
         drop(output);
-        crate::platform::filesystem::replace_file_atomically(&replacement, target, &backup)
+        Ok(())
     })();
-    if result.is_ok() {
-        let _ = fs::remove_file(candidate);
-        let _ = fs::remove_file(backup);
-    } else if target.is_file() {
+    if let Err(error) = stage_result {
         let _ = fs::remove_file(replacement);
+        return Err(error);
     }
-    result
+    match crate::platform::filesystem::replace_file_atomically(&replacement, target, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+            let _ = fs::remove_file(candidate);
+            let _ = fs::remove_file(backup);
+            Ok(())
+        }
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = fs::remove_file(replacement);
+                let _ = fs::remove_file(backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
 }
 
 fn cleanup_recovery_candidates(path: &Path) {
@@ -4189,6 +4222,26 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(!target.exists());
         assert!(target.with_extension("bak").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_prefers_replacefile_backup_over_surviving_replacement() {
+        let root = recovery_test_root("replacefile-backup");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let replacement = target.with_extension("tmp-1-2-3");
+        fs::write(&backup, "{\"version\":1,\"revision\":7}\n").unwrap();
+        fs::write(&replacement, "{\"version\":1,\"revision\":8}\n").unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        })
+        .unwrap();
+
+        assert!(restored.contains("\"revision\":7"));
+        assert!(!backup.exists());
+        assert!(!replacement.exists());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -751,7 +751,10 @@ jobs:
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
 
       - name: Windows 原子替换状态机回归
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib platform::filesystem::tests::windows_ -- --test-threads=1
+        run: |
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib platform::filesystem::tests::windows_ -- --test-threads=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib artifact_read_recovers_an_occupied_1177_layout_after_release -- --test-threads=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib artifact_writes_never_expose_partial_utf8_to_concurrent_readers -- --test-threads=1
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
