@@ -260,15 +260,10 @@
   }
   async function exitPlanToYolo() {
     if (!state.activeSessionId) return;
-    var sid = state.activeSessionId;
     try {
-      // invoke 形状保持原样（协议指纹按文本计算，不因捕获 sid 而改写）。
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
-      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
-      // 写回必须定向触发会话：await 期间用户可能已切走，直接写全局 modeState
-      // 会把 A 会话的模式串到 B 会话显示——syncModeState 串台的写入镜像面。
-      runOnSession(sid, function () { applyModeFromState(st); });
-    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
+      applyModeFromState(st);
+    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
