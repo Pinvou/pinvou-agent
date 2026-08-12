@@ -186,8 +186,7 @@ impl SkillMarketplaceManager {
                     // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
                     subtitle: String::new(),
                     // 解析 SKILL.md frontmatter description 展示;缺失则空
-                    description: read_skill_description(&path.join("SKILL.md"))
-                        .unwrap_or_default(),
+                    description: read_skill_description(&path.join("SKILL.md")).unwrap_or_default(),
                     icon: "Package".to_string(),
                     color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                     installed: true,
@@ -619,8 +618,10 @@ mod tests {
         );
         // | 块状:非空行折叠拼接,空行跳过,遇顶层字段结束
         assert_eq!(
-            read_skill_description_from_str("---\ndescription: |\n  第一行\n\n  第二行\nname: x\n---\n")
-                .as_deref(),
+            read_skill_description_from_str(
+                "---\ndescription: |\n  第一行\n\n  第二行\nname: x\n---\n"
+            )
+            .as_deref(),
             Some("第一行 第二行")
         );
         // > 块状
@@ -635,7 +636,10 @@ mod tests {
         // 超长截断到 240 字符
         let long = format!("---\ndescription: {}\n---\n", "字".repeat(300));
         assert_eq!(
-            read_skill_description_from_str(&long).unwrap().chars().count(),
+            read_skill_description_from_str(&long)
+                .unwrap()
+                .chars()
+                .count(),
             240
         );
     }
