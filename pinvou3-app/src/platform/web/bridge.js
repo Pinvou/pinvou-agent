@@ -3204,14 +3204,23 @@
       if (!block || block.type !== "text") continue;
       var text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
-      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-      if (match && match[1]) return match[1].trim();
+      // CodeWhale appends human-readable authority detail after the stable
+      // provenance identifier. Parse only that identifier so both the current
+      // one-line shape and legacy two-line metadata remain compatible.
+      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
   }
 
   function isInternalUserMessageProvenance(provenance) {
     return provenance === "runtime" || provenance === "subagent_handoff";
+  }
+
+  function isInternalRuntimeEnvelopeText(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
@@ -3222,6 +3231,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (textParts.some(isInternalRuntimeEnvelopeText)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 

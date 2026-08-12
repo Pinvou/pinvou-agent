@@ -848,6 +848,81 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
 }
 
+async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
+  var completionText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'current child-only completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_current","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  var shellCompletionText = [
+    '<codewhale:runtime_event kind="background_shell_completion" visibility="internal">',
+    'internal shell completion payload',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+
+  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sessionId = "chat-current-internal-provenance-" + bridgeKind;
+    harness.handlers.load_session = function () {
+      return {
+        metadata: { id: sessionId, title: "Current internal provenance", message_count: 5 },
+        messages: [
+          { role: "user", content: [{ type: "text", text: "real user request" }] },
+          { role: "user", content: [
+            { type: "text", text: completionText },
+            { type: "text", text: [
+              "<turn_meta>",
+              "Current local date: 2026-08-12",
+              "Current workspace: /private/workspace",
+              "Current permission posture: Full Access",
+              "Input provenance: subagent_handoff (non-authoritative)",
+              "</turn_meta>",
+            ].join("\n") },
+          ] },
+          { role: "user", content: [
+            { type: "text", text: "current runtime recovery hint" },
+            { type: "text", text: "<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "user", content: [
+            { type: "text", text: shellCompletionText },
+            { type: "text", text: "<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "parent final answer" }] },
+        ],
+        artifacts: [],
+      };
+    };
+
+    assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+    var state = harness.bridge.state.get("chat");
+    var visible = JSON.stringify(state.chatItems);
+    var raw = JSON.stringify(state.messages);
+    assert.ok(visible.includes("real user request"), bridgeKind + " must retain real user input");
+    assert.ok(visible.includes("parent final answer"), bridgeKind + " must retain the parent answer");
+    [
+      "current child-only completion summary",
+      "current runtime recovery hint",
+      "internal shell completion payload",
+      "codewhale:runtime_event",
+      "Current workspace:",
+    ].forEach(function (hiddenText) {
+      assert.ok(!visible.includes(hiddenText),
+        bridgeKind + " must hide internal payload: " + hiddenText);
+    });
+    assert.ok(raw.includes("current child-only completion summary"),
+      bridgeKind + " must preserve the child handoff in model context");
+    assert.ok(raw.includes("current runtime recovery hint"),
+      bridgeKind + " must preserve runtime recovery context");
+    assert.ok(raw.includes("internal shell completion payload"),
+      bridgeKind + " must preserve shell completion context");
+    assert.ok(raw.includes("subagent_handoff (non-authoritative)"),
+      bridgeKind + " must preserve current provenance metadata");
+  }
+}
+
 async function draftToggleFailureAbortsFirstSend() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4233,6 +4308,7 @@ Promise.resolve()
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(internalSubagentHandoffStaysOutOfPresentation)
+  .then(currentInternalProvenanceAndEnvelopeStayOutOfPresentation)
   .then(multiAgentToggleFailureIsRoutedToTriggerSession)
   .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)
