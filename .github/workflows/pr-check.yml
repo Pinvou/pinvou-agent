@@ -503,6 +503,13 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: cargo clippy --lib --no-deps
 
+      # dump_system_prompt 由 dev-tools feature 隔离，默认的 lib/clippy/test 均不会
+      # 编译它；显式检查，防止 CodeWhale Prompt API 升级再次漏适配。
+      - name: cargo check --bin dump_system_prompt (dev-tools)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou3-app/src-tauri
+        run: cargo check --bin dump_system_prompt --features dev-tools
+
       # cargo-deny 只与 Cargo/lock/deny/gitlink 等依赖与策略路径有关。
       - name: cargo-deny (advisories/licenses/bans/sources)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
@@ -722,7 +729,9 @@ jobs:
           npm --prefix pinvou3-app run test:tauri-effective-config
 
       - name: Windows Rust 全目标检查
-        run: cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --all-targets
+        run: >-
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --all-targets --features dev-tools
 
       - name: Windows Rust 单元测试链接检查
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
