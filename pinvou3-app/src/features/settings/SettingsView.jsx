@@ -2325,9 +2325,16 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       const memoryEnabled = !!(bs && bs.settings && bs.settings.memory_enabled);
       const memory = (bs && bs.memory) || {};
-      const memoryError = memory.error
-        ? String(memory.error)
-        : (Array.isArray(memory.warnings) && memory.warnings.length ? String(memory.warnings[0]) : '');
+      const memoryWarning = Array.isArray(memory.warnings) ? memory.warnings[0] : null;
+      const memoryWarningCode = memoryWarning && typeof memoryWarning === 'object' ? memoryWarning.code : '';
+      const memoryError = memory.error || memoryWarning;
+      const memoryErrorMessage = memory.error
+        ? settingsCopy.memoryLoadFailed
+        : memoryWarningCode === 'runtime_refresh_failed'
+          ? settingsCopy.memoryRuntimeRefreshFailed
+          : memoryWarningCode === 'snapshot_refresh_failed'
+            ? settingsCopy.memorySnapshotRefreshFailed
+            : settingsCopy.memorySourceUnavailable;
       const identity = (memory.profile && memory.profile.identity) || {};
       const longTermItems = [
         ...(memory.preferences || []).map(item => ({ ...item, kind: 'preference', type: settingsCopy.memoryTypes.preference })),
@@ -2575,8 +2582,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           {memoryEnabled && (
             <>
               {memoryError && (
-                <div data-testid="memory-settings-error" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
-                  {settingsCopy.memoryLoadFailed}
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                  {memoryErrorMessage}
                 </div>
               )}
               <IOSSection title={settingsCopy.profile}>
@@ -2960,7 +2967,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                       />
                     )}
                   </label>
-                  {memoryEditorError && <div data-testid="memory-editor-error" className="mt-3 text-[13px] leading-5 text-[#FF3B30]">{settingsCopy.memorySaveFailed}</div>}
+                  {memoryEditorError && <div data-testid="memory-editor-error" role="alert" aria-live="assertive" className="mt-3 text-[13px] leading-5 text-[#FF3B30]">{settingsCopy.memorySaveFailed}</div>}
                   <div className="mt-6 flex justify-end gap-2.5">
                     <button onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 px-4 rounded-full text-[14px] font-semibold bg-[#E5E5EA] dark:bg-[#2C2C2E] disabled:opacity-40`}>{settingsCopy.cancel}</button>
                     <button data-testid="memory-editor-save" onClick={saveMemoryEditor} disabled={memorySaving} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-40">{memorySaving ? settingsCopy.saving : settingsCopy.save}</button>

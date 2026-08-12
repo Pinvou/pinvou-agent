@@ -126,6 +126,11 @@ function injectSource() {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
       preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
       runtime: null, snapshot_path: '', warnings: [],
+      sources: {
+        profile: { available: true }, preferences: { available: true }, work_context: { available: true },
+        current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
+        pending: { available: true }, never: { available: true },
+      },
     };
     var failMemoryOverview = false;
     var failMemoryUpdate = false;
@@ -227,7 +232,11 @@ function injectSource() {
               identity: Object.assign({}, memoryOverview.profile.identity, args.patch || {}),
             }),
           });
-          return Promise.resolve({ profile: memoryOverview.profile, runtime: null, warnings: ['runtime cache locked'] });
+          return Promise.resolve({
+            profile: memoryOverview.profile,
+            runtime: null,
+            warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
+          });
         default: return Promise.resolve(null);
       }
     }
@@ -412,7 +421,8 @@ async function modalWidth(page, headingText) {
   rec('①b 派生概览刷新失败不吞掉已保存的称呼', await page.evaluate(() =>
     (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级后称呼')));
   rec('①c 记忆加载失败有明确提示且不伪装成未设置', await page.evaluate(() =>
-    !!document.querySelector('[data-testid="memory-settings-error"]')));
+    document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('aria-live') === 'polite'));
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setFailMemoryOverview(false);
     window.__SETTINGS_TEST__.setFailMemoryUpdate(true);
@@ -424,7 +434,8 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-editor-error"]'));
   rec('①d 源资料保存失败时保留编辑器并展示错误', await page.evaluate(() =>
     !!document.querySelector('[data-testid="memory-editor-input"]')
-      && !!document.querySelector('[data-testid="memory-editor-error"]')));
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('aria-live') === 'assertive'));
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setFailMemoryUpdate(false);
     const input = document.querySelector('[data-testid="memory-editor-input"]');

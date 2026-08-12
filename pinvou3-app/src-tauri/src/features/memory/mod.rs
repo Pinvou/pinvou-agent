@@ -139,6 +139,11 @@ fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn file_lifecycle_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemoryProfile {
     #[serde(default = "default_profile_version")]
@@ -677,21 +682,18 @@ pub fn take_turn_capture(session_id: &str) -> Option<TurnMemoryCapture> {
 
 pub fn load_profile() -> io::Result<MemoryProfile> {
     let path = profile_path();
-    match fs::read_to_string(&path) {
+    match read_text_recovering(&path, |raw| {
+        serde_json::from_str::<MemoryProfile>(raw).is_ok()
+    }) {
         Ok(raw) => {
             let mut profile: MemoryProfile = serde_json::from_str(&raw).map_err(invalid_data)?;
             profile.normalize();
             Ok(profile)
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            if let Some(profile) = recover_profile_after_interrupted_replace(&path)? {
-                return Ok(profile);
-            }
-            Ok(MemoryProfile {
-                version: PROFILE_VERSION,
-                ..MemoryProfile::default()
-            })
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(MemoryProfile {
+            version: PROFILE_VERSION,
+            ..MemoryProfile::default()
+        }),
         Err(err) => Err(err),
     }
 }
@@ -1074,7 +1076,7 @@ fn looks_completed_work_status(value: &str) -> bool {
 
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     let path = recent_work_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<RecentWorkItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -1188,6 +1190,7 @@ pub fn archive_recent_work(id: &str) -> io::Result<bool> {
 
 pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
     let dir = work_context_dir();
+    recover_directory_json_files::<WorkContextFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1200,12 +1203,10 @@ pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(mut item) = serde_json::from_str::<WorkContextFile>(&raw) else {
-            continue;
-        };
+        let raw = read_text_recovering(&path, |raw| {
+            serde_json::from_str::<WorkContextFile>(raw).is_ok()
+        })?;
+        let mut item = serde_json::from_str::<WorkContextFile>(&raw).map_err(invalid_data)?;
         normalize_work_context(&mut item);
         if !item.topic.is_empty() && !item.text.is_empty() {
             by_topic.insert(item.topic.clone(), item);
@@ -1512,7 +1513,7 @@ pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
 }
 
 fn load_timed_memory_file(path: &Path, kind: &str) -> io::Result<Vec<TimedMemoryItem>> {
-    let raw = match fs::read_to_string(path) {
+    let raw = match read_text_recovering(path, json_lines_are_valid::<TimedMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -1611,7 +1612,7 @@ fn dedupe_timed_memory_items(mut items: Vec<TimedMemoryItem>) -> Vec<TimedMemory
 
 pub fn load_pending_memory() -> io::Result<Vec<PendingMemoryItem>> {
     let path = pending_memory_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<PendingMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -2752,11 +2753,11 @@ fn refresh_timed_memory_expiry_unlocked(kind: &str, now: DateTime<Utc>) -> io::R
 
 pub fn render_memory_block() -> io::Result<(String, Vec<InjectedMemoryItem>)> {
     let profile = load_profile()?;
-    let preferences = load_preferences().unwrap_or_default();
-    let work_context = load_work_context().unwrap_or_default();
-    let current_focus = load_current_focus().unwrap_or_default();
-    let recent_activity = load_recent_activity().unwrap_or_default();
-    let legacy_recent_work = load_recent_work().unwrap_or_default();
+    let preferences = load_preferences()?;
+    let work_context = load_work_context()?;
+    let current_focus = load_current_focus()?;
+    let recent_activity = load_recent_activity()?;
+    let legacy_recent_work = load_recent_work()?;
     Ok(render_from_parts(
         &profile,
         &preferences,
@@ -3599,7 +3600,7 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
 
 fn load_never_memory_unlocked() -> io::Result<Vec<NeverMemoryItem>> {
     let path = never_memory_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<NeverMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -3801,6 +3802,7 @@ pub fn delete_preference(id: &str) -> io::Result<bool> {
 
 fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
     let dir = paths::user_memory_preferences_dir();
+    recover_directory_json_files::<PreferenceFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -3813,12 +3815,10 @@ fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(mut pref) = serde_json::from_str::<PreferenceFile>(&raw) else {
-            continue;
-        };
+        let raw = read_text_recovering(&path, |raw| {
+            serde_json::from_str::<PreferenceFile>(raw).is_ok()
+        })?;
+        let mut pref = serde_json::from_str::<PreferenceFile>(&raw).map_err(invalid_data)?;
         pref.id = clean_scalar(&pref.id);
         if pref.id.is_empty() {
             pref.id = path
@@ -3933,6 +3933,7 @@ fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let _lifecycle = file_lifecycle_lock().lock();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -3953,15 +3954,46 @@ fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
         drop(file);
         crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)
     })();
-    if result.is_err() {
+    if result.is_err() && path.is_file() {
         let _ = fs::remove_file(&tmp);
     }
     result
 }
 
-fn recover_profile_after_interrupted_replace(path: &Path) -> io::Result<Option<MemoryProfile>> {
+fn json_lines_are_valid<T: for<'de> Deserialize<'de>>(raw: &str) -> bool {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(|line| serde_json::from_str::<T>(line).is_ok())
+}
+
+fn read_text_recovering(path: &Path, validate: impl Fn(&str) -> bool) -> io::Result<String> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    read_text_recovering_unlocked(path, &validate)
+}
+
+fn read_text_recovering_unlocked(
+    path: &Path,
+    validate: &dyn Fn(&str) -> bool,
+) -> io::Result<String> {
+    read_text_recovering_unlocked_with(path, validate, &promote_recovery_candidate)
+}
+
+fn read_text_recovering_unlocked_with(
+    path: &Path,
+    validate: &dyn Fn(&str) -> bool,
+    promote: &dyn Fn(&Path, &Path, &[u8]) -> io::Result<()>,
+) -> io::Result<String> {
+    let current_error = match fs::read_to_string(path) {
+        Ok(raw) if validate(&raw) => return Ok(raw),
+        Ok(_) => io::Error::new(
+            io::ErrorKind::InvalidData,
+            "authoritative memory file is invalid",
+        ),
+        Err(error) => error,
+    };
     let Some(parent) = path.parent() else {
-        return Ok(None);
+        return Err(current_error);
     };
     let file_stem = path
         .file_stem()
@@ -3995,26 +4027,109 @@ fn recover_profile_after_interrupted_replace(path: &Path) -> io::Result<Option<M
         let Ok(raw) = fs::read_to_string(&candidate) else {
             continue;
         };
-        let Ok(mut profile) = serde_json::from_str::<MemoryProfile>(&raw) else {
+        if !validate(&raw) {
             continue;
-        };
-        profile.normalize();
-        match fs::hard_link(&candidate, path) {
-            Ok(()) => {
+        }
+        promote(&candidate, path, raw.as_bytes())?;
+        let restored = fs::read_to_string(path)?;
+        if validate(&restored) {
+            cleanup_recovery_candidates(path);
+            return Ok(restored);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "promoted memory recovery candidate is invalid",
+        ));
+    }
+    Err(current_error)
+}
+
+fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let replacement = target.with_extension(format!("recover-{}-{sequence}", std::process::id()));
+    let backup = target.with_extension("recover-bak");
+    let result = (|| {
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&replacement)?;
+        output.write_all(bytes)?;
+        output.sync_all()?;
+        drop(output);
+        crate::platform::filesystem::replace_file_atomically(&replacement, target, &backup)
+    })();
+    if result.is_ok() {
+        let _ = fs::remove_file(candidate);
+        let _ = fs::remove_file(backup);
+    } else if target.is_file() {
+        let _ = fs::remove_file(replacement);
+    }
+    result
+}
+
+fn cleanup_recovery_candidates(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let name = candidate
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if candidate == path.with_extension("bak") || name.starts_with(&format!("{stem}.tmp-"))
+            {
                 let _ = fs::remove_file(candidate);
-                return Ok(Some(profile));
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let raw = fs::read_to_string(path)?;
-                let mut current =
-                    serde_json::from_str::<MemoryProfile>(&raw).map_err(invalid_data)?;
-                current.normalize();
-                return Ok(Some(current));
-            }
-            Err(_) => continue,
         }
     }
-    Ok(None)
+}
+
+fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(dir: &Path) -> io::Result<()> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut targets = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let stem = if let Some(stem) = name.strip_suffix(".bak") {
+            Some(stem)
+        } else {
+            name.split_once(".tmp-").map(|(stem, _)| stem)
+        };
+        if let Some(stem) = stem.filter(|stem| !stem.is_empty()) {
+            targets.insert(dir.join(format!("{stem}.json")));
+        }
+    }
+    for target in targets {
+        if target.is_file() {
+            continue;
+        }
+        match read_text_recovering_unlocked(&target, &|raw| serde_json::from_str::<T>(raw).is_ok())
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn invalid_data(err: impl std::fmt::Display) -> io::Error {
@@ -4024,6 +4139,101 @@ fn invalid_data(err: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-memory-recovery-{name}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn generic_recovery_promotes_newest_valid_candidate_without_hard_links() {
+        let root = recovery_test_root("multiple");
+        let target = root.join("pending.jsonl");
+        let backup = target.with_extension("bak");
+        let older = target.with_extension("tmp-1-1-1");
+        let newer = target.with_extension("tmp-1-2-2");
+        fs::write(&backup, "invalid\n").unwrap();
+        fs::write(&older, "{\"id\":1}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        fs::write(&newer, "{\"id\":2}\n").unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            json_lines_are_valid::<serde_json::Value>(raw)
+        })
+        .unwrap();
+        assert!(restored.contains("\"id\":2"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), restored);
+        assert!(!backup.exists());
+        assert!(!older.exists());
+        assert!(!newer.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn valid_recovery_candidate_with_failed_promotion_is_an_error() {
+        let root = recovery_test_root("promotion-failure");
+        let target = root.join("profile.json");
+        fs::write(target.with_extension("bak"), "{\"version\":1}\n").unwrap();
+
+        let error = read_text_recovering_unlocked_with(
+            &target,
+            &|raw| serde_json::from_str::<MemoryProfile>(raw).is_ok(),
+            &|_, _, _| Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!target.exists());
+        assert!(target.with_extension("bak").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_profile_directory_source_recovers_missing_authority() {
+        let root = recovery_test_root("directory");
+        let target = root.join("pref_answer.json");
+        fs::write(
+            target.with_extension("bak"),
+            serde_json::to_vec(&PreferenceFile {
+                id: "pref_answer".to_string(),
+                topic: "answer_style".to_string(),
+                scope: "unconditional".to_string(),
+                text: "concise".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        recover_directory_json_files::<PreferenceFile>(&root).unwrap();
+        let restored: PreferenceFile =
+            serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(restored.id, "pref_answer");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_waits_for_active_writer_lifecycle() {
+        let root = recovery_test_root("concurrent");
+        let target = root.join("recent.jsonl");
+        let guard = file_lifecycle_lock().lock();
+        let active = target.with_extension("tmp-9-9-9");
+        fs::write(&active, "{\"active\":true}\n").unwrap();
+        let target_for_reader = target.clone();
+        let reader = std::thread::spawn(move || {
+            read_text_recovering(&target_for_reader, |raw| {
+                json_lines_are_valid::<serde_json::Value>(raw)
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::remove_file(active).unwrap();
+        fs::write(&target, "{\"committed\":true}\n").unwrap();
+        drop(guard);
+        assert!(reader.join().unwrap().unwrap().contains("committed"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     struct IsolatedPinvouHome {
         root: PathBuf,
@@ -4133,6 +4343,55 @@ mod tests {
         assert!(!valid_candidate.exists());
         assert!(fs::read_to_string(&path).unwrap().contains("升级用户"));
         assert_eq!(load_profile().unwrap(), recovered);
+        drop(home);
+    }
+
+    #[test]
+    fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
+        let home = IsolatedPinvouHome::new("committed-write-derived-failure");
+        let preference = enqueue_memory_candidate(MemorySuggestion {
+            kind: "preference".to_string(),
+            topic: "answer_style".to_string(),
+            content: "Use concise answers".to_string(),
+            source: "test".to_string(),
+        })
+        .unwrap();
+        confirm_pending_memory(&preference.id).unwrap().unwrap();
+        let preference_id = list_preferences().unwrap()[0].id.clone();
+
+        fs::create_dir_all(recent_work_path().parent().unwrap()).unwrap();
+        fs::write(recent_work_path(), "not-json\n").unwrap();
+
+        let updated = update_preference(
+            &preference_id,
+            MemoryTextPatch {
+                text: Some("Use detailed answers".to_string()),
+                topic: None,
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.text, "Use detailed answers");
+        assert_eq!(list_preferences().unwrap()[0].text, "Use detailed answers");
+        assert!(render_memory_block().is_err());
+
+        assert!(delete_preference(&preference_id).unwrap());
+        assert!(list_preferences().unwrap().is_empty());
+        assert!(render_memory_block().is_err());
+
+        let profile_candidate = enqueue_memory_candidate(MemorySuggestion {
+            kind: "profile".to_string(),
+            topic: "call_name".to_string(),
+            content: "Ada".to_string(),
+            source: "test".to_string(),
+        })
+        .unwrap();
+        confirm_pending_memory(&profile_candidate.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(load_profile().unwrap().identity.call_name, "Ada");
+        assert!(render_memory_block().is_err());
         drop(home);
     }
 

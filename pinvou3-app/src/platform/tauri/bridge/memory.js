@@ -110,20 +110,30 @@
   }
 
   function applyMemoryOverview(overview) {
+    var previous = state.memory || {};
+    var sourceStates = overview && overview.sources || {};
+    function sourceValue(source, value, fallback) {
+      var status = sourceStates[source];
+      if (status && status.available === false) {
+        return Object.prototype.hasOwnProperty.call(previous, source) ? previous[source] : fallback;
+      }
+      return value;
+    }
     state.memory = {
       loading: false,
       error: null,
-      profile: overview && overview.profile || null,
-      preferences: overview && Array.isArray(overview.preferences) ? overview.preferences : [],
-      work_context: overview && Array.isArray(overview.work_context) ? overview.work_context : [],
-      current_focus: overview && Array.isArray(overview.current_focus) ? overview.current_focus : [],
-      recent_activity: overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [],
-      recent_work: overview && Array.isArray(overview.recent_work) ? overview.recent_work : [],
-      pending: overview && Array.isArray(overview.pending) ? overview.pending : [],
-      never: overview && Array.isArray(overview.never) ? overview.never : [],
-      runtime: overview && overview.runtime || null,
-      snapshot_path: overview && overview.snapshot_path || "",
+      profile: sourceValue("profile", overview && overview.profile || null, null),
+      preferences: sourceValue("preferences", overview && Array.isArray(overview.preferences) ? overview.preferences : [], []),
+      work_context: sourceValue("work_context", overview && Array.isArray(overview.work_context) ? overview.work_context : [], []),
+      current_focus: sourceValue("current_focus", overview && Array.isArray(overview.current_focus) ? overview.current_focus : [], []),
+      recent_activity: sourceValue("recent_activity", overview && Array.isArray(overview.recent_activity) ? overview.recent_activity : [], []),
+      recent_work: sourceValue("recent_work", overview && Array.isArray(overview.recent_work) ? overview.recent_work : [], []),
+      pending: sourceValue("pending", overview && Array.isArray(overview.pending) ? overview.pending : [], []),
+      never: sourceValue("never", overview && Array.isArray(overview.never) ? overview.never : [], []),
+      runtime: sourceValue("runtime", overview && overview.runtime || null, null),
+      snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", ""),
       warnings: overview && Array.isArray(overview.warnings) ? overview.warnings : [],
+      sources: sourceStates,
     };
   }
   function applyMemoryProfileState(result) {
@@ -135,6 +145,24 @@
       runtime: result.runtime || null,
       warnings: Array.isArray(result.warnings) ? result.warnings : [],
     });
+  }
+  function applyMemoryWriteState(result, update) {
+    if (!result) return;
+    var next = Object.assign({}, state.memory, {
+      loading: false,
+      error: null,
+      runtime: result.runtime || null,
+      warnings: Array.isArray(result.warnings) ? result.warnings : [],
+    });
+    if (update) update(next, result.value);
+    state.memory = next;
+    notify();
+  }
+  function upsertMemoryValue(items, value) {
+    if (!value) return items || [];
+    var next = (items || []).filter(function (item) { return item && item.id !== value.id; });
+    next.push(value);
+    return next;
   }
   function upsertPendingMemoryCandidate(item) {
     if (!item || item.status !== "pending_confirm") return;
@@ -201,6 +229,9 @@
     if (!id || !invoke) return false;
     try {
       var res = await invoke("delete_memory_preference", { id: id, sessionId: state.activeSessionId });
+      applyMemoryWriteState(res, function (next, changed) {
+        if (changed) next.preferences = (next.preferences || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -220,6 +251,11 @@
       var args = { id: id, patch: patch || {}, sessionId: state.activeSessionId };
       if (command === "update_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
+      applyMemoryWriteState(res, function (next, value) {
+        if (!value) return;
+        var source = kind === "preference" ? "preferences" : kind;
+        next[source] = upsertMemoryValue(next[source], value);
+      });
       await loadMemoryOverview();
       return res && res.value;
     } catch (e) {
@@ -239,6 +275,11 @@
       var args = { id: id, sessionId: state.activeSessionId };
       if (command === "delete_timed_memory") args.kind = kind;
       var res = await invoke(command, args);
+      applyMemoryWriteState(res, function (next, changed) {
+        if (!changed) return;
+        var source = kind === "preference" ? "preferences" : kind;
+        next[source] = (next[source] || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -251,6 +292,9 @@
     if (!id || !invoke) return false;
     try {
       var res = await invoke("archive_recent_work_memory", { id: id, sessionId: state.activeSessionId });
+      applyMemoryWriteState(res, function (next, changed) {
+        if (changed) next.recent_work = (next.recent_work || []).filter(function (item) { return item.id !== id; });
+      });
       await loadMemoryOverview();
       return !!(res && res.value);
     } catch (e) {
@@ -263,7 +307,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      var result = await invoke("confirm_pending_memory", { id: memoryId, sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已记住" });
       await loadMemoryOverview();
       notify();
@@ -275,7 +322,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      var result = await invoke("ignore_pending_memory", { id: memoryId, sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "已忽略" });
       await loadMemoryOverview();
       notify();
@@ -287,7 +337,10 @@
     if (!memoryId) return;
     var sid = state.activeSessionId;
     try {
-      await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      var result = await invoke("never_pending_memory", { id: memoryId, reason: "user_selected", sessionId: sid });
+      applyMemoryWriteState(result, function (next) {
+        next.pending = (next.pending || []).filter(function (item) { return item.id !== memoryId; });
+      });
       if (chatItemId) patchItemById(chatItemId, { resolved: true, statusLabel: "不再提示" });
       await loadMemoryOverview();
       notify();

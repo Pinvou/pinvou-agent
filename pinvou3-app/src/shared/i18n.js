@@ -2540,10 +2540,19 @@ Object.assign(dict.ja.uiToolStore, { storeData: {
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 dict.zh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
+dict.zh.uiSettingsDetail.memorySourceUnavailable = '部分记忆资料暂时不可用，已保留上次成功加载的内容';
+dict.zh.uiSettingsDetail.memoryRuntimeRefreshFailed = '记忆已保存，但当前会话的记忆上下文暂未刷新';
+dict.zh.uiSettingsDetail.memorySnapshotRefreshFailed = '记忆资料已加载，但概览快照暂未刷新';
 dict.en.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 dict.en.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
+dict.en.uiSettingsDetail.memorySourceUnavailable = 'Some memory sources are temporarily unavailable. The last successfully loaded content is preserved.';
+dict.en.uiSettingsDetail.memoryRuntimeRefreshFailed = 'Memory was saved, but the current session context could not be refreshed.';
+dict.en.uiSettingsDetail.memorySnapshotRefreshFailed = 'Memory was loaded, but the overview snapshot could not be refreshed.';
 dict.ja.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 dict.ja.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
+dict.ja.uiSettingsDetail.memorySourceUnavailable = '一部のメモリ情報を一時的に利用できません。前回正常に読み込んだ内容を保持しています。';
+dict.ja.uiSettingsDetail.memoryRuntimeRefreshFailed = 'メモリは保存されましたが、現在のセッションのメモリコンテキストを更新できませんでした。';
+dict.ja.uiSettingsDetail.memorySnapshotRefreshFailed = 'メモリ情報は読み込まれましたが、概要スナップショットを更新できませんでした。';
 
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
