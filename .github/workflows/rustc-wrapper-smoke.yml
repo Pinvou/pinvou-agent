@@ -1,0 +1,50 @@
+name: rustc-wrapper-smoke
+
+# 验证 .cargo/config.toml [build] rustc-wrapper 在三端都能被 Cargo 执行:
+# - Unix(macos/ubuntu):shebang + sh 分支
+# - Windows:Rust std 对 .cmd 程序名的 cmd /C 处理
+# 用最小 crate 继承仓库 wrapper 配置跑 cargo check(秒级,不编译全图),
+# 防止 wrapper 在某个平台不可执行(如 Windows os error 193)导致
+# 所有 Cargo build/check/test/run 全断。
+on:
+  pull_request:
+    paths:
+      - 'pinvou3-app/src-tauri/.cargo/config.toml'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd'
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustc-wrapper-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 最小 crate 继承仓库 wrapper 配置并 cargo check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cargo init --name wrapper_smoke
+          mkdir -p .cargo
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/.cargo/config.toml" .cargo/config.toml
+          cp -R "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts" scripts
+          cargo check 2>&1 | tee cargo-check.log
+          # Windows 上 wrapper 必须真正被调用:日志应包含 rustc 编译命令
+          grep -q "Compiling wrapper_smoke" cargo-check.log
