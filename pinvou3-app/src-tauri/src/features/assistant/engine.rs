@@ -1167,16 +1167,15 @@ impl AppEngine {
                 .session_policy(session_id)
                 .multi_agent_mode_available()
             && store.mode_state(session_id).multi_agent;
-        let workspace = store
+        let roots = store
             .session_roots(session_id)
-            .map(|roots| roots.execution)
-            .unwrap_or_else(|_| bridge.session_workspace(session_id));
+            .unwrap_or_else(|_| bridge.session_roots(session_id));
         let mut engine_config = if multi_agent_enabled {
             // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
             // 完全一致，普通会话不继承这些限制。
-            bridge.build_engine_config_for_multi_agent(session_id, workspace)
+            bridge.build_engine_config_for_multi_agent(session_id, roots)
         } else {
-            bridge.build_engine_config_for_session_at(session_id, workspace)
+            bridge.build_engine_config_for_session_roots(session_id, roots)
         };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持

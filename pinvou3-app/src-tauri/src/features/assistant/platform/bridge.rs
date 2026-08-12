@@ -49,6 +49,8 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
 const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
+const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
+const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -1314,21 +1316,26 @@ impl Pinvou3Bridge {
     ///
     /// [`build_engine_config`]: Self::build_engine_config
     pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
-        self.build_engine_config_for_session_at(session_id, self.session_workspace(session_id))
+        self.build_engine_config_for_session_roots(session_id, self.session_roots(session_id))
     }
 
-    /// Build a session config at an explicit workspace. Scheduled conversations
-    /// use this path so their transcripts stay independent while every run shares
-    /// the ordinary global workspace, without creating a misleading empty
-    /// `sessions/<id>/workspace` directory first.
-    pub(crate) fn build_engine_config_for_session_at(
+    /// Build a session config from its execution and ledger roots.
+    ///
+    /// Project-bound Code sessions execute in the project while delegated-agent
+    /// control-plane state remains under the session-owned ledger root. Scheduled
+    /// conversations pass roots resolved by
+    /// [`crate::features::sessions::SessionStore::session_roots`] so
+    /// their existing shared automation workspace semantics remain unchanged.
+    pub(crate) fn build_engine_config_for_session_roots(
         &self,
         session_id: &str,
-        workspace: PathBuf,
+        roots: SessionRoots,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config();
-        let _ = std::fs::create_dir_all(&workspace);
-        cfg.workspace = workspace;
+        let _ = std::fs::create_dir_all(&roots.execution);
+        let _ = std::fs::create_dir_all(&roots.ledger);
+        cfg.workspace = roots.execution;
+        cfg.subagent_state_root = Some(roots.ledger);
         cfg.instructions = self.session_instructions(session_id);
         // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
         // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
@@ -1342,31 +1349,25 @@ impl Pinvou3Bridge {
     /// 多智能体会话专用配置（ADR-0006）。
     ///
     /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡写进
-    /// 会话工作区（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// 会话状态根（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
     /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
     /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。本产品模式仅供 Work 会话使用：默认直属实例为叶子；
-    /// 复杂任务允许直属实例再拆一层，第二层不得继续派生；直属并行 4 / 全树
-    /// 准入 8。更深后代为避免父子互等死锁不占直属 launch gate，但仍受整棵树
-    /// 的准入上限约束。
-    pub fn build_engine_config_for_multi_agent(
+    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
+    /// 第二层不得继续派生。Work 直属并行 4 / 全树准入 8，原生 Code 直属并行
+    /// 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch gate，
+    /// 但仍受整棵树的准入上限约束。
+    pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
-        workspace: PathBuf,
+        roots: SessionRoots,
     ) -> EngineConfig {
-        let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
-        // This builder configures Pinvou's opt-in Work multi-agent mode. Keep
-        // it scoped here so stale state or a future direct caller cannot project
-        // expert profiles into a native Code project. Returning the ordinary
-        // config deliberately preserves CodeWhale's base agent/workflow tools.
-        if !self.session_policy(session_id).multi_agent_mode_available() {
-            return cfg;
-        }
+        let roster_root = roots.ledger.clone();
+        let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
         // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
         // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
         // 开启之前，这里只兜底记录。
-        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
+        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&roster_root) {
             eprintln!("[multiagent] {err}");
         }
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
@@ -1374,10 +1375,19 @@ impl Pinvou3Bridge {
         // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
         // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
-        let max_concurrent = MULTI_AGENT_WORK_MAX_CONCURRENT;
-        let max_admitted = MULTI_AGENT_WORK_MAX_ADMITTED;
+        let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
+            (
+                MULTI_AGENT_CODE_MAX_CONCURRENT,
+                MULTI_AGENT_CODE_MAX_ADMITTED,
+            )
+        } else {
+            (
+                MULTI_AGENT_WORK_MAX_CONCURRENT,
+                MULTI_AGENT_WORK_MAX_ADMITTED,
+            )
+        };
         // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-        // 使用工作模式的产品默认。
+        // 使用当前会话模式的产品默认。
         cfg.max_subagents = self
             .prefs
             .advanced
@@ -1394,7 +1404,7 @@ impl Pinvou3Bridge {
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
         cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
-            &cfg.workspace,
+            &roster_root,
         ));
         cfg
     }
@@ -4507,7 +4517,7 @@ mod tests {
     }
 
     #[test]
-    fn code_session_keeps_base_agents_without_multi_agent_projection() {
+    fn code_multi_agent_isolates_state_and_roster_from_the_project() {
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "code-session"
@@ -4518,15 +4528,31 @@ mod tests {
             &bridge
         ));
 
-        let plain = bridge.build_engine_config_for_session_at("plain-session", root.join("plain"));
-        let code_workspace = root.join("code");
-        let code =
-            bridge.build_engine_config_for_multi_agent("code-session", code_workspace.clone());
+        let code_workspace = root.join("project");
+        let code_state_root = root.join("sessions").join("code-session").join("workspace");
+        let roots = SessionRoots {
+            execution: code_workspace.clone(),
+            ledger: code_state_root.clone(),
+        };
+        let ordinary_code =
+            bridge.build_engine_config_for_session_roots("code-session", roots.clone());
+        assert_eq!(ordinary_code.workspace, code_workspace);
+        assert_eq!(
+            ordinary_code.subagent_state_root.as_deref(),
+            Some(code_state_root.as_path()),
+            "未开启产品开关的普通 Code Engine 也必须隔离底座委派状态"
+        );
 
-        assert!(plain.subagents_enabled, "Work 会话保持底座委派能力");
+        let code = bridge.build_engine_config_for_multi_agent("code-session", roots);
+
         assert!(
             code.subagents_enabled,
-            "收缩 Pinvou 多智能体入口不得禁用 CodeWhale 原有 agent/workflow"
+            "Code 会话保持底座 agent/workflow 能力"
+        );
+        assert_eq!(code.workspace, code_workspace);
+        assert_eq!(
+            code.subagent_state_root.as_deref(),
+            Some(code_state_root.as_path())
         );
         let code_has_multi_agent_guard = code.hook_executor.as_ref().is_some_and(|executor| {
             executor
@@ -4536,12 +4562,27 @@ mod tests {
                 .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
         });
         assert!(
-            !code_has_multi_agent_guard,
-            "Code 会话不得装配多智能体专用深度护栏"
+            code_has_multi_agent_guard,
+            "Code 多智能体会话必须装配资源护栏"
         );
+        assert_eq!(code.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
+        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
+        assert_eq!(code.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
         assert!(
             !code_workspace.join(".codewhale").exists(),
-            "Code 会话不得向用户项目投影专家名册"
+            "Code 会话不得向用户项目写状态或专家名册"
+        );
+        assert!(
+            code_state_root
+                .join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR)
+                .is_dir(),
+            "Code 专家名册必须写进会话私有状态根"
+        );
+        assert!(
+            code.fleet_roster
+                .get("exp-engineering-frontend-developer")
+                .is_some(),
+            "会话私有名册必须装入 Code 引擎"
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4559,7 +4600,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
 
         let ordinary = bridge.build_engine_config();
-        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", workspace.clone());
+        let roots = SessionRoots {
+            execution: workspace.clone(),
+            ledger: workspace.clone(),
+        };
+        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", roots.clone());
 
         assert_eq!(
             cfg.disallowed_tools, ordinary.disallowed_tools,
@@ -4616,8 +4661,7 @@ mod tests {
 
         let mut disabled_bridge = fixture_bridge();
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
-        let disabled =
-            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", workspace.clone());
+        let disabled = disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", roots);
         assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
         assert_eq!(disabled.launch_concurrency, 0);
 

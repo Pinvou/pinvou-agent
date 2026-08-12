@@ -183,7 +183,7 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
   assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
-  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(task: &str\)/, 'Work 多智能体按本轮任务生成委派提醒');
+  assert.match(commandSource, /pub\(crate\) fn delegation_reminder\(task: &str\)/, 'Work 与原生 Code 多智能体按本轮任务生成委派提醒');
   assert.match(commandSource, /pub\(crate\) fn prepend_delegation_reminder\(/, '普通发送、编辑重发与方案接受必须复用统一提醒组装');
   assert.match(commandSource, /roster::available_role_lines\(task\)/, '名册必须按本轮任务筛选并随提醒带上');
   assert.match(rosterSource, /EXPERT_CANDIDATE_LIMIT:\s*usize\s*=\s*20/, '父模型每轮最多看到 20 位专家短候选');
@@ -262,7 +262,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /has_expert_role_projection\(&workspace\)[\s\S]{0,100}targets\.insert\(session_id\)/,
+    /has_expert_role_projection\(&state_root\)[\s\S]{0,100}targets\.insert\(session_id\)/,
     '已关闭开关但仍加载旧专家投影的在跑会话，也必须随专家增删改刷新',
   );
   assert.doesNotMatch(
@@ -281,7 +281,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_CONCURRENT:\s*usize\s*=\s*4/);
   assert.match(assistantBridgeSource, /MULTI_AGENT_WORK_MAX_ADMITTED:\s*usize\s*=\s*8/);
-  assert.doesNotMatch(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_CONCURRENT:\s*usize\s*=\s*6/);
+  assert.match(assistantBridgeSource, /MULTI_AGENT_CODE_MAX_ADMITTED:\s*usize\s*=\s*12/);
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -321,18 +322,18 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /enroll_expert_roles\(&workspace\)[\s\S]{0,80}\.map_err/,
+    /enroll_expert_roles\(&roster_root\)[\s\S]{0,80}\.map_err/,
     '专家名册写盘失败必须让开启失败，不得静默成功',
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.bridge\.session_workspace\(session_id\)/,
-    '开启前必须先执行能力门禁；允许开启的 Work 会话仍按实际 CodeWhale 工作区装配名册',
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.store\.session_roots\(session_id\)\?\.ledger/,
+    '开启前必须先执行能力门禁；Work 与原生 Code 都按会话私有状态根装配名册',
   );
   assert.match(
     assistantBridgeSource,
-    /enroll_expert_roles\(&cfg\.workspace\)[\s\S]{0,1800}FleetRoster::load\([\s\S]{0,160}&cfg\.workspace/,
-    '引擎启动时名册写入与读取必须共同遵循基座 workspace',
+    /let roster_root = roots\.ledger\.clone\(\)[\s\S]{0,700}enroll_expert_roles\(&roster_root\)[\s\S]{0,1800}FleetRoster::load\([\s\S]{0,160}&roster_root/,
+    '引擎启动时名册写入与读取必须共同遵循会话状态根，不得污染 Code 项目',
   );
   const sessionsSource = read('src-tauri', 'src', 'features', 'sessions', 'mod.rs');
   assert.match(
@@ -397,7 +398,7 @@ test('workflow 保持主线原状：不禁用；提醒不教它；快照供 work
   const bridgeSource = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   assert.match(
     bridgeSource,
-    /pub fn build_engine_config_for_multi_agent\(/,
+    /pub\(crate\) fn build_engine_config_for_multi_agent\(/,
     '多智能体配置只装名册',
   );
   assert.doesNotMatch(
@@ -662,12 +663,12 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
 });
 
-test('transcripts 命令仅读取 Work 会话自己的 CodeWhale 工作区', () => {
-  assert.match(commandSource, /fn subagent_workspace\([\s\S]{0,100}pool: &EnginePool/);
+test('transcripts 命令仅读取会话私有的 CodeWhale 状态根', () => {
+  assert.match(commandSource, /fn subagent_state_root\([\s\S]{0,100}pool: &EnginePool/);
   assert.match(
     commandSource,
-    /fn subagent_workspace\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_workspace\(session_id\)/,
-    '读取工作区前必须拒绝 Code 会话，避免把项目共享 .codewhale 当成会话记录',
+    /fn subagent_state_root\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_state_root\(session_id\)/,
+    'Work 与 Code 都必须从会话 ledger 读取，不得把项目目录当成 transcript 根',
   );
   assert.doesNotMatch(commandSource, /resolve_workflow_approval/, '审批命令已退役');
 });

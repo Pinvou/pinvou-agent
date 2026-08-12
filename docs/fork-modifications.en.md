@@ -45,7 +45,7 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 
 ## v0.9.5 migration notes
 
-- The parent passes through the new `EngineConfig.subagent_state_root` field.
+- The parent sets the new `EngineConfig.subagent_state_root` from `SessionRoots`: execution stays in the task workspace while delegated-agent state uses the session ledger.
 - The removed legacy `hidden_tools` field is not restored; session-level hiding already uses dynamic `disallowed_tools` shaping.
 - The upstream 40 KiB WorldState cap is retained globally. Only `FragmentId::Permissions` uses the existing 100 KiB instruction limit.
 - The parent lockfile reflects the v0.9.5 workspace-crate split without adding a new direct Pinvou dependency.

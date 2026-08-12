@@ -124,8 +124,8 @@ pub(crate) fn prepend_delegation_reminder(
     prepend_delegation_reminder_when_enabled(enabled, task, content)
 }
 
-/// 工作模式多智能体会话实际使用的 CodeWhale 工作区。
-fn subagent_workspace(session_id: &str, pool: &EnginePool) -> Result<std::path::PathBuf, String> {
+/// 多智能体会话私有的 CodeWhale delegated-agent 状态根。
+fn subagent_state_root(session_id: &str, pool: &EnginePool) -> Result<std::path::PathBuf, String> {
     if session_id.is_empty()
         || !session_id
             .chars()
@@ -134,9 +134,9 @@ fn subagent_workspace(session_id: &str, pool: &EnginePool) -> Result<std::path::
         return Err(format!("非法会话 id: {session_id}"));
     }
     if !pool.multi_agent_mode_available(session_id) {
-        return Err("子智能体执行记录仅对工作模式多智能体会话开放".to_string());
+        return Err("当前会话不支持子智能体执行记录".to_string());
     }
-    Ok(pool.session_workspace(session_id))
+    pool.session_state_root(session_id)
 }
 
 /// 列出一次会话派发过的子智能体（读工作区对话记录的表头）。
@@ -148,13 +148,13 @@ pub async fn list_subagent_transcripts(
     run_id: String,
     pool: State<'_, EnginePool>,
 ) -> Result<Vec<multiagent::transcripts::SubagentTranscriptSummary>, String> {
-    let workspace = subagent_workspace(&run_id, &pool)?;
+    let state_root = subagent_state_root(&run_id, &pool)?;
     // 传引擎纪元而非"引擎是否存在"：重启后父会话重建引擎时，上一进程的
     // 僵尸 worker（落盘仍是 running）必须继续判 interrupted，见
     // transcripts::projected_worker_status。
     let engine_epoch_ms = pool.engine_epoch_ms(&run_id).await;
     // 文件 I/O 移出异步运行线程（复核 P2）：清单每 2s 被轮询一次。
-    tokio::task::spawn_blocking(move || multiagent::transcripts::list(&workspace, engine_epoch_ms))
+    tokio::task::spawn_blocking(move || multiagent::transcripts::list(&state_root, engine_epoch_ms))
         .await
         .map_err(|join| format!("读取子智能体清单失败: {join}"))?
 }
@@ -169,9 +169,9 @@ pub async fn read_subagent_transcript(
     revision: Option<String>,
     pool: State<'_, EnginePool>,
 ) -> Result<multiagent::transcripts::SubagentTranscriptChunk, String> {
-    let workspace = subagent_workspace(&run_id, &pool)?;
+    let state_root = subagent_state_root(&run_id, &pool)?;
     tokio::task::spawn_blocking(move || {
-        multiagent::transcripts::read_chunk(&workspace, &agent_id, offset, revision.as_deref())
+        multiagent::transcripts::read_chunk(&state_root, &agent_id, offset, revision.as_deref())
     })
     .await
     .map_err(|join| format!("读取子智能体记录失败: {join}"))?

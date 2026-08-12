@@ -599,11 +599,17 @@ try {
     && codexView.includes('<ComposerModelSelector')
     && codexView.includes('<ComposerKbSelector')
     && codexView.includes('<ComposerToolMenu')
+    && codexView.includes('multiAgentEnabled={nativeMultiAgentEnabled}')
+    && codexView.includes('onToggleMultiAgent={switchNativeMultiAgent}')
     && codexView.includes('triggerTestId="native-tools"')
     && codexView.includes('scope="code"')
     && codexView.includes('mountedId={nativeMountedId}')
     && codexView.includes('data-testid="codex-voice-input"'),
   'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
+  assert.ok(codexView.includes('<SubagentTranscriptPanel')
+    && codexView.includes("window.addEventListener('pinvou:open-subagent'")
+    && codexView.includes('<ToolCard'),
+  'the native lane must open persisted delegated-agent conversations from timeline tool cards');
   // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，
   // 代码页卸载（切模式/视图）前必须取消进行中的录音/转写，否则识别结果可能写回
   // 已卸载组件（草稿态 null→null 时守卫放行并显示「已完成」但文本丢失）。
@@ -632,6 +638,7 @@ try {
     && codexView.includes("invoke('get_mode_state'")
     && codexView.includes("invoke('set_plan_mode_next'")
     && codexView.includes("invoke('exit_plan_to_yolo'")
+    && codexView.includes("invoke('set_multi_agent_mode'")
     && codexView.includes("invoke('cancel_generation'"),
   'native composer controls must switch via per-session commands with an explicit sessionId');
   assert.ok(!codexView.includes('bridge.models.')
@@ -640,10 +647,13 @@ try {
     && !codexView.includes('bridge.chat.'),
   'the code lane must never call bridge chat-active-bound methods for composer controls');
   assert.ok(codexView.includes('nativeDraftControls')
-    && codexView.includes('applyNativeDraftControls'),
-  'draft-state control selections must be staged and applied after session creation');
+    && /applyNativeDraftControls\(sessionId\)[\s\S]{0,1400}set_multi_agent_mode[\s\S]{0,250}setNativeDraftControls\(\{\}\)/.test(codexView)
+    && /const created = await createSession\(draftWorkspacePath\)[\s\S]{0,180}await applyNativeDraftControls\(targetId\)/.test(codexView),
+  'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
   'session control state must be scoped to its owning session to avoid cross-session flashes');
+  assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,900}sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),
+  'an async control refresh from the previous native session must not overwrite the newly selected session');
   assert.ok(chatView.includes("from './composer-controls.jsx'")
     && !chatView.includes('const ComposerKbSelector = ')
     && !chatView.includes('const ComposerModeChip = ')
