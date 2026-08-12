@@ -1288,8 +1288,10 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进 sidebar。
-        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], false) : "";
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
+        // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
+        // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
         if (titleText) {
           var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });

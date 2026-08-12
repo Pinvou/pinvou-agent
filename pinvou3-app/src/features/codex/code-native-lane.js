@@ -13,6 +13,7 @@
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 export function createNativeLane() {
   return {
@@ -494,32 +495,7 @@ function messageText(blocks) {
 // 与 platform/{tauri,web}/bridge.js 的 userMessageDisplayText 判定保持一致：
 // CodeWhale 内部运行时信封（subagent handoff / background shell 完成等）以
 // role=user 持久化供父模型上下文使用，展示层不得渲染为用户气泡。
-// 本模块是独立 ESM 车道，无法引用 bridge 闭包函数，故自包含等价实现。
-function isInternalRuntimeEnvelopeText(value) {
-  const text = String(value || '').trim();
-  return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text)
-    && /<\/codewhale:runtime_event>\s*$/i.test(text);
-}
-
-function userMessageInputProvenance(blocks) {
-  for (const block of blocks || []) {
-    if (!block || block.type !== 'text') continue;
-    const text = String(block.text || '').trim();
-    if (text.indexOf('<turn_meta>') !== 0) continue;
-    const match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
-    if (match && match[1]) return match[1].toLowerCase();
-  }
-  return '';
-}
-
-function isInternalUserMessage(blocks) {
-  const textBlocks = Array.isArray(blocks) ? blocks : [];
-  if (textBlocks.some(block => block && block.type === 'text' && isInternalRuntimeEnvelopeText(block.text))) {
-    return true;
-  }
-  const provenance = userMessageInputProvenance(textBlocks);
-  return provenance === 'runtime' || provenance === 'subagent_handoff' || provenance === 'shell_completion';
-}
+// 共享 ESM 实现见 src/shared/internal-message.mjs（bridge 闭包不可 import）。
 
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
 /// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /

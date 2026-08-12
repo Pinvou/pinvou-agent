@@ -11,12 +11,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-code-native-lane-'));
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-mkdirSync(path.join(temp, 'conversation'), { recursive: true });
-mkdirSync(path.join(temp, 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'conversation'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'shared'), { recursive: true });
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
-  copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'conversation', file));
+  copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
-copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 
 try {
   const {
@@ -29,7 +31,7 @@ try {
     parseNativePlanSnapshot,
     projectNativeLane,
     removeLocalUserMessage,
-  } = await import(`${pathToFileURL(path.join(temp, 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
+  } = await import(`${pathToFileURL(path.join(temp, 'features', 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
@@ -202,6 +204,22 @@ try {
   assert.equal(liveChanged, false, 'live 内部信封不产生可视变化');
   assert.equal(laneLiveEnvelope.items.some(item => item.type === 'user'), false,
     'live 内部信封不得 push 用户气泡');
+
+  // hydrate 仅-provenance（无信封）遗留形态：白名单必须单独兜住。
+  const laneProvenanceOnly = createNativeLane();
+  hydrateNativeLane(laneProvenanceOnly, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实任务正文' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '父汇总' }] },
+    ],
+  }, []);
+  assert.ok(laneProvenanceOnly.items.some(item => item.type === 'user' && item.text.includes('真实任务正文')),
+    '真实任务正文仍渲染');
+  assert.ok(!JSON.stringify(laneProvenanceOnly.items).includes('shell_completion'),
+    '仅-provenance 内部消息不得进入 lane 展示');
 
   // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
   // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时

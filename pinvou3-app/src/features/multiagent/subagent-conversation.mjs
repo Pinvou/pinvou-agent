@@ -14,6 +14,7 @@
  */
 
 import { presentConversationItems } from '../conversation/conversation-model.js';
+import { isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 // CodeWhale 的直接子智能体 id 由 UUID 前 8 位生成（agent_ + 8 位十六进制）。
 // 必须按完整契约匹配，不能把工具 schema 里的字段名 `agent_id` 当成实例 id。
@@ -121,6 +122,9 @@ export function projectSubagentTranscript({ messages, agent }) {
     if (!message || typeof message !== 'object') continue;
     const blocks = Array.isArray(message.content) ? message.content : [];
     if (message.role === 'user') {
+      // 内部运行时信封（子智能体交接 / 后台 shell 完成等）保留在 transcript
+      // 供模型上下文，但不得渲染为任务指令气泡（与主聊天展示层同一判定）。
+      if (isInternalUserMessage(blocks)) continue;
       if (isTaskInstruction(message, blocks)) {
         const text = textBlocksOf(blocks);
         userText = userText == null ? text : `${userText}\n\n${text}`;

@@ -930,6 +930,108 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
   }
 }
 
+async function autoTitleSkipsInternalAndStripsTurnMeta() {
+  for (var bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
+    var bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
+    var envelopeText = [
+      '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+      'This is an internal runtime event, not user input.',
+      'auto-title child completion summary',
+      '</codewhale:runtime_event>',
+    ].join('\n');
+
+    // 场景 1：首条 user 消息为内部信封 → 不得 rename（XML 不得进 sidebar 标题）。
+    var h1 = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sid1 = "chat-title-internal-" + bridgeKind;
+    h1.handlers.list_sessions = function () {
+      return [{ id: sid1, title: "New chat" }];
+    };
+    h1.handlers.load_session = function () {
+      return {
+        metadata: { id: sid1, title: "New chat" },
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: envelopeText },
+            { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "父汇总" }] },
+        ],
+        artifacts: [],
+      };
+    };
+    assert.strictEqual(await h1.bridge.sessions.switchToSession(sid1), true);
+    await h1.emit("session:list_changed", {});
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await h1.emit("chat:done", { session_id: sid1, status: "Completed" });
+    await new Promise(function (r) { setTimeout(r, 150); });
+    assert.ok(h1.calls.some(function (c) { return c.cmd === "save_session_artifacts"; }),
+      bridgeKind + " persistMessagesFor 应执行（前置条件成立，防止假绿）");
+    var rename1 = h1.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    assert.strictEqual(rename1.length, 0,
+      bridgeKind + " 首条内部信封不得触发自动命名（信封 XML 不得进 sidebar）：" + JSON.stringify(rename1));
+
+    // 场景 2：首条 user 消息为普通消息（引擎标准布局：正文 + 尾随 turn_meta block）
+    // → 标题应为正文，不得拼入 turn_meta/workspace XML。
+    var h2 = createBridgeHarness(null, { bridgeKind: bridgeKind });
+    var sid2 = "chat-title-normal-" + bridgeKind;
+    h2.handlers.list_sessions = function () {
+      return [{ id: sid2, title: "New chat" }];
+    };
+    h2.handlers.load_session = function () {
+      return {
+        metadata: { id: sid2, title: "New chat" },
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: "帮我修登录页" },
+            { type: "text", text: "<turn_meta>\nCurrent workspace: /private/ws\n</turn_meta>" },
+          ] },
+          { role: "assistant", content: [{ type: "text", text: "好的" }] },
+        ],
+        artifacts: [],
+      };
+    };
+    assert.strictEqual(await h2.bridge.sessions.switchToSession(sid2), true);
+    await h2.emit("session:list_changed", {});
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await h2.emit("chat:done", { session_id: sid2, status: "Completed" });
+    await new Promise(function (r) { setTimeout(r, 150); });
+    var rename2 = h2.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    assert.strictEqual(rename2.length, 1,
+      bridgeKind + " 普通首条消息应触发自动命名");
+    var title2 = String(rename2[0] && rename2[0].args && rename2[0].args.title || "");
+    assert.ok(title2.indexOf("帮我修登录页") === 0,
+      bridgeKind + " 标题应以真实正文开头：" + JSON.stringify(title2));
+    assert.ok(title2.indexOf("<turn_meta>") < 0 && title2.indexOf("Current workspace") < 0,
+      bridgeKind + " 标题不得包含 turn_meta/workspace XML：" + JSON.stringify(title2));
+  }
+}
+
+async function webLiveEnvelopeStaysOutOfPresentation() {
+  var bridgeKind = "web";
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
+  var sessionId = "chat-web-live-envelope";
+  var envelopeText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'web live child completion summary',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: sessionId, title: "Web live", message_count: 1 },
+      messages: [{ role: "assistant", content: [{ type: "text", text: "既有回答" }] }],
+      artifacts: [],
+    };
+  };
+  assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
+  await harness.emit("chat:user_message", { session_id: sessionId, content: envelopeText, operation: "append" });
+  var visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("web live child completion summary"),
+    "web live 内部信封不得渲染为用户气泡");
+  assert.ok(!visible.includes("codewhale:runtime_event"),
+    "web live 内部信封 XML 不得进入展示");
+}
+
 async function draftToggleFailureAbortsFirstSend() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4316,6 +4418,8 @@ Promise.resolve()
   .then(deepSeekTurnTimelineLifecycleBehavior)
   .then(internalSubagentHandoffStaysOutOfPresentation)
   .then(currentInternalProvenanceAndEnvelopeStayOutOfPresentation)
+  .then(autoTitleSkipsInternalAndStripsTurnMeta)
+  .then(webLiveEnvelopeStaysOutOfPresentation)
   .then(multiAgentToggleFailureIsRoutedToTriggerSession)
   .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)
