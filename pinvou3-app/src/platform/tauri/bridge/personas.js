@@ -78,12 +78,17 @@
       await ensureSession(); // 草稿态加卡 → 先物化 session(lazy session)
       if (!state.activeSessionId) return; // 物化失败,放弃
     }
+    // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
+    // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话
+    // 定向；切走后放弃前端播报，挂件靠 syncActivePersona 恢复（审计）。
+    var sid = state.activeSessionId;
     var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
+      // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
+      if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
       // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
-      var sid = state.activeSessionId;
       var m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
       // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
@@ -110,8 +115,11 @@
   // 摘下当前 session 的专家面具。
   async function unequipPersona() {
     if (!state.activeSessionId) return;
+    // 入口捕获触发会话：await 期间切走，卸下播报不得写进别的会话（审计）。
+    var sid = state.activeSessionId;
     var prev = state.activePersona;
     try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
+    if (sid !== state.activeSessionId) return; // 已切走：不写当前显示
     state.activePersona = null;
     if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
     notify();
@@ -119,8 +127,12 @@
   // 切换/重载 session 后,从后端拉该 session 的加持状态还原挂件(backend 是真相)。
   async function syncActivePersona() {
     if (!state.activeSessionId) { state.activePersona = null; return; }
+    var sid = state.activeSessionId;
     try {
-      state.activePersona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+      // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
+      var persona = await invoke("get_active_persona", { sessionId: state.activeSessionId }) || null;
+      if (sid !== state.activeSessionId) return; // 已切走：陈旧快照不得覆盖新会话挂件
+      state.activePersona = persona;
     } catch (e) { /* 旧 session 无加持,忽略 */ }
   }
 
