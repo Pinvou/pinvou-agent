@@ -75,6 +75,8 @@ for (const command of [
   'install_marketplace_tool',
   'uninstall_marketplace_skill',
   'uninstall_marketplace_tool',
+  'import_skill_package',
+  'import_skill_package_bytes',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
