@@ -548,7 +548,7 @@ impl EnginePool {
             crate::features::connectors::ima::ImaOpenApiTool::new(),
         ));
         // skill 双 scope 治理：spawn 全量拼组合目录（物化时机一，V-7）。组合目录
-        // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_at
+        // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_roots
         // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
         {
             let sid = session_id.to_string();
@@ -851,18 +851,18 @@ impl EnginePool {
         enabled: bool,
     ) -> Result<()> {
         if enabled && !self.multi_agent_mode_available(session_id) {
-            anyhow::bail!("Pinvou 多智能体模式本期仅支持工作会话");
+            anyhow::bail!("当前会话不支持 Pinvou 多智能体模式");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
         if enabled {
             // 先占 lifecycle 再写名册：慢磁盘期间若允许发送抢先 reserve，首轮会
             // 落进旧引擎，随后切换失败并回滚，形成界面已开但该轮未受限的竞态。
-            let workspace = self.bridge.session_workspace(session_id);
+            let roster_root = self.store.session_roots(session_id)?.ledger;
             let sid = session_id.to_string();
             tokio::task::spawn_blocking(move || -> Result<()> {
-                std::fs::create_dir_all(&workspace)
-                    .with_context(|| format!("set_multi_agent_mode({sid}): 建工作区失败"))?;
-                crate::features::multiagent::roster::enroll_expert_roles(&workspace)
+                std::fs::create_dir_all(&roster_root)
+                    .with_context(|| format!("set_multi_agent_mode({sid}): 建会话状态根失败"))?;
+                crate::features::multiagent::roster::enroll_expert_roles(&roster_root)
                     .map_err(anyhow::Error::msg)
             })
             .await
@@ -906,10 +906,22 @@ impl EnginePool {
             .multi_agent_mode_available()
     }
 
-    /// Resolve the Engine workspace, including a project-bound native Code
-    /// session. CodeWhale keeps its project-scoped `.codewhale` state here.
+    /// Resolve the Engine execution workspace, including a project-bound
+    /// native Code session. Delegated-agent state does not use this accessor.
     pub(crate) fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
         self.bridge.session_workspace(session_id)
+    }
+
+    /// Resolve the session-owned delegated-agent state and expert-roster root.
+    /// For project-bound Code sessions this is distinct from the execution root.
+    pub(crate) fn session_state_root(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<std::path::PathBuf, String> {
+        self.store
+            .session_roots(session_id)
+            .map(|roots| roots.ledger)
+            .map_err(|error| format!("解析会话状态根失败: {error:#}"))
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
@@ -1197,14 +1209,27 @@ impl EnginePool {
             if !self.multi_agent_mode_available(&session_id) {
                 continue;
             }
-            let workspace = self.bridge.session_workspace(&session_id);
-            if crate::features::multiagent::roster::has_expert_role_projection(&workspace) {
+            let state_root = match self.session_state_root(&session_id) {
+                Ok(root) => root,
+                Err(error) => {
+                    failures.push(format!("{session_id}: {error}"));
+                    continue;
+                }
+            };
+            if crate::features::multiagent::roster::has_expert_role_projection(&state_root) {
                 targets.insert(session_id);
             }
         }
         for session_id in targets {
-            let workspace = self.bridge.session_workspace(&session_id);
-            if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&workspace) {
+            let state_root = match self.session_state_root(&session_id) {
+                Ok(root) => root,
+                Err(error) => {
+                    failures.push(format!("{session_id}: {error}"));
+                    continue;
+                }
+            };
+            if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&state_root)
+            {
                 failures.push(format!("{session_id}: {err}"));
                 continue;
             }
@@ -1219,23 +1244,23 @@ impl EnginePool {
         }
     }
 
-    /// 多智能体开关开启后的即时名册刷新（ADR-0006）：把刚装配进会话工作区的
+    /// 多智能体开关开启后的即时名册刷新（ADR-0006）：把刚装配进会话状态根的
     /// 专家名册整册推给在跑引擎（底座 `Op::SetFleetRoster`，下一轮生效），
     /// 否则模型能在提醒里看到专家名字、启动时却报"不存在该 profile"。
     /// 工具面不随开关变化（与主线持平，不按会话改写禁用列表），引擎没起则 no-op——
-    /// 下次 spawn 由 `build_engine_config_for_multi_agent` 从工作区装配。
+    /// 下次 spawn 由 `build_engine_config_for_multi_agent` 从会话状态根装配。
     pub async fn refresh_multi_agent_roster(&self, session_id: &str) -> Result<(), String> {
         if !self.multi_agent_mode_available(session_id) {
             return Ok(());
         }
         let Some(engine) = self.handle_for(session_id).await else {
-            // 引擎没起不是错误：下次 spawn 从工作区装配。
+            // 引擎没起不是错误：下次 spawn 从会话状态根装配。
             return Ok(());
         };
-        let workspace = self.bridge.session_workspace(session_id);
+        let state_root = self.session_state_root(session_id)?;
         let roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             &codewhale_config::FleetConfigToml::default(),
-            &workspace,
+            &state_root,
         ));
         engine
             .handle

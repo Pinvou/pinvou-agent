@@ -60,7 +60,7 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
   assert.equal((i18n.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
 });
 
-test('Pinvou 多智能体仅接入 Work，原生 Code 保持底座既有能力', () => {
+test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根', () => {
   const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
   const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
   const tools = read('src', 'features', 'tools', 'tool-renderers.jsx');
@@ -69,35 +69,37 @@ test('Pinvou 多智能体仅接入 Work，原生 Code 保持底座既有能力',
   const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engine = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
   const pool = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
-  const builderStart = bridge.indexOf('pub fn build_engine_config_for_multi_agent');
+  const builderStart = bridge.indexOf('pub(crate) fn build_engine_config_for_multi_agent');
   const builderEnd = bridge.indexOf('pub fn ', builderStart + 10);
   const multiAgentBuilder = bridge.slice(builderStart, builderEnd);
 
-  assert.doesNotMatch(codex, /multiAgent|set_multi_agent_mode|listSubagentTranscripts/);
-  assert.doesNotMatch(codex, /SubagentTranscriptPanel|ToolCard/);
+  assert.match(codex, /multiAgent|set_multi_agent_mode/);
+  assert.match(codex, /SubagentTranscriptPanel|ToolCard/);
   assert.match(
     policy,
-    /pub fn multi_agent_mode_available\(&self\)[\s\S]{0,120}matches!\(self\.mode, SessionMode::Plain\)/,
-    '仅 Work/Plain 模式开放 Pinvou 多智能体产品能力',
+    /pub fn multi_agent_mode_available\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
+    'Work/Plain 与原生 Code 都开放 Pinvou 多智能体产品能力',
   );
-  assert.doesNotMatch(
+  assert.match(
     bridge,
-    /subagents_enabled\s*&=\s*self\.session_policy\(session_id\)/,
-    '产品入口收缩不得禁用 CodeWhale 在 Code 会话中的原生 agent/workflow',
+    /cfg\.workspace = roots\.execution;[\s\S]{0,120}cfg\.subagent_state_root = Some\(roots\.ledger\);/,
+    '引擎执行根与 delegated-agent 状态根必须显式分离',
   );
   assert.ok(builderStart >= 0 && builderEnd > builderStart, '必须保留多智能体专用配置入口');
   assert.match(
     multiAgentBuilder,
-    /if !self[\s\S]{0,120}session_policy\(session_id\)[\s\S]{0,80}multi_agent_mode_available\(\)/,
-    '多智能体专用配置入口也必须先判能力，禁止向 Code 项目投影专家文件',
+    /let roster_root = roots\.ledger\.clone\(\)[\s\S]{0,700}enroll_expert_roles\(&roster_root\)[\s\S]{0,1600}FleetRoster::load\([\s\S]{0,160}&roster_root/,
+    '专家文件必须写入并从会话 ledger 加载，不得投影进 Code 项目',
   );
   assert.match(engine, /session_policy\(session_id\)[\s\S]{0,120}\.multi_agent_mode_available\(\)/);
   assert.match(pool, /if enabled && !self\.multi_agent_mode_available\(session_id\)/);
   assert.match(
     commands,
-    /fn subagent_workspace\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,160}仅对工作模式多智能体会话开放/,
-    'Code 不接入 Pinvou transcript 投影，直调命令也不得读取项目共享状态',
+    /fn subagent_state_root\([\s\S]{0,500}!pool\.multi_agent_mode_available\(session_id\)[\s\S]{0,220}pool\.session_state_root\(session_id\)/,
+    'Code transcript 必须读取会话私有状态根，不得读取项目目录',
   );
+  assert.match(codex, /multiAgentEnabled=\{nativeMultiAgentEnabled\}/);
+  assert.match(codex, /onToggleMultiAgent=\{switchNativeMultiAgent\}/);
   assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
   assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
   assert.match(tools, /detail: \{ agentId: agentId \|\| null, sessionId: sessionId \|\| null \}/);

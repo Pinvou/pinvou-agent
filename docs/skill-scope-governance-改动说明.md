@@ -55,7 +55,7 @@ skill 能力的按会话隔离此前有三条结构性缺陷（方案 §0 的 P1
 
 ### S-4：策略接线
 
-- `EngineConfig.skills_dir` 在 `build_engine_config_for_session_at` 按会话指向组合目录（headless 单引擎路径保持 bundle/skills）。
+- `EngineConfig.skills_dir` 在 `build_engine_config_for_session_roots` 按会话指向组合目录（headless 单引擎路径保持 bundle/skills）。
 - `SessionPolicy::extra_hidden_tools()` 不再恒含 `load_skill`（只保留 `present_artifact`）；`bridge.shape_disallowed_tools` 对 code 会话按 `session_skills_is_empty` 动态补 hide `load_skill`——空 → 隐藏（避免"开关开着但没技能"的假状态），非空 → 放行（V-5）。spawn 初值与 `set_disallowed_all` 热刷两路都经此整形。
 
 ### S-5：fork 最小改动（经用户批准）
