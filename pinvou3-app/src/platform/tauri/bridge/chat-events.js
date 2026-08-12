@@ -13,6 +13,10 @@
     var bt = context.bt;
     var onSessionEvent = context.onSessionEvent;
     var runSyncOnSession = context.runSyncOnSession;
+    // 权威 modeState 写回收敛点（bridge.js 共享，评审 P1）：事件负载携带的
+    // modeState 更新也必须 bump epoch，否则在途 syncModeState 旧读会覆盖
+    // 事件写回的权威值。
+    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
     var addChatItem = context.addChatItem;
     var toolCallAlreadyStarted = context.toolCallAlreadyStarted;
     var toolCallAlreadyFinished = context.toolCallAlreadyFinished;
@@ -288,10 +292,9 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = {
-          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
-          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
-        };
+        // 事件按 sid 定向写回 + bump epoch（此回调在 runSyncOnSession(sid) 内，
+        // sid 即触发会话；不能用 active 兜底，await 竞态下两者可能不同）。
+        if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
@@ -1055,7 +1058,9 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) state.modeState = { mode: readyMode.mode || "yolo", multiAgent: !!readyMode.multi_agent };
+    // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖；
+    // sid 取事件 payload，onSessionEvent 内与 state.activeSessionId 一致）。
+    if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;

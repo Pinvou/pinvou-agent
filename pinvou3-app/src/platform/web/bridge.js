@@ -152,6 +152,14 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
+    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
+    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    modeDefaults: { work: null, design: null, code: null },
+    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
+    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
+    // localStorage。
+    modeLane: "work",
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -323,6 +331,11 @@
   var scheduledTaskPendingLoads = Object.create(null);
   var scheduledTaskAutoCreateInFlight = Object.create(null);
   var sessionSwitchRequestToken = 0;
+  // modeState 读取请求序号（评审 P1，定义前置供 syncSessionPresentationState
+  // 与权威写回收敛点共用）：任何权威 modeState 写回（invoke 返回 / 事件负载 /
+  // 会话切换状态恢复）都必须 bump 它，作废在途 syncModeState 的旧读取——
+  // 否则旧读返回时序号未变、校验通过，把刚写回的权威值覆盖回去。
+  var modeSyncSeq = 0;
 
   // ── bridge 层 UI 文案（系统消息/状态标签）──────────────────────
   // bridge 在事件回调里生成文案,拿不到 React 的 t;按 state.settings.language 取词,中文兜底。
@@ -2438,12 +2451,17 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
+      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      state.modeState = currentDraftModeState();
       notify();
       return;
     }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
+    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
+    // 全局默认（work/design 各自的 last_mode）。
+    state.modeState = currentDraftModeState();
     notify();
   }
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
@@ -2464,6 +2482,19 @@
       getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
       await refreshHistoryList();
       await syncModeState();
+      // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
+      // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
+      // 该会话自己的 per-session 记录，全局默认不受影响）。
+      var laneDefault = state.modeDefaults
+        && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+      if (laneDefault === "plan" && state.activeSessionId) {
+        try {
+          var laneModeState = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
+          applyAuthoritativeModeState(state.activeSessionId, laneModeState);
+        } catch (laneModeError) {
+          addSystemItem(bt("switchModeFailed") + laneModeError);
+        }
+      }
       await syncActivePersona();
       await syncMountedCollection();
       notify();
@@ -2505,6 +2536,10 @@
     ]);
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== sessionId) return false;
 
+    // 本链路的 modeState 写回同样 bump modeSyncSeq：与会话切换并发在途的
+    // syncModeState 读取互不感知（各自独立校验），不 bump 则两条读取链可
+    // 互相覆盖（评审 P1）。
+    modeSyncSeq += 1;
     var mode = results[0];
     var persona = results[1];
     var snapshot = results[2];
@@ -4694,10 +4729,9 @@
           }
         });
         var acceptedMode = payload.mode_state || payload.modeState;
-        state.modeState = {
-          mode: String(acceptedMode && acceptedMode.mode || "yolo"),
-          multiAgent: !!(acceptedMode && acceptedMode.multi_agent),
-        };
+        // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖；
+        // 此回调在 runSyncOnSession(sid) 内，sid 即触发会话）。
+        if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
       state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
@@ -5476,7 +5510,8 @@
     var p = e.payload || {};
     var planId = String(p.plan_id || p.planId || "").trim();
     var readyMode = p.mode_state || p.modeState;
-    if (readyMode) applyModeFromState(readyMode);
+    // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
+    if (readyMode) applyAuthoritativeModeState(state.activeSessionId, readyMode);
     if (planId && state.chatItems.some(function (item) {
       return item && item.type === "plan_card" && String(item.planId || "") === planId;
     })) return;
@@ -5515,7 +5550,8 @@
         }
       });
       var resolvedMode = p.mode_state || p.modeState;
-      if (resolvedMode) applyModeFromState(resolvedMode);
+      // 事件负载的权威 mode 写回走收敛点（bump seq 防在途旧读覆盖）。
+      if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
     });
     notify();
   });
@@ -6320,13 +6356,14 @@
   // ── Mode state ───────────────────────────────────────────────────
   // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
   // sid 仍是 active，否则把结果定向写回 sid 自己的 buffer，不污染当前显示。
-  // 另加请求序号：同一会话内并发读取乱序返回时，旧响应不得覆盖新响应
-  // （A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；tauri 版 epoch 对齐）。
-  var modeSyncSeq = 0;
+  // 另加请求序号（modeSyncSeq 声明见文件顶部）：同一会话内并发读取乱序返回时，
+  // 旧响应不得覆盖新响应（A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；
+  // tauri 版 epoch 对齐）。权威写回一律 bump 该序号，见 applyAuthoritativeModeState。
   async function syncModeState() {
     var sid = state.activeSessionId;
     if (!sid) {
-      state.modeState = { mode: "yolo", multiAgent: false };
+      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      state.modeState = currentDraftModeState();
       return;
     }
     var seq = ++modeSyncSeq;
@@ -6345,6 +6382,50 @@
       if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
     }
+  }
+
+  // ── lane 全局默认（工作/设计/代码三分，与 tauri bridge 对齐）────────
+  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
+  function currentDraftModeState() {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    var d = state.modeDefaults && state.modeDefaults[lane];
+    return { mode: d || "yolo", multiAgent: false };
+  }
+  async function refreshModeDefaults() {
+    try {
+      var defaults = await invoke("get_mode_defaults");
+      if (defaults) state.modeDefaults = defaults;
+    } catch (e) { /* 读取失败保留旧值/缺省，不打扰交互 */ }
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
+  function setModeLane(lane) {
+    var next = lane === "design" ? "design" : "work";
+    if (state.modeLane === next) return;
+    state.modeLane = next;
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
+  // ensureSession 把 lane 默认应用到新会话）。
+  async function setDraftMode(target) {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    try {
+      var defaults = await invoke("set_mode_default", { lane: lane, mode: target });
+      if (defaults) state.modeDefaults = defaults;
+      if (!state.activeSessionId) {
+        state.modeState = {
+          mode: target,
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        };
+      }
+    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+    notify();
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
@@ -6730,6 +6811,15 @@
     state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
   }
 
+  // 权威 modeState 写回收敛点（评审 P1，与 tauri 端对齐）：任何「invoke 返回 /
+  // 事件负载」带来的权威 modeState 更新都必须走这里——bump modeSyncSeq 作废
+  // 在途 syncModeState 读取，再定向写回触发会话（await 期间用户可能已切走）。
+  // 散点直写漏 bump 一处，就重现「旧读取覆盖权威值」竞态。
+  function applyAuthoritativeModeState(sid, st) {
+    modeSyncSeq += 1;
+    runOnSession(sid, function () { applyModeFromState(st); });
+  }
+
   function isActionablePlanCard(sid, itemId, planId) {
     if (!sid || sid !== state.activeSessionId || !itemId || !planId) return false;
     return state.chatItems.some(function (item) {
@@ -6781,7 +6871,7 @@
         planId: planTicket,
       });
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
       var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
@@ -6804,7 +6894,7 @@
       if (concurrentTurn && planBuffer && !deferredApplied) markRemoteTurn(sid, planBuffer);
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
-        runOnSession(sid, function () { applyModeFromState(currentMode); });
+        applyAuthoritativeModeState(sid, currentMode);
       } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
@@ -6823,7 +6913,7 @@
     notify();
     try {
       var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
       var planNotActive = errorText.indexOf("plan_not_active") >= 0;
@@ -6846,7 +6936,7 @@
       if (planNotActive) {
         try {
           var currentMode = await invoke("get_mode_state", { sessionId: sid });
-          runOnSession(sid, function () { applyModeFromState(currentMode); });
+          applyAuthoritativeModeState(sid, currentMode);
         } catch (_) {}
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
@@ -6854,23 +6944,27 @@
     notify();
   }
   async function exitPlanToYolo() {
-    if (!state.activeSessionId) return;
+    var sid = state.activeSessionId;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    if (!sid) { await setDraftMode("yolo"); return; }
     try {
+      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
+      // 计算）；await 返回后按发起时 sid 定向写回并 bump modeSyncSeq。
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
-    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
-    var sid = await ensureSession();
-    if (!sid) return;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
+    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    var sid = state.activeSessionId;
+    if (!sid) { await setDraftMode("plan"); return; }
     try {
       var st = await invoke("set_plan_mode_next", { sessionId: sid });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }
   // plan-stuck / fallback / execution-stuck 卡片动作
@@ -8576,6 +8670,8 @@
       window.PinvouWebClient.markStateReady();
     }
     if (hasCapability("superPermission")) await refreshSuperPerm();
+    // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+    refreshModeDefaults().catch(function () {});
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
@@ -8692,11 +8788,16 @@
     getWebRelaySettings: getWebRelaySettings,
     setWebRelayAddress: setWebRelayAddress,
     resetWebRelayAddress: resetWebRelayAddress,
+    // modeState 权威读取（评审 P1 后纳入公开面，与 tauri 端对齐）
+    syncModeState: syncModeState,
     // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setDraftMode: setDraftMode,
+    setModeLane: setModeLane,
+    refreshModeDefaults: refreshModeDefaults,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,
     // 用户交互

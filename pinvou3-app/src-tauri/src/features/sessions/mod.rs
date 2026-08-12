@@ -33,11 +33,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core::mode_state::{
-    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
+    ActiveSkillBinding, ModeLane, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
     SessionModeState,
 };
 use crate::platform::paths;
-use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
+use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs, UserPrefs};
 
 const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
 const MAX_SESSIONS_PER_KIND: usize = 50;
@@ -167,12 +167,15 @@ impl Default for ScheduledProfileRegistry {
 
 /// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
 ///
-/// mode 状态分两层（品悟原生 code 会话权限模式的产品语义，已拍板）：
-/// - plain（work）会话：mode 仅驻内存、默认 Yolo，不持久化（现状逐字节不变）；
-/// - code 会话：显式切 mode（`set_mode`）时持久化到
-///   `~/.pinvou3/sessions/_code_mode_states.json`（重开会话恢复它自己上次的
-///   mode），并更新 settings.json `code_permission.last_mode`（新建 code 会话的
-///   全局默认；从未用过 code 模式 → Plan 只读）。yolo 一次性确认标志
+/// mode 状态分两层（三分 lane 语义，复审拍板）：
+/// - per-session：任何会话显式切 mode（`set_mode`）都持久化到
+///   `~/.pinvou3/sessions/_session_mode_states.json`（重开会话恢复它自己上次的
+///   mode）；已生成会话的切换**不再**触碰任何全局默认。
+/// - 全局默认按 lane 三分：工作/设计 → settings.json `mode_defaults.work/design`，
+///   代码 → `code_permission.last_mode`（从未用过 code 模式 → Plan 只读）。
+///   只由对应 lane **草稿态**的显式切换写入（`set_mode_default`）；新会话默认
+///   mode = 本 lane 全局默认（code 由 `resolved_default_mode` 解析，work/design
+///   由前端在会话物化时应用）。yolo 一次性确认标志
 ///   `code_permission.yolo_confirmed` 同样在 settings.json，由确认命令写入。
 /// 其余运行时交互状态（pending_plan、persona、知识库挂载等）仍 in-memory only。
 ///
@@ -205,13 +208,17 @@ pub struct SessionStore {
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
     code_session_predicate: Arc<RwLock<Option<CodeSessionPredicate>>>,
-    /// `_code_mode_states.json` 的内存事实源：只存 code 会话的显式 mode。
-    /// 启动时 load 合并进 `mode_states`；set_mode / 删除会话时维护并落盘。
-    code_mode_states: Arc<RwLock<HashMap<String, SerializableMode>>>,
+    /// `_session_mode_states.json` 的内存事实源：存所有会话的显式 mode（三分
+    /// lane 语义后 plain 会话也持久化）。启动时 load 合并进 `mode_states`；
+    /// set_mode / 删除会话 / 保留策略清理时维护并落盘。
+    session_mode_states: Arc<RwLock<HashMap<String, SerializableMode>>>,
     /// settings.json `code_permission` 的进程内镜像。`mode_state` 在 chat 发送
     /// 路径上每轮被调，默认值解析只读这块内存（加锁读，不触盘）；写入经
     /// `UserPrefs::update_transaction` 落盘后同步本镜像。
     code_permission: Arc<RwLock<CodePermissionPrefs>>,
+    /// settings.json `mode_defaults`（work/design lane 全局默认）的进程内镜像，
+    /// 与 `code_permission` 同款镜像语义。
+    mode_defaults: Arc<RwLock<ModeDefaultPrefs>>,
     /// `_multi_agent.json` 的持久化互斥：内存快照与 tmp+rename 必须在同一临界
     /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的
     /// 旧快照**会覆盖新快照——重启后部分会话的开关状态消失。
@@ -322,6 +329,10 @@ impl PendingPlanClaim {
     pub(crate) fn commit(mut self) {
         self.store
             .finish_pending_plan_claim(&self.session_id, &self.plan_id);
+        // accept（【✅ 就这么干】）确认执行后，会话 mode 已切 Yolo 且任务已提交：
+        // 把它纳入两层持久化，否则重启/切走切回后会话恢复持久化的旧 mode
+        // （Plan），表现为「方案卡切到 Yolo，切回来又变回 Plan」。
+        self.store.persist_accepted_yolo_mode(&self.session_id);
         self.settled = true;
     }
 
@@ -480,7 +491,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
-        store.load_code_mode_states();
+        store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -515,7 +526,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
-        store.load_code_mode_states();
+        store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
             store.enforce_session_retention_locked()?;
@@ -531,6 +542,7 @@ impl SessionStore {
     ) -> Result<Self> {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
+        let prefs_snapshot = UserPrefs::load();
         let store = Self {
             manager: Arc::new(manager),
             scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
@@ -545,8 +557,9 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             code_session_predicate: Arc::new(RwLock::new(None)),
-            code_mode_states: Arc::new(RwLock::new(HashMap::new())),
-            code_permission: Arc::new(RwLock::new(UserPrefs::load().code_permission)),
+            session_mode_states: Arc::new(RwLock::new(HashMap::new())),
+            code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
+            mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -663,8 +676,8 @@ impl SessionStore {
                 );
             }
         }
-        if self.code_mode_states.write().remove(id).is_some() {
-            self.save_code_mode_states();
+        if self.session_mode_states.write().remove(id).is_some() {
+            self.save_session_mode_states();
         }
         let removed_session_model = {
             let mut session_models = self.session_models.write();
@@ -718,7 +731,7 @@ impl SessionStore {
     ///
     /// `load_skill_bindings` 在启动早期、谓词注入前执行，对绑过 skill 的 code
     /// 会话用 `or_default()` 物化出 `mode=Yolo` 的条目（`SessionModeState` 默认
-    /// mode 即 Yolo）；`load_code_mode_states` 只覆盖 `_code_mode_states.json`
+    /// mode 即 Yolo）；`load_session_mode_states` 只覆盖 `_session_mode_states.json`
     /// 里有显式记录的会话。于是「code 会话 + 绑 skill + 从未显式切 mode」重启后
     /// 会带着 Yolo 残留绕过 `resolved_default_mode`，错误回到 Yolo 而非 Plan 首启。
     /// 谓词注入后立刻 reconcile 这类残留：无持久化记录的 code 会话 mode 拨回 Plan。
@@ -731,9 +744,9 @@ impl SessionStore {
     /// 记录的 code 会话 mode 拨回 Plan 首启默认。仅修 `mode` 字段，保留
     /// `active_skill`/`pinvou_review_enabled` 等其他字段。
     fn reconcile_code_default_modes(&self) {
-        // 有显式 per-session 记录的 code 会话：交给 load_code_mode_states 覆盖，
+        // 有显式 per-session 记录的 code 会话：交给 load_session_mode_states 覆盖，
         // 不在此处理。
-        let persisted: HashSet<String> = self.code_mode_states.read().keys().cloned().collect();
+        let persisted: HashSet<String> = self.session_mode_states.read().keys().cloned().collect();
         let mut m = self.mode_states.write();
         for (id, state) in m.iter_mut() {
             if state.mode == SerializableMode::Yolo
@@ -1122,13 +1135,13 @@ impl SessionStore {
         }
 
         let removed_code_modes = {
-            let mut modes = self.code_mode_states.write();
+            let mut modes = self.session_mode_states.write();
             let before = modes.len();
             modes.retain(|id, _| !contains(id.as_str()));
             modes.len() != before
         };
         if removed_code_modes {
-            self.save_code_mode_states();
+            self.save_session_mode_states();
         }
 
         let removed_models = {
@@ -1566,7 +1579,9 @@ impl SessionStore {
     }
 
     /// 无条目时的默认 mode 解析：code 会话回落全局 `code_permission.last_mode`
-    /// （None = 用户从未用过 code 模式 → Plan 只读首启）；plain 会话恒 Yolo。
+    /// （None = 用户从未用过 code 模式 → Plan 只读首启）；plain 会话缺省 Yolo
+    /// （work/design lane 的全局默认由前端在会话物化时应用，后端不区分这两个
+    /// lane，见 `set_mode_default`）。
     fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) {
             self.code_permission
@@ -1598,11 +1613,11 @@ impl SessionStore {
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
     /// 只改 mode,保留 pinvou_review_enabled 等其他字段。
     ///
-    /// 仅品悟原生 code 会话持久化（产品已拍板的两层语义）：per-session 写
-    /// `_code_mode_states.json`（重开恢复它自己上次的 mode）+ 更新全局
-    /// `code_permission.last_mode`（新建 code 会话的默认）。plain 会话维持
-    /// 内存态不持久化；ACP 会话不经此命令（有自己的权限模式）。落盘失败只
-    /// 记日志不打断交互——内存切换已生效，与 save_skill_bindings 同级容错。
+    /// per-session 持久化（三分 lane 语义）：任何会话都写
+    /// `_session_mode_states.json`（重开恢复它自己上次的 mode）；**不再**更新
+    /// 全局 lane 默认——全局默认只由草稿态显式切换经 `set_mode_default` 写入。
+    /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
+    /// ——内存切换已生效，与 save_skill_bindings 同级容错。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
         {
             let mut m = self.mode_states.write();
@@ -1611,11 +1626,10 @@ impl SessionStore {
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = None;
         }
-        if self.is_code_session(id) {
-            self.code_mode_states.write().insert(id.to_string(), mode);
-            self.save_code_mode_states();
-            self.record_code_last_mode(mode);
-        }
+        self.session_mode_states
+            .write()
+            .insert(id.to_string(), mode);
+        self.save_session_mode_states();
         Ok(())
     }
 
@@ -1822,8 +1836,8 @@ impl SessionStore {
     /// 重置到默认（Yolo + None）。delete_session 时调用。
     pub fn reset_mode_state(&self, id: &str) {
         self.mode_states.write().remove(id);
-        if self.code_mode_states.write().remove(id).is_some() {
-            self.save_code_mode_states();
+        if self.session_mode_states.write().remove(id).is_some() {
+            self.save_session_mode_states();
         }
     }
 
@@ -2207,31 +2221,47 @@ impl SessionStore {
         }
     }
 
-    // ===================== code 会话 mode 持久化 =====================
+    // ===================== per-session mode 持久化（所有会话） =====================
 
-    /// 持久化 code 会话的 per-session mode 到 `_code_mode_states.json`
-    /// （仿 `_skill_bindings.json`；只存 code 会话，plain 会话 mode 恒内存态）。
+    /// 持久化所有会话的 per-session mode 到 `_session_mode_states.json`
+    /// （仿 `_skill_bindings.json`；三分 lane 语义后 plain 会话也持久化）。
     /// 空表时删文件，与 save_skill_bindings 同款语义。
-    pub fn save_code_mode_states(&self) {
-        let states_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
-        let modes = self.code_mode_states.read();
+    ///
+    /// 原子写 + 失败可见：直接 `std::fs::write` 在进程中断时可能留下截断文件，
+    /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
+    /// per-session mode 记录永久丢失，表现为「显式切过 mode，重启后回 Plan」。
+    pub fn save_session_mode_states(&self) {
+        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let modes = self.session_mode_states.read();
         if modes.is_empty() {
             let _ = std::fs::remove_file(&states_file);
             return;
         }
-        if let Ok(json) = serde_json::to_string_pretty(&*modes) {
-            let _ = std::fs::write(states_file, json);
+        let Ok(json) = serde_json::to_string_pretty(&*modes) else {
+            eprintln!("[sessions] serialize _session_mode_states.json failed");
+            return;
+        };
+        if let Err(error) = crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
+        {
+            eprintln!("[sessions] persist _session_mode_states.json failed: {error}");
         }
     }
 
-    /// 启动时恢复 code 会话的 per-session mode：合并进 `mode_states`，
-    /// 重开某个 code 会话即恢复它自己上次显式使用的 mode。
-    pub fn load_code_mode_states(&self) {
-        let states_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
-        if !states_file.exists() {
+    /// 启动时恢复所有会话的 per-session mode：合并进 `mode_states`，
+    /// 重开某个会话即恢复它自己上次显式使用的 mode。
+    /// 兼容：新文件不存在时回退读旧的 `_code_mode_states.json`（只含 code 会话
+    /// 的时代产物），下次保存自然写到新文件，旧文件不删。
+    pub fn load_session_mode_states(&self) {
+        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
+        let source = if states_file.exists() {
+            states_file
+        } else if legacy_file.exists() {
+            legacy_file
+        } else {
             return;
-        }
-        let content = match std::fs::read_to_string(&states_file) {
+        };
+        let content = match std::fs::read_to_string(&source) {
             Ok(c) => c,
             Err(_) => return,
         };
@@ -2239,12 +2269,12 @@ impl SessionStore {
             match serde_json::from_str(&content) {
                 Ok(m) => m,
                 Err(e) => {
-                    eprintln!("[sessions] load_code_mode_states failed: {e}");
+                    eprintln!("[sessions] load_session_mode_states failed: {e}");
                     return;
                 }
             };
         {
-            let mut persisted = self.code_mode_states.write();
+            let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
         }
         let mut states = self.mode_states.write();
@@ -2258,24 +2288,64 @@ impl SessionStore {
         *self.code_permission.read()
     }
 
-    /// 记录"上次在 code 会话显式使用的 mode"：新建 code 会话的默认 mode。
-    /// 先更新内存镜像（本次运行立即生效），再字段级事务写 settings.json；
-    /// 写盘失败只记日志（与 set_mode 的容错语义一致）。
-    fn record_code_last_mode(&self, mode: SerializableMode) {
-        self.code_permission.write().last_mode = Some(mode);
+    /// 三个 lane 的全局默认 mode 视图（内存镜像；work/design 磁盘真相在
+    /// settings.json `mode_defaults`，code 在 `code_permission.last_mode`）。
+    pub fn mode_defaults(&self) -> crate::core::mode_state::ModeDefaultsView {
+        let defaults = self.mode_defaults.read();
+        crate::core::mode_state::ModeDefaultsView {
+            work: defaults.work,
+            design: defaults.design,
+            code: self.code_permission.read().last_mode,
+        }
+    }
+
+    /// 草稿态显式切换写入对应 lane 的全局默认 mode（三分 lane 语义：已生成
+    /// 会话的切换不碰这里）。先更新内存镜像（本次运行立即生效），再字段级
+    /// 事务写 settings.json；写盘失败只记日志（与 set_mode 的容错语义一致）。
+    pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
+        match lane {
+            ModeLane::Code => {
+                self.code_permission.write().last_mode = Some(mode);
+            }
+            ModeLane::Work => {
+                self.mode_defaults.write().work = Some(mode);
+            }
+            ModeLane::Design => {
+                self.mode_defaults.write().design = Some(mode);
+            }
+        }
         if let Err(error) = UserPrefs::update_transaction(|prefs| {
-            prefs.code_permission.last_mode = Some(mode);
+            match lane {
+                ModeLane::Code => prefs.code_permission.last_mode = Some(mode),
+                ModeLane::Work => prefs.mode_defaults.work = Some(mode),
+                ModeLane::Design => prefs.mode_defaults.design = Some(mode),
+            }
             Ok(())
         }) {
-            eprintln!("[sessions] persist code_permission.last_mode failed: {error}");
+            eprintln!("[sessions] persist mode default for {lane:?} failed: {error}");
         }
+    }
+
+    /// accept 方案（`claim_pending_plan` 切 Yolo）确认提交后，把任务级切换纳入
+    /// per-session 持久化：写 `_session_mode_states.json`（重开/切走切回恢复
+    /// Yolo）。**不**更新任何全局 lane 默认（三分 lane 语义：已生成会话的切换
+    /// 只写会话自己的记录）。
+    ///
+    /// 只在 `PendingPlanClaim::commit`（engine 提交已确认）调用：任务真正开始
+    /// 执行时才记忆，提交失败回滚（`restore_pending_plan_claim`）不碰磁盘，
+    /// 内存回 Plan 与磁盘保持一致。
+    fn persist_accepted_yolo_mode(&self, id: &str) {
+        self.session_mode_states
+            .write()
+            .insert(id.to_string(), SerializableMode::Yolo);
+        self.save_session_mode_states();
     }
 
     /// yolo 一次性确认：置 `code_permission.yolo_confirmed = true` 并落盘。
     /// 确认是 UI 层语义（与 VS Code 同款），后端不在 exit_plan_to_yolo 强制门控。
     ///
     /// 仅同步本命令负责的 `yolo_confirmed` 字段，不整体覆盖镜像：`update_transaction`
-    /// 返回的快照可能已过期（并发 `record_code_last_mode` 在事务提交后、本行执行前
+    /// 返回的快照可能已过期（并发 `set_mode_default` 在事务提交后、本行执行前
     /// 写入了内存镜像的 `last_mode`），整体赋值会丢弃它导致内存/磁盘漂移。
     pub fn confirm_code_yolo(&self) -> Result<CodePermissionPrefs, String> {
         UserPrefs::update_transaction(|prefs| {
@@ -2751,7 +2821,7 @@ mod tests {
         reopened.load_session_models();
         reopened.load_pinned_sessions();
         reopened.load_hidden_sessions();
-        reopened.load_code_mode_states();
+        reopened.load_session_mode_states();
         {
             let _mutation = reopened.scheduled_mutation.lock();
             reopened.enforce_session_retention_locked()?;
@@ -4642,20 +4712,23 @@ mod tests {
     }
 
     #[test]
-    fn code_session_default_follows_global_last_mode() {
+    fn code_session_default_follows_code_lane_default() {
         let (store, _g) = isolated_store();
         with_code_sessions(&store, &["code-1", "code-2"]);
-        // 在 code-1 显式切 yolo → 全局 last_mode=yolo → 新 code 会话默认跟随。
+        // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
+        // （三分 lane 语义）→ 新 code 会话默认不跟随。
         store
             .set_mode("code-1", SerializableMode::Yolo)
             .expect("switch yolo");
-        assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
-        // 再切回 plan → 新 code 会话默认跟随 plan；code-1 保持自己的显式值。
-        store
-            .set_mode("code-1", SerializableMode::Plan)
-            .expect("switch plan");
+        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
         assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
-        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+        assert!(store.code_permission_prefs().last_mode.is_none());
+        // 草稿态写 code lane 全局默认 → 新 code 会话默认跟随；已有会话不受影响。
+        store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+        assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
+        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+        store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+        assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
     }
 
     #[test]
@@ -4669,7 +4742,7 @@ mod tests {
             .set_mode("code-2", SerializableMode::Plan)
             .expect("code-2 plan");
         // sidecar 只存 code 会话的显式 mode。
-        let file = paths::sessions_root().join("_code_mode_states.json");
+        let file = paths::sessions_root().join("_session_mode_states.json");
         let on_disk: HashMap<String, SerializableMode> =
             serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
                 .expect("parse sidecar");
@@ -4694,22 +4767,114 @@ mod tests {
         assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
     }
 
+    /// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
+    /// 不碰任何全局 lane 默认（三分 lane 语义）；提交失败回滚（rollback）不落盘，
+    /// 内存回 Plan 与磁盘保持一致。
     #[test]
-    fn plain_session_mode_is_not_persisted() {
+    fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
+        let (store, _g) = isolated_store();
+        with_code_sessions(&store, &["code-1", "code-2"]);
+        // 从未显式切过 → 首次默认 Plan。
+        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+        store
+            .register_pending_plan("code-1", "plan-1".to_string())
+            .expect("register plan");
+
+        // 回滚（未 commit 就 drop）：内存回 Plan，磁盘不写（last_mode 仍 None）。
+        let claim = store
+            .claim_pending_plan("code-1", "plan-1")
+            .expect("claim plan-1");
+        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+        drop(claim);
+        assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+        assert!(store.code_permission_prefs().last_mode.is_none());
+
+        // 提交：重新 claim + commit → per-session 持久化；全局 lane 默认不动。
+        store
+            .register_pending_plan("code-1", "plan-2".to_string())
+            .expect("register plan-2");
+        store
+            .claim_pending_plan("code-1", "plan-2")
+            .expect("claim plan-2")
+            .commit();
+        assert!(store.code_permission_prefs().last_mode.is_none());
+
+        // 重启：per-session 恢复 Yolo；新 code 会话回落全局默认（未动 → Plan）。
+        let reopened = reopen_store(&store).expect("reboot");
+        with_code_sessions(&reopened, &["code-1", "code-2"]);
+        assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
+        assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
+    }
+
+    #[test]
+    fn plain_session_mode_persists_across_restart() {
         let (store, _g) = isolated_store();
         with_code_sessions(&store, &["code-1"]);
         store
             .set_mode("plain-1", SerializableMode::Plan)
             .expect("plain plan");
         assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Plan);
-        // plain 不写 sidecar、不动全局键。
-        assert!(!paths::sessions_root()
-            .join("_code_mode_states.json")
-            .exists());
+        // 三分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
+        let file = paths::sessions_root().join("_session_mode_states.json");
+        let on_disk: HashMap<String, SerializableMode> =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
+                .expect("parse sidecar");
+        assert_eq!(on_disk.get("plain-1"), Some(&SerializableMode::Plan));
         assert!(store.code_permission_prefs().last_mode.is_none());
-        // 重启后 plain 回 Yolo（现状：mode 仅驻内存、默认 Yolo）。
+        assert_eq!(store.mode_defaults().work, None);
+        assert_eq!(store.mode_defaults().design, None);
+        // 重启后 plain 会话恢复自己的 Plan（语义 3：每个对话保存自己的 mode）。
         let reopened = reopen_store(&store).expect("reboot");
-        assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Yolo);
+        assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
+    }
+
+    /// work/design lane 全局默认的读写与持久化；非法 lane 字符串必须报错。
+    #[test]
+    fn mode_lane_defaults_round_trip_and_validate() {
+        let (store, _g) = isolated_store();
+        assert_eq!(store.mode_defaults().work, None);
+        store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+        store.set_mode_default(ModeLane::Design, SerializableMode::Yolo);
+        assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+        assert_eq!(store.mode_defaults().design, Some(SerializableMode::Yolo));
+        assert_eq!(store.mode_defaults().code, None);
+        // 落盘 settings.json + 重启后镜像恢复。
+        assert_eq!(
+            UserPrefs::load().mode_defaults.work,
+            Some(SerializableMode::Plan)
+        );
+        let reopened = reopen_store(&store).expect("reboot");
+        assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
+        assert_eq!(
+            reopened.mode_defaults().design,
+            Some(SerializableMode::Yolo)
+        );
+        // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
+        assert!(ModeLane::parse("work").is_ok());
+        assert!(ModeLane::parse("design").is_ok());
+        assert!(ModeLane::parse("code").is_ok());
+        assert!(ModeLane::parse(" CodE ").is_err());
+        assert!(ModeLane::parse("").is_err());
+    }
+
+    /// 旧版 `_code_mode_states.json`（只含 code 会话的时代产物）在新文件缺失时
+    /// 回退加载，老用户的 per-session 记录不丢。
+    #[test]
+    fn legacy_code_mode_states_file_is_loaded_as_fallback() {
+        let (store, _g) = isolated_store();
+        let legacy = paths::sessions_root().join("_code_mode_states.json");
+        std::fs::write(
+            &legacy,
+            serde_json::to_string(&HashMap::from([(
+                "code-legacy".to_string(),
+                SerializableMode::Yolo,
+            )]))
+            .expect("serialize legacy"),
+        )
+        .expect("write legacy sidecar");
+        store.load_session_mode_states();
+        assert_eq!(store.mode_state("code-legacy").mode, SerializableMode::Yolo);
+        let _ = std::fs::remove_file(&legacy);
     }
 
     #[test]
@@ -4748,7 +4913,7 @@ mod tests {
         assert!(store.mode_state("code-1").active_skill.is_some());
 
         // 重启：load_skill_bindings 恢复出 mode=Yolo + active_skill，
-        // load_code_mode_states 因无 code-1 条目不覆盖。
+        // load_session_mode_states 因无 code-1 条目不覆盖。
         let reopened = reopen_store(&store).expect("reboot");
         // 谓词注入触发 reconcile：无持久化记录的 code 会话 mode 修正为 Plan。
         with_code_sessions(&reopened, &["code-1"]);

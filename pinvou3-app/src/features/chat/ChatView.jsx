@@ -651,6 +651,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         pinvouModeStateRef.current = restored;
         setPinvouModeState(restored);
       }, [activeSessionId, chatItems.length]);
+      // 把当前工作区 lane（work/design）同步给 bridge：草稿态 mode 的全局默认
+      // 按 lane 三分（工作/设计/代码各记各的），lane 是纯前端概念，bridge
+      // 自身不读 localStorage。
+      useEffect(() => {
+        if (bridge.available && bridge.interaction && bridge.interaction.setModeLane) {
+          bridge.interaction.setModeLane(pinvouMode);
+        }
+      }, [pinvouMode]);
       useEffect(() => {
         setSelectedDesignElement(null);
         updatePinvouModeState({ type: 'set-selected-design-element', elementId: undefined });

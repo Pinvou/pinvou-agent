@@ -2,7 +2,7 @@
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
 > 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
-> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-plain-decoupling-改动说明.md`（2026-08-05 模式解耦与能力回补）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
+> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-mode-解耦与权限持久化-改动说明.md`（模式解耦、能力回补与 mode 持久化的合并留档）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
 
 ## 1. 背景与目标
 

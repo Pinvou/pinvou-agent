@@ -483,9 +483,18 @@ try {
     && main.includes("setCurrentView('codex')"),
   'selecting Codex must continue to enter the existing Codex draft page');
   const acpAgentLogo = readFileSync(path.join(root, 'src', 'features', 'codex', 'AcpAgentLogo.jsx'), 'utf8');
+  // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
+  // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
+  // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
   assert.match(main,
-    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}\);[\s\S]*?bridge\.sessions\.createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
-  'selecting Design from the shared mode entry must return to ChatView design mode');
+    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+    'selecting Design from the shared mode entry must return to ChatView design mode');
+  assert.ok(
+    main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
+    '从 code 页切回 design 时保留原工作会话，仅草稿态新建');
+  assert.ok(
+    main.includes("createPinvouModeScopeKey(bridge.activeSessionId)"),
+    '切回 design 时 pinvou 模式按会话 scope 保存，ChatView 挂载才能读回');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && acpAgentLogo.includes('<CodexLogo')
     && acpAgentLogo.includes("brand-icons/claude.png")

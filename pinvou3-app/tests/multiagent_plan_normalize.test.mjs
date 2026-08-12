@@ -651,10 +651,11 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /multiagent:roster_sync_failed|__PINVOU_SHARED_I18N__/,
     '专家卡 CRUD 不再逐会话刷新名册，前端不得保留已退役的失败事件与专用文案桥接',
   );
+  const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
   assert.match(
-    interactionBridgeSource,
+    tauriBridgeSource,
     /multiAgent: !!st\.multi_agent/,
-    'modeState 镜像必须带 multiAgent，模式事件不得把开关状态冲掉',
+    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent，模式事件不得把开关状态冲掉',
   );
 });
 
@@ -1350,9 +1351,14 @@ function loadInteractionRuntime() {
     pendingDraftMultiAgent: false,
     chatItems: [],
     messages: [],
+    // 三分 lane：草稿态 mode = 本 lane 全局默认。
+    modeDefaults: { work: null, design: null, code: null },
+    modeLane: 'work',
   };
   const deferred = {};
   const calls = [];
+  // 与 bridge.js 共享的 per-session epoch 表（评审 P1 收敛点）。
+  const modeStateEpochs = {};
   const runtime = {
     state,
     calls,
@@ -1380,7 +1386,22 @@ function loadInteractionRuntime() {
       if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
       fn();
     },
+    // 评审 P1：权威写回收敛点从 bridge.js 注入（生产同构实现）。interaction
+    // 模块不再自持 epoch 表，测试必须提供同一份共享表才能验证竞态语义。
+    modeStateEpochs,
+    bumpModeStateEpoch(sid) { if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1; },
+    applyAuthoritativeModeState(sid, st) {
+      if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
+      if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
+      state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+    },
     getBuffer() { return null; },
+    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，缺省 yolo。
+    currentDraftModeState() {
+      const lane = state.modeLane === 'design' ? 'design' : 'work';
+      const d = state.modeDefaults && state.modeDefaults[lane];
+      return { mode: d || 'yolo', multiAgent: false };
+    },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
     rerenderFromMessages() {},
@@ -1392,6 +1413,8 @@ function loadInteractionRuntime() {
     turnUsageDirty: {},
     invoke(name, args) {
       calls.push(name);
+      runtime.invokeArgs = runtime.invokeArgs || {};
+      runtime.invokeArgs[name] = args;
       if (deferred[name] && deferred[name].promise) return deferred[name].promise;
       return Promise.resolve({ mode: 'yolo', multi_agent: false });
     },
@@ -1451,4 +1474,105 @@ test('无权威改写时 syncModeState 正常写回后端值（epoch 不变）',
   assert.equal(rt.state.modeState.mode, 'plan');
   assert.equal(rt.state.modeState.multiAgent, true,
     '没有发生过 toggle 的普通读取必须照常生效');
+});
+
+// ── 评审 P1 敞口回归：chip 切换（exitPlanToYolo / setPlanModeNext）的权威
+// ── 写回必须作废在途 syncModeState 旧读取。此前这两个入口不 bump epoch，
+// ── 「切会话触发 get 在途 → 立刻点 chip → 旧 get 返回」会把刚切的模式砸回旧值。
+function enterPlanRuntime() {
+  const rt = loadInteractionRuntime();
+  rt.state.modeState = { mode: 'plan', multiAgent: false };
+  return rt;
+}
+
+test('exitPlanToYolo 权威写回作废在途旧读取：chip 切 Yolo 不被砸回 Plan（评审 P1）', async () => {
+  const rt = enterPlanRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('exit_plan_to_yolo');
+  const syncP = rt.api.syncModeState();                  // t0: get 挂起（将返回旧值 plan）
+  const exitP = rt.api.exitPlanToYolo();                 // t1: 用户点 chip 切 Yolo，set 在途
+  set.resolve({ mode: 'yolo', multi_agent: false });     // t2: set 落盘并权威写回（bump epoch）
+  await exitP;
+  assert.equal(rt.state.modeState.mode, 'yolo', '权威值先显示');
+  get.resolve({ mode: 'plan', multi_agent: false });     // t3: 旧 get 才返回
+  await syncP;
+  assert.equal(rt.state.modeState.mode, 'yolo',
+    'chip 切换的权威值不得被在途旧读取砸回 Plan（P1 敞口）');
+});
+
+test('setPlanModeNext 权威写回作废在途旧读取：chip 切 Plan 不被砸回 Yolo（评审 P1）', async () => {
+  const rt = loadInteractionRuntime();                   // 默认 modeState=yolo
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_plan_mode_next');
+  const syncP = rt.api.syncModeState();                  // t0: get 挂起（旧值 yolo）
+  const planP = rt.api.setPlanModeNext();                // t1: 用户点 chip 切 Plan，set 在途
+  set.resolve({ mode: 'plan', multi_agent: false });     // t2: set 落盘并权威写回
+  await planP;
+  assert.equal(rt.state.modeState.mode, 'plan', '权威值先显示');
+  get.resolve({ mode: 'yolo', multi_agent: false });     // t3: 旧 get 才返回
+  await syncP;
+  assert.equal(rt.state.modeState.mode, 'plan',
+    'chip 切换的权威值不得被在途旧读取砸回 Yolo（P1 敞口）');
+});
+
+// ── 三分 lane 语义回归：草稿写全局默认、会话写自己、lane 各自独立 ─────
+test('草稿态切 Plan：写本 lane 全局默认且不物化会话、不调 per-session 命令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null; // 草稿态
+  const set = rt.defer('set_mode_default');
+  const p = rt.api.setPlanModeNext();
+  set.resolve({ work: 'plan', design: null, code: null });
+  await p;
+  assert.ok(rt.calls.includes('set_mode_default'), '草稿切换必须写 lane 全局默认');
+  assert.equal(rt.invokeArgs.set_mode_default.lane, 'work');
+  assert.equal(rt.invokeArgs.set_mode_default.mode, 'plan');
+  assert.ok(!rt.calls.includes('set_plan_mode_next'), '草稿态不得调 per-session 命令');
+  assert.ok(!rt.calls.includes('create_session'), '草稿态不得物化会话');
+  assert.equal(rt.state.modeDefaults.work, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan', '草稿显示跟随新默认');
+});
+
+test('lane 切换即刷新草稿显示；草稿切换写当前 lane（work/design 互不影响）', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeDefaults = { work: 'plan', design: null, code: null };
+  // work → design：草稿显示从 work 默认 plan 变为 design 缺省 yolo。
+  rt.api.setModeLane('design');
+  assert.equal(rt.state.modeState.mode, 'yolo');
+  rt.api.setModeLane('work');
+  assert.equal(rt.state.modeState.mode, 'plan');
+  // design lane 下切 plan：写 design 默认，work 默认不动。
+  rt.api.setModeLane('design');
+  const set = rt.defer('set_mode_default');
+  const p = rt.api.setDraftMode('plan');
+  set.resolve({ work: 'plan', design: 'plan', code: null });
+  await p;
+  assert.equal(rt.invokeArgs.set_mode_default.lane, 'design');
+  assert.equal(rt.state.modeDefaults.design, 'plan');
+  assert.equal(rt.state.modeDefaults.work, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan');
+});
+
+test('已生成会话切 mode：只走 per-session 命令，不碰任何全局 lane 默认', async () => {
+  const rt = loadInteractionRuntime(); // activeSessionId = 'chat-a'
+  const set = rt.defer('set_plan_mode_next');
+  const p = rt.api.setPlanModeNext();
+  set.resolve({ mode: 'plan', multi_agent: false });
+  await p;
+  assert.ok(rt.calls.includes('set_plan_mode_next'));
+  assert.ok(!rt.calls.includes('set_mode_default'), '会话切换不得写全局默认');
+  assert.equal(rt.state.modeDefaults.work, null);
+  assert.equal(rt.state.modeState.mode, 'plan');
+});
+
+test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeLane = 'design';
+  const get = rt.defer('get_mode_defaults');
+  const p = rt.api.refreshModeDefaults();
+  get.resolve({ work: 'yolo', design: 'plan', code: 'plan' });
+  await p;
+  assert.equal(rt.state.modeDefaults.design, 'plan');
+  assert.equal(rt.state.modeState.mode, 'plan', 'design lane 草稿显示自己的全局默认');
 });

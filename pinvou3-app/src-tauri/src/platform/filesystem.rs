@@ -91,6 +91,66 @@ pub(crate) fn recover_interrupted_replace(
             "interrupted replacement has no recoverable candidate",
         ),
     ))
+/// 原子写文件：先写同目录临时文件并 sync，再原子替换目标。
+///
+/// 直接 `std::fs::write(target)` 在进程被中断（强杀/崩溃）时会留下截断或
+/// 半写的目标文件；对持久化的会话状态（如 `_code_mode_states.json`、
+/// settings.json）而言，一个损坏的目标会让启动恢复静默失败，表现为
+/// "切换成功但重启后丢失"。tmp + rename 保证目标要么是旧完整内容、
+/// 要么是新完整内容，永无中间态；失败时清理临时文件。
+pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("state.json");
+    let tmp = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let backup = parent.join(format!(
+        ".{file_name}.bak-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        if path.exists() {
+            // Windows 的 rename 不能覆盖已存在文件，走「旧文件改名备份 → tmp 顶替」
+            // 的两步替换；POSIX 直接原子覆盖。
+            replace_file_atomically(&tmp, path, &backup)?;
+        } else {
+            // 首次创建：Windows 上 rename 目标不存在会直接报 NotFound，须走
+            // 普通 rename（单文件移动，无覆盖语义，天然安全）。
+            std::fs::rename(&tmp, path)?;
+        }
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&backup);
+    }
+    write_result
 }
 
 /// 以 0600 权限创建（或截断）文件：写入含明文密钥的 CLI 配置时**直接**以
@@ -267,6 +327,69 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
+
+    use super::atomic_write;
+
+    #[test]
+    fn atomic_write_round_trips_content() {
+        let dir = std::env::temp_dir().join(format!("pinvou3-atomic-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // 首次创建（目标不存在）：Windows 上必须走普通 rename，不能失败。
+        let target = dir.join("_code_mode_states.json");
+        atomic_write(&target, br#"{"session-1":"yolo"}"#).expect("first write");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read back"),
+            r#"{"session-1":"yolo"}"#
+        );
+
+        // 覆盖写入仍保持完整内容（原子替换语义）。
+        atomic_write(&target, br#"{"session-1":"plan","session-2":"yolo"}"#).expect("rewrite");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read rewritten"),
+            r#"{"session-1":"plan","session-2":"yolo"}"#
+        );
+
+        // 成功后不残留临时/备份文件。
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name != "_code_mode_states.json"
+            })
+            .collect();
+        assert!(leftover.is_empty(), "leftover files: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_failure_is_reported_without_residue() {
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-atomic-write-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // 父级是普通文件 → tmp 无法创建，写入必须报错且不留任何残留。
+        let file_as_parent = dir.join("not-a-dir");
+        std::fs::write(&file_as_parent, "x").expect("seed parent file");
+        let target = file_as_parent.join("state.json");
+        assert!(atomic_write(&target, b"new").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&file_as_parent).expect("parent untouched"),
+            "x"
+        );
+
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list dir")
+            .filter_map(|entry| entry.ok())
+            .collect();
+        assert_eq!(leftover.len(), 1, "no tmp/backup residue: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     pub(crate) fn try_link_file(target: &Path, link: &Path) -> bool {
         try_link_file_impl(target, link)
