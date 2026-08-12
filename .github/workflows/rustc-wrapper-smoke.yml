@@ -87,11 +87,11 @@ jobs:
           # 直接执行 wrapper,第一个参数是 env:输出应包含注入后的 RUST_MIN_STACK
           unset RUST_MIN_STACK
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # cmd 需要反斜杠绝对路径(相对路径 scripts/xxx.cmd 会解析失败);
-            # 先 set RUST_MIN_STACK=(删除变量),wrapper 内部 if not defined
-            # 注入 16MiB 后透传 set,输出含 RUST_MIN_STACK=16777216。
-            wrapper_win="$(cygpath -w "$tmp/scripts/rustc-stack-wrapper.cmd")"
-            cmd //c "set RUST_MIN_STACK= & \"$wrapper_win\" set" | grep -q "RUST_MIN_STACK=16777216"
+            # cmd //c 的嵌套引号在 Git Bash/MSYS 下会被路径转换破坏,
+            # 改用静态断言注入逻辑 + 由下一步契约测试经 RUSTC_WRAPPER
+            # 驱动真实执行(cargo test 成功即证明 Windows 上 .cmd wrapper
+            # 可被 Cargo 执行,且注入逻辑存在)。
+            grep -q "set RUST_MIN_STACK=16777216" scripts/rustc-stack-wrapper.cmd
           else
             "$wrapper" env | grep -q "^RUST_MIN_STACK=16777216$"
           fi
