@@ -25,11 +25,6 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// 上抛给管理器的 CDP 事件。
 #[derive(Debug, Clone)]
 pub enum CdpEvent {
-    /// 请求-响应匹配结果（由 `call` 内部消费，管理器一般不需要）。
-    Response {
-        id: u64,
-        result: Result<Value, String>,
-    },
     /// 域事件（如 `Page.screencastFrame`、`Page.frameNavigated`、`Target.targetCreated`）。
     Event {
         session_id: Option<String>,
@@ -102,12 +97,23 @@ impl CdpSession {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    /// 优雅关闭 WebSocket（close 握手后读循环 `read.next()` 返回 None 自行退出并
+    /// drain pending）。用于 stop()/崩溃重置的兜底：`Browser.close` 失败（wedged）
+    /// 且无子进程句柄可 kill 时，至少截断读循环与帧推流，避免资源永久残留。
+    pub async fn close(&self) {
+        let mut write = self.write.lock().await;
+        let _ = write.close().await;
+    }
 }
 
-/// 建立连接的结果：会话 + 事件接收端。
+/// 建立连接的结果：会话 + 事件接收端 + 读循环任务句柄（stop 时可中止）。
 pub struct Connected {
     pub session: Arc<CdpSession>,
     pub events: mpsc::Receiver<CdpEvent>,
+    /// WebSocket 读循环任务：WS 关闭/Chrome 崩溃时自行退出；stop() 经 `close()`
+    /// 关闭 WS 后 join 或 abort 兜底，避免读循环与帧推流残留。
+    pub reader_task: tokio::task::JoinHandle<()>,
 }
 
 /// 连接 Chrome 的 browser 级 CDP 端点，返回会话与事件接收端。
@@ -143,7 +149,7 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     });
 
     let session_clone = Arc::clone(&session);
-    tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = read.next().await {
             let text = match msg {
                 WsMessage::Text(t) => t.to_string(),
@@ -191,5 +197,6 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     Ok(Connected {
         session,
         events: events_rx,
+        reader_task,
     })
 }

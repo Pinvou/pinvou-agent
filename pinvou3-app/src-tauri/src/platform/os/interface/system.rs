@@ -202,4 +202,26 @@ mod tests {
     fn archive_tool_path_returns_non_empty_program() {
         assert!(!archive_tool_path().as_os_str().is_empty());
     }
+
+    /// 浏览器专用 Chrome 候选（macos/linux/windows）必须非空，且应包含 Chrome/Chromium。
+    ///
+    /// 接线门禁：`chrome_candidates()` 经 interface 委托 `platform::chrome_candidates()`，
+    /// 各平台 `mod.rs` 必须 re-export `*_system::chrome_candidates`——若漏接线，macOS 会
+    /// 经 `pub use super::unsupported::*` glob 静默解析到空列表（编译通过但运行时永远
+    /// "未找到 Chrome"），Linux/Windows 则直接 E0425 编译失败。本测试在 macOS 上立即
+    /// 暴露空列表回归；Linux/Windows 由交叉编译/CI 编译门禁拦截。
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn chrome_candidates_non_empty_on_desktop() {
+        let candidates = chrome_candidates();
+        assert!(
+            !candidates.is_empty(),
+            "桌面平台 chrome_candidates 不应为空（检查 platform/os/<os>/mod.rs 是否 re-export chrome_candidates）"
+        );
+        let joined = candidates.join("|").to_ascii_lowercase();
+        assert!(
+            joined.contains("chrome") || joined.contains("chromium"),
+            "桌面平台 chrome_candidates 应包含 Chrome/Chromium 候选，实际: {joined}"
+        );
+    }
 }

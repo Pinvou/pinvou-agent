@@ -51,6 +51,8 @@ struct Inner {
     active_session: Option<String>,
     /// 事件循环任务句柄（防重复启动/可中止）。
     loop_task: Option<tokio::task::JoinHandle<()>>,
+    /// CDP WebSocket 读循环任务句柄（stop/崩溃重置时可中止，防读循环残留）。
+    reader_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// 浏览器管理器（Tauri State 注入，单例）。
@@ -58,8 +60,15 @@ pub struct BrowserManager {
     inner: tokio::sync::Mutex<Inner>,
     /// 启动临界区互斥：串行化整个启动序列（协调 Chrome → CDP 连接 → attach →
     /// startScreencast → 事件循环），避免 watch 轮询与 Tauri 命令并发进入产生
-    /// 双事件循环/双截图流/句柄丢失（single-flight）。
+    /// 双事件循环/双截图流/句柄丢失（single-flight）。stop() 也参与本锁，
+    /// 保证 stop 不会在启动序列中途"看到空状态提前返回"而被启动方随后覆盖。
     start_mtx: tokio::sync::Mutex<()>,
+    /// 停止代际计数：stop() 每次 +1；ensure_started 启动前记录、完成后核对，
+    /// 启动期间被 stop 打断时丢弃本次启动结果（避免 stop 被吞、浏览器残留）。
+    stop_gen: std::sync::atomic::AtomicU64,
+    /// "已向前端 emit 过 browser:activated"标记（watch 与 stop 共享）：
+    /// stop()/崩溃路径置 false，保证再次接入时必重新 emit（前端 Tab 重现）。
+    activated: std::sync::atomic::AtomicBool,
     app: parking_lot::Mutex<Option<AppHandle>>,
 }
 
@@ -68,6 +77,8 @@ impl BrowserManager {
         Self {
             inner: tokio::sync::Mutex::new(Inner::default()),
             start_mtx: tokio::sync::Mutex::new(()),
+            stop_gen: std::sync::atomic::AtomicU64::new(0),
+            activated: std::sync::atomic::AtomicBool::new(false),
             app: parking_lot::Mutex::new(None),
         }
     }
@@ -85,7 +96,7 @@ impl BrowserManager {
     /// `browser:stopped`，让前端隐藏 Tab、下次调用自动重新拉起。
     pub fn spawn_watch(app: AppHandle) {
         tokio::spawn(async move {
-            let mut last_activated = false;
+            let mut fail_count = 0u32;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let mgr = app.state::<BrowserManager>();
@@ -102,14 +113,21 @@ impl BrowserManager {
                             if let Some(task) = inner.loop_task.take() {
                                 task.abort();
                             }
+                            if let Some(task) = inner.reader_task.take() {
+                                task.abort();
+                            }
+                            if let Some(session) = inner.session.take() {
+                                // 兜底关 WS（Browser.close 已在 stop/崩溃前失败场景下截断推流）。
+                                let _ = session.close().await;
+                            }
                             if let Some(mut child) = inner.child.take() {
                                 let _ = child.kill();
                                 let _ = child.wait();
                             }
                             inner.port = None;
-                            inner.session = None;
                             inner.active_session = None;
-                            last_activated = false;
+                            mgr.activated
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
                             let _ = app.emit("browser:stopped", json!({}));
                             // Chrome 已死：端口文件失效，清掉让下次启动干净重建。
                             let _ = std::fs::remove_file(paths::browser_cdp_port_json());
@@ -119,15 +137,27 @@ impl BrowserManager {
                 }
                 // 2) 未接入：端口文件有效则接入并激活 Tab。
                 let Some(port) = port_file() else {
+                    fail_count = 0;
                     continue;
                 };
                 if !probe_cdp(port, Duration::from_millis(800)).await {
+                    // 端口文件存在但 Chrome 已死：连续失败后清掉 stale 文件，
+                    // 避免永久空转探测（wrapper 崩溃残留/异常退出场景）。
+                    fail_count += 1;
+                    if fail_count >= 5 {
+                        eprintln!("[browser] 端口文件 stale（端口 {port}），清理后重试");
+                        let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+                        fail_count = 0;
+                    }
                     continue;
                 }
+                fail_count = 0;
                 if mgr.ensure_started().await.is_ok() {
-                    if !last_activated {
+                    if !mgr
+                        .activated
+                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                    {
                         let _ = app.emit("browser:activated", json!({}));
-                        last_activated = true;
                     }
                 } else {
                     // 接入失败（如 Chrome 恰好在退出）静默重试：端口文件仍有效时下次再试。
@@ -153,6 +183,8 @@ impl BrowserManager {
         // single-flight：整个启动序列持 start_mtx，并发调用者在此等待后复用
         // 已完成的状态，而不是各自再启动一遍（双事件循环/双截图流/句柄丢失）。
         let _start_guard = self.start_mtx.lock().await;
+        // stop 代际快照：启动期间若 stop() 执行（代际 +1），完成后丢弃本次结果。
+        let gen_at_start = self.stop_gen.load(std::sync::atomic::Ordering::SeqCst);
         {
             let inner = self.inner.lock().await;
             if inner.session.is_some() && inner.active_session.is_some() {
@@ -199,24 +231,36 @@ impl BrowserManager {
             let loop_task =
                 tokio::spawn(run_event_loop(app, Arc::clone(&session), connected.events));
 
+            // 启动期间被 stop() 打断（代际已变）：丢弃本次结果，避免 stop 被吞、
+            // 浏览器以无 UI 状态残留（watch 视 session alive 而不再重置）。
+            if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start {
+                let _ = session.close().await;
+                return Err("浏览器启动期间已被停止".to_string());
+            }
+
             let mut inner = self.inner.lock().await;
             inner.port = Some(port);
             inner.child = spawned_child.take();
             inner.session = Some(session);
             inner.active_session = Some(session_id);
             inner.loop_task = Some(loop_task);
+            inner.reader_task = Some(connected.reader_task);
             Ok(())
         }
         .await;
 
         if let Err(e) = &boot {
-            // 启动失败：kill 自启的 Chrome，并清掉可能已写入的端口文件（若指向
-            // 半死实例，watch 会反复尝试接入失败；清掉让下次启动干净重建）。
+            // 启动失败：kill 自启的 Chrome。仅当 Chrome 是本模块自启时才清端口文件
+            // （复用 wrapper 实例的路径失败时其端口文件仍然健康，删除会丢协调文件）。
+            let spawned_by_us = spawned_child.is_some();
             if let Some(mut child) = spawned_child.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+            // 仅自启实例失败时清端口文件（避免误删 wrapper 的健康协调文件）。
+            if spawned_by_us {
+                let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+            }
             return Err(e.clone());
         }
         Ok(())
@@ -225,7 +269,19 @@ impl BrowserManager {
     /// 停止浏览器：停 screencast、优雅关闭 Chrome（CDP `Browser.close` 对 wrapper
     /// 启动的实例同样有效；失败则回退 kill 自启子进程）、清理协调文件并通知前端
     /// （emit `browser:stopped`，前端据此隐藏浏览器 Tab）。
+    ///
+    /// 与 `ensure_started` 共享 `start_mtx`（同序：先 start_mtx 再 inner）：stop 不会
+    /// 在启动序列中途"看到空状态提前返回"而被随后完成的启动覆盖；代际 +1 让进行中的
+    /// 启动在完成后自弃结果。
     pub async fn stop(&self) -> Result<(), String> {
+        // 先参与 single-flight（与 ensure_started 同序获取，无死锁），保证 stop 与
+        // 启动序列串行；再 +1 代际，让已被本 stop 打断的启动完成后自弃。
+        let _start_guard = self.start_mtx.lock().await;
+        self.stop_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.activated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
         let mut inner = self.inner.lock().await;
         if let (Some(session), Some(sid)) = (inner.session.as_ref(), inner.active_session.as_ref())
         {
@@ -245,6 +301,11 @@ impl BrowserManager {
             }
             let _ = child.wait();
         }
+        // Browser.close 失败（wedged）且无子进程句柄可 kill（wrapper 启动的实例）时，
+        // 至少关闭 WS 截断读循环与帧推流，避免资源永久残留。
+        if let Some(session) = inner.session.take() {
+            let _ = session.close().await;
+        }
         // Chrome 已关（close/kill 至少一条路径生效）：协调文件双删幂等（wrapper 的
         // chromeChild exit 兜底也会清）。
         let _ = std::fs::remove_file(paths::browser_cdp_port_json());
@@ -252,8 +313,10 @@ impl BrowserManager {
         if let Some(task) = inner.loop_task.take() {
             task.abort();
         }
+        if let Some(task) = inner.reader_task.take() {
+            task.abort();
+        }
         inner.port = None;
-        inner.session = None;
         inner.active_session = None;
         // 通知前端隐藏浏览器 Tab（main.jsx / BrowserView 监听 browser:stopped）。
         if let Some(app) = self.app.lock().clone() {
@@ -306,6 +369,10 @@ impl BrowserManager {
 
     /// 新建标签页并激活（截图流切换到新页）。
     pub async fn create_tab(&self, url: String) -> Result<(), String> {
+        // 与 navigate 同款协议白名单：防 file:///javascript: 等本地/脚本协议被注入。
+        if !url.starts_with("http://") && !url.starts_with("https://") && url != "about:blank" {
+            return Err("仅支持 http/https/about:blank 协议".to_string());
+        }
         let mut inner = self.inner.lock().await;
         let session = inner
             .session
@@ -699,7 +766,6 @@ async fn run_event_loop(
                 }
                 _ => {}
             },
-            CdpEvent::Response { .. } => {}
         }
     }
 }
