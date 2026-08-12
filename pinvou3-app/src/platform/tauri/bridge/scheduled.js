@@ -208,7 +208,8 @@
   function isCurrentScheduledTaskRequest(stamp) {
     if (!stamp || stamp.generation !== scheduledTaskSelectionGeneration) return false;
     if (scheduledTaskRequestTokens[stamp.kind] !== stamp.token) return false;
-    if (stamp.kind !== "tasks" && state.selectedScheduledTaskId !== stamp.id) return false;
+    // id 检查省略：selectedScheduledTaskId 唯一写者是 selectScheduledTask（每次
+    // 改写前 generation+1），id 变化必然被上方 generation 检查拦截（审计清理）。
     return true;
   }
 
@@ -367,10 +368,15 @@
   }
 
   // 聊天创建拿到合法参数后立即落成任务。草稿不会进入可渲染 state，避免再出现一层确认卡。
+  // autoOpenId 全局 last-writer：两会话并发创建时后完成者覆盖，且
+  // startScheduledTaskChat 清空后陈旧 completion 会复活 auto-open（审计 f）。
+  // 全局单调创建序号，仅最新意图可写。
+  var scheduledTaskAutoCreateSeq = 0;
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
     var lockedDraft = lockScheduledTaskDraftModel(draft);
     state.scheduledTaskDraft = null;
+    var creationSeq = ++scheduledTaskAutoCreateSeq;
     var creation = Promise.resolve()
       .then(function () {
         return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
@@ -381,7 +387,7 @@
         }
         var creationBuffer = sessionStates[creationSessionId];
         if (creationBuffer) creationBuffer.scheduledTaskDraft = null;
-        if (created && created.id) state.scheduledTaskAutoOpenId = created.id;
+        if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
         notify();
         return created;
       })
@@ -609,9 +615,15 @@
 
     function poll(attempt) {
       invoke("list_scheduled_task_runs", { id: automationId }).then(function (runs) {
+        // 任务已被删除时不再回填：陈旧轮询响应会把已删任务以 fallback 名
+        // 复活回侧边栏（审计 R1）。任务不在列表即收工，不 merge、不续排。
         var task = (state.scheduledTasks || []).find(function (item) {
           return item && item.id === automationId;
-        }) || { id: automationId, name: bt("scheduledTaskFallbackName") };
+        });
+        if (!task) {
+          stop();
+          return;
+        }
         mergeScheduledTaskRecentRuns(task, runs);
         notify();
         // 必须看原始响应:mergeScheduledTaskRecentRuns 会滤掉尚无 sessionId 的记录,
@@ -793,6 +805,7 @@
       var prompt = await invoke("scheduled_task_chat_prompt");
       state.scheduledTaskDraft = null;
       state.scheduledTaskCreationSessionId = null;
+      scheduledTaskAutoCreateSeq++; // 清空意图：作废在途 auto-create 的陈旧 completion（审计 f）
       state.scheduledTaskAutoOpenId = null;
       await createNewSession();
       state.scheduledTaskPendingGuide = prompt;

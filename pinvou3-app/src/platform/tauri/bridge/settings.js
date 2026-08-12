@@ -130,16 +130,24 @@
   // 首屏检测「预装但未启用」状态;eligible 时前端弹引导框。
   // 开机加载中不弹框，每 3 秒静默复查；12 分钟后仍 starting 则恢复可重试入口。
   // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
+  // 陈旧检测快照覆盖（审计）：检测与长任务引导（bootstrap_local_vllm）并发时，
+  // 旧快照会把已就绪引擎覆盖回 starting。任何新检测与引导完成都递增序号，
+  // 在途读取一律作废。
+  var vllmDetectSeq = 0;
   async function detectLocalVllmSetup(options) {
     var autoPoll = !!(options && options.autoPoll);
+    var seq = ++vllmDetectSeq;
     if (vllmSetupPollTimer) {
       clearTimeout(vllmSetupPollTimer);
       vllmSetupPollTimer = null;
     }
     if (!autoPoll) vllmSetupPollStartedAt = Date.now();
     try {
-      state.vllmSetup = await invoke("detect_local_vllm_setup");
+      var snapshot = await invoke("detect_local_vllm_setup");
+      if (seq !== vllmDetectSeq) return state.vllmSetup; // 已作废的陈旧读取
+      state.vllmSetup = snapshot;
     } catch (e) {
+      if (seq !== vllmDetectSeq) return state.vllmSetup;
       state.vllmSetup = null; // 检测失败静默,不打扰(等同不弹)
       vllmSetupPollStartedAt = 0;
     }
@@ -179,6 +187,7 @@
     } catch (e) {
       state.vllmBootstrapError = String(e && e.message ? e.message : e);
     }
+    vllmDetectSeq++; // 引导完成：作废在途的陈旧检测读取（审计）
     state.vllmBootstrapping = false;
     notify();
   }
@@ -206,12 +215,18 @@
   }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
+  // 整表覆盖加载：保存/删除/切换链式 loadModels 并发时旧列表不得覆盖新列表
+  // （审计 b）。请求序号后发者胜（同 vllmDetectSeq 模式）。
+  var modelsLoadSeq = 0;
   async function loadModels() {
+    var seq = ++modelsLoadSeq;
     try {
       var v = await invoke("list_models");
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = (v && v.models) || [];
       state.activeModelId = (v && v.active_model_id) || null;
     } catch (e) {
+      if (seq !== modelsLoadSeq) return;
       state.savedModels = []; state.activeModelId = null;
     }
     notify();
