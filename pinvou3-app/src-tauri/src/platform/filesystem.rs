@@ -22,10 +22,38 @@ pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
 
 #[cfg(windows)]
 fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
-    std::fs::rename(target, backup)?;
-    if let Err(error) = std::fs::rename(tmp, target) {
-        let _ = std::fs::rename(backup, target);
-        return Err(error);
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    if !target.exists() {
+        return std::fs::rename(tmp, target);
+    }
+
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    };
+    let target_wide = wide(target);
+    let tmp_wide = wide(tmp);
+    let backup_wide = wide(backup);
+    // The target is still authoritative here, so a stale backup from an older
+    // completed replacement can be discarded before asking ReplaceFileW to
+    // create the next rollback copy.
+    let _ = std::fs::remove_file(backup);
+    let replaced = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            tmp_wide.as_ptr(),
+            backup_wide.as_ptr(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        return Err(io::Error::last_os_error());
     }
     let _ = std::fs::remove_file(backup);
     Ok(())
@@ -80,6 +108,24 @@ pub(crate) mod tests {
 
     pub(crate) fn remove_dir_link(link: &Path) {
         remove_dir_link_impl(link)
+    }
+
+    #[test]
+    fn failed_atomic_replace_preserves_the_authoritative_target() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-atomic-replace-failure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("profile.json");
+        let missing_tmp = root.join("missing.tmp");
+        let backup = root.join("profile.bak");
+        std::fs::write(&target, "authoritative").unwrap();
+
+        assert!(super::replace_file_atomically(&missing_tmp, &target, &backup).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "authoritative");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

@@ -5,6 +5,7 @@ use crate::features::assistant::engine_pool::user_display_message;
 pub struct MemoryProfileState {
     pub profile: crate::features::memory::MemoryProfile,
     pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +26,7 @@ pub struct MemoryOverviewState {
     pub never: Vec<crate::features::memory::NeverMemoryItem>,
     pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
     pub snapshot_path: String,
+    pub warnings: Vec<String>,
 }
 
 fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
@@ -79,6 +81,39 @@ fn refresh_memory_runtime_for_command(
     }
 }
 
+fn refresh_memory_runtime_best_effort(
+    session_id: Option<String>,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> (
+    Option<crate::features::memory::RuntimeMemorySnapshot>,
+    Vec<String>,
+) {
+    match refresh_memory_runtime_for_command(session_id, store, app) {
+        Ok(runtime) => (runtime, Vec::new()),
+        Err(warning) => {
+            eprintln!("[memory] {warning}");
+            (None, vec![warning])
+        }
+    }
+}
+
+fn keep_memory_source_or_default<T: Default>(
+    label: &str,
+    result: std::io::Result<T>,
+    warnings: &mut Vec<String>,
+) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            let warning = format!("{label}: {error}");
+            eprintln!("[memory] {warning}");
+            warnings.push(warning);
+            T::default()
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn get_memory_profile(
     session_id: Option<String>,
@@ -86,14 +121,18 @@ pub async fn get_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile =
         crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let runtime = match resolve_memory_session_id(session_id, &store) {
-        Some(sid) => Some(
-            crate::features::memory::runtime_snapshot(&sid)
-                .map_err(|e| format!("render runtime memory: {e}"))?,
-        ),
-        None => None,
+    let (runtime, warnings) = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
+            Ok(snapshot) => (Some(snapshot), Vec::new()),
+            Err(error) => (None, vec![format!("render runtime memory: {error}")]),
+        },
+        None => (None, Vec::new()),
     };
-    Ok(MemoryProfileState { profile, runtime })
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -105,8 +144,12 @@ pub async fn update_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile = crate::features::memory::update_profile(patch)
         .map_err(|e| format!("update profile: {e}"))?;
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
-    Ok(MemoryProfileState { profile, runtime })
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -117,8 +160,12 @@ pub async fn clear_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile =
         crate::features::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
-    Ok(MemoryProfileState { profile, runtime })
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -128,28 +175,55 @@ pub async fn get_memory_overview(
 ) -> Result<MemoryOverviewState, String> {
     let profile =
         crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let preferences = crate::features::memory::list_preferences()
-        .map_err(|e| format!("load preferences: {e}"))?;
-    let work_context = crate::features::memory::load_work_context()
-        .map_err(|e| format!("load work context: {e}"))?;
-    let current_focus = crate::features::memory::load_current_focus()
-        .map_err(|e| format!("load current focus: {e}"))?;
-    let recent_activity = crate::features::memory::load_recent_activity()
-        .map_err(|e| format!("load recent activity: {e}"))?;
-    let recent_work = crate::features::memory::load_recent_work()
-        .map_err(|e| format!("load recent work: {e}"))?;
-    let pending = crate::features::memory::load_pending_memory()
-        .map_err(|e| format!("load pending memory: {e}"))?;
-    let never = crate::features::memory::load_never_memory()
-        .map_err(|e| format!("load never memory: {e}"))?;
+    let mut warnings = Vec::new();
+    let preferences = keep_memory_source_or_default(
+        "load preferences",
+        crate::features::memory::list_preferences(),
+        &mut warnings,
+    );
+    let work_context = keep_memory_source_or_default(
+        "load work context",
+        crate::features::memory::load_work_context(),
+        &mut warnings,
+    );
+    let current_focus = keep_memory_source_or_default(
+        "load current focus",
+        crate::features::memory::load_current_focus(),
+        &mut warnings,
+    );
+    let recent_activity = keep_memory_source_or_default(
+        "load recent activity",
+        crate::features::memory::load_recent_activity(),
+        &mut warnings,
+    );
+    let recent_work = keep_memory_source_or_default(
+        "load recent work",
+        crate::features::memory::load_recent_work(),
+        &mut warnings,
+    );
+    let pending = keep_memory_source_or_default(
+        "load pending memory",
+        crate::features::memory::load_pending_memory(),
+        &mut warnings,
+    );
+    let never = keep_memory_source_or_default(
+        "load never memory",
+        crate::features::memory::load_never_memory(),
+        &mut warnings,
+    );
     let runtime = match resolve_memory_session_id(session_id, &store) {
-        Some(sid) => Some(
-            crate::features::memory::runtime_snapshot(&sid)
-                .map_err(|e| format!("render runtime memory: {e}"))?,
-        ),
+        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                let warning = format!("render runtime memory: {error}");
+                eprintln!("[memory] {warning}");
+                warnings.push(warning);
+                None
+            }
+        },
         None => None,
     };
-    let snapshot_path = crate::features::memory::write_memory_snapshot_document(
+    let snapshot_path = match crate::features::memory::write_memory_snapshot_document(
         &profile,
         &preferences,
         &work_context,
@@ -159,10 +233,15 @@ pub async fn get_memory_overview(
         &pending,
         &never,
         runtime.as_ref(),
-    )
-    .map_err(|e| format!("write memory snapshot: {e}"))?
-    .display()
-    .to_string();
+    ) {
+        Ok(path) => path.display().to_string(),
+        Err(error) => {
+            let warning = format!("write memory snapshot: {error}");
+            eprintln!("[memory] {warning}");
+            warnings.push(warning);
+            String::new()
+        }
+    };
     Ok(MemoryOverviewState {
         profile,
         preferences,
@@ -174,6 +253,7 @@ pub async fn get_memory_overview(
         never,
         runtime,
         snapshot_path,
+        warnings,
     })
 }
 

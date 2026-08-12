@@ -2538,6 +2538,13 @@ Object.assign(dict.ja.uiToolStore, { storeData: {
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
+dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
+dict.zh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
+dict.en.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
+dict.en.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
+dict.ja.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
+dict.ja.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
+
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
 export { dict, LANG_TO_TAG, TAG_TO_LANG, SEARCH_KEY_PROVIDERS };

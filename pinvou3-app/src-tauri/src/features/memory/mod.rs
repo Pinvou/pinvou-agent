@@ -683,10 +683,15 @@ pub fn load_profile() -> io::Result<MemoryProfile> {
             profile.normalize();
             Ok(profile)
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(MemoryProfile {
-            version: PROFILE_VERSION,
-            ..MemoryProfile::default()
-        }),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if let Some(profile) = recover_profile_after_interrupted_replace(&path)? {
+                return Ok(profile);
+            }
+            Ok(MemoryProfile {
+                version: PROFILE_VERSION,
+                ..MemoryProfile::default()
+            })
+        }
         Err(err) => Err(err),
     }
 }
@@ -3924,25 +3929,92 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&tmp, text)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => return Ok(()),
-        Err(err) if path.exists() => {
-            let _ = fs::remove_file(path);
-            fs::rename(tmp, path).map_err(|rename_err| {
-                io::Error::new(
-                    rename_err.kind(),
-                    format!("replace after rename failed ({err}); {rename_err}"),
-                )
-            })?;
-        }
-        Err(err) => return Err(err),
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = path.with_extension(format!("tmp-{}-{timestamp}-{sequence}", std::process::id()));
+    let backup = path.with_extension("bak");
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    Ok(())
+    result
+}
+
+fn recover_profile_after_interrupted_replace(path: &Path) -> io::Result<Option<MemoryProfile>> {
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    let file_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("profile");
+    let mut candidates = Vec::new();
+    let backup = path.with_extension("bak");
+    if backup.is_file() {
+        candidates.push(backup);
+    }
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let Some(name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let is_regular_file = fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+            if is_regular_file && name.starts_with(&format!("{file_stem}.tmp-")) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort_by_key(|candidate| {
+        fs::metadata(candidate)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    candidates.reverse();
+    for candidate in candidates {
+        let Ok(raw) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        let Ok(mut profile) = serde_json::from_str::<MemoryProfile>(&raw) else {
+            continue;
+        };
+        profile.normalize();
+        match fs::hard_link(&candidate, path) {
+            Ok(()) => {
+                let _ = fs::remove_file(candidate);
+                return Ok(Some(profile));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let raw = fs::read_to_string(path)?;
+                let mut current =
+                    serde_json::from_str::<MemoryProfile>(&raw).map_err(invalid_data)?;
+                current.normalize();
+                return Ok(Some(current));
+            }
+            Err(_) => continue,
+        }
+    }
+    Ok(None)
 }
 
 fn invalid_data(err: impl std::fmt::Display) -> io::Error {
@@ -4034,6 +4106,34 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn missing_profile_recovers_latest_valid_interrupted_write() {
+        let home = IsolatedPinvouHome::new("profile-interrupted-recovery");
+        let path = profile_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_extension("tmp-42-1"), "not json").unwrap();
+        let valid_candidate = path.with_extension("tmp-42-2");
+        fs::write(
+            &valid_candidate,
+            r#"{
+  "version": 1,
+  "revision": 7,
+  "identity": { "call_name": "升级用户", "assistant_alias": "小品" }
+}"#,
+        )
+        .unwrap();
+
+        let recovered = load_profile().unwrap();
+        assert_eq!(recovered.identity.call_name, "升级用户");
+        assert_eq!(recovered.identity.assistant_alias, "小品");
+        assert_eq!(recovered.revision, 7);
+        assert!(path.is_file());
+        assert!(!valid_candidate.exists());
+        assert!(fs::read_to_string(&path).unwrap().contains("升级用户"));
+        assert_eq!(load_profile().unwrap(), recovered);
+        drop(home);
     }
 
     #[test]

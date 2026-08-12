@@ -123,7 +123,18 @@
       never: overview && Array.isArray(overview.never) ? overview.never : [],
       runtime: overview && overview.runtime || null,
       snapshot_path: overview && overview.snapshot_path || "",
+      warnings: overview && Array.isArray(overview.warnings) ? overview.warnings : [],
     };
+  }
+  function applyMemoryProfileState(result) {
+    if (!result || !result.profile) return;
+    state.memory = Object.assign({}, state.memory, {
+      loading: false,
+      error: null,
+      profile: result.profile,
+      runtime: result.runtime || null,
+      warnings: Array.isArray(result.warnings) ? result.warnings : [],
+    });
   }
   function upsertPendingMemoryCandidate(item) {
     if (!item || item.status !== "pending_confirm") return;
@@ -175,8 +186,11 @@
   async function saveMemoryProfilePatch(patch) {
     if (!invoke) return null;
     try {
-      await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
-      return await loadMemoryOverview();
+      var result = await invoke("update_memory_profile", { patch: patch || {}, sessionId: state.activeSessionId });
+      applyMemoryProfileState(result);
+      notify();
+      var overview = await loadMemoryOverview();
+      return overview || result;
     } catch (e) {
       state.memory = Object.assign({}, state.memory, { error: String(e) });
       notify();
