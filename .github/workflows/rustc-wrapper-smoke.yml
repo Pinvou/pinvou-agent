@@ -4,6 +4,9 @@ name: rustc-wrapper-smoke
 # - 默认配置(macOS/Linux 开发经 run-dev.sh、CI 经 job env)在 Windows 上不得
 #   因 .cargo/config.toml 残留 wrapper 配置而 os error 193;config.toml 不配置
 #   [build] rustc-wrapper(全局键无法按平台条件化),默认三端直接可用。
+# - run-dev.sh 的 wrapper 平台选择(scripts/rustc-stack-wrapper-select.sh):
+#   Darwin/Linux 注入 sh 版;Windows (MINGW*/MSYS*/CYGWIN*) 透传不注入,
+#   导出的 RUSTC_WRAPPER 不得指向无扩展名 Unix 文件(os error 193)。
 # - 按平台注入 RUSTC_WRAPPER 后(windows → .cmd 版,unix → sh 版),Cargo 必须
 #   能执行 wrapper;编译器进程 env 含 RUST_MIN_STACK=16777216。
 # - 契约:运行时进程(cargo run / cargo test 目标)不继承 RUST_MIN_STACK,
@@ -17,6 +20,7 @@ on:
       - 'pinvou3-app/src-tauri/.cargo/config.toml'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
       - 'pinvou3-app/run-dev.sh'
   merge_group:
   push:
@@ -64,7 +68,38 @@ jobs:
           CARGO_TERM_COLOR=never cargo check 2>&1 | tee cargo-check-default.log
           grep -q "Checking wrapper_smoke" cargo-check-default.log
 
-      # 2) 按平台注入 wrapper 后:与正式入口(run-dev.sh / CI job env)一致,
+      # 2) run-dev.sh 的 wrapper 平台选择(单一真相源 rustc-stack-wrapper-select.sh):
+      #    验证 run-dev.sh 实际使用的 selector 在 Windows(Git Bash/MSYS,
+      #    uname -s 为 MINGW*/MSYS*/CYGWIN*)下输出空、不指向无扩展名 Unix
+      #    文件——否则本地开发经 run-dev.sh 注入后会 os error 193,阻断
+      #    Windows 上所有 Cargo 命令。
+      - name: run-dev.sh selector —— Windows 不注入 Unix wrapper
+        shell: bash
+        run: |
+          set -euxo pipefail
+          run_dev="$GITHUB_WORKSPACE/pinvou3-app/run-dev.sh"
+          select_script="$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh"
+          # 回归检测:run-dev.sh 必须调用 selector,不得再直接无条件 export
+          # 指向无扩展名 Unix 文件的 RUSTC_WRAPPER(会 os error 193)。
+          if grep -nE '^[[:space:]]*export RUSTC_WRAPPER=.*rustc-stack-wrapper' "$run_dev"; then
+            echo "FAIL: run-dev.sh 仍直接无条件 export 无扩展名 Unix wrapper"
+            exit 1
+          fi
+          # selector 平台行为:Windows 输出空(透传),Unix 输出存在的 sh 文件。
+          out="$(bash "$select_script")"
+          case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*)
+              [ -z "$out" ] || { echo "FAIL: Windows selector 应输出空, got: $out"; exit 1; }
+              echo "OK: Windows selector 输出空(透传,不注入)"
+              ;;
+            Darwin|Linux)
+              [ -n "$out" ] || { echo "FAIL: Unix selector 应输出 sh wrapper"; exit 1; }
+              [ -x "$out" ] || { echo "FAIL: wrapper 不可执行: $out"; exit 1; }
+              echo "OK: Unix selector → $out"
+              ;;
+          esac
+
+      # 3) 按平台注入 wrapper 后:与正式入口(run-dev.sh / CI job env)一致,
       #    wrapper 必须被 Cargo 真正调用,且编译器进程获得 16MiB 栈。
       #    wrapper 是"export RUST_MIN_STACK + exec 原命令",用 wrapper 执行
       #    `env` 可直接观测注入结果(不经 cargo,验证 wrapper 自身逻辑)。
@@ -96,7 +131,7 @@ jobs:
             "$wrapper" env | grep -q "^RUST_MIN_STACK=16777216$"
           fi
 
-      # 3) 运行时契约:不继承编译器栈覆盖。
+      # 4) 运行时契约:不继承编译器栈覆盖。
       #    复制仓库契约测试到最小 crate,按正式入口方式注入 wrapper 后跑
       #    cargo test:测试进程是 cargo 直接启动的目标进程,不经过 wrapper,
       #    不得继承 RUST_MIN_STACK。

@@ -2,9 +2,11 @@
 rem rustc-stack-wrapper(Windows 版):仅为编译期 rustc 进程注入更大的默认
 rem 线程栈,规避 rustc/LLVM 编译 codewhale-tui 时的栈溢出(MachineLateinstrs
 rem Cleanup 递归,rustc 1.96/1.97 稳定复现;std 线程默认栈三端均为 2 MiB)。
-rem 接入方式:CI 的 Windows job 通过 RUSTC_WRAPPER 环境变量注入本文件
-rem (见 pr-check.yml windows-rust-test / rustc-wrapper-smoke.yml);
-rem Windows 本地无 SIGBUS 触发(仅 macOS 实测),默认透传即可。
+rem 接入方式:CI 的 Windows 发布 job 通过 RUSTC_WRAPPER 环境变量注入
+rem 本文件(见 release-packages.yml build-windows-x64);
+rem 平台选择统一走 rustc-stack-wrapper-select.sh(输出空 = 不注入):
+rem Windows 本地无 SIGBUS 触发(仅 macOS 实测),selector 输出空、
+rem 默认透传即可;如需统一 16 MiB 行为再手动设 RUSTC_WRAPPER 指向本文件。
 rem cargo run / cargo test 目标进程不经过本文件,运行时线程栈语义不变。
 rem Unix 请用无扩展名版本 scripts/rustc-stack-wrapper(sh,带 shebang)。
 rem 本文件全部行以 @ 开头,cmd 全程无回显,rustc stdout 纯净。

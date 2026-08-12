@@ -52,11 +52,19 @@ export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://127.0.0.1:
 # scripts/rustc-stack-wrapper(带 shebang 的 sh,Unix 可执行),只在编译期
 # rustc 进程注入 RUST_MIN_STACK=16MiB;cargo run / cargo test 启动的
 # 应用与测试进程不经过 wrapper,不会继承该变量,默认线程栈语义不变。
-# Windows 上 Cargo 执行 wrapper 需要 .cmd 后缀才能走 cmd /C(见同目录
-# rustc-stack-wrapper.cmd);Windows 无 SIGBUS 触发(macOS 仅实测),本地
-# 透传即可,CI 的 Windows job 由 pr-check.yml 按平台注入 .cmd 版。
+# 平台选择由 scripts/rustc-stack-wrapper-select.sh 统一决定(run-dev.sh
+# 与 CI smoke 共用同一 selector,避免入口与验证漂移):
+#   - Darwin/Linux:注入 sh 版 wrapper(macOS 有 SIGBUS 实测,Linux 同源);
+#   - Windows (MINGW*/MSYS*/CYGWIN*):**不设置** RUSTC_WRAPPER。Windows
+#     无 SIGBUS 触发(仅 macOS 实测),且无扩展名 Unix shell 文件无法被
+#     Windows 原生 Cargo 执行(CreateProcess → os error 193,会阻断本地
+#     所有 Cargo 命令);如需统一 16 MiB 行为,CI 的 Windows job 显式
+#     注入 .cmd 版(见 pr-check.yml windows-rust-test)。
 # 契约测试 tests/compiler_stack_contract.rs 守护"运行时进程不继承"。
-export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(pwd)/src-tauri/scripts/rustc-stack-wrapper}"
+RUSTC_WRAPPER_VALUE="$(src-tauri/scripts/rustc-stack-wrapper-select.sh)"
+if [ -n "$RUSTC_WRAPPER_VALUE" ]; then
+  export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$RUSTC_WRAPPER_VALUE}"
+fi
 
 # ── macOS 提示 ───────────────────────────────────────────────────
 # Mac 不需要 webkit/fcitx/X11 相关 env(那些在 lib.rs RELEASE_ENV_DEFAULTS Linux 段)。
