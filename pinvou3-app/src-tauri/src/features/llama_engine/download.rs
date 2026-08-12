@@ -748,6 +748,7 @@ mod tests {
             sha256: "",
             primary_url: "",
             mirror_url: "",
+            fallback_url: "",
         };
         assert!(model_file_verified(&path, &asset));
         let wrong = ModelAsset { expected_size: 17, ..asset };

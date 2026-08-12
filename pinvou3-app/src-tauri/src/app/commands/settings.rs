@@ -275,8 +275,13 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
     let model_id = model.id.clone();
     UserPrefs::update_transaction(|prefs| {
         let old = prefs.model_by_id(&model.id).cloned();
-        let model = apply_model_credential(model, old.as_ref())
+        let mut model = apply_model_credential(model, old.as_ref())
             .map_err(|e| sanitize_command_error("save_model", e))?;
+        // 互斥归一:显式选「本地识图引擎」时清空云端视觉模型引用,
+        // 杜绝"既选本地又配 vision_model_id"的脏数据(前端 doSave 已转换,此处兜底)。
+        if model.vision_prefer_local_engine {
+            model.vision_model_id = None;
+        }
         prefs.upsert_model(model);
         Ok(())
     })
@@ -371,6 +376,14 @@ pub struct ImageInputCapabilityInfo {
     /// 兜底视觉模型 endpoint 是否本机(§11.8/§11.9):None 表示未配置可用视觉模型。
     /// fallback 路径的图片字节发给视觉模型,云端视觉模型时前端同样必须提示。
     pub vision_is_local_endpoint: Option<bool>,
+    /// 本地引擎四档状态:unused / running / not_running / not_installed。
+    /// 前端发送门据此决定放行、自动启动或弹窗引导安装。
+    pub local_engine_state: String,
+    /// 自动启动/发送兜底用的默认引擎模型 id(与 `local_engine_device` 同源
+    /// 解析自 prefs 持久化的设置页选择)。
+    pub local_engine_model: String,
+    /// 默认引擎设备("gpu"/"cpu")。
+    pub local_engine_device: String,
 }
 
 #[tauri::command]
@@ -394,12 +407,29 @@ pub async fn get_image_input_capability(
             bridge
         }
     };
+    let prefer_local = bridge.vision_local_gate_active();
+    let engine_status = crate::features::llama_engine::llama_engine_status();
+    let (local_engine_model, local_engine_device) =
+        crate::features::llama_engine::resolve_default_engine_plan(&bridge.prefs.advanced);
+    let model_ready = engine_status
+        .models
+        .iter()
+        .any(|m| m.id == local_engine_model && m.installed);
     Ok(ImageInputCapabilityInfo {
         capability: bridge.effective_image_capability().as_str().to_string(),
         image_mode: bridge.image_input_mode().as_str().to_string(),
         has_vision_model: bridge.has_vision_model(),
         is_local_endpoint: bridge.is_local_endpoint(),
         vision_is_local_endpoint: bridge.vision_uses_local_endpoint(),
+        local_engine_state: crate::features::llama_engine::local_engine_state(
+            prefer_local,
+            engine_status.engine_installed,
+            model_ready,
+            engine_status.phase,
+        )
+        .to_string(),
+        local_engine_model,
+        local_engine_device: local_engine_device.as_str().to_string(),
     })
 }
 

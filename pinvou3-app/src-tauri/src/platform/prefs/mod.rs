@@ -127,6 +127,11 @@ pub use model::{
     MODEL_PROVIDER_KIND_OFFICIAL_API,
 };
 
+/// serde `skip_serializing_if` 辅助:false 时省略字段,保持旧 JSON 兼容。
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// 用户对某条 [`SavedModel`] 图片输入能力的显式覆盖(模型设置页「图片输入能力」,
 /// 设计 §6.3/§7.3)。`Auto` = 走能力解析链(模型目录→内置已验证表→Unknown);
 /// `Enabled`/`Disabled` 直接钉死,供本地自定义模型人工确认用。
@@ -140,6 +145,19 @@ pub enum ImageCapabilityOverride {
     Enabled,
     /// 用户确认该模型不支持图片输入。
     Disabled,
+}
+
+/// 本地多模态引擎的自动启动策略(设置页「自动启动引擎」三档)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlamaEngineAutoStart {
+    /// 第一次发送图片时启动(默认;旧 settings.json 无该字段反序列化即落这里)。
+    #[default]
+    FirstImage,
+    /// 开启 pinvou 时在后台启动。
+    Launch,
+    /// 从不自动启动,仅手动。
+    Never,
 }
 
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
@@ -172,6 +190,11 @@ pub struct SavedModel {
     /// endpoint 与 `credential_ref`,不保存第二份明文密钥。None = 未配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_model_id: Option<String>,
+    /// 该模型显式选择「本地识图引擎」:true 时即使全局兜底开关关闭,
+    /// resolve 规则 0 的本地端点也生效(若引擎运行);与 `vision_model_id` 互斥,
+    /// 保存时归一(见 save_model)。false = 未显式选择。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vision_prefer_local_engine: bool,
     #[serde(default, skip_serializing)]
     pub api_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +487,17 @@ pub struct AdvancedPrefs {
     /// 与 bootstrapped 区别:婉拒是"我先不要",仍可在设置→模型管理「检测本机 vLLM」里手动启用。
     #[serde(default)]
     pub local_vllm_setup_declined: bool,
+    /// 本地多模态引擎自动启动策略(设置页三档)。None → 读取侧
+    /// `unwrap_or(LlamaEngineAutoStart::FirstImage)`(默认首图触发)。
+    #[serde(default)]
+    pub llama_engine_auto_start: Option<LlamaEngineAutoStart>,
+    /// 本地多模态引擎默认模型 id(设置页选择的模型,自动启动/发送兜底用)。
+    /// None → 读取侧回落 `download::default_model()`。
+    #[serde(default)]
+    pub llama_engine_default_model: Option<String>,
+    /// 本地多模态引擎默认设备("gpu"/"cpu")。None → 读取侧回落 "gpu"。
+    #[serde(default)]
+    pub llama_engine_default_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -680,6 +714,7 @@ impl UserPrefs {
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key,
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1011,6 +1046,7 @@ mod tests {
             endpoint_mode: Some("full_chat_completions".into()),
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1048,6 +1084,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1090,6 +1127,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1127,6 +1165,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1174,6 +1213,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,
@@ -1217,11 +1257,13 @@ mod tests {
             ImageCapabilityOverride::Auto
         );
         assert!(model.vision_model_id.is_none());
+        assert!(!model.vision_prefer_local_engine);
 
-        // 显式值能序列化往返;Auto/None 时字段不写入(保持 settings.json 干净)。
+        // 显式值能序列化往返;Auto/None/false 时字段不写入(保持 settings.json 干净)。
         let mut overridden = model.clone();
         overridden.image_capability_override = ImageCapabilityOverride::Enabled;
         overridden.vision_model_id = Some("vision-1".into());
+        overridden.vision_prefer_local_engine = true;
         let json = serde_json::to_string(&overridden).unwrap();
         let back: SavedModel = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -1229,9 +1271,50 @@ mod tests {
             ImageCapabilityOverride::Enabled
         );
         assert_eq!(back.vision_model_id.as_deref(), Some("vision-1"));
+        assert!(back.vision_prefer_local_engine);
 
         let json = serde_json::to_string(&model).unwrap();
         assert!(!json.contains("vision_model_id"));
+        assert!(!json.contains("vision_prefer_local_engine"));
+    }
+
+    #[test]
+    fn llama_engine_auto_start_round_trip_with_defaults() {
+        // 旧 settings.json 无新字段 → 读取侧默认 FirstImage(首图触发)。
+        let legacy = r#"{"allow_shell": null}"#;
+        let prefs: AdvancedPrefs = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            prefs.llama_engine_auto_start,
+            None,
+            "legacy json 无字段应为 None(读取侧 unwrap_or(FirstImage))"
+        );
+        assert_eq!(
+            prefs.llama_engine_auto_start
+                .unwrap_or(LlamaEngineAutoStart::FirstImage),
+            LlamaEngineAutoStart::FirstImage
+        );
+
+        // 三档 + 模型/设备默认值往返。
+        for value in [
+            LlamaEngineAutoStart::FirstImage,
+            LlamaEngineAutoStart::Launch,
+            LlamaEngineAutoStart::Never,
+        ] {
+            let prefs = AdvancedPrefs {
+                llama_engine_auto_start: Some(value),
+                llama_engine_default_model: Some("qwen3vl-2b-q4k-m".into()),
+                llama_engine_default_device: Some("cpu".into()),
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&prefs).unwrap();
+            let back: AdvancedPrefs = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.llama_engine_auto_start, Some(value));
+            assert_eq!(
+                back.llama_engine_default_model.as_deref(),
+                Some("qwen3vl-2b-q4k-m")
+            );
+            assert_eq!(back.llama_engine_default_device.as_deref(), Some("cpu"));
+        }
     }
 
     #[test]

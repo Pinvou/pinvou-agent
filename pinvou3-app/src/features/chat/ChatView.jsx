@@ -415,7 +415,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, onGotoLlamaEngine }) => {
       const isDark = theme === 'dark';
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
@@ -1244,6 +1244,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const isScheduledSession = !!(scheduledRunContext || isScheduledTaskCreationChat);
       const sessionModelKey = (bs && bs.currentSessionModelId) || (bs && bs.activeModelId) || '';
       const [imageInputInfo, setImageInputInfo] = useState(null);
+      // 本地识图引擎发送门：弹窗引导安装/启动。prompt.kind ∈
+      // install | notRunning | starting | downloading | timeout | installError。
+      const [localEnginePrompt, setLocalEnginePrompt] = useState(null);
+      const pendingLocalEngineSendRef = useRef(null); // { resolve(boolean), info } 挂起中的发送
       useEffect(() => {
         if (!hasImageAttachment || isScheduledSession || !bridge.available
           || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') {
@@ -1257,9 +1261,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           .catch(() => { if (!cancelled) setImageInputInfo(null); });
         return () => { cancelled = true; };
       }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
+      // 选了本地识图引擎但引擎未就绪时也提示（发送门会在发送时介入）
+      const localEngineState = imageInputInfo && imageInputInfo.local_engine_state;
       const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
         ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
-        : '';
+        : (localEngineState === 'not_running' || localEngineState === 'not_installed'
+          ? t.uiAttachments.localEngineNotRunning
+          : '');
       // 云上传隐私提示(§11.8/§11.9):图片字节离开本机时告知去向——native 直发看主模型
       // 端点,fallback 看兜底视觉模型端点(图片实际发给视觉模型);本机 loopback 不显示
       // 任何云上传字样;查询失败或旧后端无对应字段时 fail-open 不显示。
@@ -1272,6 +1280,86 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           : t.uiAttachments.imageCloudUpload)
         : '';
 
+      // ── 本地识图引擎发送门 ────────────────────────────────────────────
+      // getImageInputCapability 的 local_engine_state 决定是否介入：
+      // unused/running 直接放行；not_installed 弹安装引导；not_running 按
+      // auto_start 自动启动（弹 starting 进度）或「从不」时弹三选一。
+      const llamaAutoStartSetting = (bs && bs.settings && bs.settings.advanced && bs.settings.advanced.llama_engine_auto_start) || 'first_image';
+      async function startEngineAndWait(modelId, device, timeoutMs = 60000) {
+        try {
+          if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.startEngine) {
+            await bridge.llamaEngine.startEngine(modelId, device);
+          }
+        } catch (_) {}
+        // refreshStatus 直接返回最新状态（非 React 快照），轮询不依赖 stale bs。
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          try {
+            if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
+              const st = await bridge.llamaEngine.refreshStatus();
+              if (st && st.phase === 'running') return true;
+            }
+          } catch (_) {}
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        return false;
+      }
+      function resolvePendingSend(send) {
+        const pending = pendingLocalEngineSendRef.current;
+        pendingLocalEngineSendRef.current = null;
+        setLocalEnginePrompt(null);
+        if (pending) pending.resolve(send);
+      }
+      async function startThenResolve(info) {
+        const ok = await startEngineAndWait(info.local_engine_model, info.local_engine_device);
+        resolvePendingSend(ok);
+      }
+      async function installThenResolve(info) {
+        try {
+          if (bridge.available && bridge.llamaEngine) {
+            if (bridge.llamaEngine.installEngine) await bridge.llamaEngine.installEngine();
+            if (bridge.llamaEngine.installModel) await bridge.llamaEngine.installModel(info.local_engine_model);
+          }
+        } catch (e) {
+          setLocalEnginePrompt({ kind: 'installError', message: String((e && e.message) || e) });
+          return;
+        }
+        await startThenResolve(info);
+      }
+      async function ensureLocalEngineForSend() {
+        if (!bridge.available || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') return true;
+        let info;
+        try {
+          info = await bridge.models.getImageInputCapability(activeSessionId);
+        } catch (_) { return true; } // 查询失败 fail-open，绝不误拦
+        const state = info && info.local_engine_state;
+        if (!info || state === 'unused' || state === 'running') return true;
+        if (state === 'not_installed') {
+          return new Promise(resolve => {
+            pendingLocalEngineSendRef.current = { resolve, info };
+            setLocalEnginePrompt({ kind: 'install' });
+          });
+        }
+        // not_running
+        if (llamaAutoStartSetting === 'never') {
+          return new Promise(resolve => {
+            pendingLocalEngineSendRef.current = { resolve, info };
+            setLocalEnginePrompt({ kind: 'notRunning' });
+          });
+        }
+        // 自动启动：先显示进度，成功放行、超时弹三选一
+        setLocalEnginePrompt({ kind: 'starting' });
+        const ok = await startEngineAndWait(info.local_engine_model, info.local_engine_device);
+        if (ok) {
+          resolvePendingSend(true);
+          return true;
+        }
+        return new Promise(resolve => {
+          pendingLocalEngineSendRef.current = { resolve, info };
+          setLocalEnginePrompt({ kind: 'timeout' });
+        });
+      }
+
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (isMultiAgentReadOnly || !canSend) return;
@@ -1279,6 +1367,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (constrained.truncated) {
           setInputText(constrained.text);
           return;
+        }
+        // 本地识图引擎发送门：图片且非 scheduled 会话时先保证引擎可用
+        // （安装引导 / 自动启动 / 回落三选一）。hasImageAttachment 定义在
+        // sendChatMessage 之后（TDZ），故门必须挂在 handleSend 这里。
+        if (hasImageAttachment && !isScheduledSession) {
+          const ready = await ensureLocalEngineForSend();
+          if (!ready) return;
         }
         const accepted = await sendChatMessage(constrained.text);
         if (accepted) {
@@ -1799,6 +1894,76 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                           {!su.status?.installable ? chatCopy.repairInstall : (needModel ? chatCopy.downloadModel : chatCopy.install)}</button>
                       )}
                     </div>
+                  </div>
+                </div>
+              );
+            })()}
+            {localEnginePrompt && (() => {
+              const p = localEnginePrompt;
+              const pending = pendingLocalEngineSendRef.current;
+              const info = pending && pending.info;
+              const ua = t.uiAttachments;
+              const llmEngineCopy = (t.uiSettingsDetail && t.uiSettingsDetail.llamaEngine) || {};
+              const btnPrimary = `text-[13px] font-medium px-4 py-2 rounded-full ${isDark ? 'bg-[#A8C7FA] text-[#041E49] hover:bg-[#C2D7FB]' : 'bg-[#0B57D0] text-white hover:bg-[#1967D2]'}`;
+              const btnGhost = `text-[13px] px-4 py-2 rounded-full ${isDark ? 'bg-[#333537] hover:bg-[#444746]' : 'bg-[#E1E5EA] hover:bg-[#D3D9E0]'}`;
+              const goSettingsAndCancel = () => { if (onGotoLlamaEngine) onGotoLlamaEngine(); resolvePendingSend(false); };
+              let title, body, buttons;
+              if (p.kind === 'install') {
+                title = llmEngineCopy.title || ua.localEngineNotRunning;
+                body = ua.localEngineInstallPrompt;
+                buttons = (
+                  <>
+                    <button className={btnGhost} onClick={() => resolvePendingSend(!!(info && info.has_vision_model))}>{ua.localEngineInstallCancel}</button>
+                    <button className={btnPrimary} onClick={() => installThenResolve(info)}>{ua.localEngineInstallConfirm}</button>
+                  </>
+                );
+              } else if (p.kind === 'notRunning') {
+                title = ua.localEngineNotRunning;
+                body = ua.localEngineNotRunningPrompt;
+                buttons = (
+                  <>
+                    <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
+                    {info && info.has_vision_model && (
+                      <button className={btnGhost} onClick={() => resolvePendingSend(true)}>{ua.localEngineSendFallback}</button>
+                    )}
+                    <button className={btnPrimary} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
+                  </>
+                );
+              } else if (p.kind === 'starting') {
+                title = ua.localEngineNotRunning;
+                body = llmEngineCopy.starting || ua.localEngineDownloading;
+                buttons = null;
+              } else if (p.kind === 'timeout') {
+                title = ua.localEngineStartingTimeout;
+                body = '';
+                buttons = (
+                  <>
+                    <button className={btnGhost} onClick={() => resolvePendingSend(false)}>{ua.localEngineCancelSend}</button>
+                    <button className={btnGhost} onClick={goSettingsAndCancel}>{ua.localEngineGoSettings}</button>
+                    <button className={btnPrimary} onClick={() => { setLocalEnginePrompt({ kind: 'starting' }); startThenResolve(info); }}>{ua.localEngineRetry}</button>
+                  </>
+                );
+              } else {
+                title = ua.localEngineInstallError;
+                body = p.message || '';
+                buttons = (
+                  <button className={btnPrimary} onClick={() => resolvePendingSend(false)}>{ua.localEngineClose}</button>
+                );
+              }
+              return (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45">
+                  <div className={`w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 ${isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}>
+                    <h3 className="text-[16px] font-semibold mb-2">{title}</h3>
+                    {body && <p className="text-[13px] leading-relaxed opacity-80 mb-4 whitespace-pre-wrap">{body}</p>}
+                    {p.kind === 'starting' && (
+                      <div className="mb-4 flex items-center gap-2 text-[12px] opacity-70">
+                        <span className={`inline-block h-3 w-3 rounded-full border-2 border-t-transparent animate-spin ${isDark ? 'border-[#A8C7FA]' : 'border-[#0B57D0]'}`} />
+                        {body}
+                      </div>
+                    )}
+                    {buttons && (
+                      <div className="flex items-center justify-end gap-2 flex-wrap">{buttons}</div>
+                    )}
                   </div>
                 </div>
               );

@@ -1227,8 +1227,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
       // 图片输入能力三档(auto/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
+      // 视觉模型:显式选「本地识图引擎」时用前端局部哨兵 '__local_engine__'(不落盘,
+      // doSave 转 vision_prefer_local_engine);否则用 vision_model_id。
       const [imageCapability, setImageCapability] = useState(initial.image_capability_override || 'auto');
-      const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
+      const [visionModelId, setVisionModelId] = useState(
+        initial.vision_prefer_local_engine ? '__local_engine__' : (initial.vision_model_id || ''));
       const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
       const [visionModelPickerOpen, setVisionModelPickerOpen] = useState(false);
       // 测试图片能力(设计 §7.3):仅主动点击触发;表单关键值变化后上一次结果不再可信,清除。
@@ -1466,9 +1469,12 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
           provider_kind: providerKind || null,
           vendor: vendor || null,
           endpoint_mode: endpointMode || null,
-          // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
+          // 图片能力/视觉模型(阶段 G):选了自身等同未配置;
+          // 「本地识图引擎」是前端局部哨兵(不落盘),保存时转 vision_prefer_local_engine,
+          // 与 vision_model_id 互斥(后端 save_model 另有归一兜底)。
           image_capability_override: imageCapability || 'auto',
-          vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
+          vision_prefer_local_engine: visionModelId === '__local_engine__',
+          vision_model_id: visionModelId && visionModelId !== '__local_engine__' && visionModelId !== id ? visionModelId : null,
         });
       }
       function makeModelId() {
@@ -1752,7 +1758,10 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
         { key: 'disabled', label: settingsCopy.imageCapabilityDisabled },
       ];
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
-      const visionOptions = [{ key: '', label: settingsCopy.visionModelNone }]
+      // 第一项为「本地识图引擎」(前端局部哨兵,选中转 vision_prefer_local_engine),
+      // 其次「无」与各云端视觉模型。
+      const visionOptions = [{ key: '__local_engine__', label: settingsCopy.llamaEngine.localEngineOption }]
+        .concat([{ key: '', label: settingsCopy.visionModelNone }])
         .concat(visionCandidates.map(item => ({ key: item.id, label: item.name || item.model })));
       const renderPickerRow = ({ testId, label, value, options, currentKey, open, onToggle, onChoose }) => (
         <>
@@ -2096,14 +2105,34 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
       const [searchDeleteConfirm, setSearchDeleteConfirm] = useState(null);
       const [searchPickerOpen, setSearchPickerOpen] = useState(false);
       const [restartDialog, setRestartDialog] = useState(null);
-      // 本地多模态引擎：模型/设备选择 + 诊断日志折叠
-      const [llamaModel, setLlamaModel] = useState('qwen3vl-2b-q3k-s');
-      const [llamaDevice, setLlamaDevice] = useState('gpu');
+      // 本地多模态引擎：模型/设备选择 + 诊断日志折叠。模型/设备选择持久化到
+      // prefs.advanced（自动启动与发送兜底共用同一套默认，服务端同源解析）。
+      const llamaAdvanced = (bs && bs.settings && bs.settings.advanced) || {};
+      const [llamaModel, setLlamaModel] = useState(llamaAdvanced.llama_engine_default_model || 'qwen3vl-2b-q3k-s');
+      const [llamaDevice, setLlamaDevice] = useState(llamaAdvanced.llama_engine_default_device || 'gpu');
       const [showLlamaLogs, setShowLlamaLogs] = useState(false);
       // 本地引擎视觉兜底开关：默认开（prefs.advanced.llamaEngineVisionFallback !== false）
       const [llamaVisionFallback, setLlamaVisionFallback] = useState(
-        (bs && bs.settings && bs.settings.advanced && bs.settings.advanced.llama_engine_vision_fallback) !== false
+        (llamaAdvanced.llama_engine_vision_fallback) !== false
       );
+      // 自动启动引擎三档：first_image(默认) / launch / never
+      const [llamaAutoStart, setLlamaAutoStart] = useState(llamaAdvanced.llama_engine_auto_start || 'first_image');
+      const saveAdvancedPatch = async (patch) => {
+        try {
+          const current = (bs && bs.settings && bs.settings.advanced) || {};
+          await bridge.settings.saveSettings({ advanced: Object.assign({}, current, patch) });
+        } catch (_) {}
+      };
+      const applyLlamaModel = (modelId) => { setLlamaModel(modelId); saveAdvancedPatch({ llama_engine_default_model: modelId }); };
+      const applyLlamaDevice = (device) => { setLlamaDevice(device); saveAdvancedPatch({ llama_engine_default_device: device }); };
+      // prefs 外部刷新(如其他端保存)时同步显示
+      useEffect(() => {
+        const adv = (bs && bs.settings && bs.settings.advanced) || {};
+        if (adv.llama_engine_default_model) setLlamaModel(adv.llama_engine_default_model);
+        if (adv.llama_engine_default_device) setLlamaDevice(adv.llama_engine_default_device);
+        if (adv.llama_engine_auto_start) setLlamaAutoStart(adv.llama_engine_auto_start);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [bs && bs.settings && bs.settings.advanced]);
       useEffect(() => {
         // 首次进入设置页拉一次引擎状态（下载进度/运行状态以事件驱动，这里是兜底）
         if (bridge.available && bridge.llamaEngine && bridge.llamaEngine.refreshStatus) {
@@ -2811,7 +2840,7 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   <div className="p-4">
                     <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.modelLabel}</div>
                     {models.map(m => (
-                      <button key={m.id} onClick={() => setLlamaModel(m.id)}
+                      <button key={m.id} onClick={() => applyLlamaModel(m.id)}
                         className="flex items-center gap-2.5 w-full py-1.5 text-left">
                         <RadioDot active={llamaModel === m.id} />
                         <span className="text-[13px] leading-4 text-[#1C1C1E] dark:text-[#F2F2F7]">
@@ -2827,11 +2856,11 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                   </div>
                   <div className="p-4">
                     <div className="text-[13px] font-medium mb-2 text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.deviceLabel}</div>
-                    <button onClick={() => setLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                    <button onClick={() => applyLlamaDevice('gpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'gpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.gpu}</span>
                     </button>
-                    <button onClick={() => setLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
+                    <button onClick={() => applyLlamaDevice('cpu')} className="flex items-center gap-2.5 w-full py-1.5 text-left">
                       <RadioDot active={llamaDevice === 'cpu'} />
                       <span className="text-[13px] text-[#1C1C1E] dark:text-[#F2F2F7]">{settingsCopy.llamaEngine.cpu}</span>
                     </button>
@@ -2879,6 +2908,23 @@ const SCard = React.forwardRef(({ isDark, title, titleAdornment, children, id, s
                         } catch (_) {}
                       }} />
                   </IOSRow>
+                </div>
+                <div className="px-4 py-3 border-t border-black/[0.12] dark:border-white/[0.10]">
+                  <IOSRow label={settingsCopy.llamaEngine.autoStartLabel}>
+                    <SSegmented
+                      isDark={isDark}
+                      options={[
+                        { key: 'first_image', label: settingsCopy.llamaEngine.autoStartFirstImage },
+                        { key: 'launch', label: settingsCopy.llamaEngine.autoStartLaunch },
+                        { key: 'never', label: settingsCopy.llamaEngine.autoStartNever },
+                      ]}
+                      value={llamaAutoStart}
+                      onChange={(v) => { setLlamaAutoStart(v); saveAdvancedPatch({ llama_engine_auto_start: v }); }}
+                    />
+                  </IOSRow>
+                  <div className="px-1 pb-1 mt-1 text-[12px] leading-4 text-[#9AA0A6] dark:text-[#636366]">
+                    {settingsCopy.llamaEngine.autoShutdownHint}
+                  </div>
                 </div>
                 <div className="px-4 py-3 text-[12px] leading-[17px] text-[#9AA0A6] dark:text-[#636366]">
                   {settingsCopy.llamaEngine.privacyNote} {settingsCopy.llamaEngine.newSessionHint}

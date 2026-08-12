@@ -140,4 +140,36 @@ const settingsView = readRoot("src/features/settings/SettingsView.jsx");
 assert(settingsView.includes("activeSection === 'llama'"), "SettingsView 必须分发 llama 区块");
 assert(/id="llama"/.test(settingsView), "SettingsView 必须注册 llama SectionButton");
 
+// 8. 本地识图引擎选项 + 自动启动/关闭契约：
+//    SavedModel.vision_prefer_local_engine（is_false 序列化省略）、
+//    AdvancedPrefs 自动启动三字段、capability local_engine_state、
+//    RunEvent::Exit 停引擎、前端哨兵/文案/发送门。
+const prefsMod = read("platform/prefs/mod.rs");
+assert(
+  /vision_prefer_local_engine/.test(prefsMod) && /skip_serializing_if = "is_false"/.test(prefsMod),
+  "SavedModel 必须含 vision_prefer_local_engine（is_false 序列化省略）"
+);
+for (const field of ["llama_engine_auto_start", "llama_engine_default_model", "llama_engine_default_device"]) {
+  assert(prefsMod.includes(field), `AdvancedPrefs 必须含 ${field}`);
+}
+const settingsCmd = read("app/commands/settings.rs");
+assert(settingsCmd.includes("local_engine_state"), "get_image_input_capability 必须返回 local_engine_state");
+assert(
+  /RunEvent::Exit[\s\S]*?llama_engine::server::stop\(\)/.test(lib),
+  "lib.rs 退出时必须调用 llama_engine::server::stop()（退出 pinvou 自动关引擎）"
+);
+assert(settingsView.includes("'__local_engine__'"), "SettingsView 必须提供本地识图引擎哨兵选项");
+assert(settingsView.includes("autoStartLabel"), "SettingsView 必须渲染自动启动引擎设置项");
+for (const label of [
+  "自动启动引擎", "Auto-start engine", "エンジンの自動起動",
+  "本地识图引擎", "Local image engine", "ローカル画像認識エンジン",
+  "退出 pinvou 时引擎将自动关闭", "The engine shuts down automatically when you quit pinvou",
+  "pinvou を終了するとエンジンも自動停止します",
+]) {
+  assert(settingsI18n.includes(label), `settings-i18n.js 必须包含: ${label}`);
+}
+const chatView = readRoot("src/features/chat/ChatView.jsx");
+assert(chatView.includes("ensureLocalEngineForSend"), "ChatView 必须实现本地识图引擎发送门");
+assert(chatView.includes("local_engine_state"), "ChatView 发送门必须消费 capability.local_engine_state");
+
 console.log("llama_engine_contract ok");

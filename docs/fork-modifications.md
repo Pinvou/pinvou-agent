@@ -27,6 +27,29 @@
 - 本次新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和 Tauri/Web 前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
 - 本节改动已计入上方公开维护分支 head、drift 和固定标签 `pinvou-v0.9.5-r5`；CodeWhale required checks 与父仓自动测试均已通过。
 
+### 待验证改动（2026-08-12 · 慢设备 vision 超时适配，未发布）
+
+- 现象：Intel 核显（UHD 750，Vulkan 驱动 30.0.100.9805）上 `image_analyze` 冷启动请求
+  超过 `120s` 客户端超时，4 次重试全部排队失败 → `Retry exhausted` → 主模型自动重试
+  → 死循环（实测单请求冷启动 18-50s，首次含 Vulkan 管线编译可超 120s）。
+- 改动（`CodeWhale/crates/tui/src/vision/tools.rs`，仅 2 处）：
+  - `image_analyze` 改**流式接收**（`stream: true`）：总时长 300s 由流式循环控制
+    （reqwest 整体 timeout 移除，连接阶段 30s）；超时返回已累积的部分内容 +
+    `truncated` 标记，而不是整请求失败触发重试死循环。`DEFAULT_VISION_MAX_OUTPUT_TOKENS`
+    保持上游 4096（本地/云端一致，长文档转写不阉割；慢设备生成不满 4096 时由
+    流式超时兜底）。图片描述实测 ~150 tokens，正常场景上限不影响速度。
+  - `image_analyze` 客户端超时 120s → 300s：只放宽上限，云端视觉模型（通常 10-30s）无感。
+- 验证状态：基准确认单请求 8-50s（CPU/Vulkan 各 3 次），修复后超时窗口充足；
+  完整 forkguard/契约回归待发布流程执行。
+- 追加（同文件，同一节）：`image_analyze` 请求构造增强——加 system prompt
+  （图片类型 / 文字逐字转写 / 元素布局三要素，禁止臆测）、temperature 0.7 → 0.2、
+  默认 prompt 从 "Describe this image in detail." 增强为三要素模板。
+  实测（同一张含中文截图的对比）：旧构造输出幻觉重复循环，新构造逐字转写全部中文正文。
+  对云端视觉模型（gpt-4o 等）同样适用，低温度对转写类任务无副作用。
+- 追加（同文件，同一节）：`image_analyze` 结果显式标记截断——`finish_reason == "length"`
+  时结果 JSON 附加 `"truncated": true`，主模型据此知道转写不完整（密集文字图场景），
+  避免基于残缺内容无感知总结。
+
 ### 软上限评估
 
 总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：

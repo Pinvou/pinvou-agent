@@ -24,6 +24,19 @@ Object.assign(dict.zh.uiAttachments, {
   imageUnknown:'当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”；也可以配置视觉模型。',
   imageCloudUpload:'图片将随消息发送给你选择的模型服务商',
   imageCloudUploadVision:'图片将发送给你配置的视觉模型服务商进行分析',
+  localEngineNotRunning:'已选择本地识图引擎，但引擎未运行',
+  localEngineInstallPrompt:'本地识图引擎尚未安装，是否立即安装？也可以到 设置→本地多模态引擎 安装或卸载。',
+  localEngineInstallConfirm:'安装并继续',
+  localEngineInstallCancel:'暂不安装',
+  localEngineNotRunningPrompt:'本地识图引擎未运行，且自动启动已设为「从不」。',
+  localEngineGoSettings:'去设置页启动',
+  localEngineSendFallback:'本次回落云端视觉模型发送',
+  localEngineCancelSend:'取消发送',
+  localEngineStartingTimeout:'本地识图引擎启动超时，请稍后重试或到设置页查看日志。',
+  localEngineRetry:'重试',
+  localEngineInstallError:'本地识图引擎安装失败',
+  localEngineDownloading:'正在下载引擎组件，请稍候…',
+  localEngineClose:'关闭',
 });
 Object.assign(dict.en.uiSettingsDetail, {
   saving:'Saving', localDetectionTargets:'Detect vLLM, Ollama, and LM Studio',
@@ -71,6 +84,19 @@ Object.assign(dict.en.uiAttachments, {
   imageUnknown:'Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.',
   imageCloudUpload:'Images will be sent to the model provider you selected along with your message.',
   imageCloudUploadVision:'Images will be sent to the vision model provider you configured for analysis.',
+  localEngineNotRunning:'Local image engine selected, but the engine is not running',
+  localEngineInstallPrompt:'The local image engine is not installed yet. Install it now? You can also install or uninstall it in Settings → Local Multimodal Engine.',
+  localEngineInstallConfirm:'Install and continue',
+  localEngineInstallCancel:'Not now',
+  localEngineNotRunningPrompt:'The local image engine is not running, and auto-start is set to “Never”.',
+  localEngineGoSettings:'Start from settings',
+  localEngineSendFallback:'Send via cloud vision model this time',
+  localEngineCancelSend:'Cancel send',
+  localEngineStartingTimeout:'Local image engine start timed out. Retry later or check logs in Settings.',
+  localEngineRetry:'Retry',
+  localEngineInstallError:'Failed to install the local image engine',
+  localEngineDownloading:'Downloading engine components…',
+  localEngineClose:'Close',
 });
 Object.assign(dict.ja.uiSettingsDetail, {
   saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
@@ -118,6 +144,19 @@ Object.assign(dict.ja.uiAttachments, {
   imageUnknown:'現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。',
   imageCloudUpload:'画像はメッセージとともに、選択したモデルプロバイダーに送信されます。',
   imageCloudUploadVision:'画像は、構成したビジョンモデルのプロバイダーに分析のため送信されます。',
+  localEngineNotRunning:'ローカル画像認識エンジンを選択中ですが、エンジンが起動していません',
+  localEngineInstallPrompt:'ローカル画像認識エンジンが未インストールです。今すぐインストールしますか？ 設定→ローカルマルチモーダルエンジンでインストール/アンインストールもできます。',
+  localEngineInstallConfirm:'インストールして続行',
+  localEngineInstallCancel:'今はしない',
+  localEngineNotRunningPrompt:'ローカル画像認識エンジンが起動しておらず、自動起動は「しない」に設定されています。',
+  localEngineGoSettings:'設定から起動',
+  localEngineSendFallback:'今回だけクラウドのビジョンモデルで送信',
+  localEngineCancelSend:'送信キャンセル',
+  localEngineStartingTimeout:'ローカル画像認識エンジンの起動がタイムアウトしました。後でもう一度試すか、設定でログを確認してください。',
+  localEngineRetry:'再試行',
+  localEngineInstallError:'ローカル画像認識エンジンのインストールに失敗しました',
+  localEngineDownloading:'エンジンコンポーネントをダウンロード中…',
+  localEngineClose:'閉じる',
 });
 Object.assign(dict.en.uiSettingsDetail.modelDescriptions, {
   '本地服务默认模型':'Default model for the local service',
@@ -204,6 +243,12 @@ dict.zh.uiSettingsDetail.llamaEngine = {
   newSessionHint: '引擎启动后，新开的对话才能使用本地视觉能力。',
   visionFallbackLabel: '自动作为图片识别兜底',
   visionFallbackDesc: '开启后，纯文本模型收到图片时自动用本地引擎描述（无需配置视觉模型）；关闭则按既有视觉模型配置处理。',
+  localEngineOption: '本地识图引擎',
+  autoStartLabel: '自动启动引擎',
+  autoStartFirstImage: '第一次发送图片时',
+  autoStartLaunch: '开启 pinvou 时',
+  autoStartNever: '从不',
+  autoShutdownHint: '退出 pinvou 时引擎将自动关闭。',
 };
 
 dict.en.uiSettingsDetail.llamaEngine = {
@@ -223,6 +268,12 @@ dict.en.uiSettingsDetail.llamaEngine = {
   newSessionHint: 'After starting the engine, new conversations can use the local vision capability.',
   visionFallbackLabel: 'Auto fallback for image analysis',
   visionFallbackDesc: 'When enabled, images sent to a text-only model are described by the local engine automatically (no vision model config needed). Disable to keep the existing vision model rules.',
+  localEngineOption: 'Local image engine',
+  autoStartLabel: 'Auto-start engine',
+  autoStartFirstImage: 'On first image send',
+  autoStartLaunch: 'When pinvou launches',
+  autoStartNever: 'Never',
+  autoShutdownHint: 'The engine shuts down automatically when you quit pinvou.',
 };
 
 dict.ja.uiSettingsDetail.llamaEngine = {
@@ -242,4 +293,10 @@ dict.ja.uiSettingsDetail.llamaEngine = {
   newSessionHint: 'エンジン起動後、新しい会話でローカルのビジョン機能が使えます。',
   visionFallbackLabel: '画像分析の自動フォールバック',
   visionFallbackDesc: '有効時、テキストのみのモデルに画像を送るとローカルエンジンが自動的に説明します（ビジョンモデルの設定不要）。無効時は既存のビジョンモデル設定に従います。',
+  localEngineOption: 'ローカル画像認識エンジン',
+  autoStartLabel: 'エンジンの自動起動',
+  autoStartFirstImage: '初回の画像送信時',
+  autoStartLaunch: 'pinvou 起動時',
+  autoStartNever: 'しない',
+  autoShutdownHint: 'pinvou を終了するとエンジンも自動停止します。',
 };

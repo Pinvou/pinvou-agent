@@ -140,6 +140,11 @@ pub(crate) fn build_args(
         port.to_string().into(),
         "--ctx-size".into(),
         "8192".into(),
+        // 高分辨率图像降采样上限(实测 4K 图视觉编码:默认 409s → 1024 上限 42s,
+        // 总耗时 427s → 58s,7.4 倍)。1024 正是 Qwen-VL grounding 的建议下限,
+        // 只压大图、不影响小图分辨率与准确性。核显/慢设备上必须,独显上无副作用。
+        "--image-max-tokens".into(),
+        "1024".into(),
         "-ngl".into(),
         ngl.into(),
         "--no-webui".into(),
@@ -251,6 +256,67 @@ pub(crate) fn stop() {
     if let Some(pid) = pid {
         crate::platform::os::kill_pid_tree(pid);
     }
+}
+
+/// 幂等启动：Running/Starting 时直接 Ok(false)（并发防护，绝不把
+/// "引擎已在运行或启动中" 当失败上报）；真正发起启动返回 Ok(true)。
+/// 自动启动（发送门 / launch 后台）与手动启动共用，避免并发双启动。
+pub(crate) async fn start_if_needed(
+    app: &tauri::AppHandle,
+    model_id: &str,
+    device: EngineDevice,
+) -> Result<bool, String> {
+    {
+        let guard = lock_runtime();
+        if matches!(guard.phase, EnginePhase::Starting | EnginePhase::Running) {
+            return Ok(false);
+        }
+    }
+    match start(app, model_id, device).await {
+        Ok(()) => Ok(true),
+        // 锁外检查与 start 内部守卫之间的竞态窗口：已有人启动，归一为 Ok(false)。
+        Err(error) if error.contains("引擎已在运行或启动中") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// 轮询等待引擎进入 Running（自动启动后、发送路由与 spawn 之前调用）。
+/// 期间若转入 Stopped 且带错误 → Err(该错误)；超时 → Err(超时文案)。
+/// 轮询用 tokio::time::sleep，不阻塞运行时。
+pub(crate) async fn wait_until_running(timeout: Duration) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snapshot = runtime_snapshot();
+        if snapshot.phase == "running" {
+            return Ok(());
+        }
+        if snapshot.phase == "stopped" {
+            if let Some(error) = snapshot.last_error.filter(|e| !e.is_empty()) {
+                return Err(error);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("等待本地引擎就绪超时（{}s）", timeout.as_secs()));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 测试钩子：强制置 Running（bridge.rs 规则 0 单测用；改全局 RUNTIME，
+/// 使用方需保证测试串行）。
+#[cfg(test)]
+pub(crate) fn force_running_for_test(port: u16) {
+    let mut guard = lock_runtime();
+    guard.phase = EnginePhase::Running;
+    guard.port = Some(port);
+}
+
+/// 测试钩子：复位 RUNTIME 到默认（配合 force_running_for_test 的收尾，
+/// 避免污染后续测试的引擎运行态）。
+#[cfg(test)]
+pub(crate) fn reset_runtime_for_test() {
+    let mut guard = lock_runtime();
+    *guard = EngineRuntime::default();
 }
 
 enum HealthOutcome {

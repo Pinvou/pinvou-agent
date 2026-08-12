@@ -180,6 +180,17 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
     }
 }
 
+/// 本地引擎视觉接管门：全局兜底开关（默认开）或该模型显式选择
+/// 「本地识图引擎」（`vision_prefer_local_engine`，模型设置页选项）。
+/// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
+fn vision_local_gate(
+    prefs: &crate::platform::prefs::AdvancedPrefs,
+    model: Option<&crate::platform::prefs::SavedModel>,
+) -> bool {
+    prefs.llama_engine_vision_fallback.unwrap_or(true)
+        || model.is_some_and(|m| m.vision_prefer_local_engine)
+}
+
 impl Pinvou3Bridge {
     /// 启动序列：确保 `~/.pinvou3/` 子目录存在 → 解包 bundle → 加载 prefs。
     /// 首次启动写一份默认 `settings.json` 让用户/开发者方便手改 advanced。
@@ -855,10 +866,18 @@ impl Pinvou3Bridge {
         model.api_key.clone()
     }
 
+    /// 本地引擎视觉接管门：全局兜底开关（默认开）或该模型显式选择
+    /// 「本地识图引擎」（`vision_prefer_local_engine`，模型设置页选项）。
+    /// 命中后引擎运行中即接管 `image_analyze` 端点；未运行则回落后续规则。
+    pub(crate) fn vision_local_gate_active(&self) -> bool {
+        vision_local_gate(&self.prefs.advanced, self.effective_model())
+    }
+
     /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
     /// 0. **本地多模态引擎运行中** → 直接用本地端点(最高优先级,无需配置视觉模型)。
     ///    纯文本主模型的图片输入由此获得 VisionToolFallback 路由:image_analyze
     ///    走本地引擎描述图片,引擎停止后自动回落后续规则。
+    ///    命中条件：全局兜底开关开启，或该模型显式选择了「本地识图引擎」。
     /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
     ///    id 失效或凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。
     /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
@@ -866,12 +885,7 @@ impl Pinvou3Bridge {
     /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
     ///    `image_analyze`(不 enable `Feature::VisionModel`)。
     fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
-        let llama_fallback_enabled = self
-            .prefs
-            .advanced
-            .llama_engine_vision_fallback
-            .unwrap_or(true);
-        if llama_fallback_enabled {
+        if vision_local_gate(&self.prefs.advanced, self.effective_model()) {
             if let Some(endpoint) = crate::features::llama_engine::vision_endpoint() {
                 return Some(deepseek_tui::config::VisionModelConfig {
                     model: self.model(),
@@ -2606,6 +2620,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: Default::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -2630,6 +2645,7 @@ mod tests {
             endpoint_mode: None,
             image_capability_override: Default::default(),
             vision_model_id: None,
+            vision_prefer_local_engine: false,
             api_key: api_key.to_string(),
             credential_ref: None,
             credential_state: crate::platform::credential_store::CredentialState::Missing,
@@ -2722,6 +2738,93 @@ mod tests {
             .build_engine_config()
             .features
             .enabled(deepseek_tui::features::Feature::VisionModel));
+    }
+
+    /// 本地识图引擎门：全局兜底默认开；该模型显式选「本地识图引擎」时，
+    /// 即使全局兜底关闭也命中（规则 0 条件扩展）。
+    #[test]
+    fn vision_local_gate_combinations() {
+        let prefs = |fallback: Option<bool>| crate::platform::prefs::AdvancedPrefs {
+            llama_engine_vision_fallback: fallback,
+            ..Default::default()
+        };
+        let model = |prefer_local: bool| {
+            Some(crate::platform::prefs::SavedModel {
+                id: "test".into(),
+                name: "test".into(),
+                preset: ModelPreset::Deepseek,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                model: "deepseek-v4-pro".into(),
+                base_url: "https://api.deepseek.com".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: Default::default(),
+                vision_model_id: None,
+                vision_prefer_local_engine: prefer_local,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: crate::platform::credential_store::CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            })
+        };
+        // 全局兜底默认开 → 命中（即便模型未显式选本地）
+        assert!(vision_local_gate(&prefs(None), model(false).as_ref()));
+        // 全局兜底关闭 + 模型未选本地 → 不命中
+        assert!(!vision_local_gate(&prefs(Some(false)), model(false).as_ref()));
+        // 全局兜底关闭 + 模型显式选本地 → 命中（per-model 覆盖全局）
+        assert!(vision_local_gate(&prefs(Some(false)), model(true).as_ref()));
+        // 全局兜底开 + 模型未选本地 → 命中
+        assert!(vision_local_gate(&prefs(Some(true)), model(false).as_ref()));
+    }
+
+    /// 规则 0：模型显式选「本地识图引擎」+ 引擎运行 → 本地端点
+    /// （全局兜底关闭也生效）；引擎未运行 → 回落后续规则。
+    #[test]
+    fn vision_config_local_engine_rule0() {
+        use crate::features::llama_engine::server;
+        // RAII 守卫：测试结束复位全局 RUNTIME，避免污染其他测试的引擎运行态。
+        struct RuntimeGuard;
+        impl Drop for RuntimeGuard {
+            fn drop(&mut self) {
+                server::reset_runtime_for_test();
+            }
+        }
+        let _guard = RuntimeGuard;
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        bridge.prefs.advanced.saved_models[0].vision_prefer_local_engine = true;
+        bridge.prefs.advanced.llama_engine_vision_fallback = Some(false);
+
+        // 引擎未运行 → 规则 0 不命中，未配视觉模型 → 不注册
+        assert!(bridge.resolve_vision_model_config().is_none());
+
+        // 引擎运行 → 本地端点（全局兜底关闭也被 per-model 显式选择覆盖）
+        server::force_running_for_test(8765);
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("running local engine must win");
+        assert_eq!(config.base_url.as_deref(), Some("http://127.0.0.1:8765/v1"));
+        let engine = bridge.build_engine_config();
+        assert!(engine.vision_config.is_some());
+
+        // 取消显式选择（全局兜底仍关）→ 回落规则 1（vision_model_id 云端模型）
+        bridge.prefs.advanced.saved_models[0].vision_prefer_local_engine = false;
+        push_vision_model(&mut bridge, "vision-1", "gpt-4o", "sk-vision");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-1".to_string());
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("explicit cloud vision model must resolve");
+        assert_eq!(config.model, "gpt-4o");
     }
 
     /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
@@ -4040,7 +4143,7 @@ mod tests {
         }
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                shaped.iter().filter(|tool| tool == hidden).count(),
+                shaped.iter().filter(|tool| **tool == *hidden).count(),
                 1,
                 "策略隐藏工具应恰好出现一次: {hidden}"
             );
@@ -4048,7 +4151,7 @@ mod tests {
         let twice = bridge.shape_disallowed_tools("sess-code", shaped);
         for hidden in SessionPolicy::for_mode(SessionMode::Code).extra_hidden_tools() {
             assert_eq!(
-                twice.iter().filter(|tool| tool == hidden).count(),
+                twice.iter().filter(|tool| **tool == *hidden).count(),
                 1,
                 "整形应幂等(不重复追加): {hidden}"
             );

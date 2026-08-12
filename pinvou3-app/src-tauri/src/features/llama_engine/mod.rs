@@ -73,6 +73,13 @@ impl EngineDevice {
             other => Err(format!("未知设备: {other}（可选 cpu / gpu）")),
         }
     }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            EngineDevice::Cpu => "cpu",
+            EngineDevice::Gpu => "gpu",
+        }
+    }
 }
 
 // ---------------- 状态 ----------------
@@ -174,4 +181,96 @@ pub(crate) fn llama_engine_stop() {
 /// bridge.rs 在会话 spawn 时调用（EngineConfig 快照语义）。
 pub(crate) fn vision_endpoint() -> Option<String> {
     server::running_endpoint()
+}
+
+/// 本地引擎四档状态（capability 查询与前端发送门共用口径）。
+/// - `unused`：当前模型未选本地识图引擎（且全局兜底未开），前端不介入
+/// - `running`：引擎运行中，直接使用
+/// - `not_running`：已安装但未运行，按自动启动策略处理
+/// - `not_installed`：引擎或默认模型未就绪，引导安装
+pub(crate) fn local_engine_state(
+    prefer_local: bool,
+    engine_installed: bool,
+    model_ready: bool,
+    phase: &str,
+) -> &'static str {
+    if !prefer_local {
+        return "unused";
+    }
+    if phase == "running" {
+        return "running";
+    }
+    if !engine_installed || !model_ready {
+        return "not_installed";
+    }
+    "not_running"
+}
+
+/// 解析自动启动/发送兜底用的默认引擎模型与设备：prefs 持久化的
+/// 设置页选择（未知模型 id 回落 `download::default_model()`，
+/// 非法设备回落 "gpu"）。
+pub(crate) fn resolve_default_engine_plan(
+    prefs: &crate::platform::prefs::AdvancedPrefs,
+) -> (String, EngineDevice) {
+    let model_id = prefs
+        .llama_engine_default_model
+        .as_deref()
+        .filter(|id| download::model_spec(id).is_ok())
+        .map(str::to_owned)
+        .unwrap_or_else(|| download::default_model().id.to_owned());
+    let device = prefs
+        .llama_engine_default_device
+        .as_deref()
+        .and_then(|d| EngineDevice::parse(d).ok())
+        .unwrap_or(EngineDevice::Gpu);
+    (model_id, device)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::prefs::AdvancedPrefs;
+
+    #[test]
+    fn local_engine_state_four_levels() {
+        // 未选本地识图 → unused（前端不介入）
+        assert_eq!(local_engine_state(false, true, true, "idle"), "unused");
+        assert_eq!(local_engine_state(false, false, false, "stopped"), "unused");
+        // 引擎运行 → running
+        assert_eq!(local_engine_state(true, true, true, "running"), "running");
+        // 已安装未运行 → not_running
+        assert_eq!(local_engine_state(true, true, true, "idle"), "not_running");
+        assert_eq!(local_engine_state(true, true, true, "stopped"), "not_running");
+        // 引擎或模型缺失 → not_installed
+        assert_eq!(local_engine_state(true, false, true, "idle"), "not_installed");
+        assert_eq!(local_engine_state(true, true, false, "idle"), "not_installed");
+    }
+
+    #[test]
+    fn resolve_default_engine_plan_falls_back() {
+        // 未配置 → 默认模型 + gpu
+        let (model, device) = resolve_default_engine_plan(&AdvancedPrefs::default());
+        assert_eq!(model, download::default_model().id);
+        assert_eq!(device, EngineDevice::Gpu);
+
+        // 非法模型 id / 非法设备 → 回落默认 + gpu
+        let prefs = AdvancedPrefs {
+            llama_engine_default_model: Some("no-such-model".into()),
+            llama_engine_default_device: Some("tpu".into()),
+            ..Default::default()
+        };
+        let (model, device) = resolve_default_engine_plan(&prefs);
+        assert_eq!(model, download::default_model().id);
+        assert_eq!(device, EngineDevice::Gpu);
+
+        // 合法配置透传
+        let prefs = AdvancedPrefs {
+            llama_engine_default_model: Some("qwen3vl-2b-q4k-m".into()),
+            llama_engine_default_device: Some("cpu".into()),
+            ..Default::default()
+        };
+        let (model, device) = resolve_default_engine_plan(&prefs);
+        assert_eq!(model, "qwen3vl-2b-q4k-m");
+        assert_eq!(device, EngineDevice::Cpu);
+    }
 }
