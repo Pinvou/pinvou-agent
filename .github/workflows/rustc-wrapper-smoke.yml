@@ -1,12 +1,13 @@
 name: rustc-wrapper-smoke
 
-# 验证 .cargo/config.toml [build] rustc-wrapper 在 Unix 与 Windows 都能被
-# Cargo 执行:
-# - Unix(macos/ubuntu):config.toml 指向 scripts/rustc-stack-wrapper
-#   (带 shebang 的 sh 脚本,execve 直接可执行)
-# - Windows:cargo 执行 wrapper 需要 .cmd 后缀才能走 cmd /C,由本 workflow
-#   注入 RUSTC_WRAPPER 环境变量指向 scripts/rustc-stack-wrapper.cmd
-#   (环境变量优先级高于 config.toml 的 rustc-wrapper 键)
+# 验证 rustc-stack-wrapper 的接入方式(正式 Cargo 入口按平台注入 RUSTC_WRAPPER):
+# - 默认配置(macOS/Linux 开发经 run-dev.sh、CI 经 job env)在 Windows 上不得
+#   因 .cargo/config.toml 残留 wrapper 配置而 os error 193;config.toml 不配置
+#   [build] rustc-wrapper(全局键无法按平台条件化),默认三端直接可用。
+# - 按平台注入 RUSTC_WRAPPER 后(windows → .cmd 版,unix → sh 版),Cargo 必须
+#   能执行 wrapper;编译器进程 env 含 RUST_MIN_STACK=16777216。
+# - 契约:运行时进程(cargo run / cargo test 目标)不继承 RUST_MIN_STACK,
+#   默认线程栈语义(约 2 MiB)不变。
 # 用最小 crate 继承仓库 wrapper 配置跑 cargo check(秒级,不编译全图),
 # 防止 wrapper 在某个平台不可执行(如 Windows os error 193 / Unix ENOEXEC)
 # 导致所有 Cargo build/check/test/run 全断。
@@ -16,6 +17,7 @@ on:
       - 'pinvou3-app/src-tauri/.cargo/config.toml'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd'
+      - 'pinvou3-app/run-dev.sh'
   merge_group:
   push:
     branches: [main]
@@ -40,7 +42,11 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 最小 crate 继承仓库 wrapper 配置并 cargo check
+      # 1) 默认配置直接可用:不设任何覆盖,全新 clone 的默认 config.toml 必须
+      #    三端直接 cargo check 通过。config.toml 已移除 [build] rustc-wrapper
+      #    (Windows 上指向无扩展名 sh 会 os error 193),因此 Windows 不再
+      #    需要 CI 专属 RUSTC_WRAPPER 或未被 Cargo 读取的 config.local.toml。
+      - name: 默认配置(无覆盖)cargo check —— 三端直接可用
         shell: bash
         run: |
           set -euxo pipefail
@@ -50,12 +56,63 @@ jobs:
           mkdir -p .cargo
           cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/.cargo/config.toml" .cargo/config.toml
           cp -R "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts" scripts
-          # Windows:config.toml 的 rustc-wrapper 指向无扩展名 sh(Unix 专用),
-          # cargo 用 CreateProcess 执行无扩展名只试 .exe → os error 193。
-          # 用 RUSTC_WRAPPER 环境变量(优先级高于 config.toml)覆盖为 .cmd 版。
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            export RUSTC_WRAPPER="$tmp/scripts/rustc-stack-wrapper.cmd"
+          # 关键断言:config.toml 不得再声明 [build] rustc-wrapper
+          if grep -q '^rustc-wrapper' .cargo/config.toml; then
+            echo "FAIL: config.toml 仍包含 rustc-wrapper 键(Windows 默认路径会 os error 193)"
+            exit 1
           fi
-          CARGO_TERM_COLOR=never cargo check 2>&1 | tee cargo-check.log
-          # wrapper 必须被真正调用:日志应包含编译动作(cargo check 输出 Checking)
-          grep -q "Checking wrapper_smoke" cargo-check.log
+          CARGO_TERM_COLOR=never cargo check 2>&1 | tee cargo-check-default.log
+          grep -q "Checking wrapper_smoke" cargo-check-default.log
+
+      # 2) 按平台注入 wrapper 后:与正式入口(run-dev.sh / CI job env)一致,
+      #    wrapper 必须被 Cargo 真正调用,且编译器进程获得 16MiB 栈。
+      #    wrapper 是"export RUST_MIN_STACK + exec 原命令",用 wrapper 执行
+      #    `env` 可直接观测注入结果(不经 cargo,验证 wrapper 自身逻辑)。
+      - name: 按平台注入 wrapper —— 编译期获得 16 MiB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cargo init --name wrapper_smoke
+          mkdir -p .cargo scripts
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" scripts/ 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" scripts/ 2>/dev/null || true
+          chmod +x scripts/rustc-stack-wrapper scripts/rustc-stack-wrapper.cmd 2>/dev/null || true
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            wrapper="scripts/rustc-stack-wrapper.cmd"
+          else
+            wrapper="scripts/rustc-stack-wrapper"
+          fi
+          # 直接执行 wrapper,第一个参数是 env:输出应包含注入后的 RUST_MIN_STACK
+          unset RUST_MIN_STACK
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmd //c "set RUST_MIN_STACK= & $wrapper set" | grep -q "RUST_MIN_STACK=16777216"
+          else
+            "$wrapper" env | grep -q "^RUST_MIN_STACK=16777216$"
+          fi
+
+      # 3) 运行时契约:不继承编译器栈覆盖。
+      #    复制仓库契约测试到最小 crate,按正式入口方式注入 wrapper 后跑
+      #    cargo test:测试进程是 cargo 直接启动的目标进程,不经过 wrapper,
+      #    不得继承 RUST_MIN_STACK。
+      - name: 运行时进程不继承 RUST_MIN_STACK(契约测试)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cargo init --name wrapper_smoke
+          mkdir -p .cargo tests
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" . 2>/dev/null || true
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export RUSTC_WRAPPER="$tmp/rustc-stack-wrapper.cmd"
+          else
+            cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" . 2>/dev/null || true
+            chmod +x "$tmp/rustc-stack-wrapper" 2>/dev/null || true
+            export RUSTC_WRAPPER="$tmp/rustc-stack-wrapper"
+          fi
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/tests/compiler_stack_contract.rs" tests/
+          CARGO_TERM_COLOR=never cargo test 2>&1 | tee cargo-test.log
+          grep -q "compiler_stack_contract" cargo-test.log
+          grep -q "test result: ok" cargo-test.log
