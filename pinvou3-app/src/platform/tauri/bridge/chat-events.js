@@ -840,9 +840,17 @@
 
   listen("chat:usage", function (e) { onSessionEvent(e, function () {
     var sid = e.payload && e.payload.session_id;
-    if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加值≠占用，保留上个准确值
+    // 真实窗口是模型能力常量，不随轮内请求数变化，必须先于 dirty guard 消费：
+    // 工具轮（最常见的 Agent 场景）只跳过不可信的累计 input，分母仍要更新。
+    var windowTok = Number(e.payload && e.payload.context_window) || 0;
+    if (windowTok > 0 && windowTok !== state.tokens.max) {
+      state.tokens.max = windowTok; // 云端真实窗口，替代 32K 假分母
+      notify(); // 窗口变化也要通知 UI（即使本轮 input 不可信）
+    }
+    if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加 input 不可信，保留上个准确值
     var input = Number(e.payload && e.payload.input_tokens || 0);
-    if (input > 0) {
+    // 累加值超过窗口说明仍有多请求（内部重试等无事件轮），跳过避免显示超上限
+    if (input > 0 && input <= state.tokens.max) {
       state.tokens = { input: input, max: state.tokens.max };
       notify();
     }

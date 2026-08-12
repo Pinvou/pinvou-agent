@@ -1930,12 +1930,12 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </>
               )}
             </div>
-            {ctxTokens && ctxTokens.input > 0 && (
+            {ctxTokens && ctxTokens.max > 0 && (
               <div className={`mt-1.5 px-5 text-[11px] font-mono ${
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {fmtCtxTok(ctxTokens.input)} / {fmtCtxTok(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                {t.ctxUsage} {ctxTokens.input > 0 ? fmtCtxTok(ctxTokens.input) : '—'} / {fmtCtxTok(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
