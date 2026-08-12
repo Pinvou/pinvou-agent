@@ -153,6 +153,12 @@ pub fn browser_profile_dir() -> PathBuf {
 pub fn browser_start_lock() -> PathBuf {
     browser_home().join("start.lock")
 }
+/// 浏览器最近一次动态启动失败记录：{ reason, at }，由 browser-wrapper.mjs 在
+/// Chrome 缺失/启动失败/CDP 未就绪退出前写入；Rust 侧（browser_unavailability_reason）
+/// 读取后注入模型可见的 instructions（24h 新鲜度）。
+pub fn browser_last_error_json() -> PathBuf {
+    browser_home().join("last-error.json")
+}
 /// 工作模式会话专用 mcp.json（全局 mcp.json + browser 条目）。
 /// 门控语义：browser MCP 工具只对工作模式（assistant 引擎）会话暴露，全局
 /// mcp.json 永不注册 browser 条目；codex ACP 等外部 Agent 不读本文件。

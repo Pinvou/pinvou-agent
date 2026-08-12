@@ -322,7 +322,8 @@ impl Pinvou3Bridge {
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
         // 无产出物/成品卡语义);其余会话 = 共享骨架 + work 层(与历史 instructions 逐字节相等)。
-        let base = if self.session_policy(session_id).uses_code_instructions() {
+        let uses_code_instructions = self.session_policy(session_id).uses_code_instructions();
+        let base = if uses_code_instructions {
             let workspace_hint = self
                 .execution_root_resolver
                 .as_ref()
@@ -359,6 +360,16 @@ impl Pinvou3Bridge {
         if let Some(block) = self.prefs.language.extra_language_directive() {
             rendered.push_str("\n\n");
             rendered.push_str(block);
+        }
+        // [pinvou3] 浏览器能力静态不可用时,把可读原因与恢复指引注入模型(§浏览器能力
+        // 已声明能力存在与"工具缺失怎么办"的通用兜底;这里给出精确原因)。只在工作模式
+        // (非 code 会话)注入,且只在不可用时追加——可用时 system 文本逐字节不变,不破
+        // prefix-cache。
+        if !uses_code_instructions {
+            if let Some(hint) = self.bundle.browser_unavailability_reason() {
+                rendered.push_str("\n\n## 浏览器能力不可用\n");
+                rendered.push_str(&hint);
+            }
         }
         rendered
     }

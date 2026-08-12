@@ -104,27 +104,36 @@ pub const BUNDLE_VERSION: &str = concat!(
 pub const INSTRUCTIONS_SHARED_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-shared.md");
 
-/// work 模式层：§工作环境（产出物面板语义与 tmp/ 规则）+ §工具与事实 的
-/// present_artifact 成品条。两段以空行分隔，供 [`work_layer_sections`] 切分。
+/// work 模式层：§工作环境（产出物面板语义与 tmp/ 规则）+ §浏览器能力（内嵌有头
+/// 浏览器的发现与使用指引，模型侧唯一"知道有这个能力"的静态入口）+ §工具与事实 的
+/// present_artifact 成品条。三段以空行分隔，供 [`work_layer_sections`] 切分。
 pub const INSTRUCTIONS_WORK_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-work.md");
 
-/// work 层两段：§工作环境 整节（无尾换行）与成品条（含尾换行）。
-fn work_layer_sections() -> (&'static str, &'static str) {
-    INSTRUCTIONS_WORK_MD
+/// work 层三段：§工作环境 整节（无尾换行）、§浏览器能力 整节（无尾换行）与
+/// 成品条（含尾换行）。
+fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
+    let (env_section, rest) = INSTRUCTIONS_WORK_MD
         .split_once("\n\n")
-        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + 成品条段")
+        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段");
+    let (browser_section, artifact_rule) = rest
+        .split_once("\n\n")
+        .expect("instructions-work.md 必须是 §工作环境 段 + 空行 + §浏览器能力 段 + 空行 + 成品条段");
+    (env_section, browser_section, artifact_rule)
 }
 
 /// work 模式完整 instructions（共享骨架 + work 层占位替换）。
-/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
 pub fn instructions_md() -> &'static str {
     static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RENDERED.get_or_init(|| {
-        let (env_section, artifact_rule) = work_layer_sections();
+        let (env_section, browser_section, artifact_rule) = work_layer_sections();
         INSTRUCTIONS_SHARED_MD
-            // §工作环境 位：work 段无尾换行，补回占位行换行形成节间空行。
-            .replace("{{PINVOU3_MODE_ENV_SECTION}}", &format!("{env_section}\n"))
+            // §工作环境 位：§工作环境 + §浏览器能力 整体替换占位行（两段均无尾
+            // 换行，先补 §浏览器能力 的换行形成节间空行，再补整体换行接下文）。
+            .replace(
+                "{{PINVOU3_MODE_ENV_SECTION}}",
+                &format!("{env_section}\n\n{browser_section}\n"),
+            )
             // 成品条位：占位行整体（含换行）替换为成品条原文 + 补回节间空行。
             .replace(
                 "{{PINVOU3_MODE_ARTIFACT_RULE}}\n",
@@ -790,6 +799,78 @@ impl Pinvou3Bundle {
         }))
     }
 
+    /// 浏览器能力不可用的静态原因（模型可见）。None = 前置条件齐备，不注入。
+    /// 只做静态判定：vendor chrome-devtools-mcp / node / wrapper / Chrome 候选
+    /// 存在性，以及 wrapper 记录的最近一次动态启动失败（`last-error.json`，
+    /// 24h 内新鲜）。动态失败（Chrome 启动/CDP 未就绪）发生在会话建立之后，
+    /// 当次会话读不到，由 instructions §浏览器能力 的通用兜底指引覆盖；重开会话
+    /// 时此处能读到上次原因，模型可据此精确引导用户。
+    pub fn browser_unavailability_reason(&self) -> Option<String> {
+        let mut missing: Vec<&str> = Vec::new();
+        if std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .is_none()
+            && paths::bundled_chrome_devtools_mcp_bin().is_none()
+        {
+            missing.push("内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)");
+        }
+        if paths::bundled_connector_node().is_none() && find_system_node().is_none() {
+            missing.push("node 运行时不可用");
+        }
+        if !paths::bundle_browser_wrapper().is_file() {
+            missing.push("浏览器 wrapper 脚本未释放");
+        }
+        if Self::chrome_candidate_exists().is_none() {
+            missing.push("未检测到 Chrome/Chromium/Edge");
+        }
+        if !missing.is_empty() {
+            return Some(format!(
+                "浏览器工具(`mcp_browser_*`)当前不可用:{}。需要浏览器时,请引导用户按原因修复(常见:安装 Google Chrome/Chromium/Edge)后重开会话。",
+                missing.join("; ")
+            ));
+        }
+        // 最近一次动态启动失败(Chrome 启动失败/CDP 未就绪等),24h 内新鲜才提示。
+        let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
+            return None;
+        };
+        let Ok(state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return None;
+        };
+        let reason = state.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        let at = state.get("at").and_then(|t| t.as_i64()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if reason.is_empty() || now.saturating_sub(at) > 24 * 3600 {
+            return None;
+        }
+        Some(format!(
+            "浏览器工具(`mcp_browser_*`)上次启动失败:{reason}。若用户需要浏览器,请引导其重开会话重试。"
+        ))
+    }
+
+    /// Chrome/Chromium/Edge 候选存在性探测（绝对路径直接判存在，命令名经 PATH）。
+    /// 与 `features::browser::find_chrome` 同语义的轻量版（本模块不依赖 browser feature）。
+    fn chrome_candidate_exists() -> Option<PathBuf> {
+        for c in crate::platform::os::chrome_candidates() {
+            let p = PathBuf::from(c);
+            if p.is_absolute() && p.exists() {
+                return Some(p);
+            }
+            if let Ok(path_var) = std::env::var("PATH") {
+                for dir in std::env::split_paths(&path_var) {
+                    let cand = dir.join(c);
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// 工作模式（assistant 引擎）会话的 mcp 配置路径：
     /// 全局 mcp.json + browser 条目（条件满足时），原子写到
     /// `~/.pinvou3/browser/mcp.work.json` 后返回该路径；条件不满足时直接返回
@@ -1001,6 +1082,48 @@ mod tests {
                 "canonical guidance missing: {canonical}"
             );
         }
+    }
+
+    #[test]
+    fn work_instructions_include_browser_capability_section() {
+        // 模型发现链的静态入口：§浏览器能力 必须渲染在 §工作环境 与 §工具与事实 之间，
+        // 且声明模型可见的工具名与 registry-first 覆盖（browser 不在 registry，走 mcp_browser_*）。
+        let rendered = instructions_md();
+        let env_at = rendered.find("## 工作环境").expect("§工作环境 存在");
+        let browser_at = rendered.find("## 浏览器能力").expect("§浏览器能力 存在");
+        let tools_at = rendered.find("## 工具与事实").expect("§工具与事实 存在");
+        assert!(
+            env_at < browser_at && browser_at < tools_at,
+            "§浏览器能力 应位于 §工作环境 与 §工具与事实 之间"
+        );
+        assert!(
+            rendered.contains("mcp_browser_"),
+            "应声明模型可见的 mcp_browser_* 工具名"
+        );
+        assert!(
+            rendered.contains("registry_sync"),
+            "应覆盖 registry-first 指令对浏览器任务的误导（内置浏览器不走 registry）"
+        );
+    }
+
+    #[test]
+    fn browser_unavailability_reason_reports_missing_runtime() {
+        // 空临时 HOME：vendor chrome-devtools-mcp / wrapper 均缺失，必须返回模型可读原因
+        //（静默降级是"模型找不到浏览器能力"的直接根因，原因必须可注入、可引导用户修复）。
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        std::env::remove_var("PINVOU3_CDMCP_BIN");
+        let bundle = Pinvou3Bundle::paths();
+        let msg = bundle
+            .browser_unavailability_reason()
+            .expect("前置缺失应返回不可用原因");
+        assert!(
+            msg.contains("chrome-devtools-mcp"),
+            "应点名缺失的运行时: {msg}"
+        );
+        assert!(msg.contains("mcp_browser_"), "应指明缺失的是浏览器工具: {msg}");
+        cleanup(&tmp);
     }
 
     #[test]

@@ -180,6 +180,26 @@ function clearPortFile() {
   }
 }
 
+// 最近一次启动失败记录（{ reason, at }）：Rust 侧（browser_unavailability_reason）
+// 在下次会话把原因注入模型可见的 instructions，让模型能精确引导用户修复。
+// 成功启动（CDP 就绪）时清除。
+const LAST_ERROR_JSON = join(dirname(CDP_PORT_JSON), 'last-error.json');
+function writeLastError(reason) {
+  try {
+    mkdirSync(dirname(LAST_ERROR_JSON), { recursive: true });
+    writeFileSync(LAST_ERROR_JSON, JSON.stringify({ reason, at: Date.now() }));
+  } catch {
+    /* 写失败不影响主流程 */
+  }
+}
+function clearLastError() {
+  try {
+    unlinkSync(LAST_ERROR_JSON);
+  } catch {
+    /* 不存在就算了 */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Chrome 启动（有头渲染、窗口置于屏外、独立 profile、随机端口）
 // ---------------------------------------------------------------------------
@@ -225,6 +245,7 @@ function startChrome(port) {
   const chrome = findChrome();
   if (!chrome) {
     log('未找到 Chrome/Chromium，无法启动浏览器');
+    writeLastError('未找到 Chrome/Chromium/Edge 浏览器');
     return false;
   }
   try {
@@ -246,6 +267,7 @@ function startChrome(port) {
     return true;
   } catch (e) {
     log('启动 Chrome 失败:', e.message);
+    writeLastError(`Chrome 启动失败: ${e.message}`);
     return false;
   }
 }
@@ -327,6 +349,8 @@ async function main() {
   }
 
   if (chromeReady) {
+    // 本次成功，清掉历史失败记录（若 Chrome 后崩，下次启动失败会重新写）。
+    clearLastError();
     log('使用 Chrome CDP 端口:', port);
   } else {
     // Chrome 不可用（未找到 / 启动失败 / CDP 未就绪）：直接退出。
@@ -334,6 +358,11 @@ async function main() {
     // 工具根本不会注册——与其以端口 0 误导 spawn，不如干净退出并给出可读日志；
     // 引擎对非 required server 的启动失败是非致命的，品悟 BrowserManager 之后
     // 兜底拉起 Chrome，下次会话重试即恢复。
+    if (startedByUs && chromeChild) {
+      // Chrome 拉起来了但 CDP 没就绪：记录具体原因，供 Rust 侧注入模型可见提示。
+      writeLastError('Chrome 已启动但 CDP 未就绪');
+    }
+    // 未找到 Chrome / Chrome 启动失败的原因已由 startChrome 写入 last-error.json。
     log('浏览器不可用：未找到 Chrome 或 CDP 未就绪，退出（品悟会兜底启动 Chrome，重试后恢复）');
     // 本包装可能已启动 Chrome 但 CDP 未就绪：退出前清理自启实例，避免孤儿进程
     // 占住 profile 单实例锁导致后续所有启动尝试失败。
