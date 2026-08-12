@@ -96,6 +96,7 @@
         var newTitle = personaName(card);
         if (newTitle) {
           try { await invoke("rename_session", { id: sid, title: newTitle }); } catch (_) {}
+          if (sid !== state.activeSessionId) return card; // rename 挂起期间切走:放弃后续 UI 写入(审计补充)
           m.title = newTitle;
           personaPlaceholderTitles[sid] = true;
         }
