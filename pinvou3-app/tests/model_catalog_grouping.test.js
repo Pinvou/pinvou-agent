@@ -186,7 +186,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，用 Array.from 归一
   const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
-  assert.deepStrictEqual(tiers(deepseek), ['off', 'high', 'max']);
+  assert.deepStrictEqual(tiers(deepseek), ['off', 'low', 'high', 'max']);
   const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3' };
   assert.deepStrictEqual(tiers(moonshot), ['off', 'high']);
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
@@ -229,9 +229,14 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
 
 test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
-  // 存量档位不在 deepseek 档位表内（底座会把 low/medium 归一为 high）→ 归一到 high
+  // medium 不在 deepseek 档位表内（底座把 medium 归一为 high）→ 归一到 high；
+  // low 是底座保留的真实档位，应在档位表内原样保留。
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'medium'), 'high');
-  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'low'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'low'), 'low');
+  // 底座别名 → 规范档位后再与档位表匹配
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'light'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'minimum'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'ultra'), 'max');
   // 存量值已在档位表内 → 原样保留
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'off'), 'off');
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'max'), 'max');

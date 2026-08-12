@@ -535,17 +535,25 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {
         if (!current) return;
-        setOpen(false);
         if (tier === reasoningEffortValue) return;
         setEffortSaveError('');
         const next = { ...current, reasoning_effort: tier };
-        if (bridge.available) bridge.models.saveModel(next)
-          .then(() => setEffortSaveError(''))
-          .catch((error) => setEffortSaveError(String(error && error.message ? error.message : error) || (t && t.saveModelFailed) || '保存失败'));
+        if (!bridge.available) { setOpen(false); return; }
+        // 保存成功才收弹层；失败保留弹层以便展示 effortSaveError（否则错误渲染
+        // 在已关闭的 popover 内不可达）。
+        bridge.models.saveModel(next)
+          .then(() => { setOpen(false); setEffortSaveError(''); })
+          .catch((error) => {
+            const message = (error && error.message)
+              ? error.message
+              : ((t && t.saveModelFailed) || '保存失败');
+            setEffortSaveError(message);
+          });
       }
       if (!savedModels.length) return null;
       function pick(id) {
         setOpen(false);
+        setEffortSaveError('');
         if (id === effectiveId) return;
         if (onSwitchModel) { onSwitchModel(activeSessionId, id); return; }
         if (bridge.available) bridge.models.switchModel(activeSessionId, id);

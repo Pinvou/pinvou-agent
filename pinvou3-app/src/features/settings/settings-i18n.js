@@ -47,7 +47,7 @@ Object.assign(dict.en.uiSettingsDetail, {
   },
 });
 Object.assign(dict.ja.uiSettingsDetail, {
-  reasoningEffort:'思考深度', reasoningEffortTiers:{ off:'オフ', low:'低', medium:'中', high:'高', max:'最大' },
+  reasoningEffort:'思考の深さ', reasoningEffortTiers:{ off:'オフ', low:'低', medium:'中', high:'高', max:'最大' },
   saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio を検出',
   redetect:'再検出', detect:'検出', noRunningLocalModel:'実行中のローカルモデルが見つかりません', modelNotLoadedTag:'未読み込み', modelNotLoadedHint:'メモリ未読み込み。初回使用時に自動でロードされます',
   add:'追加', manualLocalModel:'ローカルモデルを手動追加',

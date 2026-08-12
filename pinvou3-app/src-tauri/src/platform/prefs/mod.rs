@@ -178,34 +178,21 @@ impl SavedModel {
                 self.max_output_tokens = Some(24_576);
             }
         }
-        // reasoning_effort 只接受底座 `ReasoningEffort::from_setting` 认识的档位
-        // （off/low/medium/high/auto/max + 别名），非法值置 None 走 provider 默认，
-        // 避免被底座 `from_setting` 静默回退成 Max。
+        // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
+        // （off/low/medium/high/auto/max）。别名（disabled/minimum/light/ultra 等）
+        // 规范化为对应档位，避免底座 wire 层 `apply_reasoning_effort` 只认规范档位
+        // + 少数别名，把 `minimum`/`light`/`ultra`/`maximum` 等静默丢弃；非法值置
+        // None 走 provider 默认，避免被底座 `from_setting` 静默回退成 Max。
         if let Some(effort) = self.reasoning_effort.as_deref() {
-            let valid = matches!(
-                effort.trim().to_ascii_lowercase().as_str(),
-                "off"
-                    | "disabled"
-                    | "none"
-                    | "false"
-                    | "low"
-                    | "minimum"
-                    | "minimal"
-                    | "light"
-                    | "medium"
-                    | "mid"
-                    | "high"
-                    | "auto"
-                    | "automatic"
-                    | "max"
-                    | "maximum"
-                    | "xhigh"
-                    | "ultra"
-                    | "ultracode"
-            );
-            if !valid {
-                self.reasoning_effort = None;
-            }
+            self.reasoning_effort = match effort.trim().to_ascii_lowercase().as_str() {
+                "off" | "disabled" | "none" | "false" => Some("off".to_string()),
+                "low" | "minimum" | "minimal" | "light" => Some("low".to_string()),
+                "medium" | "mid" => Some("medium".to_string()),
+                "high" => Some("high".to_string()),
+                "auto" | "automatic" => Some("auto".to_string()),
+                "max" | "maximum" | "xhigh" | "ultra" | "ultracode" => Some("max".to_string()),
+                _ => None,
+            };
         }
     }
 
@@ -968,10 +955,11 @@ mod tests {
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
 
-    /// reasoning_effort 只接受底座 `ReasoningEffort::from_setting` 认识的档位：
-    /// 非法值置 None（避免被底座静默回退成 Max），合法别名原样保留。
+    /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：
+    /// 非法值置 None（避免被底座静默回退成 Max），合法别名规范化为对应档位
+    /// （对齐 `as_setting()`，避免 wire 层 `apply_reasoning_effort` 静默丢弃）。
     #[test]
-    fn normalize_reasoning_effort_rejects_unknown_and_keeps_aliases() {
+    fn normalize_reasoning_effort_canonicalizes_aliases_and_rejects_unknown() {
         let base = SavedModel {
             id: "m1".into(),
             name: "m1".into(),
@@ -998,33 +986,33 @@ mod tests {
             "非法档位应置 None 而非交给底座静默回退 Max"
         );
 
-        for alias in [
-            "off",
-            "disabled",
-            "none",
-            "false",
-            "low",
-            "minimum",
-            "minimal",
-            "light",
-            "medium",
-            "mid",
-            "high",
-            "auto",
-            "automatic",
-            "max",
-            "maximum",
-            "xhigh",
-            "ultra",
-            "ultracode",
+        for (alias, canonical) in [
+            ("off", "off"),
+            ("disabled", "off"),
+            ("none", "off"),
+            ("false", "off"),
+            ("low", "low"),
+            ("minimum", "low"),
+            ("minimal", "low"),
+            ("light", "low"),
+            ("medium", "medium"),
+            ("mid", "medium"),
+            ("high", "high"),
+            ("auto", "auto"),
+            ("automatic", "auto"),
+            ("max", "max"),
+            ("maximum", "max"),
+            ("xhigh", "max"),
+            ("ultra", "max"),
+            ("ultracode", "max"),
         ] {
             let mut m = base.clone();
             m.reasoning_effort = Some(alias.into());
             m.normalize_route_limits();
             assert_eq!(
                 m.reasoning_effort.as_deref(),
-                Some(alias),
-                "合法别名 {alias} 应保留"
+                Some(canonical),
+                "别名 {alias} 应规范化为 {canonical}"
             );
         }
     }

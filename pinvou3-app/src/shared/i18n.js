@@ -1197,7 +1197,7 @@ const dict = {
         testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
         switchModelTitle: 'モデルを切り替え', modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', modelDeleteMin: 'モデルは最低 1 つ必要です',
         modelGroupPreset: 'プリセット', modelGroupCustom: 'カスタム',
-        thinkingDepth: '思考深度', thinkingDepthTiers: { off: 'オフ', low: '低', medium: '中', high: '高', max: '最大' },
+        thinkingDepth: '思考の深さ', thinkingDepthTiers: { off: 'オフ', low: '低', medium: '中', high: '高', max: '最大' },
         saveModelFailed: '思考深度の保存に失敗しました。もう一度お試しください',
         modelEnvLocked: f => `環境変数でロック中：${f}（設定は反映されません）`, deleteModelConfirm: n => `モデル「${n}」を削除しますか？`,
         modelDirtyHint: '設定が変更されました。保存するとアプリが再起動します',

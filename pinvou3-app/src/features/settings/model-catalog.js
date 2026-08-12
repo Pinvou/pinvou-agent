@@ -592,8 +592,10 @@ function selectorSubLabel(m, t) {
 const REASONING_EFFORT_TIERS = {
   // vllm：off/low/medium/high 四档；max 被底座降级为 high，不重复暴露。
   vllm: ['off', 'low', 'medium', 'high'],
-  // deepseek / volcengine：low/medium 被底座归一为 high，仅 off/high/max 有区别。
-  deepseek: ['off', 'high', 'max'],
+  // deepseek：wire 文档只认 low/high/max（无 medium），底座 apply_reasoning_effort
+  // 把 low 保留为更便宜档位、medium 归一为 high，故暴露 off/low/high/max。
+  deepseek: ['off', 'low', 'high', 'max'],
+  // volcengine：底座把 low/medium 归一为 high，仅 off/high/max 有区别。
   volcengine: ['off', 'high', 'max'],
   // 只有 thinking 开关的 provider：off/high。
   moonshot: ['off', 'high'],
@@ -625,12 +627,15 @@ function isOpenaiReasoningFamilyModel(model) {
 // 区别的 provider」的刻意裁剪，不改变行为：
 // 1. base_url 推断：Rust 先按 `is_official_deepseek_base_url(base_url)` 判定
 //    official deepseek；前端不解析 base_url，靠 vendor/preset 覆盖同一结论。
+//    已知缺口：`openai_compatible` + 无 vendor 但 base_url 指向 api.deepseek.com
+//    的手工模型，Rust 会判为 deepseek（注入档位）而前端返回 null（无档位 UI）。
 // 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端
 //    返回 null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
 // 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入
 //    "openai"（wire route 身份）；前端对 qwen/tencent/gemini/google 返回
 //    null（底座无档位），仅 openai vendor 的 gpt-5.x reasoning 家族返回
-//    "openai"，与 Rust 的 `isOpenaiReasoningFamilyModel` 过滤等价。
+//    "openai"，与底座的 `model_is_openai_reasoning_family` 过滤等价
+//    （Rust `provider()` 不做该过滤，由底座 `apply_openai_reasoning_effort` 收口）。
 // 4. 判定优先级：Rust 是 base_url → env(DEEPSEEK_PROVIDER) → vendor → preset；
 //    前端无 env/base_url 概念，直接 vendor 优先 + preset 兜底，结果一致。
 function reasoningProviderForModel(model) {
@@ -675,13 +680,26 @@ function defaultReasoningEffortForModel(model) {
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
-// 存量档位归一：用户可能保存过底座归一前的旧档位（如 deepseek 的 medium，
-// 底座会把 low/medium 归一为 high）。展示与表单初始值都取归一后的档位，避免
-// 「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
+// 底座 ReasoningEffort::parse_strict 接受的别名 → 规范档位（对齐 as_setting()）。
+// 只收录会映射到档位表内档位的别名；auto/automatic 不在 UI 暴露，不收录（回落默认）。
+const REASONING_EFFORT_CANONICAL = {
+  off: 'off', disabled: 'off', none: 'off', false: 'off',
+  low: 'low', minimum: 'low', minimal: 'low', light: 'low',
+  medium: 'medium', mid: 'medium',
+  high: 'high',
+  max: 'max', maximum: 'max', xhigh: 'max', ultra: 'max', ultracode: 'max',
+};
+
+// 存量档位归一：用户可能保存过底座归一前的旧值（别名或不在档位表内的档位，
+// 如 deepseek 的 medium → 底座归一为 high）。展示与表单初始值都取归一后的档位，
+// 避免「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
 function normalizeStoredReasoningEffort(model, stored) {
   const tiers = reasoningEffortTiersForModel(model) || [];
   if (!tiers.length) return null;
-  if (stored && tiers.includes(stored)) return stored;
+  const canonical = stored
+    ? (REASONING_EFFORT_CANONICAL[String(stored).trim().toLowerCase()] || null)
+    : null;
+  if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }
 
