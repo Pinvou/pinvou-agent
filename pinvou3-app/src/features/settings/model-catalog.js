@@ -328,7 +328,6 @@ const MODEL_CATALOG = {
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
-        { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -345,7 +344,6 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'],
       items: [
         { model: 'qwen3.8-max', title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
-        { model: 'qwen3.8-max-preview', title: 'qwen3.8-max-preview', desc: '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换' },
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
@@ -370,7 +368,6 @@ const MODEL_CATALOG = {
         { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
-        { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
     },

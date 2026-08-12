@@ -2,7 +2,7 @@
 // 只保留各家官方/主流兼容端点；Rust 侧保持 schema 无关，切换时以用户填写的
 // base_url 为准。
 //
-// 模型名单按 2026-08-05 各厂商官方接入文档核对（platform.claude.com /
+// 模型名单按 2026-08-11 各厂商官方接入文档核对（platform.claude.com /
 // developers.openai.com / api-docs.deepseek.com / platform.moonshot.cn /
 // docs.bigmodel.cn / help.aliyun.com(model-studio) / platform.minimax.io /
 // docs.x.ai）。预设只提供 base URL 与协议，模型由用户自行填写（见
@@ -27,11 +27,11 @@ export const ACP_PROVIDER_PRESETS = [
   // 表名的 kimi-code/ 前缀是别名，实际请求的 model 字段是无前缀的 "k3"）。
   // Kimi Code 托管的 1M 变体仅 k3 一个（k3-256k 等其余档位无 1M 声明）。
   { key: 'kimi-code', nameKey: 'presetKimiCode', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3[1m]'] },
-  { key: 'deepseek', nameKey: 'presetDeepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', baseUrlAnthropic: 'https://api.deepseek.com/anthropic', wireApi: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], models1m: ['deepseek-v4-flash[1m]', 'deepseek-v4-pro[1m]'] },
+  { key: 'deepseek', nameKey: 'presetDeepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', baseUrlAnthropic: 'https://api.deepseek.com/anthropic', wireApi: 'openai', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], models1m: ['deepseek-v4-flash[1m]', 'deepseek-v4-pro[1m]'] },
   { key: 'zhipu', nameKey: 'presetZhipu', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'openai', models: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash'] },
   { key: 'qwen', nameKey: 'presetQwen', name: '通义千问 Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', wireApi: 'openai', models: ['qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus'] },
   { key: 'doubao', nameKey: 'presetDoubao', name: '豆包 Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', wireApi: 'openai', models: [] },
-  { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.1'] },
+  { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
   { key: 'xai', nameKey: 'presetXai', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', wireApi: 'openai', models: ['grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-build-0.1'] },
   { key: 'openrouter', nameKey: 'presetOpenrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', wireApi: 'openai', models: [] },
   { key: 'siliconflow', nameKey: 'presetSiliconflow', name: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', wireApi: 'openai', models: [] },
@@ -39,7 +39,7 @@ export const ACP_PROVIDER_PRESETS = [
 ];
 
 // 表单 model 字段的官方在列模型建议（datalist，可自由输入其他模型名）。
-// 截至 2026-08-05 各厂商官方文档在列：
+// 截至 2026-08-11 各厂商官方文档在列：
 export const ACP_MODEL_PRESETS = [
   // Anthropic（platform.claude.com）
   'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5',
@@ -54,8 +54,8 @@ export const ACP_MODEL_PRESETS = [
   'glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash',
   // Qwen（阿里云百炼）
   'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus',
-  // MiniMax（M3 为最新，M2.1 已列 legacy）
-  'MiniMax-M3', 'MiniMax-M2.1',
+  // MiniMax（M3 为最新旗舰，M2.7 现役；M2.5/M2.1/M2 已归历史模型）
+  'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
   // xAI（grok-4.5 旗舰 / grok-4.3 通用推荐）
   'grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-build-0.1',
 ];

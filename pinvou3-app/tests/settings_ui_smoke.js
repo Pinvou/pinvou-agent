@@ -497,7 +497,7 @@ async function modalWidth(page, headingText) {
   await sleep(300);
   const freshCatalog = await page.evaluate(() => {
     const text = document.body.innerText;
-    const stale = ['deepseek-chat', 'kimi-k2.5', 'glm-4-plus', 'minimax-m1', 'abab6.5s-chat', 'mimo-v2-flash', 'qwen-max', 'qwen-plus', 'qwen-turbo', 'doubao-pro-256k', 'gpt-4o'];
+    const stale = ['deepseek-chat', 'kimi-k2.5', 'glm-4-plus', 'minimax-m1', 'abab6.5s-chat', 'mimo-v2-flash', 'qwen-max', 'qwen-plus', 'qwen-turbo', 'doubao-pro-256k', 'gpt-4o', 'qwen3.8-max-preview'];
     return {
       hasSections: text.includes('Coding Plan') && text.includes('官方 API') && text.includes('自定义兼容接口'),
       hasProviders: text.includes('智谱 Coding Plan / GLM Coding Plan') && text.includes('Kimi Coding Plan') && text.includes('深度求索 / DeepSeek') && text.includes('MiniMax 中国版 / MiniMax China'),
@@ -530,10 +530,11 @@ async function modalWidth(page, headingText) {
     const lines = (root ? root.innerText : '').split('\n').map(line => line.trim());
     return {
       hasGa: lines.includes('qwen3.8-max'),
-      hasPreview: lines.includes('qwen3.8-max-preview'),
+      hasFlash: lines.includes('qwen3.6-flash'),
+      noPreview: !lines.includes('qwen3.8-max-preview'),
     };
   });
-  rec('⑥.1d Token Plan 条目同时列出 qwen3.8-max 正式版与预览版', Object.values(tokenPlanModels).every(Boolean), JSON.stringify(tokenPlanModels));
+  rec('⑥.1d Token Plan 条目列正式旗舰与白名单 Flash，且不展示已下线预览版', Object.values(tokenPlanModels).every(Boolean), JSON.stringify(tokenPlanModels));
   await clickExact(page, '取消');
   await sleep(300);
 
