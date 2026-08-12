@@ -28,12 +28,13 @@ vm.runInContext(
   `this.findCloudProviderForModel = findCloudProviderForModel;\n` +
   `this.providerLabelForModel = providerLabelForModel;\n` +
   `this.reasoningEffortTiersForModel = reasoningEffortTiersForModel;\n` +
-  `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n`,
+  `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n` +
+  `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel } = ctx;
+const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, normalizeStoredReasoningEffort } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -224,4 +225,27 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
   assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(defaultReasoningEffortForModel(xai), null);
+});
+
+test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {
+  const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
+  // 存量档位不在 deepseek 档位表内（底座会把 low/medium 归一为 high）→ 归一到 high
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'medium'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'low'), 'high');
+  // 存量值已在档位表内 → 原样保留
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'off'), 'off');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, 'max'), 'max');
+  // 无存量 → 回退默认档位
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, null), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseek, undefined), 'high');
+  // vllm 默认 off，存量为空时同样回退 off
+  const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
+  assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'off');
+  // 无档位模型（xai 底座空操作）→ null
+  const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
+  assert.strictEqual(normalizeStoredReasoningEffort(xai, 'high'), null);
+  assert.strictEqual(normalizeStoredReasoningEffort(xai, null), null);
+  // anthropic 档位表含 low/medium/high/max：存量 medium 原样保留
+  const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
+  assert.strictEqual(normalizeStoredReasoningEffort(anthropic, 'medium'), 'medium');
 });

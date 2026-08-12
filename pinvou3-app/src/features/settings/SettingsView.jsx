@@ -18,7 +18,7 @@ import {
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
-  reasoningEffortTiersForModel, defaultReasoningEffortForModel,
+  reasoningEffortTiersForModel, defaultReasoningEffortForModel, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -529,15 +529,19 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
       const reasoningEffortTiers = current ? (reasoningEffortTiersForModel(current) || []) : [];
-      const reasoningEffortValue = (current && current.reasoning_effort)
-        || (current ? defaultReasoningEffortForModel(current) : null)
-        || (reasoningEffortTiers.length ? 'high' : null);
+      // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
+      // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
+      const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
+      const [effortSaveError, setEffortSaveError] = useState('');
       function setReasoningEffortForCurrent(tier) {
         if (!current) return;
         setOpen(false);
         if (tier === reasoningEffortValue) return;
+        setEffortSaveError('');
         const next = { ...current, reasoning_effort: tier };
-        if (bridge.available) bridge.models.saveModel(next).catch(() => {});
+        if (bridge.available) bridge.models.saveModel(next)
+          .then(() => setEffortSaveError(''))
+          .catch((error) => setEffortSaveError(String(error && error.message ? error.message : error) || (t && t.saveModelFailed) || '保存失败'));
       }
       if (!savedModels.length) return null;
       function pick(id) {
@@ -611,6 +615,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                           </button>
                         ))}
                       </div>
+                      {effortSaveError && (
+                        <div className="mt-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]">{effortSaveError}</div>
+                      )}
                     </div>
                   </>
                 )}
@@ -1268,10 +1275,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
-      // 思考深度档位：初始取已保存值，无则按模型默认（vllm→off，其余→high；
+      // 思考深度档位：初始取已保存值（先归一——存量可能是底座归一前的旧值，
+      // 如 deepseek 的 medium），无则按模型默认（vllm→off，其余→high；
       // 底座不支持的模型无默认，保持 null = 未显式设置，避免保存时污染 SavedModel）。
       const [reasoningEffort, setReasoningEffort] = useState(
-        initial.reasoning_effort || defaultReasoningEffortForModel(initial) || null
+        normalizeStoredReasoningEffort(initial, initial.reasoning_effort)
       );
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');

@@ -620,6 +620,19 @@ function isOpenaiReasoningFamilyModel(model) {
 }
 
 // 品悟 provider 判定（对齐 bridge.rs `provider()`：vendor 优先 + preset 兜底）。
+//
+// 与 Rust `provider()` 存在 4 处结构性差异，均为前端「只暴露底座有实际档位
+// 区别的 provider」的刻意裁剪，不改变行为：
+// 1. base_url 推断：Rust 先按 `is_official_deepseek_base_url(base_url)` 判定
+//    official deepseek；前端不解析 base_url，靠 vendor/preset 覆盖同一结论。
+// 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端
+//    返回 null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
+// 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入
+//    "openai"（wire route 身份）；前端对 qwen/tencent/gemini/google 返回
+//    null（底座无档位），仅 openai vendor 的 gpt-5.x reasoning 家族返回
+//    "openai"，与 Rust 的 `isOpenaiReasoningFamilyModel` 过滤等价。
+// 4. 判定优先级：Rust 是 base_url → env(DEEPSEEK_PROVIDER) → vendor → preset；
+//    前端无 env/base_url 概念，直接 vendor 优先 + preset 兜底，结果一致。
 function reasoningProviderForModel(model) {
   if (!model) return null;
   const vendor = (model.vendor || '').trim().toLowerCase();
@@ -662,6 +675,16 @@ function defaultReasoningEffortForModel(model) {
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
+// 存量档位归一：用户可能保存过底座归一前的旧档位（如 deepseek 的 medium，
+// 底座会把 low/medium 归一为 high）。展示与表单初始值都取归一后的档位，避免
+// 「档位表不含该值 → 下拉无高亮 / 残留无法选中的脏值」；无档位模型返回 null。
+function normalizeStoredReasoningEffort(model, stored) {
+  const tiers = reasoningEffortTiersForModel(model) || [];
+  if (!tiers.length) return null;
+  if (stored && tiers.includes(stored)) return stored;
+  return defaultReasoningEffortForModel(model) || tiers[0] || null;
+}
+
 export {
   MODEL_PRESET_DEFS,
   PROVIDER_KIND_CODING_PLAN,
@@ -685,4 +708,5 @@ export {
   selectorSubLabel,
   reasoningEffortTiersForModel,
   defaultReasoningEffortForModel,
+  normalizeStoredReasoningEffort,
 };
