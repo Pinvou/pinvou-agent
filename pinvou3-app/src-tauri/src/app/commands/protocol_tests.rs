@@ -230,7 +230,8 @@ command_protocol!(
         "install_marketplace_skill",
         "import_skill_package",
         "import_skill_package_bytes",
-        "uninstall_marketplace_skill"
+        "uninstall_marketplace_skill",
+        "bundle_readiness"
     ]
 );
 command_protocol!(

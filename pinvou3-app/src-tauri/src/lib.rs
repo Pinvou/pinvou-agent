@@ -971,6 +971,7 @@ pub fn run() {
             commands::marketplace::import_skill_package,
             commands::marketplace::import_skill_package_bytes,
             commands::marketplace::uninstall_marketplace_skill,
+            commands::marketplace::bundle_readiness,
             commands::files::verify_upload,
         ]);
 
