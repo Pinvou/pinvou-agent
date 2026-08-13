@@ -4,6 +4,7 @@
 //! 安装状态持久化在 `~/.pinvou3/marketplace/installed.json`。
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
+pub mod bundle;
 pub mod skill_marketplace;
 pub mod skill_scope;
 
