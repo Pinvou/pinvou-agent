@@ -250,6 +250,17 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // 官方 deepseek base_url 推断：openai_compatible 且无 vendor，但 base_url 指向官方端点 → deepseek 档位
   const deepseekByUrl = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1' };
   assert.deepStrictEqual(tiers(deepseekByUrl), ['off', 'low', 'high', 'max']);
+  // /beta 与 api.deepseeki.com 同为官方端点（对齐 Rust is_official_deepseek_base_url）
+  const deepseekBeta = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/beta' };
+  assert.deepStrictEqual(tiers(deepseekBeta), ['off', 'low', 'high', 'max']);
+  const deepseeki = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseeki.com' };
+  assert.deepStrictEqual(tiers(deepseeki), ['off', 'low', 'high', 'max']);
+  // volcengine：底座把 low/medium 归一为 high，仅 off/high/max 有区别
+  const volcengine = { preset: 'doubao', vendor: 'doubao', model: 'doubao-seed-evolving' };
+  assert.deepStrictEqual(tiers(volcengine), ['off', 'high', 'max']);
+  // xiaomi-mimo：只有 thinking 开关（off/enabled），off/high 两档
+  const mimo = { preset: 'mimo', vendor: 'mimo', model: 'mimo-v2.5-pro' };
+  assert.deepStrictEqual(tiers(mimo), ['off', 'high']);
 });
 
 test('reasoningEffortTiersForModel：精确路由语义对齐底座 is_exact_https_route', () => {
