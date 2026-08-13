@@ -49,6 +49,16 @@ pub struct CredentialSpec {
     pub required: bool,
 }
 
+/// 配置弹窗字段的功能事实（修复方案 V4 下沉部分）。
+/// label/placeholder/helpText 属 i18n 展示资产，留前端 overlay 按包 id 索引，不进后端。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigFieldSpec {
+    pub key: String,
+    pub required: bool,
+    pub target: CredentialTarget,
+    pub secret: bool,
+}
+
 /// 包形态（内容现算，不落存储）。优先级定死（修复方案 V2）：
 /// cli 非空 → Cli > servers+skills 均非空 → Bundle > servers 非空 → Mcp > skills 非空 → Skill。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +101,12 @@ pub struct BundleInfo {
     pub cli: Vec<String>,
     /// 包声明的凭据项（收敛自 config_fields/secret_env/secret_headers）
     pub credentials: Vec<CredentialSpec>,
+    /// 功能事实（修复方案 V4 下沉；icon/color/todayImg/welcomeQueries/i18n 留前端 overlay）
+    pub description: String,
+    pub version: String,
+    pub auth_required: bool,
+    /// 配置弹窗字段功能事实（label/placeholder/helpText 留前端）
+    pub config_fields: Vec<ConfigFieldSpec>,
     pub installed: bool,
     /// 用户上传（非预置），前端用默认图标渲染
     pub user_uploaded: bool,
@@ -140,6 +156,13 @@ impl BundleRegistry {
             };
             skill_claimed.extend(companions.iter().cloned());
             let credentials = tool_credentials(&tool);
+            let config_fields = tool_config_fields(&tool);
+            // auth_required 功能事实：有必填凭据或远程 server（OAuth）即需授权；
+            // 本地免凭据工具（obsidian/pptx/gongwen）不需要。
+            let auth_required = !config_fields.is_empty()
+                || !tool.secret_env.is_empty()
+                || !tool.secret_headers.is_empty()
+                || !tool.servers.is_empty();
             out.push(BundleInfo {
                 id: tool.id.clone(),
                 name: tool.name.clone(),
@@ -152,6 +175,10 @@ impl BundleRegistry {
                 skills: companions,
                 cli: Vec::new(),
                 credentials,
+                description: tool.description.clone(),
+                version: tool.version.clone(),
+                auth_required,
+                config_fields,
                 installed: installed_mcp_ids.contains(&tool.id),
                 user_uploaded: false,
             });
@@ -173,6 +200,10 @@ impl BundleRegistry {
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
                 credentials: Vec::new(),
+                description: skill.description.clone(),
+                version: String::new(),
+                auth_required: false,
+                config_fields: Vec::new(),
                 installed: skill.installed,
                 user_uploaded: false,
             });
@@ -191,12 +222,17 @@ impl BundleRegistry {
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
                 credentials: Vec::new(),
+                description: skill.description.clone(),
+                version: String::new(),
+                auth_required: false,
+                config_fields: Vec::new(),
                 installed: true,
                 user_uploaded: true,
             });
         }
 
-        // 4) CLI 连接器源（内置常量表；V2 后不含 ima）
+        // 4) CLI 连接器源（内置常量表；V2 后不含 ima。V4 硬约束：desc/version/
+        //    auth_required 内容迁移随步骤 6（前端数据源切换）同 PR 完成，此处结构占位）
         for (id, name) in BUILTIN_CLI_BUNDLES {
             out.push(BundleInfo {
                 id: (*id).to_string(),
@@ -206,6 +242,10 @@ impl BundleRegistry {
                 skills: Vec::new(),
                 cli: vec![(*id).to_string()],
                 credentials: Vec::new(),
+                description: String::new(),
+                version: String::new(),
+                auth_required: true,
+                config_fields: Vec::new(),
                 installed: self.cli_bundle_installed(id),
                 user_uploaded: false,
             });
@@ -230,6 +270,23 @@ impl BundleRegistry {
                     key: "IMA_API_KEY".to_string(),
                     target: CredentialTarget::Credential,
                     required: true,
+                },
+            ],
+            description: String::new(),
+            version: String::new(),
+            auth_required: true,
+            config_fields: vec![
+                ConfigFieldSpec {
+                    key: "IMA_CLIENT_ID".to_string(),
+                    required: true,
+                    target: CredentialTarget::Credential,
+                    secret: true,
+                },
+                ConfigFieldSpec {
+                    key: "IMA_API_KEY".to_string(),
+                    required: true,
+                    target: CredentialTarget::Credential,
+                    secret: true,
                 },
             ],
             installed: self.cli_bundle_installed("ima"),
@@ -300,6 +357,40 @@ fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
             key: s.source_key.clone(),
             target: CredentialTarget::Bearer,
             required: s.required,
+        });
+    }
+    out
+}
+
+/// 配置弹窗字段功能事实（V4 下沉；label/placeholder/helpText 属 i18n 展示资产留前端）。
+fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
+    let mut out: Vec<ConfigFieldSpec> = Vec::new();
+    for f in &tool.config_fields {
+        out.push(ConfigFieldSpec {
+            key: f.key.clone(),
+            required: f.required,
+            target: match f.target.as_str() {
+                "bearer" => CredentialTarget::Bearer,
+                "credential" => CredentialTarget::Credential,
+                _ => CredentialTarget::Env,
+            },
+            secret: f.secret,
+        });
+    }
+    for s in &tool.secret_env {
+        out.push(ConfigFieldSpec {
+            key: s.key.clone(),
+            required: s.required,
+            target: CredentialTarget::Env,
+            secret: true,
+        });
+    }
+    for s in &tool.secret_headers {
+        out.push(ConfigFieldSpec {
+            key: s.source_key.clone(),
+            required: s.required,
+            target: CredentialTarget::Bearer,
+            secret: true,
         });
     }
     out
@@ -461,6 +552,10 @@ mod tests {
             skills: vec![],
             cli: vec![],
             credentials: creds,
+            description: String::new(),
+            version: String::new(),
+            auth_required: false,
+            config_fields: vec![],
             installed: true,
             user_uploaded: false,
         };
