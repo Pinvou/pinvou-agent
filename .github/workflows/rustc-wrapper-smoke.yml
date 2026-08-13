@@ -153,9 +153,10 @@ jobs:
           grep -q "compiler_stack_contract" cargo-test.log
           grep -q "test result: ok" cargo-test.log
 
-      # 5) 链式 wrapper(RUSTC_WRAPPER_CHAIN,如 sccache):验证 wrapper 先注入
-      #    RUST_MIN_STACK、再委托给链上命令执行(pr-check.yml 的 rust-test /
-      #    windows-rust-test 用此链保留 sccache 缓存 + 栈注入两全)。
+      # 5) 链式 wrapper(RUSTC_WRAPPER_CHAIN):验证 wrapper 先注入 RUST_MIN_STACK、
+      #    再委托给链上命令执行。注意:sccache 等 client-server 型 wrapper 不会把
+      #    env 传给 server 派生的编译器,故 CI 的 rust-test / windows-rust-test 不接
+      #    sccache 链;此处用 `env` 这类直接 exec 的命令验证链机制本身。
       - name: 链式 wrapper —— 委托链上命令且仍注入 16 MiB
         shell: bash
         run: |
