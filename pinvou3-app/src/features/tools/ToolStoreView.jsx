@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
+import { ChevronLeft, Globe, Package, Search, Server, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { localizeTool, TsActionBtn, tsCategories, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -633,17 +633,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const ov = (storeData.skills || {})[s.backendId || s.id];
         return ov ? { ...s, ...ov } : s;
       };
-      const localizeCollection = (c) => {
-        const ov = (storeData.featuredCollections || {})[c.id];
-        return ov ? { ...c, ...ov } : c;
-      };
       const externalAuthAvailable = canStartExternalAuth();
       const canMutateToolStore = can('toolStoreMutations');
       const [searchQuery, setSearchQuery] = useState('');
       const [activeCategory, setActiveCategory] = useState('all');
       const [selectedTool, setSelectedTool] = useState(null);
-      const featuredScrollRef = useRef(null);
-      const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
       const [toolStates, setToolStates] = useState({});
       const [toolAuthStates, setToolAuthStates] = useState({});
       // 配套技能 id → 所属 MCP id(由 list_marketplace_tools 的 companion_skills 反建,manifest 单一真源)。
@@ -670,13 +664,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const oauthRequestRef = useRef({});
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
       const [obsidianGuide, setObsidianGuide] = useState(null); // {backendId,name,state,vault_path} 未安装/没库引导
-      const [viewMode, setViewMode] = useState('card'); // 'card'(卡片视图) | 'list'(列表视图)
       const [groupBy, setGroupBy] = useState('type'); // 列表视图主维度:'type'(按类型) | 'business'(按业务)
       const [installedOnly, setInstalledOnly] = useState(false); // 头像入口:只看已安装
       const [skillBackend, setSkillBackend] = useState([]); // list_marketplace_skills 原始返回
-      const isCard = viewMode === 'card';
-      const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
-      const showFeaturedCollections = isCard && searchQuery === '' && activeCategory === 'all';
       // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
       const LOCAL_TOOLS = ['pptx', 'gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
@@ -735,18 +725,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) { console.error('ima_status failed:', e); }
       };
       useEffect(() => { refreshIma(); }, []);
-
-      useEffect(() => {
-        const urls = [
-          ...tsFeaturedCollections.map((item) => item.img),
-          ...tsSkillsData.map((item) => item.todayImg),
-        ].filter(Boolean);
-        urls.forEach((src) => {
-          const img = new Image();
-          img.decoding = 'async';
-          img.src = src;
-        });
-      }, []);
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       //（弹窗、刷新连接态）。真正的事件监听/秒表在模块级 feishuConn 里，切视图不丢。
@@ -920,12 +898,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const skillCards = [...presetSkills, ...uploadedSkills];
 
       const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId) && isToolVisibleOnPlatform(t));
-      const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
-      // 独家技能:公文写作 / PPT 生成 / 数据可视化 / 视觉设计(按此序;视觉无 backendId,PIN 后自然排末)
-      const FEATURED_SKILL = s => ['government-writing', 'pptx', 'visualizer'].includes(s.backendId) || s.id === 's5';
-      // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受卡片视图/分类限制(「我的工具」内搜索仍限已安装)
+      const listItems = [...connectorTools, ...skillCards]; // 连接器 + 技能全放一起
+      // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
-      const sourceItems = (searching && !installedOnly) ? listItems : (isCard ? skillCards.filter(FEATURED_SKILL) : listItems);
       const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
       // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
       // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
@@ -942,17 +917,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         ...(groupBy === 'type' ? TOOL_TYPE_GROUPS : TOOL_BUSINESS_GROUPS)
           .map(id => ({ id, label: groupBy === 'type' ? typeLabel(id) : catLabel(id) }))
           .filter(chip => listItems.some(tool => primaryGroupOf(tool) === chip.id))];
-      const PIN = ['government-writing', 'pptx', 'visualizer'];
-      const filteredTools = sourceItems.filter(tool => {
+      const filteredTools = listItems.filter(tool => {
         // 即将上线占位卡(无 backendId)在「我的工具」外可见,可检索、进分区,操作按钮自身置灰。
         if (!isLaunchedTool(tool) && installedOnly) return false;
         const q = searchQuery.toLowerCase();
         const matchesSearch = tool.title.toLowerCase().includes(q) || (tool.desc || '').toLowerCase().includes(q);
-        if (installedOnly && !isCard) return matchesSearch && tool.installed;
-        const matchesCategory = searching || isCard || activeCategory === 'all' || primaryGroupOf(tool) === activeCategory;
+        if (installedOnly) return matchesSearch && tool.installed;
+        const matchesCategory = searching || activeCategory === 'all' || primaryGroupOf(tool) === activeCategory;
         return matchesSearch && matchesCategory;
       }).sort((a, b) => {
-        if (isCard && !searching) { const r = x => { const i = PIN.indexOf(x.backendId); return i === -1 ? 99 : i; }; if (r(a) !== r(b)) return r(a) - r(b); }
         // 已上线(有 backendId 或内置)排在未上线(即将上线)之前
         const onA = !!a.backendId || !!a.builtin, onB = !!b.backendId || !!b.builtin;
         if (onA !== onB) return onA ? -1 : 1;
@@ -960,8 +933,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (!a.installed && b.installed) return 1;
         return 0;
       });
-      // 分区:仅列表视图非搜索/非「我的工具」时分区;搜索与我的工具保持平铺。组内沿用 filteredTools 排序。
-      const sectioned = !isCard && !installedOnly && !searching;
+      // 分区:仅非搜索/非「我的工具」时分区;搜索与我的工具保持平铺。组内沿用 filteredTools 排序。
+      const sectioned = !installedOnly && !searching;
       const listSections = [];
       if (sectioned) {
         const buckets = new Map();
@@ -977,10 +950,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         buckets.forEach((items, key) => listSections.push({ id: key, label: sectionLabelOf(key), items }));
       }
       useEffect(() => {
-        if (!isCard && !installedOnly && !searching && activeCategory !== 'all' && !groupChips.some(chip => chip.id === activeCategory)) {
+        if (!installedOnly && !searching && activeCategory !== 'all' && !groupChips.some(chip => chip.id === activeCategory)) {
           setActiveCategory('all');
         }
-      }, [activeCategory, installedOnly, isCard, searching, groupChips]);
+      }, [activeCategory, installedOnly, searching, groupChips]);
 
       // 从后端加载已安装状态
       const loadBackendState = async () => {
@@ -1633,30 +1606,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return () => { document.body.style.overflow = 'unset'; };
       }, [selectedTool]);
 
-      useEffect(() => {
-        if (isFeaturedHovered || searchQuery !== '' || activeCategory !== 'all') return;
-        const interval = setInterval(() => {
-          if (featuredScrollRef.current) {
-            const { scrollLeft, scrollWidth, clientWidth } = featuredScrollRef.current;
-            if (scrollLeft + clientWidth >= scrollWidth - 50) {
-              featuredScrollRef.current.scrollTo({ left: 0, behavior: 'smooth' });
-            } else {
-              featuredScrollRef.current.scrollBy({ left: 424, behavior: 'smooth' });
-            }
-          }
-        }, 4000);
-        return () => clearInterval(interval);
-      }, [isFeaturedHovered, searchQuery, activeCategory]);
-
-      const handleScrollFeatured = (direction) => {
-        if (featuredScrollRef.current) {
-          featuredScrollRef.current.scrollBy({
-            left: direction === 'left' ? -424 : 424,
-            behavior: 'smooth'
-          });
-        }
-      };
-
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900">
           {createPortal(<TsAlert alert={alert} theme={theme} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
@@ -1719,7 +1668,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                   <div className="flex items-center justify-between sm:block sm:shrink-0">
                     <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{storeCopy.title}</h1>
-                    <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
+                    <button onClick={() => { setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
                       className={`inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] ${installedOnly ? 'hidden' : 'sm:hidden'}`}>
                       <User size={14} className="mr-2 opacity-70" />
                       <span>{storeCopy.myTools}</span>
@@ -1738,19 +1687,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       />
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-3">
-                      <div className="flex h-9 shrink-0 items-center rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
-                        {[{ key: 'card', label: storeCopy.card, Icon: IconGrid }, { key: 'list', label: storeCopy.list, Icon: IconList }].map(seg => (
-                          <button key={seg.key} onClick={() => { setViewMode(seg.key); setInstalledOnly(false); setSearchQuery(''); setActiveCategory('all'); }}
-                            className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
-                              viewMode === seg.key
-                                ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
-                                : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
-                            }`}>
-                            <seg.Icon size={14} className="mr-2 opacity-70" />
-                            {seg.label}
-                          </button>
-                        ))}
-                      </div>
                       {canMutateToolStore && (
                         <button data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
                           className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
@@ -1758,7 +1694,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <span>{storeCopy.uploadSkillPackage}</span>
                         </button>
                       )}
-                      <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
+                      <button onClick={() => { setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
                         className="max-sm:hidden inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <User size={14} className="mr-2 opacity-70" />
                         <span>{storeCopy.myTools}</span>
@@ -1771,95 +1707,25 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
             {/* Main scrollable area */}
             <main className="flex-1">
-              <div className={`max-w-[1400px] mx-auto ${isCard ? 'py-8 space-y-12' : 'pt-5 pb-8 space-y-6'}`}>
-
-                {/* Featured carousel */}
-                <section
-                  hidden={!showFeaturedCollections}
-                  className={`relative group/featured ${showFeaturedCollections ? '' : 'hidden'}`}
-                  aria-hidden={!showFeaturedCollections}
-                  onMouseEnter={() => setIsFeaturedHovered(true)}
-                  onMouseLeave={() => setIsFeaturedHovered(false)}
-                >
-                    <div className="flex items-end justify-between mb-5">
-                      <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">{storeCopy.featured}</h2>
-                    </div>
-
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleScrollFeatured('left'); }}
-                      className="absolute -left-5 top-[55%] -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/90 dark:bg-slate-800/90 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center justify-center text-slate-800 dark:text-slate-200 opacity-0 group-hover/featured:opacity-100 hover:scale-110 transition-all border border-slate-200 dark:border-slate-700 hidden md:flex"
-                    >
-                      <ChevronLeft size={26} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleScrollFeatured('right'); }}
-                      className="absolute -right-5 top-[55%] -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/90 dark:bg-slate-800/90 backdrop-blur-md shadow-[0_4px_20px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center justify-center text-slate-800 dark:text-slate-200 opacity-0 group-hover/featured:opacity-100 hover:scale-110 transition-all border border-slate-200 dark:border-slate-700 hidden md:flex"
-                    >
-                      <ChevronRight size={26} />
-                    </button>
-
-                    <div
-                      ref={featuredScrollRef}
-                      className="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-6 no-scrollbar relative"
-                      style={{ scrollbarWidth: 'none', maskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)', WebkitMaskImage: 'linear-gradient(to right,#000 0,#000 92%,transparent 100%)' }}
-                    >
-                      {tsFeaturedCollections.map(localizeCollection).map((collection) => {
-                        const featTool = tools.find(a => a.id === collection.featuredToolId);
-                        if (featTool && !isToolVisibleOnPlatform(featTool)) return null;
-                        return (
-                          <div
-                            key={collection.id}
-                            onClick={() => setSelectedTool(featTool)}
-                            className="relative min-w-[320px] md:min-w-[400px] h-[440px] max-sm:h-[380px] rounded-[32px] snap-start shrink-0 overflow-hidden cursor-pointer group shadow-sm hover:shadow-xl dark:shadow-none border border-slate-200/50 dark:border-white/10 transition-all duration-500"
-                          >
-                            {collection.img
-                              ? <img src={collection.img} alt="" loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                              : <div className={`absolute inset-0 ${collection.bg} transition-transform duration-700 group-hover:scale-105`} />}
-                            <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60" />
-
-                            <div className="absolute top-0 left-0 w-full p-8 text-white z-10">
-                              <span className="text-xs font-bold text-white/70 uppercase tracking-widest mb-1.5 block">{collection.label}</span>
-                              <h3 className="text-[28px] font-bold tracking-tight leading-tight mb-3 text-white drop-shadow-sm">{collection.title}</h3>
-                              <p className="text-white/80 text-[15px] font-medium leading-relaxed max-w-[90%] drop-shadow-sm">{collection.subtitle}</p>
-                            </div>
-
-                            {featTool && (
-                              <div className="absolute bottom-6 left-6 right-6 z-10">
-                                <div className="bg-white/20 dark:bg-black/40 backdrop-blur-3xl border border-white/20 dark:border-white/10 rounded-2xl p-4 flex items-center gap-4 transition-transform group-hover:-translate-y-1">
-                                  <TsToolIcon tool={featTool} className="h-14 w-14 flex-shrink-0 rounded-[14px] shadow-inner" imageClassName="h-9 w-9" fallbackSize={26} />
-                                  <div className="flex-1 min-w-0">
-                                    <h4 className="text-base font-bold text-white truncate drop-shadow-sm">{featTool.title}</h4>
-                                    <p className="text-xs text-white/70 truncate flex items-center gap-1.5">
-                                      <Cpu size={12} /> {featTool.type}
-                                    </p>
-                                  </div>
-                                  <PlatformToolAction tool={featTool} busy={busyId === featTool.backendId} onAction={handleAction} copy={storeCopy} t={t} />
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                </section>
+              <div className="max-w-[1400px] mx-auto pt-5 pb-8 space-y-6">
 
                 {/* Category filter + tool list */}
                 <section>
-                  <div className={`flex flex-col gap-4 mb-6 ${!isCard && !installedOnly && !searching ? '' : 'sm:flex-row sm:items-end justify-between'} ${isCard ? '' : 'pb-5'}`}>
-                    {(isCard || installedOnly || searching) && (
+                  <div className={`flex flex-col gap-4 mb-6 pb-5 ${!installedOnly && !searching ? '' : 'sm:flex-row sm:items-end justify-between'}`}>
+                    {(installedOnly || searching) && (
                       <div className="flex items-center gap-3">
                         {installedOnly && (
-                          <button onClick={() => { setInstalledOnly(false); setViewMode('card'); }} title={storeCopy.back}
+                          <button onClick={() => { setInstalledOnly(false); }} title={storeCopy.back}
                             className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
                             <ChevronLeft size={20} />
                           </button>
                         )}
                         <h2 className="text-[13px] font-bold uppercase tracking-wider text-[#3C3C43]/60 dark:text-[#EBEBF5]/60">
-                          {isCard ? (searchQuery ? storeCopy.results : storeCopy.skills) : (installedOnly ? storeCopy.myTools : storeCopy.results)}
+                          {installedOnly ? storeCopy.myTools : storeCopy.results}
                         </h2>
                       </div>
                     )}
-                    {!isCard && !installedOnly && (
+                    {!installedOnly && (
                       <div className="flex flex-col gap-3">
                         {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
                         <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
@@ -1895,73 +1761,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   {filteredTools.length > 0 ? (
-                    (isSkillTab && !searching) ? (
-                    <div key="tool-store-card-grid" className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-7">
-                      {filteredTools.map((tool) => {
-                        const v = tool.todayVariant || 'fallback';
-                        const bar = (
-                          <div className="absolute bottom-4 left-4 right-4 bg-white/92 dark:bg-[#1c1c1e]/92 backdrop-blur-xl rounded-2xl p-3 flex items-center gap-3 shadow-lg">
-                            <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white shadow-inner shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
-                            <div className="flex-1 min-w-0"><h4 className="text-[15px] font-bold truncate text-slate-900 dark:text-white">{tool.title}</h4><p className="text-[12px] text-slate-500 dark:text-slate-400 truncate">{tool.subtitle}</p></div>
-                            <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />
-                          </div>
-                        );
-                        return (
-                          <div key={`card-${tool.id}`} onClick={() => setSelectedTool(tool)} className="today-card group relative w-full h-[440px] max-sm:h-[400px] rounded-[28px] overflow-hidden cursor-pointer shadow-[0_14px_40px_-18px_rgba(15,23,42,0.35)] transition-all duration-500 hover:shadow-[0_28px_64px_-24px_rgba(15,23,42,0.45)] hover:-translate-y-1">
-                            {v === 'light' ? (
-                              <>
-                                <div className="p-6"><p className="text-slate-500 dark:text-slate-400 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-[30px] font-bold leading-[1.1] tracking-tight whitespace-pre-line text-slate-900 dark:text-white">{tool.todayTitle}</h2></div>
-                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute bottom-0 left-0 w-full h-[62%] object-cover" />}
-                                {bar}
-                              </>
-                            ) : v === 'drama' ? (
-                              <>
-                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/40" />
-                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em]">{tool.todayLabel}</p></div>
-                                <div className="absolute bottom-0 left-0 p-6"><h2 className="text-white text-[32px] font-bold leading-[1.05] tracking-tight drop-shadow mb-2 whitespace-pre-line">{tool.todayTitle}</h2><p className="text-white/85 text-[14px] font-medium">{tool.subtitle}</p></div>
-                              </>
-                            ) : v === 'appbar' ? (
-                              <>
-                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
-                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/10 to-black/35" />
-                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
-                                {bar}
-                              </>
-                            ) : v === 'appimg' ? (
-                              <>
-                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
-                                <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/5 to-black/80" />
-                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
-                                <div className="absolute bottom-0 left-0 right-0 p-6 flex items-center gap-3">
-                                  <div className={`w-12 h-12 rounded-[13px] ${tool.color} flex items-center justify-center text-white text-xl shadow-lg shrink-0`}><tool.icon size={22} strokeWidth={1.6} /></div>
-                                  <div className="flex-1 min-w-0"><h4 className="text-white text-[15px] font-bold truncate drop-shadow">{tool.title}</h4><p className="text-white/80 text-[12px] truncate drop-shadow">{tool.subtitle}</p></div>
-                                  {tool.builtin
-                                    ? <span className="text-white text-[12px] font-bold bg-white/20 backdrop-blur px-3 py-1 rounded-full shrink-0">{storeCopy.builtin}</span>
-                                    : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />}
-                                </div>
-                              </>
-                            ) : v === 'fallback' ? (
-                              <>
-                                <div className={`absolute inset-0 ${tool.color}`} />
-                                <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-transparent to-black/55" />
-                                <div className="absolute top-6 left-6 right-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{storeCopy.skillLabel}</p><h2 className="text-white text-[28px] font-bold leading-[1.1] tracking-tight drop-shadow">{tool.title}</h2></div>
-                                <tool.icon size={120} strokeWidth={1} className="absolute -bottom-3 -right-1 text-white/15" />
-                                {bar}
-                              </>
-                            ) : (
-                              <>
-                                {tool.todayImg && <img src={tool.todayImg} loading="eager" decoding="async" className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
-                                <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-transparent to-black/70" />
-                                <div className="absolute top-0 left-0 p-6"><p className="text-white/85 text-[13px] font-bold uppercase tracking-[0.12em] mb-1.5">{tool.todayLabel}</p><h2 className="text-white text-[30px] font-bold leading-[1.1] tracking-tight drop-shadow whitespace-pre-line">{tool.todayTitle}</h2></div>
-                                <p className="absolute bottom-5 left-6 right-6 text-white/90 text-[14px] font-medium leading-snug">{tool.subtitle}</p>
-                              </>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    ) : (
                     <div key="tool-store-list-grid" className={sectioned ? 'pb-7 space-y-8' : 'grid grid-cols-1 lg:grid-cols-2 gap-4 pb-7'}>
                       {(sectioned ? listSections : [{ id: 'flat', label: null, items: filteredTools }]).map((section) => (
                         <div key={`section-${section.id}`}>
@@ -2007,15 +1806,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                         </div>
                       ))}
                     </div>
-                    )
                   ) : (
                     <div className="py-24 text-center flex flex-col items-center">
                       <div className="w-16 h-16 mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
-                        {isSkillTab ? <Package size={28} /> : <Server size={28} />}
+                        <Server size={28} />
                       </div>
-                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? storeCopy.emptyNoMatch : (installedOnly ? storeCopy.emptyNoInstalled : (isSkillTab ? storeCopy.emptyNoSkills : storeCopy.emptyNoTools))}</h3>
-                      <p className="text-slate-500 dark:text-slate-400">{searching ? storeCopy.emptyNoMatchHint : (installedOnly ? (canMutateToolStore ? storeCopy.emptyNoInstalledHint : storeCopy.emptyNoInstalledHintReadonly) : (isSkillTab ? (canMutateToolStore ? storeCopy.emptyNoSkillsHint : storeCopy.emptyNoSkillsHintReadonly) : storeCopy.emptyNoToolsHint))}</p>
-                      {isSkillTab && !searching && !installedOnly && canMutateToolStore && (
+                      <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? storeCopy.emptyNoMatch : (installedOnly ? storeCopy.emptyNoInstalled : storeCopy.emptyNoTools)}</h3>
+                      <p className="text-slate-500 dark:text-slate-400">{searching ? storeCopy.emptyNoMatchHint : (installedOnly ? (canMutateToolStore ? storeCopy.emptyNoInstalledHint : storeCopy.emptyNoInstalledHintReadonly) : storeCopy.emptyNoToolsHint)}</p>
+                      {!searching && !installedOnly && canMutateToolStore && (
                         <button data-testid="tool-store-empty-upload-btn" onClick={handleUploadSkill}
                           className="mt-5 inline-flex h-9 items-center rounded-full bg-blue-600 px-5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
                           <Upload size={14} className="mr-2" />{storeCopy.uploadSkillPackage}
