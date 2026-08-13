@@ -1,4 +1,5 @@
 function normalizeVoiceShortcutMode(mode) {
+  if (mode === 'edit' || mode === 'voice_edit' || mode === 'draft_edit') return 'edit';
   return mode === 'task' ? 'task' : 'dictation';
 }
 
@@ -34,17 +35,12 @@ function voiceShortcutActionForKeyDown(event, current) {
   }
 
   if (isAltSpaceKey(event)) {
-    if (!recording) return { type: 'trigger', mode: 'task' };
-    return mode === 'task' ? { type: 'trigger', mode: 'task' } : { type: 'none' };
+    return { type: 'clear_pending' };
   }
 
   if (isPlainAltKey(event)) {
-    if (state.pendingSpace) {
-      if (!recording) return { type: 'trigger', mode: 'task' };
-      return mode === 'task' ? { type: 'trigger', mode: 'task' } : { type: 'none' };
-    }
     if (!recording) return { type: 'pending_alt' };
-    return mode === 'dictation' ? { type: 'pending_alt' } : { type: 'none' };
+    return { type: 'pending_alt' };
   }
 
   return { type: 'none' };
@@ -55,7 +51,7 @@ function voiceShortcutActionForKeyUp(event, current) {
   if (!isPlainAltKey(event) || !state.pendingAlt) return { type: 'none' };
   const status = state.status || 'idle';
   const mode = normalizeVoiceShortcutMode(state.mode);
-  if (status === 'recording' && mode !== 'dictation') return { type: 'none' };
+  if (status === 'recording') return { type: 'trigger', mode };
   return { type: 'trigger', mode: 'dictation' };
 }
 

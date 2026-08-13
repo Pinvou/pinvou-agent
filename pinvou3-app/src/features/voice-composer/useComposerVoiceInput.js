@@ -7,7 +7,6 @@ import {
 
 function normalizeMode(mode) {
   if (mode === 'task') return 'task';
-  if (mode === 'structured' || mode === 'list' || mode === 'structured_dictation') return 'structured';
   if (mode === 'edit' || mode === 'voice_edit' || mode === 'draft_edit') return 'edit';
   return 'dictation';
 }
@@ -151,14 +150,15 @@ function useComposerVoiceInput(adapter) {
     const bridge = current.bridge;
     const voiceInput = current.voiceInput || { status: 'idle' };
     const voiceBusy = !!current.voiceBusy;
-    let nextMode = normalizeMode(mode);
-    if (typeof current.resolveMode === 'function') {
+    const preserveActiveMode = options.preserveMode && voiceInput.status === 'recording';
+    let nextMode = preserveActiveMode ? normalizeMode(voiceInput.mode) : normalizeMode(mode);
+    if (!preserveActiveMode && typeof current.resolveMode === 'function') {
       nextMode = normalizeMode(current.resolveMode(nextMode, {
         source: options.source || 'shortcut',
         draft: typeof current.getDraft === 'function' ? current.getDraft() : '',
         voiceInput,
       }));
-    } else if (nextMode === 'dictation' && options.source !== 'button'
+    } else if (!preserveActiveMode && nextMode === 'dictation' && options.source !== 'button'
       && trimDraft(typeof current.getDraft === 'function' ? current.getDraft() : '')) {
       nextMode = 'edit';
     }
@@ -167,13 +167,6 @@ function useComposerVoiceInput(adapter) {
       bridge.voice.cancelVoiceInput();
       return;
     }
-    if (voiceBusy) return;
-    if (typeof current.canStart === 'function' && !current.canStart(nextMode)) return;
-    if (!options.skipBeforeStart && typeof current.onBeforeStart === 'function'
-      && current.onBeforeStart(nextMode) === false) {
-      return;
-    }
-
     if (voiceInput.status === 'recording') {
       if (normalizeMode(voiceInput.mode) !== nextMode) return;
       bridge.voice.startVoiceInput(
@@ -188,6 +181,12 @@ function useComposerVoiceInput(adapter) {
       );
       return;
     }
+    if (voiceBusy) return;
+    if (typeof current.canStart === 'function' && !current.canStart(nextMode)) return;
+    if (!options.skipBeforeStart && typeof current.onBeforeStart === 'function'
+      && current.onBeforeStart(nextMode) === false) {
+      return;
+    }
 
     const sessionId = createVoiceSessionId(current.targetId);
     voiceSessionIdRef.current = sessionId;
@@ -195,7 +194,12 @@ function useComposerVoiceInput(adapter) {
     bridge.voice.startVoiceInput(
       typeof current.getDraft === 'function' ? current.getDraft() : '',
       (text, draftBeforeStart, context) => handleVoiceResult(sessionId, text, draftBeforeStart, context),
-      { mode: nextMode },
+      {
+        mode: nextMode,
+        beforePermission: typeof current.beforePermission === 'function'
+          ? current.beforePermission
+          : undefined,
+      },
     );
   }, [handleVoiceResult]);
 

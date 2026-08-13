@@ -491,11 +491,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
                     <div>
                       <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy.voiceIntroComboLabel}</div>
-                      <div className="flex items-baseline gap-2 leading-none">
-                        <span className="text-[38px] font-extrabold tracking-tight text-slate-950">Alt</span>
-                        <span className="text-[24px] font-bold text-slate-400">+</span>
-                        <span className="text-[38px] font-extrabold tracking-tight text-indigo-600">Space</span>
-                      </div>
+                      <div className="text-[38px] font-extrabold leading-none tracking-tight text-indigo-600">Alt</div>
                     </div>
                     <div className="text-right">
                       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{copy.voiceIntroModeLabel}</div>
@@ -675,6 +671,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
       const pendingVoiceAfterIntroRef = useRef(null);
+      const voiceIntroResolveRef = useRef(null);
       const voiceAsrPopoverRef = useRef(null);
       const voiceAsrInstallWasActiveRef = useRef(false);
       const voiceAsrReadyNoticeTimerRef = useRef(null);
@@ -1317,6 +1314,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const voiceAsrProgress = voiceAsrSetup.progress || {};
       useEffect(() => () => {
         if (voiceAsrReadyNoticeTimerRef.current) window.clearTimeout(voiceAsrReadyNoticeTimerRef.current);
+        if (voiceIntroResolveRef.current) {
+          voiceIntroResolveRef.current(false);
+          voiceIntroResolveRef.current = null;
+        }
       }, []);
       useEffect(() => {
         if (!voiceAsrBusy) setVoiceAsrPopoverOpen(false);
@@ -1332,6 +1333,14 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
             setVoiceAsrReadyNotice(false);
             voiceAsrReadyNoticeTimerRef.current = null;
           }, 3200);
+          const pendingVoice = pendingVoiceAfterIntroRef.current;
+          if (pendingVoice) {
+            pendingVoiceAfterIntroRef.current = null;
+            requestVoiceShortcutIntroAfterAsr(pendingVoice.mode).then((shouldContinue) => {
+              if (!shouldContinue) return;
+              handleVoiceTrigger(pendingVoice.mode, { source: pendingVoice.source || 'button' });
+            });
+          }
         }
         voiceAsrInstallWasActiveRef.current = voiceAsrBusy;
       }, [voiceAsrBusy, voiceAsrProgress.stage, voiceAsrSetup.status]);
@@ -1481,14 +1490,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           }
           return mode;
         },
-        onBeforeStart: mode => {
-          if (mode !== 'dictation') return true;
-          if (!voiceIntroSeenState && !voiceShortcutEnabledRef.current) {
-            pendingVoiceAfterIntroRef.current = { mode: 'dictation' };
-            setVoiceIntroOpen(true);
-            return false;
-          }
-          return true;
+        beforePermission: context => {
+          pendingVoiceAfterIntroRef.current = null;
+          return requestVoiceShortcutIntroAfterAsr(context && context.mode);
         },
         sendTask: async outgoing => {
           try {
@@ -1511,17 +1515,31 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setVoiceShortcutIntroSeen(true);
       }
 
-      function continuePendingVoiceAfterIntro() {
-        const pending = pendingVoiceAfterIntroRef.current;
-        pendingVoiceAfterIntroRef.current = null;
-        if (!pending) return;
-        handleVoiceTrigger(pending.mode, { skipBeforeStart: true });
+      function shouldShowVoiceShortcutIntro(mode) {
+        return normalizeVoiceMode(mode) === 'dictation'
+          && !voiceIntroSeenState
+          && !voiceShortcutEnabledRef.current;
+      }
+
+      function requestVoiceShortcutIntroAfterAsr(mode) {
+        if (!shouldShowVoiceShortcutIntro(mode)) return Promise.resolve(true);
+        if (voiceIntroResolveRef.current) return Promise.resolve(false);
+        setVoiceIntroOpen(true);
+        return new Promise((resolve) => {
+          voiceIntroResolveRef.current = resolve;
+        });
+      }
+
+      function resolveVoiceShortcutIntro(value) {
+        const resolve = voiceIntroResolveRef.current;
+        voiceIntroResolveRef.current = null;
+        if (resolve) resolve(value);
       }
 
       function handleVoiceIntroClose() {
         rememberVoiceIntroSeen();
         setVoiceIntroOpen(false);
-        continuePendingVoiceAfterIntro();
+        resolveVoiceShortcutIntro(true);
       }
 
       function handleVoiceIntroToggleShortcut(enabled) {
@@ -1529,15 +1547,25 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setVoiceShortcutEnabled(enabled);
         setVoiceShortcutEnabledState(enabled);
         setVoiceIntroOpen(false);
-        continuePendingVoiceAfterIntro();
+        resolveVoiceShortcutIntro(true);
       }
 
       function handleVoiceClick() {
+        if (shouldShowVoiceShortcutIntro('dictation')) {
+          pendingVoiceAfterIntroRef.current = { mode: 'dictation', source: 'button' };
+        } else {
+          pendingVoiceAfterIntroRef.current = null;
+        }
         handleVoiceTrigger('dictation', { source: 'button' });
         setVoiceModeMenuOpen(false);
       }
 
       function handleVoiceMenuTrigger(mode) {
+        if (shouldShowVoiceShortcutIntro(mode)) {
+          pendingVoiceAfterIntroRef.current = { mode, source: 'menu' };
+        } else {
+          pendingVoiceAfterIntroRef.current = null;
+        }
         handleVoiceTrigger(mode, { source: 'menu' });
         setVoiceModeMenuOpen(false);
       }
@@ -1842,6 +1870,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               voiceMode={voiceMode}
               copy={t}
               chatCopy={chatCopy}
+              dark={theme === 'dark'}
               voiceAsrReadyNotice={voiceAsrReadyNotice}
               canInstallLocalAsr={canInstallLocalAsr}
               onGotoSettings={onGotoSettings}
@@ -2015,7 +2044,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   menuOpen={voiceModeMenuOpen}
                   menuItems={[
                     { key: 'dictation', label: t.voiceContinueDictation || t.voiceDictationMode, onSelect: () => handleVoiceMenuTrigger('dictation') },
-                    { key: 'structured', label: t.voiceStructuredMode, onSelect: () => handleVoiceMenuTrigger('structured') },
                     ...(hasDraftText ? [{ key: 'edit', label: t.voiceEditMode, onSelect: () => handleVoiceMenuTrigger('edit') }] : []),
                   ]}
                   onToggleMenu={() => setVoiceModeMenuOpen(open => !open)}

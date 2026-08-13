@@ -12,16 +12,13 @@ enum VoiceShortcutKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VoiceShortcutEvent {
     TriggerDictation,
-    TriggerTask,
     Cancel,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct VoiceShortcutState {
     alt_down: bool,
-    space_down: bool,
     alt_pending: bool,
-    alt_space_used: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,10 +55,6 @@ fn handle_voice_shortcut_key(
                 VoiceShortcutKey::Alt => {
                     state.alt_down = false;
                     state.alt_pending = false;
-                    state.alt_space_used = false;
-                }
-                VoiceShortcutKey::Space => {
-                    state.space_down = false;
                 }
                 _ => {}
             }
@@ -72,42 +65,20 @@ fn handle_voice_shortcut_key(
     match (key, key_down) {
         (VoiceShortcutKey::Alt, true) => {
             state.alt_down = true;
-            if state.space_down && !state.alt_space_used {
-                state.alt_pending = false;
-                state.alt_space_used = true;
-                VoiceShortcutDecision::suppress(Some(VoiceShortcutEvent::TriggerTask))
-            } else {
-                state.alt_pending = true;
-                state.alt_space_used = false;
-                VoiceShortcutDecision::suppress(None)
-            }
+            state.alt_pending = true;
+            VoiceShortcutDecision::suppress(None)
         }
         (VoiceShortcutKey::Alt, false) => {
-            let should_trigger = state.alt_pending && !state.alt_space_used;
+            let should_trigger = state.alt_pending;
             state.alt_down = false;
             state.alt_pending = false;
-            state.alt_space_used = false;
             VoiceShortcutDecision::suppress(
                 should_trigger.then_some(VoiceShortcutEvent::TriggerDictation),
             )
         }
-        (VoiceShortcutKey::Space, true) if state.alt_down && !state.alt_space_used => {
-            state.space_down = true;
+        (VoiceShortcutKey::Space, true) if state.alt_down => {
             state.alt_pending = false;
-            state.alt_space_used = true;
-            VoiceShortcutDecision::suppress(Some(VoiceShortcutEvent::TriggerTask))
-        }
-        (VoiceShortcutKey::Space, true) => {
-            state.space_down = true;
-            VoiceShortcutDecision::pass()
-        }
-        (VoiceShortcutKey::Space, false) => {
-            state.space_down = false;
-            if state.alt_down {
-                VoiceShortcutDecision::suppress(None)
-            } else {
-                VoiceShortcutDecision::pass()
-            }
+            VoiceShortcutDecision::suppress(None)
         }
         (VoiceShortcutKey::Escape, true) => VoiceShortcutDecision {
             event: Some(VoiceShortcutEvent::Cancel),
@@ -149,19 +120,6 @@ fn emit_shortcut_event(app: &AppHandle, event: VoiceShortcutEvent) {
                 result.is_ok()
             );
         }
-        VoiceShortcutEvent::TriggerTask => {
-            let result = app.emit(
-                "voice-shortcut:trigger",
-                VoiceShortcutTriggerPayload {
-                    mode: "task",
-                    source: "native",
-                },
-            );
-            eprintln!(
-                "[pinvou3-app] voice shortcut emitted event=TriggerTask ok={}",
-                result.is_ok()
-            );
-        }
         VoiceShortcutEvent::Cancel => {
             let result = app.emit(
                 "voice-shortcut:cancel",
@@ -192,12 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn alt_space_triggers_task_and_blocks_followup_dictation() {
+    fn alt_space_does_not_trigger_task_or_followup_dictation() {
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true);
 
         let space = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true);
-        assert_eq!(space.event, Some(VoiceShortcutEvent::TriggerTask));
+        assert_eq!(space.event, None);
         assert!(space.suppress);
 
         let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
@@ -206,17 +164,17 @@ mod tests {
     }
 
     #[test]
-    fn space_alt_triggers_task_and_blocks_followup_dictation() {
+    fn space_then_alt_uses_plain_alt_only() {
         let mut state = VoiceShortcutState::default();
         let space = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true);
         assert_eq!(space, VoiceShortcutDecision::pass());
 
         let alt = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true);
-        assert_eq!(alt.event, Some(VoiceShortcutEvent::TriggerTask));
+        assert_eq!(alt.event, None);
         assert!(alt.suppress);
 
         let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true);
-        assert_eq!(up.event, None);
+        assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
         assert!(up.suppress);
     }
 

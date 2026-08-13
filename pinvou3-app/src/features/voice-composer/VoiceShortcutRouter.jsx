@@ -20,12 +20,6 @@ function VoiceShortcutRouter({ enabled = true }) {
         [flag]: true,
       };
     }
-    function clearPendingShortcutFlag(flag) {
-      const current = pendingRef.current || {};
-      const next = { ...current };
-      delete next[flag];
-      pendingRef.current = next.alt || next.space ? next : null;
-    }
     function clearPendingShortcut() {
       pendingRef.current = null;
     }
@@ -40,31 +34,32 @@ function VoiceShortcutRouter({ enabled = true }) {
         mode: (voiceInput && voiceInput.mode) || 'dictation',
       };
     }
+    function triggerVoiceShortcutTarget(target, actionMode, status, activeMode) {
+      if (!target || typeof target.trigger !== 'function') return;
+      if (status === 'recording') {
+        target.trigger(activeMode || 'dictation', { source: 'shortcut-stop', preserveMode: true });
+        return;
+      }
+      target.trigger(actionMode || 'dictation');
+    }
     function handleVoiceShortcutKeyDown(event) {
       if (shouldIgnoreVoiceShortcutEvent(event)) return;
       const shortcutEnabled = voiceShortcutEnabled();
-      if (!shortcutEnabled && !(event && event.key === 'Escape')) return;
-      if (
-        event
-        && event.code === 'Space'
-        && !event.altKey
-        && !event.ctrlKey
-        && !event.shiftKey
-        && !event.metaKey
-      ) {
-        setPendingShortcutFlag('space');
-        return;
-      }
       const { target, status, mode } = currentTargetState();
       if (!target) return;
+      const recording = status === 'recording';
+      if (!shortcutEnabled && !(event && (event.key === 'Escape' || (event.key === 'Alt' && recording)))) return;
       const action = voiceShortcutActionForKeyDown(event, {
         status,
         mode,
-        pendingSpace: Boolean(pendingRef.current && pendingRef.current.space),
       });
       if (action.type === 'none') return;
       event.preventDefault();
       event.stopPropagation();
+      if (action.type === 'clear_pending') {
+        clearPendingShortcut();
+        return;
+      }
       if (action.type === 'cancel') {
         clearPendingShortcut();
         if (typeof target.cancel === 'function') target.cancel();
@@ -72,19 +67,19 @@ function VoiceShortcutRouter({ enabled = true }) {
       }
       if (action.type === 'trigger') {
         clearPendingShortcut();
-        if (typeof target.trigger === 'function') target.trigger(action.mode);
+        triggerVoiceShortcutTarget(target, action.mode, status, mode);
         return;
       }
       if (action.type === 'pending_alt') setPendingShortcutFlag('alt');
     }
     function handleVoiceShortcutKeyUp(event) {
-      if (!voiceShortcutEnabled()) {
-        clearPendingShortcutFlag('space');
-        return;
-      }
-      if (event && event.code === 'Space') clearPendingShortcutFlag('space');
       const { target, status, mode } = currentTargetState();
       if (!target) return;
+      const recording = status === 'recording';
+      if (!voiceShortcutEnabled() && !(event && event.key === 'Alt' && recording)) {
+        clearPendingShortcut();
+        return;
+      }
       const action = voiceShortcutActionForKeyUp(event, {
         status,
         mode,
@@ -94,8 +89,8 @@ function VoiceShortcutRouter({ enabled = true }) {
       event.preventDefault();
       event.stopPropagation();
       clearPendingShortcut();
-      if (action.type === 'trigger' && typeof target.trigger === 'function') {
-        target.trigger(action.mode);
+      if (action.type === 'trigger') {
+        triggerVoiceShortcutTarget(target, action.mode, status, mode);
       }
     }
     window.addEventListener('keydown', handleVoiceShortcutKeyDown, true);
@@ -118,15 +113,22 @@ function VoiceShortcutRouter({ enabled = true }) {
       }
       unlisteners.push(unlisten);
     }
-    listenTauri('voice-shortcut:trigger', (event) => {
+    listenTauri('voice-shortcut:trigger', () => {
       pendingRef.current = null;
-      if (!voiceShortcutEnabled()) return;
       const target = getActiveVoiceTarget();
       if (!target || typeof target.trigger !== 'function') return;
-      const payload = event && Object.prototype.hasOwnProperty.call(event, 'payload')
-        ? event.payload
-        : event;
-      target.trigger(payload && payload.mode === 'task' ? 'task' : 'dictation');
+      const voiceInput = typeof target.getVoiceInput === 'function'
+        ? target.getVoiceInput()
+        : { status: 'idle' };
+      const status = (voiceInput && voiceInput.status) || 'idle';
+      const mode = (voiceInput && voiceInput.mode) || 'dictation';
+      const recording = status === 'recording';
+      if (!voiceShortcutEnabled() && !recording) return;
+      if (recording) {
+        target.trigger(mode, { source: 'shortcut-stop', preserveMode: true });
+        return;
+      }
+      target.trigger('dictation');
     }).then(rememberUnlisten).catch(() => {});
     listenTauri('voice-shortcut:cancel', () => {
       pendingRef.current = null;

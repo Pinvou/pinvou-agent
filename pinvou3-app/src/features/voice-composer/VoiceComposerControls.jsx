@@ -117,6 +117,7 @@ function VoiceComposerStatus({
   voiceMode,
   copy,
   chatCopy,
+  dark = false,
   voiceAsrReadyNotice,
   canInstallLocalAsr,
   onGotoSettings,
@@ -131,6 +132,7 @@ function VoiceComposerStatus({
         voiceInput={voiceInput}
         voiceMode={voiceMode}
         copy={copy}
+        dark={dark}
         canInstallLocalAsr={canInstallLocalAsr}
         onGotoSettings={onGotoSettings}
         onRetry={onRetry}

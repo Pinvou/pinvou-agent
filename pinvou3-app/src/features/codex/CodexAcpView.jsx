@@ -3188,6 +3188,7 @@ export function CodexAcpView({
               voiceMode={nativeVoiceMode}
               copy={t}
               chatCopy={t.uiChat}
+              dark={theme === 'dark'}
               voiceAsrReadyNotice={false}
               canInstallLocalAsr={nativeVoiceCanInstallAsr}
               onGotoSettings={onGotoSettings}
@@ -3366,7 +3367,6 @@ export function CodexAcpView({
                     menuOpen={nativeVoiceModeMenuOpen}
                     menuItems={[
                       { key: 'dictation', label: t.voiceContinueDictation || t.voiceDictationMode, onSelect: () => handleNativeVoiceMenuTrigger('dictation') },
-                      { key: 'structured', label: t.voiceStructuredMode, onSelect: () => handleNativeVoiceMenuTrigger('structured') },
                       ...(String(draft || '').trim() ? [{ key: 'edit', label: t.voiceEditMode, onSelect: () => handleNativeVoiceMenuTrigger('edit') }] : []),
                     ]}
                     onToggleMenu={() => setNativeVoiceModeMenuOpen(open => !open)}

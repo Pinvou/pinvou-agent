@@ -14,6 +14,8 @@ const routerPath = path.join(__dirname, "..", "src", "features", "voice-composer
 const routerSource = fs.readFileSync(routerPath, "utf8");
 const voiceControlsPath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceComposerControls.jsx");
 const voiceControlsSource = fs.readFileSync(voiceControlsPath, "utf8");
+const voiceNoticePath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceNoticeBar.jsx");
+const voiceNoticeSource = fs.readFileSync(voiceNoticePath, "utf8");
 const voiceHookPath = path.join(__dirname, "..", "src", "features", "voice-composer", "useComposerVoiceInput.js");
 const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
@@ -54,6 +56,15 @@ assert.strictEqual(unsupportedConstraint.diagnostic, "unsupported media constrai
 
 const invalidConstraint = normalizeVoiceError({ message: "Invalid constraint: noiseSuppression" });
 assert.strictEqual(invalidConstraint.category, "constraint_unsupported");
+
+const localAsrEmptyResult = normalizeVoiceError({
+  category: "recognition_failed",
+  stage: "transcribing",
+  message: "Local SenseVoice/FunASR ASR failed (exit 6): ASR empty result: backend returned no usable result",
+});
+assert.strictEqual(localAsrEmptyResult.category, "empty_result");
+assert.match(localAsrEmptyResult.message, /未识别到语音内容/);
+assert.match(localAsrEmptyResult.diagnostic, /FunASR ASR failed/);
 
 const ruleStart = source.indexOf("  function normalizeVoiceMode(mode) {");
 const ruleEnd = source.indexOf("\n  function logVoicePipeline(", ruleStart);
@@ -109,7 +120,7 @@ assert.strictEqual(
   "做一张海报，这个海报是长方形，需要联网下载的图片。用于公司的下午茶需要有一些文字的内容。",
 );
 assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("task", "查一下今日金价。"), 8000);
-assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("structured", "整理一下今天的会议待办。"), 10000);
+assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("structured", "整理一下今天的会议待办。"), 3000);
 assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("edit", "把它改成三条要点。"), 12000);
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("把这段改成三条要点。", "edit").strategy,
@@ -119,16 +130,28 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("第一整理会议第二提取风险第三明天发送。", "structured").strategy,
   "run_llm",
-  "structured dictation must run LLM for list organization",
+  "legacy structured mode must fold into the dictation main path",
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。", "dictation").strategy,
   "run_llm",
   "long poster dictation from Alt or mic must run LLM",
 );
-assert.match(rustVoiceSource, /内容很多、包含多个条件、多个意图或明显任务槽位时，整理成 Markdown 列表/);
+assert.match(rustVoiceSource, /除极短自然句外，默认整理成结构化 Markdown 列表/);
+assert.match(rustVoiceSource, /内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表/);
+assert.match(rustVoiceSource, /制作一个个人工作台，用于企业录入工作事项进度，包括截止时间/);
 assert.match(rustVoiceSource, /12月36日下午3点/);
 assert.match(rustVoiceSource, /model returned empty output/);
+assert.doesNotMatch(
+  chatSource,
+  /key: 'structured'[\s\S]*handleVoiceMenuTrigger\('structured'\)/,
+  "chat voice menu must not expose structured as a separate user mode",
+);
+assert.doesNotMatch(
+  rustVoiceSource,
+  /mode == "structured"/,
+  "structured must not remain a standalone voice postprocess chain",
+);
 assert.match(
   rustVoiceSource,
   /VoiceReasoningDialect::ThinkingDisabled[\s\S]*body\["thinking"\] = json!\(\{ "type": "disabled" \}\)/,
@@ -190,18 +213,23 @@ assert.match(
 );
 assert.match(
   routerSource,
-  /const shortcutEnabled = voiceShortcutEnabled\(\);[\s\S]*?if \(!shortcutEnabled && !\(event && event\.key === 'Escape'\)\) return;/,
-  "web voice shortcut keydown must be gated by explicit user opt-in",
+  /const recording = status === 'recording';[\s\S]*?if \(!shortcutEnabled && !\(event && \(event\.key === 'Escape' \|\| \(event\.key === 'Alt' && recording\)\)\)\) return;/,
+  "web voice shortcut keydown must gate startup by explicit opt-in but allow recording Alt stop",
 );
 assert.match(
   routerSource,
-  /if \(!voiceShortcutEnabled\(\)\) \{[\s\S]*?clearPendingShortcutFlag\('space'\);[\s\S]*?return;[\s\S]*?\}/,
-  "web voice shortcut keyup must ignore disabled shortcuts and clear pending space state",
+  /if \(!voiceShortcutEnabled\(\) && !\(event && event\.key === 'Alt' && recording\)\) \{[\s\S]*?clearPendingShortcut\(\);[\s\S]*?return;[\s\S]*?\}/,
+  "web voice shortcut keyup must ignore disabled startup shortcuts but allow recording Alt stop",
 );
 assert.match(
   routerSource,
-  /listenTauri\('voice-shortcut:trigger'[\s\S]*?pendingRef\.current = null;\s*if \(!voiceShortcutEnabled\(\)\) return;[\s\S]*?const payload/,
-  "native voice shortcut trigger must be gated by explicit user opt-in",
+  /function triggerVoiceShortcutTarget\(target, actionMode, status, activeMode\) \{[\s\S]*?if \(status === 'recording'\) \{[\s\S]*?target\.trigger\(activeMode \|\| 'dictation', \{ source: 'shortcut-stop', preserveMode: true \}\);/,
+  "web voice shortcut stop must preserve the active recording mode instead of re-resolving from draft text",
+);
+assert.match(
+  routerSource,
+  /listenTauri\('voice-shortcut:trigger'[\s\S]*?const recording = status === 'recording';[\s\S]*?if \(!voiceShortcutEnabled\(\) && !recording\) return;[\s\S]*?target\.trigger\(mode, \{ source: 'shortcut-stop', preserveMode: true \}\);[\s\S]*?target\.trigger\('dictation'\)/,
+  "native voice shortcut trigger must gate startup by opt-in but allow recording Alt stop",
 );
 assert.match(
   chatSource,
@@ -210,13 +238,18 @@ assert.match(
 );
 assert.match(
   chatSource,
-  /if \(!voiceIntroSeenState && !voiceShortcutEnabledRef\.current\) \{[\s\S]*?pendingVoiceAfterIntroRef\.current = \{ mode: 'dictation' \};[\s\S]*?setVoiceIntroOpen\(true\);[\s\S]*?return;/,
-  "first mic click must show the shortcut intro before continuing voice input",
+  /voiceIntroResolveRef = useRef\(null\)/,
+  "shortcut intro must be awaitable after ASR is ready",
 );
 assert.match(
   chatSource,
-  /function continuePendingVoiceAfterIntro\(\) \{[\s\S]*?pendingVoiceAfterIntroRef\.current = null;[\s\S]*?handleVoiceTrigger\(pending\.mode,\s*\{ skipBeforeStart: true \}\);[\s\S]*?\}/,
-  "closing or enabling the intro must continue the pending voice action exactly once",
+  /beforePermission: context => \{[\s\S]*?pendingVoiceAfterIntroRef\.current = null;[\s\S]*?return requestVoiceShortcutIntroAfterAsr\(context && context\.mode\);[\s\S]*?\}/,
+  "shortcut intro must run after ASR readiness and before microphone permission",
+);
+assert.match(
+  chatSource,
+  /if \(wasActive && !voiceAsrBusy && ready && done\) \{[\s\S]*?const pendingVoice = pendingVoiceAfterIntroRef\.current;[\s\S]*?requestVoiceShortcutIntroAfterAsr\(pendingVoice\.mode\)\.then[\s\S]*?handleVoiceTrigger\(pendingVoice\.mode, \{ source: pendingVoice\.source \|\| 'button' \}\);/,
+  "after automatic ASR install, shortcut intro must appear before continuing the original mic action",
 );
 assert.match(
   voiceHookSource,
@@ -233,6 +266,23 @@ assert.match(
   /voiceSessionId,[\s\S]*?workspaceId: current\.workspaceId,[\s\S]*?sessionId: current\.sessionId,/,
   "registered voice targets must carry voiceSessionId and context",
 );
+assert.match(
+  voiceHookSource,
+  /beforePermission: typeof current\.beforePermission === 'function'[\s\S]*?current\.beforePermission/,
+  "shared composer voice hook must pass the post-ASR shortcut gate into the bridge",
+);
+assert.match(
+  voiceHookSource,
+  /const preserveActiveMode = options\.preserveMode && voiceInput\.status === 'recording';[\s\S]*?let nextMode = preserveActiveMode \? normalizeMode\(voiceInput\.mode\) : normalizeMode\(mode\);[\s\S]*?!preserveActiveMode && typeof current\.resolveMode === 'function'/,
+  "recording Alt stop must preserve the active mode and skip draft-based mode resolution",
+);
+const voiceRecordingStopAt = voiceHookSource.indexOf("if (voiceInput.status === 'recording') {");
+const voiceBusyGateAt = voiceHookSource.indexOf("if (voiceBusy) return;", voiceRecordingStopAt);
+const voiceBeforeStartAt = voiceHookSource.indexOf("current.onBeforeStart(nextMode)", voiceRecordingStopAt);
+assert.ok(voiceRecordingStopAt >= 0 && voiceBusyGateAt > voiceRecordingStopAt,
+  "recording stop must run before busy startup gates");
+assert.ok(voiceRecordingStopAt >= 0 && voiceBeforeStartAt > voiceRecordingStopAt,
+  "recording stop must run before the ASR-ready shortcut intro gate");
 assert.match(
   voiceHookSource,
   /if \(mode === 'edit'\) \{[\s\S]*?current\.setDraft\(next\);[\s\S]*?setEditPreview\(null\);[\s\S]*?return;/,
@@ -334,9 +384,15 @@ vm.runInContext(
   const installStatusAt = source.indexOf('await invoke("voice_asr_status")', startVoiceInputAt);
   const requestingStatusAt = source.indexOf('setVoiceInputStatus("requesting_permission"', startVoiceInputAt);
   const activeSessionAt = source.indexOf("activeVoiceInput = session", startVoiceInputAt);
+  const beforePermissionAt = source.indexOf('typeof options.beforePermission === "function"', installStatusAt);
+  const permissionStatusAt = source.indexOf('message: bt("voiceRequestingPermission")', installStatusAt);
   assert.ok(startVoiceInputAt >= 0 && installStatusAt >= 0, "voice input start flow must exist");
   assert.ok(activeSessionAt < installStatusAt, "voice session must become cancellable before dependency status query");
   assert.ok(requestingStatusAt < installStatusAt, "voice input must show immediate feedback before dependency status query");
+  assert.ok(
+    beforePermissionAt > installStatusAt && beforePermissionAt < permissionStatusAt,
+    "shortcut intro gate must run after ASR readiness and before microphone permission",
+  );
   assert.match(
     source.slice(installStatusAt, installStatusAt + 300),
     /if \(activeVoiceInput !== session\) return;/,
@@ -371,11 +427,24 @@ vm.runInContext(
     /voiceAsrSetup\.open && canInstallLocalAsr && !voiceAsrSetup\.status\?\.installable/,
     "installable ASR downloads must not render the centered setup confirmation dialog",
   );
-  assert.match(
-    chatSource + voiceControlsSource,
-    /voiceAsrPopoverOpen[\s\S]*?onCancelAsr[\s\S]*?bridge\.voice\.cancelVoiceAsrSetup\(\)/,
-    "ASR install progress and cancellation should be available from the mic loading popover",
-  );
+assert.match(
+  chatSource + voiceControlsSource,
+  /voiceAsrPopoverOpen[\s\S]*?onCancelAsr[\s\S]*?bridge\.voice\.cancelVoiceAsrSetup\(\)/,
+  "ASR install progress and cancellation should be available from the mic loading popover",
+);
+assert.match(
+  voiceNoticeSource,
+  /voiceInput\.category === 'empty_result'[\s\S]*?voiceEmptyResultTitle[\s\S]*?voiceEmptyResultHint[\s\S]*?voiceRetryAgain/,
+  "ASR empty result must use user-facing iOS-style copy instead of raw backend errors",
+);
+const emptyNoticeStart = voiceNoticeSource.indexOf("voiceInput.category === 'empty_result'");
+const emptyNoticeEnd = voiceNoticeSource.indexOf("return (", emptyNoticeStart + 1);
+assert.ok(emptyNoticeStart >= 0 && emptyNoticeEnd > emptyNoticeStart, "empty-result voice notice branch must exist");
+assert.doesNotMatch(
+  voiceNoticeSource.slice(emptyNoticeStart, emptyNoticeEnd),
+  /voiceGotoDeps/,
+  "ASR empty result must not show dependency-check guidance",
+);
 
   const permissionCatchAt = source.indexOf('if (normalized.category === "permission_denied")', startVoiceInputAt);
   assert.ok(permissionCatchAt > startVoiceInputAt, "permission denial recovery must exist in voice input flow");

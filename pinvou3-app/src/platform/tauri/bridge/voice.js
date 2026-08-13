@@ -18,7 +18,6 @@
 
   function normalizeVoiceMode(mode) {
     if (mode === "task") return "task";
-    if (mode === "structured" || mode === "list" || mode === "structured_dictation") return "structured";
     if (mode === "edit" || mode === "voice_edit" || mode === "draft_edit") return "edit";
     return "dictation";
   }
@@ -101,7 +100,7 @@
         suspicious_terms: suspicious,
       };
     }
-    if (normalizedMode === "edit" || normalizedMode === "structured") {
+    if (normalizedMode === "edit") {
       return {
         strategy: "run_llm",
         reason: normalizedMode + "_mode",
@@ -125,7 +124,6 @@
   function voicePostprocessTimeoutMs(mode, rawText) {
     var normalizedMode = normalizeVoiceMode(mode);
     if (normalizedMode === "task") return 8000;
-    if (normalizedMode === "structured") return 10000;
     if (normalizedMode === "edit") return 12000;
     return compactVoiceText(rawText).length <= 18 ? 3000 : 5000;
   }
@@ -288,6 +286,7 @@
     var rawStage = (err && err.stage) || fallbackStage || "recording";
     var rawMessage = String((err && (err.message || err.toString && err.toString())) || err || "");
     var constraint = String((err && err.constraint) || "");
+    var emptyResultLike = /ASR empty result|empty result|backend returned no usable|no usable result|failed \(exit 6\)|exit 6/i.test(rawMessage);
     if (name === "NotAllowedError" || name === "SecurityError" || rawCategory === "permission_denied") {
       return { category: "permission_denied", stage: "permission", message: bt("voicePermissionDenied") };
     }
@@ -307,8 +306,13 @@
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
-    if (rawCategory === "empty_result") {
-      return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
+    if (rawCategory === "empty_result" || emptyResultLike) {
+      return {
+        category: "empty_result",
+        stage: rawStage,
+        message: bt("voiceEmptyResult"),
+        diagnostic: rawMessage || "",
+      };
     }
     if (rawCategory === "context_mismatch") {
       return { category: "context_mismatch", stage: "writeback", message: bt("voiceContextMismatch") };
@@ -583,9 +587,7 @@
             ? bt("voiceTaskPostprocessing")
             : mode === "edit"
               ? bt("voiceEditPostprocessing")
-              : mode === "structured"
-                ? bt("voiceStructuredPostprocessing")
-                : bt("voicePostprocessing"),
+              : bt("voicePostprocessing"),
           stage: "postprocessing",
           mode: mode,
         });
@@ -794,6 +796,21 @@
     } catch (e) {
       if (activeVoiceInput !== session) return;
       // 检测失败（如 mock 环境/旧后端）不阻塞，继续走原录音路径（环境变量/兜底引擎）
+    }
+
+    if (options && typeof options.beforePermission === "function") {
+      var shouldContinue = await options.beforePermission({
+        mode: session.mode,
+        sessionId: session.sessionId,
+        draftBeforeStart: session.draftBeforeStart,
+      });
+      if (activeVoiceInput !== session) return;
+      if (shouldContinue === false) {
+        cleanupVoiceInputSession(session);
+        activeVoiceInput = null;
+        setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
+        return;
+      }
     }
 
     var AudioCtor = window.AudioContext || window.webkitAudioContext;

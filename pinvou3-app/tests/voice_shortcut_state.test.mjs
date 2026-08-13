@@ -47,11 +47,13 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace(), { status: 'idle' }),
-  { type: 'trigger', mode: 'task' },
+  { type: 'clear_pending' },
+  'Alt+Space must not trigger direct voice task mode',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingSpace: true }),
-  { type: 'trigger', mode: 'task' },
+  { type: 'pending_alt' },
+  'legacy pending Space state must not turn Alt into task mode',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'dictation' }),
@@ -63,23 +65,32 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace(), { status: 'recording', mode: 'dictation' }),
-  { type: 'none' },
+  { type: 'clear_pending' },
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'task' }),
-  { type: 'none' },
+  { type: 'pending_alt' },
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'task', pendingAlt: true }),
-  { type: 'none' },
+  { type: 'trigger', mode: 'task' },
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace(), { status: 'recording', mode: 'task' }),
-  { type: 'trigger', mode: 'task' },
+  { type: 'clear_pending' },
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'task', pendingSpace: true }),
-  { type: 'trigger', mode: 'task' },
+  { type: 'pending_alt' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'edit', pendingAlt: true }),
+  { type: 'trigger', mode: 'edit' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'structured', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+  'legacy structured recordings should stop through the dictation main path',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task' }),
@@ -92,7 +103,7 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace({ repeat: true }), { status: 'idle' }),
-  { type: 'trigger', mode: 'task' },
+  { type: 'clear_pending' },
   'repeat filtering is handled before action mapping so tests can exercise pure key mapping',
 );
 assert.strictEqual(shouldIgnoreVoiceShortcutEvent(alt({ repeat: true })), true);

@@ -18,7 +18,7 @@ const voicePillVisibleExpression = policySource.match(/function shouldShowVoiceP
 assert.doesNotMatch(voicePillVisibleExpression, /voiceInput\.status === 'failed'/, 'failed voice state must use the composer notice only, not the interaction pill');
 assert.match(chatSource, /<VoiceComposerButton/, 'chat composer must render the shared microphone entry');
 assert.match(controlsSource, /menuItems\.map/, 'composer microphone entry must expose shared voice mode menu items');
-assert.match(chatSource, /key: 'structured'[\s\S]*handleVoiceMenuTrigger\('structured'\)/, 'chat composer must expose structured dictation from the voice menu');
+assert.doesNotMatch(chatSource, /key: 'structured'[\s\S]*handleVoiceMenuTrigger\('structured'\)/, 'structured must not be exposed as a separate voice menu mode');
 assert.match(chatSource, /key: 'edit'[\s\S]*handleVoiceMenuTrigger\('edit'\)/, 'chat composer must expose voice edit from the voice menu when draft text exists');
 assert.match(controlsSource, /data-testid="voice-edit-preview"/, 'voice edit confirmation preview must be shared');
 assert.match(controlsSource, /testId = 'composer-voice-button'/, 'composer microphone entry must remain available');

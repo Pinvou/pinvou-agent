@@ -1,6 +1,5 @@
 function normalizeVoiceMode(mode) {
   if (mode === 'task') return 'task';
-  if (mode === 'structured' || mode === 'list' || mode === 'structured_dictation') return 'structured';
   if (mode === 'edit' || mode === 'voice_edit' || mode === 'draft_edit') return 'edit';
   return 'dictation';
 }
@@ -8,7 +7,6 @@ function normalizeVoiceMode(mode) {
 function voiceModeLabel(mode, copy) {
   const voiceMode = normalizeVoiceMode(mode);
   if (voiceMode === 'task') return copy.voiceTaskMode;
-  if (voiceMode === 'structured') return copy.voiceStructuredMode || copy.voiceDictationMode;
   if (voiceMode === 'edit') return copy.voiceEditMode || copy.voiceDictationMode;
   return copy.voiceDictationMode;
 }
@@ -16,7 +14,6 @@ function voiceModeLabel(mode, copy) {
 function voicePostprocessingLabel(mode, copy) {
   const voiceMode = normalizeVoiceMode(mode);
   if (voiceMode === 'task') return copy.voiceTaskPostprocessing;
-  if (voiceMode === 'structured') return copy.voiceStructuredPostprocessing || copy.voicePostprocessing;
   if (voiceMode === 'edit') return copy.voiceEditPostprocessing || copy.voicePostprocessing;
   return copy.voicePostprocessing;
 }

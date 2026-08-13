@@ -661,7 +661,7 @@ try {
     && codexView.includes('if (!activeId && !draftWorkspacePath) return false;')
     && codexView.includes("attachments.some(attachment => attachment.status === 'parsing')")
     && codexView.includes('sendTask: async outgoing => {'),
-  'Codex Alt+Space voice task must go through the shared hook and the code-lane risk gate before direct send');
+  'Codex voice task mode must go through the shared hook and the code-lane risk gate before direct send');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。
   assert.ok(codexView.includes('data-testid="codex-composer-configs"')
