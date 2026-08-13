@@ -7,6 +7,8 @@ release/
 *.rs.bk
 *.rlib
 *.prof*
+# Windows 栈 wrapper 由 selector / CI 按需从 .rs 编译,不入库
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
 # Node / frontend
 node_modules/
