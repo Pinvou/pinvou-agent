@@ -27,13 +27,10 @@ name: PR Check
 # - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
 # - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
 #   也能从 main cache 增量编译,不再全冷。
-# - sccache(2026-07 补充):rust-cache 只罩第三方依赖;checkout 会刷新仓库内源文件
-#   mtime,cargo 按 mtime 判 dirty,CodeWhale path 依赖 + 主 crate 每轮必重编(~5min)。
-#   sccache 按内容哈希缓存编译产物(GHA cache 后端,scoping 与 actions/cache 一致),
-#   仓库内 crate 源码不变即全命中;Rust 相关 main push 同时充当 sccache 暖源。
-#   PR/merge queue 侧 SCCACHE_GHA_RW_MODE=READ_ONLY(对齐 rust-cache save-if 仅 main),
-#   只读暖 cache,不向共享 10GB 配额写入。
-#   接入范围仅 rust-test / windows-rust-test;rust-lint 不接入(见该 job 注释)。
+# - 曾用 sccache 按内容哈希缓存仓库内 crate 的编译产物,但 sccache 的 client-server
+#   架构只会把 RUST_MIN_STACK 传给 client、到不了 server 派生的 rustc,codewhale-tui
+#   codegen 仍会栈溢出(#271 已移除)。rust-cache 的 target 目录缓存保留,仓库内 crate
+#   每轮重编约 5min 的成本接受;rust-lint 从不接入 sccache(见该 job 注释)。
 
 on:
   pull_request:
@@ -547,20 +544,16 @@ jobs:
         )
       }}
     runs-on: ubuntu-latest
-    # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用
-    # (GitHub 默认 6h,此处收紧到 45min,与 mac-build 的 50min 量级一致)。
-    timeout-minutes: 45
+    # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
+    # 移除 sccache 后仓库内 crate 每轮重编、冷编译更长,放宽到 90min。
+    timeout-minutes: 90
     env:
-      # sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
-      # 经 rustc-stack-wrapper 链式调用 sccache:先把 RUST_MIN_STACK=16MiB 注入
-      # 编译期 rustc 进程(规避 codewhale-tui O2 编译的栈溢出/SIGBUS,三端同源风险),
-      # 再交给 sccache 缓存。必须用 ${{ github.workspace }} 绝对路径(Cargo 按进程
-      # cwd 解析 RUSTC_WRAPPER 相对路径会双拼成不存在的路径)。
+      # 经 rustc-stack-wrapper 直接注入 RUST_MIN_STACK=16MiB 到编译期 rustc 进程
+      # (规避 codewhale-tui O2 编译的栈溢出/SIGBUS)。不链式接 sccache:sccache 的
+      # client-server 架构只会把 RUST_MIN_STACK 传给 client、到不了 server 派生的
+      # rustc,codegen 仍会溢出。必须用 ${{ github.workspace }} 绝对路径(Cargo 按
+      # 进程 cwd 解析 RUSTC_WRAPPER 相对路径会双拼成不存在的路径)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
-      RUSTC_WRAPPER_CHAIN: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # PR 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
-      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -633,12 +626,6 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
-      - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-        with:
-          version: v0.16.0
-
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -679,22 +666,21 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'push' && needs.changes.outputs.rust_code == 'true' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
-    # 45min:aws-lc-sys(NASM 预生成对象)冷编译比纯 Rust 图更久。
-    timeout-minutes: 45
+    # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。
+    timeout-minutes: 90
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
       AWS_LC_SYS_PREBUILT_NASM: "1"
-      # sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
-      # 经 rustc-stack-wrapper.cmd 链式调用 sccache:先把 RUST_MIN_STACK=16MiB 注入
-      # 编译期 rustc 进程(规避 codewhale-tui O2 编译的栈溢出,三端同源风险),
-      # 再交给 sccache 缓存。Windows 上 Cargo 执行 wrapper 需 .cmd 后缀才能走
-      # cmd /C;必须用 ${{ github.workspace }} 绝对路径(避免按 cwd 双拼解析)。
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd
-      RUSTC_WRAPPER_CHAIN: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
-      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
+      # Windows 经 RUSTC_WRAPPER 注入 rustc-stack-wrapper.exe(本 job 先编译)。
+      # .cmd 经 cmd /C 执行,cmd.exe 命令行上限 8191 字符,windows-sys/windows 等
+      # 大型 crate 的 rustc 命令行(数千个 --cfg feature=...)会超限报
+      # "The command line is too long";.exe 经 CreateProcess 直启(上限 32767),
+      # 只在编译期 rustc 注入 RUST_MIN_STACK=16MiB,不泄漏到 cargo test 目标进程。
+      # 不链式接 sccache:sccache 的 client-server 架构只会把 RUST_MIN_STACK 传给
+      # client、到不了 server 派生的 rustc,codegen 仍会溢出。必须用
+      # ${{ github.workspace }} 绝对路径(避免按 cwd 双拼解析)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -714,6 +700,12 @@ jobs:
         shell: bash
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
+      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
+      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响,无自举依赖。
+      - name: 编译 Windows 栈 wrapper(.exe)
+        shell: bash
+        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+
       - name: Node.js
         uses: actions/setup-node@v7
         with:
@@ -730,12 +722,6 @@ jobs:
           workspaces: pinvou3-app/src-tauri
           shared-key: windows-rust-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # 装在 cargo 步骤之前即可;post 阶段自动输出 show-stats 命中率。
-      - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-        with:
-          version: v0.16.0
 
       - name: Windows 架构与 Tauri 资源契约
         run: |
@@ -809,6 +795,7 @@ jobs:
       - release-contract-test
       - rust-lint
       - rust-test
+      - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -826,6 +813,7 @@ jobs:
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
@@ -848,6 +836,7 @@ jobs:
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
