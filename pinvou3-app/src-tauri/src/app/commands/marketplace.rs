@@ -545,4 +545,122 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BundleReadinessResult {
+    pub bundle_id: String,
+    pub installed: bool,
+    pub ready: bool,
+    pub reason: Option<String>,
+    /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
+    pub detail: Option<serde_json::Value>,
+}
+
+/// 统一就绪态查询：
+/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready
+/// - ima（凭据型技能包）→ ima_status 的 credentials_present（凭据齐即 ready）
+/// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
+#[tauri::command]
+pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
+    use crate::features::marketplace::bundle::{
+        readiness_for, BundleKind, BundleRegistry, CredentialTarget, Readiness,
+    };
+    let reg = BundleRegistry::new();
+    let Some(bundle) = reg.bundle(&bundle_id) else {
+        return Err(format!("未知能力包 '{bundle_id}'"));
+    };
+    let (ready, reason, detail) = match bundle.kind {
+        BundleKind::Cli => {
+            let (connected, detail) = match bundle_id.as_str() {
+                "feishu" => {
+                    let v = crate::features::connectors::feishu::feishu_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "wecom" => {
+                    let v = crate::features::connectors::wecom::wecom_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "dingtalk" => {
+                    let v = crate::features::connectors::dingtalk::dingtalk_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "tmeet" => {
+                    let v = crate::features::connectors::tmeet::tmeet_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                other => return Err(format!("未知 CLI 包 '{other}'")),
+            };
+            (
+                connected,
+                if connected {
+                    None
+                } else {
+                    Some("not_connected".to_string())
+                },
+                detail,
+            )
+        }
+        BundleKind::Skill if bundle.id == "ima" => {
+            let v = crate::features::connectors::ima::ima_status().await?;
+            let creds = v
+                .get("credentials_present")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            (
+                creds,
+                if creds {
+                    None
+                } else {
+                    Some("missing_credentials".to_string())
+                },
+                Some(v),
+            )
+        }
+        _ => {
+            let store = crate::platform::credential_store::SystemCredentialStore::new();
+            let has = |key: &str| {
+                let target = bundle
+                    .credentials
+                    .iter()
+                    .find(|c| c.key == key)
+                    .map(|c| match c.target {
+                        CredentialTarget::Env => "env",
+                        CredentialTarget::Bearer => "bearer",
+                        CredentialTarget::Credential => "credential",
+                    })
+                    .unwrap_or("env");
+                store
+                    .get(
+                        &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                            &bundle_id, target, key,
+                        ),
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some()
+            };
+            match readiness_for(&bundle, has) {
+                Readiness::Ready => (true, None, None),
+                Readiness::NotReady(reason) => (false, Some(reason.to_string()), None),
+            }
+        }
+    };
+    Ok(BundleReadinessResult {
+        bundle_id,
+        installed: bundle.installed,
+        ready,
+        reason,
+        detail,
+    })
+}
+
+fn connected_of(v: &serde_json::Value) -> bool {
+    v.get("connected")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false)
+}
 use super::prelude::*;
