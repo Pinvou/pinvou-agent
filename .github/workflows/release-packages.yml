@@ -86,6 +86,13 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # v0.9.5 升级后 release(fat-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
+      # (SIGBUS,Linux 与 macOS 同源风险)。.cargo/config.toml 不设置 rustc-wrapper
+      # (全局键无法按平台条件化),由本 Linux 发布 job 显式注入 RUSTC_WRAPPER
+      # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。
+      # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
+      # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -182,6 +189,9 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
+      # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -282,6 +292,9 @@ jobs:
       # 用预生成 NASM 对象规避(同 pr-check.yml windows-rust-test 的结论)。
       # 当前 Windows 默认发布目标仅 x86_64。
       AWS_LC_SYS_PREBUILT_NASM: "1"
+      # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(三端统一注入;
+      # Windows 上 Cargo 需要 .cmd 后缀才能走 cmd /C,见 config.toml 注释)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -375,6 +388,11 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # v0.9.5 升级后 release(fat-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
+      # (SIGBUS,run 31558490865 实证)。.cargo/config.toml 不设置 rustc-wrapper
+      # (全局键无法按平台条件化),由本 macOS 发布 job 显式注入 RUSTC_WRAPPER
+      # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7

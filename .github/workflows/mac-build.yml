@@ -83,6 +83,16 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],
       # 不再需要 CARGO_PROFILE_DEV_DEBUG 环境变量。
+      # v0.9.5 升级后 dev 对依赖开 O2 + 256 codegen-units 时,rustc/LLVM 编译
+      # codewhale-tui 会在 MachineLateinstrsCleanup 递归中栈溢出(SIGBUS)。
+      # .cargo/config.toml 不设置 rustc-wrapper(全局键无法按平台条件化,且
+      # Windows 上指向无扩展名 sh 会 os error 193),由 macOS 构建 job 显式
+      # 注入 RUSTC_WRAPPER 指向 sh 版(wrapper 只作用于编译期 rustc 进程,
+      # cargo run / cargo test 目标进程不继承 RUST_MIN_STACK)。
+      # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析
+      # RUSTC_WRAPPER 相对路径,而 cargo 步骤 working-directory 是
+      # pinvou3-app/src-tauri,相对路径会被双拼成不存在的路径(os error 2)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
