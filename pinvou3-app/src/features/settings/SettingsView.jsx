@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Archive, Briefcase, Check, ChevronDown, Code, Cpu, Database, Edit2, FileText, Globe, Lightbulb, MessageSquare, MoreHorizontal, Paperclip, Plus, RefreshCw, Search, Sparkles, Trash2, User, Video, Wrench, X } from '../../components/icons.jsx';
+import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
@@ -1836,17 +1837,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         </RowTag>
         );
       };
-      const IOSSwitch = ({ checked, onChange }) => (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={checked}
-          onClick={() => onChange(!checked)}
-          className={`relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors ${checked ? 'bg-[#34C759]' : ('bg-[#E5E5EA] dark:bg-[#3A3A3C]')}`}
-        >
-          <span className={`absolute left-0 top-[2px] h-[22px] w-[22px] rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[22px]' : 'translate-x-[2px]'}`} />
-        </button>
-      );
+      const IOSSwitch = ({ checked, onChange }) => <Toggle checked={checked} onChange={onChange} size="md" />;
       const SectionButton = ({ id, icon, label, dot }) => (
         <button
           type="button"
