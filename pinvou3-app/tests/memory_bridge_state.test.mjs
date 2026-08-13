@@ -60,6 +60,16 @@ await api.loadMemoryOverview();
 assert.equal(state.memory.preferences[0].text, 'concise', 'unavailable source must preserve last success');
 assert.equal(state.memory.sources.preferences.available, false);
 
+state.memory.snapshot_path = '/snap/last-success.json';
+response = overview({
+  snapshot_path: '',
+  warnings: [{ code: 'snapshot_refresh_failed', source: 'snapshot', detail: 'locked' }],
+  sources: { ...availableSources, snapshot: { available: false, code: 'snapshot_refresh_failed' } },
+});
+await api.loadMemoryOverview();
+assert.equal(state.memory.snapshot_path, '/snap/last-success.json', 'unavailable snapshot source must preserve last path');
+assert.equal(state.memory.sources.snapshot.available, false);
+
 response = overview({ preferences: [] });
 await api.loadMemoryOverview();
 assert.deepEqual(state.memory.preferences, [], 'successful empty source must replace stale content');

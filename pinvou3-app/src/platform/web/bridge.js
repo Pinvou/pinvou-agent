@@ -6472,10 +6472,13 @@
   function applyMemoryOverview(overview) {
     var previous = state.memory || {};
     var sourceStates = overview && overview.sources || {};
-    function sourceValue(source, value, fallback) {
+    // stateKey:后端 source 名与前端 state 字段名通常一致,但 snapshot 源对应
+    // state.memory.snapshot_path,两者不同;保留上次值时按 state 字段名查找。
+    function sourceValue(source, value, fallback, stateKey) {
       var status = sourceStates[source];
       if (status && status.available === false) {
-        return Object.prototype.hasOwnProperty.call(previous, source) ? previous[source] : fallback;
+        var key = stateKey || source;
+        return Object.prototype.hasOwnProperty.call(previous, key) ? previous[key] : fallback;
       }
       return value;
     }
@@ -6491,7 +6494,7 @@
       pending: sourceValue("pending", overview && Array.isArray(overview.pending) ? overview.pending : [], []),
       never: sourceValue("never", overview && Array.isArray(overview.never) ? overview.never : [], []),
       runtime: sourceValue("runtime", overview && overview.runtime || null, null),
-      snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", ""),
+      snapshot_path: sourceValue("snapshot", overview && overview.snapshot_path || "", "", "snapshot_path"),
       warnings: orderedMemoryWarnings(overview && overview.warnings),
       sources: sourceStates,
     };
