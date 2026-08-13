@@ -42,7 +42,7 @@ fn main() {
 
     let mut cmd = Command::new(&program);
     cmd.args(&rest);
-    // 仅在未显式设置时注入 16 MiB(与 sh/.cmd 版一致)。
+    // 仅在未显式设置时注入 16 MiB(与 sh 版一致)。
     if env::var_os("RUST_MIN_STACK").is_none() {
         cmd.env("RUST_MIN_STACK", "16777216");
     }
