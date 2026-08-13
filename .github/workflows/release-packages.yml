@@ -293,8 +293,9 @@ jobs:
       # 当前 Windows 默认发布目标仅 x86_64。
       AWS_LC_SYS_PREBUILT_NASM: "1"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(三端统一注入;
-      # Windows 上 Cargo 需要 .cmd 后缀才能走 cmd /C,见 config.toml 注释)。
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd
+      # Windows 用 .exe 版 wrapper(本 job 先编译):.cmd 经 cmd /C 受 8191 字符
+      # 命令行上限限制,windows-sys 等大型 crate 的 rustc 命令行会超限)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -305,6 +306,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
+      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响,无自举依赖。
+      - name: 编译 Windows 栈 wrapper(.exe)
+        shell: bash
+        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
