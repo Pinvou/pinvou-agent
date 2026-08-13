@@ -26,7 +26,8 @@ static MARKETPLACE_DIR: Dir =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
 /// 单个 skill 子树未压缩大小上限(防御性,预置/上传都适用)。
-const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+/// `pub(crate)`:命令层 `import_skill_package_bytes` 复用同一上限。
+pub(crate) const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
 const INSTALLED_FROM_MARKER: &str = ".installed-from";
@@ -182,8 +183,10 @@ impl SkillMarketplaceManager {
                 out.push(MarketplaceSkillInfo {
                     id: name.clone(),
                     title: name.clone(),
-                    subtitle: "用户上传的技能".to_string(),
-                    description: String::new(),
+                    // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
+                    subtitle: String::new(),
+                    // 解析 SKILL.md frontmatter description 展示;缺失则空
+                    description: read_skill_description(&path.join("SKILL.md")).unwrap_or_default(),
                     icon: "Package".to_string(),
                     color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                     installed: true,
@@ -294,7 +297,23 @@ impl SkillMarketplaceManager {
 
     /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
     /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    pub fn import_package(&self, zip_path: &str) -> Result<(), String> {
+    /// 返回落盘技能名(frontmatter name),供命令层同步 scope 禁用集。
+    pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
+        let fname = Path::new(zip_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "package.zip".to_string());
+        self.import_package_named(zip_path, &fname)
+    }
+
+    /// `display_name` 仅写入 `.installed-from=upload:<display_name>` 标记
+    /// (保留用户原始 zip 名,便于卸载提示),其余行为与 `import_package` 一致。
+    /// 拖放字节通道落临时文件导入时,zip 名已丢,由命令层传入净化后的展示名。
+    pub fn import_package_named(
+        &self,
+        zip_path: &str,
+        display_name: &str,
+    ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -409,13 +428,9 @@ impl SkillMarketplaceManager {
                     .map_err(|e| format!("读条目: {e}"))?;
                 std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
             }
-            let fname = Path::new(zip_path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "package.zip".to_string());
             std::fs::write(
                 staged.join(INSTALLED_FROM_MARKER),
-                format!("upload:{fname}"),
+                format!("upload:{display_name}"),
             )
             .map_err(|e| format!("写标记: {e}"))?;
             Ok(())
@@ -431,7 +446,7 @@ impl SkillMarketplaceManager {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
-        Ok(())
+        Ok(name)
     }
 }
 
@@ -485,6 +500,65 @@ fn read_skill_name_from_str(content: &str) -> Option<String> {
     None
 }
 
+fn read_skill_description(md_path: &Path) -> Option<String> {
+    read_skill_description_from_str(&std::fs::read_to_string(md_path).ok()?)
+}
+
+/// 解析 SKILL.md frontmatter 的 `description:`(仅展示用)。支持单行(含引号)与
+/// `|`/`>` 块状(取块内非空行,折叠拼接为单行);缺失/空 → None;超 240 字截断。
+fn read_skill_description_from_str(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    // by_ref:块状分支里还要接着消费同一个迭代器
+    for line in lines.by_ref() {
+        let t = line.trim();
+        if t == "---" {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("description:") {
+            let v = rest.trim();
+            if v.is_empty() {
+                return None;
+            }
+            if v == "|" || v == ">" {
+                // 块状:收集后续缩进行,空行跳过,遇顶层字段(无缩进)结束
+                let mut parts: Vec<String> = Vec::new();
+                let mut total: usize = 0;
+                for l in lines {
+                    let lt = l.trim();
+                    if lt.is_empty() {
+                        continue;
+                    }
+                    let indent = l.len() - l.trim_start().len();
+                    if indent == 0 {
+                        break;
+                    }
+                    total += lt.chars().count();
+                    parts.push(lt.to_string());
+                    if total > 240 {
+                        break;
+                    }
+                }
+                let s = parts.join(" ");
+                return if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.trim().chars().take(240).collect())
+                };
+            }
+            let v = v.trim_matches('"').trim_matches('\'').trim();
+            return if v.is_empty() {
+                None
+            } else {
+                Some(v.chars().take(240).collect())
+            };
+        }
+    }
+    None
+}
+
 /// SKILL.md 布局优先级(越小越优先):根 SKILL.md(0) > `*/skills/<n>/SKILL.md`(1)
 /// > `<n>/SKILL.md`(2) > 更深嵌套(3)。仿底座 scan_tarball 的 rank。
 fn skill_md_rank(path: &str) -> Option<usize> {
@@ -532,6 +606,47 @@ mod tests {
             Some("huashu-nuwa")
         );
         assert!(read_skill_name_from_str("no frontmatter").is_none());
+    }
+
+    #[test]
+    fn parses_frontmatter_description() {
+        // 单行
+        assert_eq!(
+            read_skill_description_from_str("---\nname: x\ndescription: 整理会议纪要\n---\n")
+                .as_deref(),
+            Some("整理会议纪要")
+        );
+        // 引号剥离
+        assert_eq!(
+            read_skill_description_from_str("---\ndescription: \"带 引号\"\n---\n").as_deref(),
+            Some("带 引号")
+        );
+        // | 块状:非空行折叠拼接,空行跳过,遇顶层字段结束
+        assert_eq!(
+            read_skill_description_from_str(
+                "---\ndescription: |\n  第一行\n\n  第二行\nname: x\n---\n"
+            )
+            .as_deref(),
+            Some("第一行 第二行")
+        );
+        // > 块状
+        assert_eq!(
+            read_skill_description_from_str("---\ndescription: >\n  fold\n  ed\n---\n").as_deref(),
+            Some("fold ed")
+        );
+        // 缺失 / 空 / 无 frontmatter
+        assert!(read_skill_description_from_str("---\nname: x\n---\n").is_none());
+        assert!(read_skill_description_from_str("---\ndescription: ''\n---\n").is_none());
+        assert!(read_skill_description_from_str("no frontmatter").is_none());
+        // 超长截断到 240 字符
+        let long = format!("---\ndescription: {}\n---\n", "字".repeat(300));
+        assert_eq!(
+            read_skill_description_from_str(&long)
+                .unwrap()
+                .chars()
+                .count(),
+            240
+        );
     }
 
     #[test]
@@ -739,10 +854,40 @@ mod tests {
         assert!(!dest.join(".git").exists(), ".git 等隐藏目录应跳过");
         let marker = std::fs::read_to_string(dest.join(".installed-from")).unwrap();
         assert!(marker.starts_with("upload:"), "标记应为 upload:");
-        assert!(mgr
+        let listed = mgr
             .list_skills()
-            .iter()
-            .any(|s| s.id == "my-test-skill" && s.user_uploaded && s.installed));
+            .into_iter()
+            .find(|s| s.id == "my-test-skill")
+            .expect("list 应含上传技能");
+        assert!(listed.user_uploaded && listed.installed);
+        // frontmatter description 应被解析展示;subtitle 留空交前端回退
+        assert_eq!(listed.description, "t");
+        assert!(listed.subtitle.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `import_package_named` 用调用方给的 display_name 写 upload: 标记
+    /// (拖放字节通道的 zip 名经命令层净化后传入)。
+    #[test]
+    fn import_package_named_writes_upload_marker() {
+        use std::io::Write;
+        let tmp = fresh_dir("named");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: named-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.import_package_named(zip_path.to_str().unwrap(), "my skill.zip")
+            .unwrap();
+        let marker =
+            std::fs::read_to_string(tmp.join("named-skill").join(".installed-from")).unwrap();
+        assert_eq!(marker.trim(), "upload:my skill.zip");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

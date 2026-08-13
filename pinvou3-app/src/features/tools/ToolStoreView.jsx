@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
+import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
@@ -653,6 +654,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 有配套 MCP 的技能卡据此把状态/装卸联动到该 MCP,避免命名不一致(government-writing↔gongwen)时状态分叉。
       const [skillToMcp, setSkillToMcp] = useState({});
       const [busyId, setBusyId] = useState(null);
+      const busyRef = useRef(null); // 拖放 controller 经 ref 读最新 busyId(闭包不刷新)
+      busyRef.current = busyId;
+      const [dropActive, setDropActive] = useState(false); // 拖放 overlay 可见性
+      // 页面级拖放导入技能包:capture 阶段接管 document,隔离全局附件通道
+      // (见 attachment-drop-controller.js;canAccept 经 busyRef 读最新值)。
+      useEffect(() => {
+        const ctrl = window.PinvouAttachmentDropController;
+        if (!ctrl) return undefined;
+        return ctrl.install({
+          document,
+          capture: true,
+          canAccept: () => canMutateToolStore && !busyRef.current,
+          onActiveChange: setDropActive,
+          onFiles: handleZipDrop,
+        });
+      }, []);
       const [alert, setAlert] = useState({ visible: false, loading: false, title: '', subtitle: '', isInstall: false, isError: false });
       const oauthRequestRef = useRef({});
       const [configDialog, setConfigDialog] = useState(null); // { backendId, name, fields }
@@ -1209,13 +1226,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
 
-      // 上传 zip 技能包(Rust 端弹 dialog 选文件)
-      const handleUploadSkill = async () => {
+      // 上传 zip 技能包:按钮走 Rust 原生 dialog,拖放走 base64 字节通道,
+      // 成功/取消/失败/loading 处理统一在这里。
+      const doImportSkillZip = async (invokeFn) => {
         if (!canMutateToolStore) return;
         setBusyId('__upload__');
         setAlert({ loading: true, visible: false, title: storeCopy.importingSkill, subtitle: storeCopy.validatingSkillPackage, isInstall: true, isError: false });
         try {
-          const ok = await invokeTauri('import_skill_package');
+          const ok = await invokeFn();
           if (ok) {
             await loadBackendState();
             setAlert({ visible: true, loading: false, title: storeCopy.skillImported, isInstall: true, isError: false });
@@ -1228,6 +1246,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } finally {
           setBusyId(null);
         }
+      };
+      const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_skill_package'));
+      const handleZipDrop = (files) => {
+        const zip = pickSkillZip(files);
+        if (!zip) return Promise.resolve();
+        if (zip.size > MAX_SKILL_ZIP_BYTES) {
+          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(storeCopy.invalidSkillZipDrop), isInstall: false, isError: true });
+          return Promise.resolve();
+        }
+        return doImportSkillZip(async () =>
+          invokeTauri('import_skill_package_bytes', { filename: zip.name, dataBase64: await fileToBase64(zip) }));
       };
 
       const connectIma = async (values = {}) => {
@@ -1463,9 +1492,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
         // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
-        // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
+        // 纯技能(无配套 MCP、无同名工具:预置技能与用户上传技能)才走 handleSkillAction。
+        // 用 skillCards(含 userUploaded 卡)而非静态 tsSkillsData 判定——上传技能不在静态表里,
+        // 漏判会落到下方通用工具分支报「未知工具」。
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
-        else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
+        else if (skillCards.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
         // 飞书走 CLI 连接流程,不走 marketplace install
@@ -1605,6 +1636,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       return (
         <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden antialiased selection:bg-blue-200 dark:selection:bg-blue-900">
           {createPortal(<TsAlert alert={alert} theme={theme} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
+          {/* 拖放技能包 overlay:可接受拖放期间全屏提示(pointer-events-none 不挡点击) */}
+          {dropActive && canMutateToolStore && (
+            <div data-testid="tool-store-drop-overlay" className="fixed inset-0 z-[80] flex items-center justify-center pointer-events-none bg-blue-500/10">
+              <div className="rounded-3xl border-2 border-dashed border-blue-500 bg-white/90 dark:bg-[#1C1C1E]/90 px-8 py-6 text-center shadow-2xl">
+                <Upload size={28} className="mx-auto mb-3 text-blue-500" />
+                <p className="text-[15px] font-semibold">{storeCopy.dropSkillZipHere}</p>
+              </div>
+            </div>
+          )}
           {createPortal(<TsConfigDialog
             config={externalAuthAvailable ? configDialog : null}
             theme={theme}
@@ -1687,6 +1727,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           </button>
                         ))}
                       </div>
+                      {canMutateToolStore && (
+                        <button data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
+                          className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                          <Upload size={14} className="mr-2 opacity-70" />
+                          <span>{storeCopy.uploadSkillPackage}</span>
+                        </button>
+                      )}
                       <button onClick={() => { setViewMode('list'); setInstalledOnly(true); setSearchQuery(''); }} title={storeCopy.myTools}
                         className="max-sm:hidden inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <User size={14} className="mr-2 opacity-70" />
@@ -1917,6 +1964,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       </div>
                       <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-200 mb-2">{searching ? storeCopy.emptyNoMatch : (installedOnly ? storeCopy.emptyNoInstalled : (isSkillTab ? storeCopy.emptyNoSkills : storeCopy.emptyNoTools))}</h3>
                       <p className="text-slate-500 dark:text-slate-400">{searching ? storeCopy.emptyNoMatchHint : (installedOnly ? (canMutateToolStore ? storeCopy.emptyNoInstalledHint : storeCopy.emptyNoInstalledHintReadonly) : (isSkillTab ? (canMutateToolStore ? storeCopy.emptyNoSkillsHint : storeCopy.emptyNoSkillsHintReadonly) : storeCopy.emptyNoToolsHint))}</p>
+                      {isSkillTab && !searching && !installedOnly && canMutateToolStore && (
+                        <button data-testid="tool-store-empty-upload-btn" onClick={handleUploadSkill}
+                          className="mt-5 inline-flex h-9 items-center rounded-full bg-blue-600 px-5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
+                          <Upload size={14} className="mr-2" />{storeCopy.uploadSkillPackage}
+                        </button>
+                      )}
                     </div>
                   )}
                 </section>
