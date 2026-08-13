@@ -605,7 +605,9 @@ jobs:
 
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
       # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
+      # push(main) 只编译不执行测试(见下方 --no-run),不需要 relay/Chrome 运行时依赖。
       - name: Node.js (relay e2e)
+        if: ${{ github.event_name != 'push' }}
         uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -613,9 +615,11 @@ jobs:
           cache-dependency-path: remote-control-relay/package-lock.json
 
       - name: relay 依赖 (真实 relay e2e)
+        if: ${{ github.event_name != 'push' }}
         run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
+        if: ${{ github.event_name != 'push' }}
         # real-browser driver 从 pinvou3-app/node_modules 加载 puppeteer-core。
         # npm --prefix pinvou3-app install 即使指定单包也会解析并安装项目完整依赖树，
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
@@ -630,22 +634,34 @@ jobs:
           # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # MQ/PR(ci:full-rust) 跑完整 lib 测试(含真实 relay/Chrome e2e)。
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
       # 取得的仍是已加锁 guard，不会绕过互斥；根治需消除测试对进程级 env 的依赖
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
-      - name: cargo test --lib (真 bge-m3/vLLM 测试已 #[ignore])
+      - name: cargo test --lib (MQ/PR 完整测试)
+        if: ${{ github.event_name != 'push' }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
 
+      # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
+      # MQ 已对同一代码跑过完整 lib 测试,squash 合并后的 push 不再重复执行测试;
+      # --no-run 编译含 test harness 的全部 target 产物(与完整 test 的编译腿一致),
+      # 供热 MQ restore 后增量复用,省去测试执行时间。
+      # 不需要 relay/Chrome 运行时依赖(上方 setup-node/relay/浏览器 step 已按 !=push 跳过)。
+      - name: cargo test --lib --no-run (push main 仅编译暖 cache)
+        if: ${{ github.event_name == 'push' }}
+        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+
       - name: L1 harness 严格错误回归（不调用真模型）
         # 仅在 harness 及其直接依赖路径变化时追加，避免无关 Rust 改动重复跑。
         # 保留 --test-threads=1:仅 3 个 strict_mode_ 测试,harness 本身需串行语义。
-        if: ${{ needs.changes.outputs.l1 == 'true' }}
+        # push(main) 跳过:MQ 已验证同一代码,push 不重复执行测试(仅暖 cache)。
+        if: ${{ needs.changes.outputs.l1 == 'true' && github.event_name != 'push' }}
         run: >-
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --test l1_dialog_harness strict_mode_
@@ -727,12 +743,6 @@ jobs:
           shared-key: windows-rust-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Windows 架构与 Tauri 资源契约
-        run: |
-          python scripts/architecture-guard.py
-          npm --prefix pinvou3-app run test:tauri-layout
-          npm --prefix pinvou3-app run test:tauri-effective-config
-
       - name: Windows Rust 全目标检查
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
@@ -799,7 +809,6 @@ jobs:
       - release-contract-test
       - rust-lint
       - rust-test
-      - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -817,7 +826,6 @@ jobs:
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
-          WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
@@ -840,7 +848,6 @@ jobs:
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
-            "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"

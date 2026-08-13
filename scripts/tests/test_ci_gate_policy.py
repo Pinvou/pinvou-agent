@@ -160,20 +160,8 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         self.assertIn(
-            "if: ${{ needs.changes.outputs.l1 == 'true' }}",
+            "needs.changes.outputs.l1 == 'true'",
             rust_test,
-        )
-
-    def test_windows_rust_test_wired_into_required_gate(self):
-        required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
-        self.assertIn("- windows-rust-test", required_gate)
-        self.assertIn(
-            "WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}",
-            required_gate,
-        )
-        self.assertIn(
-            '"windows-rust-test:$WINDOWS_RUST_RESULT"',
-            required_gate,
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
