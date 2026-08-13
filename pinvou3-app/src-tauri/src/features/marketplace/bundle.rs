@@ -358,9 +358,12 @@ mod tests {
     use super::*;
 
     /// 把 PINVOU3_HOME 指到干净临时目录跑闭包,跑完恢复并清理。
-    /// 注：与 marketplace/mod.rs 测试的 ENV_LOCK 不互斥（各自持锁），
-    /// 并行跑存在环境变量竞争——CI rust-test 当前 skipped，修复环境后需共享锁。
+    /// 与 marketplace/mod.rs / paths 测试共享 ENV_LOCK（V6：CI rust-test 已启用，
+    /// 并行跑会互相覆盖 PINVOU3_HOME，必须串行）。
     fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!("pinvou3-bundle-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
