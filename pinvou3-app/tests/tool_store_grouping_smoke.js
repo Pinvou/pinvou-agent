@@ -75,10 +75,6 @@ async function clickExact(page, text) {
     await page.evaluate(() => { document.querySelector('[data-nav="toolstore"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
     await page.waitForFunction(() => document.body.innerText.includes('工具商店'), { timeout: 10000 });
 
-    // 切到列表视图
-    rec('切换到列表视图', await clickExact(page, '列表'));
-    await sleep(400);
-
     const chipText = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
     for (const label of ['按类型', '按业务', '全部', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`类型维度 chip/segment「${label}」渲染`, chipText.includes(label));

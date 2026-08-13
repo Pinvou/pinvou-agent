@@ -680,15 +680,6 @@ const AcFmtIcon = FileTypeIcon;
       return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
     };
 
-    const tsFeaturedCollections = [
-      { id: 'f6', label: '即装即用', title: '实时天气随口问', subtitle: '接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。', img: 'assets/banner-weather.jpg', bg: 'bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-600', featuredToolId: 1 },
-      { id: 'f4', label: '数据引擎', title: '打造智能投研助理', subtitle: '集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。', img: 'assets/banner-invest.jpg', bg: 'bg-gradient-to-br from-red-600 via-rose-700 to-orange-600', featuredToolId: 2 },
-      { id: 'f7', label: '企业数据', title: '一键查透企业全貌', subtitle: '接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。', img: 'assets/banner-company.jpg', bg: 'bg-gradient-to-br from-blue-700 via-cyan-600 to-teal-500', featuredToolId: 13 },
-      { id: 'f1', label: '即时沟通', title: '打通企业微信', subtitle: '以你本人身份操作企微消息、文档、会议与日程，扫码授权、全程不填 key。', img: 'assets/banner-wecom.jpg', bg: 'bg-gradient-to-br from-green-600 via-emerald-600 to-teal-600', featuredToolId: 99 },
-      { id: 'f2', label: '个人知识', title: '激活你的本地笔记', subtitle: '接入本机 Obsidian 笔记库，全文检索、读写与维护双链，让 AI 基于你的知识作答。', img: 'assets/banner-obsidian.jpg', bg: 'bg-gradient-to-br from-violet-700 via-purple-600 to-fuchsia-600', featuredToolId: 14 },
-      { id: 'f3', label: '效率编排', title: '跨平台消息中转', subtitle: '无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。', img: 'assets/banner-message.jpg', bg: 'bg-gradient-to-br from-emerald-600 via-teal-700 to-cyan-800', featuredToolId: 9 },
-    ];
-
     const TsActionBtn = ({ tool, busy, onAction, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
@@ -753,4 +744,4 @@ const AcFmtIcon = FileTypeIcon;
 
     // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
 
-export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, localizeTool, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, tsFeaturedCollections, TsActionBtn };
+export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, localizeTool, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
