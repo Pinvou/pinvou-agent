@@ -1,6 +1,6 @@
 use super::attachments::{
-    attachment_display_text, build_message_with_attachments_in_dir,
-    prepare_native_user_message_in_dir, validate_staged_attachment_basename,
+    build_message_with_attachments_in_dir, prepare_native_user_message_in_dir,
+    validate_staged_attachment_basename,
 };
 use super::knowledge::build_kb_agentic_guide;
 use super::prelude::*;
@@ -184,7 +184,9 @@ pub(crate) async fn chat_with_reservation(
             _ => IMAGE_INPUT_UNSUPPORTED_ERROR.to_string(),
         });
     }
-    let display_content = attachment_display_text(&message, &attachments);
+    // 展示/持久化文本统一用 JSON 数组形式(前端 attachment-message.js 契约,
+    // 无损表达含 ` · ` 等分隔符的合法文件名)。
+    let display_content = display_chat_message(&message, &attachments);
     let raw_message = message.clone();
     // 原生代码会话绑项目目录时，落盘根（会话私有目录）与引擎 cwd（项目目录）
     // 不同根，附件引用必须绝对路径；其余会话两根一致，维持相对路径引用。

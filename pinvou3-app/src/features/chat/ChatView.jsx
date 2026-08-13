@@ -2428,8 +2428,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     : (isDark ? 'bg-[#004A77] text-[#E3E3E3]' : 'bg-[#D3E3FD] text-[#1F1F1F]')
                 }`} />
               <div className="flex gap-2 justify-end mt-1">
-                <button className={cardBtnCls(isDark)} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
-                <button className={cardBtnCls(isDark, 'primary')} onClick={commit}>{t.resend}</button>
+                <button className={cardBtnCls()} onClick={() => { setEditing(false); setVal(item.text); }}>{t.cpCancel}</button>
+                <button className={cardBtnCls('primary')} onClick={commit}>{t.resend}</button>
               </div>
             </div>
           </div>

@@ -4002,7 +4002,9 @@
       turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice && !item.authoritySyncNotice;
+      });
       var uitem = {
         type: "user",
         text: displayText,

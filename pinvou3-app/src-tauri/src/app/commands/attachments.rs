@@ -447,27 +447,6 @@ pub fn build_message_with_attachments(
 // 原生图片输入(设计 §9.1/§9.2,阶段 D)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// UI/timeline 展示文本:附件名以 📎 拼接(图片/文件同式)。
-/// chat.rs 的 Fallback/无图路径与 Native 路径共用,保持两处不漂移。
-pub(super) fn attachment_display_text(
-    text: &str,
-    attachments: &[crate::features::files::file_ingest::IngestResult],
-) -> String {
-    if attachments.is_empty() {
-        return text.to_string();
-    }
-    let names = attachments
-        .iter()
-        .map(|attachment| attachment.basename.as_str())
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if text.trim().is_empty() {
-        format!("📎 {names}")
-    } else {
-        format!("{text}\n\n📎 {names}")
-    }
-}
-
 /// Native 路径(v0.9.5 底座官方标记方案)消息构造:图片暂存到 workspace 后
 /// 在消息文本中生成 `[Attached image: <path>]` 标记行,由底座
 /// `image_attach::expand_attachment_blocks` 在构建时展开为
