@@ -288,9 +288,13 @@
         });
         if (concurrentTurn && turnOwnerBuffer) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
+          // 稳定错误码(如 image_input_unsupported)剥掉码前缀,只给用户看可操作指引;
+          // 与 web bridge displayTurnError 同一口径(chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR)。
+          var errorText = String(err && err.toString ? err.toString() : err || "");
+          errorText = errorText.replace(/^image_input_unsupported[:：]?\s*/, "");
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + errorText, {
             turnErrorNotice: true,
           });
         });

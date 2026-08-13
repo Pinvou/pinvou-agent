@@ -3450,14 +3450,10 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
-              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
-              // tool_result，不能按历史恢复为 submitted。跳过，等
-              // chat:user_input_required 事件渲染可交互的 active 卡。
-              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
-                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
+                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
+                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
               });
             }
             continue;
@@ -3979,6 +3975,14 @@
     } catch (_) { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
 
+  // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
+  // src-tauri chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR 对应)剥掉码前缀,
+  // 只给用户看可操作的中文指引;码本身仍可被 indexOf 匹配。
+  function displayTurnError(err) {
+    var text = String(err && err.toString ? err.toString() : err || "");
+    return text.replace(/^image_input_unsupported[:：]?\s*/, "");
+  }
+
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -3998,9 +4002,7 @@
       turnOwnerBuffer.remoteCommittedRevision = "";
     }
     runSyncOnSession(sid, function () {
-      state.chatItems = state.chatItems.filter(function (item) {
-        return !item.turnErrorNotice && !item.authoritySyncNotice;
-      });
+      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
       var uitem = {
         type: "user",
         text: displayText,
@@ -4063,7 +4065,7 @@
         runSyncOnSession(sid, function () {
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
-            : "⚠️ " + (err && err.toString ? err.toString() : err), {
+            : "⚠️ " + displayTurnError(err), {
             turnErrorNotice: true,
           });
         });
@@ -4475,7 +4477,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addAuthoritySyncNotice(bt("turnSyncRetry"));
+      addSystemItem(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -5212,7 +5214,7 @@
       }
     }
 
-    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // File.write/File.edit 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
     var mutationAction = meta && fileMutationAction(meta.name, meta.args);
@@ -6259,6 +6261,12 @@
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
     });
   }
+  // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
+  async function getImageInputCapability(sessionId) {
+    return await invoke("get_image_input_capability", {
+      sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
+    });
+  }
 
   // ── 模型列表(「添加模型」方案)─────────────────────────────────
   async function loadModels() {
@@ -6272,11 +6280,16 @@
     notify();
   }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action}
+  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
  async function saveModel(model) {
-   await invoke("save_model", { model: model });
+   // probe_image_capability 是保存命令的独立参数(「自动探测」档),不落 SavedModel。
+   var probeImageCapability = !!model.probe_image_capability;
+   var clean = Object.assign({}, model);
+   delete clean.probe_image_capability;
+   var outcome = await invoke("save_model", { model: clean, probeImageCapability: probeImageCapability });
    await loadModels();
    await loadEffectiveModelConfig();
+   return outcome || null;
  }
  async function revealModelApiKey(id) {
    return await invoke("reveal_model_api_key", { id: id });
@@ -6326,6 +6339,11 @@
   }
   async function testModelConnection(baseUrl, apiKey, modelId) {
     return await invoke("test_model_connection", { baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
+  }
+  // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
+  // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
+  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
+    return await invoke("test_image_input_capability", { model: model, baseUrl: baseUrl, apiKey: apiKey, modelId: modelId || null });
   }
   async function testSearchProvider(provider, apiKey) {
     return await invoke("test_search_provider", { provider: provider, apiKey: apiKey || null });
@@ -6847,7 +6865,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
+      addSystemItemFor(sid, bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -7013,7 +7031,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("turnSyncRetry"));
+      addSystemItem(bt("turnSyncRetry"));
       notify();
       return;
     }
@@ -8778,6 +8796,8 @@
    saveModel: saveModel,
    revealModelApiKey: revealModelApiKey,
    deleteModel: deleteModel,
+    getImageInputCapability: getImageInputCapability,
+    testImageInputCapability: testImageInputCapability,
     setActiveModel: setActiveModel,
     loadSessionModel: loadSessionModel,
     switchModel: switchModel,

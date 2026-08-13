@@ -13,8 +13,8 @@ pub(super) use crate::platform::credential_store::{
     CredentialEditAction, CredentialState, CredentialStore, SystemCredentialStore,
 };
 pub(super) use crate::platform::prefs::{
-    AdvancedPrefs, ColorScheme, Language, NotificationPrefs, SavedModel, SearchPrefs,
-    SearchProvider, SidebarPrefs, Theme, UserPrefs,
+    AdvancedPrefs, ColorScheme, ImageCapabilityOverride, Language, NotificationPrefs, SavedModel,
+    SearchPrefs, SearchProvider, SidebarPrefs, Theme, UserPrefs,
 };
 
 /// Keep the Tauri transport boundary in `app::commands` while domain modules
