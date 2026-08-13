@@ -101,7 +101,10 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("DEEPSEEK_REASONING_EFFORT", "off"),
     ("DEEPSEEK_ALLOW_INSECURE_HTTP", "1"),
     ("DEEPSEEK_FORCE_HTTP1", "1"),
-    ("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576"),
+    // 不再注入 DEEPSEEK_MAX_OUTPUT_TOKENS：它会把所有模型（含云端）的输出上限
+    // 钉死在 24576。底座对 ≥500K 窗口模型默认 64K（API_MAX_OUTPUT_TOKENS），
+    // 云端模型应落到底座兜底；本地 vLLM 的 24K 预算由 route_limits_for_model
+    // 的 is_local_vllm 分支显式携带，不依赖该 env。
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。
@@ -1118,5 +1121,113 @@ mod web_template_seed {
     #[test]
     fn web_template_dir_named_web_template() {
         assert!(crate::platform::paths::web_template_dir().ends_with("web-template"));
+    }
+}
+
+#[cfg(test)]
+mod release_env_defaults_guard {
+    /// PR #210 守卫：release/boot 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS。
+    /// 该 env 会被底座 effective_max_output_tokens() 优先读取，一旦回归会重新把
+    /// 所有模型（含云端）输出上限钉死 24576——正是本 PR 移除的根因。此守卫在
+    /// CHANGES_REQUESTED 后新增：clean env 云端落底座 64K 兜底的前提，就是
+    /// release 安装包启动路径（.deb 双击等）不再注入该变量。
+    ///
+    /// 两层检查（评审修正 2026-08-11）：
+    /// 1. 常量表本身不含这两个 key（防常量里重新出现）；
+    /// 2. 走**实际注入路径** `ensure_release_env`（run() 启动路径的 release env
+    ///    注入函数，无写盘副作用）后断言进程 env 仍无这两个 key——即使未来有人在
+    ///    注入函数里绕过常量表直接 set_var，这里也能抓到。
+    ///
+    /// 第三轮评审修正 2026-08-11：本测试此前直接删进程级 env 且不还原，未借 crate
+    /// 级唯一 ENV_LOCK（会与 bridge.rs 等 env 写测试并发竞态），也不还原
+    /// ensure_release_env 写入的 RELEASE_ENV_DEFAULTS / PATH / 平台 UI env（串行 CI
+    /// 下造成后续测试顺序依赖）。现改为：先取 ENV_LOCK 再全量快照 env，退出（含
+    /// panic）时按快照完整还原。bridge boot 侧的 env 注入源头由 bridge.rs
+    /// `forkguard_boot_env_must_not_pin_global_output_cap` 单独守卫（boot 不直接
+    /// 进单测：会 mutate PINVOU3_HOME 写盘 + 全量解包 bundle，见
+    /// `engine_config_workspace_follows_bridge_field` 注释）。
+    ///
+    /// 进程 env 全量快照：ensure_release_env 会 set RELEASE_ENV_DEFAULTS、重写 PATH、
+    /// Linux 上还会 set GDK_BACKEND 等 UI env——只有全量快照才能完整还原，且不随
+    /// 各常量表增删漂移。
+    ///
+    /// 第四轮评审修正（2026-08-12）：此前用 `String` + `std::env::vars()`——`vars()`
+    /// 对任何非 UTF-8 的合法环境变量值（POSIX 允许任意字节）会直接 panic，且 Drop 中
+    /// 的二次枚举同样 panic；测试断言失败展开 panic 期间再 panic 会中止整个测试进程。
+    /// 现改用 `OsString` + `vars_os()`，非 UTF-8 环境变量也能完整快照/还原。
+    struct EnvSnapshot(std::collections::HashMap<std::ffi::OsString, Option<std::ffi::OsString>>);
+
+    impl EnvSnapshot {
+        fn take() -> Self {
+            let mut map = std::collections::HashMap::new();
+            for (k, v) in std::env::vars_os() {
+                map.insert(k, Some(v));
+            }
+            // 显式记录"当前不存在"的 key，还原时统一按快照恢复原状（set / remove）。
+            for key in ["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"] {
+                map.entry(std::ffi::OsString::from(key)).or_insert(None);
+            }
+            Self(map)
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            // ensure_release_env 可能 set 了快照中原本不存在的 key（PATH 分支、Linux
+            // UI env 等）——全部移除，回到快照状态，杜绝后续测试的顺序依赖。
+            let keep: std::collections::HashSet<&std::ffi::OsString> = self.0.keys().collect();
+            let stale: Vec<std::ffi::OsString> = std::env::vars_os()
+                .map(|(k, _)| k)
+                .filter(|k| !keep.contains(k))
+                .collect();
+            for k in stale {
+                std::env::remove_var(&k);
+            }
+        }
+    }
+
+    #[test]
+    fn release_env_defaults_must_not_pin_global_output_cap() {
+        // crate 级唯一 env 锁：与所有 env 写测试串行（同 bridge.rs locked_env 约定），
+        // 避免与 DEEPSEEK_* / PINVOU3_HOME 写测试并发竞态。
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
+        // 第一层：常量表
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "DEEPSEEK_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 DEEPSEEK_MAX_OUTPUT_TOKENS（PR #210 移除全局注入）"
+        );
+        assert!(
+            !super::RELEASE_ENV_DEFAULTS
+                .iter()
+                .any(|(k, _)| *k == "PINVOU3_MAX_OUTPUT_TOKENS"),
+            "RELEASE_ENV_DEFAULTS 不得包含 PINVOU3_MAX_OUTPUT_TOKENS（品悟侧上限仅经 prefs/route 携带）"
+        );
+
+        // 第二层：实际注入路径（ensure_release_env 是 run() 启动路径的 release env
+        // 注入函数）。先清掉外部可能残留的 env，确保断言的是注入函数自身的行为。
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+        super::ensure_release_env();
+        assert!(
+            std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端）"
+        );
+        assert!(
+            std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
+            "ensure_release_env 不得重新注入 PINVOU3_MAX_OUTPUT_TOKENS（品悟上限仅经 prefs/route 携带）"
+        );
+        // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
     }
 }

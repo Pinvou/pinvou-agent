@@ -185,10 +185,21 @@ impl Pinvou3Bridge {
     /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
     /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
     ///
-    /// **$PINVOU3_SESSION_ARTIFACTS** 环境变量在这里 set 到公共 MCP 产物目录。
-    /// PPT / 公文等 MCP server 是 stdio 子进程，不能可靠感知当前 GUI session；
-    /// 因此二进制办公产物固定落到 `sessions/default/artifacts/`，具体归属由带
-    /// `session_id` 的工具事件和前端持久化决定。
+    /// boot 路径的 env 注入唯一收口（PR #210 守卫目标）：只写会话产物目录
+    /// `PINVOU3_SESSION_ARTIFACTS`。PPT / 公文等 MCP server 是 stdio 子进程，
+    /// 不能可靠感知当前 GUI session，故二进制办公产物固定落到
+    /// `sessions/default/artifacts/`，具体归属由带 `session_id` 的工具事件和前端
+    /// 持久化决定。
+    ///
+    /// ⚠️ 不得在这里（或 boot 其它位置）注入 `DEEPSEEK_MAX_OUTPUT_TOKENS` /
+    /// `PINVOU3_MAX_OUTPUT_TOKENS`：底座 `effective_max_output_tokens()` 优先读
+    /// 前者，一旦回归会把所有模型（含云端）输出上限重新钉死 24576——正是本 PR
+    /// 移除的根因。lib.rs `release_env_defaults_guard` 守 run() 的 release env 注入，
+    /// 本函数 + `forkguard_boot_env_must_not_pin_global_output_cap` 守 boot 注入源头。
+    fn wire_boot_env(artifacts_dir: &std::path::Path) {
+        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", artifacts_dir);
+    }
+
     pub fn boot() -> Result<Self> {
         // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
         // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
@@ -221,7 +232,7 @@ impl Pinvou3Bridge {
             prefs.save().ok();
         }
         let artifacts = paths::default_session_artifacts_dir();
-        std::env::set_var("PINVOU3_SESSION_ARTIFACTS", &artifacts);
+        Self::wire_boot_env(&artifacts);
         let this = Self {
             prefs,
             bundle,
@@ -232,7 +243,6 @@ impl Pinvou3Bridge {
             execution_root_resolver: None,
             code_session_predicate: None,
         };
-        this.wire_max_output_tokens_env();
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
         //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
         //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
@@ -284,26 +294,6 @@ impl Pinvou3Bridge {
             eprintln!(
                 "[pinvou3-app] cleaned up {removed} legacy disk file(s) \
                  (C-fork P-no-disk: prompt content now Inline in memory)"
-            );
-        }
-    }
-
-    /// 把 `self.max_output_tokens()` 写到底座读取的 `DEEPSEEK_MAX_OUTPUT_TOKENS`
-    /// env (核心:底座 `effective_max_output_tokens()` 只读这个 env)。
-    ///
-    /// 生产 Tauri 启动不走 run-dev.sh (clean env), 没这一步会让底座回到
-    /// 模型表启发式。这里显式写入 pinvou3 的本地 vLLM 输出预算,确保 dev /
-    /// release / headless harness 行为一致。
-    ///
-    /// 已有 env 时不覆盖 (允许 run-dev.sh / L1 harness / 用户 override)。
-    ///
-    /// 单独抽 helper 让测试可以不走 boot() (避免 ensure_dirs / extract_bundle
-    /// 写盘到真实 ~/.pinvou3 + 不需要拿 PINVOU3_HOME ENV_LOCK)。
-    pub fn wire_max_output_tokens_env(&self) {
-        if std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none() {
-            std::env::set_var(
-                "DEEPSEEK_MAX_OUTPUT_TOKENS",
-                self.max_output_tokens().to_string(),
             );
         }
     }
@@ -904,8 +894,9 @@ impl Pinvou3Bridge {
 
     /// 为一个具体 wire model 生成宿主已知的 route facts：
     /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
-    /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。output 始终不超过 Pinvou
-    /// 全局 24K 请求意图。
+    /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
+    /// output_tokens：本地 vLLM 显式携带 Pinvou 24K 预算（防 SSE timeout 既有约束），
+    /// 云端模型不声明（SavedModel.max_output_tokens 默认 None）→ 底座按 64K/厂商能力兜底。
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -2580,11 +2571,11 @@ mod tests {
     fn forkguard_compaction_128k_scenarios() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // [根治后] derive_compaction_threshold 经底座 context_input_budget_for_route 读
-        // DEEPSEEK_MAX_OUTPUT_TOKENS 算 output 预留(不再镜像 24576)。测试须钉死生产 env 值,
-        // 否则底座默认 API_MAX_OUTPUT_TOKENS=65536 → E 偏小 → T 偏小(fixture 的 wire 用 is_none
-        // 检查,env 被其它测试污染时不覆盖)。生产由 Bridge::boot → wire_max_output_tokens_env 保证。
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        // [根因] derive_compaction_threshold 经底座 context_input_budget_for_route 算
+        // output 预留：本地 vLLM 的 24576 由 route_limits_for_model 的 is_local_vllm
+        // 分支显式携带进 RouteLimits.output_tokens，主导预留计算（min(requested_cap,
+        // route_cap)=24576），不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env。云端模型不再
+        // 被品悟钉死 24576，落底座 64K 兜底。
         // A. 真实 128K 部署:探测拿到 131072
         // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
         let mut a = fixture_bridge();
@@ -2678,6 +2669,196 @@ mod tests {
             t_c, 133_029,
             "256K/24K profile 的 Compact 阈值应稳定为 133029"
         );
+    }
+
+    /// PR #210 回归：云端模型不再被全局 DEEPSEEK_MAX_OUTPUT_TOKENS 钉死 24576。
+    /// clean env（无该 env）下云端 SavedModel.max_output_tokens 为 None →
+    /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
+    /// 本地 vLLM 的 24576 由 is_local_vllm 分支显式携带（不依赖 env），两者都要锁。
+    ///
+    /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
+    /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
+    /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
+    /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`
+    /// 与下方 `forkguard_boot_env_must_not_pin_global_output_cap`）。
+    /// C 段只锁"中间层不被 env 污染"这一层事实，D 段沿底座公开预算链验证 env
+    /// 确实生效（对应 CHANGES_REQUESTED：补沿最终预算/请求构造链的回归）。
+    #[test]
+    fn forkguard_cloud_route_output_not_pinned_by_global_env() {
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
+        //    时前端存 null）→ route_limits.output_tokens=None → 底座 64K/厂商能力兜底。
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "",
+        );
+        let cloud_limits = cloud.route_limits_for_model("deepseek-v4-pro");
+        let cloud_output = cloud_limits.as_ref().and_then(|l| l.output_tokens);
+        assert_eq!(
+            cloud_output, None,
+            "clean env 下云端 route_limits.output_tokens 必须为 None（不声明，落底座兜底）"
+        );
+
+        // B. 本地 vLLM：is_local_vllm 分支显式携带 24K 预算，不依赖 env → 仍 24576。
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
+        let local_limits = local.route_limits_for_model(&local.model());
+        assert_eq!(
+            local_limits.as_ref().and_then(|l| l.output_tokens),
+            Some(24_576),
+            "本地 vLLM 仍显式携带 24K 预算（不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env）"
+        );
+
+        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
+        //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
+        //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
+        assert_eq!(
+            cloud_limits_env.as_ref().and_then(|l| l.output_tokens),
+            None,
+            "品悟中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
+        );
+
+        // D. 沿底座公开预算链（context_input_budget_for_route，品悟 derive_compaction_threshold
+        //    同款 API）验证：env 残留 24576 会把底座 output reservation 从 clean env 的 64K
+        //    压回 24K → 可用输入预算随之变大。证明"残留 env 不影响云端"不成立——真正防线是
+        //    release/boot 不再注入（lib.rs release_env_defaults_guard）。用显式 256K RouteLimits
+        //    （<500K 窗口才走 effective_max_output_tokens_for_route，≥500K 走 TURN 分支不读 env），
+        //    deepseek-v4-pro 的 provider max_output=384K 不会钳制 64K/24K 中的任一个。
+        let route_limits_256k = codewhale_config::route::RouteLimits {
+            context_tokens: Some(256_000),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        // 先回到 clean env 基准（C 段末尾已 set 24576）。
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        let budget_clean = deepseek_tui::core::engine::context_input_budget_for_route(
+            deepseek_tui::config::ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(route_limits_256k),
+            0,
+        )
+        .expect("显式 256K route 必须能算出输入预算");
+        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
+        let budget_env = deepseek_tui::core::engine::context_input_budget_for_route(
+            deepseek_tui::config::ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(route_limits_256k),
+            0,
+        )
+        .expect("显式 256K route 必须能算出输入预算");
+        assert!(
+            budget_env > budget_clean,
+            "env 残留 24576 使底座 output reservation 变小（64K→24K），输入预算必须变大：\
+             clean={budget_clean} env={budget_env}"
+        );
+        assert_eq!(
+            budget_env - budget_clean,
+            65_536 - 24_576,
+            "reservation 差应恰为底座 64K 兜底 − 本地 24K（clamp/headroom 两侧相同）"
+        );
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+    }
+
+    /// PR #210 守卫（第四轮评审修正 2026-08-12）：bridge boot 的 env 注入结果
+    /// 不得包含输出上限 env。lib.rs `release_env_defaults_guard` 只覆盖 run() 的
+    /// release env 注入路径；若未来有人在 boot 路径直接 set_var
+    /// `DEEPSEEK_MAX_OUTPUT_TOKENS`，那边的守卫抓不到——故把 boot 的 env 写入收口到
+    /// `wire_boot_env` 单一源头，并在**隔离 home 下实际执行 `Pinvou3Bridge::boot()`**
+    /// 后断言最终 env 状态：无论注入发生在 boot 哪一行，只要重新注入 24576，守卫即失败。
+    ///
+    /// 第四轮评审此前指出：旧版守卫只直接调用 `wire_boot_env` helper，wire_boot_env
+    /// 不是由类型/编译器强制的唯一 env 写入口，未来若有人在 boot 其他位置直接
+    /// set_var、重建旧 helper 或调用其他 helper，该测试仍会通过。本版改为跑真实
+    /// boot：boot 在隔离临时目录下执行（bundle 解包 / settings 写入 / legacy 清扫全落
+    /// 隔离目录，不触碰真实 `~/.pinvou3` 与用户 home 文件），断言 boot 后进程 env 无
+    /// 这两个 key 且 `PINVOU3_SESSION_ARTIFACTS` 正常写入。
+    ///
+    /// 第五轮评审修正 2026-08-13：此前只隔离 `HOME`——Windows 的 `user_home_dir()`
+    /// 优先读 `USERPROFILE`、其次 `HOMEDRIVE`+`HOMEPATH`、最后才 `HOME`，只设 `HOME`
+    /// 会让 `boot()` 的 `workspace`（= `user_home_dir()`）在 Windows 上仍指向真实
+    /// 用户目录，legacy 清扫可能删除真实目录里带管理标识的文件。现把三平台 home
+    /// 来源全部隔离到临时目录；临时目录命名叠加 `std::process::id()`（跨进程唯一），
+    /// 并用 RAII guard 保证 boot/断言 panic 时仍回收整份解包 bundle。
+    #[test]
+    fn forkguard_boot_env_must_not_pin_global_output_cap() {
+        // 需要写 PINVOU3_HOME / HOME / Windows home 来源（隔离目录），锁 + 恢复这些与目标 key。
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+            "PINVOU3_SESSION_ARTIFACTS",
+            "PINVOU3_HOME",
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+        ]);
+        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
+        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
+
+        // RAII 清理：boot 会全量解包 bundle 到隔离 home，断言/panic 时也须回收
+        // （此前仅在正常结尾 remove_dir_all，中途失败会残留整份 bundle）。
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        // 叠加 pid + 进程内原子后缀：unique_suffix 只保证单进程内唯一，双终端并发
+        // cargo test 会跨进程碰撞（见 paths::tests::unique_suffix 文档）。
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-boot-env-guard-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _temp = TempDirGuard(root.clone());
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建隔离 home");
+        std::env::set_var("PINVOU3_HOME", &root);
+        // 三平台 user_home_dir() 来源全部隔离到 root：macOS/Linux 读 HOME；Windows
+        // 优先 USERPROFILE，其次 HOMEDRIVE+HOMEPATH，最后 HOME。若不隔离 Windows 的
+        // 前两项，boot 的 workspace 仍指向真实用户目录，legacy 清扫会触碰真实文件。
+        std::env::set_var("HOME", &root);
+        std::env::set_var("USERPROFILE", &root);
+        std::env::remove_var("HOMEDRIVE");
+        std::env::remove_var("HOMEPATH");
+
+        let bridge = super::Pinvou3Bridge::boot().expect("隔离 home 下 boot 必须成功");
+
+        assert!(
+            std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
+            "boot 执行后不得注入 DEEPSEEK_MAX_OUTPUT_TOKENS（会重新钉死云端输出上限）"
+        );
+        assert!(
+            std::env::var_os("PINVOU3_MAX_OUTPUT_TOKENS").is_none(),
+            "boot 执行后不得注入 PINVOU3_MAX_OUTPUT_TOKENS"
+        );
+        // boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）。
+        let artifacts = paths::default_session_artifacts_dir();
+        assert_eq!(
+            std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
+            Ok(artifacts.to_str().expect("隔离 home 路径必须是 UTF-8")),
+            "boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
+        );
+
+        // bridge 先于 TempDirGuard 回收（guard 声明更早、drop 更晚），避免删目录时
+        // bridge 仍持有其中的 bundle 路径。
+        drop(bridge);
     }
 
     /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
@@ -2912,41 +3093,6 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
-    }
-
-    /// `wire_max_output_tokens_env` 必须把 self.max_output_tokens() 设给底座
-    /// env,让 dev / release / headless harness 对同一个本地 vLLM cap 达成一致。
-    ///
-    /// 走 fixture_bridge() + helper (而非 boot()),避免:
-    ///   - 写真实 ~/.pinvou3 (codex round 5 finding)
-    ///   - 跟 PINVOU3_HOME ENV_LOCK 持有者冲突
-    ///
-    /// 两个语义合并一个测试避免并发 race (Rust env process-global,
-    /// 后续多测试可以拿 DEEPSEEK_MAX_OUTPUT_TOKENS 专属锁,但目前只此一处)。
-    #[test]
-    fn wire_max_output_tokens_env_sets_default_then_respects_existing() {
-        let (_lock, _env) =
-            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // clean env 路径:helper 应 set 默认 24576
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
-        std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
-        fixture_bridge().wire_max_output_tokens_env();
-        assert_eq!(
-            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("24576"),
-            "wire helper 必须 set DEEPSEEK_MAX_OUTPUT_TOKENS=24576, 让底座 \
-             effective_max_output_tokens 走 pinvou3 显式 cap (24K,见 max_output_tokens 注释)"
-        );
-
-        // 已有 env 不覆盖路径:helper 是 no-op
-        std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "32768");
-        fixture_bridge().wire_max_output_tokens_env();
-        assert_eq!(
-            std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS").as_deref(),
-            Ok("32768"),
-            "已有 env 必须保留,不能被 helper 覆盖 (允许 run-dev.sh / L1 / 用户 override)"
-        );
-        std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。
