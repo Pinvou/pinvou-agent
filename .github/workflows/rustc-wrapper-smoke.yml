@@ -5,7 +5,7 @@ name: rustc-wrapper-smoke
 #   因 .cargo/config.toml 残留 wrapper 配置而 os error 193;config.toml 不配置
 #   [build] rustc-wrapper(全局键无法按平台条件化),默认三端直接可用。
 # - run-dev.sh 的 wrapper 平台选择(scripts/rustc-stack-wrapper-select.sh):
-#   Darwin/Linux 注入 sh 版;Windows (MINGW*/MSYS*/CYGWIN*) 透传不注入,
+#   Darwin/Linux 注入 sh 版;Windows (MINGW*/MSYS*/CYGWIN*) 注入 .cmd 版,
 #   导出的 RUSTC_WRAPPER 不得指向无扩展名 Unix 文件(os error 193)。
 # - 按平台注入 RUSTC_WRAPPER 后(windows → .cmd 版,unix → sh 版),Cargo 必须
 #   能执行 wrapper;编译器进程 env 含 RUST_MIN_STACK=16777216。
@@ -70,10 +70,10 @@ jobs:
 
       # 2) run-dev.sh 的 wrapper 平台选择(单一真相源 rustc-stack-wrapper-select.sh):
       #    验证 run-dev.sh 实际使用的 selector 在 Windows(Git Bash/MSYS,
-      #    uname -s 为 MINGW*/MSYS*/CYGWIN*)下输出空、不指向无扩展名 Unix
-      #    文件——否则本地开发经 run-dev.sh 注入后会 os error 193,阻断
-      #    Windows 上所有 Cargo 命令。
-      - name: run-dev.sh selector —— Windows 不注入 Unix wrapper
+      #    uname -s 为 MINGW*/MSYS*/CYGWIN*)下输出 .cmd 版、不指向无扩展名
+      #    Unix 文件——否则本地开发经 run-dev.sh 注入后会 os error 193,
+      #    阻断 Windows 上所有 Cargo 命令。
+      - name: run-dev.sh selector —— Windows 注入 .cmd 版 wrapper
         shell: bash
         run: |
           set -euxo pipefail
@@ -85,12 +85,14 @@ jobs:
             echo "FAIL: run-dev.sh 仍直接无条件 export 无扩展名 Unix wrapper"
             exit 1
           fi
-          # selector 平台行为:Windows 输出空(透传),Unix 输出存在的 sh 文件。
+          # selector 平台行为:Windows 输出 .cmd 版(Windows 原生路径),
+          # Unix 输出存在的 sh 文件。
           out="$(bash "$select_script")"
           case "$(uname -s)" in
             MINGW*|MSYS*|CYGWIN*)
-              [ -z "$out" ] || { echo "FAIL: Windows selector 应输出空, got: $out"; exit 1; }
-              echo "OK: Windows selector 输出空(透传,不注入)"
+              [ -n "$out" ] || { echo "FAIL: Windows selector 应输出 .cmd wrapper"; exit 1; }
+              echo "$out" | grep -qi '\.cmd$' || { echo "FAIL: Windows selector 应指向 .cmd 版, got: $out"; exit 1; }
+              echo "OK: Windows selector → $out"
               ;;
             Darwin|Linux)
               [ -n "$out" ] || { echo "FAIL: Unix selector 应输出 sh wrapper"; exit 1; }
@@ -155,3 +157,27 @@ jobs:
           CARGO_TERM_COLOR=never cargo test 2>&1 | tee cargo-test.log
           grep -q "compiler_stack_contract" cargo-test.log
           grep -q "test result: ok" cargo-test.log
+
+      # 5) 链式 wrapper(RUSTC_WRAPPER_CHAIN,如 sccache):验证 wrapper 先注入
+      #    RUST_MIN_STACK、再委托给链上命令执行(pr-check.yml 的 rust-test /
+      #    windows-rust-test 用此链保留 sccache 缓存 + 栈注入两全)。
+      #    Unix 用 `env` 充当链上命令直接观测注入结果;Windows 静态断言链分支
+      #    存在(cmd 嵌套引号在 Git Bash/MSYS 下会被路径转换破坏)。
+      - name: 链式 wrapper —— 委托链上命令且仍注入 16 MiB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" . 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" . 2>/dev/null || true
+          chmod +x rustc-stack-wrapper 2>/dev/null || true
+          unset RUST_MIN_STACK
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            grep -q "RUSTC_WRAPPER_CHAIN" rustc-stack-wrapper.cmd
+            grep -q "set RUST_MIN_STACK=16777216" rustc-stack-wrapper.cmd
+          else
+            # `env env`:链上命令 `env` 执行参数中的 `env`(无参),打印当前环境,
+            # 应包含经 wrapper 注入的 RUST_MIN_STACK=16777216。
+            RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper env | grep -q "^RUST_MIN_STACK=16777216$"
+          fi

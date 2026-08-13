@@ -8,23 +8,27 @@
 # 无扩展名 sh 会 os error 193,阻断所有 Cargo 命令),因此由正式
 # Cargo 入口按平台决定是否注入:
 #   - Darwin/Linux:注入 sh 版(编译 codewhale-tui 有 SIGBUS 实测风险);
-#   - Windows (MINGW*/MSYS*/CYGWIN*):透传不注入。Windows 无 SIGBUS
-#     触发(仅 macOS 实测);且无扩展名 Unix shell 文件无法被 Windows
-#     原生 Cargo 执行(CreateProcess → os error 193)。
+#   - Windows (MINGW*/MSYS*/CYGWIN*):注入 .cmd 版。栈溢出根因三端同源
+#     (Windows 无 SIGBUS 信号、表现为栈溢出,已由 windows-rust-test 实测),
+#     本地 dev 同样需要 16 MiB 栈;无扩展名 sh 无法被 Windows 原生 Cargo
+#     执行(CreateProcess → os error 193),故注入 .cmd 版。
 #
 # 本脚本是"平台选择"的单一真相源:run-dev.sh 与 CI smoke
 # (rustc-wrapper-smoke.yml)都执行它,保证正式入口与实际验证一致。
 # 输出空时调用方不得设置 RUSTC_WRAPPER。
 #
-# 注意:本脚本不做路径转换(cygpath 等)。Windows 分支刻意输出空,
-# 避免 MSYS 风格路径(C:\ vs /c/)与空格转义在 CreateProcess 下出错。
+# 注意:Windows 分支用 cygpath -m 把 MSYS 风格路径(/c/...)转成 Windows
+# 原生路径(C:/...)。原生 cargo.exe 的 CreateProcess 无法解析 /c/...,
+# MSYS 对 env 变量的自动路径转换也不可靠,显式转换更稳妥。用 -m(正斜杠)
+# 而非 -w(反斜杠):反斜杠经 shell echo 二次解析可能被吃掉(\a/\r/\c)。
 case "$(uname -s)" in
   Darwin|Linux)
     # 与本脚本同目录的 sh wrapper(绝对路径,不依赖调用方 cwd)
     echo "$(cd "$(dirname "$0")" && pwd)/rustc-stack-wrapper"
     ;;
   MINGW*|MSYS*|CYGWIN*)
-    # Windows:透传,不注入
+    # 与本脚本同目录的 .cmd wrapper(cygpath 转 Windows 原生路径)
+    cygpath -m "$(cd "$(dirname "$0")" && pwd)/rustc-stack-wrapper.cmd"
     ;;
   *)
     # 未知平台:透传,不注入

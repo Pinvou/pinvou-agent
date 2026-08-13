@@ -39,12 +39,13 @@
 # run-dev.sh 与 rustc-wrapper-smoke 共用,输出空 = 不注入):
 #   - macOS/Linux 开发:pinvou3-app/run-dev.sh 调用 selector,注入
 #     scripts/rustc-stack-wrapper(无扩展名 sh,带 shebang)
-#   - Windows 开发:selector 输出空(Git Bash/MSYS 下注入无扩展名 Unix
-#     文件会 os error 193),默认透传即可;如需统一行为,可设
-#     RUSTC_WRAPPER=scripts/rustc-stack-wrapper.cmd
+#   - Windows 开发:run-dev.sh 调用 selector,注入
+#     scripts/rustc-stack-wrapper.cmd(经 cmd /C 执行;无扩展名 sh 会
+#     os error 193)
 #   - CI:pr-check(rust-lint)、mac-build、release-packages
 #     (Linux x64/arm64、macOS universal)注入 sh 版;
-#     release-packages 的 Windows x64 注入 .cmd 版
+#     release-packages 的 Windows x64 与 pr-check 的 windows-rust-test
+#     注入 .cmd 版
 # 注入的 RUST_MIN_STACK=16MiB 只作用于编译期 rustc 进程;cargo run /
 # cargo test 目标进程不经过 wrapper,运行时线程栈语义(约 2 MiB)不变。
 # 与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
