@@ -220,6 +220,16 @@ pub fn take_turn_capture(session_id: &str) -> Option<TurnMemoryCapture> {
     })
 }
 
+/// 中断/会话回收时丢弃该 session 的进行中 turn capture，避免进程级 store 永久驻留。
+/// 与 take_turn_capture 的区别：不构建返回值、不触发记忆复盘（中断轮不应复盘）。
+pub fn discard_turn_capture(session_id: &str) {
+    let session_id = clean_id(session_id);
+    if session_id.is_empty() {
+        return;
+    }
+    turn_capture_store().lock().remove(&session_id);
+}
+
 pub fn load_profile() -> io::Result<MemoryProfile> {
     let path = profile_path();
     match read_text_recovering(&path, |raw| {

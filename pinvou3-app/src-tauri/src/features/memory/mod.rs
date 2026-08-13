@@ -40,13 +40,13 @@ pub use self::io::{
 // ---- 实体存储读写 pub 入口（io）----
 pub use self::io::{
     append_turn_assistant, archive_recent_work, clear_profile, confirm_pending_memory,
-    delete_preference, delete_timed_memory, delete_work_context, enqueue_memory_candidate,
-    ignore_pending_memory, list_preferences, list_preferences_with_cleanup, load_current_focus,
-    load_never_memory, load_pending_memory, load_profile, load_recent_activity, load_recent_work,
-    load_work_context, load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user, save_profile,
-    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
-    upsert_recent_work,
+    delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences, list_preferences_with_cleanup,
+    load_current_focus, load_never_memory, load_pending_memory, load_profile, load_recent_activity,
+    load_recent_work, load_work_context, load_work_context_with_cleanup, memory_enabled,
+    never_pending_memory, record_turn_tool_complete, record_turn_tool_start, record_turn_user,
+    save_profile, take_turn_capture, update_preference, update_profile, update_timed_memory,
+    update_work_context, upsert_recent_work,
 };
 
 // ---- LLM 后台复盘（llm_review）----

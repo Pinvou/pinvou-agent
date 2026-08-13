@@ -164,6 +164,13 @@ impl SelfMetrics {
         ));
     }
 
+    /// Turn aborted（停止/会话回收，未走到 TurnComplete）：移除 inflight 打点条目，
+    /// 避免该 session 的 TurnTiming 永久驻留。不写 perf 累计、不标 warmed（中断轮非完成轮）。
+    pub fn on_turn_aborted(&self, session_id: &str) {
+        self.inflight.lock().remove(session_id);
+        self.set_last_event(format!("turn_aborted session={session_id}"));
+    }
+
     pub fn snapshot(&self) -> SelfPerfSnapshot {
         let p = self.perf.lock();
         SelfPerfSnapshot {
@@ -194,6 +201,22 @@ impl SelfMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_metrics_aborted_turn_clears_inflight_without_marking_warmed() {
+        let m = SelfMetrics::default();
+        m.on_turn_started("s1");
+        m.on_first_delta("s1");
+        m.on_turn_aborted("s1");
+        let dbg = m.debug_snapshot();
+        assert_eq!(dbg.inflight_count, 0);
+        assert_eq!(dbg.warmed_sessions_count, 0);
+        // 中断轮不污染 perf 累计：不写 tokens、不计 TTFT/TPS。
+        let s = m.snapshot();
+        assert_eq!(s.gen_tokens_total, 0);
+        assert_eq!(s.prompt_tokens_total, 0);
+        assert_eq!(s.ttft_count, 0);
+    }
 
     #[test]
     fn self_metrics_first_turn_per_session_records_ttft_tps() {
