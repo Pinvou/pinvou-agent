@@ -104,6 +104,17 @@ function injectSource() {
         has_secret: true,
         credential_state: 'configured',
       },
+      {
+        id: 'cloud-kimi-global-custom',
+        name: 'Kimi 国际版',
+        preset: 'kimi',
+        model: 'custom-kimi-id',
+        base_url: 'https://api.moonshot.ai/v1',
+        vendor: 'kimi',
+        reasoning_effort: 'off',
+        has_secret: true,
+        credential_state: 'configured',
+      },
     ];
     var activeModelId = 'local-qwen';
     var superPerm = false;
@@ -492,6 +503,38 @@ async function modalWidth(page, headingText) {
     remaining: window.__SETTINGS_TEST__.models().map(model => model.id),
   }));
   rec('⑤ 确认后才调用删除模型并刷新列表', deleted.calls.includes('cloud-deepseek') && !deleted.remaining.includes('cloud-deepseek'), JSON.stringify(deleted));
+
+  // 思考深度档位迁移：编辑 Kimi Global 自定义模型（已存 off），手输改 ID 为 kimi-k3 后
+  // 档位表由 off/high 变为 low/high/max，off 不在其中，必须按新 route 归一为 low——
+  // 否则界面无高亮、保存仍写旧值（底座 K3 实际按 low 执行）。
+  await clickRowAction(page, 'custom-kimi-id', '编辑');
+  await sleep(300);
+  await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="model-form-dialog"] input[placeholder="输入模型 ID"]');
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'kimi-k3');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(300);
+  const kimiEffortMigration = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { found: false, labels: [], selected: [] };
+    const label = [...dialog.querySelectorAll('span')].find(node => (node.textContent || '').trim() === '思考深度');
+    const row = label && label.parentElement;
+    const buttons = row ? [...row.querySelectorAll('button')] : [];
+    const selected = buttons.filter(node => (node.className || '').includes('bg-[#007AFF]')).map(node => (node.textContent || '').trim());
+    return { found: !!row, labels: buttons.map(node => (node.textContent || '').trim()), selected };
+  });
+  rec('⑥ 自定义模型 ID 手输 kimi-k3 后思考深度归一为 low（关闭残留 off）',
+    kimiEffortMigration.found
+      && kimiEffortMigration.labels.includes('低')
+      && !kimiEffortMigration.labels.includes('关闭')
+      && kimiEffortMigration.selected.length === 1
+      && kimiEffortMigration.selected[0] === '低',
+    JSON.stringify(kimiEffortMigration));
+  await clickExact(page, '取消');
+  await sleep(200);
 
   await clickExact(page, '添加模型');
   await sleep(300);

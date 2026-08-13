@@ -1386,6 +1386,23 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setProviderModelPickerOpen(false);
         setPickerOpen(false);
       }
+      // 手输编辑会改变 reasoning-effort route 的字段（model ID / base_url）后，把思考
+      // 深度归一到新 route：仍在档位表内的值保留（不覆盖用户有效选择，如 vLLM 的 high、
+      // 非 K3 moonshot 的 off），不在档位表内的按底座真实等价值回落（如 K3 的 off→low、
+      // medium→high，或 openai_compatible 改到官方 deepseek 端点后档位从无到有 → 默认
+      // high）。与目录选择（chooseModel / applyCatalogItem）的「重置到默认」区分：目录
+      // 选择是显式换模型，手输是改字段，保留有效值更符合直觉且不会误清用户的旧选择。
+      function renormalizeReasoningEffort(modelDescriptor) {
+        setReasoningEffort(normalizeStoredReasoningEffort(modelDescriptor, reasoningEffort));
+      }
+      function handleModelIdChange(value) {
+        setModel(value);
+        renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+      }
+      function handleBaseUrlChange(value) {
+        setBaseUrl(value);
+        renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
+      }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
@@ -1653,7 +1670,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             {(customModel || !known) && renderInlineField({
               label: settingsCopy.modelId,
               value: model,
-              onChange: e => setModel(e.target.value),
+              onChange: e => handleModelIdChange(e.target.value),
               placeholder: isCodingPlan ? t.uiSettingsView.codingPlanModelIdPlaceholder : settingsCopy.modelIdPlaceholder,
             })}
           </>
@@ -1897,7 +1914,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                       placeholder: settingsCopy.localModel,
                     })}
                     {showProviderModelField && renderProviderModelField()}
-                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
+                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
@@ -1907,7 +1924,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                         <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
-                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
+                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.apiKeyRequired}</label>

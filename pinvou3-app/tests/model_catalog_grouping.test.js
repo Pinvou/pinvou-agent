@@ -263,6 +263,32 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(mimo), ['off', 'high']);
 });
 
+test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
+  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const openai = model => ({ preset: 'openai', vendor: 'openai', model });
+  // 官方 OpenAI 支持手输自定义模型 ID：这些模型底座会注入多档 reasoning_effort，
+  // 前端必须提供切换，不能因「不在目录内」返回 null（否则后端注入、前端不可控）。
+  const reasoningFamily = [
+    'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+    'gpt-5.5', 'gpt-5.5-pro',
+    'gpt-5.5-2026-01-01', 'gpt-5.5-pro-2026-01-01',
+    'gpt-5-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max',
+    'gpt-5.2-codex', 'gpt-5.3-codex', 'codex-gpt-5.5', 'chatgpt-gpt-5.5',
+    'gpt-5.5-codex', 'gpt-5.5-codex-preview', 'codex-gpt-5.5-preview', 'chatgpt-gpt-5.5-preview',
+  ];
+  reasoningFamily.forEach(id => {
+    assert.deepStrictEqual(tiers(openai(id)), ['off', 'low', 'medium', 'high', 'max'], `reasoning 家族正例应提供切换: ${id}`);
+  });
+  // 非 reasoning 家族（含名称近似但底座 predicate 不命中的）不提供切换
+  const nonReasoning = [
+    'gpt-5.4-mini', 'gpt-4o', 'gpt-4.1', 'o3', 'o4-mini',
+    'gpt-5.5-2026-1-1', 'gpt-5.5-pro-20260101', 'gpt-5.5-codex-preview-extra',
+  ];
+  nonReasoning.forEach(id => {
+    assert.strictEqual(reasoningEffortTiersForModel(openai(id)), null, `非 reasoning 模型应为 null: ${id}`);
+  });
+});
+
 test('reasoningEffortTiersForModel：精确路由语义对齐底座 is_exact_https_route', () => {
   const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
   const mkZai = baseUrl => ({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: baseUrl });
@@ -338,6 +364,21 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // 中国端点 kimi-k3 走通用 moonshot 档位（off/high），off 保持 off
   const k3Cn = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.cn/v1' };
   assert.strictEqual(normalizeStoredReasoningEffort(k3Cn, 'off'), 'off');
+});
+
+test('手输改字段（model ID / base_url）归一只修正失效值、保留有效值', () => {
+  // Kimi 非 K3 上已存 off：改自定义 ID（仍非 K3）后 off 依然合法，保留而非重置为 high
+  const moonshotCustom = { preset: 'kimi', vendor: 'kimi', model: 'custom-kimi-a' };
+  assert.strictEqual(normalizeStoredReasoningEffort(moonshotCustom, 'off'), 'off');
+  // 改 ID 为 kimi-k3（always-thinking）后 off 失效，按底座真实等价值归一为 low
+  const k3 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
+  assert.strictEqual(normalizeStoredReasoningEffort(k3, 'off'), 'low');
+  // vLLM 上已存 high：改本地模型 ID / base_url 后 high 依然合法，保留（不误清用户选择）
+  const vllmHigh = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
+  assert.strictEqual(normalizeStoredReasoningEffort(vllmHigh, 'high'), 'high');
+  // openai_compatible 改 base_url 到官方 deepseek 端点：档位从无到有，存量 null 回落默认 high
+  const deepseekByUrl = { preset: 'openai_compatible', model: 'my-model', base_url: 'https://api.deepseek.com' };
+  assert.strictEqual(normalizeStoredReasoningEffort(deepseekByUrl, null), 'high');
 });
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);

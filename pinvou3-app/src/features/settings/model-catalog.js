@@ -608,18 +608,53 @@ const REASONING_EFFORT_TIERS = {
   openai: ['off', 'low', 'medium', 'high', 'max'],
 };
 
-// OpenAI 官方 API 里底座 `apply_openai_reasoning_effort` 只对 reasoning 家族
-// 模型注入档位。这里只特判品悟目录实际收录的 reasoning 家族模型（gpt-5.5 与
-// gpt-5.6-sol/terra/luna）；其余 gpt-5.x codex / 日期快照 / pro 等已下线或
-// 未收录，不做特判避免死代码。
-const OPENAI_REASONING_FAMILY = new Set([
-  'gpt-5.5',
-  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-]);
-
+// OpenAI 官方 API 支持「自定义模型」手输模型 ID，因此 reasoning 家族判定必须
+// 对齐底座 CodeWhale `model_is_openai_reasoning_family`（models.rs）的完整
+// predicate，而不是只覆盖品悟目录收录的 4 个 ID：用户手输 gpt-5.6 / gpt-5.5-pro /
+// 日期快照 / gpt-5.3-codex 等模型时底座仍会注入多档 reasoning_effort，前端若
+// 返回 null 会隐藏切换，造成「后端注入、前端不可控」的不一致。
 function isOpenaiReasoningFamilyModel(model) {
   const lower = String((model && model.model) || '').trim().toLowerCase();
-  return OPENAI_REASONING_FAMILY.has(lower);
+  return isOpenaiGpt55ApiModel(lower)
+    || isOpenaiGpt56ApiModel(lower)
+    || isOpenaiCodexModel(lower);
+}
+
+// 对齐 models.rs `is_openai_gpt_55_api_model`：gpt-5.5 / gpt-5.5-pro 及其日期快照。
+function isOpenaiGpt55ApiModel(lower) {
+  return lower === 'gpt-5.5' || lower === 'gpt-5.5-pro'
+    || hasOpenaiDateSnapshotSuffix(lower, 'gpt-5.5-')
+    || hasOpenaiDateSnapshotSuffix(lower, 'gpt-5.5-pro-');
+}
+
+// 对齐 models.rs `is_openai_gpt_56_api_model`。
+function isOpenaiGpt56ApiModel(lower) {
+  return lower === 'gpt-5.6' || lower === 'gpt-5.6-sol'
+    || lower === 'gpt-5.6-terra' || lower === 'gpt-5.6-luna';
+}
+
+// 对齐 models.rs `is_openai_codex_model`。
+const OPENAI_CODEX_MODELS = new Set([
+  'gpt-5-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max',
+  'gpt-5.2-codex', 'gpt-5.3-codex', 'codex-gpt-5.5', 'chatgpt-gpt-5.5',
+  'gpt-5.5-codex', 'gpt-5.5-codex-preview', 'codex-gpt-5.5-preview', 'chatgpt-gpt-5.5-preview',
+]);
+
+function isOpenaiCodexModel(lower) {
+  return OPENAI_CODEX_MODELS.has(lower);
+}
+
+// 对齐 models.rs `has_date_snapshot_suffix`：prefix 后须紧跟 YYYY-MM-DD（10 字符，
+// 第 5 / 8 位为 '-'，其余为数字），否则不视为日期快照。
+function hasOpenaiDateSnapshotSuffix(lower, prefix) {
+  if (!lower.startsWith(prefix)) return false;
+  const rest = lower.slice(prefix.length);
+  if (rest.length !== 10 || rest[4] !== '-' || rest[7] !== '-') return false;
+  for (let i = 0; i < 10; i += 1) {
+    if (i === 4 || i === 7) continue;
+    if (rest[i] < '0' || rest[i] > '9') return false;
+  }
+  return true;
 }
 
 // 品悟 provider 判定（对齐 bridge.rs `provider()`：base_url(deepseek) 优先，
