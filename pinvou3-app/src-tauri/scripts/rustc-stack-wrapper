@@ -10,19 +10,21 @@
 # (优先级高于 .cargo/config.toml,Windows 上同样可靠)。平台选择统一走
 # rustc-stack-wrapper-select.sh(单一真相源,输出空 = 不注入):
 #   - macOS/Linux 开发:pinvou3-app/run-dev.sh 调用 selector 注入本文件
-#   - Windows 开发:run-dev.sh 调用 selector 注入 .cmd 版(本文件是
+#   - Windows 开发:run-dev.sh 调用 selector 编译并注入 .exe 版(本文件是
 #     无扩展名 Unix shell,Windows 原生 Cargo 无法执行 → os error 193)
 #   - CI:pr-check(rust-lint)、mac-build、release-packages
 #     (Linux x64/arm64、macOS universal)按平台注入 sh 版;
-#     Windows 发布 / windows-rust-test job 注入 rustc-stack-wrapper.cmd 版
+#     Windows 发布 / windows-rust-test job 先编译 .exe 版再注入
+#     (见 rustc-stack-wrapper.rs)
 # 本脚本只包装编译期 rustc 调用;cargo run / cargo test 启动的应用与
 # 测试进程不经过本脚本,不会继承 RUST_MIN_STACK,默认线程栈语义
 # (约 2 MiB)不变。与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
 #
-# 注意:本文件是 Unix(sh)版本。Windows 上 Cargo 需要 .cmd 后缀才能走
-# cmd /C(见 rustc-stack-wrapper.cmd);栈溢出根因三端同源(macOS 实测 SIGBUS、
-# Windows 实测栈溢出),Windows 本地 dev 经 selector 注入 .cmd 版,CI 的
-# Windows job(发布 / windows-rust-test)同样注入 .cmd 版。
+# 注意:本文件是 Unix(sh)版本。Windows 上需 .exe 可执行文件:.cmd 经
+# cmd /C 受 8191 字符命令行上限限制,故用 .exe 经 CreateProcess 直启
+# (见 rustc-stack-wrapper.rs)。栈溢出根因三端同源(macOS 实测 SIGBUS、
+# Windows 实测栈溢出),Windows 本地 dev 经 selector 编译注入 .exe 版,CI 的
+# Windows job(发布 / windows-rust-test)同样先编译 .exe 版再注入。
 export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
 # 链式 wrapper(如 sccache):cargo 调用 `$RUSTC_WRAPPER rustc <args>` 时,若设置了
 # RUSTC_WRAPPER_CHAIN,则在本脚本之后插入该命令,形成
