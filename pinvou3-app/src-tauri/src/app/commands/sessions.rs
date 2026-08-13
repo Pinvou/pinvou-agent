@@ -465,6 +465,15 @@ pub async fn delete_session(
     };
     if result.is_ok() {
         pool.forget_session(&id);
+        // 会话删除兜底：清掉进程级 store 里该 session 的打点残留，避免随会话删除
+        // 缓慢增长的自测指标泄漏（warmed_sessions 在每轮 TurnComplete 插入、从不回收）。
+        if let Some(m) = app
+            .try_state::<crate::features::monitor::MonitorState>()
+            .map(|s| s.self_metrics())
+        {
+            m.drop_session(&id);
+        }
+        crate::features::memory::discard_turn_capture(&id);
         let payload = serde_json::json!({ "id": &id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);

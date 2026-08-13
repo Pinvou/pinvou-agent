@@ -217,8 +217,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // 若放组件 useState，一离开工具商店就全丢 → 回来按钮又变“连接”。故挂在模块级单例，
     // 活在组件生命周期之外；组件只订阅它做镜像渲染。
     // 统一注册 Tauri 事件监听并收集 unlisten 句柄，供 conn.disposeListeners() 清理。
+    // ev.listen 返回 Promise<unlisten>，若 dispose 在 resolve 前发生，迟到的句柄不能
+    // 再 push 进已清空的数组（否则监听永远漏注销）→ 直接注销。
     function track(ev, conn, event, handler) {
-      ev.listen(event, handler).then(u => conn.unlisteners.push(u)).catch(() => {});
+      ev.listen(event, handler)
+        .then(u => { if (conn.disposed) { try { u(); } catch (_) {} } else { conn.unlisteners.push(u); } })
+        .catch(() => {});
     }
 
     const feishuConn = {
@@ -226,6 +230,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       tick: null,
       listenersReady: false,
       unlisteners: [],
+      disposed: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
@@ -240,6 +245,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
       disposeListeners() {
+        this.disposed = true;
         this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
         this.unlisteners = [];
         this.listenersReady = false;
@@ -296,7 +302,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 企业微信连接流程 · 跨视图持久 store(镜像 feishuConn;企微纯扫码单段）──
     const wecomConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], subs: new Set(),
+      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -310,6 +316,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
       disposeListeners() {
+        this.disposed = true;
         this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
         this.unlisteners = [];
         this.listenersReady = false;
@@ -347,7 +354,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 钉钉连接流程 · 跨视图持久 store(镜像企微;纯扫码单段）──
     const dingtalkConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], subs: new Set(),
+      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -361,6 +368,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
       disposeListeners() {
+        this.disposed = true;
         this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
         this.unlisteners = [];
         this.listenersReady = false;
@@ -403,7 +411,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // ── 腾讯会议连接流程 · 跨视图持久 store(镜像钉钉;纯 OAuth 扫码单段）──
     const tmeetConn = {
-      flow: null, tick: null, listenersReady: false, unlisteners: [], subs: new Set(),
+      flow: null, tick: null, listenersReady: false, unlisteners: [], disposed: false, subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch (_) {} }); },
       startTick() {
@@ -417,6 +425,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       },
       stopTick() { if (this.tick) { clearInterval(this.tick); this.tick = null; } },
       disposeListeners() {
+        this.disposed = true;
         this.unlisteners.forEach(u => { try { u(); } catch (_) {} });
         this.unlisteners = [];
         this.listenersReady = false;
