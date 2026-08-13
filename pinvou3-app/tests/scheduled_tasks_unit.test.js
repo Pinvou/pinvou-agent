@@ -846,6 +846,30 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
   assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
   assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+
+  var stuckWithMetadata = [
+    '<codewhale:runtime_event kind="stuck_guard" visibility="internal">',
+    'Change strategy instead of repeating the same tool call.',
+    '</codewhale:runtime_event>',
+    '<turn_meta>',
+    'Input provenance: runtime (non-authoritative)',
+    '</turn_meta>',
+  ].join('\n');
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: stuckWithMetadata,
+    operation: "append",
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(!visible.includes("Change strategy instead"), "runtime events with trailing turn metadata must stay hidden");
+
+  await harness.emit("chat:user_message", {
+    session_id: sessionId,
+    content: stuckWithMetadata + "\n真实用户补充",
+    operation: "append",
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  assert.ok(visible.includes("真实用户补充"), "arbitrary text after runtime metadata must remain visible");
 }
 
 async function draftToggleFailureAbortsFirstSend() {

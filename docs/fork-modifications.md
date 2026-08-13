@@ -4,21 +4,31 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-11 · v0.9.5 r5 公开基线）
+## 0. 当前状态（2026-08-13 · v0.9.5 r5 公开基线 + 本地候选）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| 候选 PR | `Pinvou/CodeWhale#12`，分支 `fix/schema-tool-args-stuck-guard`，head `6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708`；尚未合入维护分支、未打标签、未发布 |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`Pinvou/CodeWhale#11` 已合并；当前维护分支 head 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
 | 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r5` 均指向公开维护分支 head；`r1`/`r2`/`r3`/`r4` 保留为不可变历史标签 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题、7 个线性提交 |
-| drift | `48 files changed, +2177/-269`；净增约 1908 行 |
-| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试 + 父仓指纹/行为测试 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题；公开 7 个线性提交，本地候选 8 个 |
+| drift | 公开基线 `48 files changed, +2177/-269`；本地候选 `50 files changed, +2437/-278` |
+| 守护 | 本地候选新增 4 条 CodeWhale `forkguard_*` 行为测试 + Tauri/Web 展示回归；完整 guard 结果见第 4 节 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
-### 本次会话修复（已验证并发布）
+### 本地模型工具调用兼容修复（已定向验证，尚未发布）
+
+- 部分 OpenAI 兼容后端会返回结构上合法、但把 schema 声明的嵌套 object/array 再编码成 JSON 字符串的工具参数；这会让 `request_user_input` 等强类型工具在进入业务校验前失败。
+- T2 本地候选只在 schema 明确声明 object/array、字符串为不超过 64 KiB 的严格 JSON 且解码类型一致时修复该容器；普通文本和数字/布尔字符串不做宽松转换，修复后仍执行原工具校验。
+- 重复工具调用触发 `stuck_guard` 时，内部策略提示现在折叠进当前 `tool_result`，不再在工具结果后追加独立 runtime `user` 消息，避免严格 OpenAI 兼容后端因角色序列拒绝下一轮。
+- Tauri/Web bridge 同时识别内部 runtime event 后合法附带的 `turn_meta`，避免内部 XML 泄露成聊天气泡；任意额外用户文本仍保持可见。
+- 底座候选 commit 为 `6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708`，已推送到 `Pinvou/CodeWhale:fix/schema-tool-args-stuck-guard` 并提交 `Pinvou/CodeWhale#12`；它尚未合入公开维护分支，也不属于任何公开标签。
+- 通用 schema 参数修复已提交官方上游 `Hmbown/CodeWhale#5348`；最新上游已移除 `stuck_guard`，因此角色续轮兼容只保留在当前 v0.9.5 fork 生命周期内。
+
+### r5 会话恢复修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
 - 底座修复已通过 `Pinvou/CodeWhale#11` 合入，公开 commit 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`。
@@ -29,7 +39,7 @@
 
 ### 软上限评估
 
-总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：
+公开基线及本地候选的总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：
 
 - T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
 - T5 `+912/-45`：三省六部角色派发、结构化/文件产出验证、显式项目根、路径逃逸阻断、取消和真实终态必须位于 SubAgent 生命周期内。
@@ -56,18 +66,20 @@
 
 ### T2：工具兼容与命令执行安全
 
-- **commit**：`595adce47e2d1bcf895d7bfd6426c074eb969324`
-- **规模**：15 文件，`+181/-98`
-- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
+- **commits**：公开 `595adce47e2d1bcf895d7bfd6426c074eb969324`；候选 PR `Pinvou/CodeWhale#12` 为 `6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708`（未合入、未发布）。
+- **规模**：公开主题 15 文件，`+181/-98`；本地候选另增 3 文件，`+260/-9`。
+- **核心文件**：`core/engine.rs`、`core/engine/{dispatch,turn_loop,tool_setup}.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
   - `SetDisallowedTools` 支持工具商店、知识库和会话策略在不重建 Engine 的情况下动态收窄工具面。
   - 复用 v0.9.5 原生 `allowed_tools` 作为硬白名单入口；Pinvou 名单由 app 构造，底座不维护产品 blocklist。
   - `File` 写入保持 64 KiB 单次内容上限，并在落盘前拒绝超限输入。
   - 多行 Shell 按 segment 检查；破坏性命令在自动批准模式下仍被阻断。
-  - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
+  - schema 明确要求 object/array 时，窄修复模型输出的严格 JSON 字符串容器；不做 primitive coercion，业务工具仍执行自身校验。
+  - 工具重复告警折叠进对应 `tool_result`，保持下一轮 provider 角色序列合法；应用 bridge 隐藏带 `turn_meta` 的内部 runtime event。
+  - 当前工具面不恢复已退役的独立追加文件工具，也不放宽 `request_user_input` 的问题数量、字段和选项校验。
 - **边界**：不包含 Skill 来源、Automation 或三省六部角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`，以及 Tauri/Web 内部消息展示回归。
 
 ### T3：嵌入上下文与技能来源
 
@@ -142,24 +154,31 @@ CodeWhale fork 只提供这些产品能力不可缺少的底座生命周期入�
 
 ## 4. 验证
 
-CodeWhale 当前已通过：
+本地候选当前已通过：
 
 ```text
 cargo fmt --all -- --check
-cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-23 passed / 0 failed
+27 passed / 0 failed
+node pinvou3-app/tests/scheduled_tasks_unit.test.js
+PASS scheduled tasks unit
+npm run lint:ui
+npm run build:ui
+npm test
+122 passed / 0 failed；pet asset validation passed
+./scripts/fork-guard.sh
+CodeWhale 27 passed；pinvou3-app 20 passed
+python3 scripts/architecture-guard.py
+architecture guard passed
 ```
 
-父仓当前已通过：
+以下为 r5 公开基线发布时通过的完整父仓验证，本地候选尚未重复全部构建矩阵：
 
 ```text
 cargo fmt --all -- --check
 cargo check --locked
 cargo test --locked --lib -- --test-threads=1
 1077 passed / 0 failed / 12 ignored
-./scripts/fork-guard.sh
-CodeWhale 23 passed；pinvou3-app 18 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui

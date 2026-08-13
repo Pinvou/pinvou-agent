@@ -1,6 +1,6 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-11. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
+> Updated: 2026-08-13. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
 
 ## Current baseline
 
@@ -8,11 +8,12 @@
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
+| Candidate PR | `Pinvou/CodeWhale#12`, branch `fix/schema-tool-args-stuck-guard` at `6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708`; not merged into the maintenance branch, tagged, or released |
 | Merged fixes | `Pinvou/CodeWhale#9` and `Pinvou/CodeWhale#11` are merged; the current maintenance head is `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` |
 | Public status | `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r5` both resolve to the public maintenance head; `r1` through `r4` remain immutable historical tags |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | 48 files, `+2177/-269` |
-| Organization | Five long-lived topics in seven linear commits replayed from `v0.9.5` |
+| Drift | Public: 48 files, `+2177/-269`; local candidate: 50 files, `+2437/-278` |
+| Organization | Five long-lived topics; seven published commits plus one local candidate replayed from `v0.9.5` |
 
 ### Published session fix
 
@@ -26,7 +27,7 @@
 ## Topics
 
 1. **Host embedding and routing boundary** — `331cb1594688c723d98499d9ca11f05af291b599` plus `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` (`Pinvou/CodeWhale#11`). Exposes only the library modules, narrow root-level Fleet roster API, read-only live-worker projection, opaque resolved-route interfaces, and distinct runtime-snapshot versus process-resume session APIs required by the host; the full `fleet` module remains private.
-2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`. Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, and fail-closed multiline command safety while reusing upstream `allowed_tools`.
+2. **Tool compatibility and command-execution safety** — published `595adce47e2d1bcf895d7bfd6426c074eb969324`, plus candidate `Pinvou/CodeWhale#12` at `6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708`. It adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, fail-closed multiline command safety, schema-bound repair of stringified JSON containers, and keeps stuck-guard guidance inside the corresponding tool result while reusing upstream `allowed_tools`. Primitive strings remain untouched and tool-specific validation still applies. The generic schema repair is also proposed upstream as `Hmbown/CodeWhale#5348`; current upstream has removed `stuck_guard`, so that role-sequence compatibility remains scoped to this v0.9.5 fork lifecycle.
 3. **Embedded context and Skill sources** — `5a9f52941b83452c1e8b76c2d679bac315edcf70`. Seals ambient project authority, scans only the explicit Skill root, filters disabled Skills, preserves up to 100 KiB only for the Permissions fragment, and excludes internal reminders from Working Set extraction.
 4. **Automation and runtime lifecycle** — `fc84f7d3e5dca0e3db404d43e218597764129f9b`. Preserves stable conversation/thread identity, v4 task compatibility, anchored schedules, no-backfill/no-overlap behavior, and terminal-only cleanup.
 5. **Three Departments and Six Ministries orchestration, completion gate, and structured-output safety** — `3782a78d4e11d1fb65042cf9c82231b9d644c20a` plus `d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`. Adds the role/tool/step/output contract, bounded write claims, explicit host-selected output roots, traversal and symlink-escape rejection, safe structured persistence, file-completion gate, cancellation, and authoritative terminal result needed by that workflow.
@@ -42,8 +43,8 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 
 ## Verification
 
-- CodeWhale format and locked library check pass.
-- All 23 CodeWhale `forkguard_*` tests pass.
+- The local candidate passes CodeWhale format checks, all 27 CodeWhale `forkguard_*` tests, all 20 parent `forkguard_*` tests, all 122 Node tests, pet asset validation, UI lint/build, and the architecture guard.
+- The remaining locked checks and build matrix below describe the published r5 baseline and have not all been rerun for the local candidate yet.
 - Parent locked Rust check and desktop binary link pass.
 - Parent library tests pass: 1077 passed, 0 failed, and 12 environment-dependent tests ignored.
 - Parent fork guard, architecture guard, npm tests, UI lint, desktop UI build, and web UI build pass.

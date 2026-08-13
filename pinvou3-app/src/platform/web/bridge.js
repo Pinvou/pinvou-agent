@@ -4598,8 +4598,12 @@
   // 只是包了一层路由,所以 active session 行为零变化。
   function isInternalRuntimeUserMessage(value) {
     var text = String(value || "").trim();
-    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
-      /<\/codewhale:runtime_event>\s*$/i.test(text);
+    var event = text.match(/^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>[\s\S]*?<\/codewhale:runtime_event>/i);
+    if (!event) return false;
+    var trailing = text.slice(event[0].length).trim();
+    return !trailing ||
+      /^<turn_meta>[\s\S]*<\/turn_meta>$/i.test(trailing) ||
+      /^<turn_meta_unchanged\s*\/>$/i.test(trailing);
   }
 
   function applyRemoteUserMessageEvent(e, force) {
