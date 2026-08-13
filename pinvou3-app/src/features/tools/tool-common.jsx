@@ -648,16 +648,17 @@ const AcFmtIcon = FileTypeIcon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's4', backendId: 'government-writing', title: '党政机关公文写作', subtitle: '通知/意见等法定文种，套话术、层级序号、自检', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, todayImg: 'assets/skill-doc.jpg', todayLabel: '编辑之选 · 专业辅助', todayTitle: '规范公文\n一键起草', todayVariant: 'photo', cardW: 'flex-[1.4]' },
-      { id: 's7', backendId: 'visualizer', title: '数据分析可视化', subtitle: 'Chart.js 仪表盘 / 图表分析 / HTML 可视化', category: 'skill', type: 'Skill', version: '—', latency: '本地', desc: '将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', icon: LineChart, color: 'bg-gradient-to-b from-blue-500 to-cyan-600', installed: false, authRequired: false, todayImg: 'assets/skill-visualizer.jpg', todayLabel: '数据洞察', todayTitle: '一段数据\n生成\n仪表盘', todayVariant: 'appimg', cardW: 'flex-1' },
       { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true, todayImg: 'assets/skill-visual.jpg', todayLabel: '创意探索', todayTitle: '视觉设计\n信手拈来', todayVariant: 'appimg', cardW: 'flex-1' },
     ];
 
     // 后端合成技能卡的补充展示数据(按 backendId 取):
     // - tsSkillFeaturedAssets:精选位 Today 大卡的图片/版式(非文案,文案走 i18n overlay)
     // - tsSkillIconByName:Rust SkillManifest.icon(lucide 名)→ 图标组件
+    // 精选位资产(非文案):公文/PPT/可视化统一由后端技能数据合成,文案走 i18n overlay
     const tsSkillFeaturedAssets = {
+      'government-writing': { todayImg: 'assets/skill-doc.jpg', todayVariant: 'photo', cardW: 'flex-[1.4]' },
       pptx: { todayImg: 'assets/skill-ppt.jpg', todayVariant: 'drama', cardW: 'flex-1' },
+      visualizer: { todayImg: 'assets/skill-visualizer.jpg', todayVariant: 'appimg', cardW: 'flex-1' },
     };
     const tsSkillIconByName = { Presentation, FileText, LineChart, BookOpen };
 
