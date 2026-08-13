@@ -309,7 +309,11 @@ impl SkillMarketplaceManager {
     /// `display_name` 仅写入 `.installed-from=upload:<display_name>` 标记
     /// (保留用户原始 zip 名,便于卸载提示),其余行为与 `import_package` 一致。
     /// 拖放字节通道落临时文件导入时,zip 名已丢,由命令层传入净化后的展示名。
-    pub fn import_package_named(&self, zip_path: &str, display_name: &str) -> Result<String, String> {
+    pub fn import_package_named(
+        &self,
+        zip_path: &str,
+        display_name: &str,
+    ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
