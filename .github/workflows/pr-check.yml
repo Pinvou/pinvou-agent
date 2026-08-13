@@ -752,11 +752,21 @@ jobs:
 
       - name: Windows 原子替换状态机回归
         run: |
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib platform::filesystem::tests::windows_ -- --test-threads=1
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib artifact_read_recovers_an_occupied_1177_layout_after_release -- --test-threads=1
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib artifact_writes_never_expose_partial_utf8_to_concurrent_readers -- --test-threads=1
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib artifact_public_read_ -- --test-threads=1
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib features::memory::tests::topic_migration_ -- --test-threads=1
+          set -euo pipefail
+          # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
+          # 导致的静默空跑。
+          for filter in \
+            'platform::filesystem::tests::windows_' \
+            'artifact_read_recovers_an_occupied_1177_layout_after_release' \
+            'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
+            'artifact_public_read_' \
+            'features::memory::tests::topic_migration_'; do
+            cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "$filter" -- --test-threads=1 2>&1 | tee /tmp/windows_regression.log
+            grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
+              echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
+              exit 1
+            }
+          done
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
