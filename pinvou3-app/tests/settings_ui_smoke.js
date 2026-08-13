@@ -757,6 +757,24 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.5 手动添加本地模型表单保持 iOS 分组且默认无需 Key，不强制显示名', Object.values(manualLocalForm).every(Boolean), JSON.stringify(manualLocalForm));
+  // 思考深度残留：新建草稿默认 DeepSeek 初始化为 high，切到「手动添加本地模型」
+  // 必须把思考深度重置为 vLLM 默认 off（关闭），否则保存会显式写入 high，绕过桥接层
+  // vllm→off 的 SSE timeout 约束。此处断言真实 UI 选中「关闭」。
+  const manualLocalEffort = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    if (!dialog) return { found: false, labels: [], selected: [] };
+    const label = [...dialog.querySelectorAll('span')].find(node => (node.textContent || '').trim() === '思考深度');
+    const row = label && label.parentElement;
+    const buttons = row ? [...row.querySelectorAll('button')] : [];
+    const selected = buttons.filter(node => (node.className || '').includes('bg-[#007AFF]')).map(node => (node.textContent || '').trim());
+    return { found: !!row, labels: buttons.map(node => (node.textContent || '').trim()), selected };
+  });
+  rec('⑥.5b 手动添加本地模型思考深度重置为 vLLM 默认「关闭」（不残留 high）',
+    manualLocalEffort.found
+      && manualLocalEffort.labels.includes('关闭')
+      && manualLocalEffort.selected.length === 1
+      && manualLocalEffort.selected[0] === '关闭',
+    JSON.stringify(manualLocalEffort));
   await clickExact(page, '取消');
   await sleep(200);
 

@@ -1603,6 +1603,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setLocalKeyEnabled(false);
         setCustomModel(true);
         setPickerOpen(false);
+        // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
+        // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
+        // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
+        // 「vllm→off」的默认约束。与 applyCatalogItem / chooseModel 的切换语义一致。
+        setReasoningEffort(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: '', vendor, base_url: defs.baseUrl }));
       }
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
