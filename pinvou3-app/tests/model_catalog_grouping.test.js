@@ -178,24 +178,21 @@ test('同 provider 多个目录内自定义模型主标签仍各不相同', () =
   assert.strictEqual(selectorMainLabel(m2, t), 'glm-5.2');
 });
 
-console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);
-if (fail > 0) process.exit(1);
-
 // ── 思考深度档位（reasoning effort）──
 test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位', () => {
   // vm 上下文数组与宿主 realm 不同，deepStrictEqual 会因原型不同误报，用 Array.from 归一
   const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.deepStrictEqual(tiers(deepseek), ['off', 'low', 'high', 'max']);
-  const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3' };
+  const moonshot = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
   assert.deepStrictEqual(tiers(moonshot), ['low', 'high', 'max']);
   const moonshotNonK3 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k2.6' };
   assert.deepStrictEqual(tiers(moonshotNonK3), ['off', 'high']);
-  const zai52 = { preset: 'glm', vendor: 'glm', model: 'GLM-5.2' };
+  const zai52 = { preset: 'glm', vendor: 'glm', model: 'GLM-5.2', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual(tiers(zai52), ['off', 'high', 'max']);
   const zaiTurbo = { preset: 'glm', vendor: 'glm', model: 'glm-5-turbo' };
   assert.deepStrictEqual(tiers(zaiTurbo), ['off', 'high']);
-  const kimiCodeK3 = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3' };
+  const kimiCodeK3 = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://api.kimi.com/coding/v1' };
   assert.deepStrictEqual(tiers(kimiCodeK3), ['low', 'high', 'max']);
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
   assert.deepStrictEqual(tiers(vllm), ['off', 'low', 'medium', 'high']);
@@ -219,6 +216,17 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(gemini), null);
   const custom = { preset: 'openai_compatible', model: 'my-model' };
   assert.strictEqual(reasoningEffortTiersForModel(custom), null);
+  // tiered effort 只认精确 first-party 端点：中国端点 / 兼容网关同型号回落通用档位（fail-closed）
+  const moonshotCn = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.cn/v1' };
+  assert.deepStrictEqual(tiers(moonshotCn), ['off', 'high']);
+  const k3OnDirectPlatform = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://api.moonshot.ai/v1' };
+  assert.deepStrictEqual(tiers(k3OnDirectPlatform), ['off', 'high']);
+  const k3OnGateway = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://gateway.example.com/v1' };
+  assert.deepStrictEqual(tiers(k3OnGateway), ['off', 'high']);
+  const zaiCn = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
+  assert.deepStrictEqual(tiers(zaiCn), ['off', 'high']);
+  const zaiCodingPlanGlobal = { preset: 'openai_compatible', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/coding/paas/v4' };
+  assert.deepStrictEqual(tiers(zaiCodingPlanGlobal), ['off', 'high', 'max']);
   // 官方 deepseek base_url 推断：openai_compatible 且无 vendor，但 base_url 指向官方端点 → deepseek 档位
   const deepseekByUrl = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1' };
   assert.deepStrictEqual(tiers(deepseekByUrl), ['off', 'low', 'high', 'max']);
@@ -259,4 +267,18 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // anthropic 档位表含 low/medium/high/max：存量 medium 原样保留
   const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
   assert.strictEqual(normalizeStoredReasoningEffort(anthropic, 'medium'), 'medium');
+  // always-thinking K3（国际直连平台）：off 在底座 K3 路由里等价于 low，medium 等价于 high
+  const k3Direct = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'off'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'none'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'medium'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'low'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'high'), 'high');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Direct, 'max'), 'max');
+  // 中国端点 kimi-k3 走通用 moonshot 档位（off/high），off 保持 off
+  const k3Cn = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.cn/v1' };
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Cn, 'off'), 'off');
 });
+
+console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);
+if (fail > 0) process.exit(1);

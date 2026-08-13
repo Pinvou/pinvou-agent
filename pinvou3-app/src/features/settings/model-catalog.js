@@ -636,9 +636,9 @@ function isOpenaiReasoningFamilyModel(model) {
 //    仅 openai vendor 的 reasoning 家族返回 "openai"（对齐底座
 //    `model_is_openai_reasoning_family`）。
 // 4. zai/moonshot 路由级档位：底座按「精确 first-party base_url + 模型名」判定
-//    tiered effort（zai GLM-5.2/5.3、moonshot K3）；前端按模型名近似细分（见
-//    reasoningEffortTiersForModel），不解析 zai/moonshot base_url。对兼容网关
-//    误配同型号时，底座会 fail-closed（不注入），最多表现为选了档位无效果。
+//    tiered effort（zai GLM-5.2/5.3、moonshot K3）；前端同样按精确端点身份判定
+//    （见 reasoningEffortTiersForModel 与 is_exact_*_base_url）。兼容网关/中国端点
+//    误配同型号时底座 fail-closed（不注入），前端回落通用档位，与底座行为对齐。
 // 对齐 bridge.rs `is_official_deepseek_base_url`：官方 DeepSeek 端点判定
 // （trim 尾斜杠 + /beta + /v1，小写比较）。
 function isOfficialDeepseekBaseUrl(baseUrl) {
@@ -649,6 +649,28 @@ function isOfficialDeepseekBaseUrl(baseUrl) {
     .replace(/\/v1$/, '')
     .toLowerCase();
   return normalized === 'https://api.deepseek.com' || normalized === 'https://api.deepseeki.com';
+}
+
+// 底座对 moonshot/zai 的 tiered effort 只按「精确 first-party base_url + 模型名」路由
+// （CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
+// is_exact_zai_tiered_effort_route），与底座 is_exact_https_route 一样只容忍一个尾斜杠。
+// 中国端点 / 兼容网关误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
+function normalizeExactRouteUrl(baseUrl) {
+  return String(baseUrl || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+// Moonshot 直连平台（国际站）端点：https://api.moonshot.ai/v1
+function isExactMoonshotPlatformBaseUrl(baseUrl) {
+  return normalizeExactRouteUrl(baseUrl) === 'https://api.moonshot.ai/v1';
+}
+// Kimi Code 会员计划端点：https://api.kimi.com/coding/v1（裸 k3）
+function isExactKimiCodeBaseUrl(baseUrl) {
+  return normalizeExactRouteUrl(baseUrl) === 'https://api.kimi.com/coding/v1';
+}
+// z.ai first-party Chat 端点（Coding Plan / 普通平台）。
+function isExactZaiChatBaseUrl(baseUrl) {
+  const normalized = normalizeExactRouteUrl(baseUrl);
+  return normalized === 'https://api.z.ai/api/paas/v4'
+    || normalized === 'https://api.z.ai/api/coding/paas/v4';
 }
 
 function reasoningProviderForModel(model) {
@@ -687,21 +709,40 @@ function reasoningProviderForModel(model) {
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
 // 路由/模型级细分（仅品悟目录收录的模型）：底座对 first-party 的 zai GLM-5.2
 // 提供 tiered effort（off/high/max），对 moonshot K3（kimi-k3 / k3，always-thinking）
-// 提供 low/high/max（off 归一为 low）；其余按 provider 档位表。按模型名近似判定，
-// 与底座 `is_exact_zai_tiered_effort_route` / K3 路由在 first-party 预设模型上一致。
+// 提供 low/high/max（off 归一为 low）；其余按 provider 档位表。
+// tiered effort 按「精确 first-party base_url + 模型名」判定，与底座
+// `is_exact_zai_tiered_effort_route` / `is_exact_direct_moonshot_k3_route` /
+// `is_exact_kimi_code_k3_route` 对齐：中国端点（api.moonshot.cn / open.bigmodel.cn）
+// 与兼容网关误配同型号时底座 fail-closed，前端不再暴露低/高/最深档位，避免无效或彼此等效的选项。
 function reasoningEffortTiersForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (!provider) return null;
   const tiers = REASONING_EFFORT_TIERS[provider];
   if (!tiers) return null;
   const modelName = String((model && model.model) || '').trim().toLowerCase();
-  if (provider === 'zai' && modelName === 'glm-5.2') {
+  if (provider === 'zai' && modelName === 'glm-5.2' && isExactZaiChatBaseUrl((model && model.base_url) || '')) {
     return ['off', 'high', 'max'];
   }
-  if (provider === 'moonshot' && (modelName === 'kimi-k3' || modelName === 'k3')) {
+  if (provider === 'moonshot' && isExactMoonshotK3Route(model, modelName)) {
     return ['low', 'high', 'max'];
   }
   return tiers;
+}
+
+// 底座 K3（always-thinking）精确路由：直连平台 kimi-k3 与 Kimi Code 裸 k3。
+// 仅这两个「精确端点 + 模型名」组合会进入 tiered low/high/max 路由。
+function isExactMoonshotK3Route(model, modelName) {
+  const baseUrl = (model && model.base_url) || '';
+  if (modelName === 'kimi-k3') return isExactMoonshotPlatformBaseUrl(baseUrl);
+  if (modelName === 'k3') return isExactKimiCodeBaseUrl(baseUrl);
+  return false;
+}
+
+// 当前模型是否走底座 always-thinking K3 tiered 路由（档位表为 low/high/max）。
+function isAlwaysThinkingK3Route(model) {
+  if (!model || reasoningProviderForModel(model) !== 'moonshot') return false;
+  const modelName = String((model && model.model) || '').trim().toLowerCase();
+  return isExactMoonshotK3Route(model, modelName);
 }
 
 // 该模型的默认思考深度档位：本地 vLLM 保持 off（防 SSE timeout），其余 high。
@@ -726,9 +767,16 @@ const REASONING_EFFORT_CANONICAL = {
 function normalizeStoredReasoningEffort(model, stored) {
   const tiers = reasoningEffortTiersForModel(model) || [];
   if (!tiers.length) return null;
-  const canonical = stored
+  let canonical = stored
     ? (REASONING_EFFORT_CANONICAL[String(stored).trim().toLowerCase()] || null)
     : null;
+  // always-thinking K3：off 在底座 K3 路由里等价于最低档 low（thinking.effort=low /
+  // reasoning_effort=low），medium 等价于 high。按路由真实等价值归一，否则 UI 高亮
+  // high、请求实际 low，且点击已高亮的 high 会被相等判断短路、无法纠正。
+  if (isAlwaysThinkingK3Route(model)) {
+    if (canonical === 'off') canonical = 'low';
+    else if (canonical === 'medium') canonical = 'high';
+  }
   if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }

@@ -1598,6 +1598,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
         const selectedLabel = customModel || !known ? `${settingsCopy.customModel} ID` : ((selectedItem && selectedItem.title) || model);
         const chooseModel = (item) => {
+          const nextModel = (!item || item.custom) ? '' : item.model;
           if (!item || item.custom) {
             setCustomModel(true);
             setModel('');
@@ -1607,6 +1608,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             setModel(item.model);
             if (!nameTouched) setName(item.title || item.model);
           }
+          // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
+          // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
+          setReasoningEffort(defaultReasoningEffortForModel({ preset, model: nextModel, vendor, base_url: baseUrl, provider_kind: providerKind }) || null);
           setProviderModelPickerOpen(false);
         };
         return (
