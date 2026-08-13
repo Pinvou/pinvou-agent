@@ -122,11 +122,18 @@
   // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
   // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
   // 透传出 <script>。post-process 只命中后者,不会双重转义代码块里的 `<script>` 字面量。
-  // 渲染兜底已收敛到 shared/markdown-bridge-fallback.js（随 index.html 以普通脚本加载，
-  // 暴露 window.PinvouMarkdownBridgeFallback）；此处取别名，消除 web/tauri 两份逐字复制。
-  var renderMarkdown = (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function")
-    ? window.PinvouMarkdownBridgeFallback.renderMarkdown
-    : function (text) { return String(text || ""); };
+  // 优先委托共享渲染器 window.PinvouMarkdownRenderer（npm 版，含语法高亮）；在其尚未安装的
+  // 短暂窗口退回 vendor 全局兜底。兜底实现已收敛到 shared/markdown-bridge-fallback.js
+  // （随 index.html 以普通脚本加载，暴露 window.PinvouMarkdownBridgeFallback），消除两份逐字复制。
+  function renderMarkdown(text) {
+    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
+      return window.PinvouMarkdownRenderer.renderMarkdown(text);
+    }
+    if (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function") {
+      return window.PinvouMarkdownBridgeFallback.renderMarkdown(text);
+    }
+    return String(text || "");
+  }
 
 
   // The pet is a separate WebView and must not own a second copy of the main

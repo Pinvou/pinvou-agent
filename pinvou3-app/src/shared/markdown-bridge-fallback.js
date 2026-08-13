@@ -8,6 +8,8 @@
  *
  * 此前该兜底在 platform/web/bridge.js 与 platform/tauri/bridge.js 中逐字重复两份，
  * 现收敛到本文件，由两处 bridge 统一引用 window.PinvouMarkdownBridgeFallback。
+ * 注意：bridge 层负责「优先委托 window.PinvouMarkdownRenderer（npm 版，含语法高亮）」，
+ * 仅在共享渲染器尚未安装时才调用本文件的 vendor 全局兜底；本文件不再重复该委托。
  */
 (function (root) {
   "use strict";
@@ -27,9 +29,6 @@
   }
 
   function renderMarkdown(text) {
-    if (root.PinvouMarkdownRenderer && typeof root.PinvouMarkdownRenderer.renderMarkdown === "function") {
-      return root.PinvouMarkdownRenderer.renderMarkdown(text);
-    }
     if (!root.marked || !root.DOMPurify) return escapeHtml(text);
     var html = neutralizeRawDangerousTags(root.marked.parse(text || ""));
     return root.DOMPurify.sanitize(html, {
