@@ -20,6 +20,7 @@ import {
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
+  buildElicitationContent,
   commandExecutionDetails,
   projectAcpTimeline,
   resolveAcpSessionControls,
@@ -586,17 +587,10 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
   });
 
   function submit(groups) {
-    const content = {};
-    for (const group of groups) {
-      const custom = group.answers.find(answer => answer.other);
-      if (custom && group.otherAnswerKey) {
-        content[group.otherAnswerKey] = custom.value;
-      } else if (group.multiSelect) {
-        content[group.answerKey] = group.answers.map(answer => answer.value);
-      } else if (group.answers[0]) {
-        content[group.answerKey] = group.answers[0].value;
-      }
-    }
+    // content 用无原型对象构造（见 buildElicitationContent）：answerKey 为
+    // constructor/toString/__proto__ 时普通 {} 会命中 Object.prototype，字段在
+    // JSON 序列化时静默丢失。
+    const content = buildElicitationContent(groups);
     onRespond(elicitation.elicitationId, 'accept', content);
   }
 

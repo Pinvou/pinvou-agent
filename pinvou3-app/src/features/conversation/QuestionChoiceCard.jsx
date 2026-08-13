@@ -10,8 +10,11 @@ function normalizedOptions(question) {
 }
 
 function initialState(questions, initialAnswers) {
-  const selected = {};
-  const other = {};
+  // 用无原型对象：question.id 后端仅校验非空，constructor/toString/__proto__ 是合法输入；
+  // 普通 {} 会让这些键命中 Object.prototype（读函数/写触发 __proto__ setter），导致未选择
+  // 被判为已回答、伪造“其他答案”或历史答案无法形成 own property（重挂载丢选中态）。
+  const selected = Object.create(null);
+  const other = Object.create(null);
   for (const question of questions) {
     const answers = (initialAnswers || []).filter(answer => answer && answer.id === question.id);
     const options = normalizedOptions(question);
@@ -45,6 +48,12 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
+// 状态更新必须保持无原型，否则 spread 回普通对象会让未显式设置的保留键重新命中
+// Object.prototype（例如选 constructor 前读取 selected['constructor'] 拿到函数）。
+function copyState(state) {
+  return Object.assign(Object.create(null), state);
+}
+
 export function QuestionChoiceCard({
   title,
   description = '',
@@ -71,35 +80,45 @@ export function QuestionChoiceCard({
   function choose(question, value) {
     if (locked) return;
     setOther(current => {
-      const next = { ...current };
+      const next = copyState(current);
       delete next[question.id];
       return next;
     });
     setSelected(current => {
-      if (!question.multiSelect) return { ...current, [question.id]: value };
+      const next = copyState(current);
+      if (!question.multiSelect) {
+        next[question.id] = value;
+        return next;
+      }
       const values = Array.isArray(current[question.id]) ? current[question.id] : [];
-      return {
-        ...current,
-        [question.id]: values.includes(value)
-          ? values.filter(candidate => candidate !== value)
-          : [...values, value],
-      };
+      next[question.id] = values.includes(value)
+        ? values.filter(candidate => candidate !== value)
+        : [...values, value];
+      return next;
     });
   }
 
   function changeOther(question, value) {
     if (locked) return;
     setSelected(current => {
-      const next = { ...current };
+      const next = copyState(current);
       delete next[question.id];
       return next;
     });
-    setOther(current => ({ ...current, [question.id]: value }));
+    setOther(current => {
+      const next = copyState(current);
+      next[question.id] = value;
+      return next;
+    });
   }
 
   function changeValue(question, value) {
     if (locked) return;
-    setSelected(current => ({ ...current, [question.id]: value }));
+    setSelected(current => {
+      const next = copyState(current);
+      next[question.id] = value;
+      return next;
+    });
   }
 
   function answered(question) {
