@@ -15,7 +15,7 @@ name: PR Check
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
-# - windows-rust-test:Rust 相关 Ready PR、Merge Queue 与 main push 跑 Windows 原生编译/单测；Draft 跳过。
+# - windows-rust-test:只在 main push 且 rust 相关路径变更时跑，不作为 PR 或 Merge Queue 合入门禁。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -660,9 +660,10 @@ jobs:
   windows-rust-test:
     name: windows-rust-test
     needs: changes
-    # Windows 专属原语必须在原生 runner 执行；Draft 保持快速反馈，Ready PR、Merge Queue
-    # 与 main push 按 Rust 路径触发，docs-only 变更不消耗 Windows runner。
-    if: ${{ !cancelled() && needs.changes.outputs.rust_code == 'true' && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
+    # 跨平台构建不作为 PR 检测项；合入 main 后按路径做 Windows 原生验证:
+    # 仅 rust 相关改动才跑(docs-only 推送烧 32min Windows runner 零收益——其 cache
+    # shared-key 只被自身消费,不为 PR 提供暖 cache)。
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.changes.outputs.rust_code == 'true' }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。
