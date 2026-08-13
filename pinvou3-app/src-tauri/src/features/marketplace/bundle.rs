@@ -1,46 +1,80 @@
-//! 能力包统一模型 — 步骤 1：schema + 注册表 + kind 推导（只读，不改安装/门禁/投影）。
+//! 能力包统一模型 — 步骤 1/2：schema + 注册表 + kind 推导 + 就绪态（只读，不改安装/门禁/投影）。
 //!
-//! 设计依据：`docs/capability-governance.md` §3（能力包线）。一切外部能力统一建模为包：
+//! 设计依据：`docs/capability-governance.md` §3（能力包线）+ 实施修复方案（V1-V7）。
+//! 一切外部能力统一建模为包：
 //!
 //! ```text
-//! Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
+//! Bundle = { id, name, mcp_servers: [], skills: [], cli: [],
+//!            credentials: [ { key, target: env|credential|bearer, required } ] }
 //! ```
 //!
 //! - 包是唯一真相源；`mcp.json`、会话 skills 组合目录降级为投影（后续步骤实施）
 //! - 包类型不做存储标签，`bundle_kind` 由内容现算（可信代码推导，防自报标签提权）
 //! - 一个包 = 一个开关；包内技能可见性唯一跟随所属包
+//! - **installed 与 ready 分离**：installed 是存储态（装没装，二态）；ready 是派生态
+//!   （不进存储，查询时现算）——CLI 包按授权存在与否、凭据型按 credentials 必填项
+//!   是否齐（查系统凭据）、本地免凭据包恒 ready。UI 统一消费 (installed, ready) 二元组。
 //!
 //! 注册表汇总四类源：MCP manifest（`bundle/mcp-servers/<id>/manifest.json`）、
-//! 预置技能（编译内嵌）、CLI 连接器（内置常量表，UI 元数据从 tool-common.jsx 迁移）、
-//! 已上传技能（`bundle/skills/` 带 `.installed-from=upload:` 标记）。
+//! 预置技能（编译内嵌）、CLI 连接器（内置常量表）、已上传技能
+//! （`bundle/skills/` 带 `.installed-from=upload:` 标记）。
 
 use serde::{Deserialize, Serialize};
 
 use super::skill_marketplace::SkillMarketplaceManager;
 use super::MarketplaceManager;
 
-// 内置 CLI 连接器清单（UI 元数据从 tool-common.jsx 的 feishuCli/wecomCli/dingtalkCli/
-// tmeetCli/imaOpenapi 条目迁移；安装态 = CLI 安装 + 扫码/凭据配置，状态机后续步骤定义）。
+// 内置 CLI 连接器清单（修复方案 V2：ima 无 CLI 二进制，移出 CLI 包，归凭据型技能包）。
 const BUILTIN_CLI_BUNDLES: &[(&str, &str)] = &[
     ("feishu", "飞书（Lark）"),
     ("wecom", "企业微信"),
     ("dingtalk", "钉钉"),
     ("tmeet", "腾讯会议"),
-    ("ima", "腾讯 ima"),
 ];
 
-/// 包形态（内容现算，不落存储）。
+/// 凭据目标：env（mcp.json 环境变量占位）、credential（系统凭据存储）、bearer（Authorization 头）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialTarget {
+    Env,
+    Credential,
+    Bearer,
+}
+
+/// 包声明的凭据项（修复方案一：从 config_fields/secret_env/secret_headers 收敛）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialSpec {
+    pub key: String,
+    pub target: CredentialTarget,
+    pub required: bool,
+}
+
+/// 包形态（内容现算，不落存储）。优先级定死（修复方案 V2）：
+/// cli 非空 → Cli > servers+skills 均非空 → Bundle > servers 非空 → Mcp > skills 非空 → Skill。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BundleKind {
-    /// 纯 MCP：mcp_servers 非空、其余空
-    Mcp,
+    /// CLI 包：cli 非空（飞书/企微/钉钉/腾讯会议等内置连接器）
+    Cli,
     /// 组合包：mcp_servers 与 skills 均非空（MCP 函数 + 使用引导一体）
     Bundle,
-    /// CLI 包：cli 非空（飞书/企微/钉钉/tmeet/ima 等内置连接器）
-    Cli,
-    /// 纯技能包：仅 skills（市场预置、用户上传）
+    /// 纯 MCP：mcp_servers 非空、skills/cli 空
+    Mcp,
+    /// 纯技能包：仅 skills（市场预置、用户上传；含凭据型技能包如 ima）
     Skill,
+}
+
+/// 空包错误：mcp_servers/skills/cli 全空（修复方案 V7，schema 层拦截，不默认归 Skill）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidBundle;
+
+/// 就绪态（派生态，不进存储）。UI 消费 (installed, ready)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Readiness {
+    Ready,
+    /// 未就绪；reason 给前端提示（如缺凭据的 key 列表）
+    NotReady(&'static str),
 }
 
 /// 能力包清单条目（前端消费；id 沿用现有命名空间：MCP 工具 id / 技能 id / CLI 连接器 id）。
@@ -55,6 +89,8 @@ pub struct BundleInfo {
     pub skills: Vec<String>,
     /// 包内 CLI 连接器 id（无则空）
     pub cli: Vec<String>,
+    /// 包声明的凭据项（收敛自 config_fields/secret_env/secret_headers）
+    pub credentials: Vec<CredentialSpec>,
     pub installed: bool,
     /// 用户上传（非预置），前端用默认图标渲染
     pub user_uploaded: bool,
@@ -84,15 +120,18 @@ impl BundleRegistry {
     /// - MCP manifest 的 `companion_skills` 声明 → 技能归入该 MCP 包（组合包）
     /// - 未被任何 MCP 引用的预置技能 → 独立纯技能包
     /// - 用户上传技能 → 独立纯技能包
-    /// - 内置 CLI 连接器 → CLI 包（ima 无 CLI 二进制，走 OpenAPI 凭据，kind 仍按内容推导）
+    /// - 内置 CLI 连接器 → CLI 包（修复方案 V2：ima 移出，归凭据型技能包）
+    /// - ima（凭据型）：OpenAPI 凭据 + companion 技能 ima-skills → 纯技能包（凭据型）
     pub fn list_bundles(&self) -> Vec<BundleInfo> {
         let mut out: Vec<BundleInfo> = Vec::new();
-        let mut skill_claimed: Vec<String> = Vec::new(); // 已被 MCP 包认领的技能 id
+        // 已被 MCP/凭据型包认领的技能 id（ima-skills 须在预置扫描前声明，避免先独立成包）
+        let mut skill_claimed: Vec<String> = vec!["ima-skills".to_string()];
 
-        // 1) MCP 源（含组合包）
+        // 1) MCP 源（含组合包；凭据项从 manifest config_fields/secret_env 收敛）
         for tool in self.mcp_manager.available_tools() {
             let companions = tool.companion_skills.clone();
             skill_claimed.extend(companions.iter().cloned());
+            let credentials = tool_credentials(&tool);
             out.push(BundleInfo {
                 id: tool.id.clone(),
                 name: tool.name.clone(),
@@ -104,6 +143,7 @@ impl BundleRegistry {
                 mcp_servers: vec![tool.id.clone()],
                 skills: companions,
                 cli: Vec::new(),
+                credentials,
                 installed: self.mcp_manager.installed_ids().contains(&tool.id),
                 user_uploaded: false,
             });
@@ -124,6 +164,7 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
+                credentials: Vec::new(),
                 installed: skill.installed,
                 user_uploaded: false,
             });
@@ -141,12 +182,13 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
+                credentials: Vec::new(),
                 installed: true,
                 user_uploaded: true,
             });
         }
 
-        // 4) CLI 连接器源（内置常量表；ima 为 OpenAPI 凭据型，仍归 CLI 线）
+        // 4) CLI 连接器源（内置常量表；V2 后不含 ima）
         for (id, name) in BUILTIN_CLI_BUNDLES {
             out.push(BundleInfo {
                 id: (*id).to_string(),
@@ -155,10 +197,36 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: Vec::new(),
                 cli: vec![(*id).to_string()],
+                credentials: Vec::new(),
                 installed: self.cli_bundle_installed(id),
                 user_uploaded: false,
             });
         }
+
+        // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）
+        let ima_skills = ["ima-skills"];
+        out.push(BundleInfo {
+            id: "ima".to_string(),
+            name: "腾讯 ima".to_string(),
+            kind: BundleKind::Skill,
+            mcp_servers: Vec::new(),
+            skills: ima_skills.iter().map(|s| s.to_string()).collect(),
+            cli: Vec::new(),
+            credentials: vec![
+                CredentialSpec {
+                    key: "IMA_CLIENT_ID".to_string(),
+                    target: CredentialTarget::Credential,
+                    required: true,
+                },
+                CredentialSpec {
+                    key: "IMA_API_KEY".to_string(),
+                    target: CredentialTarget::Credential,
+                    required: true,
+                },
+            ],
+            installed: self.cli_bundle_installed("ima"),
+            user_uploaded: false,
+        });
 
         out
     }
@@ -175,16 +243,103 @@ impl BundleRegistry {
     }
 }
 
-/// 纯函数：由内容推导包形态（与 [`BundleInfo::kind`] 同一逻辑，供规则查表复用）。
-pub fn derive_bundle_kind(mcp_servers: &[String], skills: &[String], cli: &[String]) -> BundleKind {
+/// 纯函数：由内容推导包形态（修复方案 V2 优先级定死 + V7 空包报错）。
+/// 优先级：cli 非空 → Cli > servers+skills 均非空 → Bundle > servers 非空 → Mcp
+/// > skills 非空 → Skill；全空 → Err（空包在 schema 层拦截，不默认归 Skill）。
+pub fn derive_bundle_kind(
+    mcp_servers: &[String],
+    skills: &[String],
+    cli: &[String],
+) -> Result<BundleKind, InvalidBundle> {
     if !cli.is_empty() {
-        BundleKind::Cli
+        Ok(BundleKind::Cli)
     } else if !mcp_servers.is_empty() && !skills.is_empty() {
-        BundleKind::Bundle
+        Ok(BundleKind::Bundle)
     } else if !mcp_servers.is_empty() {
-        BundleKind::Mcp
+        Ok(BundleKind::Mcp)
+    } else if !skills.is_empty() {
+        Ok(BundleKind::Skill)
     } else {
-        BundleKind::Skill
+        Err(InvalidBundle)
+    }
+}
+
+/// 从 MCP ToolManifest 收敛凭据声明（修复方案一）：config_fields → credentials，
+/// secret_env/secret_headers 按 target 映射（env/bearer），required 语义保留。
+fn tool_credentials(tool: &super::ToolManifest) -> Vec<CredentialSpec> {
+    let mut out: Vec<CredentialSpec> = Vec::new();
+    for f in &tool.config_fields {
+        let target = match f.target.as_str() {
+            "bearer" => CredentialTarget::Bearer,
+            "credential" => CredentialTarget::Credential,
+            _ => CredentialTarget::Env,
+        };
+        out.push(CredentialSpec {
+            key: f.key.clone(),
+            target,
+            required: f.required,
+        });
+    }
+    for s in &tool.secret_env {
+        out.push(CredentialSpec {
+            key: s.key.clone(),
+            target: CredentialTarget::Env,
+            required: s.required,
+        });
+    }
+    for s in &tool.secret_headers {
+        out.push(CredentialSpec {
+            key: s.source_key.clone(),
+            target: CredentialTarget::Bearer,
+            required: s.required,
+        });
+    }
+    out
+}
+
+/// 就绪态判定（派生态，现算不进存储）。
+/// - CLI 包：授权存在与否——由命令层经 `bundle_readiness` 分派到各 status 查询注入
+///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）
+/// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
+/// - 本地免凭据：恒 Ready
+pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
+    match bundle.kind {
+        // CLI 包授权态由调用方（命令层）注入；此处按 installed 保守返回——
+        // 命令层 `bundle_readiness` 覆盖 CLI 分派后，此分支不达。
+        BundleKind::Cli => {
+            if bundle.installed {
+                Readiness::Ready
+            } else {
+                Readiness::NotReady("cli_not_installed")
+            }
+        }
+        BundleKind::Mcp | BundleKind::Bundle => {
+            // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
+            let missing: Vec<&str> = bundle
+                .credentials
+                .iter()
+                .filter(|c| c.required && !credential_has(&c.key))
+                .map(|c| c.key.as_str())
+                .collect();
+            if missing.is_empty() {
+                Readiness::Ready
+            } else {
+                Readiness::NotReady("missing_credentials")
+            }
+        }
+        BundleKind::Skill => {
+            let missing: Vec<&str> = bundle
+                .credentials
+                .iter()
+                .filter(|c| c.required && !credential_has(&c.key))
+                .map(|c| c.key.as_str())
+                .collect();
+            if missing.is_empty() {
+                Readiness::Ready
+            } else {
+                Readiness::NotReady("missing_credentials")
+            }
+        }
     }
 }
 
@@ -231,34 +386,145 @@ mod tests {
         );
         // 预置技能（被认领 + 独立）
         for (name, marker) in [
-            ("government-writing", "pinvou3-marketplace:government-writing"),
+            (
+                "government-writing",
+                "pinvou3-marketplace:government-writing",
+            ),
             ("visualizer", "pinvou3-marketplace:visualizer"),
         ] {
-            write(&format!("bundle/skills/{name}/SKILL.md"), "---\nname: {name}\n---\n# hi");
             write(
-                &format!("bundle/skills/{name}/.installed-from"),
-                marker,
+                &format!("bundle/skills/{name}/SKILL.md"),
+                "---\nname: {name}\n---\n# hi",
             );
+            write(&format!("bundle/skills/{name}/.installed-from"), marker);
         }
         // 上传技能
-        write("bundle/skills/my-upload/SKILL.md", "---\nname: my-upload\n---\n# hi");
+        write(
+            "bundle/skills/my-upload/SKILL.md",
+            "---\nname: my-upload\n---\n# hi",
+        );
         write("bundle/skills/my-upload/.installed-from", "upload:pkg.zip");
     }
 
     #[test]
     fn derives_bundle_kind_by_content() {
         let mcp = |id: &str| id.to_string();
-        assert_eq!(derive_bundle_kind(&[], &[], &[]), BundleKind::Skill);
-        assert_eq!(derive_bundle_kind(&[mcp("a")], &[], &[]), BundleKind::Mcp);
+        // V7：空包报错，不默认归 Skill
+        assert_eq!(derive_bundle_kind(&[], &[], &[]), Err(InvalidBundle));
+        // V2 优先级：cli 恒赢 > Bundle > Mcp > Skill
+        assert_eq!(
+            derive_bundle_kind(&[mcp("a")], &[], &[]),
+            Ok(BundleKind::Mcp)
+        );
         assert_eq!(
             derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[]),
-            BundleKind::Bundle
+            Ok(BundleKind::Bundle)
         );
-        assert_eq!(derive_bundle_kind(&[], &[], &[mcp("feishu")]), BundleKind::Cli);
         assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[], &[mcp("feishu")]),
-            BundleKind::Cli
+            derive_bundle_kind(&[], &[mcp("s")], &[]),
+            Ok(BundleKind::Skill)
         );
+        assert_eq!(
+            derive_bundle_kind(&[], &[], &[mcp("feishu")]),
+            Ok(BundleKind::Cli)
+        );
+        // 即使有 servers+skills，cli 非空仍归 Cli
+        assert_eq!(
+            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[mcp("feishu")]),
+            Ok(BundleKind::Cli)
+        );
+    }
+
+    #[test]
+    fn readiness_rules() {
+        let b = |kind: BundleKind, creds: Vec<CredentialSpec>| BundleInfo {
+            id: "x".into(),
+            name: "x".into(),
+            kind,
+            mcp_servers: vec![],
+            skills: vec![],
+            cli: vec![],
+            credentials: creds,
+            installed: true,
+            user_uploaded: false,
+        };
+        // 本地免凭据 → 恒 Ready
+        assert_eq!(
+            readiness_for(&b(BundleKind::Mcp, vec![]), |_| false),
+            Readiness::Ready
+        );
+        // 必填凭据缺失 → NotReady
+        let creds = vec![CredentialSpec {
+            key: "AMAP_KEY".into(),
+            target: CredentialTarget::Env,
+            required: true,
+        }];
+        assert_eq!(
+            readiness_for(&b(BundleKind::Mcp, creds.clone()), |k| k != "AMAP_KEY"),
+            Readiness::NotReady("missing_credentials")
+        );
+        assert_eq!(
+            readiness_for(&b(BundleKind::Mcp, creds), |k| k == "AMAP_KEY"),
+            Readiness::Ready
+        );
+        // 非必填凭据缺失不影响 ready
+        let opt = vec![CredentialSpec {
+            key: "OPT".into(),
+            target: CredentialTarget::Credential,
+            required: false,
+        }];
+        assert_eq!(
+            readiness_for(&b(BundleKind::Skill, opt), |_| false),
+            Readiness::Ready
+        );
+        // CLI 未安装 → NotReady（命令层注入真实授权态后此分支不达）
+        let mut cli_b = b(BundleKind::Cli, vec![]);
+        cli_b.installed = false;
+        assert_eq!(
+            readiness_for(&cli_b, |_| false),
+            Readiness::NotReady("cli_not_installed")
+        );
+    }
+
+    #[test]
+    fn collects_tool_credentials() {
+        let tool = super::super::ToolManifest {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            version: String::new(),
+            icon: String::new(),
+            category: String::new(),
+            mcp_tools: vec![],
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            secret_env: vec![super::super::SecretEnv {
+                key: "SEC".into(),
+                provider: String::new(),
+                required: true,
+            }],
+            secret_headers: vec![],
+            validate_on_install: false,
+            config_fields: vec![super::super::ConfigField {
+                key: "KEY".into(),
+                label: String::new(),
+                required: true,
+                target: "env".into(),
+                secret: false,
+            }],
+            routing_rules: vec![],
+            tool_table_entries: vec![],
+            pip_dependencies: vec![],
+            servers: vec![],
+            companion_skills: vec![],
+        };
+        let creds = tool_credentials(&tool);
+        assert_eq!(creds.len(), 2);
+        assert_eq!(creds[0].key, "KEY");
+        assert_eq!(creds[0].target, CredentialTarget::Env);
+        assert!(creds[0].required);
+        assert_eq!(creds[1].key, "SEC");
     }
 
     #[test]
@@ -269,12 +535,27 @@ mod tests {
             let reg = BundleRegistry::new();
             let bundles = reg.list_bundles();
             // 四类源都存在
-            assert!(bundles.iter().any(|b| b.kind == BundleKind::Mcp), "应含纯 MCP 包");
-            assert!(bundles.iter().any(|b| b.kind == BundleKind::Bundle), "应含组合包");
-            assert!(bundles.iter().any(|b| b.kind == BundleKind::Skill), "应含纯技能包");
-            assert!(bundles.iter().any(|b| b.kind == BundleKind::Cli), "应含 CLI 包");
+            assert!(
+                bundles.iter().any(|b| b.kind == BundleKind::Mcp),
+                "应含纯 MCP 包"
+            );
+            assert!(
+                bundles.iter().any(|b| b.kind == BundleKind::Bundle),
+                "应含组合包"
+            );
+            assert!(
+                bundles.iter().any(|b| b.kind == BundleKind::Skill),
+                "应含纯技能包"
+            );
+            assert!(
+                bundles.iter().any(|b| b.kind == BundleKind::Cli),
+                "应含 CLI 包"
+            );
             // gongwen 组合包应携带 government-writing 技能
-            let gongwen = bundles.iter().find(|b| b.id == "gongwen").expect("gongwen 应存在");
+            let gongwen = bundles
+                .iter()
+                .find(|b| b.id == "gongwen")
+                .expect("gongwen 应存在");
             assert!(
                 gongwen.skills.contains(&"government-writing".to_string()),
                 "gongwen 应携带 government-writing"
@@ -287,16 +568,39 @@ mod tests {
                 "被认领技能不得独立成包"
             );
             // 上传技能 = 独立纯技能包 + user_uploaded
-            let upload = bundles.iter().find(|b| b.id == "my-upload").expect("上传技能包应存在");
+            let upload = bundles
+                .iter()
+                .find(|b| b.id == "my-upload")
+                .expect("上传技能包应存在");
             assert_eq!(upload.kind, BundleKind::Skill);
             assert!(upload.user_uploaded);
-            // CLI 包 id 覆盖内置清单
+            // CLI 包 id 覆盖内置清单（V2：ima 不在 CLI 包）
             for (id, _) in BUILTIN_CLI_BUNDLES {
                 assert!(
-                    bundles.iter().any(|b| b.id == *id && b.kind == BundleKind::Cli),
+                    bundles
+                        .iter()
+                        .any(|b| b.id == *id && b.kind == BundleKind::Cli),
                     "CLI 包 {id} 应存在"
                 );
             }
+            // V2：ima 归凭据型技能包（Skill），且携带 ima-skills + 凭据声明
+            let ima = bundles
+                .iter()
+                .find(|b| b.id == "ima")
+                .expect("ima 包应存在");
+            assert_eq!(ima.kind, BundleKind::Skill, "ima 应归 Skill");
+            assert!(ima.skills.contains(&"ima-skills".to_string()));
+            assert!(
+                ima.credentials
+                    .iter()
+                    .any(|c| c.key == "IMA_API_KEY" && c.required),
+                "ima 应声明必填凭据"
+            );
+            // ima-skills 不得再独立成包（被 ima 认领）
+            assert!(
+                !bundles.iter().any(|b| b.id == "ima-skills"),
+                "ima-skills 不得独立成包"
+            );
             // id 唯一（一个包 = 一个开关的前提）
             let mut ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
             ids.sort_unstable();
