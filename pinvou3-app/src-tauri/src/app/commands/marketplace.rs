@@ -515,12 +515,71 @@ pub async fn import_skill_package(
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .import_package(&path.to_string_lossy())
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package(&path.to_string_lossy())?;
+        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        Ok::<String, String>(name)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 导入技能默认加入 code 禁用集（外部能力显式开启），并重写在线会话组合目录。
+    // 重写在线会话组合目录（下一轮 prompt 生效）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(true)
+}
+
+/// 拖放导入:Windows WebView2 的 HTML5 文件拖放拿不到源文件路径
+/// (`dragDropEnabled=false`,契约测试锁定,附件系统同走字节通道),所以前端把
+/// zip 读成 base64 传这里,临时落盘后走 `import_package_named`。
+/// 与 `import_skill_package`(原生文件对话框)返回语义一致:true=已导入。
+#[tauri::command]
+pub async fn import_skill_package_bytes(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    if !filename.to_ascii_lowercase().ends_with(".zip") {
+        return Err("仅支持 .zip 技能包".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码 zip 数据失败: {e}"))?;
+    use crate::features::marketplace::skill_marketplace::MAX_SKILL_SIZE_BYTES;
+    if bytes.len() as u64 > MAX_SKILL_SIZE_BYTES {
+        return Err(format!(
+            "技能包超过 {} MiB 上限",
+            MAX_SKILL_SIZE_BYTES / 1024 / 1024
+        ));
+    }
+    // 展示名净化(仅写 .installed-from 标记用):去路径分隔符/控制字符,截 128
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-skill-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
+    let tmp_for_import = tmp.clone();
+    let name = tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)?;
+        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        Ok::<String, String>(name)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?;
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    name?;
+    // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
     pool.refresh_live_sessions_skills().await;
     Ok(true)
 }

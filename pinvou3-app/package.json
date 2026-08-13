@@ -102,6 +102,8 @@
     "test:kb-smoke": "node tests/kb_smoke.js",
     "test:composer-tools-smoke": "node tests/composer_tools_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
+    "test:tool-store-import": "node --test tests/skill_zip_import_logic.test.js && node tests/tool_store_skill_import_smoke.js",
+    "test:tool-store-drop-contract": "node tests/tool_store_skill_drop_contract.test.mjs",
     "test:design-mode-entry-smoke": "node tests/design_mode_entry_smoke.js",
     "test:bridge-smoke": "npm run test:ui-smoke && npm run test:settings-ui && npm run test:acp-providers-ui && npm run test:kb-smoke && npm run test:composer-tools-smoke && npm run test:design-mode-entry-smoke && npm run test:tool-store",
     "test:markdown-artifact-ui": "node tests/markdown_artifact_edit_smoke.js",
