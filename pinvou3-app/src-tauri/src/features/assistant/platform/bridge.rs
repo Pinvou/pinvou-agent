@@ -518,11 +518,12 @@ impl Pinvou3Bridge {
     ///  • disk 上没了多余的 instructions.md 给用户造成混淆
     ///  • 多引擎并发不再依赖 per-session 文件避免 race(内存对象天然隔离)
     ///  • rehydrate 不再从 disk 重读,内容跟 EngineConfig 一起在内存里活
+    ///  • Inline name 保持稳定,避免纯展示标签中的 session_id 破坏跨会话前缀缓存
     pub fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = Vec::new();
         let rendered = self.build_session_system_prompt(session_id);
         out.push(InstructionSource::Inline {
-            name: format!("pinvou3:sessions/{session_id}/instructions"),
+            name: "pinvou3:instructions".to_string(),
             content: rendered,
         });
         for project_rule in self.code_session_project_rules(session_id) {
@@ -3761,10 +3762,9 @@ mod tests {
     }
 
     /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
-    /// 必须 workspace 不同 + instructions 的 inline name 含各自 session_id(走
-    /// `InstructionSource::Inline`,内存对象天然隔离,不再依赖 disk 文件)。
+    /// 必须使用不同 workspace 隔离产物,同时保持静态 instructions 前缀一致以便缓存复用。
     #[test]
-    fn engine_config_for_session_paths_are_isolated() {
+    fn engine_config_for_session_keeps_isolation_without_prompt_variance() {
         let bridge = fixture_bridge();
         let (a, b) = ("sess-aaaa-1111", "sess-bbbb-2222");
         let cfg_a = bridge.build_engine_config_for_session(a);
@@ -3777,25 +3777,31 @@ mod tests {
         assert!(cfg_a.workspace.to_string_lossy().contains(a));
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
-        // instructions 第一项是 session 专属 Inline source,name 含各自 session_id。
-        let name_of = |s: &InstructionSource| -> String {
+        // Inline source 的 name 会被渲染进 <instructions source="...">,所以它也是
+        // system prompt 文本的一部分,不能携带 session_id。
+        let inline_of = |s: &InstructionSource| -> (String, String) {
             match s {
-                InstructionSource::Inline { name, .. } => name.clone(),
-                InstructionSource::File(p) => p.display().to_string(),
+                InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
+                InstructionSource::File(p) => {
+                    panic!(
+                        "session instructions 第一项必须是 Inline,实际为 {}",
+                        p.display()
+                    )
+                }
             }
         };
-        let name_a = name_of(&cfg_a.instructions[0]);
-        let name_b = name_of(&cfg_b.instructions[0]);
-        assert!(
-            matches!(cfg_a.instructions[0], InstructionSource::Inline { .. }),
-            "session instructions 第一项必须是 Inline(C 方案 P-no-disk)"
+        let (name_a, content_a) = inline_of(&cfg_a.instructions[0]);
+        let (name_b, content_b) = inline_of(&cfg_b.instructions[0]);
+        assert_eq!(name_a, "pinvou3:instructions");
+        assert_eq!(name_a, name_b, "跨 session 的静态 source name 必须一致");
+        assert_eq!(
+            content_a, content_b,
+            "跨 session 的静态 instructions 必须一致"
         );
-        assert_ne!(name_a, name_b, "两 session 的 inline name 必须不同");
-        assert!(name_a.contains(a) && name_b.contains(b));
         // session_id / workspace 已移出静态 content,走 per-turn <turn_meta>
         // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
-        // 触发 vLLM prefix-cache MISS → 工具调用漂移)。故 content 不再含 session_id,
-        // 隔离已由上面"workspace 目录不同 + inline name 含 session_id"覆盖。
+        // 触发 vLLM prefix-cache MISS → 工具调用漂移)。session 隔离由不同 workspace
+        // 和每个 session 独立的 EngineConfig/Engine 实例负责,name 仅是展示标签。
     }
 
     #[test]
