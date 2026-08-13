@@ -8,9 +8,10 @@
 # 无扩展名 sh 会 os error 193,阻断所有 Cargo 命令),因此由正式
 # Cargo 入口按平台决定是否注入:
 #   - Darwin/Linux:注入 sh 版(编译 codewhale-tui 有 SIGBUS 实测风险);
-#   - Windows (MINGW*/MSYS*/CYGWIN*):透传不注入。Windows 无 SIGBUS
-#     触发(仅 macOS 实测);且无扩展名 Unix shell 文件无法被 Windows
-#     原生 Cargo 执行(CreateProcess → os error 193)。
+#   - Windows (MINGW*/MSYS*/CYGWIN*):透传不注入。栈溢出根因三端同源
+#     (Windows 无 SIGBUS 信号、表现为栈溢出,已由 windows-rust-test 实测),
+#     但无扩展名 Unix shell 文件无法被 Windows 原生 Cargo 执行
+#     (CreateProcess → os error 193),故本地透传、由 CI 注入 .cmd 版。
 #
 # 本脚本是"平台选择"的单一真相源:run-dev.sh 与 CI smoke
 # (rustc-wrapper-smoke.yml)都执行它,保证正式入口与实际验证一致。

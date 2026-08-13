@@ -14,14 +14,15 @@
 #     Windows 原生 Cargo 无法执行 → os error 193),默认透传即可
 #   - CI:pr-check(rust-lint)、mac-build、release-packages
 #     (Linux x64/arm64、macOS universal)按平台注入 sh 版;
-#     Windows 发布 job 注入 rustc-stack-wrapper.cmd 版
+#     Windows 发布 / windows-rust-test job 注入 rustc-stack-wrapper.cmd 版
 # 本脚本只包装编译期 rustc 调用;cargo run / cargo test 启动的应用与
 # 测试进程不经过本脚本,不会继承 RUST_MIN_STACK,默认线程栈语义
 # (约 2 MiB)不变。与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
 #
 # 注意:本文件是 Unix(sh)版本。Windows 上 Cargo 需要 .cmd 后缀才能走
-# cmd /C(见 rustc-stack-wrapper.cmd);Windows 无 SIGBUS 触发(仅 macOS
-# 实测),本地透传即可,CI 的 Windows 发布 job 注入 .cmd 版本。
+# cmd /C(见 rustc-stack-wrapper.cmd);栈溢出根因三端同源(macOS 实测 SIGBUS、
+# Windows 实测栈溢出),Windows 本地 dev 经 selector 透传,CI 的 Windows job
+# (发布 / windows-rust-test)显式注入 .cmd 版。
 export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
 # 链式 wrapper(如 sccache):cargo 调用 `$RUSTC_WRAPPER rustc <args>` 时,若设置了
 # RUSTC_WRAPPER_CHAIN,则在本脚本之后插入该命令,形成
