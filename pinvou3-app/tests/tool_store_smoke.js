@@ -40,7 +40,7 @@ function injectSource() {
       'patsnap-search':['智慧芽专利&文献融合检索',[]],
       'canva-mcp':['Canva 可画',[]],
       'yuandian-mcp':['华宇元典法律数据',[]],
-      obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
+      obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',['pptx']],gongwen:['公文写作',['government-writing']]
     };
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
@@ -51,7 +51,12 @@ function injectSource() {
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
     const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
-    const skills=()=>[{id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false}];
+    const skills=()=>[
+      {id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},
+      {id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false},
+      // pptx:真实预置技能(组合包化),卡片由后端数据合成,安装态跟随同名 MCP
+      {id:'pptx',title:'PPT 生成',subtitle:'本地直出可编辑 PowerPoint',description:'本地直出可编辑 .pptx',icon:'Presentation',color:'bg-gradient-to-b from-orange-400 to-rose-500',installed:!!state.installed.pptx,user_uploaded:false},
+    ];
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);

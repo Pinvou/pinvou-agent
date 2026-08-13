@@ -165,6 +165,13 @@ impl BundleRegistry {
             if skill_claimed.contains(&skill.id) {
                 continue;
             }
+            // id 唯一性：与既有包同名的技能不再独立成包。同名 companion 技能
+            // （pptx 技能 ↔ pptx MCP）由同名 MCP 包全权代表——装后认领并 derive 为
+            // Bundle 携带技能；未装时若再独立成包会产生两个同 id 包，破坏
+            // 「一个包 = 一个开关」前提（前端同名技能装卸本就路由到该 MCP）。
+            if out.iter().any(|b| b.id == skill.id) {
+                continue;
+            }
             out.push(BundleInfo {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
@@ -647,6 +654,53 @@ mod tests {
                 .expect("government-writing 应独立成包");
             assert_eq!(skill.kind, BundleKind::Skill);
             assert!(skill.installed, "存量单装技能保持已装态");
+        });
+    }
+
+    /// pptx 组合包化 × V5：companion 技能与 MCP 同名（pptx↔pptx）时——
+    /// 未装 MCP：纯 MCP 包，同名技能**不**独立成包（否则两个包同 id，破坏唯一性）；
+    /// 已装 MCP：认领同名技能，derive 为 Bundle 携带技能。
+    #[test]
+    fn pptx_same_id_companion_claim_follows_install_state() {
+        with_temp_home(|| {
+            let home = std::env::var("PINVOU3_HOME").unwrap();
+            let home = std::path::Path::new(&home).to_path_buf();
+            seed_fixture(&home, false);
+            let write = |rel: &str, content: &str| {
+                let p = home.join(rel);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, content).unwrap();
+            };
+            // pptx MCP（manifest 声明同名 companion 技能）+ 预置 pptx 技能
+            write(
+                "bundle/mcp-servers/pptx/manifest.json",
+                r#"{"id":"pptx","name":"PPT 生成","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"","args":[],"companion_skills":["pptx"]}"#,
+            );
+            write("bundle/skills/pptx/SKILL.md", "---\nname: pptx\n---\n# hi");
+            write(
+                "bundle/skills/pptx/.installed-from",
+                "pinvou3-marketplace:pptx",
+            );
+
+            // 未装：纯 MCP 包；同名技能不独立成包（包 id 唯一）
+            let bundles = BundleRegistry::new().list_bundles();
+            let pptx: Vec<_> = bundles.iter().filter(|b| b.id == "pptx").collect();
+            assert_eq!(pptx.len(), 1, "同名技能不得再独立成包（包 id 唯一）");
+            assert_eq!(pptx[0].kind, BundleKind::Mcp, "未装应为纯 MCP 包");
+            assert!(pptx[0].skills.is_empty(), "未装包不得认领技能");
+            assert!(!pptx[0].installed);
+
+            // 装后：认领同名技能 → 组合包
+            write("marketplace/installed.json", r#"["pptx"]"#);
+            let bundles = BundleRegistry::new().list_bundles();
+            let pptx: Vec<_> = bundles.iter().filter(|b| b.id == "pptx").collect();
+            assert_eq!(pptx.len(), 1);
+            assert_eq!(pptx[0].kind, BundleKind::Bundle, "装后应为组合包");
+            assert!(
+                pptx[0].skills.contains(&"pptx".to_string()),
+                "装后应携带同名 companion 技能"
+            );
+            assert!(pptx[0].installed);
         });
     }
 }

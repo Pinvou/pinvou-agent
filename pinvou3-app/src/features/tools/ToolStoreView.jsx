@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Cpu, Globe, IconGrid, IconList, Package, Search, Server, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillsData, tsToolsData } from './tool-common.jsx';
+import { localizeTool, TsActionBtn, tsCategories, tsFeaturedCollections, tsSkillFeaturedAssets, tsSkillIconByName, tsSkillsData, tsToolsData } from './tool-common.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
 
@@ -663,8 +663,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const isCard = viewMode === 'card';
       const isSkillTab = isCard; // 兼容:卡片视图 = 渲染本地技能 Today 卡
       const showFeaturedCollections = isCard && searchQuery === '' && activeCategory === 'all';
-      // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(PPT / 公文)
-      const LOCAL_TOOLS = ['pptx', 'gongwen'];
+      // 连接器 tab 只显示"需连外部数据"的工具,排除本地生成类(公文;PPT 已组合包化,
+      // 唯一入口是由后端数据合成的 companion 技能卡,见下方 companionSkillCards)
+      const LOCAL_TOOLS = ['gongwen'];
       // 飞书(CLI 路线)连接态:不走 marketplace,由 lark-cli auth status 判定
       const [feishuConnected, setFeishuConnected] = useState(false);
       // 飞书连接流程状态机（取代旧阻塞式扫码浮层）：null=idle
@@ -726,6 +727,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         const urls = [
           ...tsFeaturedCollections.map((item) => item.img),
           ...tsSkillsData.map((item) => item.todayImg),
+          ...Object.values(tsSkillFeaturedAssets).map((item) => item.todayImg),
         ].filter(Boolean);
         urls.forEach((src) => {
           const img = new Image();
@@ -888,23 +890,36 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         || !isRestrictedExternalAuthTool(tool)
         || !!tool.installed
       );
-      // 技能卡 = 预置(合并安装状态) + 用户上传(后端动态返回,默认图标)
+      // 技能卡 = 预置(静态卡合并安装状态) + companion 技能(后端数据合成) + 用户上传
       const presetSkills = tsSkillsData.map(localizeSkill).map(s => {
         if (s.builtin) return { ...s, installed: true };
         // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
-        // 同名工具的展示别名(PPT=pptx)同样跟工具态;都不命中才读独立 skill 后端(纯技能/上传)。
-        const mcpId = skillToMcp[s.backendId]
-          || (tsToolsData.some(t => t.backendId === s.backendId) ? s.backendId : null);
+        // 否则读独立 skill 后端(纯技能,如 visualizer)。
+        const mcpId = skillToMcp[s.backendId] || null;
         if (mcpId) return { ...s, installed: !!toolStates[mcpId] };
         const be = skillBackend.find(x => x.id === s.backendId);
         return { ...s, installed: be ? be.installed : false };
       });
+      // companion 技能卡:manifest companion_skills 声明、但无静态卡的技能(pptx),
+      // 由后端 list_marketplace_skills 数据合成——真实预置技能取代前端空壳卡,
+      // 展示文案走 i18n overlay(localizeSkill),精选位图片/版式走 tsSkillFeaturedAssets,
+      // 安装态/装卸跟随所属 MCP。
+      const staticSkillIds = new Set(tsSkillsData.map(s => s.backendId).filter(Boolean));
+      const companionSkillCards = skillBackend
+        .filter(x => !x.user_uploaded && skillToMcp[x.id] && !staticSkillIds.has(x.id))
+        .map(x => localizeSkill({
+          id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
+          category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+          icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
+          installed: !!toolStates[skillToMcp[x.id]],
+          ...(tsSkillFeaturedAssets[x.id] || {}),
+        }));
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
       }));
-      const skillCards = [...presetSkills, ...uploadedSkills];
+      const skillCards = [...presetSkills, ...companionSkillCards, ...uploadedSkills];
 
       const connectorTools = tools.filter(t => !LOCAL_TOOLS.includes(t.backendId) && isToolVisibleOnPlatform(t));
       const listItems = [...connectorTools, ...skillCards]; // 列表视图:连接器 + 技能全放一起
@@ -1462,8 +1477,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 安装/卸载入口
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
-        // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
-        // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
+        // 有配套 MCP 的技能(公文=gongwen、PPT=pptx,manifest companion_skills 声明)→ 改走该
+        // MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
+        // 纯技能(无配套 MCP:如 visualizer、上传技能)才走 handleSkillAction。
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
         else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
@@ -1515,7 +1531,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return;
         }
         const tool = findLocalizedTool(backendId);
-        const name = tool ? tool.title : backendId;
+        // 组合包化的本地能力(pptx)只有 companion 技能卡、无连接器卡,名称回退到技能卡
+        const name = tool ? tool.title : ((skillCards.find(x => x.backendId === backendId) || {}).title || backendId);
 
         // 安装：有 configFields 的工具先弹配置弹窗
         if (!isInstalled) {

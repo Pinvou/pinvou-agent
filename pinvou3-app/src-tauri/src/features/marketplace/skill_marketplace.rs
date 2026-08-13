@@ -3,11 +3,11 @@
 //! 与 MCP 工具市场([`super::marketplace`])刻意分开:MCP 工具是 server 进程(改
 //! mcp.json),技能是磁盘上的 SKILL.md 目录(落 `bundle/skills/`,进 system prompt)。
 //!
-//! 预置技能(government-writing)随 app 编译进二进制(`include_dir`),从嵌入资源复制到
+//! 预置技能(government-writing/pptx/visualizer/ima-skills)随 app 编译进二进制(`include_dir`),从嵌入资源复制到
 //! `~/.pinvou3/bundle/skills/<name>/`——这是底座聊天**唯一加载**的 pinvou3 私有
 //! skill 目录(fork patch #41 砍掉了其余扫描路径)。安装入口为 MCP 工具的配套技能
 //! 联动(见 `marketplace::companion_skills`:装「公文写作」gongwen MCP 时一并装
-//! government-writing),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
+//! government-writing、装「PPT 生成」pptx MCP 时一并装 pptx),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
 //!
 //! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
 //! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
@@ -68,6 +68,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。",
             icon: "FileText",
             color: "bg-gradient-to-b from-red-500 to-rose-700",
+        },
+        SkillManifest {
+            id: "pptx",
+            skill_name: "pptx",
+            source_dir: "pptx",
+            title: "PPT 生成",
+            subtitle: "本地直出可编辑 PowerPoint，套主题模板、真图表、带封面",
+            description: "本地直出可编辑 PowerPoint（.pptx）：先列大纲确认，再按内容自动选主题（9 套）产结构化 deck，渲染器套主题模板生成真·可编辑图表、自带封面缩略图的演示文稿，数据不出机。配合工具商店的「PPT 生成」工具即可直出 .pptx。",
+            icon: "Presentation",
+            color: "bg-gradient-to-b from-orange-400 to-rose-500",
         },
         SkillManifest {
             id: "visualizer",
@@ -589,6 +599,44 @@ mod tests {
             .list_skills()
             .iter()
             .any(|s| s.id == "government-writing" && !s.installed));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 预置 pptx 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
+    /// pptx 是「PPT 生成」MCP 的同名 companion 技能(manifest `companion_skills`)。
+    #[test]
+    fn install_then_uninstall_pptx_preset_roundtrip() {
+        let tmp = fresh_dir("pptx");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("pptx").unwrap();
+        let skill_dir = tmp.join("pptx");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert!(skill_dir.join(".installed-from").is_file(), "应写安装标记");
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("pptx")
+        );
+        let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            skill_md.contains("mcp_pptx_make_pptx"),
+            "应引导调用 pptx MCP 工具"
+        );
+        assert!(
+            skill_md.contains("present_artifact(path, title)"),
+            "应要求产物卡交付"
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "pptx" && s.installed));
+
+        mgr.uninstall("pptx").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "pptx" && !s.installed));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
