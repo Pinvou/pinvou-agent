@@ -1634,19 +1634,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 ) : (
                   <>
                     {visibleChatItems.map((item) => (
-                      <ChatBubble
-                        key={item.id}
-                        item={item}
-                        sessionId={activeSessionId}
-                        theme={theme}
-                        t={t}
-                        onPrefill={(text) => setInputText(text)}
-                        onSend={sendChatMessage}
-                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
-                        onOpenEditor={onOpenEditor}
-                        isLatestArtifact={latestArtifactIds.has(item.id)}
-                        allowScheduledTaskDraft={isScheduledTaskCreationChat}
-                      />
+                      <div key={item.id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 600px' }}>
+                        <ChatBubble
+                          item={item}
+                          sessionId={activeSessionId}
+                          theme={theme}
+                          t={t}
+                          onPrefill={(text) => setInputText(text)}
+                          onSend={sendChatMessage}
+                          editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
+                          onOpenEditor={onOpenEditor}
+                          isLatestArtifact={latestArtifactIds.has(item.id)}
+                          allowScheduledTaskDraft={isScheduledTaskCreationChat}
+                        />
+                      </div>
                     ))}
                     {busy && <ThinkingBubble thinking={bs && bs.thinking} theme={theme} t={t} isLocal={activeModelLocal} />}
                   </>
