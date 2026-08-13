@@ -116,7 +116,7 @@ try {
   await clickTextArea('Go');
   const afterSwitch = await checkedState();
   // name 是 `${cardId}-${question.id}-choice`，不含选项；按 DOM 顺序取单选的两个 radio。
-  const radios = afterSwitch.filter((i) => i.type === 'radio');
+  const radios = afterSwitch.filter((i) => i.name.endsWith('-q-lang-choice'));
   assert(radios.length === 2 && radios[0].checked === false && radios[1].checked === true,
     '文本点击 Go 后单选切换到第二项', afterSwitch);
 
@@ -139,7 +139,7 @@ try {
   // ── 点击圆点本身：走原生 onChange，单选仍恰好一次 ──────────────
   await clickDot('Python');
   const afterDot = await checkedState();
-  const radios2 = afterDot.filter((i) => i.type === 'radio');
+  const radios2 = afterDot.filter((i) => i.name.endsWith('-q-lang-choice'));
   assert(radios2.length === 2 && radios2[0].checked === true && radios2[1].checked === false,
     '点击圆点本身经原生 onChange 选中', afterDot);
 
@@ -163,6 +163,19 @@ try {
     return cards.map((f) => Array.from(f.querySelectorAll('input')).filter((i) => i.checked).length);
   });
   assert(lockedChecked.some((n) => n > 0), '锁定卡 restoredAnswers 还原选中态', lockedChecked);
+
+  // ── 评审 P2：其他值 == 预设 value 时还原为“其他”而非预设 ─────────
+  const otherCollision = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="other-collision-card"]');
+    const textInputs = Array.from(card.querySelectorAll('input[type="text"]'));
+    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    return {
+      otherValue: textInputs.length ? textInputs[0].value : null,
+      checkedCount: radios.filter((r) => r.checked).length,
+    };
+  });
+  assert(otherCollision.otherValue === 'A', '其他值 == 预设 value 时应还原为“其他”输入而非预设选项', otherCollision);
+  assert(otherCollision.checkedCount === 0, '预设选项 A 不得被误选中（应还原为“其他”）', otherCollision);
 
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 

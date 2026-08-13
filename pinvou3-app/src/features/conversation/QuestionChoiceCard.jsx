@@ -9,7 +9,7 @@ function normalizedOptions(question) {
   }));
 }
 
-function initialState(questions, initialAnswers) {
+function initialState(questions, initialAnswers, otherAnswerLabel) {
   // 用无原型对象：question.id 后端仅校验非空，constructor/toString/__proto__ 是合法输入；
   // 普通 {} 会让这些键命中 Object.prototype（读函数/写触发 __proto__ setter），导致未选择
   // 被判为已回答、伪造“其他答案”或历史答案无法形成 own property（重挂载丢选中态）。
@@ -18,10 +18,18 @@ function initialState(questions, initialAnswers) {
   for (const question of questions) {
     const answers = (initialAnswers || []).filter(answer => answer && answer.id === question.id);
     const options = normalizedOptions(question);
+    // “其他”答案判定：显式 other 标记，或 label 命中“其他”文案（提交时以 otherAnswerLabel 存
+    // label）。只把非“其他”答案拿去按 value 回退匹配预设选项，避免“其他值 == 预设 value”时
+    // 被误判为预设、丢失用户实际选择“其他”的语义（评审 P2）。
+    const isOtherAnswer = answer => (
+      answer.other === true
+      || (otherAnswerLabel != null && otherAnswerLabel !== '' && answer.label === otherAnswerLabel)
+    );
+    const matchesOption = answer => options.some(option => (
+      option.label === answer.label || option.value === answer.value
+    ));
     const optionValues = answers
-      .filter(answer => options.some(option => (
-        option.label === answer.label || option.value === answer.value
-      )))
+      .filter(answer => !isOtherAnswer(answer) && matchesOption(answer))
       .map(answer => {
         const option = options.find(candidate => (
           candidate.label === answer.label || candidate.value === answer.value
@@ -29,9 +37,7 @@ function initialState(questions, initialAnswers) {
         return option && option.value;
       })
       .filter(value => value != null);
-    const custom = answers.find(answer => !options.some(option => (
-      option.label === answer.label || option.value === answer.value
-    )));
+    const custom = answers.find(answer => isOtherAnswer(answer) || !matchesOption(answer));
     if (question.multiSelect) {
       if (optionValues.length) selected[question.id] = optionValues;
     } else if (optionValues.length) {
@@ -72,7 +78,7 @@ export function QuestionChoiceCard({
   onCancel,
 }) {
   const cardId = useId();
-  const initial = initialState(questions, initialAnswers);
+  const initial = initialState(questions, initialAnswers, otherAnswerLabel);
   const [selected, setSelected] = useState(initial.selected);
   const [other, setOther] = useState(initial.other);
   const locked = resolved || submitting;

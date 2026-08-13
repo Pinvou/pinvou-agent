@@ -673,6 +673,9 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       id: group.questionId,
       label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
       value: String(answer.value),
+      // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
+      // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
+      other: answer.other,
     })));
     onSubmitAnswers(item.toolCallId, answers);
   }

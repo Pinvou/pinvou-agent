@@ -57,6 +57,24 @@ const Fixture = () => {
           statusText="已提交"
         />
       )}
+      {/* 评审 P2 回归：其他值 == 预设 value 时，重挂载应还原为“其他”而非高亮预设。 */}
+      <div data-testid="other-collision-card">
+        <QuestionChoiceCard
+          title="其他值与预设值相同（锁定）"
+          questions={[{
+            id: 'q-other-collision',
+            header: '选择',
+            question: '选一个？',
+            options: [{ label: 'A' }, { label: 'B' }],
+            allowOther: true,
+            multiSelect: false,
+          }]}
+          initialAnswers={[{ id: 'q-other-collision', label: '其他', value: 'A' }]}
+          otherAnswerLabel="其他"
+          resolved
+          statusText="已提交"
+        />
+      </div>
       <button type="button" data-testid="reset" onClick={() => setResolved(false)}>重置</button>
     </div>
   );
