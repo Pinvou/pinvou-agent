@@ -75,6 +75,45 @@ const Fixture = () => {
           statusText="已提交"
         />
       </div>
+      {/* 评审第五轮 P2 回归 A：allowOther=false + 预设项名为“其他” + 显式 other:false。
+          重挂载必须高亮预设“其他”项，不得被 label 兼容判定误归为自定义（无自定义输入可渲染）。 */}
+      <div data-testid="preset-named-other-card">
+        <QuestionChoiceCard
+          title="预设项名为其他且禁用自由输入（锁定）"
+          questions={[{
+            id: 'q-preset-other',
+            header: '选择',
+            question: '选一个？',
+            options: [{ label: '其他' }, { label: '常规' }],
+            allowOther: false,
+            multiSelect: false,
+          }]}
+          initialAnswers={[{ id: 'q-preset-other', label: '其他', value: '其他', other: false }]}
+          otherAnswerLabel="其他"
+          resolved
+          statusText="已提交"
+        />
+      </div>
+      {/* 评审第五轮 P2 回归 B：跨语言冷重载——other 标记被后端剥离，label 仍为中文“其他”，
+          但界面已切英文（otherAnswerLabel='Other'）。不得按 value 回退把撞值的“其他”答案
+          误判为预设 A，应还原为自定义输入。 */}
+      <div data-testid="cross-lang-cold-card">
+        <QuestionChoiceCard
+          title="跨语言冷重载（锁定）"
+          questions={[{
+            id: 'q-cross-lang',
+            header: '选择',
+            question: '选一个？',
+            options: [{ label: 'A' }, { label: 'B' }],
+            allowOther: true,
+            multiSelect: false,
+          }]}
+          initialAnswers={[{ id: 'q-cross-lang', label: '其他', value: 'A' }]}
+          otherAnswerLabel="Other"
+          resolved
+          statusText="已提交"
+        />
+      </div>
       <button type="button" data-testid="reset" onClick={() => setResolved(false)}>重置</button>
     </div>
   );

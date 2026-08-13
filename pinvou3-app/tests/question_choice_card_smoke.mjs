@@ -97,11 +97,17 @@ try {
     await page.mouse.click(loc.input.x + loc.input.width / 2, loc.input.y + loc.input.height / 2);
     return loc;
   };
-  const checkedState = () => page.evaluate(() => Array.from(document.querySelectorAll('fieldset input')).map((i) => ({
-    name: i.name,
-    checked: i.checked,
-    type: i.type,
-  })));
+  // 仅采集交互卡（q-lang/q-skill）的 fieldset 状态；页面下方锁定还原卡有合法历史选中态，
+  // 不应混入交互断言。交互卡是文档中前两个 fieldset（按渲染顺序）。
+  const checkedState = () => page.evaluate(() => {
+    const fieldsets = Array.from(document.querySelectorAll('fieldset'));
+    const interactive = fieldsets.slice(0, 2);
+    return interactive.flatMap((f) => Array.from(f.querySelectorAll('input')).map((i) => ({
+      name: i.name,
+      checked: i.checked,
+      type: i.type,
+    })));
+  });
 
   // ── 单选：点击文本恰好选中一次 ─────────────────────────────────
   const before = await checkedState();
@@ -176,6 +182,37 @@ try {
   });
   assert(otherCollision.otherValue === 'A', '其他值 == 预设 value 时应还原为“其他”输入而非预设选项', otherCollision);
   assert(otherCollision.checkedCount === 0, '预设选项 A 不得被误选中（应还原为“其他”）', otherCollision);
+
+  // ── 评审第五轮 P2-A：allowOther=false + 预设项名为“其他” + 显式 other:false ────
+  //     重挂载应高亮预设“其他”项，且无自定义输入（allowOther=false 不渲染）。
+  const presetNamedOther = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="preset-named-other-card"]');
+    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    const otherInput = card.querySelector('input[type="text"]');
+    return {
+      // 预设“其他”项是第一个 radio，应被选中（高亮恢复）。
+      presetOtherChecked: radios.length ? radios[0].checked : null,
+      anyChecked: radios.filter((r) => r.checked).length,
+      hasOtherInput: Boolean(otherInput),
+    };
+  });
+  assert(presetNamedOther.hasOtherInput === false, 'allowOther=false 不应渲染自定义输入', presetNamedOther);
+  assert(presetNamedOther.presetNamedOtherChecked === true || presetNamedOther.anyChecked === 1,
+    '预设项名为“其他”+ other:false 应高亮该预设项（不得被 label 兼容判定误归为自定义）', presetNamedOther);
+
+  // ── 评审第五轮 P2-B：跨语言冷重载——other 被剥离，label 仍中文“其他”，界面切英文 ─
+  //     不得按 value 回退把撞值的“其他”答案误判为预设 A，应还原为自定义输入且不高亮预设。
+  const crossLang = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="cross-lang-cold-card"]');
+    const textInputs = Array.from(card.querySelectorAll('input[type="text"]'));
+    const radios = Array.from(card.querySelectorAll('input[type="radio"]'));
+    return {
+      otherValue: textInputs.length ? textInputs[0].value : null,
+      checkedCount: radios.filter((r) => r.checked).length,
+    };
+  });
+  assert(crossLang.otherValue === 'A', '跨语言冷重载应还原自定义输入值 A（label 不匹配英文预设时不回退 value）', crossLang);
+  assert(crossLang.checkedCount === 0, '跨语言冷重载不得高亮预设 A（应还原为“其他”）', crossLang);
 
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 

@@ -18,22 +18,33 @@ function initialState(questions, initialAnswers, otherAnswerLabel) {
   for (const question of questions) {
     const answers = (initialAnswers || []).filter(answer => answer && answer.id === question.id);
     const options = normalizedOptions(question);
-    // “其他”答案判定：显式 other 标记，或 label 命中“其他”文案（提交时以 otherAnswerLabel 存
-    // label）。只把非“其他”答案拿去按 value 回退匹配预设选项，避免“其他值 == 预设 value”时
-    // 被误判为预设、丢失用户实际选择“其他”的语义（评审 P2）。
-    const isOtherAnswer = answer => (
-      answer.other === true
-      || (otherAnswerLabel != null && otherAnswerLabel !== '' && answer.label === otherAnswerLabel)
+    // “其他”答案判定（评审第五轮 P2）：
+    //   1) 显式布尔 other 标记优先——包括明确的 false。warm 路径（restoredAnswers）保留 other
+    //      标记；若问题 allow_free_text=false 却存在名为“其他”的普通预设项（isFreeTextPlaceholderOption
+    //      过滤被 allowOther 跳过、该预设项保留），提交链路会产生 { other: false }，必须尊重它，
+    //      否则该预设项重挂载后既不高亮也看不到答案。
+    //   2) 冷重载路径后端只持久化 {id,label,value}（UserInputAnswer 无 other 字段，已被剥离）；
+    //      仅当该问题允许自由输入（allowOther）时才按 label 命中“其他”文案兼容判定，allowOther=false
+    //      时不存在自定义答案，不应把名为“其他”的预设项误判为 other。
+    const isOtherAnswer = answer => {
+      if (typeof answer.other === 'boolean') return answer.other;
+      return Boolean(question.allowOther)
+        && otherAnswerLabel != null && otherAnswerLabel !== ''
+        && answer.label === otherAnswerLabel;
+    };
+    // 预设匹配优先按 label：跨语言冷重载时 otherAnswerLabel 随界面语言变化，“其他”答案的 label
+    // （如中文“其他”）不再命中英文预设；此时不应回退到 value 匹配，否则撞值的“其他”答案会被
+    // 误判为预设（评审第五轮 P2）。仅当 label 缺失时才按 value 回退，兼容 label 缺失的历史数据。
+    const findOption = answer => (
+      answer.label != null && answer.label !== ''
+        ? options.find(option => option.label === answer.label)
+        : options.find(option => option.value === answer.value)
     );
-    const matchesOption = answer => options.some(option => (
-      option.label === answer.label || option.value === answer.value
-    ));
+    const matchesOption = answer => Boolean(findOption(answer));
     const optionValues = answers
       .filter(answer => !isOtherAnswer(answer) && matchesOption(answer))
       .map(answer => {
-        const option = options.find(candidate => (
-          candidate.label === answer.label || candidate.value === answer.value
-        ));
+        const option = findOption(answer);
         return option && option.value;
       })
       .filter(value => value != null);
