@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, Globe, Package, Search, Server, Upload, User, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, TsActionBtn, tsCategories, tsSkillFeaturedAssets, tsSkillIconByName, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { localizeTool, TsActionBtn, tsCategories, tsSkillFeaturedAssets, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -892,15 +892,29 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 展示文案走 i18n overlay(localizeSkill),精选位图片/版式走 tsSkillFeaturedAssets,
       // 安装态:有配套 MCP(companion 声明)跟随 MCP 工具态,纯技能读后端 installed。
       const staticSkillIds = new Set(tsSkillsData.map(s => s.backendId).filter(Boolean));
+      // 已被非 MCP 连接器认领的技能不再单独成卡:ima-skills 归 ima 连接器包(后端注册表 V5 预认领;
+      // ima 非 MCP、不在 companion_skills 反建范围),其连接器卡即包卡,避免「一个产品两张卡」。
+      const CONNECTOR_CLAIMED_SKILLS = new Set(['ima-skills']);
       const companionSkillCards = skillBackend
-        .filter(x => !x.user_uploaded && !staticSkillIds.has(x.id))
-        .map(x => localizeSkill({
-          id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
-          category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
-          icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
-          installed: skillToMcp[x.id] ? !!toolStates[skillToMcp[x.id]] : !!x.installed,
-          ...(tsSkillFeaturedAssets[x.id] || {}),
-        }));
+        .filter(x => !x.user_uploaded && !staticSkillIds.has(x.id) && !CONNECTOR_CLAIMED_SKILLS.has(x.id))
+        .map(x => {
+          const mcpId = skillToMcp[x.id] || null;
+          // 组合包卡的业务分类跟随配套 MCP(公文=gongwen→docs;pptx 连接器卡已删,元数据在 tsToolWelcomeData)
+          const mcpEntry = mcpId
+            ? (tsToolsData.find(t => t.backendId === mcpId) || tsToolWelcomeData.find(t => t.backendId === mcpId))
+            : null;
+          return localizeSkill({
+            id: 'mcp-skill-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || '',
+            // 有配套 MCP(companion)的卡 = 工具包:徽标与分组归 bundle,安装态跟随 MCP
+            category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
+            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
+            companionBundle: !!mcpId,
+            version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+            icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
+            installed: mcpId ? !!toolStates[mcpId] : !!x.installed,
+            ...(tsSkillFeaturedAssets[x.id] || {}),
+          });
+        });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         category: 'skill', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
@@ -908,14 +922,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       }));
       const skillCards = [...presetSkills, ...companionSkillCards, ...uploadedSkills];
 
-      const connectorTools = tools.filter(t => isToolVisibleOnPlatform(t));
+      // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
+      // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
+      const bundleMcpIds = Object.values(skillToMcp);
+      // 组合包的 MCP 连接器卡不进列表:包由 companion 合成卡唯一代表(取代已删的 LOCAL_TOOLS 硬编码)。
+      // 条目数据仍保留在 tsToolsData(详情/安装/配置流程经 findLocalizedTool 消费)。
+      const connectorTools = tools.filter(t => !bundleMcpIds.includes(t.backendId) && isToolVisibleOnPlatform(t));
       const listItems = [...connectorTools, ...skillCards]; // 连接器 + 技能全放一起
       // 搜索全局:有搜索词时跨「连接器 + 全部技能」检索,不受分类限制(「我的工具」内搜索仍限已安装)
       const searching = searchQuery.trim() !== '';
       const isLaunchedTool = tool => !!tool.backendId || !!tool.builtin || !!tool.userUploaded;
-      // 双维度分组:主维度(groupBy)决定二级筛选集合,另一维度决定下方分区(section)。
-      // 含 companion_skills 的 MCP = 工具包(skillToMcp 的值即其 id,manifest 反建,单一真源)。
-      const bundleMcpIds = Object.values(skillToMcp);
       const typeGroupOf = tool => getToolTypeGroup(tool, bundleMcpIds);
       const catLabel = id => (storeData.categories || {})[id] || (tsCategories.find(c => c.id === id) || {}).label || id;
       const typeLabel = id => ((storeCopy.typeGroups || {})[id]) || id;

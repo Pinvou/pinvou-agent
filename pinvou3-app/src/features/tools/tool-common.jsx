@@ -468,6 +468,25 @@ const AcFmtIcon = FileTypeIcon;
         </div>
       );
     };
+    // ══ 编入新工具/技能指南(2026-08 能力包归一后) ════════════════════════════
+    // 一个产品 = 一张卡。禁止「连接器卡 + 技能卡」双卡并存,历史上 PPT/公文/ima
+    // 都踩过(重复卡、分类漂移),归一后规则如下:
+    // 1. 纯 MCP 工具:在 resources/mcp-servers/<id>/manifest.json 声明,本文件加
+    //    连接器条目(category 直接落业务类 id:collab/docs/dev/finance/life)。
+    // 2. 组合包(MCP + 配套技能):manifest 加 companion_skills 声明 + 预置技能落
+    //    skill-marketplace/<name>/SKILL.md。✦不要✦加连接器条目以外的第二张卡——
+    //    商店卡由后端技能数据自动合成(companionSkillCards),连接器条目只作元数据
+    //    源(详情/配置/欢迎语),渲染层按 bundleMcpIds 自动过滤,不会出现两张卡。
+    // 3. 纯技能:只注册预置技能(preset_manifests),不加 tsSkillsData 静态卡——
+    //    静态卡机制已随 s4/s7 删除,合成路径全覆盖。
+    // 4. 连接器认领的技能(如 ima-skills 归 ima):加入 ToolStoreView 的
+    //    CONNECTOR_CLAIMED_SKILLS,防止单独成卡。
+    // 5. 占位卡(未上线)用 backendId: null;builtin 技能(如视觉设计)保留 builtin 标记。
+    // 6. 文案三语走 i18n overlay(uiToolDetails/storeData),本文件只留中文原文。
+    // 旧实现待更新:7 个 MCP manifest 仍内嵌 routing_rules/tool_table_entries
+    // (weather/iwencai/obsidian/patsnap-search/qcc/canva-mcp/yuandian-mcp)——
+    // 非组合包无双写问题,新增组合包时勿模仿,知识一律进 SKILL.md。
+    // ════════════════════════════════════════════════════════════════════════
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
     const tsToolsData = [
       { id: 1, backendId: 'weather', title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'life', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true, configTitle: '高德天气 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://console.amap.com/dev/key/app', configDocLabel: '去创建 Web 服务 Key', configFields: [{ key: 'AMAP_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴高德 Web 服务 Key', helpText: '请选择「Web 服务」类型。' }], welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
@@ -491,10 +510,11 @@ const AcFmtIcon = FileTypeIcon;
       { id: 16, backendId: 'gongwen', title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
 
-    // 新对话欢迎卡数据(非商店卡片):组合包化的本地能力(pptx)已无连接器卡,
-    // 但安装后「去新对话」引导卡仍按 backendId 取标题/描述/欢迎问题;三语 overlay 同 localizeTool。
+    // 本地能力的元数据(非商店连接器卡):组合包化的 pptx 已无连接器卡,但安装后
+    // 「去新对话」引导卡按 backendId 取标题/描述/欢迎问题(三语 overlay 同 localizeTool);
+    // category 同时供商店组合包合成卡确定业务分区。
     const tsToolWelcomeData = [
-      { backendId: 'pptx', title: 'PPT 生成', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
+      { backendId: 'pptx', title: 'PPT 生成', category: 'docs', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },
     ];
 
     // overlay 提供 configFields 时按字段 key 深合并，只覆盖 label/helpText/placeholder，其余源字段保留。
@@ -645,6 +665,9 @@ const AcFmtIcon = FileTypeIcon;
 
     // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
     // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
+    // ⚠ 此表已近退役:预置技能卡一律由后端数据合成(companionSkillCards),不要再往
+    // 这里加条目(编入规则见 tsToolsData 头部指南)。s5 是唯一遗留——builtin 内置技能
+    // (visual-design 在 bundle/skills/,无需安装),其包模型归属待决策,决策后此表应清空。
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
@@ -678,6 +701,8 @@ const AcFmtIcon = FileTypeIcon;
     const TOOL_TYPE_GROUPS = ['bundle', 'mcp', 'skill', 'cli', 'api', 'upcoming'];
     const getToolTypeGroup = (tool, bundleMcpIds) => {
       if (!tool) return 'upcoming';
+      // companion 合成卡优先判 bundle:卡面 category 恒为 skill,须先于 skill 规则短路
+      if (tool.companionBundle) return 'bundle';
       if (tool.userUploaded || tool.builtin || tool.category === 'skill') return 'skill';
       if (!tool.backendId) return 'upcoming';
       if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';
