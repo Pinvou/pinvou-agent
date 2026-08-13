@@ -55,11 +55,9 @@ export PINVOU_REMOTE_RELAY_WS_URL="${PINVOU_REMOTE_RELAY_WS_URL:-ws://127.0.0.1:
 # 平台选择由 scripts/rustc-stack-wrapper-select.sh 统一决定(run-dev.sh
 # 与 CI smoke 共用同一 selector,避免入口与验证漂移):
 #   - Darwin/Linux:注入 sh 版 wrapper(macOS 有 SIGBUS 实测,Linux 同源);
-#   - Windows (MINGW*/MSYS*/CYGWIN*):**不设置** RUSTC_WRAPPER。Windows
-#     无 SIGBUS 触发(仅 macOS 实测),且无扩展名 Unix shell 文件无法被
-#     Windows 原生 Cargo 执行(CreateProcess → os error 193,会阻断本地
-#     所有 Cargo 命令);如需统一 16 MiB 行为,CI 的 Windows job 显式
-#     注入 .cmd 版(见 pr-check.yml windows-rust-test)。
+#   - Windows (MINGW*/MSYS*/CYGWIN*):注入 .cmd 版 wrapper(栈溢出根因
+#     三端同源,Windows 本地 dev 同样需要 16 MiB 栈;.cmd 经 cmd /C 执行,
+#     无扩展名 sh 会 os error 193)。
 # 契约测试 tests/compiler_stack_contract.rs 守护"运行时进程不继承"。
 RUSTC_WRAPPER_VALUE="$(src-tauri/scripts/rustc-stack-wrapper-select.sh)"
 if [ -n "$RUSTC_WRAPPER_VALUE" ]; then

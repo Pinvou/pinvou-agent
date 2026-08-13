@@ -10,8 +10,8 @@
 # (优先级高于 .cargo/config.toml,Windows 上同样可靠)。平台选择统一走
 # rustc-stack-wrapper-select.sh(单一真相源,输出空 = 不注入):
 #   - macOS/Linux 开发:pinvou3-app/run-dev.sh 调用 selector 注入本文件
-#   - Windows 开发:selector 输出空(本文件是无扩展名 Unix shell,
-#     Windows 原生 Cargo 无法执行 → os error 193),默认透传即可
+#   - Windows 开发:run-dev.sh 调用 selector 注入 .cmd 版(本文件是
+#     无扩展名 Unix shell,Windows 原生 Cargo 无法执行 → os error 193)
 #   - CI:pr-check(rust-lint)、mac-build、release-packages
 #     (Linux x64/arm64、macOS universal)按平台注入 sh 版;
 #     Windows 发布 / windows-rust-test job 注入 rustc-stack-wrapper.cmd 版
@@ -21,8 +21,8 @@
 #
 # 注意:本文件是 Unix(sh)版本。Windows 上 Cargo 需要 .cmd 后缀才能走
 # cmd /C(见 rustc-stack-wrapper.cmd);栈溢出根因三端同源(macOS 实测 SIGBUS、
-# Windows 实测栈溢出),Windows 本地 dev 经 selector 透传,CI 的 Windows job
-# (发布 / windows-rust-test)显式注入 .cmd 版。
+# Windows 实测栈溢出),Windows 本地 dev 经 selector 注入 .cmd 版,CI 的
+# Windows job(发布 / windows-rust-test)同样注入 .cmd 版。
 export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
 # 链式 wrapper(如 sccache):cargo 调用 `$RUSTC_WRAPPER rustc <args>` 时,若设置了
 # RUSTC_WRAPPER_CHAIN,则在本脚本之后插入该命令,形成
