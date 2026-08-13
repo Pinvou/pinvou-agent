@@ -9,7 +9,7 @@
 _Avoid_: 多智能体对话、工作流运行、专属会话
 
 **品悟原生代码会话（Pinvou Native Code Session）**：
-代码模式中由品悟直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 Pinvou 多智能体开关、行内专家卡和只读 transcript 面板。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript、协调锁和 Pinvou 专家名册通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，不会向项目写入 `.codewhale/agents/`。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
+代码模式中由品悟直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 Pinvou 多智能体开关；开关只控制 Pinvou 专家名册与强制委派提醒，不控制底座 `agent` / `workflow` 的执行事实。只要当前会话实际发生子智能体委派，无论开关状态如何，都显示行内子智能体卡和只读 transcript 面板。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript 和协调锁通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，Pinvou 专家则通过内存 `fleet.profiles` 配置提供，不向项目或会话目录写入专家 TOML。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
 _Avoid_: 品悟 ACP 会话、Codex 会话
 
 **外部 ACP 代码会话（External ACP Code Session）**：
@@ -37,11 +37,11 @@ _Avoid_: 子代理聊天、抽屉
 _Avoid_: Agent
 
 **角色名册（Roster）**：
-多智能体模式开启时装配进 CodeWhale 会话状态根的角色集合，供模型按名字派工。专家池的用户自建卡自动入册。工作模式与原生 Code 都写入自己的会话私有状态根；绑定项目的 Code 会话不会在用户项目中创建或刷新 `.codewhale/agents/`。项目中若已有旧版本留下的 `exp-*` 文件，本期不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。
+供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。
 _Avoid_: 团队、卡池
 
 **CodeWhale 执行根与状态根（Execution Root / Subagent State Root）**：
-执行根是父模型与子智能体实际执行任务的目录；原生 Code 绑定项目后使用用户项目。状态根承载 delegated-agent 的 `.codewhale` 配置、账本、transcript 与协调锁；绑定项目的 Code 会话通过 `EngineConfig.subagent_state_root` 把它固定到会话私有目录。分离只隔离控制面，不改变子智能体 cwd 或对项目文件的写权限：只读并行任务和串行的“修改→测试→审查”接力可共享执行根；同一 Git 仓库的并行写入仍必须使用 worktree，无法准备时改为串行。
+执行根是父模型与子智能体实际执行任务的目录；原生 Code 绑定项目后使用用户项目。状态根只承载 delegated-agent 账本、transcript、协调锁等运行状态，不是专家配置目录；绑定项目的 Code 会话通过 `EngineConfig.subagent_state_root` 把它固定到会话私有目录。分离只隔离控制面，不改变子智能体 cwd 或对项目文件的写权限：只读并行任务和串行的“修改→测试→审查”接力可共享执行根；同一 Git 仓库的并行写入仍必须使用 worktree，无法准备时改为串行。
 _Avoid_: 子智能体专属项目目录
 
 **只读/执行（权限档）**：

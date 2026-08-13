@@ -394,14 +394,15 @@ pub fn run() {
             });
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
-            let code_session_agents =
+            let (code_session_agents, acp_pool_for_capabilities) =
                 match crate::features::codex_acp::AcpPool::new(handle.clone(), store_for_engine.clone())
                 {
                     Ok(pool) => {
                         let agents = pool.agents().clone();
+                        let capability_pool = pool.clone();
                         handle.manage(pool);
                         eprintln!("[pinvou3-app] Codex ACP pool ready (lazy spawn per session)");
-                        agents
+                        (agents, capability_pool)
                     }
                     Err(error) => {
                         panic!("failed to init Codex ACP pool: {error:#}");
@@ -457,6 +458,11 @@ pub fn run() {
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
                     }));
+                    pool.bridge
+                        .set_external_acp_session_predicate(std::sync::Arc::new({
+                            let acp_pool = acp_pool_for_capabilities.clone();
+                            move |session_id: &str| acp_pool.is_acp(session_id)
+                        }));
                     // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
                     // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
                     store_for_engine.set_code_session_predicate(std::sync::Arc::new({

@@ -63,12 +63,11 @@ impl SessionPolicy {
         self.mode
     }
 
-    /// Whether Pinvou may expose its opt-in multi-agent mode for this session.
+    /// Whether this product mode supports Pinvou's opt-in multi-agent mode.
     ///
-    /// Work and native Code sessions both support the product mode. Code keeps
-    /// its project as the execution root while delegated state and expert
-    /// profiles are rooted in the session-private ledger directory.
-    pub fn multi_agent_mode_available(&self) -> bool {
+    /// This policy owns only the plain/code product axis. The bridge combines
+    /// it with the native/external-ACP runtime axis before exposing capability.
+    pub fn supports_multi_agent_mode(&self) -> bool {
         matches!(self.mode, SessionMode::Plain | SessionMode::Code)
     }
 
@@ -140,7 +139,7 @@ mod tests {
     fn code_policy_uses_code_scope_and_hides_artifact() {
         let policy = SessionPolicy::for_mode(SessionMode::Code);
         assert_eq!(policy.mode(), SessionMode::Code);
-        assert!(policy.multi_agent_mode_available());
+        assert!(policy.supports_multi_agent_mode());
         assert_eq!(policy.connector_scope(), ConnectorScope::Code);
         // load_skill 不在恒隐藏列表：其隐藏与否由组合目录空否动态决定
         // （bridge::shape_disallowed_tools，V-5 联动）。
@@ -157,7 +156,7 @@ mod tests {
     fn plain_policy_uses_plain_scope_and_hides_git() {
         let policy = SessionPolicy::for_mode(SessionMode::Plain);
         assert_eq!(policy.mode(), SessionMode::Plain);
-        assert!(policy.multi_agent_mode_available());
+        assert!(policy.supports_multi_agent_mode());
         assert_eq!(policy.connector_scope(), ConnectorScope::Plain);
         assert!(policy.extra_hidden_tools().is_empty());
         // 运行行为语义方法：plain 不绑项目目录、不用代码层 instructions

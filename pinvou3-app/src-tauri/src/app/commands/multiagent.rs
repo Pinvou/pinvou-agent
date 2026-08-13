@@ -9,6 +9,7 @@
 
 use super::prelude::*;
 
+use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::multiagent;
 
 /// 多智能体模式的每轮委派提醒（拼在用户消息之前，chat 发送链注入）。
@@ -34,9 +35,7 @@ use crate::features::multiagent;
 ///   避免角色默认步数截断有效工作；工作模式使用直属并行 4 / 全树准入 8。
 /// - Git 与子智能体工作区策略沿用普通对话语义，由父模型按任务自主决定；App
 ///   不把每个会话强制 git 化，也不封禁底座已有的 worktree 能力。
-pub(crate) fn delegation_reminder(task: &str) -> String {
-    // 底座预载可执行专家的完整 profile；父模型每轮只收到与当前任务相关的短候选。
-    let roles = multiagent::roster::available_role_lines(task);
+fn delegation_reminder_with_roles(roles: Vec<String>) -> String {
     let roster_block = if roles.is_empty() {
         "（本轮未匹配到合适专家，可不带 `profile` 裸派）".to_string()
     } else {
@@ -101,27 +100,54 @@ pub(crate) fn delegation_reminder(task: &str) -> String {
     )
 }
 
-fn prepend_delegation_reminder_when_enabled(enabled: bool, task: &str, content: String) -> String {
-    if !enabled {
-        return content;
-    }
-    format!("{}\n\n---\n\n{content}", delegation_reminder(task))
+#[cfg(test)]
+fn delegation_reminder(task: &str) -> String {
+    let snapshot = ExpertRosterSnapshot::capture();
+    delegation_reminder_with_roles(snapshot.available_role_lines(task))
 }
 
-/// 给一次会话交互的用户 turn 统一追加多智能体提醒。普通发送、编辑重发
-/// 与方案接受都必须走这里，避免某条旁路退回主代理亲自执行。`task` 只用于筛选
-/// 本轮专家，`content` 是实际发给模型的完整内容；展示/落盘消息由调用方另传。
-pub(crate) fn prepend_delegation_reminder(
+/// 一次普通多智能体 turn 的模型内容与专家配置必须共用同一个快照。
+/// `None` 表示普通/不可用会话：内容逐字保持不变，Engine route 也不得注入专家。
+pub(crate) struct PreparedDelegationTurn {
+    pub content: String,
+    pub expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+}
+
+pub(crate) fn prepare_delegation_turn(
     pool: &EnginePool,
     session_id: &str,
     enabled: bool,
     task: &str,
     content: String,
+) -> PreparedDelegationTurn {
+    if !enabled || !pool.multi_agent_mode_available(session_id) {
+        return PreparedDelegationTurn {
+            content,
+            expert_snapshot: None,
+        };
+    }
+    let snapshot = ExpertRosterSnapshot::capture();
+    let reminder = delegation_reminder_with_roles(snapshot.available_role_lines(task));
+    PreparedDelegationTurn {
+        content: format!("{reminder}\n\n---\n\n{content}"),
+        expert_snapshot: Some(snapshot),
+    }
+}
+
+/// `EditLastTurn` 是底座定义的“用 Engine 上一轮已安装 route 重放”，操作本身
+/// 不携带新 route。这里故意不给它展示动态候选，避免 Persona CRUD 后出现新提醒
+/// 配旧名册；仍保留委派规则，并明确使用不带 profile 的裸派路径。
+pub(crate) fn prepend_delegation_replay_reminder(
+    pool: &EnginePool,
+    session_id: &str,
+    enabled: bool,
+    content: String,
 ) -> String {
-    if !pool.multi_agent_mode_available(session_id) {
+    if !enabled || !pool.multi_agent_mode_available(session_id) {
         return content;
     }
-    prepend_delegation_reminder_when_enabled(enabled, task, content)
+    let reminder = delegation_reminder_with_roles(Vec::new());
+    format!("{reminder}\n\n---\n\n{content}")
 }
 
 /// 多智能体会话私有的 CodeWhale delegated-agent 状态根。
@@ -179,21 +205,7 @@ pub async fn read_subagent_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::{delegation_reminder, prepend_delegation_reminder_when_enabled};
-
-    #[test]
-    fn turn_content_prepends_delegation_only_when_enabled() {
-        let content = "请审查当前实现".to_string();
-        assert_eq!(
-            prepend_delegation_reminder_when_enabled(false, &content, content.clone()),
-            content,
-            "关闭多智能体时必须保持原消息逐字不变"
-        );
-
-        let wrapped = prepend_delegation_reminder_when_enabled(true, &content, content.clone());
-        assert!(wrapped.starts_with("本会话已开启多智能体模式"));
-        assert!(wrapped.ends_with(&format!("---\n\n{content}")));
-    }
+    use super::delegation_reminder;
 
     /// 每轮提醒教的是**强制委派任务、父模型只统筹**（ADR-0006）：只教裸
     /// `agent` 集群，单任务至少一个、可拆任务尽量拆、父模型亲自协调汇总。

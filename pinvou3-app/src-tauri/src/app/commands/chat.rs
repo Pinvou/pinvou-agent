@@ -217,13 +217,14 @@ pub(crate) async fn chat_with_reservation(
     let mode_state = store.mode_state(&sid);
     // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用提醒组装；每轮
     // 重申而非首轮一次性教学，关掉开关即保持原消息不变。
-    full = super::multiagent::prepend_delegation_reminder(
+    let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool,
         &sid,
         mode_state.multi_agent,
         &raw_message,
         full,
     );
+    full = prepared_delegation.content;
     let mode = mode_state.mode;
     let send_started_at = std::time::Instant::now();
     crate::features::assistant::timing::start_turn(&sid);
@@ -240,6 +241,7 @@ pub(crate) async fn chat_with_reservation(
             user_display_message(display_content.clone()),
             mode.to_app_mode(),
             restrict_tools.unwrap_or(false),
+            prepared_delegation.expert_snapshot,
             reservation,
         )
         .await

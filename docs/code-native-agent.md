@@ -43,7 +43,7 @@
 绑项目目录的核心安全设计：
 
 - **执行根**（LLM 面向）：engine cwd、文件工具相对路径根、shell 执行目录。经 `Pinvou3Bridge` 注入的执行根解析器（共享 AcpPool 那份 `SessionAgentStore` 实例）推导；engine spawn（`engine.rs`）与 shell_workspace（`engine_pool.rs`）两个消费点经 `bridge.session_workspace` 自动同源。
-- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`，Pinvou 专家名册也写入同一私有状态根。
+- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；Pinvou 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
 - 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 或 Pinvou 专家名册写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
 - 例外适配：附件引用在绑项目会话改用绝对路径（相对路径会相对项目根解析落空）。
 
@@ -198,8 +198,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `session_workspace()` 与 `audit_workspace()` 收敛为该接口的字段，调用方按用途
   显式选择，避免新增调用点时把执行根误当账本根写盘（或反之）。
 - Engine 配置把 `workspace` 设为 `execution`，把 `subagent_state_root` 设为 `ledger`；
-  多智能体专家名册与 transcript 同样只读写 `ledger`，因此绑定项目的 Code 会话不会
-  在项目中生成 `.codewhale/agents/`，而子智能体仍能在真实项目目录完成任务。
+  delegated-agent transcript 与协调状态只读写 `ledger`。多智能体专家名册由全局专家池转换为
+  原生 `fleet.profiles` 随配置提供，不在项目或会话目录生成 `.codewhale/agents/`；个人与项目
+  profile 仍按 CodeWhale 原生优先级加载并允许同名覆盖，而子智能体始终在真实项目目录完成任务。
 
 ### 8.3 代码会话工具开关（双 scope）
 

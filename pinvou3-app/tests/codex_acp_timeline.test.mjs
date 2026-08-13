@@ -600,16 +600,29 @@ try {
     && codexView.includes('<ComposerKbSelector')
     && codexView.includes('<ComposerToolMenu')
     && codexView.includes('multiAgentEnabled={nativeMultiAgentEnabled}')
+    && codexView.includes('multiAgentAvailable={nativeMultiAgentAvailable}')
     && codexView.includes('onToggleMultiAgent={switchNativeMultiAgent}')
     && codexView.includes('triggerTestId="native-tools"')
     && codexView.includes('scope="code"')
     && codexView.includes('mountedId={nativeMountedId}')
     && codexView.includes('data-testid="codex-voice-input"'),
   'the native lane must mount the shared composer controls (work/design style) plus the voice input button behind the native-agent gate');
-  assert.ok(codexView.includes('<SubagentTranscriptPanel')
+  assert.ok(codexView.includes('renderToolItem={isNativeAgent')
+    && !codexView.includes('renderToolItem={isNativeAgent && nativeMultiAgentEnabled')
+    && codexView.includes('{subagentPanel && activeSession && isNativeAgent && (')
+    && !codexView.includes('{subagentPanel && activeSession && isNativeAgent && nativeMultiAgentEnabled && (')
+    && codexView.includes("if (typeof window === 'undefined' || !isNativeAgent) return undefined;")
+    && codexView.includes('<SubagentTranscriptPanel')
     && codexView.includes("window.addEventListener('pinvou:open-subagent'")
     && codexView.includes('<ToolCard'),
-  'the native lane must open persisted delegated-agent conversations from timeline tool cards');
+  'the native lane must always expose factual delegated-agent cards and transcripts; product mode only controls the Pinvou roster and reminder');
+  const interactionCommands = readFileSync(
+    path.join(root, 'src-tauri', 'src', 'app', 'commands', 'interaction.rs'),
+    'utf8',
+  );
+  assert.ok(interactionCommands.includes('multi_agent_available: pool.multi_agent_mode_available(&session_id)')
+    && codexView.includes('multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available)'),
+  'the native multi-agent control must consume the backend SessionPolicy availability instead of a literal UI capability');
   // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，
   // 代码页卸载（切模式/视图）前必须取消进行中的录音/转写，否则识别结果可能写回
   // 已卸载组件（草稿态 null→null 时守卫放行并显示「已完成」但文本丢失）。
@@ -650,6 +663,10 @@ try {
     && /applyNativeDraftControls\(sessionId\)[\s\S]{0,1400}set_multi_agent_mode[\s\S]{0,250}setNativeDraftControls\(\{\}\)/.test(codexView)
     && /const created = await createSession\(draftWorkspacePath\)[\s\S]{0,180}await applyNativeDraftControls\(targetId\)/.test(codexView),
   'draft-state control selections, including multi-agent mode, must be applied after session creation and before first send');
+  assert.ok(
+    /await applyNativeDraftControls\(targetId\);[\s\S]{0,520}await refreshNativeControls\(targetId\);[\s\S]{0,1800}await invoke\('chat'/.test(codexView),
+    'a newly created native session must refresh authoritative multi-agent state after applying draft controls and before its first turn',
+  );
   assert.ok(codexView.includes('nativeControlsSessionRef.current === activeId'),
   'session control state must be scoped to its owning session to avoid cross-session flashes');
   assert.ok(/refreshNativeControls\(sessionId\)[\s\S]{0,900}sessionId !== activeIdRef\.current[\s\S]{0,100}return controls/.test(codexView),

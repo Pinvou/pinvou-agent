@@ -65,6 +65,8 @@ test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根',
   const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
   const tools = read('src', 'features', 'tools', 'tool-renderers.jsx');
   const commands = read('src-tauri', 'src', 'app', 'commands', 'multiagent.rs');
+  const interaction = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
+  const appRoot = read('src-tauri', 'src', 'lib.rs');
   const policy = read('src-tauri', 'src', 'features', 'assistant', 'session_policy.rs');
   const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
   const engine = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
@@ -86,8 +88,18 @@ test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根',
   );
   assert.match(
     policy,
-    /pub fn multi_agent_mode_available\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
+    /pub fn supports_multi_agent_mode\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
     'Work/Plain 与原生 Code 都开放 Pinvou 多智能体产品能力',
+  );
+  assert.match(
+    bridge,
+    /pub fn multi_agent_mode_available[\s\S]{0,500}!external_acp && self\.session_policy\(session_id\)\.supports_multi_agent_mode\(\)/,
+    '最终能力必须同时检查产品模式与原生/外部 ACP 运行时轴',
+  );
+  assert.match(
+    appRoot,
+    /set_external_acp_session_predicate[\s\S]{0,300}acp_pool\.is_acp\(session_id\)/,
+    '外部 ACP 判定必须由进程内同一份 AcpPool 注入，不能靠前端隐藏入口',
   );
   assert.match(
     bridge,
@@ -97,10 +109,20 @@ test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根',
   assert.ok(builderStart >= 0 && builderEnd > builderStart, '必须保留多智能体专用配置入口');
   assert.match(
     multiAgentBuilder,
-    /let roster_root = roots\.ledger\.clone\(\)[\s\S]{0,700}enroll_expert_roles\(&roster_root\)[\s\S]{0,1600}FleetRoster::load\([\s\S]{0,160}&roster_root/,
-    '专家文件必须写入并从会话 ledger 加载，不得投影进 Code 项目',
+    /FleetRoster::load\([\s\S]{0,120}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    '初始名册必须合并全局专家配置与真实 execution workspace',
   );
-  assert.match(engine, /session_policy\(session_id\)[\s\S]{0,120}\.multi_agent_mode_available\(\)/);
+  assert.doesNotMatch(
+    multiAgentBuilder,
+    /enroll_expert_roles|roots\.ledger/,
+    '多智能体配置不得再向会话 ledger 写入或从中加载专家 TOML',
+  );
+  assert.match(
+    bridge,
+    /build_multi_agent_dt_config[\s\S]{0,500}config\.fleet = Some\(snapshot\.fleet_config\(\)\.clone\(\)\)/,
+    '全局专家池必须通过 CodeWhale 原生 fleet profiles 进入每轮配置',
+  );
+  assert.match(engine, /bridge\.multi_agent_mode_available\(session_id\)/);
   assert.match(pool, /if enabled && !self\.multi_agent_mode_available\(session_id\)/);
   assert.match(
     commands,
@@ -108,9 +130,46 @@ test('Pinvou 多智能体接入 Work 与原生 Code，并隔离 Code 状态根',
     'Code transcript 必须读取会话私有状态根，不得读取项目目录',
   );
   assert.match(codex, /multiAgentEnabled=\{nativeMultiAgentEnabled\}/);
+  assert.match(codex, /multiAgentAvailable=\{nativeMultiAgentAvailable\}/);
   assert.match(codex, /onToggleMultiAgent=\{switchNativeMultiAgent\}/);
+  assert.match(
+    interaction,
+    /multi_agent_available:\s*pool\.multi_agent_mode_available\(&session_id\)/,
+    'Code 页开关可用性必须来自后端会话策略，不能由前端写死',
+  );
+  assert.match(
+    codex,
+    /multiAgentAvailable:\s*Boolean\(modeState && modeState\.multi_agent_available\)/,
+    'Code 页必须消费 get_mode_state 返回的策略能力',
+  );
+  assert.match(
+    codex,
+    /nativeMultiAgentEnabled\s*=\s*nativeMultiAgentAvailable\s*&&\s*nativeMultiAgentSelected/,
+    '旧状态不得绕过会话策略重新启用多智能体展示',
+  );
+  assert.match(
+    codex,
+    /renderToolItem=\{isNativeAgent\s*\?/,
+    '原生 Code 必须始终把真实 agent 调用交给行内子智能体卡渲染',
+  );
+  assert.doesNotMatch(
+    codex,
+    /renderToolItem=\{isNativeAgent && nativeMultiAgentEnabled/,
+    '产品专家模式关闭后也不能隐藏底座已经实际执行的裸 agent 调用',
+  );
+  assert.match(
+    codex,
+    /subagentPanel && activeSession && isNativeAgent && \(/,
+    '原生 Code 的真实子智能体 transcript 必须始终可打开',
+  );
+  assert.doesNotMatch(
+    codex,
+    /subagentPanel && activeSession && isNativeAgent && nativeMultiAgentEnabled/,
+    '产品专家模式关闭后不得隐藏既有 transcript',
+  );
   assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
   assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
-  assert.match(tools, /detail: \{ agentId: agentId \|\| null, sessionId: sessionId \|\| null \}/);
+  assert.match(tools, /if \(typeof window === 'undefined' \|\| !agentId\) return;/);
+  assert.match(tools, /detail: \{ agentId, sessionId: sessionId \|\| null \}/);
   assert.match(tools, /listSubagentTranscripts\(sid\)/);
 });

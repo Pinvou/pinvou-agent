@@ -148,6 +148,7 @@ CodeWhale fork 只提供这些产品能力不可缺少的底座生命周期入�
 ### v0.9.5 新增适配
 
 - `EngineConfig` 新增 `subagent_state_root`；父仓按 `SessionRoots` 显式设置：执行根保持任务目录，delegated-agent 状态根使用会话 ledger。
+- Pinvou 全局专家池通过原生 `fleet.profiles` 配置提供给 Engine；不再借 `subagent_state_root` 或每会话角色文件承载专家定义，个人/项目 profile 的原生覆盖优先级保持不变。
 - 已删除的旧 `hidden_tools` 字段不再恢复；Pinvou 原有动态隐藏行为本就通过 `disallowed_tools` 完成。
 - v0.9.5 WorldState 40 KiB fragment cap 只对 Permissions 做 100 KiB 窄例外，其他 fragment 不变。
 - v0.9.5 workspace crate 拆分引起父仓 `Cargo.lock` 重算，未增加 Pinvou 直接依赖。

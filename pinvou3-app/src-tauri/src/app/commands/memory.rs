@@ -550,11 +550,10 @@ pub async fn edit_last_turn(
         .reserve_turn(&sid)
         .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
     let mode_state = store.mode_state(&sid);
-    let full = super::multiagent::prepend_delegation_reminder(
+    let full = super::multiagent::prepend_delegation_replay_reminder(
         pool.inner(),
         &sid,
         mode_state.multi_agent,
-        &new_message,
         new_message.clone(),
     );
     let display_message = user_display_message(new_message);

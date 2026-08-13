@@ -4,8 +4,8 @@ import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { expertDelegationText, isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
 import {
-  extractSubagentId,
   resolveSubagentPresentation,
+  resolveSubagentSpawnResult,
   subagentRoleOrdinals,
   subagentTreeIsDone,
   visibleSubagentDescendantRows,
@@ -153,9 +153,9 @@ function watchExpertCard(sessionId, agentId) {
 }
 
 function openSubagentTranscript(agentId, sessionId) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !agentId) return;
   window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
-    detail: { agentId: agentId || null, sessionId: sessionId || null },
+    detail: { agentId, sessionId: sessionId || null },
   }));
 }
 
@@ -212,10 +212,12 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
 const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const copy = t.uiMultiAgent;
   const args = item.args || {};
-  const agentId = extractSubagentId(item.output);
+  const spawnResult = resolveSubagentSpawnResult(item);
+  const { agentId } = spawnResult;
   const spawnText = expertDelegationText(args);
   const isDelegation = isExpertDelegationCall(item.name, args);
-  const failedSpawn = item.state === 'failed';
+  const failedSpawn = spawnResult.failed;
+  const canOpenTranscript = !!agentId && !failedSpawn;
   const sessionId = sessionIdProp || activeExpertSessionId();
   const sessionSnapshot = expertLedgerSnapshots.get(sessionId);
 
@@ -327,14 +329,17 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
     <div data-testid="expert-agent-tree" className="my-1 w-full max-w-[520px]">
       <div
         data-testid="expert-agent-card"
-        className={`flex w-full items-center rounded-[12px] border px-2 py-1.5 transition-colors ${
-          'border-[#E5E5EA] bg-white hover:bg-[#F2F2F7] dark:border-[#38383A] dark:bg-[#1C1C1E] dark:hover:bg-[#2C2C2E]'
+        className={`flex w-full items-center rounded-[12px] border border-[#E5E5EA] bg-white px-2 py-1.5 transition-colors dark:border-[#38383A] dark:bg-[#1C1C1E] ${
+          canOpenTranscript ? 'hover:bg-[#F2F2F7] dark:hover:bg-[#2C2C2E]' : ''
         }`}
       >
         <button
           type="button"
-          onClick={() => openSubagentTranscript(agentId, sessionId)}
-          className="flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left"
+          disabled={!canOpenTranscript}
+          onClick={canOpenTranscript ? () => openSubagentTranscript(agentId, sessionId) : undefined}
+          className={`flex min-w-0 flex-1 items-center gap-2.5 px-1 py-0.5 text-left ${
+            canOpenTranscript ? 'cursor-pointer' : 'cursor-default'
+          }`}
         >
           <AppIcon
             card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
