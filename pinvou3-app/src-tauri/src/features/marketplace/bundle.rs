@@ -126,10 +126,18 @@ impl BundleRegistry {
         let mut out: Vec<BundleInfo> = Vec::new();
         // 已被 MCP/凭据型包认领的技能 id（ima-skills 须在预置扫描前声明，避免先独立成包）
         let mut skill_claimed: Vec<String> = vec!["ima-skills".to_string()];
+        let installed_mcp_ids = self.mcp_manager.installed_ids();
 
         // 1) MCP 源（含组合包；凭据项从 manifest config_fields/secret_env 收敛）
         for tool in self.mcp_manager.available_tools() {
-            let companions = tool.companion_skills.clone();
+            // 修复方案 V5：companion 认领是「随包」语义——包本体已装才认领技能；
+            // 存量已单装技能的包未装时，技能保留独立纯技能包形态（不强制认领，
+            // 只影响新装路径），避免用户既有开关/技能消失。
+            let companions: Vec<String> = if installed_mcp_ids.contains(&tool.id) {
+                tool.companion_skills.clone()
+            } else {
+                Vec::new()
+            };
             skill_claimed.extend(companions.iter().cloned());
             let credentials = tool_credentials(&tool);
             out.push(BundleInfo {
@@ -144,7 +152,7 @@ impl BundleRegistry {
                 skills: companions,
                 cli: Vec::new(),
                 credentials,
-                installed: self.mcp_manager.installed_ids().contains(&tool.id),
+                installed: installed_mcp_ids.contains(&tool.id),
                 user_uploaded: false,
             });
         }
@@ -367,7 +375,8 @@ mod tests {
     }
 
     /// fixture：临时 home 下构造 mcp-servers manifest + 技能目录 + 上传标记。
-    fn seed_fixture(home: &std::path::Path) {
+    /// `install_gongwen=true` 时把 gongwen 写入 installed.json（V5 认领条件）。
+    fn seed_fixture(home: &std::path::Path, install_gongwen: bool) {
         let write = |rel: &str, content: &str| {
             let p = home.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -404,6 +413,10 @@ mod tests {
             "---\nname: my-upload\n---\n# hi",
         );
         write("bundle/skills/my-upload/.installed-from", "upload:pkg.zip");
+        // 安装态（V5 认领条件）
+        if install_gongwen {
+            write("marketplace/installed.json", r#"["gongwen"]"#);
+        }
     }
 
     #[test]
@@ -531,7 +544,7 @@ mod tests {
     fn registry_lists_all_source_kinds() {
         with_temp_home(|| {
             let home = std::env::var("PINVOU3_HOME").unwrap();
-            seed_fixture(std::path::Path::new(&home));
+            seed_fixture(std::path::Path::new(&home), true);
             let reg = BundleRegistry::new();
             let bundles = reg.list_bundles();
             // 四类源都存在
@@ -551,15 +564,17 @@ mod tests {
                 bundles.iter().any(|b| b.kind == BundleKind::Cli),
                 "应含 CLI 包"
             );
-            // gongwen 组合包应携带 government-writing 技能
+            // gongwen 已装 → 组合包，携带 government-writing
             let gongwen = bundles
                 .iter()
                 .find(|b| b.id == "gongwen")
                 .expect("gongwen 应存在");
+            assert_eq!(gongwen.kind, BundleKind::Bundle, "gongwen 已装应为组合包");
             assert!(
                 gongwen.skills.contains(&"government-writing".to_string()),
                 "gongwen 应携带 government-writing"
             );
+            assert!(gongwen.installed);
             // government-writing 不应再以独立技能包出现（已被认领）
             assert!(
                 !bundles
@@ -606,6 +621,32 @@ mod tests {
             ids.sort_unstable();
             ids.dedup();
             assert_eq!(ids.len(), bundles.len(), "包 id 必须唯一");
+        });
+    }
+
+    /// V5：包本体未装时 companion 技能保留独立纯技能包形态（存量单装兼容）。
+    #[test]
+    fn uninstalled_bundle_keeps_companion_skill_independent() {
+        with_temp_home(|| {
+            let home = std::env::var("PINVOU3_HOME").unwrap();
+            seed_fixture(std::path::Path::new(&home), false);
+            let reg = BundleRegistry::new();
+            let bundles = reg.list_bundles();
+            // gongwen 未装 → 纯 MCP 包（不认领）
+            let gongwen = bundles
+                .iter()
+                .find(|b| b.id == "gongwen")
+                .expect("gongwen 应存在");
+            assert_eq!(gongwen.kind, BundleKind::Mcp, "gongwen 未装应为纯 MCP 包");
+            assert!(gongwen.skills.is_empty(), "未装包不得认领技能");
+            assert!(!gongwen.installed);
+            // government-writing 保留独立技能包（存量单装可继续开关）
+            let skill = bundles
+                .iter()
+                .find(|b| b.id == "government-writing")
+                .expect("government-writing 应独立成包");
+            assert_eq!(skill.kind, BundleKind::Skill);
+            assert!(skill.installed, "存量单装技能保持已装态");
         });
     }
 }
