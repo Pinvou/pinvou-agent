@@ -260,6 +260,16 @@ assert.match(
   /const sessionId = createVoiceSessionId\(current\.targetId\);[\s\S]*?voiceSessionIdRef\.current = sessionId;[\s\S]*?setVoiceSessionId\(sessionId\);/,
   "shared composer voice hook must create a voiceSessionId when recording starts",
 );
+assert.doesNotMatch(
+  voiceHookSource.match(/function createVoiceSessionId[\s\S]*?\n\}/)?.[0] || "",
+  /Math\.random/,
+  "voiceSessionId must not use Math.random because it guards stale cross-target voice writes",
+);
+assert.match(
+  voiceHookSource,
+  /cryptoApi\.randomUUID|cryptoApi\.getRandomValues/,
+  "voiceSessionId must prefer Web Crypto randomness",
+);
 assert.match(
   voiceHookSource,
   /if \(!targetId \|\| !isActiveVoiceTarget\(targetId, sessionId\)\) \{[\s\S]*?clearStaleVoiceState\(targetId, sessionId\);[\s\S]*?return;/,

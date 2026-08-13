@@ -18,9 +18,24 @@ function activeStatus(status) {
     || status === 'postprocessing';
 }
 
+let fallbackVoiceSessionCounter = 0;
+
+function createVoiceSessionRandomPart() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID();
+  }
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+    const values = new Uint32Array(2);
+    cryptoApi.getRandomValues(values);
+    return `${values[0].toString(36)}${values[1].toString(36)}`;
+  }
+  fallbackVoiceSessionCounter += 1;
+  return `fallback-${Date.now().toString(36)}-${fallbackVoiceSessionCounter.toString(36)}`;
+}
+
 function createVoiceSessionId(targetId) {
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${targetId || 'voice'}:${Date.now().toString(36)}:${random}`;
+  return `${targetId || 'voice'}:${Date.now().toString(36)}:${createVoiceSessionRandomPart()}`;
 }
 
 function trimDraft(value) {
