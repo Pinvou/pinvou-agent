@@ -36,8 +36,11 @@ case "$(uname -s)" in
     if [ ! -f "$exe" ] || [ "$src" -nt "$exe" ]; then
       # 显式 cygpath 转 Windows 原生路径,避免 MSYS 对 /c/... 的自动转换
       # 在 rustc 参数位不可靠。
-      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$exe")" 2>/dev/null; then
-        exit 0 # 编译失败(如无 rustc):透传不注入
+      # 编译失败即报错终止:Windows 栈溢出已实证,静默退回"不注入"会把 wrapper
+      # 构建失败重新表现为难诊断的 rustc 栈溢出。
+      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$exe")"; then
+        echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
+        exit 1
       fi
     fi
     cygpath -m "$exe"

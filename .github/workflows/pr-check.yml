@@ -794,6 +794,7 @@ jobs:
       - release-contract-test
       - rust-lint
       - rust-test
+      - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -811,6 +812,7 @@ jobs:
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
@@ -833,6 +835,7 @@ jobs:
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
