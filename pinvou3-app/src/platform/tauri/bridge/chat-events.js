@@ -240,12 +240,8 @@
   // 只是包了一层路由,所以 active session 行为零变化。
   function isInternalRuntimeUserMessage(value) {
     var text = String(value || "").trim();
-    var event = text.match(/^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>[\s\S]*?<\/codewhale:runtime_event>/i);
-    if (!event) return false;
-    var trailing = text.slice(event[0].length).trim();
-    return !trailing ||
-      /^<turn_meta>[\s\S]*<\/turn_meta>$/i.test(trailing) ||
-      /^<turn_meta_unchanged\s*\/>$/i.test(trailing);
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   function applyRemoteUserMessageEvent(e, force) {
@@ -632,7 +628,9 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
+    var outForCard = (meta && meta.name === "load_skill")
+      ? bt("skillContentHidden")
+      : context.toolResultDisplayContent(p.output);
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {

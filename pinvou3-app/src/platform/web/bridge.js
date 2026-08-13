@@ -3162,6 +3162,35 @@
     return "";
   }
 
+  // CodeWhale may append model-only recovery guidance to a persisted tool result
+  // to preserve strict provider role ordering. Keep that guidance in durable/model
+  // context, but remove only the two known internal suffix kinds from tool cards.
+  function stripInternalToolRuntimeSuffix(value) {
+    var text = String(value == null ? "" : value);
+    var marker = "\n\n<codewhale:runtime_event";
+    while (true) {
+      var start = text.lastIndexOf(marker);
+      if (start < 0) return text;
+      var suffix = text.slice(start + 2);
+      var opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
+      if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
+      var tag = opening[0];
+      var knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
+      var internal = /\bvisibility=(["'])internal\1/i.test(tag);
+      if (!knownKind || !internal) return text;
+      text = text.slice(0, start);
+    }
+  }
+
+  function toolResultDisplayContent(content) {
+    if (typeof content === "string") return stripInternalToolRuntimeSuffix(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (block) {
+      if (!block || typeof block.text !== "string") return block;
+      return Object.assign({}, block, { text: stripInternalToolRuntimeSuffix(block.text) });
+    });
+  }
+
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
   function parsePlanSnapshot(content) {
     var txt = toolResultText(content);
@@ -3326,14 +3355,16 @@
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
-              updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
+              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem({
                 type: "careful_blocked", toolCallId: c.tool_use_id,
                 args: tm.args, metadata: blockedMd, time: "",
               });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
+              var contentForCard = (tm.name === "load_skill")
+                ? bt("skillContentHidden")
+                : toolResultDisplayContent(c.content);
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -4598,12 +4629,8 @@
   // 只是包了一层路由,所以 active session 行为零变化。
   function isInternalRuntimeUserMessage(value) {
     var text = String(value || "").trim();
-    var event = text.match(/^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>[\s\S]*?<\/codewhale:runtime_event>/i);
-    if (!event) return false;
-    var trailing = text.slice(event[0].length).trim();
-    return !trailing ||
-      /^<turn_meta>[\s\S]*<\/turn_meta>$/i.test(trailing) ||
-      /^<turn_meta_unchanged\s*\/>$/i.test(trailing);
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   function applyRemoteUserMessageEvent(e, force) {
@@ -5099,7 +5126,9 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
+    var outForCard = (meta && meta.name === "load_skill")
+      ? bt("skillContentHidden")
+      : toolResultDisplayContent(p.output);
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {

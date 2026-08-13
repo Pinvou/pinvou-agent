@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published baseline plus one candidate PR.
+# CodeWhale v0.9.5 clean re-fork guard: published r6 baseline.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd"
-EXPECTED_HEAD="6cb45cc4ad77ccc0d40c59c3c527e9bbdbb16708"
+PUBLISHED_HEAD="3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02"
+EXPECTED_HEAD="3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02"
 EXPECTED_COMMITS=8
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
@@ -18,12 +18,12 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 公开基线与本地候选拓扑 ──"
+bold "── 第 0 层：v0.9.5 r6 公开拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的本地候选 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记的 r6 公开 head $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，本地候选登记为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，r6 登记为 $EXPECTED_HEAD"
   fail=1
 fi
 
@@ -31,15 +31,15 @@ if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null 
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
   green "  ✓ 维护基线继承官方 v0.9.5"
 else
-  red "  ✗ 本地候选未同时继承官方 v0.9.5 与公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ r6 未同时继承官方 v0.9.5 与公开维护 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个登记提交（含 1 个未合入候选）"
+  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，候选登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r6 登记为 $EXPECTED_COMMITS"
   fail=1
 fi
 
@@ -66,6 +66,7 @@ fingerprints=(
   "T2|嵌套容器修复保持 primitive 不变     |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_schema_bound_json_container_repair_accepts_nested_payload"
   "T2|stuck 告警留在 tool result          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_stuck_guard_warning_is_embedded_in_tool_result_content"
   "T2|stuck 续轮保持 provider 角色合法    |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence"
+  "T2|错误降级提示保持 provider 角色合法  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_tool_error_degradation_preserves_provider_role_sequence"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
@@ -100,7 +101,7 @@ fingerprints=(
   "APP|运行时会话读取不修复在途工具调用      |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call"
   "APP|进程启动显式恢复中断工具调用且幂等    |pinvou3-app/src-tauri/src/features/sessions/mod.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
   "APP|仅进程启动入口触发工具历史恢复        |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
-  "APP|内部 runtime 尾随元数据不展示        |pinvou3-app/src/platform/tauri/bridge/chat-events.js|<turn_meta_unchanged\\s*\\/>"
+  "APP|工具卡隐藏已知内部 runtime suffix    |pinvou3-app/src/platform/tauri/bridge.js|function stripInternalToolRuntimeSuffix("
 )
 
 for fp in "${fingerprints[@]}"; do
