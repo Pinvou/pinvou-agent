@@ -16,6 +16,7 @@
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
+pub(crate) mod behavior_telemetry;
 pub(crate) mod chat;
 pub(crate) mod codex;
 pub(crate) mod connectors;

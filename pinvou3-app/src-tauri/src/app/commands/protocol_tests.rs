@@ -70,6 +70,11 @@ command_protocol!(
     ]
 );
 command_protocol!(attachments_protocol, "attachments.rs", []);
+command_protocol!(
+    behavior_telemetry_protocol,
+    "behavior_telemetry.rs",
+    ["track_behavior_event"]
+);
 command_protocol!(chat_protocol, "chat.rs", ["chat"]);
 command_protocol!(
     connectors_protocol,

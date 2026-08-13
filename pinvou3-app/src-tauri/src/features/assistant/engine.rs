@@ -365,6 +365,14 @@ pub(crate) fn emit_chat_terminal(
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
+fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'static str {
+    match status {
+        TurnOutcomeStatus::Completed if error.is_none() => "success",
+        TurnOutcomeStatus::Interrupted => "interrupted",
+        _ => "failed",
+    }
+}
+
 fn emit_turn_started(app: &AppHandle, session_id: &str) {
     let started_payload = json!({ "session_id": session_id });
     let _ = app.emit("chat:turn_started", started_payload.clone());
@@ -1768,6 +1776,19 @@ fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    crate::features::behavior_telemetry::track(
+                        &app,
+                        crate::features::behavior_telemetry::BehaviorEvent::new("task_started")
+                            .session(&session_id)
+                            .turn(&turn_id)
+                            .input_type("text"),
+                    );
+                    crate::features::behavior_telemetry::track_model_used(
+                        &app,
+                        &session_id,
+                        &turn_id,
+                        &bridge,
+                    );
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
                         log::error!(
                             "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
@@ -1906,6 +1927,13 @@ fn spawn_event_forwarder(
                         &session_id,
                         &name,
                         &tracked_input,
+                        success,
+                    );
+                    crate::features::behavior_telemetry::track_tool_call(
+                        &app,
+                        &session_id,
+                        current_turn_id.as_deref(),
+                        &name,
                         success,
                     );
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
@@ -2710,6 +2738,20 @@ fn spawn_event_forwarder(
                             usage.output_tokens,
                             usage.prompt_cache_hit_tokens,
                             usage.prompt_cache_miss_tokens,
+                        );
+                    }
+                    if let Some(turn_id) = current_turn_id.as_deref() {
+                        crate::features::behavior_telemetry::track(
+                            &app,
+                            crate::features::behavior_telemetry::BehaviorEvent::new(
+                                "task_finished",
+                            )
+                            .session(&session_id)
+                            .turn(turn_id)
+                            .status(behavior_task_status(
+                                terminal_status,
+                                terminal_error.as_deref(),
+                            )),
                         );
                     }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
