@@ -109,7 +109,7 @@
     "test:webui": "npm run build:web && node ../remote-control-relay/test/web-ui.smoke.cjs",
     "test:user-journey": "../scripts/run-user-journey-tests.sh",
     "sync:version": "node ../scripts/sync-version.mjs",
-    "test:markdown": "node tests/markdown_syntax_highlight.test.mjs"
+    "test:markdown": "node tests/markdown_syntax_highlight.test.mjs && node tests/markdown_bridge_fallback_safety.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
