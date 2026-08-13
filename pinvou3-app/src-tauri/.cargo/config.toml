@@ -31,21 +31,23 @@
 #
 # 注意:本文件**不**配置 [build] rustc-wrapper。Cargo 的 rustc-wrapper 是
 # 全局键,无法按平台条件化:Unix 需要无扩展名 shebang 脚本,Windows 需要
-# .cmd 后缀才能走 cmd /C——单一 config 值无法三端两全(Windows 上指向
-# 无扩展名 sh 会直接 os error 193,阻断所有 Cargo 命令)。
+# 可执行文件(.cmd 经 cmd /C 受 8191 字符命令行上限,大型 crate 的 rustc
+# 命令行会超限,故用 .exe 经 CreateProcess 直启,上限 32767)——单一 config
+# 值无法三端两全(Windows 上指向无扩展名 sh 会直接 os error 193,阻断所有
+# Cargo 命令)。
 # 因此 wrapper 由**正式 Cargo 入口按平台注入 RUSTC_WRAPPER 环境变量**
 # (环境变量优先级高于 config 文件,Windows 上同样可靠);平台选择统一走
 # pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh(单一真相源,
 # run-dev.sh 与 rustc-wrapper-smoke 共用,输出空 = 不注入):
 #   - macOS/Linux 开发:pinvou3-app/run-dev.sh 调用 selector,注入
 #     scripts/rustc-stack-wrapper(无扩展名 sh,带 shebang)
-#   - Windows 开发:run-dev.sh 调用 selector,注入
-#     scripts/rustc-stack-wrapper.cmd(经 cmd /C 执行;无扩展名 sh 会
-#     os error 193)
+#   - Windows 开发:run-dev.sh 调用 selector,selector 幂等编译并注入
+#     scripts/rustc-stack-wrapper.exe(经 CreateProcess 直启;无扩展名 sh
+#     会 os error 193)
 #   - CI:pr-check(rust-lint)、mac-build、release-packages
 #     (Linux x64/arm64、macOS universal)注入 sh 版;
 #     release-packages 的 Windows x64 与 pr-check 的 windows-rust-test
-#     注入 .cmd 版
+#     先 rustc 编译 .exe 版再注入
 # 注入的 RUST_MIN_STACK=16MiB 只作用于编译期 rustc 进程;cargo run /
 # cargo test 目标进程不经过 wrapper,运行时线程栈语义(约 2 MiB)不变。
 # 与 rust-lang/rust #160535(默认栈提升到 16 MiB)同方向。
