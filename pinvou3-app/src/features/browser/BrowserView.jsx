@@ -43,7 +43,10 @@ export function BrowserView({ theme, t }) {
       const st = await invokeTauri('browser_status');
       setRunning(!!st.running);
       if (st.url) setUrl(st.url);
-      if (st.activeTab) setActiveSession(st.activeTab);
+      if (st.activeTab) {
+        activeSessionRef.current = st.activeTab;
+        setActiveSession(st.activeTab);
+      }
     } catch {
       setRunning(false);
     }
@@ -87,9 +90,12 @@ export function BrowserView({ theme, t }) {
       }
     }));
     guard(listenTauri('browser:navigation', (e) => {
-      if (e.payload && e.payload.url) {
-        setUrl(e.payload.url);
-        setUrlInput(e.payload.url);
+      // 只对当前激活标签页的导航更新地址栏：后台标签页的 frameNavigated
+      // 不应覆盖地址栏，否则 openExternal 会打开非当前标签页的 URL。
+      const p = e.payload || {};
+      if (p.url && (p.tab == null || activeSessionRef.current == null || p.tab === activeSessionRef.current)) {
+        setUrl(p.url);
+        setUrlInput(p.url);
       }
     }));
     guard(listenTauri('browser:tabs-changed', () => refreshTabs()));

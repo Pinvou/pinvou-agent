@@ -103,8 +103,13 @@ impl CdpSession {
     /// drain pending）。用于 stop()/崩溃重置的兜底：`Browser.close` 失败（wedged）
     /// 且无子进程句柄可 kill 时，至少截断读循环与帧推流，避免资源永久残留。
     pub async fn close(&self) {
-        let mut write = self.write.lock().await;
-        let _ = write.close().await;
+        // 无界 close 握手在 TCP 半开/wedged（写缓冲满）时会永久阻塞；调用方常持
+        // inner/start_mtx 锁，必须限时，否则冻结整个 BrowserManager。
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut write = self.write.lock().await;
+            let _ = write.close().await;
+        })
+        .await;
     }
 }
 
@@ -194,7 +199,10 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
                     method: method.to_string(),
                     params: v.get("params").cloned().unwrap_or(Value::Null),
                 };
-                let _ = events_tx.send(ev);
+                // try_send：有界通道满时丢弃新事件而非阻塞读循环（阻塞会连带卡死
+                // 命令响应与 screencast 握手）。切勿用 `send(ev)` 无 .await 的写法——
+                // 那会直接 drop 未 poll 的 future，导致所有域事件静默丢失。
+                let _ = events_tx.try_send(ev);
             }
         }
         // WebSocket 已关闭：唤醒所有在途请求，避免持有 inner 锁的调用永久挂起

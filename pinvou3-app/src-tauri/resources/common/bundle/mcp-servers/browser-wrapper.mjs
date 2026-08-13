@@ -256,6 +256,8 @@ function startChrome(port) {
     mkdirSync(PROFILE_DIR, { recursive: true });
     const args = [
       `--remote-debugging-port=${port}`,
+      // CDP 无鉴权：显式绑定回环，不依赖各浏览器默认绑定地址。
+      '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${PROFILE_DIR}`,
       'about:blank',
       ...BROWSER_FLAGS,

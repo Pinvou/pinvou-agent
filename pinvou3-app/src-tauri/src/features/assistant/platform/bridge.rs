@@ -1351,6 +1351,13 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // 代码模式（原生代码会话）不暴露 browser MCP 工具：回落全局 mcp.json
+        // （无 browser 条目）。系统提示词 §浏览器能力 与「不可用原因」已按
+        // uses_code_instructions 门控，这里对齐工具注册口径，否则 code 会话会
+        // 拿到未声明的 mcp_browser_* 工具，与「仅工作模式暴露」的约定矛盾。
+        if self.session_policy(session_id).uses_code_instructions() {
+            cfg.mcp_config_path = crate::platform::paths::mcp_config_path();
+        }
         cfg
     }
 

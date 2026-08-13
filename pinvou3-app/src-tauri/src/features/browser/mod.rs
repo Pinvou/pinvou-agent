@@ -812,12 +812,20 @@ async fn run_event_loop(
                     let _ = app.emit("browser:frame", &payload);
                 }
                 "Page.frameNavigated" => {
-                    let url = params
-                        .pointer("/frame/url")
+                    // 只对主 frame 驱动地址栏：iframe 的 frameNavigated 不应覆盖
+                    // 地址栏/导航状态（父 frame 会另发一次主 frame 事件）。
+                    let is_iframe = params
+                        .pointer("/frame/parentId")
                         .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let payload = json!({ "url": url, "tab": session_id });
-                    let _ = app.emit("browser:navigation", &payload);
+                        .is_some();
+                    if !is_iframe {
+                        let url = params
+                            .pointer("/frame/url")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let payload = json!({ "url": url, "tab": session_id });
+                        let _ = app.emit("browser:navigation", &payload);
+                    }
                 }
                 "Target.targetCreated" | "Target.targetDestroyed" => {
                     let payload = json!({ "event": method, "params": params });
@@ -1031,6 +1039,9 @@ fn start_chrome(chrome: &Path, port: u16) -> Result<Child, String> {
     std::fs::create_dir_all(&profile).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
     let mut cmd = Command::new(chrome);
     cmd.arg(format!("--remote-debugging-port={port}"));
+    // CDP 无鉴权、可控制整个浏览器：显式绑定回环，不依赖各浏览器对
+    // --remote-debugging-port 的默认绑定地址（默认虽为 127.0.0.1，显式更稳）。
+    cmd.arg("--remote-debugging-address=127.0.0.1");
     cmd.arg(format!("--user-data-dir={}", profile.display()));
     cmd.args([
         "--no-first-run",
