@@ -142,6 +142,21 @@ async function clickExact(page, text) {
     rec('拖放 zip 触发 import_skill_package_bytes', dropSent.ok, dropSent.why);
     const dropToast = await page.evaluate(() => document.body.innerText.includes('技能包已导入'));
     rec('拖放导入成功弹窗', dropToast);
+
+    // 5. 上传技能可从 UI 卸载(路由必须命中 skill 分支而非通用工具分支)
+    const uninstalled = await page.evaluate(async () => {
+      const rows = [...document.querySelectorAll('div')].filter(el =>
+        (el.textContent || '').includes('my-test-skill') && el.querySelector('button'));
+      const row = rows[rows.length - 1];
+      if (!row) return { ok: false, why: 'no row' };
+      const btn = row.querySelector('button');
+      if (!btn) return { ok: false, why: 'no button' };
+      btn.click();
+      await new Promise(r => setTimeout(r, 600));
+      const call = window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'uninstall_marketplace_skill');
+      return { ok: !!call && call.args.skillId === 'my-test-skill', why: JSON.stringify(call && call.args) };
+    });
+    rec('上传技能可卸载(uninstall_marketplace_skill 命中)', uninstalled.ok, uninstalled.why);
   } finally {
     await browser.close();
   }

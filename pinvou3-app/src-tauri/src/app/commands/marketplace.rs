@@ -515,12 +515,15 @@ pub async fn import_skill_package(
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .import_package(&path.to_string_lossy())
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package(&path.to_string_lossy())?;
+        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        Ok::<String, String>(name)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 导入技能默认加入 code 禁用集（外部能力显式开启），并重写在线会话组合目录。
+    // 重写在线会话组合目录（下一轮 prompt 生效）。
     pool.refresh_live_sessions_skills().await;
     Ok(true)
 }
@@ -565,14 +568,17 @@ pub async fn import_skill_package_bytes(
     ));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
     let tmp_for_import = tmp.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)
+    let name = tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let name = mgr.import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)?;
+        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        Ok::<String, String>(name)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))?;
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
-    result?;
+    name?;
     // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
     pool.refresh_live_sessions_skills().await;
     Ok(true)

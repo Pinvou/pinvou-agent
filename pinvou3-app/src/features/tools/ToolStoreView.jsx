@@ -1492,9 +1492,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const handleAction = async (backendId, isInstalled) => {
         if (!canMutateToolStore) return;
         // 有配套 MCP 的技能(公文=gongwen)→ 改走该 MCP 装卸,skill 作为 companion 随 MCP 联动(两卡同步);
-        // 纯技能(无配套 MCP、无同名工具:如上传技能)才走 handleSkillAction。PPT=pptx 有同名工具,落下方正常工具流。
+        // 纯技能(无配套 MCP、无同名工具:预置技能与用户上传技能)才走 handleSkillAction。
+        // 用 skillCards(含 userUploaded 卡)而非静态 tsSkillsData 判定——上传技能不在静态表里,
+        // 漏判会落到下方通用工具分支报「未知工具」。
         if (skillToMcp[backendId]) backendId = skillToMcp[backendId];
-        else if (tsSkillsData.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
+        else if (skillCards.some(s => s.backendId === backendId) && !tsToolsData.some(t => t.backendId === backendId)) return handleSkillAction(backendId, isInstalled);
         const requestedTool = findLocalizedTool(backendId);
         if (!externalAuthAvailable && isRestrictedExternalAuthTool(requestedTool)) return;
         // 飞书走 CLI 连接流程,不走 marketplace install

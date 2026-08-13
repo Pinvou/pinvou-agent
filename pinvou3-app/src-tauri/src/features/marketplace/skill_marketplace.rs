@@ -297,7 +297,8 @@ impl SkillMarketplaceManager {
 
     /// 导入用户上传的 zip 技能包:解压找 SKILL.md → 安全校验 → 落盘到
     /// `bundle/skills/<name>/`。穿越/symlink/大小防护对齐底座 install.rs。
-    pub fn import_package(&self, zip_path: &str) -> Result<(), String> {
+    /// 返回落盘技能名(frontmatter name),供命令层同步 scope 禁用集。
+    pub fn import_package(&self, zip_path: &str) -> Result<String, String> {
         let fname = Path::new(zip_path)
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -308,7 +309,7 @@ impl SkillMarketplaceManager {
     /// `display_name` 仅写入 `.installed-from=upload:<display_name>` 标记
     /// (保留用户原始 zip 名,便于卸载提示),其余行为与 `import_package` 一致。
     /// 拖放字节通道落临时文件导入时,zip 名已丢,由命令层传入净化后的展示名。
-    pub fn import_package_named(&self, zip_path: &str, display_name: &str) -> Result<(), String> {
+    pub fn import_package_named(&self, zip_path: &str, display_name: &str) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -441,7 +442,7 @@ impl SkillMarketplaceManager {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
-        Ok(())
+        Ok(name)
     }
 }
 
