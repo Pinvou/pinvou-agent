@@ -551,8 +551,13 @@ jobs:
     # (GitHub 默认 6h,此处收紧到 45min,与 mac-build 的 50min 量级一致)。
     timeout-minutes: 45
     env:
-      # 同 rust-lint:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
-      RUSTC_WRAPPER: sccache
+      # sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
+      # 经 rustc-stack-wrapper 链式调用 sccache:先把 RUST_MIN_STACK=16MiB 注入
+      # 编译期 rustc 进程(规避 codewhale-tui O2 编译的栈溢出/SIGBUS,三端同源风险),
+      # 再交给 sccache 缓存。必须用 ${{ github.workspace }} 绝对路径(Cargo 按进程
+      # cwd 解析 RUSTC_WRAPPER 相对路径会双拼成不存在的路径)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      RUSTC_WRAPPER_CHAIN: sccache
       SCCACHE_GHA_ENABLED: "true"
       # PR 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
       SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -680,8 +685,13 @@ jobs:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
       AWS_LC_SYS_PREBUILT_NASM: "1"
-      # 同 rust-test:sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
-      RUSTC_WRAPPER: sccache
+      # sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
+      # 经 rustc-stack-wrapper.cmd 链式调用 sccache:先把 RUST_MIN_STACK=16MiB 注入
+      # 编译期 rustc 进程(规避 codewhale-tui O2 编译的栈溢出,三端同源风险),
+      # 再交给 sccache 缓存。Windows 上 Cargo 执行 wrapper 需 .cmd 后缀才能走
+      # cmd /C;必须用 ${{ github.workspace }} 绝对路径(避免按 cwd 双拼解析)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd
+      RUSTC_WRAPPER_CHAIN: sccache
       SCCACHE_GHA_ENABLED: "true"
       # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
       SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}

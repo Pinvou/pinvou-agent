@@ -155,3 +155,27 @@ jobs:
           CARGO_TERM_COLOR=never cargo test 2>&1 | tee cargo-test.log
           grep -q "compiler_stack_contract" cargo-test.log
           grep -q "test result: ok" cargo-test.log
+
+      # 5) 链式 wrapper(RUSTC_WRAPPER_CHAIN,如 sccache):验证 wrapper 先注入
+      #    RUST_MIN_STACK、再委托给链上命令执行(pr-check.yml 的 rust-test /
+      #    windows-rust-test 用此链保留 sccache 缓存 + 栈注入两全)。
+      #    Unix 用 `env` 充当链上命令直接观测注入结果;Windows 静态断言链分支
+      #    存在(cmd 嵌套引号在 Git Bash/MSYS 下会被路径转换破坏)。
+      - name: 链式 wrapper —— 委托链上命令且仍注入 16 MiB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper" . 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd" . 2>/dev/null || true
+          chmod +x rustc-stack-wrapper 2>/dev/null || true
+          unset RUST_MIN_STACK
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            grep -q "RUSTC_WRAPPER_CHAIN" rustc-stack-wrapper.cmd
+            grep -q "set RUST_MIN_STACK=16777216" rustc-stack-wrapper.cmd
+          else
+            # `env env`:链上命令 `env` 执行参数中的 `env`(无参),打印当前环境,
+            # 应包含经 wrapper 注入的 RUST_MIN_STACK=16777216。
+            RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper env | grep -q "^RUST_MIN_STACK=16777216$"
+          fi

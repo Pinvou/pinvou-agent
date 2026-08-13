@@ -23,4 +23,11 @@
 # cmd /C(见 rustc-stack-wrapper.cmd);Windows 无 SIGBUS 触发(仅 macOS
 # 实测),本地透传即可,CI 的 Windows 发布 job 注入 .cmd 版本。
 export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+# 链式 wrapper(如 sccache):cargo 调用 `$RUSTC_WRAPPER rustc <args>` 时,若设置了
+# RUSTC_WRAPPER_CHAIN,则在本脚本之后插入该命令,形成
+# cargo → 本脚本 → RUSTC_WRAPPER_CHAIN → rustc。这样既能保留 sccache 缓存,
+# 又把 RUST_MIN_STACK 只注入到编译期 rustc 进程(不泄漏到 cargo run/test 目标)。
+if [ -n "${RUSTC_WRAPPER_CHAIN:-}" ]; then
+  exec "${RUSTC_WRAPPER_CHAIN}" "$@"
+fi
 exec "$@"
