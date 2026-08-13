@@ -685,12 +685,14 @@ jobs:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
       AWS_LC_SYS_PREBUILT_NASM: "1"
-      # sccache 内容哈希缓存,仓库内 crate 源码不变即全命中。
-      # 经 rustc-stack-wrapper.cmd 链式调用 sccache:先把 RUST_MIN_STACK=16MiB 注入
-      # 编译期 rustc 进程(规避 codewhale-tui O2 编译的栈溢出,三端同源风险),
-      # 再交给 sccache 缓存。Windows 上 Cargo 执行 wrapper 需 .cmd 后缀才能走
-      # cmd /C;必须用 ${{ github.workspace }} 绝对路径(避免按 cwd 双拼解析)。
-      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.cmd
+      # Windows 经 RUSTC_WRAPPER 注入 rustc-stack-wrapper.exe(本 job 先编译)。
+      # .cmd 经 cmd /C 执行,cmd.exe 命令行上限 8191 字符,windows-sys/windows 等
+      # 大型 crate 的 rustc 命令行(数千个 --cfg feature=...)会超限报
+      # "The command line is too long";.exe 经 CreateProcess 直启(上限 32767),
+      # 只在编译期 rustc 注入 RUST_MIN_STACK=16MiB,不泄漏到 cargo test 目标进程。
+      # 经 RUSTC_WRAPPER_CHAIN 链式调用 sccache 保留缓存;必须用 ${{ github.workspace }}
+      # 绝对路径(避免按 cwd 双拼解析)。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
       RUSTC_WRAPPER_CHAIN: sccache
       SCCACHE_GHA_ENABLED: "true"
       # PR/merge queue 只读(对齐 rust-cache save-if 仅 main 的配额保护);main push 读写。
@@ -713,6 +715,12 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         shell: bash
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
+      # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响,无自举依赖。
+      - name: 编译 Windows 栈 wrapper(.exe)
+        shell: bash
+        run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
       - name: Node.js
         uses: actions/setup-node@v7
