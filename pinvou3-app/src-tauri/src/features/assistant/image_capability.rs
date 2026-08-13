@@ -92,10 +92,15 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
-    // Anthropic Claude 3/4/5 全系视觉输入(默认预设 claude-sonnet-5 命中 claude-5)。
+    // Anthropic Claude 3/4/5 全系视觉输入。命名两式:claude-4-opus / claude-4-sonnet
+    // 命中 claude-N;新一代 claude-sonnet-5(默认预设)/claude-opus-5 需单独条目
+    // ——子串匹配跨不过 "sonnet"/"opus","claude-5" 命中不了 claude-sonnet-5。
     "claude-3",
     "claude-4",
     "claude-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-haiku-5",
     // Google Gemini 全系多模态。
     "gemini",
     // xAI Grok 全系视觉输入(默认预设 grok-4.3 命中)。
