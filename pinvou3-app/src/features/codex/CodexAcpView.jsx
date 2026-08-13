@@ -2106,7 +2106,6 @@ export function CodexAcpView({
   const nativeVoiceCanInstallAsr = can('localModelSetup') && can('dependencyInstall');
   const nativeVoiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
   const nativeVoiceAsrBusy = !!(nativeVoiceAsrSetup.installing || nativeVoiceAsrSetup.cancelling);
-  const [nativeVoiceModeMenuOpen, setNativeVoiceModeMenuOpen] = useState(false);
 
   useEffect(() => {
     if (!nativeVoiceAsrBusy) setVoiceAsrPopoverOpen(false);
@@ -2168,10 +2167,6 @@ export function CodexAcpView({
   }
   function handleNativeVoiceClose() {
     nativeVoice.closeVoice();
-  }
-  function handleNativeVoiceMenuTrigger(mode) {
-    handleNativeVoiceTrigger(mode, { source: 'menu' });
-    setNativeVoiceModeMenuOpen(false);
   }
 
   // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
@@ -3351,32 +3346,6 @@ export function CodexAcpView({
                   >
                     <Paperclip size={18} />
                   </button>
-                  <VoiceComposerButton
-                    refProp={voiceAsrPopoverRef}
-                    voiceInput={nativeVoiceInput}
-                    voiceMode={nativeVoiceMode}
-                    voiceAsrSetup={nativeVoiceAsrSetup}
-                    voiceAsrPopoverOpen={voiceAsrPopoverOpen}
-                    copy={t}
-                    disabled={nativeVoiceDisabled}
-                    testId="codex-voice-input"
-                    onClick={() => {
-                      handleNativeVoiceTrigger('dictation', { source: 'button' });
-                      setNativeVoiceModeMenuOpen(false);
-                    }}
-                    menuOpen={nativeVoiceModeMenuOpen}
-                    menuItems={[
-                      { key: 'dictation', label: t.voiceContinueDictation || t.voiceDictationMode, onSelect: () => handleNativeVoiceMenuTrigger('dictation') },
-                      ...(String(draft || '').trim() ? [{ key: 'edit', label: t.voiceEditMode, onSelect: () => handleNativeVoiceMenuTrigger('edit') }] : []),
-                    ]}
-                    onToggleMenu={() => setNativeVoiceModeMenuOpen(open => !open)}
-                    onToggleAsrPopover={() => setVoiceAsrPopoverOpen(open => !open)}
-                    onCancelAsr={() => {
-                      if (bridge.available && bridge.voice.cancelVoiceAsrSetup) {
-                        bridge.voice.cancelVoiceAsrSetup();
-                      }
-                    }}
-                  />
                   <button type="button" onClick={() => setCommandOpen(value => !value)}
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
@@ -3633,10 +3602,29 @@ export function CodexAcpView({
                 {busy ? (
                   <button onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
-                    className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
-                    <Send size={16} />
-                  </button>
+                  <>
+                    <VoiceComposerButton
+                      refProp={voiceAsrPopoverRef}
+                      voiceInput={nativeVoiceInput}
+                      voiceMode={nativeVoiceMode}
+                      voiceAsrSetup={nativeVoiceAsrSetup}
+                      voiceAsrPopoverOpen={voiceAsrPopoverOpen}
+                      copy={t}
+                      disabled={nativeVoiceDisabled}
+                      testId="codex-voice-input"
+                      onClick={() => handleNativeVoiceTrigger('dictation', { source: 'button' })}
+                      onToggleAsrPopover={() => setVoiceAsrPopoverOpen(open => !open)}
+                      onCancelAsr={() => {
+                        if (bridge.available && bridge.voice.cancelVoiceAsrSetup) {
+                          bridge.voice.cancelVoiceAsrSetup();
+                        }
+                      }}
+                    />
+                    <button onClick={send} disabled={!sessionReady || (!draft.trim() && !attachments.some(attachment => attachment.status === 'ready') && !workspaceReferences.length) || working || activeRuntimeBusy || (!isNativeAgent && (!activeStatus || !activeStatus.installed || !activeStatus.authenticated))}
+                      className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
+                      <Send size={16} />
+                    </button>
+                  </>
                 )}
               </div>
               {pendingYoloSwitch && (

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, ChevronDown, Mic, RefreshCw, Send, X } from '../../components/icons.jsx';
+import { Check, Mic, RefreshCw, Send, X } from '../../components/icons.jsx';
 import { COMPOSER_ICON_BUTTON_CLASS } from '../chat/composer-controls.jsx';
 import { VoiceAsrPopover } from './VoiceAsrPopover.jsx';
 import { VoiceNoticeBar, VoiceReadyNotice } from './VoiceNoticeBar.jsx';
@@ -39,9 +39,6 @@ function VoiceComposerButton({
   disabled,
   testId = 'composer-voice-button',
   onClick,
-  menuOpen,
-  menuItems,
-  onToggleMenu,
   onToggleAsrPopover,
   onCancelAsr,
 }) {
@@ -50,7 +47,6 @@ function VoiceComposerButton({
   const active = isVoiceActive(voiceInput);
   const recording = isVoiceRecording(voiceInput);
   const label = asrBusy.busy ? asrBusy.label : primaryVoiceLabel(voiceInput, voiceMode, copy);
-  const hasMenu = !asrBusy.busy && !active && Array.isArray(menuItems) && menuItems.length > 0;
   return (
     <div ref={refProp} className="relative flex shrink-0 items-center">
       <VoiceAsrPopover
@@ -81,33 +77,7 @@ function VoiceComposerButton({
         >
           {asrBusy.busy ? <RefreshCw size={18} className="animate-spin" /> : <Mic size={18} />}
         </button>
-        {hasMenu && (
-          <button
-            type="button"
-            onClick={onToggleMenu}
-            disabled={disabled}
-            aria-label={copy.voiceModeMenu || '语音模式'}
-            title={copy.voiceModeMenu || '语音模式'}
-            className="ml-[-5px] flex h-9 w-6 shrink-0 items-center justify-center rounded-full text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10"
-          >
-            <ChevronDown size={13} />
-          </button>
-        )}
       </div>
-      {hasMenu && menuOpen && (
-        <div className="absolute bottom-11 right-0 z-40 w-44 rounded-xl border border-black/[0.08] bg-white p-1.5 text-[12px] text-[#202124] shadow-xl dark:border-white/10 dark:bg-[#202124] dark:text-[#E8EAED]">
-          {menuItems.map(item => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={item.onSelect}
-              className="flex h-8 w-full items-center rounded-lg px-2.5 text-left hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-            >
-              <span className="truncate">{item.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

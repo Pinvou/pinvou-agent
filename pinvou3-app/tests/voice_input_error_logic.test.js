@@ -14,10 +14,14 @@ const routerPath = path.join(__dirname, "..", "src", "features", "voice-composer
 const routerSource = fs.readFileSync(routerPath, "utf8");
 const voiceControlsPath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceComposerControls.jsx");
 const voiceControlsSource = fs.readFileSync(voiceControlsPath, "utf8");
+const voiceIntroModalPath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceShortcutIntroModal.jsx");
+const voiceIntroModalSource = fs.readFileSync(voiceIntroModalPath, "utf8");
 const voiceNoticePath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceNoticeBar.jsx");
 const voiceNoticeSource = fs.readFileSync(voiceNoticePath, "utf8");
 const voiceHookPath = path.join(__dirname, "..", "src", "features", "voice-composer", "useComposerVoiceInput.js");
 const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
+const settingsPath = path.join(__dirname, "..", "src", "features", "settings", "SettingsView.jsx");
+const settingsSource = fs.readFileSync(settingsPath, "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
@@ -322,6 +326,41 @@ assert.doesNotMatch(
   chatSource,
   /<VoiceShortcutIntroModal[\s\S]*?shortcutEnabled=/,
   "voice intro modal should make the enable decision through the footer button only",
+);
+assert.match(
+  settingsSource,
+  /data-testid="voice-shortcut-info"/,
+  "settings voice shortcut row must expose a lightweight info button",
+);
+assert.match(
+  settingsSource,
+  /function handleVoiceShortcutInfoClose\(\) \{[\s\S]*?setVoiceShortcutIntroOpen\(false\);[\s\S]*?\}/,
+  "settings voice shortcut info close must only dismiss the guide after marking it seen",
+);
+assert.match(
+  settingsSource,
+  /function markVoiceShortcutIntroSeen\(\) \{[\s\S]*?setVoiceShortcutIntroSeen\(true\);[\s\S]*?\}/,
+  "settings voice shortcut guide must mark the shortcut intro as seen",
+);
+assert.doesNotMatch(
+  settingsSource.match(/function handleVoiceShortcutInfoOpen[\s\S]*?\n      \}/)?.[0] || "",
+  /checkDependencies|startVoiceInput|requestVoice|transcribe|download/i,
+  "settings voice shortcut info button must not check ASR, download models, or start recording",
+);
+assert.match(
+  settingsSource,
+  /<VoiceShortcutIntroModal[\s\S]*?shortcutEnabled=\{voiceShortcutsEnabled\}[\s\S]*?primaryLabel=\{voiceShortcutsEnabled \? t\.voiceIntroDone : \(t\.voiceShortcutEnableTitle \|\| t\.uiSettings\.voiceShortcutEnable\)\}/,
+  "settings voice shortcut guide must use settings-specific button copy instead of the first-use continue copy",
+);
+assert.match(
+  voiceIntroModalSource,
+  /const canEnable = !shortcutEnabled && typeof onToggleShortcut === 'function';/,
+  "shared voice shortcut intro modal must hide the enable action when shortcuts are already enabled",
+);
+assert.doesNotMatch(
+  voiceIntroModalSource,
+  /role="switch"/,
+  "shared voice intro modal must not reintroduce a second enable switch",
 );
 
 const deviceTimeout = normalizeVoiceError({
