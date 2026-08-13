@@ -18,7 +18,7 @@ import {
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
-  reasoningEffortTiersForModel, defaultReasoningEffortForModel, normalizeStoredReasoningEffort,
+  reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -1373,8 +1373,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
         // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
-        // 无档位模型置 null = 未显式设置）。
-        setReasoningEffort(defaultReasoningEffortForModel({ preset: p, model: nextModel, vendor: group.vendor || vendor }) || null);
+        // 无档位模型置 null = 未显式设置）。带上 nextBaseUrl 以按新 route 判定档位。
+        setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         if (p !== 'local_vllm') {
           setApiKey('');
           setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -1610,7 +1610,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           }
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
-          setReasoningEffort(defaultReasoningEffortForModel({ preset, model: nextModel, vendor, base_url: baseUrl, provider_kind: providerKind }) || null);
+          setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
           setProviderModelPickerOpen(false);
         };
         return (

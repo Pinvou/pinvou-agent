@@ -29,12 +29,13 @@ vm.runInContext(
   `this.providerLabelForModel = providerLabelForModel;\n` +
   `this.reasoningEffortTiersForModel = reasoningEffortTiersForModel;\n` +
   `this.defaultReasoningEffortForModel = defaultReasoningEffortForModel;\n` +
+  `this.reasoningEffortForModelSwitch = reasoningEffortForModelSwitch;\n` +
   `this.normalizeStoredReasoningEffort = normalizeStoredReasoningEffort;\n`,
   ctx,
   { filename: srcPath },
 );
 
-const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, normalizeStoredReasoningEffort } = ctx;
+const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -190,8 +191,13 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(moonshotNonK3), ['off', 'high']);
   const zai52 = { preset: 'glm', vendor: 'glm', model: 'GLM-5.2', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual(tiers(zai52), ['off', 'high', 'max']);
-  const zaiTurbo = { preset: 'glm', vendor: 'glm', model: 'glm-5-turbo' };
+  const zaiTurbo = { preset: 'glm', vendor: 'glm', model: 'glm-5-turbo', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual(tiers(zaiTurbo), ['off', 'high']);
+  const zai51 = { preset: 'glm', vendor: 'glm', model: 'glm-5.1', base_url: 'https://api.z.ai/api/paas/v4' };
+  assert.deepStrictEqual(tiers(zai51), ['off', 'high']);
+  // GLM-5.3 继承 GLM-5.2 的 reasoning_options，同为 tiered effort（底座 is_exact_zai_tiered_effort_route）
+  const zai53 = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
+  assert.deepStrictEqual(tiers(zai53), ['off', 'high', 'max']);
   const kimiCodeK3 = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://api.kimi.com/coding/v1' };
   assert.deepStrictEqual(tiers(kimiCodeK3), ['low', 'high', 'max']);
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
@@ -223,13 +229,56 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(k3OnDirectPlatform), ['off', 'high']);
   const k3OnGateway = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://gateway.example.com/v1' };
   assert.deepStrictEqual(tiers(k3OnGateway), ['off', 'high']);
-  const zaiCn = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
-  assert.deepStrictEqual(tiers(zaiCn), ['off', 'high']);
   const zaiCodingPlanGlobal = { preset: 'openai_compatible', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/coding/paas/v4' };
   assert.deepStrictEqual(tiers(zaiCodingPlanGlobal), ['off', 'high', 'max']);
+  // zai：中国端点 / 兼容网关 / 未验证模型底座删除 thinking/reasoning_effort，off 与 high 等效 → 不提供切换
+  const zaiCn = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
+  assert.strictEqual(reasoningEffortTiersForModel(zaiCn), null);
+  const zaiGateway = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://gateway.example.com/v1' };
+  assert.strictEqual(reasoningEffortTiersForModel(zaiGateway), null);
+  const zaiUnknownModel = { preset: 'glm', vendor: 'glm', model: 'glm-4.7', base_url: 'https://api.z.ai/api/paas/v4' };
+  assert.strictEqual(reasoningEffortTiersForModel(zaiUnknownModel), null);
+  // minimax：仅 first-party MiniMax-M3 提供 off/high，M2.7/M2.5 与兼容网关不提供切换
+  const minimaxM3 = { preset: 'minimax', vendor: 'minimax', model: 'MiniMax-M3', base_url: 'https://api.minimax.io/v1' };
+  assert.deepStrictEqual(tiers(minimaxM3), ['off', 'high']);
+  const minimaxM3Cn = { preset: 'minimax', vendor: 'minimax', model: 'MiniMax-M3', base_url: 'https://api.minimaxi.com/v1' };
+  assert.deepStrictEqual(tiers(minimaxM3Cn), ['off', 'high']);
+  const minimaxM27 = { preset: 'minimax', vendor: 'minimax', model: 'MiniMax-M2.7', base_url: 'https://api.minimax.io/v1' };
+  assert.strictEqual(reasoningEffortTiersForModel(minimaxM27), null);
+  const minimaxGateway = { preset: 'minimax', vendor: 'minimax', model: 'MiniMax-M3', base_url: 'https://gateway.example.com/v1' };
+  assert.strictEqual(reasoningEffortTiersForModel(minimaxGateway), null);
   // 官方 deepseek base_url 推断：openai_compatible 且无 vendor，但 base_url 指向官方端点 → deepseek 档位
   const deepseekByUrl = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1' };
   assert.deepStrictEqual(tiers(deepseekByUrl), ['off', 'low', 'high', 'max']);
+});
+
+test('reasoningEffortTiersForModel：精确路由语义对齐底座 is_exact_https_route', () => {
+  const tiers = model => Array.from(reasoningEffortTiersForModel(model) || []);
+  const mkZai = baseUrl => ({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: baseUrl });
+  // 一个尾斜杠无意义（底座 strip_suffix('/')），仍为精确端点
+  assert.deepStrictEqual(tiers(mkZai('https://api.z.ai/api/paas/v4/')), ['off', 'high', 'max']);
+  // 两个尾斜杠：底座只删一个，path 变成 api/paas/v4/，与官方 path 不等 → fail-closed
+  assert.strictEqual(reasoningEffortTiersForModel(mkZai('https://api.z.ai/api/paas/v4//')), null);
+  // path 大小写敏感：API/paas/v4 是相邻路由，不是官方端点
+  assert.strictEqual(reasoningEffortTiersForModel(mkZai('https://api.z.ai/API/paas/v4')), null);
+  // host/scheme 大小写不敏感
+  assert.deepStrictEqual(tiers(mkZai('https://API.Z.AI/api/paas/v4')), ['off', 'high', 'max']);
+  assert.deepStrictEqual(tiers(mkZai('HTTPS://api.z.ai/api/paas/v4')), ['off', 'high', 'max']);
+});
+
+test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
+  const k26 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k2.6' };
+  const k3 = { preset: 'kimi', vendor: 'kimi', model: 'kimi-k3', base_url: 'https://api.moonshot.ai/v1' };
+  // K2.6 上用户可存 off；切到 K3 后 off 不在其档位表（low/high/max）内，必须重置为 high
+  assert.deepStrictEqual(Array.from(reasoningEffortTiersForModel(k26)), ['off', 'high']);
+  assert.ok(!Array.from(reasoningEffortTiersForModel(k3)).includes('off'));
+  assert.strictEqual(reasoningEffortForModelSwitch(k3), 'high');
+  // 无档位模型切换置 null（未显式设置）；vllm 切回 off
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'off');
+  // z.ai glm-5.2 切换默认 high；中国端点 glm-5.2 无档位 → null
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/paas/v4' }), 'high');
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' }), null);
 });
 
 test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {

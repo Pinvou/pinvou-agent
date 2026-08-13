@@ -651,26 +651,45 @@ function isOfficialDeepseekBaseUrl(baseUrl) {
   return normalized === 'https://api.deepseek.com' || normalized === 'https://api.deepseeki.com';
 }
 
-// 底座对 moonshot/zai 的 tiered effort 只按「精确 first-party base_url + 模型名」路由
-// （CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
-// is_exact_zai_tiered_effort_route），与底座 is_exact_https_route 一样只容忍一个尾斜杠。
-// 中国端点 / 兼容网关误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
-function normalizeExactRouteUrl(baseUrl) {
-  return String(baseUrl || '').trim().replace(/\/+$/, '').toLowerCase();
+// 底座对 moonshot/zai/minimax 的 tiered effort 只按「精确 first-party base_url + 模型名」
+// 路由（CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
+// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route）。复刻底座 `is_exact_https_route`
+// 的比较语义：scheme/host ASCII 大小写不敏感、path 大小写敏感、只容忍一个尾斜杠——不多删
+// 斜杠、也不整段转小写（不同大小写的 path 是相邻路由，不是官方端点）。中国端点 / 兼容网关
+// 误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
+function isExactHttpsRoute(baseUrl, expectedAuthority, expectedPath) {
+  const trimmed = String(baseUrl || '').trim();
+  // 对齐底座 strip_suffix('/')：只去掉一个尾斜杠，剩下的斜杠仍参与 path 比较。
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  const schemeSep = normalized.indexOf('://');
+  if (schemeSep === -1) return false;
+  const scheme = normalized.slice(0, schemeSep);
+  const authorityAndPath = normalized.slice(schemeSep + 3);
+  const slash = authorityAndPath.indexOf('/');
+  if (slash === -1) return false;
+  const authority = authorityAndPath.slice(0, slash);
+  const path = authorityAndPath.slice(slash + 1);
+  return scheme.toLowerCase() === 'https'
+    && authority.toLowerCase() === expectedAuthority.toLowerCase()
+    && path === expectedPath;
 }
 // Moonshot 直连平台（国际站）端点：https://api.moonshot.ai/v1
 function isExactMoonshotPlatformBaseUrl(baseUrl) {
-  return normalizeExactRouteUrl(baseUrl) === 'https://api.moonshot.ai/v1';
+  return isExactHttpsRoute(baseUrl, 'api.moonshot.ai', 'v1');
 }
 // Kimi Code 会员计划端点：https://api.kimi.com/coding/v1（裸 k3）
 function isExactKimiCodeBaseUrl(baseUrl) {
-  return normalizeExactRouteUrl(baseUrl) === 'https://api.kimi.com/coding/v1';
+  return isExactHttpsRoute(baseUrl, 'api.kimi.com', 'coding/v1');
 }
 // z.ai first-party Chat 端点（Coding Plan / 普通平台）。
 function isExactZaiChatBaseUrl(baseUrl) {
-  const normalized = normalizeExactRouteUrl(baseUrl);
-  return normalized === 'https://api.z.ai/api/paas/v4'
-    || normalized === 'https://api.z.ai/api/coding/paas/v4';
+  return isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/paas/v4')
+    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4');
+}
+// MiniMax first-party OpenAI Chat 端点（国际 api.minimax.io / 国内 api.minimaxi.com）。
+function isExactMinimaxChatBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.minimax.io', 'v1')
+    || isExactHttpsRoute(baseUrl, 'api.minimaxi.com', 'v1');
 }
 
 function reasoningProviderForModel(model) {
@@ -707,24 +726,37 @@ function reasoningProviderForModel(model) {
 }
 
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
-// 路由/模型级细分（仅品悟目录收录的模型）：底座对 first-party 的 zai GLM-5.2
-// 提供 tiered effort（off/high/max），对 moonshot K3（kimi-k3 / k3，always-thinking）
-// 提供 low/high/max（off 归一为 low）；其余按 provider 档位表。
-// tiered effort 按「精确 first-party base_url + 模型名」判定，与底座
-// `is_exact_zai_tiered_effort_route` / `is_exact_direct_moonshot_k3_route` /
-// `is_exact_kimi_code_k3_route` 对齐：中国端点（api.moonshot.cn / open.bigmodel.cn）
-// 与兼容网关误配同型号时底座 fail-closed，前端不再暴露低/高/最深档位，避免无效或彼此等效的选项。
+// 路由/模型级细分（仅品悟目录收录的模型）：
+// - zai：first-party z.ai 端点上 GLM-5.2/5.3 提供 tiered effort（off/high/max），
+//   GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；中国 open.bigmodel.cn、
+//   兼容网关、未验证模型底座会删除 thinking/reasoning_effort（两档等效）→ 不提供切换。
+// - moonshot：K3（kimi-k3 / k3，always-thinking）提供 low/high/max（off 归一为 low）；
+//   其余 moonshot 模型按 generic thinking 开关暴露 off/high。
+// - minimax：仅 first-party MiniMax-M3 提供 off（disabled）/high（adaptive）；M2.7/M2.5
+//   与兼容网关底座清空控制字段（两档等效）→ 不提供切换。
+// 与底座 `is_exact_zai_tiered_effort_route` / `is_exact_direct_moonshot_k3_route` /
+// `is_exact_kimi_code_k3_route` / `is_exact_minimax_m3_route` 对齐：中国端点 / 兼容网关
+// 误配同型号时底座 fail-closed，前端不再暴露无效或彼此等效的选项。
 function reasoningEffortTiersForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (!provider) return null;
   const tiers = REASONING_EFFORT_TIERS[provider];
   if (!tiers) return null;
   const modelName = String((model && model.model) || '').trim().toLowerCase();
-  if (provider === 'zai' && modelName === 'glm-5.2' && isExactZaiChatBaseUrl((model && model.base_url) || '')) {
-    return ['off', 'high', 'max'];
+  const baseUrl = (model && model.base_url) || '';
+  if (provider === 'zai') {
+    if (!isExactZaiChatBaseUrl(baseUrl)) return null;
+    if (modelName === 'glm-5.2' || modelName === 'glm-5.3') return ['off', 'high', 'max'];
+    if (modelName === 'glm-5.1' || modelName === 'glm-5-turbo') return ['off', 'high'];
+    return null;
   }
   if (provider === 'moonshot' && isExactMoonshotK3Route(model, modelName)) {
     return ['low', 'high', 'max'];
+  }
+  if (provider === 'minimax') {
+    if (!isExactMinimaxChatBaseUrl(baseUrl)) return null;
+    if (modelName !== 'minimax-m3') return null;
+    return ['off', 'high'];
   }
   return tiers;
 }
@@ -749,6 +781,14 @@ function isAlwaysThinkingK3Route(model) {
 function defaultReasoningEffortForModel(model) {
   if (reasoningProviderForModel(model) === 'vllm') return 'off';
   return reasoningEffortTiersForModel(model) ? 'high' : null;
+}
+
+// 切换模型时的思考深度重置：丢弃旧档位，按新 model 的 route 回落到默认档位
+// （vllm→off，其余支持档位的模型→high；无档位模型→null = 未显式设置）。K2.6 选 off 后
+// 切 K3，off 不在 K3 档位表（low/high/max）内，必须重置为 high，否则界面无高亮且保存
+// 仍写旧值。单独成函数以便对「模型切换归一」这一状态迁移做行为测试。
+function reasoningEffortForModelSwitch(model) {
+  return defaultReasoningEffortForModel(model) || null;
 }
 
 // 底座 ReasoningEffort::parse_strict 接受的别名 → 规范档位（对齐 as_setting()）。
@@ -804,5 +844,6 @@ export {
   selectorSubLabel,
   reasoningEffortTiersForModel,
   defaultReasoningEffortForModel,
+  reasoningEffortForModelSwitch,
   normalizeStoredReasoningEffort,
 };
