@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.8.0"
+version = "0.8.1"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
