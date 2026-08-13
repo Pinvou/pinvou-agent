@@ -34,11 +34,6 @@ import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
 import {
-  shouldIgnoreVoiceShortcutEvent,
-  voiceShortcutActionForKeyDown,
-  voiceShortcutActionForKeyUp,
-} from './voice-shortcut-state.mjs';
-import {
   VOICE_SHORTCUT_SETTINGS_EVENT,
   setVoiceShortcutEnabled,
   setVoiceShortcutIntroSeen,
@@ -57,15 +52,6 @@ import {
   parseJsonChain,
   parseLooseJson,
 } from '../conversation/structured-assistant-content.js';
-import {
-  FLOATING_VOICE_CLICK_SUPPRESSION_MS,
-  canStartFloatingVoiceDrag,
-  clearFloatingVoiceDragClick,
-  consumeFloatingVoiceDragClick,
-  createFloatingVoiceDragSession,
-  finishFloatingVoiceDrag,
-  moveFloatingVoiceDrag,
-} from './floating-voice-drag.mjs';
 import {
   createPinvouModeScopeKey,
   loadPinvouModeState,
@@ -91,12 +77,24 @@ import {
   isPersonalWorkbenchTemplateDraftForTemplate,
 } from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
-import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
   ComposerKbSelector,
   ComposerModeChip,
 } from './composer-controls.jsx';
+import {
+  VoiceComposerButton,
+  VoiceEditPreview,
+  VoiceComposerPillLayer,
+  VoiceComposerStatus,
+} from '../voice-composer/VoiceComposerControls.jsx';
+import {
+  isVoiceActive,
+  isVoiceBusy,
+  normalizeVoiceMode,
+} from '../voice-composer/voice-ui-policy.mjs';
+import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.js';
 
 const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const MULTI_AGENT_ENABLED = can('multiAgent');
@@ -676,16 +674,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const chatRootRef = useRef(null);
       const composerRef = useRef(null);
-      const voiceShortcutPendingRef = useRef(null);
       const pendingVoiceAfterIntroRef = useRef(null);
       const voiceAsrPopoverRef = useRef(null);
       const voiceAsrInstallWasActiveRef = useRef(false);
       const voiceAsrReadyNoticeTimerRef = useRef(null);
-      const floatingVoiceRef = useRef(null);
-      const voiceDragRef = useRef(null);
-      const voiceDragClickResetRef = useRef(null);
-      const [floatingVoicePos, setFloatingVoicePos] = useState(null);
-      const [floatingVoicePressed, setFloatingVoicePressed] = useState(false);
       const [voiceIntroOpen, setVoiceIntroOpen] = useState(false);
       const [voiceAsrPopoverOpen, setVoiceAsrPopoverOpen] = useState(false);
       const [voiceAsrReadyNotice, setVoiceAsrReadyNotice] = useState(false);
@@ -1228,11 +1220,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         setInputText(restored);
       }, [activeSessionId, draftEpoch, setInputText]);
       const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
-      const voiceMode = voiceInput.mode === 'task' ? 'task' : 'dictation';
-      const voiceActive = voiceInput.status === 'requesting_permission' || voiceInput.status === 'recording' || voiceInput.status === 'transcribing' || voiceInput.status === 'postprocessing';
-      const voiceRecording = voiceInput.status === 'recording';
-      const voiceBusy = voiceInput.status === 'transcribing' || voiceInput.status === 'postprocessing';
-      const voiceNotice = voiceInput.status !== 'idle' && voiceInput.message;
+      const voiceMode = normalizeVoiceMode(voiceInput.mode);
+      const voiceActive = isVoiceActive(voiceInput);
+      const voiceBusy = isVoiceBusy(voiceInput);
+      const [voiceModeMenuOpen, setVoiceModeMenuOpen] = useState(false);
       const hasDraftText = inputText.trim().length > 0;
       const hasReadyAttachment = attachments.some(a => a.status === 'ready');
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
@@ -1242,7 +1233,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         && !firstTurnPending
         && (hasDraftText || hasReadyAttachment);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
-      const canFloatingSend = canSend && !voiceActive && !sceneCapabilityPreparing;
       const canClearInput = hasDraftText && !voiceActive;
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
@@ -1321,56 +1311,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           : raw;
         sendChatMessage(scopedText);
       }, [selectedDesignElement, sendChatMessage]);
-      const [deviceMode, setDeviceMode] = useState(() => {
-        const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
-        const h = typeof window !== 'undefined' ? window.innerHeight : 900;
-        const coarse = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
-        const touch = coarse || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
-        return { w, h, touch };
-      });
-      const isTabletSized = Math.min(deviceMode.w, deviceMode.h) <= 820 || Math.max(deviceMode.w, deviceMode.h) <= 1180;
-      // 浮动语音球是给 Windows 平板/触屏大屏用的；手机输入栏已有麦克风，浮球只会遮挡消息。
-      const isPhoneSized = Math.min(deviceMode.w, deviceMode.h) < 640;
-      const tabletVoiceMode = (deviceMode.touch || isTabletSized) && !isPhoneSized;
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
-      const primaryVoiceLabel = voiceInput.status === 'recording'
-        ? t.voiceStop
-        : voiceInput.status === 'failed'
-          ? t.voiceRetry
-          : voiceInput.status === 'requesting_permission'
-            ? t.voiceCancel
-            : voiceInput.status === 'transcribing'
-              ? t.voiceTranscribing
-              : voiceInput.status === 'postprocessing'
-                ? (voiceMode === 'task' ? t.voiceTaskPostprocessing : t.voicePostprocessing)
-              : t.voiceStart;
-      function clampFloatingVoicePos(x, y) {
-        const root = chatRootRef.current;
-        const floater = floatingVoiceRef.current;
-        if (!root || !floater) return { x, y };
-        const rootRect = root.getBoundingClientRect();
-        const floatRect = floater.getBoundingClientRect();
-        const margin = 12;
-        const maxX = Math.max(margin, rootRect.width - floatRect.width - margin);
-        const maxY = Math.max(margin, rootRect.height - floatRect.height - margin);
-        return {
-          x: Math.min(Math.max(x, margin), maxX),
-          y: Math.min(Math.max(y, margin), maxY),
-        };
-      }
-      const floatingVoiceStyle = floatingVoicePos
-        ? { left: floatingVoicePos.x + 'px', top: floatingVoicePos.y + 'px' }
-        : { left: 'calc(100% - 220px)', top: '50%', transform: 'translateY(-50%)' };
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrBusy = !!(voiceAsrSetup.installing || voiceAsrSetup.cancelling);
-      const voiceAsrCancelling = !!voiceAsrSetup.cancelling;
       const voiceAsrProgress = voiceAsrSetup.progress || {};
-      const voiceAsrPct = voiceAsrProgress.stage === 'model' && voiceAsrProgress.total
-        ? Math.floor(voiceAsrProgress.downloaded / voiceAsrProgress.total * 100)
-        : null;
-      const voiceAsrBusyLabel = voiceAsrCancelling
-        ? chatCopy.cancelling
-        : chatCopy.downloadingModel(voiceAsrPct != null ? voiceAsrPct + '%' : '...');
       useEffect(() => () => {
         if (voiceAsrReadyNoticeTimerRef.current) window.clearTimeout(voiceAsrReadyNoticeTimerRef.current);
       }, []);
@@ -1415,63 +1359,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
         // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       }, [justInstalledTool, activeSessionId, draftEpoch]);
-
-      useEffect(() => {
-        const measureDeviceMode = () => {
-          const w = window.innerWidth;
-          const h = window.innerHeight;
-          const coarse = window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
-          const touch = coarse || navigator.maxTouchPoints > 0;
-          setDeviceMode({ w, h, touch });
-        };
-        measureDeviceMode();
-        window.addEventListener('resize', measureDeviceMode);
-        window.addEventListener('orientationchange', measureDeviceMode);
-        const mq = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
-        if (mq && mq.addEventListener) mq.addEventListener('change', measureDeviceMode);
-        return () => {
-          window.removeEventListener('resize', measureDeviceMode);
-          window.removeEventListener('orientationchange', measureDeviceMode);
-          if (mq && mq.removeEventListener) mq.removeEventListener('change', measureDeviceMode);
-        };
-      }, []);
-
-      useEffect(() => {
-        const finishFromWindow = (event) => {
-          finishFloatingVoicePointer(event.pointerId, event, true, event.type);
-        };
-        const finishOnBlur = () => {
-          const drag = voiceDragRef.current;
-          if (drag && drag.pointerId !== null) finishFloatingVoicePointer(drag.pointerId, null, true, 'blur');
-        };
-        window.addEventListener('pointerup', finishFromWindow, true);
-        window.addEventListener('pointercancel', finishFromWindow, true);
-        window.addEventListener('blur', finishOnBlur);
-        return () => {
-          window.removeEventListener('pointerup', finishFromWindow, true);
-          window.removeEventListener('pointercancel', finishFromWindow, true);
-          window.removeEventListener('blur', finishOnBlur);
-          if (voiceDragClickResetRef.current) window.clearTimeout(voiceDragClickResetRef.current);
-          const drag = voiceDragRef.current;
-          if (drag && drag.pointerId !== null) {
-            const pointerId = drag.pointerId;
-            const target = drag.target;
-            finishFloatingVoiceDrag(drag, pointerId);
-            try {
-              if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-            } catch (_) {}
-          }
-          voiceDragRef.current = null;
-        };
-      }, []);
-
-      useEffect(() => {
-        if (!tabletVoiceMode || !floatingVoicePos) return;
-        const raf = requestAnimationFrame(() => {
-          setFloatingVoicePos(pos => pos ? clampFloatingVoicePos(pos.x, pos.y) : pos);
-        });
-        return () => cancelAnimationFrame(raf);
-      }, [tabletVoiceMode, hasDraftText, hasReadyAttachment, deviceMode.w, deviceMode.h]);
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
       useEffect(() => {
@@ -1530,6 +1417,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       function handleKeyDown(e) {
+        if (chatVoice && chatVoice.editPreview) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            chatVoice.cancelVoiceEditPreview();
+            return;
+          }
+          if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
+            e.preventDefault();
+            chatVoice.applyVoiceEditPreview({ send: e.ctrlKey || e.metaKey });
+            return;
+          }
+        }
         // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
         // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
         if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
@@ -1560,77 +1459,52 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function finishFloatingVoicePointer(pointerId, event, releaseCapture, reason) {
-        const drag = voiceDragRef.current;
-        const target = drag && drag.target;
-        const result = finishFloatingVoiceDrag(drag, pointerId, {
-          suppressCompatibleClick: reason === 'pointerup' || reason === 'lostpointercapture' || reason === 'buttons-released',
-        });
-        if (!result.matched) return false;
-
-        setFloatingVoicePressed(false);
-        if (voiceDragClickResetRef.current) {
-          window.clearTimeout(voiceDragClickResetRef.current);
-          voiceDragClickResetRef.current = null;
-        }
-        if (drag.suppressClick) {
-          if (event && event.preventDefault) event.preventDefault();
-          voiceDragClickResetRef.current = window.setTimeout(() => {
-            if (voiceDragRef.current === drag) clearFloatingVoiceDragClick(drag);
-            voiceDragClickResetRef.current = null;
-          }, FLOATING_VOICE_CLICK_SUPPRESSION_MS);
-        }
-        if (releaseCapture) {
-          try {
-            if (target && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-          } catch (_) {}
-        }
-        drag.target = null;
-        return true;
-      }
-
-      function handleFloatingVoiceClick(event) {
-        const nativeEvent = event.nativeEvent || event;
-        if (consumeFloatingVoiceDragClick(voiceDragRef.current, {
-          detail: nativeEvent.detail,
-          pointerId: nativeEvent.pointerId,
-          pointerType: nativeEvent.pointerType,
-        })) {
-          event.preventDefault();
-          if (voiceDragClickResetRef.current) {
-            window.clearTimeout(voiceDragClickResetRef.current);
-            voiceDragClickResetRef.current = null;
+      const chatVoice = useComposerVoiceInput({
+        targetId: 'chat-composer',
+        ownerKind: 'chat',
+        bridge,
+        voiceInput,
+        voiceBusy,
+        workspaceId: activeSessionId || 'draft',
+        sessionId: activeSessionId || null,
+        getDraft: () => inputText,
+        setDraft: value => {
+          if (typeof value === 'function') setInputText(value);
+          else setInputText(value);
+        },
+        appendDraft: bridge.voice.appendVoiceText,
+        isStillActive: () => true,
+        resolveMode: (mode, context) => {
+          if (mode === 'dictation' && context && context.source !== 'button'
+            && String(context.draft || '').trim()) {
+            return 'edit';
           }
-          return;
-        }
-        handleVoiceClick();
-      }
-
-      function applyVoiceResult(recognized, result) {
-        const finalText = String(recognized || '').trim();
-        if (!finalText) return;
-        const resultMode = result && result.mode === 'task' ? 'task' : voiceMode;
-        if (resultMode === 'task') {
-          sendChatMessage(finalText);
-          return;
-        }
-        setInputText(prev => bridge.voice.appendVoiceText(prev, finalText));
-      }
-
-      function handleVoiceTrigger(mode = 'dictation') {
-        if (!bridge.available) return;
-        if (voiceInput.status === 'requesting_permission') {
-          bridge.voice.cancelVoiceInput();
-          return;
-        }
-        if (voiceBusy) return;
-        if (voiceInput.status === 'recording') {
-          if (voiceMode !== mode) return;
-          bridge.voice.startVoiceInput(inputText, applyVoiceResult, { mode });
-          return;
-        }
-        bridge.voice.startVoiceInput(inputText, applyVoiceResult, { mode });
-      }
+          return mode;
+        },
+        onBeforeStart: mode => {
+          if (mode !== 'dictation') return true;
+          if (!voiceIntroSeenState && !voiceShortcutEnabledRef.current) {
+            pendingVoiceAfterIntroRef.current = { mode: 'dictation' };
+            setVoiceIntroOpen(true);
+            return false;
+          }
+          return true;
+        },
+        sendTask: async outgoing => {
+          try {
+            return await sendChatMessage(outgoing);
+          } catch (error) {
+            console.warn('[voice-input] task send failed after writeback', error);
+            return false;
+          }
+        },
+        onTaskAccepted: () => {
+          setInputText('');
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        },
+      });
+      const handleVoiceTrigger = chatVoice.triggerVoice;
 
       function rememberVoiceIntroSeen() {
         setVoiceIntroSeenState(true);
@@ -1641,7 +1515,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         const pending = pendingVoiceAfterIntroRef.current;
         pendingVoiceAfterIntroRef.current = null;
         if (!pending) return;
-        handleVoiceTrigger(pending.mode);
+        handleVoiceTrigger(pending.mode, { skipBeforeStart: true });
       }
 
       function handleVoiceIntroClose() {
@@ -1659,13 +1533,13 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       function handleVoiceClick() {
-        if (!bridge.available) return;
-        if (!voiceIntroSeenState && !voiceShortcutEnabledRef.current) {
-          pendingVoiceAfterIntroRef.current = { mode: 'dictation' };
-          setVoiceIntroOpen(true);
-          return;
-        }
-        handleVoiceTrigger('dictation');
+        handleVoiceTrigger('dictation', { source: 'button' });
+        setVoiceModeMenuOpen(false);
+      }
+
+      function handleVoiceMenuTrigger(mode) {
+        handleVoiceTrigger(mode, { source: 'menu' });
+        setVoiceModeMenuOpen(false);
       }
 
       useEffect(() => {
@@ -1673,184 +1547,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (voiceInput.status !== 'idle' && voiceInput.status !== 'failed') return;
         pendingVoiceAfterIntroRef.current = null;
       }, [voiceInput.status, voiceIntroSeenState]);
-
-      useEffect(() => {
-        function setPendingShortcutFlag(flag) {
-          voiceShortcutPendingRef.current = {
-            ...(voiceShortcutPendingRef.current || {}),
-            [flag]: true,
-            startedAt: (voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.startedAt) || Date.now(),
-          };
-        }
-        function clearPendingShortcutFlag(flag) {
-          const current = voiceShortcutPendingRef.current || {};
-          const next = { ...current };
-          delete next[flag];
-          if (next.alt || next.space) {
-            voiceShortcutPendingRef.current = next;
-          } else {
-            voiceShortcutPendingRef.current = null;
-          }
-        }
-        function clearPendingShortcut() {
-          voiceShortcutPendingRef.current = null;
-        }
-        function handleVoiceShortcutKeyDown(event) {
-          if (shouldIgnoreVoiceShortcutEvent(event)) return;
-          if (!voiceShortcutEnabledRef.current && !(event && event.key === 'Escape')) return;
-          if (
-            event
-            && event.code === 'Space'
-            && !event.altKey
-            && !event.ctrlKey
-            && !event.shiftKey
-            && !event.metaKey
-          ) {
-            setPendingShortcutFlag('space');
-            return;
-          }
-          const action = voiceShortcutActionForKeyDown(event, {
-            status: voiceInput.status,
-            mode: voiceMode,
-            pendingSpace: Boolean(voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.space),
-          });
-          if (action.type === 'none') return;
-          event.preventDefault();
-          event.stopPropagation();
-          if (action.type === 'cancel') {
-            clearPendingShortcut();
-            handleVoiceCancel();
-            return;
-          }
-          if (action.type === 'trigger') {
-            clearPendingShortcut();
-            handleVoiceTrigger(action.mode);
-            return;
-          }
-          if (action.type === 'pending_alt') {
-            setPendingShortcutFlag('alt');
-          }
-        }
-        function handleVoiceShortcutKeyUp(event) {
-          if (!voiceShortcutEnabledRef.current) {
-            clearPendingShortcutFlag('space');
-            return;
-          }
-          if (event && event.code === 'Space') {
-            clearPendingShortcutFlag('space');
-          }
-          const action = voiceShortcutActionForKeyUp(event, {
-            status: voiceInput.status,
-            mode: voiceMode,
-            pendingAlt: Boolean(voiceShortcutPendingRef.current && voiceShortcutPendingRef.current.alt),
-          });
-          if (action.type === 'none') return;
-          event.preventDefault();
-          event.stopPropagation();
-          clearPendingShortcut();
-          if (action.type === 'trigger') {
-            handleVoiceTrigger(action.mode);
-          }
-        }
-        window.addEventListener('keydown', handleVoiceShortcutKeyDown, true);
-        window.addEventListener('keyup', handleVoiceShortcutKeyUp, true);
-        return () => {
-          window.removeEventListener('keydown', handleVoiceShortcutKeyDown, true);
-          window.removeEventListener('keyup', handleVoiceShortcutKeyUp, true);
-          clearPendingShortcut();
-        };
-      }, [inputText, voiceInput.status, voiceMode, voiceBusy, bridge.available, sendChatMessage]);
-
-      useEffect(() => {
-        if (!bridge.available || isWeb) return undefined;
-        let disposed = false;
-        const unlisteners = [];
-        function rememberUnlisten(unlisten) {
-          if (disposed) {
-            try { unlisten(); } catch (_) {}
-            return;
-          }
-          unlisteners.push(unlisten);
-        }
-        listenTauri('voice-shortcut:trigger', (event) => {
-          voiceShortcutPendingRef.current = null;
-          if (!voiceShortcutEnabledRef.current) return;
-          const payload = event && Object.prototype.hasOwnProperty.call(event, 'payload')
-            ? event.payload
-            : event;
-          const mode = payload && payload.mode === 'task' ? 'task' : 'dictation';
-          handleVoiceTrigger(mode);
-        }).then(rememberUnlisten).catch(() => {});
-        listenTauri('voice-shortcut:cancel', () => {
-          voiceShortcutPendingRef.current = null;
-          handleVoiceCancel();
-        }).then(rememberUnlisten).catch(() => {});
-        return () => {
-          disposed = true;
-          unlisteners.forEach((unlisten) => {
-            try { unlisten(); } catch (_) {}
-          });
-        };
-      }, [inputText, voiceInput.status, voiceMode, voiceBusy, bridge.available, sendChatMessage]);
-
-      function handleFloatingVoicePointerDown(e) {
-        if (!tabletVoiceMode) return;
-        const activeDrag = voiceDragRef.current;
-        if (activeDrag && activeDrag.pointerId !== null) return;
-        if (!canStartFloatingVoiceDrag(e)) return;
-        const root = chatRootRef.current;
-        const floater = floatingVoiceRef.current;
-        if (!root || !floater) return;
-        if (voiceDragClickResetRef.current) {
-          window.clearTimeout(voiceDragClickResetRef.current);
-          voiceDragClickResetRef.current = null;
-        }
-        const floatRect = floater.getBoundingClientRect();
-        const target = e.currentTarget;
-        const drag = createFloatingVoiceDragSession({
-          pointerId: e.pointerId,
-          pointerType: e.pointerType,
-          clientX: e.clientX,
-          clientY: e.clientY,
-          offsetX: e.clientX - floatRect.left,
-          offsetY: e.clientY - floatRect.top,
-        });
-        drag.target = target;
-        voiceDragRef.current = drag;
-        setFloatingVoicePressed(true);
-        try { target.setPointerCapture(e.pointerId); } catch (_) {}
-      }
-
-      function handleFloatingVoicePointerMove(e) {
-        const drag = voiceDragRef.current;
-        const movement = moveFloatingVoiceDrag(drag, {
-          pointerId: e.pointerId,
-          clientX: e.clientX,
-          clientY: e.clientY,
-          buttons: e.buttons,
-        });
-        if (movement.kind === 'released') {
-          finishFloatingVoicePointer(e.pointerId, e, true, 'buttons-released');
-          return;
-        }
-        if (movement.kind !== 'move') return;
-        const root = chatRootRef.current;
-        if (!root) return;
-        e.preventDefault();
-        const rootRect = root.getBoundingClientRect();
-        setFloatingVoicePos(clampFloatingVoicePos(
-          movement.x - rootRect.left,
-          movement.y - rootRect.top
-        ));
-      }
-
-      function handleFloatingVoicePointerEnd(e) {
-        finishFloatingVoicePointer(e.pointerId, e, true, e.type);
-      }
-
-      function handleFloatingVoiceLostPointerCapture(e) {
-        finishFloatingVoicePointer(e.pointerId, e, false, 'lostpointercapture');
-      }
 
       function handleClearInput() {
         if (!canClearInput) return;
@@ -1860,11 +1556,11 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       }
 
       function handleVoiceCancel() {
-        if (bridge.available) bridge.voice.cancelVoiceInput();
+        chatVoice.cancelVoice();
       }
 
       function handleVoiceClose() {
-        if (bridge.available) bridge.voice.clearVoiceInput();
+        chatVoice.closeVoice();
       }
 
       function handlePaste(e) {
@@ -2079,53 +1775,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onToggleShortcut={handleVoiceIntroToggleShortcut}
             />
           )}
-          {tabletVoiceMode && (
-            <div ref={floatingVoiceRef} style={floatingVoiceStyle} className="absolute z-30 flex items-center gap-2">
-              <button
-                onClick={handleFloatingVoiceClick}
-                onPointerDown={handleFloatingVoicePointerDown}
-                onPointerMove={handleFloatingVoicePointerMove}
-                onPointerUp={handleFloatingVoicePointerEnd}
-                onPointerCancel={handleFloatingVoicePointerEnd}
-                onLostPointerCapture={handleFloatingVoiceLostPointerCapture}
-                disabled={primaryVoiceDisabled}
-                data-testid="floating-voice-button"
-                data-pressed={floatingVoicePressed ? 'true' : 'false'}
-                aria-label={primaryVoiceLabel}
-                title={primaryVoiceLabel}
-                className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-xl backdrop-blur-2xl touch-none select-none ${
-                  voiceRecording
-                    ? 'bg-[#C5221F] text-white shadow-red-500/25 hover:bg-[#A50E0E]'
-                    : voiceBusy
-                      ? 'bg-[#E8F0FE] text-[#174EA6] cursor-wait dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'
-                      : voiceInput.status === 'failed'
-                        ? 'bg-[#FCE8E6] text-[#C5221F] hover:bg-[#FAD2CF] dark:bg-[#3A1F1F] dark:text-[#F28B82] dark:hover:bg-[#4A2525]'
-                        : 'bg-[#0B57D0] text-white hover:bg-[#0842A0] shadow-blue-500/25 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#D3E3FD]'
-                } ${primaryVoiceDisabled ? 'opacity-80' : ''} ${floatingVoicePressed ? 'scale-95' : ''}`}>
-                {voiceRecording ? <StopCircle size={26} /> : <Mic size={26} />}
-              </button>
-              {hasDraftText && (
-                <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
-                  className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-lg backdrop-blur-2xl transition-all ${
-                    canClearInput
-                      ? 'bg-white/90 border-black/[0.06] text-[#5F6368] hover:bg-[#F1F3F4] dark:bg-[#161618]/90 dark:border-white/10 dark:text-[#C4C7C5] dark:hover:bg-[#252629]'
-                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed opacity-60'
-                  }`}>
-                  <Trash2 size={20} />
-                </button>
-              )}
-              {(hasDraftText || hasReadyAttachment) && (
-                <button onClick={handleSend} disabled={!canFloatingSend} aria-label={t.sendMsg} title={t.sendMsg}
-                  className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-all ${
-                    canFloatingSend
-                      ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white hover:-translate-y-0.5 active:translate-y-0'
-                      : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'
-                  }`}>
-                  <Send size={19} className="translate-x-[1px]" />
-                </button>
-              )}
-            </div>
-          )}
           {/* Floating Input Area */}
           <div ref={composerWrapRef} data-testid="chat-composer-wrap" className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20 ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'}`}>
             <div className="max-w-[800px] w-full mx-auto">
@@ -2188,64 +1837,25 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
-            {imageInputWarning && (
-              <div data-testid="image-capability-warning"
-                className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
-                <AlertTriangle size={14} className="shrink-0 text-amber-500" />
-                <span className="min-w-0">{imageInputWarning}</span>
-              </div>
-            )}
-            {imagePrivacyHint && (
-              <div data-testid="image-privacy-hint"
-                className="mb-2 px-3 text-[11px] leading-4 text-black/45 dark:text-white/45">
-                {imagePrivacyHint}
-              </div>
-            )}
-            {voiceAsrReadyNotice && (
-              <div className="mb-2 flex justify-end px-2">
-                <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[#34C759]/20 bg-white/90 px-3 py-1.5 text-[12px] font-medium text-[#1B7F3A] shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-[#1C1C1E]/85 dark:text-[#D1FADF]">
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-[#34C759]" />
-                  <span className="truncate">{chatCopy.asrReadyNotice}</span>
-                </div>
-              </div>
-            )}
-            {voiceNotice && (
-              <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
-                voiceInput.status === 'failed'
-                  ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3A1F1F] dark:text-[#F28B82]'
-                  : 'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'
-              }`}>
-                <span className="min-w-0 truncate">
-                  {voiceInput.status === 'requesting_permission' ? t.voiceRequesting
-                    : voiceInput.status === 'recording' ? t.voiceRecording
-                    : voiceInput.status === 'postprocessing' ? (voiceMode === 'task' ? t.voiceTaskPostprocessing : t.voicePostprocessing)
-                    : voiceInput.status === 'transcribing' ? t.voiceTranscribing
-                    : voiceInput.status === 'completed' ? t.voiceCompleted
-                    : voiceInput.message}
-                </span>
-                <div className="flex items-center gap-1 shrink-0">
-                  {voiceInput.status === 'failed' && voiceInput.category === 'recognition_failed' && canInstallLocalAsr && onGotoSettings && (
-                    <button onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium ${'bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20'}`}>{t.voiceGotoDeps}</button>
-                  )}
-                  {voiceInput.status === 'failed' && (
-                    <button onClick={() => handleVoiceTrigger(voiceMode)} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceRetry}</button>
-                  )}
-                  {voiceActive && (
-                    <button onClick={handleVoiceCancel} className={`px-2 py-1 rounded-full ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{t.voiceCancel}</button>
-                  )}
-                  {!voiceActive && (
-                    <button onClick={handleVoiceClose} title={t.voiceClose} className={`w-6 h-6 rounded-full flex items-center justify-center ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>×</button>
-                  )}
-                </div>
-              </div>
-            )}
+            <VoiceComposerStatus
+              voiceInput={voiceInput}
+              voiceMode={voiceMode}
+              copy={t}
+              chatCopy={chatCopy}
+              voiceAsrReadyNotice={voiceAsrReadyNotice}
+              canInstallLocalAsr={canInstallLocalAsr}
+              onGotoSettings={onGotoSettings}
+              onRetry={() => handleVoiceTrigger(voiceMode)}
+              onCancel={handleVoiceCancel}
+              onClose={handleVoiceClose}
+            />
             {voiceAsrSetup.open && !canInstallLocalAsr && (
               <div className={`flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-2xl text-[12px] ${'bg-[#E8F0FE] text-[#174EA6] dark:bg-[#1E2B3A] dark:text-[#A8C7FA]'}`}>
                 <span>{chatCopy.asrUnavailable}</span>
                 <button onClick={() => bridge.voice.closeVoiceAsrSetup()} className={`shrink-0 px-2 py-1 rounded-full font-medium ${'hover:bg-black/5 dark:hover:bg-white/10'}`}>{chatCopy.gotIt}</button>
               </div>
             )}
-            {voiceAsrSetup.open && canInstallLocalAsr && (() => {
+            {voiceAsrSetup.open && canInstallLocalAsr && !voiceAsrSetup.status?.installable && (() => {
               const su = voiceAsrSetup;
               const prog = su.progress || {};
               const pct = (prog.stage === 'model' && prog.total) ? Math.floor(prog.downloaded / prog.total * 100) : null;
@@ -2296,7 +1906,21 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 </div>
               );
             })()}
-            <div className="bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+            <div className="relative bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+              <VoiceComposerPillLayer
+                voiceInput={voiceInput}
+                voiceMode={voiceMode}
+                copy={t}
+                onCancel={handleVoiceCancel}
+                onConfirm={() => handleVoiceTrigger(voiceMode)}
+              />
+              <VoiceEditPreview
+                preview={chatVoice.editPreview}
+                copy={t}
+                onApply={() => chatVoice.applyVoiceEditPreview()}
+                onApplyAndSend={() => chatVoice.applyVoiceEditPreview({ send: true })}
+                onCancel={chatVoice.cancelVoiceEditPreview}
+              />
               {sceneCapabilityStatus && (
                 <div
                   data-testid="scene-capability-status"
@@ -2361,69 +1985,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   {t.chatInputLimitReached(CHAT_INPUT_MAX_LENGTH.toLocaleString())}
                 </div>
               )}
-              <div className="flex items-center justify-between mt-1.5 gap-2">
-                <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  <ComposerAttachButton t={t} compact={composerCompact} />
-                  <div ref={voiceAsrPopoverRef} className="relative shrink-0">
-                    {voiceAsrBusy && voiceAsrPopoverOpen && (
-                      <div className="absolute bottom-full left-0 z-[40] mb-2 w-[236px] overflow-hidden rounded-[20px] border border-black/10 bg-white/90 p-3 text-[#1D1D1F] shadow-[0_18px_45px_-18px_rgba(0,0,0,0.45)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#1C1C1E]/90 dark:text-[#F2F2F7]">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-[12px] font-semibold">{voiceAsrBusyLabel}</div>
-                            <div className="mt-0.5 text-[11px] text-[#6E6E73] dark:text-[#A1A1AA]">
-                              {voiceAsrPct != null ? `${voiceAsrPct}%` : chatCopy.asrStages.preparing}
-                            </div>
-                          </div>
-                          <RefreshCw size={17} className="shrink-0 animate-spin text-[#0A84FF]" />
-                        </div>
-                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-                          <div
-                            className={`h-full rounded-full bg-[#0A84FF] transition-all ${voiceAsrPct == null ? 'w-1/3 animate-pulse' : ''}`}
-                            style={voiceAsrPct != null ? { width: `${voiceAsrPct}%` } : undefined}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setVoiceAsrPopoverOpen(false);
-                            bridge.voice.cancelVoiceAsrSetup();
-                          }}
-                          disabled={voiceAsrCancelling}
-                          className={`mt-3 w-full rounded-full px-3 py-2 text-[13px] font-semibold transition-colors ${
-                            voiceAsrCancelling
-                              ? 'cursor-wait bg-black/5 text-gray-400 dark:bg-white/10'
-                              : 'bg-[#FFF0EF] text-[#D70015] hover:bg-[#FFE3E1] dark:bg-[#3A1F1F] dark:text-[#FF9F92] dark:hover:bg-[#4A2727]'
-                          }`}
-                        >
-                          {voiceAsrCancelling ? chatCopy.cancelling : chatCopy.cancelDownload}
-                        </button>
-                      </div>
-                    )}
-                    <button
-                      onClick={voiceAsrBusy ? () => setVoiceAsrPopoverOpen(open => !open) : handleVoiceClick}
-                      disabled={primaryVoiceDisabled || voiceAsrCancelling}
-                      data-testid="composer-voice-button"
-                      aria-label={voiceAsrBusy ? voiceAsrBusyLabel : primaryVoiceLabel}
-                      title={voiceAsrBusy ? voiceAsrBusyLabel : primaryVoiceLabel}
-                      className={`${
-                        voiceRecording
-                          ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
-                          : voiceAsrBusy
-                            ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
-                            : voiceActive
-                              ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
-                              : COMPOSER_ICON_BUTTON_CLASS
-                      } ${(primaryVoiceDisabled || voiceAsrCancelling) ? 'opacity-70 cursor-wait' : ''}`}
-                    >
-                      {voiceAsrBusy ? <RefreshCw size={18} className="animate-spin" /> : <Mic size={18} />}
-                    </button>
+                <div className="flex items-center justify-between mt-1.5 gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                    <ComposerAttachButton t={t} compact={composerCompact} />
+                    <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
+                    <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
+                    <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
+                    <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                   </div>
-                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
-                  <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
-                  <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
-                </div>
-                {!tabletVoiceMode && hasDraftText && (
+                {hasDraftText && (
                   <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
@@ -2433,6 +2003,28 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <Trash2 size={18} />
                   </button>
                 )}
+                <VoiceComposerButton
+                  refProp={voiceAsrPopoverRef}
+                  voiceInput={voiceInput}
+                  voiceMode={voiceMode}
+                  voiceAsrSetup={voiceAsrSetup}
+                  voiceAsrPopoverOpen={voiceAsrPopoverOpen}
+                  copy={t}
+                  disabled={primaryVoiceDisabled}
+                  onClick={handleVoiceClick}
+                  menuOpen={voiceModeMenuOpen}
+                  menuItems={[
+                    { key: 'dictation', label: t.voiceContinueDictation || t.voiceDictationMode, onSelect: () => handleVoiceMenuTrigger('dictation') },
+                    { key: 'structured', label: t.voiceStructuredMode, onSelect: () => handleVoiceMenuTrigger('structured') },
+                    ...(hasDraftText ? [{ key: 'edit', label: t.voiceEditMode, onSelect: () => handleVoiceMenuTrigger('edit') }] : []),
+                  ]}
+                  onToggleMenu={() => setVoiceModeMenuOpen(open => !open)}
+                  onToggleAsrPopover={() => setVoiceAsrPopoverOpen(open => !open)}
+                  onCancelAsr={() => {
+                    setVoiceAsrPopoverOpen(false);
+                    bridge.voice.cancelVoiceAsrSetup();
+                  }}
+                />
                 {busy ? (
                   <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">

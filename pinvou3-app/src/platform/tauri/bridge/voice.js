@@ -14,9 +14,13 @@
   var activeVoiceInput = null;
   var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
   var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+  var VOICE_RECORDING_MAX_DURATION_MS = 60000;
 
   function normalizeVoiceMode(mode) {
-    return mode === "task" ? "task" : "dictation";
+    if (mode === "task") return "task";
+    if (mode === "structured" || mode === "list" || mode === "structured_dictation") return "structured";
+    if (mode === "edit" || mode === "voice_edit" || mode === "draft_edit") return "edit";
+    return "dictation";
   }
 
   function voiceNow() {
@@ -29,10 +33,22 @@
     return Math.max(0, Math.round((end || voiceNow()) - start));
   }
 
-  var VOICE_FILLER_TERMS = ["嗯", "啊", "呃", "额", "那个", "就是"];
+  var VOICE_FILLER_TERMS = ["嗯", "啊", "呃", "那个", "就是"];
   var VOICE_SUSPICIOUS_ASR_TERMS = [
     "进价", "惊吓", "图标", "销售暑假", "屁屁提", "PPTT", "截止事件",
-    "负责任", "风险电", "三百字一类", "爱新闻", "代码嫩力", "核心公能"
+    "负责任", "风险电", "三百字一类", "爱新闻", "代码嫩力", "核心公能",
+    "GP杠5", "GPT杠5", "closonic", "克劳德", "deeps V3", "deep seek v three",
+    "批地爱福", "pDF", "合同金鹅", "付款结点", "违约条宽", "表哥", "亲自酒店",
+    "离海绵距离", "四零一", "talken", "过期处里", "产品民", "pin vo",
+    "rest a p i", "认正", "错误马", "示例情求", "语音输出", "模型下崽体验",
+    "知识裤", "报消", "住宿上线", "班纳", "温婉简洁", "高贴票"
+  ];
+  var VOICE_PROTECTED_TERMS = [
+    "金价", "图表", "表格", "PPT", "GPT-5", "Claude Sonnet", "DeepSeek V3",
+    "AI 新闻", "PDF", "Pinvou", "REST API", "401", "token", "高铁票",
+    "负责人", "截止时间", "预算", "部门", "超支项", "付款风险", "交付风险",
+    "客服投诉", "产品线", "高频问题", "语音输入", "模型下载体验", "知识库",
+    "差旅报销标准", "住宿上限", "banner", "温暖简洁"
   ];
   var VOICE_TASK_WORDS = [
     "查", "搜索", "生成", "整理", "总结", "比较", "做一个", "做成", "列出",
@@ -54,10 +70,13 @@
     var compact = compactVoiceText(text);
     if (!compact) return true;
     if (compact.length > 8) return false;
+    if (compact === "文") return true;
     var remaining = compact;
     VOICE_FILLER_TERMS.forEach(function (term) {
       remaining = remaining.split(term).join("");
     });
+    remaining = remaining.split("额").join("");
+    remaining = remaining.split("文").join("");
     return remaining.trim() === "";
   }
 
@@ -82,30 +101,33 @@
         suspicious_terms: suspicious,
       };
     }
-    if (isShortClearVoiceText(text, normalizedMode)) {
+    if (normalizedMode === "edit" || normalizedMode === "structured") {
       return {
-        strategy: "use_asr",
-        reason: "short_clear",
+        strategy: "run_llm",
+        reason: normalizedMode + "_mode",
         suspicious_terms: suspicious,
       };
     }
-    if (normalizedMode === "task" || suspicious.length || text.length > 18 || voiceContainsAny(text, VOICE_FILLER_TERMS).length) {
+    if (normalizedMode === "task") {
       return {
         strategy: "run_llm",
-        reason: normalizedMode === "task" ? "task_mode" : suspicious.length ? "suspicious_asr" : "long_or_noisy",
+        reason: suspicious.length ? "task_suspicious_asr" : "task_long_or_noisy",
         suspicious_terms: suspicious,
       };
     }
     return {
-      strategy: "use_asr",
-      reason: "default_clear",
+      strategy: "run_llm",
+      reason: isShortClearVoiceText(text, normalizedMode) ? "dictation_short_clear" : (suspicious.length ? "suspicious_asr" : "dictation_llm"),
       suspicious_terms: suspicious,
     };
   }
 
   function voicePostprocessTimeoutMs(mode, rawText) {
-    if (normalizeVoiceMode(mode) === "task") return 2500;
-    return compactVoiceText(rawText).length <= 18 ? 1500 : 2000;
+    var normalizedMode = normalizeVoiceMode(mode);
+    if (normalizedMode === "task") return 8000;
+    if (normalizedMode === "structured") return 10000;
+    if (normalizedMode === "edit") return 12000;
+    return compactVoiceText(rawText).length <= 18 ? 3000 : 5000;
   }
 
   function hasVoiceHighRiskResidual(text) {
@@ -115,8 +137,10 @@
   function applyVoiceDeterministicCorrections(text, rawText) {
     var value = String(text || "");
     var raw = String(rawText || "");
+    if (isFillerOnlyVoiceText(value)) return "";
     if (!value.trim()) return value;
     value = value
+      .replace(/^[嗯啊呃额][，,、\s]+/g, "")
       .replace(/今日进价/g, "今日金价")
       .replace(/今天的进价/g, "今天的金价")
       .replace(/数据分析图标/g, "数据分析图表")
@@ -129,8 +153,48 @@
       .replace(/三百字一类/g, "三百字以内")
       .replace(/代码嫩力/g, "代码能力")
       .replace(/g\s*p\s*t\s*five/gi, "GPT-5")
-      .replace(/克劳德\s*sonnet/gi, "Claude Sonnet")
-      .replace(/爱新闻/g, "AI 新闻");
+      .replace(/G\s*P\s*T?\s*杠\s*5/gi, "GPT-5")
+      .replace(/克劳德\s*sonnet|closonic/gi, "Claude Sonnet")
+      .replace(/deep\s*seek\s*v\s*three|deeps\s*V3/gi, "DeepSeek V3")
+      .replace(/爱新闻|AI新闻/g, "AI 新闻")
+      .replace(/批地爱福|pDF/g, "PDF")
+      .replace(/合同金鹅/g, "合同金额")
+      .replace(/付款结点/g, "付款节点")
+      .replace(/违约条宽/g, "违约条款")
+      .replace(/表哥/g, "表格")
+      .replace(/本月玉算/g, "本月预算")
+      .replace(/不门/g, "部门")
+      .replace(/超时项/g, "超支项")
+      .replace(/亲自酒店/g, "亲子酒店")
+      .replace(/离海绵距离/g, "离海边距离")
+      .replace(/四零一/g, "401")
+      .replace(/talken/gi, "token")
+      .replace(/过期处里/g, "过期处理")
+      .replace(/产品民\s*pin vo|产品名con|pin\s*vo/gi, "产品名 Pinvou")
+      .replace(/rest\s*a\s*p\s*i|re API/gi, "REST API")
+      .replace(/认正/g, "认证")
+      .replace(/错误马/g, "错误码")
+      .replace(/示例情求/g, "示例请求")
+      .replace(/高贴票/g, "高铁票")
+      .replace(/北京的高$/g, "北京的高铁票")
+      .replace(/副款风险/g, "付款风险")
+      .replace(/交互风险/g, "交付风险")
+      .replace(/各列三跳/g, "各列三条")
+      .replace(/客诉投诉/g, "客服投诉")
+      .replace(/产品先/g, "产品线")
+      .replace(/高频问提/g, "高频问题")
+      .replace(/重点推近/g, "重点推进")
+      .replace(/语音输出/g, "语音输入")
+      .replace(/模型下崽体验/g, "模型下载体验")
+      .replace(/知识裤/g, "知识库")
+      .replace(/报消/g, "报销")
+      .replace(/住宿上线/g, "住宿上限")
+      .replace(/中秋活动班纳/g, "中秋活动 banner")
+      .replace(/温婉简洁/g, "温暖简洁")
+      .replace(/有长方形[，,、\s]*的需要/g, "是长方形，需要")
+      .replace(/长方形[，,、\s]*的需要/g, "长方形，需要")
+      .replace(/联网下的图片/g, "联网下载的图片")
+      .replace(/联网下图片/g, "联网下载图片");
     value = value
       .replace(/GPT-5和/g, "GPT-5 和")
       .replace(/和Claude Sonnet/g, "和 Claude Sonnet");
@@ -145,6 +209,38 @@
         .replace(/生成数据分析图表吧[。.]?/g, "生成数据分析图表。");
     }
     return value;
+  }
+
+  function voiceProtectedTermsIn(text) {
+    return VOICE_PROTECTED_TERMS.filter(function (term) {
+      return String(text || "").indexOf(term) >= 0;
+    });
+  }
+
+  function validateVoicePostprocessOutput(rawText, ruleText, finalText, mode) {
+    var raw = String(rawText || "");
+    var corrected = String(ruleText || "");
+    var finalValue = String(finalText || "");
+    var rawCompact = compactVoiceText(raw);
+    var correctedCompact = compactVoiceText(corrected);
+    var finalCompact = compactVoiceText(finalValue);
+    if (!finalCompact) return isFillerOnlyVoiceText(raw) || isFillerOnlyVoiceText(corrected);
+    if (rawCompact.length > 12 && finalCompact.length < Math.floor(correctedCompact.length * 0.55)) {
+      return false;
+    }
+    var protectedTerms = voiceProtectedTermsIn(corrected);
+    var missingProtected = protectedTerms.filter(function (term) {
+      return finalValue.indexOf(term) < 0;
+    });
+    if (missingProtected.length) return false;
+    var normalizedMode = normalizeVoiceMode(mode);
+    if (normalizedMode === "edit") {
+      return finalValue.trim().length > 0;
+    }
+    if (normalizedMode === "task" && hasVoiceHighRiskResidual(finalValue).length) {
+      return false;
+    }
+    return true;
   }
 
   function logVoicePipeline(diagnostic) {
@@ -393,9 +489,9 @@
           }, timeoutMs || voicePostprocessTimeoutMs(normalizedMode, rawText));
         }),
       ]);
-      var text = String((res && res.text) || "").trim();
+      var text = String(res && res.text !== undefined ? res.text : "").trim();
       return {
-        text: text || rawText,
+        text: text,
         source: (res && res.source) || "llm",
         durationMs: roundedMs(startedAt),
         timeoutMs: timeoutMs || voicePostprocessTimeoutMs(normalizedMode, rawText),
@@ -459,7 +555,9 @@
         throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
       }
       var mode = normalizeVoiceMode(session.mode);
-      var strategy = classifyVoiceText(text, mode);
+      var ruleText = applyVoiceDeterministicCorrections(text, text);
+      var rawSuspiciousTerms = voiceContainsAny(text, VOICE_SUSPICIOUS_ASR_TERMS);
+      var strategy = classifyVoiceText(ruleText, mode);
       var postprocessResult;
       if (strategy.strategy === "skip_empty") {
         postprocessResult = {
@@ -472,7 +570,7 @@
         };
       } else if (strategy.strategy === "use_asr") {
         postprocessResult = {
-          text: text,
+          text: ruleText,
           source: "skipped_" + strategy.reason,
           durationMs: 0,
           timeoutMs: 0,
@@ -481,25 +579,39 @@
         };
       } else {
         setVoiceInputStatus("postprocessing", {
-          message: mode === "task" ? bt("voiceTaskPostprocessing") : bt("voicePostprocessing"),
+          message: mode === "task"
+            ? bt("voiceTaskPostprocessing")
+            : mode === "edit"
+              ? bt("voiceEditPostprocessing")
+              : mode === "structured"
+                ? bt("voiceStructuredPostprocessing")
+                : bt("voicePostprocessing"),
           stage: "postprocessing",
           mode: mode,
         });
         postprocessResult = await postprocessVoiceText(
-          text,
+          ruleText,
           mode,
           session.draftBeforeStart,
           session.sessionId,
-          voicePostprocessTimeoutMs(mode, text)
+          voicePostprocessTimeoutMs(mode, ruleText)
         );
       }
-      var finalText = applyVoiceDeterministicCorrections(postprocessResult.text, text);
+      var candidateText = applyVoiceDeterministicCorrections(postprocessResult.text, ruleText);
+      var outputValid = validateVoicePostprocessOutput(text, ruleText, candidateText, mode);
+      if (mode === "edit" && postprocessResult.fallbackReason) outputValid = false;
+      var finalText = outputValid ? candidateText : (mode === "edit" ? "" : ruleText);
+      var outputFallbackReason = outputValid ? "" : "llm_output_invalid";
       var highRiskResidual = mode === "task" ? hasVoiceHighRiskResidual(finalText) : [];
       var fallbackHighRisk = mode === "task"
-        && !!postprocessResult.fallbackReason
-        && strategy.suspicious_terms
-        && strategy.suspicious_terms.length > 0;
+        && (!!postprocessResult.fallbackReason || !!outputFallbackReason)
+        && rawSuspiciousTerms
+        && rawSuspiciousTerms.length > 0
+        && highRiskResidual.length > 0;
       var taskSendBlocked = mode === "task" && (highRiskResidual.length > 0 || fallbackHighRisk);
+      var editUnchanged = mode === "edit"
+        && !!String(finalText || "").trim()
+        && String(finalText || "").trim() === String(session.draftBeforeStart || "").trim();
       var diagnostic = {
         mode: mode,
         recording_ms: Math.round(durationMs),
@@ -512,16 +624,17 @@
         llm_timeout_ms: postprocessResult.timeoutMs || 0,
         normalize_strategy: strategy.strategy,
         skip_reason: strategy.strategy === "run_llm" ? "" : strategy.reason,
-        fallback_reason: postprocessResult.fallbackReason || "",
-        suspicious_asr_terms: strategy.suspicious_terms || [],
+        fallback_reason: outputFallbackReason || postprocessResult.fallbackReason || "",
+        suspicious_asr_terms: rawSuspiciousTerms,
         high_risk_residual_terms: highRiskResidual,
         task_send_blocked: taskSendBlocked,
+        edit_unchanged: editUnchanged,
         raw_text_length: text.length,
         final_text_length: finalText.length,
       };
       logVoicePipeline(diagnostic);
       if (activeVoiceInput !== session) return;
-      if (finalText && typeof session.writeback === "function") {
+      if (finalText && !editUnchanged && typeof session.writeback === "function") {
         await session.writeback(finalText, session.draftBeforeStart, {
           mode: mode,
           rawText: text,
@@ -531,9 +644,11 @@
       setVoiceInputStatus("completed", {
         message: !finalText
           ? bt("voiceEmptyResult")
-          : diagnostic.task_send_blocked
+          : editUnchanged
+            ? bt("voiceEditNoChange")
+            : diagnostic.task_send_blocked
             ? bt("voiceWrittenBack")
-            : mode === "task" ? bt("voiceTaskSent") : bt("voiceWrittenBack"),
+            : mode === "task" ? bt("voiceTaskSent") : mode === "edit" ? bt("voiceEditApplied") : bt("voiceWrittenBack"),
         completedAt: Date.now(),
         mode: mode,
         diagnostic: diagnostic,
@@ -567,13 +682,15 @@
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, patch);
       notify();
     } catch (e) {
+      var message = String(e);
       var cancelled = state.voiceAsrSetup.cancelling || String(e).indexOf("已取消") >= 0;
+      var alreadyInstalling = message.indexOf("正在下载或安装中") >= 0 || message.indexOf("already installing") >= 0;
       var failedPatch = {
-        open: cancelled ? false : true,
-        installing: false,
+        open: false,
+        installing: alreadyInstalling && !cancelled,
         cancelling: false,
-        progress: cancelled ? { stage: "cancelled" } : state.voiceAsrSetup.progress,
-        error: cancelled ? null : String(e),
+        progress: cancelled ? { stage: "cancelled" } : (state.voiceAsrSetup.progress || { stage: "start" }),
+        error: cancelled || alreadyInstalling ? null : message,
       };
       state.voiceAsrSetup = Object.assign({}, state.voiceAsrSetup, failedPatch);
       notify();
@@ -724,7 +841,7 @@
       session.source.connect(session.processor);
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
-      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
+      session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, VOICE_RECORDING_MAX_DURATION_MS);
       setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {

@@ -6,8 +6,16 @@ const vm = require("vm");
 
 const bridgePath = path.join(__dirname, "..", "src", "platform", "tauri", "bridge", "voice.js");
 const source = fs.readFileSync(bridgePath, "utf8");
+const rustVoicePath = path.join(__dirname, "..", "src-tauri", "src", "app", "commands", "voice.rs");
+const rustVoiceSource = fs.readFileSync(rustVoicePath, "utf8");
 const chatPath = path.join(__dirname, "..", "src", "features", "chat", "ChatView.jsx");
 const chatSource = fs.readFileSync(chatPath, "utf8");
+const routerPath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceShortcutRouter.jsx");
+const routerSource = fs.readFileSync(routerPath, "utf8");
+const voiceControlsPath = path.join(__dirname, "..", "src", "features", "voice-composer", "VoiceComposerControls.jsx");
+const voiceControlsSource = fs.readFileSync(voiceControlsPath, "utf8");
+const voiceHookPath = path.join(__dirname, "..", "src", "features", "voice-composer", "useComposerVoiceInput.js");
+const voiceHookSource = fs.readFileSync(voiceHookPath, "utf8");
 // voice.js 的文案走 bridge.js 的 BT_TABLE（bt(key)，按语言取词、中文兜底）；
 // 这里从 bridge.js 抽出 zh 表构造 bt，保持断言面向真实文案。
 const bridgeMainSource = fs.readFileSync(path.join(__dirname, "..", "src", "platform", "tauri", "bridge.js"), "utf8");
@@ -69,13 +77,19 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("今天天气怎么样？", "dictation").strategy,
-  "use_asr",
-  "short clear dictation should skip LLM",
+  "run_llm",
+  "non-empty dictation should run LLM even when short and clear",
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("查一下今日进价，并生成数据分析图标。", "task").strategy,
   "run_llm",
   "task mode with suspicious ASR terms should run LLM",
+);
+assert.strictEqual(ruleContext.classifyVoiceText("查天气", "task").strategy, "run_llm");
+assert.deepStrictEqual(
+  ruleContext.classifyVoiceText("多一个海报，这个海报用于公司的年会海报里面需要有一些文字说清楚地点和时间，在北京下午3点12月16号需要联网下载一张图片，海报都足够的好看。然后海报查一下。", "task").strategy,
+  "run_llm",
+  "long multi-condition poster task must run LLM instead of using raw ASR",
 );
 assert.deepStrictEqual(
   Array.from(ruleContext.hasVoiceHighRiskResidual("查一下今日进价。")),
@@ -90,29 +104,103 @@ assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("把这段内容整理成表格，列出负责任、截止事件和状态。", ""),
   "把这段内容整理成表格，列出负责人、截止时间和状态。",
 );
-assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("task", "查一下今日金价。"), 2500);
+assert.strictEqual(
+  ruleContext.applyVoiceDeterministicCorrections("嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。", ""),
+  "做一张海报，这个海报是长方形，需要联网下载的图片。用于公司的下午茶需要有一些文字的内容。",
+);
+assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("task", "查一下今日金价。"), 8000);
+assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("structured", "整理一下今天的会议待办。"), 10000);
+assert.strictEqual(ruleContext.voicePostprocessTimeoutMs("edit", "把它改成三条要点。"), 12000);
+assert.deepStrictEqual(
+  ruleContext.classifyVoiceText("把这段改成三条要点。", "edit").strategy,
+  "run_llm",
+  "edit mode must always run LLM instead of appending the edit instruction",
+);
+assert.deepStrictEqual(
+  ruleContext.classifyVoiceText("第一整理会议第二提取风险第三明天发送。", "structured").strategy,
+  "run_llm",
+  "structured dictation must run LLM for list organization",
+);
+assert.deepStrictEqual(
+  ruleContext.classifyVoiceText("一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。", "dictation").strategy,
+  "run_llm",
+  "long poster dictation from Alt or mic must run LLM",
+);
+assert.match(rustVoiceSource, /内容很多、包含多个条件、多个意图或明显任务槽位时，整理成 Markdown 列表/);
+assert.match(rustVoiceSource, /12月36日下午3点/);
+assert.match(rustVoiceSource, /model returned empty output/);
+assert.match(
+  rustVoiceSource,
+  /VoiceReasoningDialect::ThinkingDisabled[\s\S]*body\["thinking"\] = json!\(\{ "type": "disabled" \}\)/,
+  "voice postprocess must disable thinking for DeepSeek-style providers",
+);
+assert.match(
+  rustVoiceSource,
+  /VoiceReasoningDialect::QwenEnableThinking[\s\S]*body\["enable_thinking"\] = json!\(false\)/,
+  "voice postprocess must disable Qwen thinking with enable_thinking=false",
+);
+assert.match(
+  rustVoiceSource,
+  /retry_empty_output[\s\S]*call_voice_postprocess_model\([\s\S]*true,[\s\S]*2,/,
+  "voice postprocess must retry once with the retry prompt after empty LLM output",
+);
+assert.match(
+  rustVoiceSource,
+  /request attempt=\{\}/,
+  "voice postprocess logs must include request attempt number",
+);
+assert.match(
+  rustVoiceSource,
+  /retry_unchanged_output/,
+  "edit postprocess must retry when the model returns the original draft unchanged",
+);
+assert.match(
+  rustVoiceSource,
+  /completed mode=\{\} raw_len=\{\} draft_len=\{\} output_len=\{\} changed=\{\}/,
+  "voice postprocess completed logs must include whether edit output changed",
+);
+assert.match(
+  source,
+  /editUnchanged[\s\S]*edit_unchanged: editUnchanged[\s\S]*voiceEditNoChange/,
+  "voice bridge must expose unchanged edit diagnostics and a visible no-change status",
+);
 assert.doesNotMatch(source, /raw_text:\s*text/, "voice diagnostics must not persist raw ASR text");
 assert.doesNotMatch(source, /final_text:\s*finalText/, "voice diagnostics must not persist postprocessed text");
 assert.match(source, /raw_text_length:\s*text\.length/, "voice diagnostics should retain raw text length");
 assert.match(source, /final_text_length:\s*finalText\.length/, "voice diagnostics should retain final text length");
 assert.match(
   source,
+  /VOICE_RECORDING_MAX_DURATION_MS = 60000/,
+  "single voice recording must allow up to 60 seconds before auto-finish",
+);
+assert.match(
+  source,
+  /setTimeout\(function \(\) \{ finishVoiceInput\(false, true\); \}, VOICE_RECORDING_MAX_DURATION_MS\)/,
+  "recording auto-finish must use the named 60s max duration constant",
+);
+assert.match(
+  source,
   /fallbackHighRisk[\s\S]*taskSendBlocked[\s\S]*fallbackHighRisk/,
   "task mode must block sending when LLM fallback leaves high-risk ASR terms",
 );
 assert.match(
-  chatSource,
-  /if \(!voiceShortcutEnabledRef\.current && !\(event && event\.key === 'Escape'\)\) return;/,
+  source,
+  /mode === "edit" && postprocessResult\.fallbackReason[\s\S]*outputValid = false/,
+  "edit mode must not write the edit instruction back when LLM postprocess fails",
+);
+assert.match(
+  routerSource,
+  /const shortcutEnabled = voiceShortcutEnabled\(\);[\s\S]*?if \(!shortcutEnabled && !\(event && event\.key === 'Escape'\)\) return;/,
   "web voice shortcut keydown must be gated by explicit user opt-in",
 );
 assert.match(
-  chatSource,
-  /if \(!voiceShortcutEnabledRef\.current\) \{[\s\S]*?clearPendingShortcutFlag\('space'\);[\s\S]*?return;[\s\S]*?\}/,
+  routerSource,
+  /if \(!voiceShortcutEnabled\(\)\) \{[\s\S]*?clearPendingShortcutFlag\('space'\);[\s\S]*?return;[\s\S]*?\}/,
   "web voice shortcut keyup must ignore disabled shortcuts and clear pending space state",
 );
 assert.match(
-  chatSource,
-  /voiceShortcutPendingRef\.current = null;\s*if \(!voiceShortcutEnabledRef\.current\) return;[\s\S]*?const payload/,
+  routerSource,
+  /listenTauri\('voice-shortcut:trigger'[\s\S]*?pendingRef\.current = null;\s*if \(!voiceShortcutEnabled\(\)\) return;[\s\S]*?const payload/,
   "native voice shortcut trigger must be gated by explicit user opt-in",
 );
 assert.match(
@@ -127,8 +215,53 @@ assert.match(
 );
 assert.match(
   chatSource,
-  /function continuePendingVoiceAfterIntro\(\) \{[\s\S]*?pendingVoiceAfterIntroRef\.current = null;[\s\S]*?handleVoiceTrigger\(pending\.mode\);[\s\S]*?\}/,
+  /function continuePendingVoiceAfterIntro\(\) \{[\s\S]*?pendingVoiceAfterIntroRef\.current = null;[\s\S]*?handleVoiceTrigger\(pending\.mode,\s*\{ skipBeforeStart: true \}\);[\s\S]*?\}/,
   "closing or enabling the intro must continue the pending voice action exactly once",
+);
+assert.match(
+  voiceHookSource,
+  /const sessionId = createVoiceSessionId\(current\.targetId\);[\s\S]*?voiceSessionIdRef\.current = sessionId;[\s\S]*?setVoiceSessionId\(sessionId\);/,
+  "shared composer voice hook must create a voiceSessionId when recording starts",
+);
+assert.match(
+  voiceHookSource,
+  /if \(!targetId \|\| !isActiveVoiceTarget\(targetId, sessionId\)\) \{[\s\S]*?clearStaleVoiceState\(targetId, sessionId\);[\s\S]*?return;/,
+  "shared composer voice hook must reject late writeback for inactive targets",
+);
+assert.match(
+  voiceHookSource,
+  /voiceSessionId,[\s\S]*?workspaceId: current\.workspaceId,[\s\S]*?sessionId: current\.sessionId,/,
+  "registered voice targets must carry voiceSessionId and context",
+);
+assert.match(
+  voiceHookSource,
+  /if \(mode === 'edit'\) \{[\s\S]*?current\.setDraft\(next\);[\s\S]*?setEditPreview\(null\);[\s\S]*?return;/,
+  "edit mode must directly replace the draft after LLM succeeds",
+);
+assert.match(
+  voiceHookSource,
+  /next === original[\s\S]*onEditUnchanged/,
+  "edit mode must not silently swallow unchanged model output",
+);
+assert.match(
+  voiceHookSource,
+  /applyVoiceEditPreview[\s\S]*?current\.setDraft\(next\)/,
+  "legacy voice edit preview apply should remain available for stale preview state",
+);
+assert.match(
+  voiceHookSource,
+  /const cancelVoiceOrPreview = useCallback[\s\S]*?editPreviewRef\.current[\s\S]*?setEditPreview\(null\)[\s\S]*?cancelVoiceInput\(\)/,
+  "global voice cancel must dismiss an edit preview before cancelling an active recording",
+);
+assert.match(
+  chatSource,
+  /resolveMode: \(mode, context\) => \{[\s\S]*?mode === 'dictation'[\s\S]*?context\.source !== 'button'[\s\S]*?return 'edit';/,
+  "Alt dictation with existing chat draft must enter voice edit mode",
+);
+assert.match(
+  chatSource,
+  /<VoiceEditPreview[\s\S]*?onApply=\{\(\) => chatVoice\.applyVoiceEditPreview\(\)\}[\s\S]*?onApplyAndSend=\{\(\) => chatVoice\.applyVoiceEditPreview\(\{ send: true \}\)\}/,
+  "chat composer must render the voice edit confirmation preview",
 );
 assert.doesNotMatch(
   chatSource,
@@ -191,9 +324,9 @@ vm.runInContext(
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.strictEqual(stoppedTracks, 1, "late microphone stream must be stopped after timeout");
 
-  assert.match(chatSource, /const voiceBusy = voiceInput\.status === 'transcribing' \|\| voiceInput\.status === 'postprocessing'/);
+  assert.match(chatSource, /const voiceBusy = isVoiceBusy\(voiceInput\)/);
   assert.match(
-    chatSource,
+    voiceHookSource,
     /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.voice\.cancelVoiceInput\(\);[\s\S]*?return;/,
   );
 
@@ -229,8 +362,18 @@ vm.runInContext(
     "automatic ASR install must use the mic loading button instead of opening the centered setup dialog",
   );
   assert.match(
+    source.slice(installVoiceAsrAt, installVoiceAsrAt + 1000),
+    /alreadyInstalling[\s\S]*?open:\s*false,[\s\S]*?installing:\s*alreadyInstalling && !cancelled/,
+    "duplicate ASR install attempts must stay in mic loading state instead of reopening the setup dialog",
+  );
+  assert.match(
     chatSource,
-    /voiceAsrBusy && voiceAsrPopoverOpen[\s\S]*?bridge\.voice\.cancelVoiceAsrSetup\(\)/,
+    /voiceAsrSetup\.open && canInstallLocalAsr && !voiceAsrSetup\.status\?\.installable/,
+    "installable ASR downloads must not render the centered setup confirmation dialog",
+  );
+  assert.match(
+    chatSource + voiceControlsSource,
+    /voiceAsrPopoverOpen[\s\S]*?onCancelAsr[\s\S]*?bridge\.voice\.cancelVoiceAsrSetup\(\)/,
     "ASR install progress and cancellation should be available from the mic loading popover",
   );
 

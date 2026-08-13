@@ -2,7 +2,7 @@ use super::prelude::*;
 use anyhow::{Context, Result as AnyResult};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceTranscriptionRequest {
@@ -382,21 +382,72 @@ pub async fn transcribe_voice_audio(
 fn normalize_voice_postprocess_mode(mode: &str) -> &'static str {
     match mode.trim() {
         "task" | "rewrite" | "task_rewrite" => "task",
+        "structured" | "list" | "structured_dictation" => "structured",
+        "edit" | "voice_edit" | "draft_edit" => "edit",
         _ => "dictation",
     }
 }
 
 fn voice_postprocess_prompt(mode: &str) -> &'static str {
-    if mode == "task" {
-        r#"你是 Pinvou 的语音 ASR 纠错器，只负责把 ASR 文本纠正为用户原本想说的话。
+    if mode == "edit" {
+        r#"你是 Pinvou 的语音编辑器。你的唯一职责是根据用户的语音修改指令，改写“当前输入框已有文本”。
+
+强规则：
+1. 不回答问题，不执行任务，只输出修改后的完整输入框文本。
+2. ASR 文本是修改指令，不是要追加到正文里的内容，除非用户明确说“加上/追加/补充”。
+3. 必须保留原文中未被修改指令涉及的信息。
+4. 不新增用户没说过的事实、时间、数量、条件、工具或结论。
+5. 用户要求改成要点、列表或几条时，可以重排为 Markdown 列表。
+6. 用户要求删除某条时，只删除明确指定的内容。
+7. 用户要求替换实体时，只做对应替换。
+8. 如果修改指令为空、纯噪声或无法理解，输出原文。
+9. 只输出最终文本，不解释，不包裹代码块。
+
+示例：
+当前输入框已有文本：
+帮我整理会议纪要，提取风险和待办，明天发给团队。
+
+ASR 文本：
+把它改成三条要点。
+
+最终文本：
+- 整理会议纪要。
+- 提取风险和待办。
+- 明天发给团队。"#
+    } else if mode == "structured" {
+        r#"你是 Pinvou 的结构化语音整理器。你的唯一职责是把 ASR 口语文本整理为清晰条目。
+
+强规则：
+1. 不回答问题，不执行任务。
+2. 去掉口头禅、重复表达和犹豫词。
+3. 把多个意图拆成独立 Markdown 列表条目。
+4. 单句清晰输入不要强行拆条。
+5. 必须保留任务槽位：动作、对象、时间、数量、格式、限制条件、输出形态。
+6. 不新增用户没说过的信息。
+7. 不把用户任务改写成 Agent 回答。
+8. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、Pinvou。
+9. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
+10. 只输出最终文本，不解释。
+
+示例：
+ASR 文本：嗯帮我整理一下昨天会议吧那个提取三个风险点然后明天下午三点前发给项目群。
+最终文本：
+- 整理昨天的会议内容。
+- 提取 3 个风险点。
+- 明天下午三点前发给项目群。"#
+    } else if mode == "task" {
+        r#"你是 Pinvou 的语音任务纠错器。你的唯一职责是把 ASR 文本纠正为用户原本想交给 Agent 执行的任务。
 
 强规则：
 1. 不回答问题，不执行任务。
 2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
-3. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
-4. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
-5. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是”等口头禅，才输出空字符串。
-6. 优先纠正上下文中明显 ASR 错词：
+3. 必须保留任务槽位：动作、对象、时间、数量、格式、限制条件、输出形态。
+4. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
+5. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
+6. 禁止截断句子；如果不确定，只做最小纠错并保留原句结构。
+7. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、Pinvou。
+8. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
+9. 优先纠正上下文中明显 ASR 错词：
    - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
    - 数据分析可视化里的“图标”通常应修为“图表”
    - “屁屁提/PPTT”通常应修为“PPT”
@@ -404,28 +455,39 @@ fn voice_postprocess_prompt(mode: &str) -> &'static str {
    - “截止事件”通常应修为“截止时间”
    - “负责任”通常应修为“负责人”
    - “风险电”通常应修为“风险点”
-   - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
-   - 搜索“爱新闻”通常应修为“AI 新闻”
-7. 去掉口头禅、重复词和误识别语气词。
-8. 只输出最终文本，不解释，不使用 Markdown。
+   - “表哥”通常应修为“表格”
+   - “四零一/talken/过期处里”通常应修为“401/token/过期处理”
+   - “批地爱福/pDF”通常应修为“PDF”
+   - “g p t five/GP杠5”通常应修为“GPT-5”，“closonic/克劳德 sonnet”通常应修为“Claude Sonnet”
+   - “deeps V3/deep seek v three”通常应修为“DeepSeek V3”
+   - 搜索“爱新闻/AI新闻”通常应修为“AI 新闻”
+10. 对明显口语断裂做最小顺句，例如“有长方形，的需要联网下的图片”应整理为“是长方形，需要联网下载图片”。
+11. 去掉口头禅、重复词和误识别语气词。
+12. 只输出最终任务文本，不解释，不使用 Markdown。
 
 示例：
-ASR 文本：今天天气怎么样？
-最终文本：今天天气怎么样？
-ASR 文本：嗯。
-最终文本：
-ASR 文本：搜索一下今天的爱新闻，按重要性排序。
-最终文本：搜索一下今天的 AI 新闻，按重要性排序。"#
+ASR 文本：查一下今日进价并生成数据分析图标。
+最终文本：查一下今日金价并生成数据分析图表。
+ASR 文本：比较GP杠5mini和deeps V3的调用成本。
+最终文本：比较 GPT-5 mini 和 DeepSeek V3 的调用成本。
+ASR 文本：嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。
+最终文本：做一张用于公司下午茶的长方形海报，需要联网下载图片，并包含文案内容。
+ASR 文本：文。
+最终文本："#
     } else {
-        r#"你是 Pinvou 的语音 ASR 纠错器，只负责把 ASR 文本纠正为用户原本想说的话。
+        r#"你是 Pinvou 的语音听写整理器。你的唯一职责是把 ASR 文本纠正并整理为用户原本想输入到文本框里的内容。
 
 强规则：
 1. 不回答问题，不执行任务。
 2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
-3. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
-4. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
-5. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是”等口头禅，才输出空字符串。
-6. 优先纠正上下文中明显 ASR 错词：
+3. 先去掉口头禅、重复词和误识别语气词，再修明显 ASR 错词。
+4. 内容很短且单一时，输出一条自然句。
+5. 内容很多、包含多个条件、多个意图或明显任务槽位时，整理成 Markdown 列表。
+6. 整理成列表时必须保留任务槽位：动作、对象、时间、数量、格式、限制条件、输出形态。
+5. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
+7. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
+8. 日期、时间、地点按用户原话保留；即使看起来不合理，也不能擅自修正或删除。
+9. 优先纠正上下文中明显 ASR 错词：
    - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
    - 数据分析可视化里的“图标”通常应修为“图表”
    - “屁屁提/PPTT”通常应修为“PPT”
@@ -435,8 +497,7 @@ ASR 文本：搜索一下今天的爱新闻，按重要性排序。
    - “风险电”通常应修为“风险点”
    - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
    - 搜索“爱新闻”通常应修为“AI 新闻”
-7. 去掉口头禅、重复词和误识别语气词。
-8. 只输出最终文本，不解释，不使用 Markdown。
+10. 只输出最终文本，不解释。
 
 示例：
 ASR 文本：今天天气怎么样？
@@ -444,13 +505,24 @@ ASR 文本：今天天气怎么样？
 ASR 文本：嗯。
 最终文本：
 ASR 文本：搜索一下今天的爱新闻，按重要性排序。
-最终文本：搜索一下今天的 AI 新闻，按重要性排序。"#
+最终文本：搜索一下今天的 AI 新闻，按重要性排序。
+ASR 文本：一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。
+最终文本：
+- 制作一张用于公司年会的长方形海报。
+- 时间：12月36日下午3点。
+- 需要联网下载一张图片。
+- 图片尽量好看，并突出员工协作。
+- 海报需要红色背景。
+- 海报上需要包含少量文字。"#
     }
 }
 
 fn voice_postprocess_timeout(mode: &str, raw_text: &str) -> Duration {
-    if normalize_voice_postprocess_mode(mode) == "task" {
-        return Duration::from_millis(2500);
+    match normalize_voice_postprocess_mode(mode) {
+        "task" => return Duration::from_millis(8000),
+        "structured" => return Duration::from_millis(10000),
+        "edit" => return Duration::from_millis(12000),
+        _ => {}
     }
     let compact_len = raw_text
         .chars()
@@ -459,9 +531,9 @@ fn voice_postprocess_timeout(mode: &str, raw_text: &str) -> Duration {
         })
         .count();
     if compact_len <= 18 {
-        Duration::from_millis(1500)
+        Duration::from_millis(3000)
     } else {
-        Duration::from_millis(2000)
+        Duration::from_millis(5000)
     }
 }
 
@@ -478,6 +550,32 @@ fn voice_postprocess_user_content(raw_text: &str, draft_text: Option<&str>) -> S
     }
 }
 
+fn voice_postprocess_retry_prompt(mode: &str) -> &'static str {
+    if mode == "edit" {
+        "你是语音编辑器。当前输入框已有文本是正文，ASR 文本是修改指令，不是要追加的正文。必须根据 ASR 指令修改正文，并只输出修改后的完整正文。除非 ASR 是纯口头禅、纯噪声或完全无法理解，否则禁止原样输出当前输入框已有文本。禁止解释，禁止空输出。"
+    } else if mode == "structured" {
+        "你是语音整理器。把 ASR 口语整理成清晰 Markdown 列表。保留动作、对象、时间、地点、格式、限制条件。禁止新增事实。必须只输出最终文本，禁止空输出；除非 ASR 是纯口头禅或纯噪声。"
+    } else if mode == "task" {
+        "你是语音任务纠错器。把 ASR 纠正为用户要交给 Agent 执行的任务。保留所有时间、地点、格式和限制条件。禁止新增事实。必须只输出最终任务文本，禁止空输出；除非 ASR 是纯口头禅或纯噪声。"
+    } else {
+        "你是语音听写整理器。把 ASR 纠正为用户想输入的文本。内容很多、多条件或多意图时整理成 Markdown 列表；短句输出自然句。保留所有时间、地点、格式和限制条件。禁止新增事实。必须只输出最终文本，禁止空输出；除非 ASR 是纯口头禅或纯噪声。"
+    }
+}
+
+fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
+    let base = match mode {
+        "edit" => 768,
+        "structured" => 512,
+        "task" => 384,
+        _ => 384,
+    };
+    if retry {
+        base + 128
+    } else {
+        base
+    }
+}
+
 fn sanitize_voice_postprocess_output(text: &str) -> String {
     text.trim()
         .trim_matches('\u{feff}')
@@ -485,6 +583,157 @@ fn sanitize_voice_postprocess_output(text: &str) -> String {
         .trim_matches('\'')
         .trim()
         .to_string()
+}
+
+fn voice_postprocess_changed(mode: &str, text: &str, draft_text: Option<&str>) -> bool {
+    if mode != "edit" {
+        return true;
+    }
+    let draft = draft_text.unwrap_or("").trim();
+    if draft.is_empty() {
+        return true;
+    }
+    text.trim() != draft
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceReasoningDialect {
+    None,
+    ThinkingDisabled,
+    QwenEnableThinking,
+    VllmChatTemplate,
+    Minimax,
+}
+
+fn apply_voice_reasoning_controls(
+    body: &mut Value,
+    preset: crate::platform::prefs::ModelPreset,
+    provider: &str,
+    base_url: &str,
+    model: &str,
+) {
+    match voice_reasoning_dialect(preset, provider, base_url, model) {
+        VoiceReasoningDialect::ThinkingDisabled => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+        VoiceReasoningDialect::QwenEnableThinking => {
+            body["enable_thinking"] = json!(false);
+        }
+        VoiceReasoningDialect::VllmChatTemplate => {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        }
+        VoiceReasoningDialect::Minimax => {
+            body["thinking"] = json!({ "type": "disabled" });
+            body["reasoning_split"] = json!(true);
+        }
+        VoiceReasoningDialect::None => {}
+    }
+}
+
+fn voice_reasoning_dialect(
+    preset: crate::platform::prefs::ModelPreset,
+    provider: &str,
+    base_url: &str,
+    model: &str,
+) -> VoiceReasoningDialect {
+    if provider == "vllm" || preset == crate::platform::prefs::ModelPreset::LocalVllm {
+        return VoiceReasoningDialect::VllmChatTemplate;
+    }
+    if provider == "deepseek" || preset == crate::platform::prefs::ModelPreset::Deepseek {
+        return VoiceReasoningDialect::ThinkingDisabled;
+    }
+
+    match preset {
+        crate::platform::prefs::ModelPreset::Kimi => {
+            if voice_kimi_supports_disabled_thinking(model) {
+                VoiceReasoningDialect::ThinkingDisabled
+            } else {
+                VoiceReasoningDialect::None
+            }
+        }
+        crate::platform::prefs::ModelPreset::Qwen => VoiceReasoningDialect::QwenEnableThinking,
+        crate::platform::prefs::ModelPreset::Doubao
+        | crate::platform::prefs::ModelPreset::Glm
+        | crate::platform::prefs::ModelPreset::Mimo => VoiceReasoningDialect::ThinkingDisabled,
+        crate::platform::prefs::ModelPreset::Minimax => VoiceReasoningDialect::Minimax,
+        crate::platform::prefs::ModelPreset::OpenaiCompatible
+        | crate::platform::prefs::ModelPreset::LocalVllm
+        | crate::platform::prefs::ModelPreset::Deepseek
+        | crate::platform::prefs::ModelPreset::Openai
+        | crate::platform::prefs::ModelPreset::Anthropic
+        | crate::platform::prefs::ModelPreset::Gemini
+        | crate::platform::prefs::ModelPreset::Xai => {
+            voice_reasoning_dialect_from_base_url(base_url, model)
+        }
+    }
+}
+
+#[allow(clippy::if_same_then_else)]
+fn voice_reasoning_dialect_from_base_url(base_url: &str, model: &str) -> VoiceReasoningDialect {
+    let normalized = base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/chat/completions")
+        .trim_end_matches("/v1")
+        .to_ascii_lowercase();
+
+    if normalized.contains("api.deepseek.com") || normalized.contains("api.deepseeki.com") {
+        VoiceReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("dashscope.aliyuncs.com") {
+        VoiceReasoningDialect::QwenEnableThinking
+    } else if normalized.contains("moonshot.cn") || normalized.contains("moonshot.ai") {
+        if voice_kimi_supports_disabled_thinking(model) {
+            VoiceReasoningDialect::ThinkingDisabled
+        } else {
+            VoiceReasoningDialect::None
+        }
+    } else if normalized.contains("volces.com")
+        || normalized.contains("volcengine")
+        || normalized.contains("byteplus.com")
+    {
+        VoiceReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("minimax.chat") || normalized.contains("minimaxi.com") {
+        VoiceReasoningDialect::Minimax
+    } else if normalized.contains("bigmodel.cn") || normalized.contains("z.ai") {
+        VoiceReasoningDialect::ThinkingDisabled
+    } else if normalized.contains("xiaomimimo.com") {
+        VoiceReasoningDialect::ThinkingDisabled
+    } else {
+        VoiceReasoningDialect::None
+    }
+}
+
+fn voice_kimi_supports_disabled_thinking(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
+        && !model.contains("thinking")
+        && !model.contains("k2.7")
+}
+
+fn voice_chat_message_text(value: &Value) -> String {
+    let Some(message) = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+    else {
+        return String::new();
+    };
+    if let Some(content) = message.get("content").and_then(Value::as_str) {
+        return content.to_string();
+    }
+    if let Some(parts) = message.get("content").and_then(Value::as_array) {
+        return parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .or_else(|| part.get("content"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    String::new()
 }
 
 async fn voice_postprocess_bridge(
@@ -515,9 +764,12 @@ async fn call_voice_postprocess_model(
     mode: &str,
     raw_text: &str,
     draft_text: Option<&str>,
+    retry: bool,
+    attempt: u8,
 ) -> AnyResult<String> {
+    let timeout = voice_postprocess_timeout(mode, raw_text);
     let client = Client::builder()
-        .timeout(voice_postprocess_timeout(mode, raw_text))
+        .timeout(timeout)
         .build()
         .context("build voice postprocess client")?;
     let base_url = bridge.base_url();
@@ -529,7 +781,21 @@ async fn call_voice_postprocess_model(
     } else {
         bridge.model()
     };
-    let system = voice_postprocess_prompt(mode);
+    log::info!(
+        target: "pinvou.voice",
+        "[voice_postprocess] request attempt={} mode={} provider={} model={} timeout_ms={} draft_present={}",
+        attempt,
+        mode,
+        bridge.provider(),
+        model_name,
+        timeout.as_millis(),
+        draft_text.map(|text| !text.trim().is_empty()).unwrap_or(false)
+    );
+    let system = if retry {
+        voice_postprocess_retry_prompt(mode)
+    } else {
+        voice_postprocess_prompt(mode)
+    };
     let user = voice_postprocess_user_content(raw_text, draft_text);
     let preset = bridge
         .effective_model_owned()
@@ -544,22 +810,29 @@ async fn call_voice_postprocess_model(
             &model_name,
             system,
             &user,
-            128,
+            voice_postprocess_max_tokens(mode, retry),
         )
         .await?;
         return Ok(sanitize_voice_postprocess_output(&content));
     }
 
-    let body = json!({
+    let mut body = json!({
         "model": model_name,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user }
         ],
         "temperature": 0,
-        "max_tokens": 128,
+        "max_tokens": voice_postprocess_max_tokens(mode, retry),
         "stream": false
     });
+    apply_voice_reasoning_controls(
+        &mut body,
+        preset,
+        &bridge.provider(),
+        &base_url,
+        &model_name,
+    );
     let resp = client
         .post(format!(
             "{}/chat/completions",
@@ -576,15 +849,8 @@ async fn call_voice_postprocess_model(
         .json()
         .await
         .context("parse voice postprocess response json")?;
-    let content = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    Ok(sanitize_voice_postprocess_output(content))
+    let content = voice_chat_message_text(&value);
+    Ok(sanitize_voice_postprocess_output(&content))
 }
 
 #[tauri::command]
@@ -593,27 +859,135 @@ pub async fn postprocess_voice_text(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<VoicePostprocessResponse, String> {
+    let started_at = Instant::now();
     let raw_text = request.text.trim();
+    let mode = normalize_voice_postprocess_mode(&request.mode);
+    let draft_len = request
+        .draft_text
+        .as_deref()
+        .map(|text| text.trim().chars().count())
+        .unwrap_or(0);
     if raw_text.is_empty() {
+        log::info!(
+            target: "pinvou.voice",
+            "[voice_postprocess] skipped_empty mode={} elapsed_ms={}",
+            mode,
+            started_at.elapsed().as_millis()
+        );
         return Ok(VoicePostprocessResponse {
             text: String::new(),
-            mode: normalize_voice_postprocess_mode(&request.mode).to_string(),
+            mode: mode.to_string(),
             source: "empty".to_string(),
         });
     }
-    let mode = normalize_voice_postprocess_mode(&request.mode);
-    let bridge = voice_postprocess_bridge(request.session_id.as_deref(), &pool, &store)
-        .await
-        .map_err(|error| format!("prepare voice postprocess model: {error:#}"))?;
-    let text = call_voice_postprocess_model(&bridge, mode, raw_text, request.draft_text.as_deref())
-        .await
-        .map_err(|error| format!("voice postprocess failed: {error:#}"))?;
-    Ok(VoicePostprocessResponse {
-        text: if text.trim().is_empty() {
-            raw_text.to_string()
+    let bridge = match voice_postprocess_bridge(request.session_id.as_deref(), &pool, &store).await
+    {
+        Ok(bridge) => bridge,
+        Err(error) => {
+            log::warn!(
+                target: "pinvou.voice",
+                "[voice_postprocess] prepare_failed mode={} raw_len={} draft_len={} elapsed_ms={} error={:#}",
+                mode,
+                raw_text.chars().count(),
+                draft_len,
+                started_at.elapsed().as_millis(),
+                error
+            );
+            return Err(format!("prepare voice postprocess model: {error:#}"));
+        }
+    };
+    let text = match call_voice_postprocess_model(
+        &bridge,
+        mode,
+        raw_text,
+        request.draft_text.as_deref(),
+        false,
+        1,
+    )
+    .await
+    {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!(
+                target: "pinvou.voice",
+                "[voice_postprocess] failed mode={} raw_len={} draft_len={} elapsed_ms={} error={:#}",
+                mode,
+                raw_text.chars().count(),
+                draft_len,
+                started_at.elapsed().as_millis(),
+                error
+            );
+            return Err(format!("voice postprocess failed: {error:#}"));
+        }
+    };
+    let text = if text.trim().is_empty()
+        || !voice_postprocess_changed(mode, &text, request.draft_text.as_deref())
+    {
+        let retry_reason = if text.trim().is_empty() {
+            "retry_empty_output"
         } else {
-            text
-        },
+            "retry_unchanged_output"
+        };
+        log::warn!(
+            target: "pinvou.voice",
+            "[voice_postprocess] {} mode={} raw_len={} draft_len={} elapsed_ms={}",
+            retry_reason,
+            mode,
+            raw_text.chars().count(),
+            draft_len,
+            started_at.elapsed().as_millis()
+        );
+        match call_voice_postprocess_model(
+            &bridge,
+            mode,
+            raw_text,
+            request.draft_text.as_deref(),
+            true,
+            2,
+        )
+        .await
+        {
+            Ok(text) if !text.trim().is_empty() => text,
+            Ok(_) => {
+                log::warn!(
+                    target: "pinvou.voice",
+                    "[voice_postprocess] empty_output mode={} raw_len={} draft_len={} elapsed_ms={}",
+                    mode,
+                    raw_text.chars().count(),
+                    draft_len,
+                    started_at.elapsed().as_millis()
+                );
+                return Err("voice postprocess failed: model returned empty output".to_string());
+            }
+            Err(error) => {
+                log::warn!(
+                    target: "pinvou.voice",
+                    "[voice_postprocess] failed mode={} raw_len={} draft_len={} elapsed_ms={} error={:#}",
+                    mode,
+                    raw_text.chars().count(),
+                    draft_len,
+                    started_at.elapsed().as_millis(),
+                    error
+                );
+                return Err(format!("voice postprocess failed: {error:#}"));
+            }
+        }
+    } else {
+        text
+    };
+    let changed = voice_postprocess_changed(mode, &text, request.draft_text.as_deref());
+    log::info!(
+        target: "pinvou.voice",
+        "[voice_postprocess] completed mode={} raw_len={} draft_len={} output_len={} changed={} elapsed_ms={}",
+        mode,
+        raw_text.chars().count(),
+        draft_len,
+        text.chars().count(),
+        changed,
+        started_at.elapsed().as_millis()
+    );
+    Ok(VoicePostprocessResponse {
+        text,
         mode: mode.to_string(),
         source: "llm".to_string(),
     })

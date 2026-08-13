@@ -33,6 +33,11 @@ assert.deepStrictEqual(
   { type: 'pending_alt' },
 );
 assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingAlt: true }),
+  { type: 'pending_alt' },
+  'holding Alt should remain pending until keyup instead of starting recording',
+);
+assert.deepStrictEqual(
   voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: true }),
   { type: 'trigger', mode: 'dictation' },
 );
@@ -79,6 +84,11 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task' }),
   { type: 'cancel' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'idle' }),
+  { type: 'none' },
+  'Escape must not be treated as a global idle shortcut',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altSpace({ repeat: true }), { status: 'idle' }),

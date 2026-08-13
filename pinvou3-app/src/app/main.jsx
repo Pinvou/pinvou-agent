@@ -22,6 +22,7 @@ import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundar
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
+import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
@@ -1647,6 +1648,7 @@ function workspaceDisplayName(path) {
             paddingLeft: 'env(safe-area-inset-left)',
           } : undefined}>
 
+          <VoiceShortcutRouter />
           <WebConnectionStatus theme={activeTheme} t={t} />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
