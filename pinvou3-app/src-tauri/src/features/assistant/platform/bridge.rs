@@ -2779,40 +2779,66 @@ mod tests {
     /// 不得包含输出上限 env。lib.rs `release_env_defaults_guard` 只覆盖 run() 的
     /// release env 注入路径；若未来有人在 boot 路径直接 set_var
     /// `DEEPSEEK_MAX_OUTPUT_TOKENS`，那边的守卫抓不到——故把 boot 的 env 写入收口到
-    /// `wire_boot_env` 单一源头，并在**隔离 PINVOU3_HOME + HOME 下实际执行
-    /// `Pinvou3Bridge::boot()`** 后断言最终 env 状态：无论注入发生在 boot 哪一行，
-    /// 只要重新注入 24576，守卫即失败。
+    /// `wire_boot_env` 单一源头，并在**隔离 home 下实际执行 `Pinvou3Bridge::boot()`**
+    /// 后断言最终 env 状态：无论注入发生在 boot 哪一行，只要重新注入 24576，守卫即失败。
     ///
     /// 第四轮评审此前指出：旧版守卫只直接调用 `wire_boot_env` helper，wire_boot_env
     /// 不是由类型/编译器强制的唯一 env 写入口，未来若有人在 boot 其他位置直接
     /// set_var、重建旧 helper 或调用其他 helper，该测试仍会通过。本版改为跑真实
     /// boot：boot 在隔离临时目录下执行（bundle 解包 / settings 写入 / legacy 清扫全落
-    /// 隔离目录，不触碰真实 `~/.pinvou3` 与 `$HOME` 文件），断言 boot 后进程 env 无
+    /// 隔离目录，不触碰真实 `~/.pinvou3` 与用户 home 文件），断言 boot 后进程 env 无
     /// 这两个 key 且 `PINVOU3_SESSION_ARTIFACTS` 正常写入。
+    ///
+    /// 第五轮评审修正 2026-08-13：此前只隔离 `HOME`——Windows 的 `user_home_dir()`
+    /// 优先读 `USERPROFILE`、其次 `HOMEDRIVE`+`HOMEPATH`、最后才 `HOME`，只设 `HOME`
+    /// 会让 `boot()` 的 `workspace`（= `user_home_dir()`）在 Windows 上仍指向真实
+    /// 用户目录，legacy 清扫可能删除真实目录里带管理标识的文件。现把三平台 home
+    /// 来源全部隔离到临时目录；临时目录命名叠加 `std::process::id()`（跨进程唯一），
+    /// 并用 RAII guard 保证 boot/断言 panic 时仍回收整份解包 bundle。
     #[test]
     fn forkguard_boot_env_must_not_pin_global_output_cap() {
-        // 需要写 PINVOU3_HOME / HOME（隔离目录），锁 + 恢复这两者与目标 key。
+        // 需要写 PINVOU3_HOME / HOME / Windows home 来源（隔离目录），锁 + 恢复这些与目标 key。
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MAX_OUTPUT_TOKENS",
             "PINVOU3_MAX_OUTPUT_TOKENS",
             "PINVOU3_SESSION_ARTIFACTS",
             "PINVOU3_HOME",
             "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
         ]);
         std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS");
         std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS");
 
+        // RAII 清理：boot 会全量解包 bundle 到隔离 home，断言/panic 时也须回收
+        // （此前仅在正常结尾 remove_dir_all，中途失败会残留整份 bundle）。
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        // 叠加 pid + 进程内原子后缀：unique_suffix 只保证单进程内唯一，双终端并发
+        // cargo test 会跨进程碰撞（见 paths::tests::unique_suffix 文档）。
         let root = std::env::temp_dir().join(format!(
-            "pinvou3-boot-env-guard-{}",
+            "pinvou3-boot-env-guard-{}-{}",
+            std::process::id(),
             crate::bridge::paths::tests::unique_suffix()
         ));
+        let _temp = TempDirGuard(root.clone());
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("创建隔离 home");
         std::env::set_var("PINVOU3_HOME", &root);
+        // 三平台 user_home_dir() 来源全部隔离到 root：macOS/Linux 读 HOME；Windows
+        // 优先 USERPROFILE，其次 HOMEDRIVE+HOMEPATH，最后 HOME。若不隔离 Windows 的
+        // 前两项，boot 的 workspace 仍指向真实用户目录，legacy 清扫会触碰真实文件。
         std::env::set_var("HOME", &root);
+        std::env::set_var("USERPROFILE", &root);
+        std::env::remove_var("HOMEDRIVE");
+        std::env::remove_var("HOMEPATH");
 
-        let bridge =
-            super::Pinvou3Bridge::boot().expect("隔离 PINVOU3_HOME + HOME 下 boot 必须成功");
+        let bridge = super::Pinvou3Bridge::boot().expect("隔离 home 下 boot 必须成功");
 
         assert!(
             std::env::var_os("DEEPSEEK_MAX_OUTPUT_TOKENS").is_none(),
@@ -2830,8 +2856,9 @@ mod tests {
             "boot 仍应写 PINVOU3_SESSION_ARTIFACTS（收口函数行为不变）"
         );
 
+        // bridge 先于 TempDirGuard 回收（guard 声明更早、drop 更晚），避免删目录时
+        // bridge 仍持有其中的 bundle 路径。
         drop(bridge);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
