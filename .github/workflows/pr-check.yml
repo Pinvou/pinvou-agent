@@ -426,9 +426,10 @@ jobs:
       - name: 安装前端依赖
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
-      - name: 版本与发布配置契约
+      # 版本一致性校验(--check)由 version-consistency job 无路径门全事件覆盖,
+      # 此处不重复;仅跑 Tauri overlay 与各平台打包契约。
+      - name: Tauri 打包与发布配置契约
         run: |
-          node scripts/sync-version.mjs --check
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
           npm --prefix pinvou3-app run test:web-template-packaging
@@ -442,7 +443,10 @@ jobs:
   rust-lint:
     name: rust-lint
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.rust_code == 'true' }}
+    # 纳入 rust_dependencies:只改 deny.toml 时 rust_code=false 但 rust_dependencies=true,
+    # cargo-deny 子步骤(已按 rust_dependencies 门控)需本 job 启动才能运行;
+    # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
+    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
