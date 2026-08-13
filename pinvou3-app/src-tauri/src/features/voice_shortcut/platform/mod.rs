@@ -7,9 +7,7 @@ use super::{
 use std::sync::{mpsc, Mutex, OnceLock};
 use tauri::AppHandle;
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{
-    HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
-};
+use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VIRTUAL_KEY, VK_ESCAPE, VK_LMENU, VK_MENU, VK_RMENU, VK_SPACE,
