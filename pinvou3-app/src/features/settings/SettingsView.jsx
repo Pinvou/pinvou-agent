@@ -185,13 +185,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             call_name: draft.call_name,
             assistant_alias: draft.assistant_alias,
           });
-          setProfileSaveError('');
-        } catch (error) {
-          // The bridge already surfaced the error into state.memory.error with
-          // generic "load failed" copy; track a dedicated save error so the UI
-          // shows the accurate "save failed" message instead and consumes the
-          // rejection.
-          setProfileSaveError(String(error));
         } finally {
           setSaving(false);
         }
@@ -2383,6 +2376,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const text = String(memoryEditor.value || '').trim();
         setMemorySaving(true);
         setMemoryEditorError('');
+        setProfileSaveError('');
         try {
           if (memoryEditor.mode === 'memory') {
             if (!text || !bridge.memory.updateMemoryItem) return;
@@ -2394,6 +2388,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           setMemoryEditor(null);
         } catch (error) {
           setMemoryEditorError(String(error));
+          setProfileSaveError(String(error));
         } finally {
           setMemorySaving(false);
         }

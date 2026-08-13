@@ -16,7 +16,7 @@ pub(crate) struct ReplaceError {
 }
 
 impl ReplaceError {
-    fn new(state: ReplaceState, source: io::Error) -> Self {
+    pub(crate) fn new(state: ReplaceState, source: io::Error) -> Self {
         Self { state, source }
     }
 

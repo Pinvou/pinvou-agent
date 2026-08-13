@@ -4460,6 +4460,21 @@ fn read_text_recovering_unlocked(
     read_text_recovering_unlocked_with(path, validate, &promote_recovery_candidate)
 }
 
+/// Windows maps `ERROR_SHARING_VIOLATION` (32) / `ERROR_LOCK_VIOLATION` (33) to
+/// `ErrorKind::Uncategorized` rather than `PermissionDenied`, so a file held by
+/// an antivirus scan or another process without read-sharing fails
+/// `fs::read_to_string` this way. Treat those codes as transient so recovery
+/// never promotes a stale backup over a still-valid authoritative file.
+#[cfg(windows)]
+fn is_transient_windows_lock(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32) | Some(33))
+}
+
+#[cfg(not(windows))]
+fn is_transient_windows_lock(_error: &io::Error) -> bool {
+    false
+}
+
 fn read_text_recovering_unlocked_with(
     path: &Path,
     validate: &dyn Fn(&str) -> bool,
@@ -4483,7 +4498,7 @@ fn read_text_recovering_unlocked_with(
                 io::ErrorKind::PermissionDenied
                     | io::ErrorKind::UnexpectedEof
                     | io::ErrorKind::Interrupted
-            );
+            ) || is_transient_windows_lock(&error);
             if transient && path.is_file() {
                 return Err(error);
             }
@@ -4784,6 +4799,26 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
         assert!(backup.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_sharing_violation_is_transient() {
+        // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) surface as
+        // ErrorKind::Uncategorized on Windows, outside the kind-based transient
+        // whitelist; the raw-OS-code guard must still recognize them so recovery
+        // never promotes a stale backup over a still-valid authoritative file.
+        let sharing = io::Error::from_raw_os_error(32);
+        let lock = io::Error::from_raw_os_error(33);
+        #[cfg(windows)]
+        {
+            assert!(is_transient_windows_lock(&sharing));
+            assert!(is_transient_windows_lock(&lock));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(!is_transient_windows_lock(&sharing));
+            assert!(!is_transient_windows_lock(&lock));
+        }
     }
 
     #[test]
