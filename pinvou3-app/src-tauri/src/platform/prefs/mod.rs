@@ -142,6 +142,10 @@ pub struct SavedModel {
     /// Pinvou 对该 route 声明的单轮 output 上限；最终仍受进程级请求上限约束。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// 用户选择的思考深度档位（透传底座 reasoning_effort：off/low/medium/high/max）。
+    /// None = 未显式设置，走 provider 默认（vllm→off 防 SSE timeout，其余→high）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub model: String,
     pub base_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +177,22 @@ impl SavedModel {
             if self.max_output_tokens.is_none() {
                 self.max_output_tokens = Some(24_576);
             }
+        }
+        // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
+        // （off/low/medium/high/auto/max）。别名（disabled/minimum/light/ultra 等）
+        // 规范化为对应档位，避免底座 wire 层 `apply_reasoning_effort` 只认规范档位
+        // + 少数别名，把 `minimum`/`light`/`ultra`/`maximum` 等静默丢弃；非法值置
+        // None 走 provider 默认，避免被底座 `from_setting` 静默回退成 Max。
+        if let Some(effort) = self.reasoning_effort.as_deref() {
+            self.reasoning_effort = match effort.trim().to_ascii_lowercase().as_str() {
+                "off" | "disabled" | "none" | "false" => Some("off".to_string()),
+                "low" | "minimum" | "minimal" | "light" => Some("low".to_string()),
+                "medium" | "mid" => Some("medium".to_string()),
+                "high" => Some("high".to_string()),
+                "auto" | "automatic" => Some("auto".to_string()),
+                "max" | "maximum" | "xhigh" | "ultra" | "ultracode" => Some("max".to_string()),
+                _ => None,
+            };
         }
     }
 
@@ -648,6 +668,7 @@ impl UserPrefs {
             preset,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model,
             base_url,
             provider_kind: None,
@@ -934,6 +955,76 @@ mod tests {
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
 
+    /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：
+    /// 非法值置 None（避免被底座静默回退成 Max），合法别名规范化为对应档位
+    /// （对齐 `as_setting()`，避免 wire 层 `apply_reasoning_effort` 静默丢弃）。
+    #[test]
+    fn normalize_reasoning_effort_canonicalizes_aliases_and_rejects_unknown() {
+        let base = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "m1".into(),
+            base_url: "https://example.invalid/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        let mut invalid = base.clone();
+        invalid.reasoning_effort = Some("turbo".into());
+        invalid.normalize_route_limits();
+        assert_eq!(
+            invalid.reasoning_effort, None,
+            "非法档位应置 None 而非交给底座静默回退 Max"
+        );
+
+        for (alias, canonical) in [
+            ("off", "off"),
+            ("disabled", "off"),
+            ("none", "off"),
+            ("false", "off"),
+            ("low", "low"),
+            ("minimum", "low"),
+            ("minimal", "low"),
+            ("light", "low"),
+            ("medium", "medium"),
+            ("mid", "medium"),
+            ("high", "high"),
+            ("auto", "auto"),
+            ("automatic", "auto"),
+            ("max", "max"),
+            ("maximum", "max"),
+            ("xhigh", "max"),
+            ("ultra", "max"),
+            ("ultracode", "max"),
+        ] {
+            let mut m = base.clone();
+            m.reasoning_effort = Some(alias.into());
+            m.normalize_route_limits();
+            assert_eq!(
+                m.reasoning_effort.as_deref(),
+                Some(canonical),
+                "别名 {alias} 应规范化为 {canonical}"
+            );
+        }
+    }
+
+    /// 旧版 settings.json（无 reasoning_effort 字段）必须反序列化成功且字段为 None。
+    #[test]
+    fn saved_model_missing_reasoning_effort_field_defaults_to_none() {
+        let json = r#"{"id":"m1","name":"m1","preset":"openai_compatible","model":"gpt-5.4-mini","base_url":"https://api.openai.com/v1"}"#;
+        let model: SavedModel = serde_json::from_str(json).expect("旧数据必须能反序列化");
+        assert_eq!(model.reasoning_effort, None);
+    }
+
     #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {
         let mut prefs = UserPrefs::default();
@@ -977,6 +1068,7 @@ mod tests {
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "glm-5-turbo".into(),
             base_url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions/".into(),
             provider_kind: None,
@@ -1012,6 +1104,7 @@ mod tests {
             preset: ModelPreset::Glm,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "glm-5.2".into(),
             base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
             provider_kind: None,
@@ -1052,6 +1145,7 @@ mod tests {
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.chat/v1".into(),
             provider_kind: None,
@@ -1087,6 +1181,7 @@ mod tests {
             preset: ModelPreset::Minimax,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.chat".into(),
             provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
@@ -1132,6 +1227,7 @@ mod tests {
             preset: ModelPreset::Kimi,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "kimi-k2.6".into(),
             base_url: "https://api.moonshot.cn/v1".into(),
             provider_kind: None,

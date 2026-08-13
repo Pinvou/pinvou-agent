@@ -1098,7 +1098,6 @@ fn setup_vllm_env(env: &mut EnvGuard) {
     if std::env::var_os("DEEPSEEK_MODEL").is_none() {
         env.set("DEEPSEEK_MODEL", "qwen36_35b_256k");
     }
-    env.set("DEEPSEEK_REASONING_EFFORT", "off");
     env.set("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     env.set("DEEPSEEK_FORCE_HTTP1", "1");
     env.set("DEEPSEEK_MAX_OUTPUT_TOKENS", "2048");
