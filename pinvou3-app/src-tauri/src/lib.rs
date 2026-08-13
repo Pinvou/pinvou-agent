@@ -669,6 +669,7 @@ pub fn run() {
             commands::settings::set_active_model,
             commands::settings::set_session_model,
             commands::settings::get_session_model_id,
+            commands::settings::get_image_input_capability,
             commands::codex::get_codex_acp_status,
             commands::codex::list_acp_agents,
             commands::codex::get_acp_agent_status,
@@ -717,6 +718,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
             commands::voice::transcribe_voice_audio,
             commands::voice::reset_microphone_permission,
@@ -1001,7 +1003,6 @@ mod tool_allowlist_contract {
         for core in [
             "Bash",
             "File",
-            "Git",
             "Web",
             "agent",
             "load_skill",
@@ -1017,6 +1018,7 @@ mod tool_allowlist_contract {
         }
 
         for excluded in [
+            "Git",
             "Run",
             "tasks",
             "automation",

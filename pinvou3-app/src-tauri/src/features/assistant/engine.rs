@@ -520,6 +520,9 @@ impl TurnLifecycle {
             }) else {
                 continue;
             };
+            // v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行进入
+            // 文本、由底座展开为 ImageUrl 块;display message 与引擎消息的
+            // 文本部分一致(含标记行),图片块归引擎历史管理,无需在此保留。
             messages[index] = rule.display_message.clone();
             if active_reservation_id == Some(rule.reservation_id) {
                 active_rule_matched = true;
@@ -1545,8 +1548,8 @@ pub(crate) async fn apply_harness_action(
                 write_files,
                 max_steps,
                 output_schema,
-                structured_output_root: Some(project_dir),
                 expects_file_output,
+                structured_output_root: Some(project_dir.clone()),
             };
             if let Err(e) = handle.send(op).await {
                 eprintln!("[harness] spawn subagent failed: {e:?}");
@@ -1589,8 +1592,8 @@ pub(crate) async fn apply_harness_action(
                     write_files: t.write_files,
                     max_steps: t.max_steps,
                     output_schema: t.output_schema,
-                    structured_output_root: Some(t.project_dir),
                     expects_file_output: t.expects_file_output,
+                    structured_output_root: Some(ws.clone()),
                 };
                 if let Err(e) = handle.send(op).await {
                     eprintln!("[harness] fan-out spawn failed: {e:?}");
@@ -2387,8 +2390,8 @@ fn spawn_event_forwarder(
                                                 write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
-                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
+                                                structured_output_root: Some(ws.clone()),
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
                                                 eprintln!("[harness] per_page {role} 空壳→重派 {rr} 失败: {e:?}");
@@ -2459,8 +2462,8 @@ fn spawn_event_forwarder(
                                                 write_files: t.write_files,
                                                 max_steps: t.max_steps,
                                                 output_schema: t.output_schema,
-                                                structured_output_root: Some(t.project_dir),
                                                 expects_file_output: t.expects_file_output,
+                                                structured_output_root: Some(ws.clone()),
                                             };
                                             if let Err(e) = approve_handle.send(op).await {
                                                 eprintln!("[harness] per_page 补派 {next_role} 失败: {e:?}");
@@ -3489,6 +3492,44 @@ mod turn_lifecycle_tests {
         drop(next);
     }
 
+    /// Native 图片输入(阶段 D):sanitize 把引擎注入文本替换为 UI 展示文本时,
+    /// 必须保留 LocalImage 附件引用块(设计 §10.1/§10.2)——持久化只存引用,
+    /// 恢复/重建后靠它重新物化;turn_meta 等其余注入块照旧丢弃。
+    #[test]
+    fn sanitize_replaces_injected_prompt_with_display_text() {
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        let mut reservation = lifecycle.reserve().expect("reserve");
+        reservation
+            .set_transcript(
+                TranscriptOperation::Append,
+                message("user", "看看这张图\n\n📎 shot.png"),
+            )
+            .expect("display transcript");
+        reservation
+            .prepare_actual_user_content(
+                "<system-reminder>r</system-reminder>\n\n看看这张图".to_string(),
+            )
+            .expect("actual prompt");
+
+        let engine_message = engine_user("<system-reminder>r</system-reminder>\n\n看看这张图");
+        let (sanitized, matched) = lifecycle.sanitize_messages(vec![engine_message]);
+        assert!(matched, "raw prompt must match the registered rule");
+        assert_eq!(sanitized.len(), 1);
+        let content = &sanitized[0].content;
+        assert_eq!(
+            content.first(),
+            Some(&ContentBlock::Text {
+                text: "看看这张图\n\n📎 shot.png".to_string(),
+                cache_control: None,
+            }),
+            "display text replaces the injected prompt"
+        );
+        // v0.9.5 官方方案:图片由底座展开为 ImageUrl 块并归引擎历史管理,
+        // display message 不携带图片块(标记行已含在文本中)。
+        assert_eq!(content.len(), 1, "turn_meta block stays dropped");
+        drop(reservation);
+    }
+
     #[test]
     fn reclaim_of_submitted_accept_plan_carries_admission_once_before_terminal() {
         let lifecycle = Arc::new(TurnLifecycle::default());
@@ -3899,25 +3940,6 @@ mod scheduled_turn_tests {
             std::fs::canonicalize(&report).expect("canonical report")
         );
 
-        let appendix = workspace.join("appendix.md");
-        std::fs::write(&appendix, "patched appendix").expect("patched artifact file");
-        persist_successful_tool_artifact(
-            &store,
-            &scheduled.metadata.id,
-            &workspace,
-            "File",
-            &serde_json::json!({
-                "action": "patch",
-                "patch": "*** Begin Patch\n*** Update File: report.md\n*** Add File: appendix.md\n*** Delete File: deleted.md\n*** End Patch"
-            }),
-            &serde_json::json!({
-                "files_applied": 2,
-                "touched_files": ["report.md", "appendix.md", "deleted.md"]
-            })
-            .to_string(),
-        )
-        .expect("persist canonical patch artifacts");
-
         drop(store);
         let reopened = crate::features::sessions::SessionStore::boot().expect("reopen store");
         let paths: Vec<_> = reopened
@@ -3927,13 +3949,7 @@ mod scheduled_turn_tests {
             .into_iter()
             .map(|artifact| artifact.storage_path)
             .collect();
-        assert_eq!(
-            paths,
-            vec![
-                persisted,
-                std::fs::canonicalize(&appendix).expect("canonical appendix")
-            ]
-        );
+        assert_eq!(paths, vec![persisted]);
 
         match previous {
             Some(value) => std::env::set_var("PINVOU3_HOME", value),

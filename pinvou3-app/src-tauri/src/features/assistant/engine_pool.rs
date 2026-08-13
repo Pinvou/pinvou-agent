@@ -1517,7 +1517,7 @@ mod scheduled_model_tests {
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
-    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1550,6 +1550,8 @@ mod scheduled_model_tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

@@ -128,6 +128,8 @@ mod tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

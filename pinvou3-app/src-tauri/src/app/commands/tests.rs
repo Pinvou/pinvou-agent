@@ -1417,6 +1417,226 @@ fn image_attachment_stages_and_guides_image_analyze() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+// ── Native 图片输入(设计 §9.2,阶段 D)─────────────────────────────────
+
+fn mk_image_attachment(
+    basename: &str,
+    path: &Path,
+    byte_size: u64,
+) -> crate::features::files::file_ingest::IngestResult {
+    crate::features::files::file_ingest::IngestResult {
+        kind: "image".into(),
+        basename: basename.into(),
+        path: path.to_string_lossy().to_string(),
+        markdown: None,
+        token_estimate: 0,
+        byte_size,
+        warning: None,
+    }
+}
+
+/// Native(v0.9.5 官方标记方案):文字 + 多图 + 文本附件 → 消息文本含图片
+/// `[Attached image: <path>]` 标记行(按用户选择顺序);不注入"看不到图"
+/// 硬规则、不引导 image_analyze;文本附件 markdown 内联行为与 Fallback
+/// 路径一致;标记路径只来自暂存结果(不接受前端直给路径)。
+#[test]
+fn native_image_message_builds_marker_lines_in_order() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-test-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let src_a = tmp.join("a.png");
+    let src_b = tmp.join("b.jpg");
+    std::fs::write(&src_a, b"\x89PNG\r\n\x1a\nfake-a").expect("写假 png");
+    std::fs::write(&src_b, b"\xff\xd8\xfffake-b").expect("写假 jpg");
+    let text_attachment = mk_attachment("text", "notes.txt", 2, 10);
+
+    let segment = prepare_native_user_message_in_dir(
+        "这几张图和笔记说明了什么？".to_string(),
+        vec![
+            mk_image_attachment("a.png", &src_a, 15),
+            text_attachment,
+            mk_image_attachment("b.jpg", &src_b, 11),
+        ],
+        &ws,
+        "attachments",
+    )
+    .expect("Native 构造应成功");
+
+    assert!(segment.contains("这几张图和笔记说明了什么？"));
+    assert!(
+        !segment.contains("看不到这张图") && !segment.contains("image_analyze"),
+        "Native 不得注入 image_analyze 硬规则提示,得到:\n{segment}"
+    );
+    assert!(
+        !segment.contains(src_a.to_string_lossy().as_ref()),
+        "图片的 workspace 外绝对路径不得进模型消息(设计 §10.1)"
+    );
+    assert!(
+        segment.contains("### a.png (image, 15 bytes)")
+            && segment.contains("### b.jpg (image, 11 bytes)"),
+        "附件清单应保留图片条目"
+    );
+    assert!(
+        segment.contains("row-1,value-1"),
+        "文本附件 markdown 应照旧内联"
+    );
+    // 官方标记行按用户选择顺序出现,路径为暂存后的 workspace 路径。
+    let marker_a = format!(
+        "[Attached image: {}]",
+        ws.join("attachments/a.png").display()
+    );
+    let marker_b = format!(
+        "[Attached image: {}]",
+        ws.join("attachments/b.jpg").display()
+    );
+    let marker_a_pos = segment.find(&marker_a).expect("a.png 标记行必须存在");
+    let marker_b_pos = segment.find(&marker_b).expect("b.jpg 标记行必须存在");
+    assert!(
+        marker_a_pos < marker_b_pos,
+        "标记行按用户选择顺序(先 a 后 b):\n{segment}"
+    );
+    // 暂存产物真实落盘,路径来自暂存结果。
+    assert!(ws.join("attachments/a.png").exists());
+    assert!(ws.join("attachments/b.jpg").exists());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native: 纯图片消息(空文字 + 图片)允许发送,不伪造用户文字(设计 §9.4)。
+#[test]
+fn native_image_message_allows_pure_image() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-pure-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let src = tmp.join("only.png");
+    std::fs::write(&src, b"\x89PNG\r\n\x1a\nfake").expect("写假 png");
+
+    let segment = prepare_native_user_message_in_dir(
+        String::new(),
+        vec![mk_image_attachment("only.png", &src, 13)],
+        &ws,
+        "attachments",
+    )
+    .expect("纯图片消息应允许");
+
+    // 只有附件清单与标记行,没有伪造的用户文字。
+    assert!(segment.contains("用户附上了以下文件"));
+    assert!(
+        segment.contains(&format!(
+            "[Attached image: {}]",
+            ws.join("attachments/only.png").display()
+        )),
+        "图片标记行必须存在:\n{segment}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native: 任一图片暂存失败 → 整条消息 Err,不静默降级为纯文本(设计 §10.2)。
+#[test]
+fn native_image_message_stage_failure_is_error_not_silent_text() {
+    let tmp = std::env::temp_dir().join(format!("pinvou3-native-fail-{}", std::process::id()));
+    let ws = tmp.join("workspace");
+    std::fs::create_dir_all(&ws).expect("建 workspace");
+    let missing = tmp.join("missing.png"); // 故意不创建
+
+    let result = prepare_native_user_message_in_dir(
+        "看图".to_string(),
+        vec![mk_image_attachment("missing.png", &missing, 0)],
+        &ws,
+        "attachments",
+    );
+    let error = result.expect_err("暂存失败必须报错");
+    assert!(
+        error.contains("missing.png") && error.contains("暂存"),
+        "错误应指明哪张图暂存失败: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Native 构造函数对纯文本/非图片附件的回归:与文本拼接路径结果一致。
+#[test]
+fn native_prepare_text_only_and_non_image_regression() {
+    let ws = mk_test_ws("native-regression");
+
+    let text_only =
+        prepare_native_user_message_in_dir("你好".to_string(), Vec::new(), &ws, "attachments")
+            .expect("纯文本");
+    assert_eq!(text_only, "你好");
+
+    let with_text = prepare_native_user_message_in_dir(
+        "查全文".to_string(),
+        vec![mk_attachment("text", "a.txt", 3, 10)],
+        &ws,
+        "attachments",
+    )
+    .expect("文本附件");
+    let legacy = build_message_with_attachments(
+        "查全文".to_string(),
+        vec![mk_attachment("text", "a.txt", 3, 10)],
+        &ws,
+    );
+    assert_eq!(
+        with_text, legacy,
+        "非图片附件路径必须与现有文本拼接结果一致"
+    );
+
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// Unsupported 路径的稳定错误码(设计 §9.2):前端按码匹配,码后必须带
+/// 用户可操作指引。钉住格式防手滑改码。
+#[test]
+fn image_input_unsupported_error_keeps_stable_code() {
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.starts_with("image_input_unsupported"));
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.contains("不支持图片"));
+    assert!(super::chat::IMAGE_INPUT_UNSUPPORTED_ERROR.contains("视觉模型"));
+}
+
+/// Unknown 与确认不支持共用稳定错误码前缀,但 Unknown 文案必须给出显式确认出口
+/// (设计 §6.3:Unknown 不冒充支持,允许用户手工开启)。
+#[test]
+fn image_input_unknown_error_offers_explicit_confirm_path() {
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.starts_with("image_input_unsupported"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("能力未知"));
+    assert!(super::chat::IMAGE_INPUT_UNKNOWN_ERROR.contains("支持图片"));
+}
+
+/// `get_image_input_capability` 返回体的 wire 形状:前端按字段名与字符串值匹配
+/// (选图即时警告),钉住防手滑改字段。
+#[test]
+fn image_input_capability_info_serializes_stable_fields() {
+    let info = super::settings::ImageInputCapabilityInfo {
+        capability: "unknown".to_string(),
+        image_mode: "vision_tool_fallback".to_string(),
+        has_vision_model: true,
+        is_local_endpoint: false,
+        vision_is_local_endpoint: Some(false),
+    };
+    let value = serde_json::to_value(&info).expect("serialize ImageInputCapabilityInfo");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "capability": "unknown",
+            "image_mode": "vision_tool_fallback",
+            "has_vision_model": true,
+            "is_local_endpoint": false,
+            "vision_is_local_endpoint": false,
+        })
+    );
+    // 未配置视觉模型时字段仍稳定出现(为 null),前端按 fail-open 处理。
+    let no_vision = super::settings::ImageInputCapabilityInfo {
+        capability: "unsupported".to_string(),
+        image_mode: "unsupported".to_string(),
+        has_vision_model: false,
+        is_local_endpoint: true,
+        vision_is_local_endpoint: None,
+    };
+    let value = serde_json::to_value(&no_vision).expect("serialize without vision model");
+    assert_eq!(value["vision_is_local_endpoint"], serde_json::Value::Null);
+}
+
 /// 造一个指定 kind / token 估算的 IngestResult,markdown 是 `rows` 行可定位文本。
 fn mk_attachment(
     kind: &str,
@@ -1805,7 +2025,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let _ = std::fs::remove_dir_all(replacement_workspace);
 }
 
-/// 小附件维持全量内联:内容在代码块里,且明确告知无需 File.read。
+/// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。
 #[test]
 fn small_attachment_stays_inline() {
     let ws = mk_test_ws("inline");
@@ -1816,8 +2036,8 @@ fn small_attachment_stays_inline() {
     );
     assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
     assert!(
-        prompt.contains("不需要再调 `File(action=\"read\")`"),
-        "内联段应声明无需 File.read"
+        prompt.contains("不需要再调 read_file"),
+        "内联段应声明无需 read_file"
     );
     assert!(!ws.join("attachments").exists(), "小附件不应落盘");
     let _ = std::fs::remove_dir_all(&ws);
@@ -1841,7 +2061,7 @@ fn large_spreadsheet_goes_path_mode() {
         "应给出落盘 CSV 相对路径"
     );
     assert!(
-        prompt.contains("File(action=\"read\")") && prompt.contains("Bash(action=\"run\")"),
+        prompt.contains("read_file") && prompt.contains("exec_shell"),
         "应引导工具消化"
     );
     assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");

@@ -553,7 +553,7 @@ async fn memory_llm_uses_profile_in_fresh_session() {
         AppMode::Yolo,
         None,
         true,
-    )
+            )
     .expect("build memory probe op");
     handle.send(op).await.expect("send memory probe");
 
@@ -612,7 +612,7 @@ async fn memory_llm_current_instruction_overrides_memory() {
         AppMode::Yolo,
         None,
         true,
-    )
+            )
     .expect("build override probe op");
     handle.send(op).await.expect("send override probe");
     let (answer, elapsed) = collect_answer(&handle, Duration::from_secs(90)).await;
