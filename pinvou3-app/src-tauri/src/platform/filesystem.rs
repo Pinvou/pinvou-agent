@@ -91,6 +91,8 @@ pub(crate) fn recover_interrupted_replace(
             "interrupted replacement has no recoverable candidate",
         ),
     ))
+}
+
 /// 原子写文件：先写同目录临时文件并 sync，再原子替换目标。
 ///
 /// 直接 `std::fs::write(target)` 在进程被中断（强杀/崩溃）时会留下截断或
@@ -134,7 +136,8 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
         if path.exists() {
             // Windows 的 rename 不能覆盖已存在文件，走「旧文件改名备份 → tmp 顶替」
             // 的两步替换；POSIX 直接原子覆盖。
-            replace_file_atomically(&tmp, path, &backup)?;
+            replace_file_atomically(&tmp, path, &backup)
+                .map_err(ReplaceError::into_io_error)?;
         } else {
             // 首次创建：Windows 上 rename 目标不存在会直接报 NotFound，须走
             // 普通 rename（单文件移动，无覆盖语义，天然安全）。
