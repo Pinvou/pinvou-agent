@@ -12,14 +12,17 @@ const WEB_TEMPLATE_ROOT = path.join(
   "common",
   "web-template",
 );
+const PACKAGE_JSON_PATH = path.join(WEB_TEMPLATE_ROOT, "package.json");
 const LOCKFILE_PATH = path.join(WEB_TEMPLATE_ROOT, "package-lock.json");
 const MARKER_PATH = path.join(
   WEB_TEMPLATE_ROOT,
   "node_modules",
   ".pinvou-prepared.json",
 );
-const PREPARE_FORMAT_VERSION = 1;
+const PREPARE_FORMAT_VERSION = 2;
 const NPM_CI_ARGS = ["ci", "--prefer-offline", "--no-audit", "--no-fund"];
+
+class InvalidDependencyFieldError extends TypeError {}
 
 function npmInstallInvocation({
   platform = process.platform,
@@ -63,27 +66,69 @@ function npmInvocation({ platform = process.platform, env = process.env } = {}) 
 function expectedMarker({
   platform = process.platform,
   architecture = process.arch,
+  webTemplateRoot = WEB_TEMPLATE_ROOT,
+  packageJsonPath = path.join(webTemplateRoot, "package.json"),
+  lockfilePath = path.join(webTemplateRoot, "package-lock.json"),
 } = {}) {
-  const lockfile = fs.readFileSync(LOCKFILE_PATH);
+  const packageJson = fs.readFileSync(packageJsonPath);
+  const lockfile = fs.readFileSync(lockfilePath);
   return {
     format: PREPARE_FORMAT_VERSION,
     platform,
     architecture,
+    packageJsonSha256: crypto
+      .createHash("sha256")
+      .update(packageJson)
+      .digest("hex"),
     lockfileSha256: crypto.createHash("sha256").update(lockfile).digest("hex"),
   };
 }
 
-function isPrepared(expected = expectedMarker()) {
+function declaredPackageNames(packageJsonPath = PACKAGE_JSON_PATH) {
+  const manifest = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  const packageNames = (fieldName) => {
+    const field = manifest[fieldName];
+    if (field == null) return [];
+    if (typeof field !== "object" || Array.isArray(field)) {
+      throw new InvalidDependencyFieldError(
+        `package.json 的 ${fieldName} 必须是对象、null 或缺失`,
+      );
+    }
+    return Object.keys(field);
+  };
+  return [
+    ...new Set([
+      ...packageNames("dependencies"),
+      ...packageNames("devDependencies"),
+    ]),
+  ].sort();
+}
+
+function isPrepared(expected = expectedMarker(), {
+  webTemplateRoot = WEB_TEMPLATE_ROOT,
+  packageJsonPath = path.join(webTemplateRoot, "package.json"),
+  lockfilePath = path.join(webTemplateRoot, "package-lock.json"),
+  markerPath = path.join(webTemplateRoot, "node_modules", ".pinvou-prepared.json"),
+} = {}) {
   try {
-    const actual = JSON.parse(fs.readFileSync(MARKER_PATH, "utf8"));
-    const requiredPackages = ["vite", "esbuild", "react", "react-dom"];
+    const requiredPackages = declaredPackageNames(packageJsonPath);
+    const currentExpected = expectedMarker({
+      platform: expected?.platform,
+      architecture: expected?.architecture,
+      webTemplateRoot,
+      packageJsonPath,
+      lockfilePath,
+    });
+    const actual = JSON.parse(fs.readFileSync(markerPath, "utf8"));
     return (
+      JSON.stringify(expected) === JSON.stringify(currentExpected) &&
       JSON.stringify(actual) === JSON.stringify(expected) &&
       requiredPackages.every((packageName) =>
-        fs.existsSync(path.join(WEB_TEMPLATE_ROOT, "node_modules", packageName)),
+        fs.existsSync(path.join(webTemplateRoot, "node_modules", packageName)),
       )
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof InvalidDependencyFieldError) throw error;
     return false;
   }
 }
@@ -148,7 +193,9 @@ if (require.main === module) {
 module.exports = {
   LOCKFILE_PATH,
   MARKER_PATH,
+  PACKAGE_JSON_PATH,
   WEB_TEMPLATE_ROOT,
+  declaredPackageNames,
   expectedMarker,
   isPrepared,
   main,
