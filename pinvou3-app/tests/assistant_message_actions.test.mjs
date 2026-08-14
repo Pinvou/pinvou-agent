@@ -417,7 +417,7 @@ assert.match(actions, /data-testid="assistant-message-share"/);
 assert.match(actions, /data-testid="assistant-export-md"/);
 assert.match(actions, /data-testid="assistant-export-html"/);
 for (const target of ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq']) {
-  assert.match(actions, new RegExp(`assistant-share-\\$\\{target\\}|${target}`));
+  assert.match(actions, new RegExp(`assistant-share-\\$\\{target\\}`));
 }
 assert.match(exportLogic, /renderMarkdown\(normalized\)/);
 assert.match(saveActions, /invokeTauri\('export_assistant_response'/);

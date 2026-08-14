@@ -198,8 +198,9 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
         filename: assistantExportFilename(format),
       });
       if (saved) showFeedback(copy.exportSuccess);
-    } catch {
-      showFeedback(copy.exportFailed, true);
+    } catch (error) {
+      const tooLarge = String(error?.message || error).includes('assistant_export_too_large');
+      showFeedback(tooLarge ? copy.exportTooLarge : copy.exportFailed, true);
     }
   };
 
