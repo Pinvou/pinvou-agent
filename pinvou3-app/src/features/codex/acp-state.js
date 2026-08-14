@@ -3,11 +3,6 @@ import {
   presentConversationItems,
   stripTerminalControlSequences,
 } from '../conversation/conversation-model.js';
-export {
-  toolWorkspaceResources,
-  workspaceMarkdownResource,
-} from '../conversation/conversation-model.js';
-
 function contentText(content) {
   if (!content) return '';
   if (typeof content === 'string') return content;

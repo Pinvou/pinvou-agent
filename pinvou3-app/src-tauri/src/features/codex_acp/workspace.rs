@@ -1275,6 +1275,7 @@ mod tests {
         let path = root.path().join("docs/report.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "# report\n").unwrap();
+        let path = fs::canonicalize(path).unwrap();
 
         for resource in [
             "docs/report.md".to_string(),
