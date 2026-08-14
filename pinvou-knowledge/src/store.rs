@@ -2,6 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::types::Type;
@@ -14,12 +15,44 @@ use crate::model::{
 };
 
 const SCHEMA_VERSION: i64 = 3;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const VECTOR_SIGNATURE_BITS: u32 = 16;
 const VECTOR_SIGNATURE_RADIUS: u32 = 3;
 // Exact search keeps recall deterministic for the small and medium knowledge
 // bases used by a single team. Above this boundary the signature index bounds
 // the amount of vector data read by one query.
 const VECTOR_EXACT_SCAN_THRESHOLD: i64 = 20_000;
+
+#[derive(Debug)]
+pub enum DeviceMutationError {
+    NotFound,
+    OwnerProtected,
+    HostOwnerProtected,
+    Revoked,
+    Database(rusqlite::Error),
+}
+
+impl std::fmt::Display for DeviceMutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("device not found"),
+            Self::OwnerProtected => {
+                formatter.write_str("owner devices require local host management")
+            }
+            Self::HostOwnerProtected => {
+                formatter.write_str("the host owner device cannot be changed")
+            }
+            Self::Revoked => formatter.write_str("the device is revoked"),
+            Self::Database(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for DeviceMutationError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error)
+    }
+}
 pub(crate) const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -213,6 +246,7 @@ impl Store {
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         }
         let connection = Connection::open(path)?;
+        configure_connection(&connection)?;
         connection.execute_batch(SCHEMA)?;
         ensure_vector_signature_schema(&connection)?;
         connection.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};"))?;
@@ -225,6 +259,7 @@ impl Store {
     #[cfg(test)]
     pub fn in_memory() -> rusqlite::Result<Self> {
         let connection = Connection::open_in_memory()?;
+        configure_connection(&connection)?;
         connection.execute_batch(SCHEMA)?;
         ensure_vector_signature_schema(&connection)?;
         Ok(Self {
@@ -242,6 +277,7 @@ impl Store {
                 | OpenFlags::SQLITE_OPEN_URI
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let mut connection = Connection::open_with_flags(path.as_ref(), flags)?;
+            configure_connection(&connection)?;
             return query(&mut connection);
         }
 
@@ -1256,57 +1292,6 @@ impl Store {
         })
     }
 
-    pub fn create_invite(
-        &self,
-        id: &str,
-        secret_hash: &str,
-        scope: AccessScope,
-        label: Option<&str>,
-        expires_at: i64,
-    ) -> rusqlite::Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO invites(id,secret_hash,scope,label,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![id, secret_hash, scope_text(scope), label, now(), expires_at],
-        )?;
-        Ok(())
-    }
-
-    pub fn redeem_invite_and_add_device(
-        &self,
-        secret_hash: &str,
-        device_id: &str,
-        device_name: &str,
-        token_hash: &str,
-    ) -> rusqlite::Result<AccessScope> {
-        let mut connection = self.conn.lock();
-        let transaction = connection.transaction()?;
-        let timestamp = now();
-        let invite = transaction.query_row(
-            "SELECT id,scope FROM invites WHERE secret_hash=?1 AND consumed_at IS NULL AND expires_at>=?2",
-            params![secret_hash, timestamp],
-            |row| Ok((row.get::<_, String>(0)?, parse_scope(&row.get::<_, String>(1)?))),
-        )?;
-        let changed = transaction.execute(
-            "UPDATE invites SET consumed_at=?2 WHERE id=?1 AND consumed_at IS NULL",
-            params![invite.0, timestamp],
-        )?;
-        if changed != 1 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        transaction.execute(
-            "INSERT INTO devices(id,name,scope,token_hash,created_at) VALUES(?1,?2,?3,?4,?5)",
-            params![
-                device_id,
-                device_name,
-                scope_text(invite.1),
-                token_hash,
-                timestamp
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(invite.1)
-    }
-
     pub fn add_device(
         &self,
         device_id: &str,
@@ -1445,11 +1430,21 @@ impl Store {
         name: Option<&str>,
         scope: Option<AccessScope>,
         revoked: Option<bool>,
-    ) -> rusqlite::Result<DeviceGrant> {
-        let current = self
-            .device(id)?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        self.conn.lock().execute(
+    ) -> Result<DeviceGrant, DeviceMutationError> {
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        let current = transaction
+            .query_row(
+                "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+                params![id],
+                map_device,
+            )
+            .optional()?
+            .ok_or(DeviceMutationError::NotFound)?;
+        if current.scope.is_owner() {
+            return Err(DeviceMutationError::OwnerProtected);
+        }
+        transaction.execute(
             "UPDATE devices SET name=?2,scope=?3,revoked=?4 WHERE id=?1",
             params![
                 id,
@@ -1458,19 +1453,97 @@ impl Store {
                 revoked.unwrap_or(current.revoked),
             ],
         )?;
-        self.device(id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+        let updated = transaction.query_row(
+            "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+            params![id],
+            map_device,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
     }
 
-    pub fn delete_device(&self, id: &str) -> rusqlite::Result<()> {
-        let changed = self
-            .conn
-            .lock()
-            .execute("DELETE FROM devices WHERE id=?1", params![id])?;
-        if changed != 1 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+    pub fn delete_device(&self, id: &str) -> Result<(), DeviceMutationError> {
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        let scope = transaction
+            .query_row(
+                "SELECT scope FROM devices WHERE id=?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or(DeviceMutationError::NotFound)?;
+        if parse_scope(&scope).is_owner() {
+            return Err(DeviceMutationError::OwnerProtected);
         }
+        // Unauthenticated join requests cannot be reliably tied to an
+        // existing device. Invalidate all pending requests in the same
+        // transaction so removing a member cannot later resurrect a token
+        // that was staged before the removal.
+        transaction.execute(
+            "UPDATE join_requests SET status='rejected',resolved_at=?1 WHERE status='pending'",
+            params![now()],
+        )?;
+        let changed = transaction.execute("DELETE FROM devices WHERE id=?1", params![id])?;
+        if changed != 1 {
+            return Err(DeviceMutationError::NotFound);
+        }
+        transaction.commit()?;
         Ok(())
     }
+
+    pub fn set_owner_role(
+        &self,
+        id: &str,
+        owner: bool,
+        host_owner_meta: &str,
+    ) -> Result<DeviceGrant, DeviceMutationError> {
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        let host_owner = transaction
+            .query_row(
+                "SELECT value FROM meta WHERE key=?1",
+                params![host_owner_meta],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if host_owner.as_deref() == Some(id) {
+            return Err(DeviceMutationError::HostOwnerProtected);
+        }
+        let current = transaction
+            .query_row(
+                "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+                params![id],
+                map_device,
+            )
+            .optional()?
+            .ok_or(DeviceMutationError::NotFound)?;
+        if current.revoked {
+            return Err(DeviceMutationError::Revoked);
+        }
+        transaction.execute(
+            "UPDATE devices SET scope=?2 WHERE id=?1",
+            params![
+                id,
+                scope_text(if owner {
+                    AccessScope::Owner
+                } else {
+                    AccessScope::Manage
+                })
+            ],
+        )?;
+        let updated = transaction.query_row(
+            "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+            params![id],
+            map_device,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+}
+
+pub(crate) fn configure_connection(connection: &Connection) -> rusqlite::Result<()> {
+    connection.busy_timeout(SQLITE_BUSY_TIMEOUT)
 }
 
 fn search_fts_on_connection(
@@ -1847,8 +1920,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        vector_signature, vector_signature_neighbors, DocumentIndexUpdate, RestoreDocumentOutcome,
-        Store, VECTOR_SIGNATURE_RADIUS,
+        vector_signature, vector_signature_neighbors, DeviceMutationError, DocumentIndexUpdate,
+        RestoreDocumentOutcome, Store, SQLITE_BUSY_TIMEOUT, VECTOR_SIGNATURE_RADIUS,
     };
 
     #[test]
@@ -2447,6 +2520,74 @@ mod tests {
     }
 
     #[test]
+    fn device_mutations_protect_owners_inside_the_write_transaction() {
+        let store = Store::in_memory().unwrap();
+        store
+            .add_device(
+                "owner-1",
+                "Owner",
+                crate::model::AccessScope::Owner,
+                "owner-token",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            store.update_device(
+                "owner-1",
+                Some("Renamed"),
+                Some(crate::model::AccessScope::Read),
+                Some(true),
+            ),
+            Err(DeviceMutationError::OwnerProtected)
+        ));
+        assert!(matches!(
+            store.delete_device("owner-1"),
+            Err(DeviceMutationError::OwnerProtected)
+        ));
+        let owner = store.device("owner-1").unwrap().unwrap();
+        assert_eq!(owner.name, "Owner");
+        assert_eq!(owner.scope, crate::model::AccessScope::Owner);
+        assert!(!owner.revoked);
+    }
+
+    #[test]
+    fn deleting_a_member_invalidates_pending_join_credentials_atomically() {
+        let store = Store::in_memory().unwrap();
+        store
+            .add_device(
+                "member-1",
+                "Member",
+                crate::model::AccessScope::Read,
+                "member-token",
+            )
+            .unwrap();
+        let pending = store
+            .create_join_request(
+                "request-1",
+                "claim-hash",
+                "Member",
+                "replacement-device",
+                "replacement-token",
+                None,
+                i64::MAX,
+            )
+            .unwrap();
+        assert_eq!(pending.status, crate::model::JoinRequestStatus::Pending);
+
+        store.delete_device("member-1").unwrap();
+
+        assert!(store.device("member-1").unwrap().is_none());
+        assert!(store
+            .approve_join_request("request-1", crate::model::AccessScope::Read)
+            .is_err());
+        let resolved = store.list_join_requests(None, 0).unwrap();
+        assert_eq!(
+            resolved[0].status,
+            crate::model::JoinRequestStatus::Rejected
+        );
+    }
+
+    #[test]
     fn recycle_bin_lists_only_top_level_entries_and_permanent_delete_removes_rows() {
         let store = Store::in_memory().unwrap();
         let active_collection = store.create_collection("在用资料", None).unwrap();
@@ -2575,5 +2716,33 @@ mod tests {
             .unwrap();
         assert_eq!(store.purge_expired_trash(2).unwrap(), vec!["managed-old"]);
         assert!(store.document(document.id, true).unwrap().is_none());
+    }
+
+    #[test]
+    fn every_store_connection_uses_a_bounded_busy_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(&root.path().join("knowledge.db")).unwrap();
+        let expected = SQLITE_BUSY_TIMEOUT.as_millis() as i64;
+
+        let primary_timeout = store
+            .conn
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        let read_timeout = store
+            .with_read_connection(|connection| {
+                connection.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+            })
+            .unwrap();
+        let memory_store = Store::in_memory().unwrap();
+        let memory_timeout = memory_store
+            .conn
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+
+        assert_eq!(primary_timeout, expected);
+        assert_eq!(read_timeout, expected);
+        assert_eq!(memory_timeout, expected);
     }
 }

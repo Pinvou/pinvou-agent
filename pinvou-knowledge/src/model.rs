@@ -122,13 +122,6 @@ pub struct ResolveJoinRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PairRequest {
-    pub invite_secret: String,
-    pub device_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PairResponse {
     pub server: ServerInfo,
     pub token: String,
@@ -241,23 +234,6 @@ pub struct SourceWindow {
 pub struct SourceChunk {
     pub ord: i64,
     pub text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteCreateRequest {
-    pub scope: AccessScope,
-    pub label: Option<String>,
-    pub endpoint: String,
-    pub expires_in_minutes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InviteCreated {
-    pub invite_id: String,
-    pub invite: String,
-    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

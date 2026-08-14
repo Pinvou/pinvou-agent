@@ -24,6 +24,12 @@ def _extract_quoted_paths(block):
     return paths
 
 
+def _without_yaml_comments(block):
+    return "\n".join(
+        line for line in block.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _is_covered_by_trigger(entry, trigger_paths):
     """entry 被 trigger path 覆盖:完全相同,或 trigger 是其上层 `/**` 目录 glob。"""
     for trigger in trigger_paths:
@@ -143,16 +149,24 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
     def test_standalone_knowledge_crate_has_its_own_required_gate(self):
-        changes = self.pr_workflow.split(
-            "\n  changes:", maxsplit=1
-        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
         self.assertIn("knowledge_rust:", changes)
-        self.assertIn("- 'pinvou-knowledge/**/*.rs'", changes)
         self.assertIn("knowledge_dependencies:", changes)
+        knowledge_paths = changes.split(
+            "            knowledge_rust:", maxsplit=1
+        )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
+        self.assertIn("- 'pinvou-knowledge/**/*.rs'", knowledge_paths)
+        self.assertIn("- 'pinvou-knowledge/deploy/**'", knowledge_paths)
 
-        knowledge = self.pr_workflow.split(
-            "\n  knowledge-rust:", maxsplit=1
-        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        knowledge = _without_yaml_comments(
+            self.pr_workflow.split("\n  knowledge-rust:", maxsplit=1)[1].split(
+                "\n  rust-lint:", maxsplit=1
+            )[0]
+        )
         self.assertIn("needs.changes.outputs.knowledge_rust == 'true'", knowledge)
         self.assertIn(
             "cargo fmt --manifest-path pinvou-knowledge/Cargo.toml -- --check",
@@ -166,6 +180,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
         )
+        self.assertIn("bash -n pinvou-knowledge/deploy/install.sh", knowledge)
         self.assertIn(
             "needs.changes.outputs.knowledge_dependencies == 'true'",
             knowledge,
@@ -227,24 +242,65 @@ class CiGatePolicyTests(unittest.TestCase):
             "github.event.pull_request.draft == false", windows_rust_test
         )
 
-        windows_rust_test = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        windows_rust_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
+                "\n  windows-codex-runtime-test:", maxsplit=1
+            )[0]
+        )
         self.assertIn(
             "defaults:\n      run:\n        shell: bash",
             windows_rust_test,
         )
+        self.assertIn(
+            "- name: Windows 原子替换状态机回归\n"
+            "        shell: bash\n"
+            "        run: |",
+            windows_rust_test,
+        )
+        self.assertIn(
+            "- name: Windows 测试 exe 嵌入 Common-Controls v6 清单\n"
+            "        shell: pwsh\n"
+            "        run: |",
+            windows_rust_test,
+        )
+        self.assertIn(
+            '"-outputresource:$($exe.FullName);#1"',
+            windows_rust_test,
+        )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
-        release_contract = self.pr_workflow.split(
-            "\n  release-contract-test:", maxsplit=1
-        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        release_contract_paths = changes.split(
+            "            release_contract:", maxsplit=1
+        )[1].split("            l1:", maxsplit=1)[0]
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/resources/**'",
+            release_contract_paths,
+        )
+        self.assertIn(
+            "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+
+        release_contract = _without_yaml_comments(
+            self.pr_workflow.split("\n  release-contract-test:", maxsplit=1)[1].split(
+                "\n  knowledge-rust:", maxsplit=1
+            )[0]
+        )
         self.assertIn(
             "needs.changes.outputs.release_contract == 'true'",
             release_contract,
         )
         self.assertNotIn("github.event_name != 'merge_group'", release_contract)
         self.assertIn("github.event.pull_request.draft == false", release_contract)
+        self.assertIn(
+            "npm --prefix pinvou3-app run test:knowledge-host-packaging",
+            release_contract,
+        )
 
     def test_main_cache_writer_is_not_cancelled(self):
         concurrency = self.pr_workflow.split(

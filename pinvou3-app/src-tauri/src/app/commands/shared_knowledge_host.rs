@@ -1,4 +1,3 @@
-use std::time::Duration;
 use std::{io::Write, path::PathBuf, str::FromStr};
 
 use age::secrecy::ExposeSecret;
@@ -47,16 +46,6 @@ pub async fn shared_kb_host_status() -> SharedKnowledgeHostStatus {
 #[tauri::command]
 pub fn shared_kb_host_lan_endpoints() -> Vec<String> {
     shared_knowledge_host::lan_endpoints()
-}
-
-#[tauri::command]
-pub async fn shared_kb_discover_nearby(
-) -> Result<Vec<pinvou_knowledge::discovery::DiscoveredKnowledgeHost>, String> {
-    tokio::task::spawn_blocking(|| {
-        pinvou_knowledge::discovery::discover_nearby(Duration::from_millis(1500))
-    })
-    .await
-    .map_err(|error| format!("局域网发现任务失败：{error}"))?
 }
 
 #[tauri::command]

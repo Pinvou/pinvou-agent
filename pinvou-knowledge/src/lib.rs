@@ -6,7 +6,6 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 
-pub mod discovery;
 pub mod embedding;
 pub mod model;
 #[cfg(feature = "client")]
@@ -163,6 +162,25 @@ pub fn is_supported_document_path(path: &Path) -> bool {
     )
 }
 
+/// Detect private-key material even if it was renamed to a normal text file.
+/// Certificates are intentionally allowed because they are public material.
+pub fn looks_like_secret_material(bytes: &[u8]) -> bool {
+    const MARKERS: &[&[u8]] = &[
+        b"-----BEGIN PRIVATE KEY-----",
+        b"-----BEGIN RSA PRIVATE KEY-----",
+        b"-----BEGIN DSA PRIVATE KEY-----",
+        b"-----BEGIN EC PRIVATE KEY-----",
+        b"-----BEGIN OPENSSH PRIVATE KEY-----",
+        b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        b"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        b"openssh-key-v1",
+    ];
+    let head = &bytes[..bytes.len().min(8192)];
+    MARKERS
+        .iter()
+        .any(|marker| head.windows(marker.len()).any(|window| window == *marker))
+}
+
 /// 与桌面本地知识库保持一致的切块规则。
 pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
     if text.trim().is_empty() || max_chars == 0 {
@@ -220,6 +238,24 @@ mod tests {
         assert!(is_supported_document_path(Path::new("sheet.xlsx")));
         assert!(!is_supported_document_path(Path::new("archive.zip")));
         assert!(!is_supported_document_path(Path::new("secret.key")));
+    }
+
+    #[test]
+    fn chunking_prefers_sentence_boundaries_after_sixty_percent() {
+        assert_eq!(
+            chunk_text("abcdefghi.jklmnop", 12, 2),
+            vec!["abcdefghi.", "i.jklmnop"]
+        );
+    }
+
+    #[test]
+    fn renamed_private_keys_are_rejected_by_shared_core() {
+        assert!(super::looks_like_secret_material(
+            b"notes\n-----BEGIN OPENSSH PRIVATE KEY-----\nsecret"
+        ));
+        assert!(!super::looks_like_secret_material(
+            b"-----BEGIN CERTIFICATE-----\npublic"
+        ));
     }
 
     #[test]

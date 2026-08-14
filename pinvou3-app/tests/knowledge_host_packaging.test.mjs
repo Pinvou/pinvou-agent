@@ -31,6 +31,10 @@ const hostCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/shared_knowledge_host.rs'),
   'utf8',
 );
+const hostPlatformLinux = readFileSync(
+  path.join(appRoot, 'src-tauri/src/features/shared_knowledge_host/platform/linux.rs'),
+  'utf8',
+);
 const remoteKnowledgeView = readFileSync(
   path.join(appRoot, 'src/features/remote-knowledge/RemoteKnowledgeView.jsx'),
   'utf8',
@@ -168,6 +172,33 @@ test('maintenance operations restart the service after failure, cancellation, or
   assert.match(helper, /identity_mode/u);
 });
 
+test('restore validates backup and identity absolute paths independently', () => {
+  assert.doesNotMatch(helper, /case "\$input:\$identity_file"/u);
+  assert.match(helper, /require_absolute_path "\$input" "备份文件路径无效"/u);
+  assert.match(helper, /require_absolute_path "\$identity_file" "恢复密钥路径无效"/u);
+
+  if (process.platform === 'win32') return;
+  const functionStart = helper.indexOf('require_absolute_path() {');
+  const functionEnd = helper.indexOf('\n\n[ "$(id -u)"', functionStart);
+  assert.ok(functionStart >= 0 && functionEnd > functionStart);
+  const script = `set -eu
+fail() { printf '%s\\n' "$*" >&2; exit 1; }
+${helper.slice(functionStart, functionEnd)}
+require_absolute_path "/tmp/archive.pinbak" invalid
+if (require_absolute_path "relative:/tmp/key" invalid >/dev/null 2>&1); then exit 1; fi
+if (require_absolute_path "relative.pinbak" invalid >/dev/null 2>&1); then exit 1; fi`;
+  execFileSync('/bin/sh', ['-c', script]);
+});
+
+test('native Linux host commands have bounded execution and explicit pkexec cancellation errors', () => {
+  assert.doesNotMatch(hostPlatformLinux, /\.output\(\)/u);
+  assert.doesNotMatch(hostPlatformLinux, /\.status\(\)/u);
+  assert.match(hostPlatformLinux, /output_with_timeout_and_kill_tree\(command, timeout\)/u);
+  assert.match(hostPlatformLinux, /BACKUP_HELPER_TIMEOUT: Duration = Duration::from_secs\(60 \* 60\)/u);
+  assert.match(hostPlatformLinux, /Some\(126\) => format!\("\{operation\}已取消"\)/u);
+  assert.match(hostPlatformLinux, /Some\(127\).*未获系统管理员授权/u);
+});
+
 test('owner claim survives until the native client persists it and health uses TLS', () => {
   assert.match(helper, /show_owner_claim\(\)/u);
   assert.match(helper, /install_or_upgrade[\s\S]*show_owner_claim/u);
@@ -201,7 +232,8 @@ test('native host setup reports real milestones to a blocking progress dialog', 
   assert.match(remoteKnowledgeView, /testId="shared-kb-host-progress"/u);
   assert.match(remoteKnowledgeView, /role="progressbar"/u);
   assert.match(remoteKnowledgeView, /shared-kb-host-progress-error/u);
-  assert.match(remoteKnowledgeView, /closeDisabled=\{!\['complete', 'failed'\]\.includes\(hostProgress\.phase\)\}/u);
+  assert.doesNotMatch(remoteKnowledgeView, /closeDisabled=\{!\['complete', 'failed'\]\.includes\(hostProgress\.phase\)\}/u);
+  assert.match(remoteKnowledgeView, /current\?\.operation === 'install'/u);
 });
 
 test('existing standalone data and model are adopted with a complete rollback path', () => {

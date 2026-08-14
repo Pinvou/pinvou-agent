@@ -9,8 +9,8 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::core::mode_state::MountedRemoteCollection;
 use crate::features::remote_knowledge::{
-    discover_folder_files, JoinOutcome, PendingJoin, RemoteConnection, RemoteConnectionStatus,
-    RemoteFolderDiscovery, RemoteKnowledgeService,
+    discover_folder_files, JoinOutcome, PendingJoin, RemoteConnectionStatus, RemoteFolderDiscovery,
+    RemoteKnowledgeService,
 };
 use crate::features::sessions::SessionStore;
 
@@ -56,15 +56,6 @@ pub async fn remote_kb_connections(
     state: State<'_, RemoteKnowledgeService>,
 ) -> Result<Vec<RemoteConnectionStatus>, String> {
     state.statuses().await
-}
-
-#[tauri::command]
-pub async fn remote_kb_accept_invite(
-    state: State<'_, RemoteKnowledgeService>,
-    invitation: String,
-    device_name: String,
-) -> Result<RemoteConnection, String> {
-    state.accept_invite(&invitation, &device_name).await
 }
 
 #[tauri::command]

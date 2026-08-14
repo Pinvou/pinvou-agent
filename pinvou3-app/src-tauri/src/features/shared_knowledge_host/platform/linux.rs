@@ -3,23 +3,31 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use pinvou_knowledge::client::KnowledgeClient;
 use pinvou_knowledge::model::DeviceGrant;
+
+use crate::platform::process::{output_with_timeout, output_with_timeout_and_kill_tree};
 
 use super::super::{
     compare_host_versions, HostOwnerClaim, HostRestoreResult, HostVersionState,
     PackagedHostResources, SharedKnowledgeHostStatus, LOCAL_ENDPOINT,
 };
 
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_HELPER_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const INSTALL_HELPER_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const BACKUP_HELPER_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
 pub async fn status() -> SharedKnowledgeHostStatus {
     let installed_binary = Path::new("/usr/lib/pinvou/pinvou-knowledge-server");
     let installed = installed_binary.is_file();
     let running = tokio::task::spawn_blocking(|| {
-        Command::new("systemctl")
-            .args(["is-active", "--quiet", "pinvou-knowledge.service"])
-            .status()
-            .map(|status| status.success())
+        let mut command = Command::new("systemctl");
+        command.args(["is-active", "--quiet", "pinvou-knowledge.service"]);
+        output_with_timeout(command, PROBE_TIMEOUT)
+            .map(|output| output.status.success())
             .unwrap_or(false)
     })
     .await
@@ -58,10 +66,9 @@ pub async fn status() -> SharedKnowledgeHostStatus {
 }
 
 fn installed_service_version() -> Option<String> {
-    let output = Command::new("/usr/lib/pinvou/pinvou-knowledge-server")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut command = Command::new("/usr/lib/pinvou/pinvou-knowledge-server");
+    command.arg("--version");
+    let output = output_with_timeout(command, PROBE_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -87,24 +94,23 @@ pub async fn install_or_upgrade(
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
-        let output = Command::new("pkexec")
-            .arg(&resources.helper)
-            .arg(if upgrade { "upgrade" } else { "install" })
-            .arg(&resources.server)
-            .arg(model_dir)
-            .arg(uid)
-            .arg(gid)
-            .output()
-            .map_err(|error| format!("无法打开系统管理员确认：{error}"))?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if message.is_empty() {
-                "共享知识库安装已取消或失败".to_string()
-            } else {
-                message
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let operation = if upgrade {
+            "升级共享知识库"
+        } else {
+            "安装共享知识库"
+        };
+        let stdout = privileged_helper(
+            &resources,
+            [
+                if upgrade { "upgrade" } else { "install" }.to_string(),
+                resources.server.to_string_lossy().into_owned(),
+                model_dir.to_string_lossy().into_owned(),
+                uid,
+                gid,
+            ],
+            operation,
+            INSTALL_HELPER_TIMEOUT,
+        )?;
         Ok(stdout
             .lines()
             .rev()
@@ -115,9 +121,9 @@ pub async fn install_or_upgrade(
 }
 
 fn command_identity(flag: &str) -> Result<String, String> {
-    let output = Command::new("id")
-        .arg(flag)
-        .output()
+    let mut command = Command::new("id");
+    command.arg(flag);
+    let output = output_with_timeout(command, PROBE_TIMEOUT)
         .map_err(|error| format!("无法识别当前 Linux 用户：{error}"))?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() || value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit())
@@ -138,24 +144,19 @@ pub async fn set_owner_device(
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
-        let output = Command::new("pkexec")
-            .arg(&resources.helper)
-            .arg("set-owner")
-            .arg(device_id)
-            .arg(if owner { "owner" } else { "manage" })
-            .arg(uid)
-            .arg(gid)
-            .output()
-            .map_err(|error| format!("无法打开系统管理员确认：{error}"))?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if message.is_empty() {
-                "所有者设置已取消或失败".to_string()
-            } else {
-                message
-            });
-        }
-        serde_json::from_slice(&output.stdout).map_err(|_| "所有者设置结果无效".to_string())
+        let result = privileged_helper(
+            &resources,
+            [
+                "set-owner".to_string(),
+                device_id,
+                if owner { "owner" } else { "manage" }.to_string(),
+                uid,
+                gid,
+            ],
+            "设置所有者",
+            CONTROL_HELPER_TIMEOUT,
+        )?;
+        serde_json::from_str(&result).map_err(|_| "所有者设置结果无效".to_string())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -169,6 +170,7 @@ pub async fn consume_owner_claim(
             &resources,
             ["claim-owner".to_string()],
             "清理本机所有者凭据",
+            CONTROL_HELPER_TIMEOUT,
         )?;
         serde_json::from_str(result.trim()).map_err(|_| "本机所有者凭据无效".to_string())
     })
@@ -183,23 +185,18 @@ pub async fn recover_owner(resources: PackagedHostResources) -> Result<HostOwner
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
-        let output = Command::new("pkexec")
-            .arg(&resources.helper)
-            .arg("recover-owner")
-            .arg(&resources.server)
-            .arg(uid)
-            .arg(gid)
-            .output()
-            .map_err(|error| format!("无法打开系统管理员确认：{error}"))?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if message.is_empty() {
-                "重新连接本机服务已取消或失败".to_string()
-            } else {
-                message
-            });
-        }
-        serde_json::from_slice(&output.stdout).map_err(|_| "本机所有者恢复结果无效".to_string())
+        let result = privileged_helper(
+            &resources,
+            [
+                "recover-owner".to_string(),
+                resources.server.to_string_lossy().into_owned(),
+                uid,
+                gid,
+            ],
+            "重新连接本机服务",
+            CONTROL_HELPER_TIMEOUT,
+        )?;
+        serde_json::from_str(&result).map_err(|_| "本机所有者恢复结果无效".to_string())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -213,26 +210,21 @@ pub async fn remove_host(
         if !resources.helper.is_file() {
             return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
         }
-        let output = Command::new("pkexec")
-            .arg(&resources.helper)
-            .arg("remove")
-            .arg(if delete_data {
-                "delete-data"
-            } else {
-                "keep-data"
-            })
-            .output()
-            .map_err(|error| format!("无法打开系统管理员确认：{error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(if message.is_empty() {
-                "移除共享知识库已取消或失败".to_string()
-            } else {
-                message
-            })
-        }
+        privileged_helper(
+            &resources,
+            [
+                "remove".to_string(),
+                if delete_data {
+                    "delete-data"
+                } else {
+                    "keep-data"
+                }
+                .to_string(),
+            ],
+            "移除共享知识库",
+            CONTROL_HELPER_TIMEOUT,
+        )?;
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -258,6 +250,7 @@ pub async fn backup_host(
                 gid,
             ],
             "创建共享知识库备份",
+            BACKUP_HELPER_TIMEOUT,
         )?;
         result
             .lines()
@@ -293,6 +286,7 @@ pub async fn restore_host(
                 gid,
             ],
             "恢复共享知识库",
+            BACKUP_HELPER_TIMEOUT,
         )?;
         let mut manifest = None;
         let mut owner_claim = None;
@@ -317,28 +311,50 @@ fn privileged_helper<const N: usize>(
     resources: &PackagedHostResources,
     args: [String; N],
     operation: &str,
+    timeout: Duration,
 ) -> Result<String, String> {
     if !resources.helper.is_file() {
         return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
     }
-    let output = Command::new("pkexec")
-        .arg(&resources.helper)
-        .args(args)
-        .output()
-        .map_err(|error| format!("无法打开系统管理员确认：{error}"))?;
+    let mut command = Command::new("pkexec");
+    command.arg(&resources.helper).args(args);
+    let output = output_with_timeout_and_kill_tree(command, timeout)
+        .map_err(|error| privileged_helper_execution_error(operation, &error))?;
     if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if message.is_empty() {
-            format!("{operation}已取消或失败")
-        } else {
-            message
-        });
+        return Err(privileged_helper_failure(
+            operation,
+            output.status.code(),
+            &output.stderr,
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn privileged_helper_execution_error(operation: &str, error: &str) -> String {
+    if error.contains(" timed out after ") {
+        format!("{operation}等待超时，已终止本次操作：{error}")
+    } else {
+        format!("无法打开系统管理员确认：{error}")
+    }
+}
+
+fn privileged_helper_failure(operation: &str, code: Option<i32>, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr).trim().to_string();
+    match code {
+        // pkexec documents 126 for a dismissed authentication dialog and 127
+        // when authorization could not be obtained.
+        Some(126) => format!("{operation}已取消"),
+        Some(127) if detail.is_empty() => format!("{operation}未获系统管理员授权"),
+        Some(127) => format!("{operation}未获系统管理员授权：{detail}"),
+        _ if detail.is_empty() => format!("{operation}失败"),
+        _ => detail,
+    }
+}
+
 pub fn lan_endpoints() -> Vec<String> {
-    let output = Command::new("hostname").arg("-I").output();
+    let mut command = Command::new("hostname");
+    command.arg("-I");
+    let output = output_with_timeout(command, PROBE_TIMEOUT);
     let mut endpoints = output
         .ok()
         .filter(|output| output.status.success())
@@ -362,10 +378,10 @@ fn is_lan_address(address: IpAddr) -> bool {
         IpAddr::V4(address) => {
             address.is_private() && !address.is_loopback() && !is_tailnet(address)
         }
-        IpAddr::V6(address) => {
-            let first = address.segments()[0];
-            !address.is_loopback() && ((first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80)
-        }
+        // Only ULA addresses are portable between machines. A link-local fe80::
+        // endpoint requires an interface zone id, which `hostname -I` does not
+        // provide and therefore must never be advertised in a share link.
+        IpAddr::V6(address) => !address.is_loopback() && (address.segments()[0] & 0xfe00) == 0xfc00,
     }
 }
 
@@ -383,7 +399,7 @@ mod tests {
         for address in ["192.168.1.20", "10.20.0.3", "fd12::3"] {
             assert!(is_lan_address(address.parse().unwrap()), "{address}");
         }
-        for address in ["127.0.0.1", "8.8.8.8", "100.64.12.34", "::1"] {
+        for address in ["127.0.0.1", "8.8.8.8", "100.64.12.34", "::1", "fe80::1"] {
             assert!(!is_lan_address(address.parse().unwrap()), "{address}");
         }
     }
@@ -396,5 +412,26 @@ mod tests {
         );
         assert_eq!(service_version_from_output(b""), None);
         assert_eq!(service_version_from_output(&[0xff]), None);
+    }
+
+    #[test]
+    fn pkexec_cancellation_authorization_and_timeout_are_distinct() {
+        assert_eq!(
+            privileged_helper_failure("恢复共享知识库", Some(126), b"dismissed"),
+            "恢复共享知识库已取消"
+        );
+        assert_eq!(
+            privileged_helper_failure("恢复共享知识库", Some(127), b""),
+            "恢复共享知识库未获系统管理员授权"
+        );
+        assert_eq!(
+            privileged_helper_failure("恢复共享知识库", Some(1), b"restore failed"),
+            "restore failed"
+        );
+        assert!(privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec timed out after 3600s: no subprocess output"
+        )
+        .contains("等待超时"));
     }
 }

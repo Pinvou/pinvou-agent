@@ -906,7 +906,7 @@ fn agentic_guide_mentions_collection_and_kb_search() {
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
     assert!(g.contains("《团队规范》"));
-    assert!(build_kb_agentic_guide(&[]).contains("《本地知识集》"));
+    assert!(build_kb_agentic_guide(&[]).contains("《知识集》"));
 }
 
 #[test]

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use futures_util::future::join_all;
 use parking_lot::RwLock;
 use pinvou_knowledge::client::{
-    new_join_credentials, normalize_stored_endpoint, normalize_user_endpoint, parse_invite,
-    parse_share, KnowledgeClient, NewJoinCredentials,
+    new_join_credentials, normalize_stored_endpoint, normalize_user_endpoint, parse_share,
+    KnowledgeClient, NewJoinCredentials,
 };
 use pinvou_knowledge::model::{
     AccessScope, Collection, CreateCollectionRequest, DeviceGrant, Document, JoinRequestRecord,
@@ -356,20 +356,6 @@ impl RemoteKnowledgeService {
         }
     }
 
-    pub async fn accept_invite(
-        &self,
-        invitation: &str,
-        device_name: &str,
-    ) -> Result<RemoteConnection, String> {
-        let _pairing = self.pairing.lock().await;
-        let invitation = parse_invite(invitation)?;
-        self.ensure_endpoint_not_connected(&invitation.endpoint)?;
-        self.ensure_server_identity_not_connected(&invitation.endpoint)
-            .await?;
-        let paired = KnowledgeClient::pair(&invitation, device_name.trim()).await?;
-        self.persist_paired_connection(invitation.endpoint, paired)
-    }
-
     pub async fn register_local_owner(
         &self,
         endpoint: &str,
@@ -506,30 +492,14 @@ impl RemoteKnowledgeService {
         if source.is_empty() || device_name.is_empty() {
             return Err("请输入共享链接或服务器地址，并填写姓名".to_string());
         }
-        let parsed_share = source
-            .starts_with("pinvou-knowledge://share")
-            .then(|| parse_share(source))
-            .transpose()?;
-        let (endpoints, tls_ca, share_secret, expected_server, expected_identity) =
-            if let Some(share) = parsed_share {
-                (
-                    share.endpoints,
-                    share.tls_ca,
-                    Some(share.secret),
-                    Some(share.server_id),
-                    Some(share.identity),
-                )
-            } else {
-                let endpoint = normalize_user_endpoint(source)?;
-                let server = KnowledgeClient::bootstrap_identity(&endpoint).await?;
-                (
-                    vec![endpoint],
-                    server.tls_ca,
-                    None,
-                    Some(server.server_id),
-                    Some(server.identity),
-                )
-            };
+        let share = parse_share(source).map_err(|_| {
+            "首次加入必须使用所有者生成的共享链接，以安全验证服务器身份".to_string()
+        })?;
+        let endpoints = share.endpoints;
+        let tls_ca = share.tls_ca;
+        let share_secret = Some(share.secret);
+        let expected_server = Some(share.server_id);
+        let expected_identity = Some(share.identity);
         // Reject a second address for an already connected server before the
         // server creates a pending join request. The post-response check below
         // remains as a race guard, but must not be the normal duplicate path.
@@ -627,15 +597,28 @@ impl RemoteKnowledgeService {
             .find(|item| item.request_id == request_id)
             .ok_or_else(|| "加入申请不存在".to_string())?;
         let secrets = self.pending_join_secrets(request_id)?;
-        let request = KnowledgeClient::cancel_join_request(
+        let remote = KnowledgeClient::cancel_join_request(
             &pending.endpoint,
             &pending.tls_ca,
             request_id,
             &secrets.claim_secret,
         )
-        .await?;
+        .await;
         self.remove_pending_join(request_id)?;
-        Ok(request)
+        match remote {
+            Ok(request) => Ok(request),
+            Err(_) => Ok(JoinRequestRecord {
+                id: pending.request_id,
+                device_name: pending.device_name,
+                status: JoinRequestStatus::Cancelled,
+                scope: None,
+                share_id: None,
+                device_id: None,
+                created_at: pending.created_at,
+                expires_at: pending.expires_at,
+                resolved_at: Some(chrono::Utc::now().timestamp()),
+            }),
+        }
     }
 
     async fn persist_join_outcome(
@@ -903,13 +886,6 @@ impl RemoteKnowledgeService {
             );
         }
         Ok(())
-    }
-
-    async fn ensure_server_identity_not_connected(&self, endpoint: &str) -> Result<(), String> {
-        let server = KnowledgeClient::bootstrap_identity(endpoint)
-            .await
-            .map_err(|error| format!("无法确认知识库服务器身份：{error}"))?;
-        self.ensure_server_id_not_connected(&server.server_id)
     }
 
     fn ensure_server_id_not_connected(&self, server_id: &str) -> Result<(), String> {

@@ -17,6 +17,15 @@ fail() {
   exit 1
 }
 
+require_absolute_path() {
+  candidate=$1
+  message=$2
+  case "$candidate" in
+    /*) ;;
+    *) fail "$message" ;;
+  esac
+}
+
 [ "$(id -u)" -eq 0 ] || fail "需要管理员权限"
 [ "$(uname -s)" = Linux ] || fail "仅支持 Linux"
 
@@ -565,7 +574,7 @@ backup_host() {
   service_uid=$4
   service_gid=$5
   validate_service_identity "$service_uid" "$service_gid"
-  case "$output" in /*) ;; *) fail "备份路径无效" ;; esac
+  require_absolute_path "$output" "备份路径无效"
   begin_service_maintenance
   if ! result=$(setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
       "$INSTALL_BIN" --data-dir "$DATA_DIR" --backup-output "$output" \
@@ -583,7 +592,10 @@ restore_host() {
   service_uid=$4
   service_gid=$5
   validate_service_identity "$service_uid" "$service_gid"
-  case "$input:$identity_file" in /*:/*) ;; *) fail "恢复路径无效" ;; esac
+  # Validate each argument independently. Combining both values in one case
+  # expression lets a colon inside either path satisfy the other path's slash.
+  require_absolute_path "$input" "备份文件路径无效"
+  require_absolute_path "$identity_file" "恢复密钥路径无效"
   [ -f "$input" ] || fail "备份文件不存在"
   [ -f "$identity_file" ] || fail "恢复密钥不存在"
   identity_owner=$(stat -c %u "$identity_file" 2>/dev/null) || fail "无法检查恢复密钥"

@@ -86,27 +86,6 @@ pub fn create_encrypted_backup(
         .iter()
         .map(|value| Recipient::from_str(value).map_err(|_| "备份接收密钥无效".to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    let server_id =
-        Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .and_then(|connection| {
-                connection.query_row("SELECT value FROM meta WHERE key='server_id'", [], |row| {
-                    row.get::<_, String>(0)
-                })
-            })
-            .map_err(|error| format!("无法读取共享知识库身份：{error}"))?;
-
-    let mut documents = collect_documents(&documents_dir)?;
-    documents.sort_by(|left, right| left.path.cmp(&right.path));
-    let manifest = BackupManifest {
-        format: BACKUP_FORMAT,
-        created_at: chrono::Utc::now().timestamp(),
-        server_id,
-        database_sha256: hash_file(&database)?,
-        document_count: documents.len(),
-        document_bytes: documents.iter().map(|file| file.size).sum(),
-        documents,
-    };
-
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -118,6 +97,44 @@ pub fn create_encrypted_backup(
     if output.exists() {
         return Err("备份文件已存在，请选择其他名称".to_string());
     }
+
+    // Copying only knowledge.db while WAL mode is active can silently omit committed
+    // pages that still live in knowledge.db-wal. First request a non-blocking
+    // checkpoint, then use SQLite itself to materialize one transactional snapshot.
+    // VACUUM INTO reads the complete logical database even when a concurrent reader
+    // prevents the checkpoint from draining the WAL completely.
+    let snapshot_dir = tempfile::Builder::new()
+        .prefix(".pinvou-knowledge-backup-snapshot-")
+        .tempdir()
+        .map_err(|error| format!("无法创建数据库备份快照：{error}"))?;
+    let snapshot_database = snapshot_dir.path().join(DATABASE_NAME);
+    create_database_snapshot(&database, &snapshot_database)?;
+    let snapshot_connection = Connection::open_with_flags(
+        &snapshot_database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("无法读取数据库备份快照：{error}"))?;
+    crate::store::configure_connection(&snapshot_connection)
+        .map_err(|error| format!("无法配置数据库备份快照：{error}"))?;
+    let server_id = snapshot_connection
+        .query_row("SELECT value FROM meta WHERE key='server_id'", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| format!("无法读取共享知识库身份：{error}"))?;
+    drop(snapshot_connection);
+
+    let mut documents = collect_documents(&documents_dir)?;
+    documents.sort_by(|left, right| left.path.cmp(&right.path));
+    let manifest = BackupManifest {
+        format: BACKUP_FORMAT,
+        created_at: chrono::Utc::now().timestamp(),
+        server_id,
+        database_sha256: hash_file(&snapshot_database)?,
+        document_count: documents.len(),
+        document_bytes: documents.iter().map(|file| file.size).sum(),
+        documents,
+    };
+
     let temporary = parent.join(format!(
         ".{}.{}.tmp",
         output
@@ -152,7 +169,7 @@ pub fn create_encrypted_backup(
             .append_data(&mut header, MANIFEST_NAME, manifest_bytes.as_slice())
             .map_err(|error| format!("无法写入备份清单：{error}"))?;
         archive
-            .append_path_with_name(&database, DATABASE_NAME)
+            .append_path_with_name(&snapshot_database, DATABASE_NAME)
             .map_err(|error| format!("无法备份数据库：{error}"))?;
         if documents_dir.is_dir() {
             archive
@@ -336,6 +353,7 @@ fn preserve_current_host_state(data_dir: &Path, staged_database: &Path) -> Resul
         return Err("本机恢复需要现有共享知识库".to_string());
     }
     let connection = Connection::open(staged_database).map_err(|error| error.to_string())?;
+    crate::store::configure_connection(&connection).map_err(|error| error.to_string())?;
     connection
         .execute(
             "ATTACH DATABASE ?1 AS current_host",
@@ -361,6 +379,7 @@ fn preserve_current_host_state(data_dir: &Path, staged_database: &Path) -> Resul
 
 fn clear_host_state(database: &Path) -> Result<(), String> {
     let connection = Connection::open(database).map_err(|error| error.to_string())?;
+    crate::store::configure_connection(&connection).map_err(|error| error.to_string())?;
     connection
         .execute_batch(
             "BEGIN IMMEDIATE;
@@ -463,6 +482,41 @@ fn ensure_path_outside_data_dir(
     let candidate_parent = fs::canonicalize(candidate_parent).map_err(|error| error.to_string())?;
     if candidate_parent.starts_with(data_dir) {
         return Err(message.to_string());
+    }
+    Ok(())
+}
+
+fn create_database_snapshot(database: &Path, snapshot: &Path) -> Result<(), String> {
+    let connection =
+        Connection::open(database).map_err(|error| format!("无法打开共享知识库数据库：{error}"))?;
+    crate::store::configure_connection(&connection)
+        .map_err(|error| format!("无法配置共享知识库数据库：{error}"))?;
+    let _checkpoint = connection
+        .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|error| format!("无法检查共享知识库 WAL：{error}"))?;
+    connection
+        .execute("VACUUM INTO ?1", [snapshot.to_string_lossy().into_owned()])
+        .map_err(|error| format!("无法创建数据库一致性快照：{error}"))?;
+    drop(connection);
+
+    let snapshot_connection = Connection::open_with_flags(
+        snapshot,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("无法验证数据库备份快照：{error}"))?;
+    crate::store::configure_connection(&snapshot_connection)
+        .map_err(|error| format!("无法配置数据库备份快照：{error}"))?;
+    let integrity = snapshot_connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法验证数据库备份快照：{error}"))?;
+    if integrity != "ok" {
+        return Err(format!("数据库备份快照校验失败：{integrity}"));
     }
     Ok(())
 }
@@ -619,6 +673,62 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn encrypted_backup_includes_commits_still_pinned_in_the_wal() {
+        let source = tempfile::tempdir().unwrap();
+        seed_data(source.path(), "source-server", "source-owner");
+        let database = source.path().join(DATABASE_NAME);
+
+        // Keep an older read snapshot open so PASSIVE checkpoint cannot drain every
+        // WAL frame. A raw copy of knowledge.db would therefore miss this marker.
+        let reader = Connection::open(&database).unwrap();
+        reader
+            .execute_batch("PRAGMA wal_autocheckpoint=0; BEGIN;")
+            .unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT value FROM meta WHERE key='server_id'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "source-server"
+        );
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute_batch("PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        writer
+            .execute(
+                "INSERT INTO meta(key,value) VALUES('wal_snapshot_marker','committed')",
+                [],
+            )
+            .unwrap();
+        assert!(database.with_extension("db-wal").is_file());
+
+        let (identity, recipient) = generate_identity();
+        let backup_root = tempfile::tempdir().unwrap();
+        let backup = backup_root.path().join("wal.pinbak");
+        create_encrypted_backup(source.path(), &backup, &[recipient]).unwrap();
+
+        let extracted = tempfile::tempdir().unwrap();
+        let identity = Identity::from_str(&identity).unwrap();
+        decrypt_archive(&backup, &identity, &extracted).unwrap();
+        let snapshot = Connection::open(extracted.path().join(DATABASE_NAME)).unwrap();
+        assert_eq!(
+            snapshot
+                .query_row(
+                    "SELECT value FROM meta WHERE key='wal_snapshot_marker'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "committed"
+        );
+
+        reader.execute_batch("ROLLBACK;").unwrap();
+        drop(writer);
     }
 
     #[test]

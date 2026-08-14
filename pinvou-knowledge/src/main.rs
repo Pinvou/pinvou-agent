@@ -173,6 +173,12 @@ async fn main() -> anyhow::Result<()> {
             let _ = background.index_pending_documents().await;
         });
     }
+    {
+        let background = service.clone();
+        tokio::spawn(async move {
+            background.run_trash_retention_loop().await;
+        });
+    }
     server::serve(service, args.bind)
         .await
         .map_err(anyhow::Error::msg)

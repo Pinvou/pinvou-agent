@@ -31,6 +31,7 @@ const CHROME = process.env.CHROME || [
 ].find(p => fs.existsSync(p));
 if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome,可用 env CHROME=/path/to/chromium 指定'); process.exit(2); }
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-kb-'));
+const MOCK_SHARE_LINK = 'pinvou-knowledge://share/mock-lan';
 
 function injectSource() {
   return `(function(){
@@ -118,10 +119,6 @@ function injectSource() {
           return Promise.resolve(snapshot);
         }
         case 'remote_kb_pending_joins': return Promise.resolve(window.__REMOTE_PENDING_JOINS__ || []);
-        case 'shared_kb_discover_nearby': return Promise.resolve([{
-          identity:'nearby-office',serverId:'nearby-office',name:'Office Shared Knowledge',
-          endpoints:['https://192.168.1.50:3210']
-        }]);
         case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
         case 'shared_kb_host_lan_endpoints': return Promise.resolve(['https://192.168.1.20:3210']);
         case 'shared_kb_host_reconnect': {
@@ -333,6 +330,8 @@ async function chooseRemoteUploadSource(page, testId) {
   const { url: INDEX } = await startUiTestServer();
   const results = [];
   const rec = (name, pass, detail) => { results.push({ name, pass }); console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`); };
+  const remoteKnowledgeSource = fs.readFileSync(path.join(__dirname, '../src/features/remote-knowledge/RemoteKnowledgeView.jsx'), 'utf8');
+  rec('共享知识库危险操作不依赖 WebView window.confirm', !remoteKnowledgeSource.includes('window.confirm'), 'source contract');
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox','--disable-gpu','--no-first-run','--no-default-browser-check'], userDataDir: PROFILE });
   const page = await browser.newPage();
   const errs = [];
@@ -454,6 +453,7 @@ async function chooseRemoteUploadSource(page, testId) {
       nameValue: nameInput?.value,
       namePlaceholder: nameInput?.placeholder,
       nameLabel: nameInput?.getAttribute('aria-label'),
+      sourcePlaceholder: dialog?.querySelector('[data-testid="remote-invitation"]')?.placeholder,
       connectDisabled: connectButton?.disabled,
     };
   });
@@ -462,17 +462,21 @@ async function chooseRemoteUploadSource(page, testId) {
   }
   rec('⓪c1 添加服务器使用二级弹窗且姓名默认为空', connectDialog.visible && !connectDialog.mainForm
     && connectDialog.nameValue === '' && connectDialog.namePlaceholder === '输入姓名'
-    && connectDialog.nameLabel === '输入姓名' && connectDialog.connectDisabled,
+    && connectDialog.nameLabel === '输入姓名' && connectDialog.sourcePlaceholder.includes('pinvou-knowledge://share')
+    && connectDialog.connectDisabled,
   JSON.stringify(connectDialog));
-  await page.waitForSelector('[data-testid="remote-nearby-hosts"]');
-  await page.evaluate(() => [...document.querySelectorAll('[data-testid="remote-nearby-hosts"] button')]
-    .find(button => (button.textContent || '').includes('Office Shared Knowledge'))?.click());
-  const nearbyDiscovery = await page.evaluate(() => ({
-    source: document.querySelector('[data-testid="remote-invitation"]')?.value,
-    calls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_discover_nearby').length,
+  await page.type('[data-testid="remote-invitation"]', '192.168.1.20:3210');
+  await page.type('[data-testid="remote-device-name"]', 'Alice');
+  const directJoinBlocked = await page.evaluate(() => ({
+    submitDisabled: document.querySelector('[data-testid="remote-connect-submit"]')?.disabled,
+    invalid: document.querySelector('[data-testid="remote-invitation"]')?.getAttribute('aria-invalid'),
+    help: document.querySelector('[data-testid="remote-join-source-help"]')?.innerText || '',
+    nearbyVisible: Boolean(document.querySelector('[data-testid="remote-nearby-hosts"]')),
   }));
-  rec('⓪c2 附近发现仅作为可选地址入口', nearbyDiscovery.source === 'https://192.168.1.50:3210'
-    && nearbyDiscovery.calls >= 1, JSON.stringify(nearbyDiscovery));
+  rec('⓪c2 普通加入仅接受所有者生成的共享链接', directJoinBlocked.submitDisabled
+    && directJoinBlocked.invalid === 'true' && directJoinBlocked.help.includes('pinvou-knowledge://share')
+    && !directJoinBlocked.nearbyVisible,
+  JSON.stringify(directJoinBlocked));
   await page.evaluate(() => {
     const input = document.querySelector('[data-testid="remote-invitation"]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -481,15 +485,14 @@ async function chooseRemoteUploadSource(page, testId) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
   });
-  await page.type('[data-testid="remote-invitation"]', '192.168.1.20:3210');
-  await page.type('[data-testid="remote-device-name"]', 'Alice');
+  await page.type('[data-testid="remote-invitation"]', MOCK_SHARE_LINK);
   const joinForm = await page.evaluate(() => ({
     sourceValue: document.querySelector('[data-testid="remote-invitation"]')?.value,
     nameValue: document.querySelector('[data-testid="remote-device-name"]')?.value,
     submitDisabled: document.querySelector('[data-testid="remote-connect-submit"]')?.disabled,
     hasLegacyModes: !!document.querySelector('[data-testid="remote-connect-mode-lan"]'),
   }));
-  rec('⓪c3 共享知识库使用单一加入入口', joinForm.sourceValue === '192.168.1.20:3210'
+  rec('⓪c3 共享知识库使用单一加入入口', joinForm.sourceValue === MOCK_SHARE_LINK
     && joinForm.nameValue === 'Alice' && !joinForm.submitDisabled && !joinForm.hasLegacyModes,
   JSON.stringify(joinForm));
 
@@ -518,7 +521,7 @@ async function chooseRemoteUploadSource(page, testId) {
     };
   });
   rec('⓪c3 加入防重复提交并立即选择获批连接', lanConnected.calls === 1
-    && lanConnected.args?.source === '192.168.1.20:3210'
+    && lanConnected.args?.source === MOCK_SHARE_LINK
     && lanConnected.args?.deviceName === 'Alice' && lanConnected.fixedScope === 'read'
     && lanConnected.selected && lanConnected.readOnly && !lanConnected.upload
     && lanConnected.notice.includes('已加入共享知识库'),
@@ -528,7 +531,7 @@ async function chooseRemoteUploadSource(page, testId) {
     window.__REMOTE_JOIN_PENDING_MODE__ = true;
     document.querySelector('[data-testid="remote-add-server"]')?.click();
   });
-  await page.type('[data-testid="remote-invitation"]', '192.168.1.21:3210');
+  await page.type('[data-testid="remote-invitation"]', 'pinvou-knowledge://share/mock-pending');
   await page.type('[data-testid="remote-device-name"]', 'Pending Alice');
   await page.click('[data-testid="remote-connect-submit"]');
   await page.waitForSelector('[data-testid="remote-join-feedback"][data-status="pending"]');
@@ -713,7 +716,7 @@ async function chooseRemoteUploadSource(page, testId) {
     window.__REMOTE_JOIN_NAME__ = 'LAN Knowledge New';
     document.querySelector('[data-testid="remote-add-server"]')?.click();
   });
-  await page.type('[data-testid="remote-invitation"]', '192.168.1.20:3210');
+  await page.type('[data-testid="remote-invitation"]', 'pinvou-knowledge://share/mock-generation');
   await page.type('[data-testid="remote-device-name"]', 'Generation Test');
   await page.click('[data-testid="remote-connect-submit"]');
   await sleep(500);
@@ -1101,7 +1104,32 @@ async function chooseRemoteUploadSource(page, testId) {
     && ownerJoinAutoRefresh.badge === '1' && ownerJoinAutoRefresh.pollDelta >= 1,
   JSON.stringify(ownerJoinAutoRefresh));
   await page.evaluate(() => { window.__REMOTE_OWNER_JOIN_REQUESTS__ = []; });
-  await page.waitForSelector('[data-testid="shared-kb-backup"]');
+  const ownerPeopleTab = await page.evaluate(() => ({
+    selected: document.querySelector('[data-testid="remote-owner-people-tab"]')?.getAttribute('aria-selected'),
+    hostSelected: document.querySelector('[data-testid="remote-owner-host-tab"]')?.getAttribute('aria-selected'),
+    tabIndex: document.querySelector('[data-testid="remote-owner-people-tab"]')?.tabIndex,
+    hostTabIndex: document.querySelector('[data-testid="remote-owner-host-tab"]')?.tabIndex,
+    peoplePanelVisible: Boolean(document.querySelector('#remote-owner-people-panel')),
+    backupVisible: Boolean(document.querySelector('[data-testid="shared-kb-backup"]')),
+  }));
+  rec('所有者面板默认聚焦成员与邀请并隐藏主机维护操作',
+    ownerPeopleTab.selected === 'true' && ownerPeopleTab.hostSelected === 'false'
+      && ownerPeopleTab.tabIndex === 0 && ownerPeopleTab.hostTabIndex === -1
+      && ownerPeopleTab.peoplePanelVisible && !ownerPeopleTab.backupVisible,
+  JSON.stringify(ownerPeopleTab));
+  await page.focus('[data-testid="remote-owner-people-tab"]');
+  await page.keyboard.press('ArrowRight');
+  await page.waitForSelector('#remote-owner-host-panel');
+  const keyboardHostTab = await page.evaluate(() => ({
+    selected: document.querySelector('[data-testid="remote-owner-host-tab"]')?.getAttribute('aria-selected'),
+    focused: document.activeElement?.getAttribute('data-testid'),
+  }));
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForSelector('#remote-owner-people-panel');
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'remote-owner-people-tab');
+  rec('所有者面板页签支持方向键切换和焦点跟随',
+    keyboardHostTab.selected === 'true' && keyboardHostTab.focused === 'remote-owner-host-tab',
+  JSON.stringify(keyboardHostTab));
   await page.waitForSelector('[data-testid="remote-share-other-endpoint"]');
   await page.evaluate(() => {
     document.querySelector('[data-testid="remote-share-other-endpoint"]')?.closest('details')?.setAttribute('open', '');
@@ -1120,35 +1148,99 @@ async function chooseRemoteUploadSource(page, testId) {
       && shareEndpoints.has('cube.example.ts.net:3210')
       && !shareEndpoints.has('https://127.0.0.1:3210'),
     JSON.stringify(shareCreation));
+  await page.click('[data-testid="remote-owner-host-tab"]');
+  await page.waitForSelector('[data-testid="shared-kb-backup"]');
+  const ownerHostTab = await page.evaluate(() => ({
+    selected: document.querySelector('[data-testid="remote-owner-host-tab"]')?.getAttribute('aria-selected'),
+    peoplePanelVisible: Boolean(document.querySelector('#remote-owner-people-panel')),
+    hostPanelVisible: Boolean(document.querySelector('#remote-owner-host-panel')),
+    dangerText: document.querySelector('#remote-owner-host-panel')?.innerText || '',
+  }));
+  rec('服务维护独立成页并隔离停用与删除操作',
+    ownerHostTab.selected === 'true' && !ownerHostTab.peoplePanelVisible
+      && ownerHostTab.hostPanelVisible && ownerHostTab.dangerText.includes('停用与删除'),
+  JSON.stringify(ownerHostTab));
+  const hostRemoveCallsBeforeCancel = await page.evaluate(() => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_remove').length);
+  await page.click('[data-testid="shared-kb-delete-host"]');
+  await page.waitForSelector('[data-testid="shared-kb-delete-host-confirm"]');
+  const hostDeleteConfirmation = await page.evaluate(() => ({
+    modalCount: document.querySelectorAll('[aria-modal="true"]').length,
+    ownerPanelVisible: Boolean(document.querySelector('[data-testid="remote-owner-panel"]')),
+    text: document.querySelector('[data-testid="shared-kb-delete-host-confirm"]')?.innerText || '',
+    cancelFocused: document.activeElement?.getAttribute('data-testid'),
+  }));
+  await page.click('[data-testid="shared-kb-delete-host-confirm-cancel"]');
+  await page.waitForSelector('[data-testid="remote-owner-panel"]');
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'remote-owner-host-tab');
+  const hostRemoveCallsAfterCancel = await page.evaluate(() => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_remove').length);
+  rec('所有者危险操作使用单一产品确认弹窗且取消不执行',
+    hostDeleteConfirmation.modalCount === 1 && !hostDeleteConfirmation.ownerPanelVisible
+      && hostDeleteConfirmation.text.includes('删除服务和数据')
+      && hostDeleteConfirmation.cancelFocused === 'shared-kb-delete-host-confirm-cancel'
+      && hostRemoveCallsAfterCancel === hostRemoveCallsBeforeCancel,
+  JSON.stringify({ hostDeleteConfirmation, hostRemoveCallsBeforeCancel, hostRemoveCallsAfterCancel }));
   await page.click('[data-testid="shared-kb-backup"]');
   await page.waitForSelector('[data-testid="shared-kb-recovery-code"]');
   const encryptedBackup = await page.evaluate(() => ({
     code: document.querySelector('[data-testid="shared-kb-recovery-code"] textarea')?.value || '',
     call: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_host_backup').at(-1),
+    modalCount: document.querySelectorAll('[aria-modal="true"]').length,
   }));
   await page.click('[data-testid="shared-kb-recovery-done"]');
 
   await page.click('[data-testid="shared-kb-restore"]');
   await page.waitForSelector('[data-testid="shared-kb-restore-dialog"]');
-  page.once('dialog', dialog => dialog.accept());
+  const restoreCallsBeforeCancel = await page.evaluate(() => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_restore').length);
   await page.click('[data-testid="shared-kb-restore-submit"]');
+  await page.waitForSelector('[data-testid="shared-kb-restore-confirm"]');
+  const sameHostConfirmation = await page.evaluate(() => ({
+    modalCount: document.querySelectorAll('[aria-modal="true"]').length,
+    restoreDialogVisible: Boolean(document.querySelector('[data-testid="shared-kb-restore-dialog"]')),
+    text: document.querySelector('[data-testid="shared-kb-restore-confirm"]')?.innerText || '',
+  }));
+  await page.click('[data-testid="shared-kb-restore-confirm-cancel"]');
+  await page.waitForSelector('[data-testid="shared-kb-restore-dialog"]');
+  const restoreCallsAfterCancel = await page.evaluate(() => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_restore').length);
+  await page.click('[data-testid="shared-kb-restore-submit"]');
+  await page.waitForSelector('[data-testid="shared-kb-restore-confirm"]');
+  await page.click('[data-testid="shared-kb-restore-confirm-submit"]');
+  await page.waitForFunction((before) => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_restore').length > before, {}, restoreCallsBeforeCancel);
   await page.waitForSelector('[data-testid="shared-kb-restore-dialog"]', { hidden: true });
+  await page.waitForSelector('[data-testid="shared-kb-restore"]');
   await page.click('[data-testid="shared-kb-restore"]');
   await page.waitForSelector('[data-testid="shared-kb-restore-dialog"]');
   await page.type('[data-testid="shared-kb-restore-dialog"] textarea', 'AGE-SECRET-KEY-1MOVE');
-  page.once('dialog', dialog => dialog.accept());
   await page.click('[data-testid="shared-kb-restore-submit"]');
+  await page.waitForSelector('[data-testid="shared-kb-restore-confirm"]');
+  const migrationConfirmation = await page.evaluate(() => ({
+    modalCount: document.querySelectorAll('[aria-modal="true"]').length,
+    restoreDialogVisible: Boolean(document.querySelector('[data-testid="shared-kb-restore-dialog"]')),
+    text: document.querySelector('[data-testid="shared-kb-restore-confirm"]')?.innerText || '',
+  }));
+  await page.click('[data-testid="shared-kb-restore-confirm-submit"]');
+  await page.waitForFunction(() => (window.__KB_CALLS__ || [])
+    .filter(call => call.cmd === 'shared_kb_host_restore').length >= 2);
   await page.waitForSelector('[data-testid="shared-kb-restore-dialog"]', { hidden: true });
   const restoreCalls = await page.evaluate(() => (window.__KB_CALLS__ || [])
     .filter(call => call.cmd === 'shared_kb_host_restore').slice(-2));
   rec('shared backup and restore keep same-host and migration flows explicit',
     encryptedBackup.code === 'AGE-SECRET-KEY-1MOCK'
+      && encryptedBackup.modalCount === 1
       && encryptedBackup.call?.args?.destination === '/home/x/shared.pinbak'
+      && sameHostConfirmation.modalCount === 1 && !sameHostConfirmation.restoreDialogVisible
+      && sameHostConfirmation.text.includes('恢复共享知识库')
+      && restoreCallsAfterCancel === restoreCallsBeforeCancel
+      && migrationConfirmation.modalCount === 1 && !migrationConfirmation.restoreDialogVisible
       && restoreCalls.length === 2
       && restoreCalls[0]?.args?.source === '/home/x/shared.pinbak'
       && restoreCalls[0]?.args?.recoveryCode === null
       && restoreCalls[1]?.args?.recoveryCode === 'AGE-SECRET-KEY-1MOVE',
-    JSON.stringify({ encryptedBackup, restoreCalls }));
+    JSON.stringify({ encryptedBackup, sameHostConfirmation, restoreCallsBeforeCancel, restoreCallsAfterCancel, migrationConfirmation, restoreCalls }));
   await page.keyboard.press('Escape');
 
   if (process.env.KB_REMOTE_SCREENSHOT) {

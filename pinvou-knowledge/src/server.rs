@@ -16,31 +16,13 @@ use tower_http::trace::TraceLayer;
 
 use crate::model::*;
 use crate::service::KnowledgeService;
+use crate::store::DeviceMutationError;
 use crate::MAX_UPLOAD_BYTES;
 
 const SMALL_JSON_LIMIT: usize = 16 * 1024;
 const UPLOAD_REQUEST_LIMIT: usize = MAX_UPLOAD_BYTES + 1024 * 1024;
 
 pub async fn serve(service: Arc<KnowledgeService>, bind: SocketAddr) -> Result<(), String> {
-    let _discovery = if bind.ip().is_unspecified() && bind.port() != 0 {
-        service.server_info().ok().and_then(|info| {
-            match crate::discovery::advertise(
-                &info.server_id,
-                &info.identity,
-                &info.name,
-                &info.tls_ca,
-                bind.port(),
-            ) {
-                Ok(advertisement) => Some(advertisement),
-                Err(error) => {
-                    eprintln!("[pinvou-knowledge] LAN discovery unavailable: {error}");
-                    None
-                }
-            }
-        })
-    } else {
-        None
-    };
     let app = router(service.clone());
     let tls = tls_config(&service).await?;
     axum_server::bind_rustls(bind, tls)
@@ -66,10 +48,6 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
         .route("/health", get(health))
         .route("/api/v1/info", get(info))
         .route("/api/v1/access", get(current_access))
-        .route(
-            "/api/v1/pair/redeem",
-            post(pair).layer(DefaultBodyLimit::max(SMALL_JSON_LIMIT)),
-        )
         .route(
             "/api/v2/join-requests",
             post(create_join_request).layer(DefaultBodyLimit::max(SMALL_JSON_LIMIT)),
@@ -188,22 +166,6 @@ async fn current_access(
     headers: HeaderMap,
 ) -> ApiResult<Json<DeviceGrant>> {
     Ok(Json(require_device_access(&service, &headers)?))
-}
-
-async fn pair(
-    State(service): State<Arc<KnowledgeService>>,
-    Json(request): Json<PairRequest>,
-) -> ApiResult<impl IntoResponse> {
-    let mut headers = HeaderMap::new();
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok((
-        headers,
-        Json(
-            service
-                .redeem_invite(request)
-                .map_err(ApiError::bad_request)?,
-        ),
-    ))
 }
 
 async fn create_join_request(
@@ -346,22 +308,13 @@ async fn owner_update_device(
     Json(request): Json<UpdateDeviceRequest>,
 ) -> ApiResult<Json<DeviceGrant>> {
     require_owner_device(&service, &headers)?;
-    let target = service
-        .list_devices()
-        .map_err(ApiError::internal)?
-        .into_iter()
-        .find(|device| device.id == id)
-        .ok_or_else(|| ApiError::not_found("设备不存在"))?;
-    if target.scope.is_owner() {
-        return Err(ApiError::forbidden("所有者设备只能在主机本机管理"));
-    }
     if request.scope.is_some_and(AccessScope::is_owner) {
         return Err(ApiError::forbidden("所有者只能由主机本机 PINVOU 提升"));
     }
     Ok(Json(
         service
             .update_device(&id, request)
-            .map_err(ApiError::bad_request)?,
+            .map_err(map_device_mutation_error)?,
     ))
 }
 
@@ -374,17 +327,20 @@ async fn owner_delete_device(
     if caller.id == id {
         return Err(ApiError::forbidden("不能移除当前所有者设备"));
     }
-    if service
-        .list_devices()
-        .map_err(ApiError::internal)?
-        .into_iter()
-        .find(|device| device.id == id)
-        .is_some_and(|device| device.scope.is_owner())
-    {
-        return Err(ApiError::forbidden("所有者设备只能在主机本机管理"));
-    }
-    service.delete_device(&id).map_err(ApiError::bad_request)?;
+    service
+        .delete_device(&id)
+        .map_err(map_device_mutation_error)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn map_device_mutation_error(error: DeviceMutationError) -> ApiError {
+    match error {
+        DeviceMutationError::NotFound => ApiError::not_found("设备不存在"),
+        DeviceMutationError::OwnerProtected => ApiError::forbidden("所有者设备只能在主机本机管理"),
+        DeviceMutationError::HostOwnerProtected => ApiError::forbidden("不能修改主机所有者设备"),
+        DeviceMutationError::Revoked => ApiError::conflict("请先恢复该成员设备"),
+        DeviceMutationError::Database(error) => ApiError::internal(error.to_string()),
+    }
 }
 
 async fn owner_trashed_collections(

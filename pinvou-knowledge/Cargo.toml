@@ -59,7 +59,6 @@ clap = { version = "4", features = ["derive", "env"], optional = true }
 flate2 = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
 mime_guess = { version = "2", optional = true }
-mdns-sd = "=0.20.3"
 if-addrs = "=0.14.0"
 rcgen = { version = "=0.14.8", features = ["x509-parser"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }

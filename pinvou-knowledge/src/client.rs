@@ -15,7 +15,8 @@ use crate::model::*;
 use crate::MAX_UPLOAD_BYTES;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
-const PAIR_TIMEOUT: Duration = Duration::from_secs(15);
+const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 // Replacement remains atomic and waits for parsing plus embedding before the
 // server commits it. External parsers may legitimately consume up to 120s, so
 // this operation must not inherit the generic 90s request timeout and report an
@@ -27,12 +28,6 @@ pub struct KnowledgeClient {
     endpoint: String,
     token: String,
     http: reqwest::Client,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedInvite {
-    pub endpoint: String,
-    pub secret: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,19 +140,11 @@ impl KnowledgeClient {
         if !endpoint.starts_with("https://") {
             return Err("共享知识库首次连接必须使用 HTTPS".to_string());
         }
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(PROBE_TIMEOUT)
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|error| error.to_string())?;
-        let info: ServerInfo = decode(
-            http.get(format!("{endpoint}/api/v1/info"))
-                .send()
-                .await
-                .map_err(|error| error.to_string())?,
-        )
-        .await?;
+        // The private CA can only be bootstrapped over the local loopback
+        // channel used by the root-owned host helper. Remote first contact must
+        // carry the CA in a reusable share link; learning it from the same
+        // unauthenticated network connection would be circular TOFU.
+        let info = Self::local_health_untrusted(&endpoint).await?;
         let verified = Self::new_pinned(endpoint, "", &info.tls_ca)?
             .health()
             .await?;
@@ -203,20 +190,6 @@ impl KnowledgeClient {
         decode(response).await.map(Some)
     }
 
-    pub async fn pair(invite: &ParsedInvite, device_name: &str) -> Result<PairResponse, String> {
-        let client = Self::new(&invite.endpoint, "")?;
-        client
-            .post_with_timeout(
-                "/api/v1/pair/redeem",
-                &PairRequest {
-                    invite_secret: invite.secret.clone(),
-                    device_name: device_name.to_string(),
-                },
-                PAIR_TIMEOUT,
-            )
-            .await
-    }
-
     pub async fn request_join(
         endpoint: &str,
         tls_ca: &str,
@@ -234,7 +207,7 @@ impl KnowledgeClient {
                     claim_secret: credentials.claim_secret.clone(),
                     share_secret: share_secret.map(str::to_string),
                 },
-                PAIR_TIMEOUT,
+                JOIN_TIMEOUT,
             )
             .await
     }
@@ -252,7 +225,7 @@ impl KnowledgeClient {
                 &JoinRequestClaim {
                     claim_secret: claim_secret.to_string(),
                 },
-                PAIR_TIMEOUT,
+                JOIN_TIMEOUT,
             )
             .await
     }
@@ -270,7 +243,7 @@ impl KnowledgeClient {
                 &JoinRequestClaim {
                     claim_secret: claim_secret.to_string(),
                 },
-                PAIR_TIMEOUT,
+                JOIN_TIMEOUT,
             )
             .await
     }
@@ -477,7 +450,14 @@ impl KnowledgeClient {
                     .post(self.url(&format!("/api/v1/collections/{collection_id}/documents"))),
             )
             .multipart(form);
-        decode(request.send().await.map_err(|error| error.to_string())?).await
+        decode(
+            request
+                .timeout(UPLOAD_TIMEOUT)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?,
+        )
+        .await
     }
 
     pub async fn replace_document_path(
@@ -666,28 +646,6 @@ async fn read_upload_path(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub fn parse_invite(value: &str) -> Result<ParsedInvite, String> {
-    let url = url::Url::parse(value.trim()).map_err(|_| "连接邀请格式无效".to_string())?;
-    if url.scheme() != "pinvou-knowledge" || url.host_str() != Some("connect") {
-        return Err("这不是 Pinvou 知识库连接邀请".to_string());
-    }
-    let mut endpoint = None;
-    let mut secret = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "endpoint" => endpoint = Some(normalize_endpoint(&value)?),
-            "invite" => secret = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    Ok(ParsedInvite {
-        endpoint: endpoint.ok_or_else(|| "连接邀请缺少服务地址".to_string())?,
-        secret: secret
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "连接邀请缺少一次性凭证".to_string())?,
-    })
-}
-
 pub fn parse_share(value: &str) -> Result<ParsedShare, String> {
     let url = url::Url::parse(value.trim()).map_err(|_| "分享连接格式无效".to_string())?;
     if url.scheme() != "pinvou-knowledge" || url.host_str() != Some("share") {
@@ -869,16 +827,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invite_parser_keeps_private_endpoint_and_secret() {
-        let parsed = parse_invite(
-            "pinvou-knowledge://connect?endpoint=https%3A%2F%2F100.64.0.1%3A3210&invite=once",
-        )
-        .unwrap();
-        assert_eq!(parsed.endpoint, "https://100.64.0.1:3210");
-        assert_eq!(parsed.secret, "once");
-    }
-
-    #[test]
     fn plain_http_is_limited_to_loopback() {
         assert!(normalize_endpoint("http://127.0.0.1:3210").is_ok());
         assert!(normalize_endpoint("http://[::1]:3210").is_ok());
@@ -921,6 +869,15 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn remote_identity_cannot_be_bootstrapped_from_an_untrusted_connection() {
+        let error = KnowledgeClient::bootstrap_identity("https://192.168.1.20:3210")
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("回环"));
+    }
+
     #[test]
     fn downloaded_filename_cannot_escape_the_selected_directory() {
         assert_eq!(safe_download_filename("../../secret.txt"), "secret.txt");
@@ -930,6 +887,7 @@ mod tests {
     #[test]
     fn atomic_replacement_timeout_exceeds_external_parser_budget() {
         assert!(REPLACE_TIMEOUT > Duration::from_secs(120));
+        assert!(UPLOAD_TIMEOUT > Duration::from_secs(120));
     }
 
     #[tokio::test]

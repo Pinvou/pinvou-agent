@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::client::normalize_endpoint;
 use crate::model::*;
 use crate::parser::parse_document;
-use crate::store::{DocumentIndexUpdate, RestoreDocumentOutcome, Store};
+use crate::store::{DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, Store};
 use crate::tls::TlsIdentity;
 use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES};
 
@@ -31,6 +31,7 @@ const MAX_INDEX_CHUNKS: usize = 16_000;
 const MAX_VECTOR_DIMENSIONS: usize = 4096;
 const MAX_TOTAL_VECTOR_FLOATS: usize = 16 * 1024 * 1024;
 const TRASH_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+const TRASH_CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const JOIN_REQUEST_RATE_WINDOW: Duration = Duration::from_secs(60);
 const JOIN_REQUEST_PER_SOURCE_LIMIT: usize = 6;
 const JOIN_REQUEST_GLOBAL_LIMIT: usize = 300;
@@ -147,12 +148,6 @@ impl KnowledgeService {
         ] {
             store.delete_meta(key).map_err(|error| error.to_string())?;
         }
-        let expired_paths = store
-            .purge_expired_trash(chrono::Utc::now().timestamp() - TRASH_RETENTION_SECONDS)
-            .map_err(|error| error.to_string())?;
-        for storage_path in expired_paths {
-            let _ = std::fs::remove_file(documents_dir.join(storage_path));
-        }
         let service = Arc::new(Self {
             data_dir,
             documents_dir,
@@ -166,6 +161,7 @@ impl KnowledgeService {
             indexing: tokio::sync::Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(search_parallelism())),
         });
+        service.purge_expired_trash_at(chrono::Utc::now().timestamp())?;
         // 桌面端可能正在向同一 bind-mounted 目录部署模型。服务启动不能在
         // 目录替换空窗中先判定完整、随后读取到另一代或已被移动的文件。
         match crate::try_lock_knowledge_model_install(&service.model_dir) {
@@ -191,6 +187,37 @@ impl KnowledgeService {
 
     pub fn tls_identity(&self) -> &TlsIdentity {
         &self.tls
+    }
+
+    /// Keep enforcing the 30-day trash retention while a long-lived host service runs.
+    /// Boot performs the first cleanup; this loop handles entries that expire afterwards.
+    pub async fn run_trash_retention_loop(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(TRASH_CLEANUP_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let service = Arc::clone(&self);
+            match tokio::task::spawn_blocking(move || service.purge_expired_trash()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("PINVOU Knowledge trash cleanup failed: {error}"),
+                Err(error) => eprintln!("PINVOU Knowledge trash cleanup task failed: {error}"),
+            }
+        }
+    }
+
+    fn purge_expired_trash(&self) -> Result<usize, String> {
+        self.purge_expired_trash_at(chrono::Utc::now().timestamp())
+    }
+
+    fn purge_expired_trash_at(&self, now: i64) -> Result<usize, String> {
+        let paths = self
+            .store
+            .purge_expired_trash(now - TRASH_RETENTION_SECONDS)
+            .map_err(|error| error.to_string())?;
+        let removed = paths.len();
+        self.remove_managed_sources(paths);
+        Ok(removed)
     }
 
     pub fn server_info(&self) -> Result<ServerInfo, String> {
@@ -415,33 +442,14 @@ impl KnowledgeService {
         device_id: &str,
         owner: bool,
     ) -> Result<DeviceGrant, String> {
-        if store
-            .meta(HOST_OWNER_DEVICE_META)
-            .map_err(|error| error.to_string())?
-            .as_deref()
-            == Some(device_id)
-        {
-            return Err("不能修改主机所有者设备".to_string());
-        }
-        let current = store
-            .device(device_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "成员设备不存在".to_string())?;
-        if current.revoked {
-            return Err("请先恢复该成员设备".to_string());
-        }
         store
-            .update_device(
-                device_id,
-                None,
-                Some(if owner {
-                    AccessScope::Owner
-                } else {
-                    AccessScope::Manage
-                }),
-                None,
-            )
-            .map_err(|error| error.to_string())
+            .set_owner_role(device_id, owner, HOST_OWNER_DEVICE_META)
+            .map_err(|error| match error {
+                DeviceMutationError::NotFound => "成员设备不存在".to_string(),
+                DeviceMutationError::HostOwnerProtected => "不能修改主机所有者设备".to_string(),
+                DeviceMutationError::Revoked => "请先恢复该成员设备".to_string(),
+                other => other.to_string(),
+            })
     }
 
     pub fn create_share(&self, request: ShareCreateRequest) -> Result<ShareCreated, String> {
@@ -607,55 +615,6 @@ impl KnowledgeService {
             .map_err(|_| "加入申请不存在或已经处理".to_string())
     }
 
-    pub fn create_invite(&self, request: InviteCreateRequest) -> Result<InviteCreated, String> {
-        let endpoint = normalize_endpoint(&request.endpoint)?;
-        let id = random_secret(12);
-        let secret = random_secret(32);
-        let expires_at = chrono::Utc::now().timestamp()
-            + request.expires_in_minutes.unwrap_or(15).clamp(1, 24 * 60) as i64 * 60;
-        self.store
-            .create_invite(
-                &id,
-                &hash_secret(&secret),
-                request.scope,
-                request.label.as_deref(),
-                expires_at,
-            )
-            .map_err(|error| error.to_string())?;
-        let mut invite =
-            url::Url::parse("pinvou-knowledge://connect").map_err(|error| error.to_string())?;
-        invite
-            .query_pairs_mut()
-            .append_pair("endpoint", &endpoint)
-            .append_pair("invite", &secret);
-        Ok(InviteCreated {
-            invite_id: id,
-            invite: invite.to_string(),
-            expires_at,
-        })
-    }
-
-    pub fn redeem_invite(&self, request: PairRequest) -> Result<PairResponse, String> {
-        let device_name = normalized_name(&request.device_name, "Pinvou device")?;
-        let token = random_secret(32);
-        let device_id = random_secret(18);
-        let scope = self
-            .store
-            .redeem_invite_and_add_device(
-                &hash_secret(&request.invite_secret),
-                &device_id,
-                &device_name,
-                &hash_secret(&token),
-            )
-            .map_err(|_| "连接邀请无效、已使用或已过期".to_string())?;
-        Ok(PairResponse {
-            server: self.server_info()?,
-            token,
-            scope,
-            device_id,
-        })
-    }
-
     fn check_join_request_rate(&self, source: IpAddr) -> Result<(), String> {
         match check_attempt_rate(
             &self.join_request_rate,
@@ -706,16 +665,13 @@ impl KnowledgeService {
         &self,
         id: &str,
         request: UpdateDeviceRequest,
-    ) -> Result<DeviceGrant, String> {
+    ) -> Result<DeviceGrant, DeviceMutationError> {
         self.store
             .update_device(id, request.name.as_deref(), request.scope, request.revoked)
-            .map_err(|error| error.to_string())
     }
 
-    pub fn delete_device(&self, id: &str) -> Result<(), String> {
-        self.store
-            .delete_device(id)
-            .map_err(|_| "授权设备不存在".to_string())
+    pub fn delete_device(&self, id: &str) -> Result<(), DeviceMutationError> {
+        self.store.delete_device(id)
     }
 
     pub fn collections(&self, include_deleted: bool) -> Result<Vec<Collection>, String> {
@@ -1659,6 +1615,87 @@ mod tests {
 
         assert!(!source.exists());
         assert!(service.store.document(document.id, true).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retention_cleanup_removes_expired_managed_files_without_following_absolute_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "retention".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let expired = service
+            .upload_document(collection.id, "expired.md", b"expired".to_vec())
+            .await
+            .unwrap();
+        let recent = service
+            .upload_document(collection.id, "recent.md", b"recent".to_vec())
+            .await
+            .unwrap();
+        let untrusted = service
+            .upload_document(collection.id, "untrusted.md", b"untrusted".to_vec())
+            .await
+            .unwrap();
+        let expired_source = service
+            .store
+            .document(expired.id, false)
+            .unwrap()
+            .map(|stored| service.documents_dir.join(stored.storage_path))
+            .unwrap();
+        let recent_source = service
+            .store
+            .document(recent.id, false)
+            .unwrap()
+            .map(|stored| service.documents_dir.join(stored.storage_path))
+            .unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+
+        for id in [expired.id, recent.id, untrusted.id] {
+            service.trash_document(id).unwrap();
+        }
+        let now = 2_000_000_000i64;
+        let cutoff = now - TRASH_RETENTION_SECONDS;
+        let connection = rusqlite::Connection::open(root.path().join("knowledge.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE documents SET deleted_at=?1 WHERE id=?2",
+                rusqlite::params![cutoff, expired.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE documents SET deleted_at=?1 WHERE id=?2",
+                rusqlite::params![cutoff + 1, recent.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE documents SET deleted_at=?1,storage_path=?2 WHERE id=?3",
+                rusqlite::params![
+                    cutoff,
+                    outside.path().to_string_lossy().into_owned(),
+                    untrusted.id
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(service.purge_expired_trash_at(now).unwrap(), 2);
+        assert!(!expired_source.exists());
+        assert!(recent_source.exists());
+        assert!(outside.path().is_file());
+        assert!(service.store.document(expired.id, true).unwrap().is_none());
+        assert!(service
+            .store
+            .document(untrusted.id, true)
+            .unwrap()
+            .is_none());
+        assert!(service.store.document(recent.id, true).unwrap().is_some());
     }
 
     #[tokio::test]

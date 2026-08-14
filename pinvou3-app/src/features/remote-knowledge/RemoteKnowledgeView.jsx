@@ -19,6 +19,8 @@ const quiet = `${button} px-3 text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7
 const danger = `${button} px-3 text-[#d63a3a] hover:bg-[#d63a3a]/10`;
 const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#444746] transition-colors hover:bg-[#E1E5EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537] disabled:cursor-not-allowed disabled:opacity-45';
 const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
+const ownerSection = 'rounded-2xl border border-[#e3e7ee] bg-white p-4 dark:border-white/10 dark:bg-[#1E1F20] sm:p-5';
+const ownerTab = 'inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/25';
 const collectionPalette = ['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a', '#4b7bd6'];
 const documentPageSize = 200;
 const documentStatusBatchSize = 500;
@@ -74,7 +76,18 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function OverlayDialog({ testId, title, description, icon: Icon, onClose, closeLabel, closeDisabled = false, children }) {
+function OverlayDialog({
+  testId,
+  title,
+  description,
+  icon: Icon,
+  onClose,
+  closeLabel,
+  closeDisabled = false,
+  widthClassName = 'max-w-[560px]',
+  scrollBody = false,
+  children,
+}) {
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
@@ -85,10 +98,10 @@ function OverlayDialog({ testId, title, description, icon: Icon, onClose, closeL
         aria-modal="true"
         aria-label={title}
         data-testid={testId}
-        className={`max-h-[calc(100vh-2rem)] w-full max-w-[560px] overflow-y-auto rounded-3xl p-5 sm:p-6 animate-in zoom-in-95 duration-200 motion-reduce:animate-none ${panel} ${panelShadow}`}
+        className={`max-h-[calc(100vh-2rem)] w-full ${widthClassName} ${scrollBody ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'} rounded-3xl p-5 sm:p-6 animate-in zoom-in-95 duration-200 motion-reduce:animate-none ${panel} ${panelShadow}`}
         onMouseDown={event => event.stopPropagation()}
       >
-        <div className="flex items-start gap-3">
+        <div className="flex shrink-0 items-start gap-3">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#eaf2ff] text-[#0B57D0] dark:bg-[#172b49] dark:text-[#A8C7FA]">
             <Icon size={20} />
           </div>
@@ -98,7 +111,7 @@ function OverlayDialog({ testId, title, description, icon: Icon, onClose, closeL
           </div>
           <button className={iconButton} onClick={onClose} disabled={closeDisabled} aria-label={closeLabel}><X size={16} /></button>
         </div>
-        <div className="mt-5">{children}</div>
+        <div className={`mt-5 ${scrollBody ? 'min-h-0 overflow-y-auto pr-1' : ''}`}>{children}</div>
       </section>
     </div>
   );
@@ -115,12 +128,12 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const [documentsLoadingPage, setDocumentsLoadingPage] = useState(false);
   const [invitation, setInvitation] = useState('');
   const [deviceName, setDeviceName] = useState('');
-  const [nearbyHosts, setNearbyHosts] = useState([]);
   const [pendingJoins, setPendingJoins] = useState([]);
   const [joinFeedback, setJoinFeedback] = useState(null);
   const [hostStatus, setHostStatus] = useState(null);
   const [showConnector, setShowConnector] = useState(false);
   const [showOwnerPanel, setShowOwnerPanel] = useState(false);
+  const [ownerPanelTab, setOwnerPanelTab] = useState('people');
   const [ownerShares, setOwnerShares] = useState([]);
   const [ownerJoinRequests, setOwnerJoinRequests] = useState([]);
   const [ownerDevices, setOwnerDevices] = useState([]);
@@ -146,6 +159,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const [restoreCode, setRestoreCode] = useState('');
   const [backupRecoveryCode, setBackupRecoveryCode] = useState('');
   const [documentToTrash, setDocumentToTrash] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
   const [includeTrash, setIncludeTrash] = useState(false);
   const [hostProgress, setHostProgress] = useState(null);
   const [busyCounts, setBusyCounts] = useState({});
@@ -160,6 +174,11 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const searchRequestRef = useRef(0);
   const connectionsRequestRef = useRef(0);
   const ownerPanelRequestRef = useRef(0);
+  const ownerPanelTriggerRef = useRef(null);
+  const ownerPeopleTabRef = useRef(null);
+  const ownerHostTabRef = useRef(null);
+  const confirmationResolverRef = useRef(null);
+  const confirmationTriggerRef = useRef(null);
   const connectInFlightRef = useRef(false);
   const pendingRefreshInFlightRef = useRef(false);
   const ownerRequestsRefreshInFlightRef = useRef(false);
@@ -183,7 +202,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const isBusy = useCallback(key => Boolean(busyCounts[key]), [busyCounts]);
   const anyBusy = Object.keys(busyCounts).length > 0;
   const connecting = isBusy('connect');
-  const connectionDetailsReady = Boolean(deviceName.trim() && invitation.trim());
+  const invitationIsShareLink = invitation.trim().startsWith('pinvou-knowledge://share');
+  const connectionDetailsReady = Boolean(deviceName.trim() && invitationIsShareLink);
   const pendingOwnerJoinRequests = useMemo(
     () => ownerJoinRequests.filter(item => item.status === 'pending'),
     [ownerJoinRequests],
@@ -271,7 +291,40 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const closeOwnerPanel = useCallback(() => {
     ownerPanelRequestRef.current += 1;
     setShowOwnerPanel(false);
+    window.requestAnimationFrame(() => ownerPanelTriggerRef.current?.focus());
   }, []);
+
+  const requestConfirmation = useCallback(options => new Promise(resolve => {
+    confirmationResolverRef.current?.(false);
+    confirmationResolverRef.current = resolve;
+    const activeElement = document.activeElement;
+    confirmationTriggerRef.current = activeElement && typeof activeElement.focus === 'function' ? activeElement : null;
+    setConfirmation({ dangerous: false, ...options });
+  }), []);
+
+  const finishConfirmation = useCallback(confirmed => {
+    const resolve = confirmationResolverRef.current;
+    confirmationResolverRef.current = null;
+    setConfirmation(null);
+    window.requestAnimationFrame(() => {
+      if (confirmationTriggerRef.current?.isConnected) confirmationTriggerRef.current.focus();
+      confirmationTriggerRef.current = null;
+    });
+    resolve?.(confirmed);
+  }, []);
+
+  useEffect(() => () => {
+    confirmationResolverRef.current?.(false);
+    confirmationResolverRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!showOwnerPanel || showRecoveryCode || showRestoreDialog || confirmation) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      (ownerPanelTab === 'host' ? ownerHostTabRef : ownerPeopleTabRef).current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [confirmation, ownerPanelTab, showOwnerPanel, showRecoveryCode, showRestoreDialog]);
 
   const resetDocumentPaging = useCallback(() => {
     documentsRef.current = [];
@@ -373,6 +426,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
         }
         setNotice({ type: 'success', text: t.remoteKbConnected });
       }
+    } catch {
+      // A transient bridge or server failure must not escape the polling loop;
+      // durable requests stay visible and the next interval retries them.
     } finally {
       pendingRefreshInFlightRef.current = false;
     }
@@ -501,10 +557,11 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     if (selectedConnection && !canManage && includeTrash) setIncludeTrash(false);
   }, [canManage, includeTrash, selectedConnection]);
   useEffect(() => {
-    if (!showConnector && !showOwnerPanel && !showCollectionCreator && !showPublishDialog && !showUploadDialog && !showRecoveryCode && !showRestoreDialog && !documentToTrash) return undefined;
+    if (!showConnector && !showOwnerPanel && !showCollectionCreator && !showPublishDialog && !showUploadDialog && !showRecoveryCode && !showRestoreDialog && !documentToTrash && !confirmation) return undefined;
     const closeOnEscape = event => {
       if (event.key !== 'Escape') return;
-      if (documentToTrash) setDocumentToTrash(null);
+      if (confirmation) finishConfirmation(false);
+      else if (documentToTrash) setDocumentToTrash(null);
       else if (showRecoveryCode) setShowRecoveryCode(false);
       else if (showRestoreDialog && !isBusy('restore-host')) setShowRestoreDialog(false);
       else if (showUploadDialog && !isBusy('upload')) {
@@ -521,7 +578,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [closeOwnerPanel, documentToTrash, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
+  }, [closeOwnerPanel, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
   useEffect(() => {
     if (!showUploadSourceMenu) return undefined;
     const closeMenu = event => {
@@ -575,29 +632,9 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }
 
-  async function discoverNearby() {
-    setBusyCounts(current => ({ ...current, discovery: (current.discovery || 0) + 1 }));
-    try {
-      const discovered = await invokeTauri('shared_kb_discover_nearby');
-      const connectedIds = new Set(connections.map(item => item.serverId));
-      setNearbyHosts((discovered || []).filter(item => !connectedIds.has(item.serverId)));
-    } catch {
-      setNearbyHosts([]);
-    } finally {
-      setBusyCounts(current => {
-        const count = current.discovery || 0;
-        if (count > 1) return { ...current, discovery: count - 1 };
-        const next = { ...current };
-        delete next.discovery;
-        return next;
-      });
-    }
-  }
-
   function openConnector() {
     setJoinFeedback(null);
     setShowConnector(true);
-    discoverNearby();
   }
 
   async function cancelPendingJoin(requestId) {
@@ -616,19 +653,18 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       const connection = await invokeTauri('shared_kb_host_install');
       await Promise.all([loadHostStatus(), loadConnections()]);
       selectServer(connection.serverId);
-      setHostProgress({ operation: 'install', phase: 'complete', percent: 100, error: null });
+      setHostProgress(current => (current?.operation === 'install'
+        ? { operation: 'install', phase: 'complete', percent: 100, error: null }
+        : null));
       setNotice({ type: 'success', text: t.remoteKbHostCreated });
       window.setTimeout(() => setHostProgress(current => (
         current?.operation === 'install' && current.phase === 'complete' ? null : current
       )), 1200);
     } catch (error) {
       const message = String(error);
-      setHostProgress(current => ({
-        operation: 'install',
-        phase: 'failed',
-        percent: current?.percent || 5,
-        error: message,
-      }));
+      setHostProgress(current => (current?.operation === 'install' ? {
+        operation: 'install', phase: 'failed', percent: current.percent || 5, error: message,
+      } : null));
       setNotice({ type: 'error', text: message });
     } finally {
       hostOperationInFlightRef.current = false;
@@ -649,19 +685,18 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     try {
       await invokeTauri('shared_kb_host_upgrade');
       await Promise.all([loadHostStatus(), loadConnections()]);
-      setHostProgress({ operation: 'upgrade', phase: 'complete', percent: 100, error: null });
+      setHostProgress(current => (current?.operation === 'upgrade'
+        ? { operation: 'upgrade', phase: 'complete', percent: 100, error: null }
+        : null));
       setNotice({ type: 'success', text: t.remoteKbHostUpgraded });
       window.setTimeout(() => setHostProgress(current => (
         current?.operation === 'upgrade' && current.phase === 'complete' ? null : current
       )), 1200);
     } catch (error) {
       const message = String(error);
-      setHostProgress(current => ({
-        operation: 'upgrade',
-        phase: 'failed',
-        percent: current?.percent || 5,
-        error: message,
-      }));
+      setHostProgress(current => (current?.operation === 'upgrade' ? {
+        operation: 'upgrade', phase: 'failed', percent: current.percent || 5, error: message,
+      } : null));
       setNotice({ type: 'error', text: message });
     } finally {
       hostOperationInFlightRef.current = false;
@@ -683,14 +718,18 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       const connection = await invokeTauri('shared_kb_host_reconnect');
       await Promise.all([loadHostStatus(), loadConnections()]);
       selectServer(connection.serverId);
-      setHostProgress({ operation: 'reconnect', phase: 'complete', percent: 100, error: null });
+      setHostProgress(current => (current?.operation === 'reconnect'
+        ? { operation: 'reconnect', phase: 'complete', percent: 100, error: null }
+        : null));
       setNotice({ type: 'success', text: t.remoteKbHostReconnected });
       window.setTimeout(() => setHostProgress(current => (
         current?.operation === 'reconnect' && current.phase === 'complete' ? null : current
       )), 1200);
     } catch (error) {
       const message = String(error);
-      setHostProgress({ operation: 'reconnect', phase: 'failed', percent: 100, error: message });
+      setHostProgress(current => (current?.operation === 'reconnect'
+        ? { operation: 'reconnect', phase: 'failed', percent: 100, error: message }
+        : null));
       setNotice({ type: 'error', text: message });
     } finally {
       hostOperationInFlightRef.current = false;
@@ -706,6 +745,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     if (!selectedServerId || !isOwner) return;
     const serverId = selectedServerId;
     const requestId = ++ownerPanelRequestRef.current;
+    if (!showOwnerPanel) {
+      setOwnerPanelTab('people');
+      setNotice(null);
+    }
     setShowOwnerPanel(true);
     setShareLink('');
     setOwnerShares([]);
@@ -723,6 +766,16 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     if (requests) setOwnerJoinRequests(requests);
     if (devices) setOwnerDevices(devices);
     if (modelStatus) setOwnerModelStatus(modelStatus);
+  }
+
+  function moveOwnerPanelTab(event) {
+    let nextTab = null;
+    if (event.key === 'Home') nextTab = 'people';
+    else if (event.key === 'End') nextTab = 'host';
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') nextTab = ownerPanelTab === 'people' ? 'host' : 'people';
+    if (!nextTab) return;
+    event.preventDefault();
+    setOwnerPanelTab(nextTab);
   }
 
   async function createShare() {
@@ -745,6 +798,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   async function resolveJoinRequest(requestId, scope) {
+    if (isBusy(`owner-request-${requestId}`)) return;
     const command = scope ? 'remote_kb_approve_join_request' : 'remote_kb_reject_join_request';
     const resolved = await run(`owner-request-${requestId}`, () => invokeTauri(command, {
       serverId: selectedServerId,
@@ -774,13 +828,27 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   async function removeMember(device) {
-    if (!window.confirm(t.remoteKbRemoveMemberConfirm.replace('{name}', device.name))) return;
+    const confirmed = await requestConfirmation({
+      testId: 'remote-remove-member-confirm',
+      title: t.remoteKbRemoveMemberAction,
+      description: t.remoteKbRemoveMemberConfirm.replace('{name}', device.name),
+      confirmLabel: t.remoteKbRemoveMemberAction,
+      dangerous: true,
+    });
+    if (!confirmed) return;
     const done = await run(`member-${device.id}`, () => invokeTauri('remote_kb_remove_device', { serverId: selectedServerId, deviceId: device.id }));
     if (done !== undefined) setOwnerDevices(current => current.filter(item => item.id !== device.id));
   }
 
   async function changeOwner(device, owner) {
-    if (!isLocalHostOwner || !window.confirm((owner ? t.remoteKbPromoteOwnerConfirm : t.remoteKbDemoteOwnerConfirm).replace('{name}', device.name))) return;
+    if (!isLocalHostOwner) return;
+    const confirmed = await requestConfirmation({
+      testId: 'remote-owner-change-confirm',
+      title: owner ? t.remoteKbPromoteOwner : t.remoteKbDemoteOwner,
+      description: (owner ? t.remoteKbPromoteOwnerConfirm : t.remoteKbDemoteOwnerConfirm).replace('{name}', device.name),
+      confirmLabel: owner ? t.remoteKbPromoteOwner : t.remoteKbDemoteOwner,
+    });
+    if (!confirmed) return;
     const updated = await run(`member-${device.id}`, () => invokeTauri('shared_kb_host_set_owner_device', { deviceId: device.id, owner }));
     if (updated) setOwnerDevices(current => current.map(item => (item.id === updated.id ? updated : item)));
   }
@@ -792,7 +860,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
 
   async function removeHost(deleteData) {
     const prompt = deleteData ? t.remoteKbDeleteHostConfirm : t.remoteKbRemoveHostConfirm;
-    if (!window.confirm(prompt)) return;
+    const confirmed = await requestConfirmation({
+      testId: deleteData ? 'shared-kb-delete-host-confirm' : 'shared-kb-remove-host-confirm',
+      title: deleteData ? t.remoteKbDeleteHost : t.remoteKbRemoveHost,
+      description: prompt,
+      confirmLabel: deleteData ? t.remoteKbDeleteHost : t.remoteKbRemoveHost,
+      dangerous: deleteData,
+    });
+    if (!confirmed) return;
     const done = await run(deleteData ? 'delete-host' : 'remove-host', () => invokeTauri('shared_kb_host_remove', {
       serverId: selectedServerId,
       deleteData,
@@ -830,7 +905,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   async function restoreHost() {
     if (!restoreSource || !selectedServerId) return;
     const migration = Boolean(restoreCode.trim());
-    if (!window.confirm(migration ? t.remoteKbMigrateConfirm : t.remoteKbRestoreConfirm)) return;
+    const confirmed = await requestConfirmation({
+      testId: 'shared-kb-restore-confirm',
+      title: t.remoteKbRestoreTitle,
+      description: migration ? t.remoteKbMigrateConfirm : t.remoteKbRestoreConfirm,
+      confirmLabel: t.remoteKbRestoreAction,
+      dangerous: true,
+    });
+    if (!confirmed) return;
     const restored = await run('restore-host', () => invokeTauri('shared_kb_host_restore', {
       serverId: selectedServerId,
       source: restoreSource,
@@ -845,7 +927,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   async function permanentlyDelete(kind, id, name) {
-    if (!window.confirm(t.remoteKbPermanentDeleteConfirm.replace('{name}', name))) return;
+    const confirmed = await requestConfirmation({
+      testId: 'remote-permanent-delete-confirm',
+      title: t.remoteKbPermanentDelete,
+      description: t.remoteKbPermanentDeleteConfirm.replace('{name}', name),
+      confirmLabel: t.remoteKbPermanentDelete,
+      dangerous: true,
+    });
+    if (!confirmed) return;
     const command = kind === 'collection' ? 'remote_kb_permanently_delete_collection' : 'remote_kb_permanently_delete_document';
     const done = await run(`permanent-${kind}-${id}`, () => invokeTauri(command, { serverId: selectedServerId, id }));
     if (done === undefined) return;
@@ -854,7 +943,13 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   async function removeConnection(serverId) {
-    if (!window.confirm(t.remoteKbRemoveConfirm)) return;
+    const confirmed = await requestConfirmation({
+      testId: 'remote-disconnect-confirm',
+      title: t.remoteKbDisconnect,
+      description: t.remoteKbRemoveConfirm,
+      confirmLabel: t.remoteKbDisconnect,
+    });
+    if (!confirmed) return;
     const result = await run('remove-server', () => invokeTauri('remote_kb_remove_connection', { serverId }));
     if (result === undefined) return;
     await loadConnections();
@@ -862,7 +957,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
 
   async function createCollection() {
     const name = newCollectionName.trim();
-    if (!name || !selectedServerId) return;
+    if (!name || !selectedServerId || isBusy('create-collection')) return;
     const created = await run('create-collection', () => invokeTauri('remote_kb_create_collection', {
       serverId: selectedServerId,
       name,
@@ -913,8 +1008,17 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   }
 
   async function changeCollectionTrash(collection) {
+    if (isBusy('collection-trash')) return;
     const command = collection.deletedAt ? 'remote_kb_restore_collection' : 'remote_kb_delete_collection';
-    if (!collection.deletedAt && !window.confirm(t.remoteKbTrashConfirm)) return;
+    if (!collection.deletedAt) {
+      const confirmed = await requestConfirmation({
+        testId: 'remote-collection-trash-confirm',
+        title: t.remoteKbTrash,
+        description: t.remoteKbTrashConfirm,
+        confirmLabel: t.remoteKbTrash,
+      });
+      if (!confirmed) return;
+    }
     const done = await run('collection-trash', () => invokeTauri(command, {
       serverId: selectedServerId,
       id: collection.id,
@@ -1103,7 +1207,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       failed ? t.remoteKbUploadFailedSummary.replace('{count}', String(failed)) : '',
     ].filter(Boolean).join(' · ');
     setNotice({
-      type: counts.failed || counts.index_failed || refreshError ? 'error' : 'success',
+      type: failed || refreshError ? 'error' : 'success',
       text: refreshError ? `${summary} ${t.remoteKbUploadRefreshFailed.replace('{error}', refreshError)}` : summary,
     });
   }
@@ -1418,7 +1522,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </div>
                 <div className="flex items-center gap-1">
                   {isOwner && (
-                    <button data-testid="remote-govern" className={soft} onClick={openOwnerPanel}>
+                    <button ref={ownerPanelTriggerRef} data-testid="remote-govern" className={soft} onClick={openOwnerPanel}>
                       <Users size={14} />{t.remoteKbGovern}
                       {!!pendingOwnerJoinRequests.length && (
                         <span data-testid="remote-govern-pending-count" className="grid h-5 min-w-5 place-items-center rounded-full bg-[#0B57D0] px-1 text-[10px] font-bold text-white animate-in zoom-in-75 duration-150 dark:bg-[#A8C7FA] dark:text-[#062E6F]">
@@ -1491,7 +1595,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                           </span>
                           {canManage && (
                             <div className="flex items-center gap-1">
-                              <button className={collection.deletedAt ? quiet : 'text-[11.5px] text-[#d63a3a] hover:underline'} onClick={() => changeCollectionTrash(collection)}>
+                              <button className={collection.deletedAt ? quiet : 'text-[11.5px] text-[#d63a3a] hover:underline disabled:opacity-50'} disabled={isBusy('collection-trash')} onClick={() => changeCollectionTrash(collection)}>
                                 {collection.deletedAt ? t.remoteKbRestore : t.remoteKbTrash}
                               </button>
                               {isOwner && collection.deletedAt && <button className={danger} onClick={() => permanentlyDelete('collection', collection.id, collection.name)} disabled={isBusy(`permanent-collection-${collection.id}`)} title={t.remoteKbPermanentDelete}><Trash2 size={13} /></button>}
@@ -1624,7 +1728,6 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             icon={Server}
             onClose={() => setHostProgress(null)}
             closeLabel={t.remoteKbClose}
-            closeDisabled={!['complete', 'failed'].includes(hostProgress.phase)}
           >
             <div className="space-y-4">
               <div
@@ -1713,50 +1816,24 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             ) : (
               <>
                 <div className="space-y-3 animate-in fade-in duration-150 motion-reduce:animate-none">
-                  {(isBusy('discovery') || nearbyHosts.length > 0) && (
-                    <section data-testid="remote-nearby-hosts" className="rounded-2xl bg-[#F7F9FC] p-3 dark:bg-white/[0.04]">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className={`text-[12px] font-semibold ${ink}`}>{t.remoteKbNearby}</span>
-                        <button className={iconButton} onClick={discoverNearby} disabled={isBusy('discovery')} title={t.remoteKbRefresh}>
-                          <RefreshCw size={14} className={isBusy('discovery') ? 'animate-spin' : ''} />
-                        </button>
-                      </div>
-                      {isBusy('discovery') && !nearbyHosts.length ? (
-                        <p className={`mt-2 text-[11.5px] ${muted}`}>{t.remoteKbDiscovering}</p>
-                      ) : (
-                        <div className="mt-2 space-y-1.5">
-                          {nearbyHosts.map(host => (
-                            <button
-                              key={host.identity}
-                              className="flex w-full items-center gap-3 rounded-xl bg-white px-3 py-2.5 text-left transition-colors hover:bg-[#eef3fb] dark:bg-white/[0.05] dark:hover:bg-white/10"
-                              onClick={() => setInvitation(host.endpoints?.[0] || '')}
-                            >
-                              <Server size={15} className="shrink-0 text-[#0B57D0] dark:text-[#A8C7FA]" />
-                              <span className="min-w-0 flex-1">
-                                <span className={`block truncate text-[12.5px] font-semibold ${ink}`}>{host.name}</span>
-                                <span className={`block truncate text-[10.5px] ${muted}`}>{host.endpoints?.[0]}</span>
-                              </span>
-                              <Plus size={14} className="shrink-0 text-[#0B57D0] dark:text-[#A8C7FA]" />
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </section>
-                  )}
                   <input
                     autoFocus
                     data-testid="remote-invitation"
-                    className={field}
+                    className={`${field} ${invitation.trim() && !invitationIsShareLink ? 'border-[#d63a3a] focus:border-[#d63a3a] focus:ring-[#d63a3a]/10' : ''}`}
                     value={invitation}
                     onChange={event => setInvitation(event.target.value)}
                     onKeyDown={event => { if (event.key === 'Enter') connectServer(); }}
                     placeholder={t.remoteKbJoinSourcePlaceholder}
                     aria-label={t.remoteKbJoinSource}
+                    aria-describedby="remote-join-source-help"
+                    aria-invalid={Boolean(invitation.trim() && !invitationIsShareLink)}
                     spellCheck={false}
                     disabled={connecting}
                   />
                   <input data-testid="remote-device-name" className={field} value={deviceName} onChange={event => setDeviceName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') connectServer(); }} placeholder={t.remoteKbDeviceName} aria-label={t.remoteKbDeviceName} autoComplete="name" disabled={connecting} />
-                  <p className={`text-[11.5px] leading-5 ${muted}`}>{t.remoteKbJoinHint}</p>
+                  <p id="remote-join-source-help" data-testid="remote-join-source-help" className={`text-[12px] leading-5 ${invitation.trim() && !invitationIsShareLink ? 'text-[#d63a3a]' : muted}`}>
+                    {invitation.trim() && !invitationIsShareLink ? t.remoteKbShareLinkOnly : t.remoteKbJoinHint}
+                  </p>
                 </div>
                 <div className="mt-5 flex justify-end gap-2">
                   <button className={quiet} onClick={() => setShowConnector(false)} disabled={connecting}>{t.remoteKbCancel}</button>
@@ -1769,7 +1846,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           </OverlayDialog>
         )}
 
-        {showOwnerPanel && isOwner && (
+        {showOwnerPanel && isOwner && !showRecoveryCode && !showRestoreDialog && !confirmation && (
           <OverlayDialog
             testId="remote-owner-panel"
             title={t.remoteKbGovernTitle}
@@ -1777,98 +1854,181 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             icon={Users}
             onClose={closeOwnerPanel}
             closeLabel={t.remoteKbClose}
+            widthClassName="max-w-[720px]"
+            scrollBody
           >
-            <div className="space-y-5">
-              <section>
-                <div className="flex items-center justify-between gap-3">
-                  <div><h3 className={`text-[13px] font-bold ${ink}`}>{t.remoteKbShareTitle}</h3><p className={`mt-0.5 text-[11.5px] ${muted}`}>{t.remoteKbShareDesc}</p></div>
-                  <button data-testid="remote-create-share" className={soft} onClick={createShare} disabled={isBusy('create-share')}><Link size={14} />{t.remoteKbCreateShare}</button>
+            <div className="space-y-4">
+              <div role="tablist" aria-label={t.remoteKbGovernTitle} className="grid grid-cols-2 gap-1 rounded-xl bg-[#F0F4F9] p-1 dark:bg-[#171719]">
+                <button
+                  ref={ownerPeopleTabRef}
+                  id="remote-owner-people-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={ownerPanelTab === 'people'}
+                  aria-controls="remote-owner-people-panel"
+                  tabIndex={ownerPanelTab === 'people' ? 0 : -1}
+                  data-testid="remote-owner-people-tab"
+                  className={`${ownerTab} ${ownerPanelTab === 'people' ? 'bg-white text-[#0B57D0] shadow-sm dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
+                  onClick={() => setOwnerPanelTab('people')}
+                  onKeyDown={moveOwnerPanelTab}
+                >
+                  <Users size={15} />{t.remoteKbPeopleTab}
+                </button>
+                <button
+                  ref={ownerHostTabRef}
+                  id="remote-owner-host-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={ownerPanelTab === 'host'}
+                  aria-controls="remote-owner-host-panel"
+                  tabIndex={ownerPanelTab === 'host' ? 0 : -1}
+                  data-testid="remote-owner-host-tab"
+                  className={`${ownerTab} ${ownerPanelTab === 'host' ? 'bg-white text-[#0B57D0] shadow-sm dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
+                  onClick={() => setOwnerPanelTab('host')}
+                  onKeyDown={moveOwnerPanelTab}
+                >
+                  <Server size={15} />{t.remoteKbServiceTab}
+                </button>
+              </div>
+
+              {notice && (
+                <div role={notice.type === 'error' ? 'alert' : 'status'} className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${notice.type === 'error' ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}>
+                  {notice.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+                  <span className="min-w-0 flex-1 break-words">{notice.text}</span>
+                  <button type="button" className={iconButton} onClick={() => setNotice(null)} aria-label={t.remoteKbClose}><X size={15} /></button>
                 </div>
-                <label className={`mt-3 flex cursor-pointer items-center gap-2 text-[12px] ${muted}`}>
-                  <input type="checkbox" checked={autoApproveRead} onChange={event => setAutoApproveRead(event.target.checked)} />
-                  {t.remoteKbAutoApproveRead}
-                </label>
-                <details className="mt-3">
-                  <summary className={`cursor-pointer text-[12px] font-semibold ${muted}`}>{t.remoteKbOtherNetwork}</summary>
-                  <input data-testid="remote-share-other-endpoint" className={`${field} mt-2`} value={shareEndpoint} onChange={event => setShareEndpoint(event.target.value)} placeholder={t.remoteKbOtherNetworkPlaceholder} spellCheck={false} />
-                </details>
-                {shareLink && (
-                  <div className="mt-3 flex items-center gap-2 rounded-xl bg-[#F0F4F9] p-2 dark:bg-[#2A2B2D]">
-                    <input readOnly className={`${field} border-0 bg-transparent`} value={shareLink} />
-                    <button className={iconButton} title={t.remoteKbCopy} onClick={() => navigator.clipboard.writeText(shareLink)}><Copy size={15} /></button>
-                  </div>
-                )}
-                {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && (
-                  <div className="mt-3 space-y-1.5">
-                    {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => (
-                      <div key={item.id} className="flex items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2 dark:bg-white/[0.04]">
-                        <Link size={13} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
-                        <span className={`min-w-0 flex-1 truncate text-[11.5px] ${muted}`}>{new Date(item.expiresAt * 1000).toLocaleString()}</span>
-                        {item.autoApproveRead && <span className="text-[10.5px] text-[#16894a] dark:text-[#7DD3A8]">{t.remoteKbAutoReadShort}</span>}
-                        <button className={quiet} onClick={() => stopShare(item.id)} disabled={isBusy(`stop-share-${item.id}`)}>{t.remoteKbStopShare}</button>
+              )}
+
+              {ownerPanelTab === 'people' ? (
+                <div id="remote-owner-people-panel" role="tabpanel" aria-labelledby="remote-owner-people-tab" className="space-y-4">
+                  <section className={ownerSection}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbShareTitle}</h3>
+                        <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbShareDesc}</p>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-              <section className="border-t border-gray-400/15 pt-4">
-                <div className="flex items-center justify-between"><h3 className={`text-[13px] font-bold ${ink}`}>{t.remoteKbRequestsTitle}</h3><button className={iconButton} onClick={openOwnerPanel}><RefreshCw size={14} /></button></div>
-                <div className="mt-2 max-h-[280px] space-y-2 overflow-y-auto">
-                  {!pendingOwnerJoinRequests.length && <p className={`py-5 text-center text-[12px] ${muted}`}>{t.remoteKbNoRequests}</p>}
-                  {pendingOwnerJoinRequests.map(item => (
-                    <div key={item.id} data-testid="remote-owner-join-request" className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 animate-in fade-in slide-in-from-top-1 duration-150 dark:bg-white/[0.04]">
-                      <div className="min-w-0 flex-1"><p className={`truncate text-[12.5px] font-semibold ${ink}`}>{item.deviceName}</p></div>
-                      <button className={quiet} onClick={() => resolveJoinRequest(item.id, 'read')}>{t.remoteKbApproveRead}</button>
-                      <button className={quiet} onClick={() => resolveJoinRequest(item.id, 'manage')}>{t.remoteKbApproveManage}</button>
-                      <button className={danger} onClick={() => resolveJoinRequest(item.id, null)}>{t.remoteKbReject}</button>
+                      <button data-testid="remote-create-share" className={`${soft} w-full sm:w-auto`} onClick={createShare} disabled={isBusy('create-share')}><Link size={14} />{t.remoteKbCreateShare}</button>
                     </div>
-                  ))}
-                </div>
-              </section>
-              <section className="border-t border-gray-400/15 pt-4">
-                <div className="flex items-center justify-between"><h3 className={`text-[13px] font-bold ${ink}`}>{t.remoteKbMembersTitle}</h3><span className={`text-[11px] ${muted}`}>{ownerDevices.length}</span></div>
-                <div className="mt-2 max-h-[280px] space-y-2 overflow-y-auto">
-                  {ownerDevices.map(device => {
-                    const current = device.id === selectedConnection?.deviceId;
-                    const busy = isBusy(`member-${device.id}`);
-                    return (
-                      <div key={device.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/[0.04]">
-                        <div className="min-w-[150px] flex-1">
-                          <p className={`truncate text-[12.5px] font-semibold ${ink}`}>{device.name}{current ? ` · ${t.remoteKbThisDevice}` : ''}</p>
-                          <p className={`mt-0.5 text-[10.5px] ${device.revoked ? 'text-[#d63a3a]' : muted}`}>{device.revoked ? t.remoteKbRevoked : device.scope === 'owner' ? t.remoteKbOwner : device.scope === 'manage' ? t.remoteKbManage : t.remoteKbReadOnly}</p>
-                        </div>
-                        {!device.scope?.includes('owner') && !device.revoked && (
-                          <select className="h-8 rounded-lg border border-[#dfe3ea] bg-white px-2 text-[11.5px] dark:border-white/10 dark:bg-[#171719]" value={device.scope} disabled={busy} onChange={event => updateMember(device, { scope: event.target.value })}>
-                            <option value="read">{t.remoteKbReadOnly}</option>
-                            <option value="manage">{t.remoteKbManage}</option>
-                          </select>
-                        )}
-                        {!device.scope?.includes('owner') && <button className={quiet} disabled={busy} onClick={() => updateMember(device, { revoked: !device.revoked })}>{device.revoked ? t.remoteKbRestoreAccess : t.remoteKbRevokeAccess}</button>}
-                        {isLocalHostOwner && !current && !device.revoked && <button className={quiet} disabled={busy} onClick={() => changeOwner(device, device.scope !== 'owner')}>{device.scope === 'owner' ? t.remoteKbDemoteOwner : t.remoteKbPromoteOwner}</button>}
-                        {!current && device.scope !== 'owner' && <button className={danger} disabled={busy} onClick={() => removeMember(device)}><Trash2 size={13} /></button>}
+                    <label className={`mt-4 flex cursor-pointer items-start gap-2.5 text-[13px] leading-5 ${muted}`}>
+                      <input className="mt-0.5 h-4 w-4 shrink-0" type="checkbox" checked={autoApproveRead} onChange={event => setAutoApproveRead(event.target.checked)} />
+                      {t.remoteKbAutoApproveRead}
+                    </label>
+                    <details className="mt-3">
+                      <summary className={`cursor-pointer text-[13px] font-semibold ${muted}`}>{t.remoteKbOtherNetwork}</summary>
+                      <input data-testid="remote-share-other-endpoint" className={`${field} mt-2`} value={shareEndpoint} onChange={event => setShareEndpoint(event.target.value)} placeholder={t.remoteKbOtherNetworkPlaceholder} spellCheck={false} />
+                    </details>
+                    {shareLink && (
+                      <div className="mt-3 flex items-center gap-2 rounded-xl bg-[#F0F4F9] p-2 dark:bg-[#2A2B2D]">
+                        <input readOnly className={`${field} border-0 bg-transparent`} value={shareLink} />
+                        <button type="button" className={iconButton} title={t.remoteKbCopy} aria-label={t.remoteKbCopy} onClick={() => navigator.clipboard.writeText(shareLink)}><Copy size={15} /></button>
                       </div>
-                    );
-                  })}
+                    )}
+                    {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && (
+                      <div className="mt-3 space-y-2">
+                        {ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).map(item => (
+                          <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/[0.04]">
+                            <Link size={14} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
+                            <span className={`min-w-[180px] flex-1 truncate text-[12.5px] ${muted}`}>{new Date(item.expiresAt * 1000).toLocaleString()}</span>
+                            {item.autoApproveRead && <span className="text-[12px] text-[#16894a] dark:text-[#7DD3A8]">{t.remoteKbAutoReadShort}</span>}
+                            <button className={quiet} onClick={() => stopShare(item.id)} disabled={isBusy(`stop-share-${item.id}`)}>{t.remoteKbStopShare}</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className={ownerSection}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbRequestsTitle}</h3>
+                        {!!pendingOwnerJoinRequests.length && <span className="rounded-full bg-[#EAF2FF] px-2 py-0.5 text-[11px] font-bold text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]">{pendingOwnerJoinRequests.length}</span>}
+                      </div>
+                      <button type="button" className={iconButton} onClick={openOwnerPanel} aria-label={t.remoteKbRefresh} title={t.remoteKbRefresh}><RefreshCw size={14} /></button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {!pendingOwnerJoinRequests.length && <p className={`py-5 text-center text-[13px] ${muted}`}>{t.remoteKbNoRequests}</p>}
+                      {pendingOwnerJoinRequests.map(item => {
+                        const requestBusy = isBusy(`owner-request-${item.id}`);
+                        return (
+                          <div key={item.id} data-testid="remote-owner-join-request" className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 animate-in fade-in slide-in-from-top-1 duration-150 dark:bg-white/[0.04] sm:flex-row sm:items-center">
+                            <div className="min-w-0 flex-1"><p className={`truncate text-[13.5px] font-semibold ${ink}`}>{item.deviceName}</p></div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'read')}>{t.remoteKbApproveRead}</button>
+                              <button className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'manage')}>{t.remoteKbApproveManage}</button>
+                              <button className={danger} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, null)}>{t.remoteKbReject}</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section className={ownerSection}>
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbMembersTitle}</h3>
+                      <span className={`rounded-full bg-[#F0F4F9] px-2 py-0.5 text-[12px] font-semibold dark:bg-[#2A2B2D] ${muted}`}>{ownerDevices.length}</span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {ownerDevices.map(device => {
+                        const current = device.id === selectedConnection?.deviceId;
+                        const busy = isBusy(`member-${device.id}`);
+                        return (
+                          <div key={device.id} className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 dark:bg-white/[0.04] sm:flex-row sm:items-center">
+                            <div className="min-w-[150px] flex-1">
+                              <p className={`truncate text-[13.5px] font-semibold ${ink}`}>{device.name}{current ? ` · ${t.remoteKbThisDevice}` : ''}</p>
+                              <p className={`mt-1 text-[12px] ${device.revoked ? 'text-[#d63a3a]' : muted}`}>{device.revoked ? t.remoteKbRevoked : device.scope === 'owner' ? t.remoteKbOwner : device.scope === 'manage' ? t.remoteKbManage : t.remoteKbReadOnly}</p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {!device.scope?.includes('owner') && !device.revoked && (
+                                <select aria-label={`${device.name} · ${t.remoteKbMemberAccess}`} className="h-9 rounded-lg border border-[#dfe3ea] bg-white px-2.5 text-[12.5px] dark:border-white/10 dark:bg-[#171719]" value={device.scope} disabled={busy} onChange={event => updateMember(device, { scope: event.target.value })}>
+                                  <option value="read">{t.remoteKbReadOnly}</option>
+                                  <option value="manage">{t.remoteKbManage}</option>
+                                </select>
+                              )}
+                              {!device.scope?.includes('owner') && <button className={quiet} disabled={busy} onClick={() => updateMember(device, { revoked: !device.revoked })}>{device.revoked ? t.remoteKbRestoreAccess : t.remoteKbRevokeAccess}</button>}
+                              {isLocalHostOwner && !current && !device.revoked && <button className={quiet} disabled={busy} onClick={() => changeOwner(device, device.scope !== 'owner')}>{device.scope === 'owner' ? t.remoteKbDemoteOwner : t.remoteKbPromoteOwner}</button>}
+                              {!current && device.scope !== 'owner' && <button type="button" className={danger} disabled={busy} onClick={() => removeMember(device)} aria-label={t.remoteKbRemoveMember.replace('{name}', device.name)} title={t.remoteKbRemoveMember.replace('{name}', device.name)}><Trash2 size={13} /></button>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
                 </div>
-              </section>
-              <section className="border-t border-gray-400/15 pt-4">
-                <div className="flex items-center gap-3">
-                  <Database size={16} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
-                  <div className="min-w-0 flex-1"><h3 className={`text-[13px] font-bold ${ink}`}>{t.remoteKbModelTitle}</h3><p className={`mt-0.5 text-[11.5px] ${ownerModelStatus?.error ? 'text-[#d63a3a]' : muted}`}>{ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing)}</p></div>
-                  {isLocalHostOwner && !ownerModelStatus?.ready && <button className={soft} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
+              ) : (
+                <div id="remote-owner-host-panel" role="tabpanel" aria-labelledby="remote-owner-host-tab" className="space-y-4">
+                  <section className={ownerSection}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Database size={18} /></div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbModelTitle}</h3>
+                        <p className={`mt-1 text-[13px] leading-5 ${ownerModelStatus?.error ? 'text-[#d63a3a]' : muted}`}>{ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing)}</p>
+                      </div>
+                      {isLocalHostOwner && !ownerModelStatus?.ready && <button className={`${soft} w-full sm:w-auto`} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
+                    </div>
+                  </section>
+
+                  {isLocalHostOwner && (
+                    <>
+                      <section className={ownerSection}>
+                        <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbHostSettings}</h3>
+                        <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbHostSettingsDesc}</p>
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                          <button data-testid="shared-kb-backup" className={`${soft} w-full`} onClick={backupHost} disabled={isBusy('backup-host')}><Download size={14} />{t.remoteKbBackup}</button>
+                          <button data-testid="shared-kb-restore" className={`${soft} w-full`} onClick={openRestoreDialog} disabled={isBusy('restore-host')}><Upload size={14} />{t.remoteKbRestoreBackup}</button>
+                        </div>
+                      </section>
+                      <section className="rounded-2xl border border-[#d63a3a]/20 bg-[#d63a3a]/[0.035] p-4 dark:bg-[#d63a3a]/[0.06] sm:p-5">
+                        <h3 className="text-[15px] font-bold text-[#b72f2f] dark:text-[#ff8a80]">{t.remoteKbDangerZone}</h3>
+                        <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbDangerZoneDesc}</p>
+                        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+                          <button data-testid="shared-kb-remove-host" className={`${quiet} w-full sm:w-auto`} onClick={() => removeHost(false)} disabled={isBusy('remove-host')}>{t.remoteKbRemoveHost}</button>
+                          <button data-testid="shared-kb-delete-host" className={`${danger} w-full bg-white sm:w-auto dark:bg-[#1E1F20]`} onClick={() => removeHost(true)} disabled={isBusy('delete-host')}><Trash2 size={14} />{t.remoteKbDeleteHost}</button>
+                        </div>
+                      </section>
+                    </>
+                  )}
                 </div>
-              </section>
-              {isLocalHostOwner && (
-                <section className="border-t border-gray-400/15 pt-4">
-                  <h3 className={`text-[13px] font-bold ${ink}`}>{t.remoteKbHostSettings}</h3>
-                  <p className={`mt-1 text-[11.5px] leading-5 ${muted}`}>{t.remoteKbHostSettingsDesc}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button data-testid="shared-kb-backup" className={quiet} onClick={backupHost} disabled={isBusy('backup-host')}><Download size={13} />{t.remoteKbBackup}</button>
-                    <button data-testid="shared-kb-restore" className={quiet} onClick={openRestoreDialog} disabled={isBusy('restore-host')}><Upload size={13} />{t.remoteKbRestoreBackup}</button>
-                    <button className={quiet} onClick={() => removeHost(false)} disabled={isBusy('remove-host')}>{t.remoteKbRemoveHost}</button>
-                    <button className={danger} onClick={() => removeHost(true)} disabled={isBusy('delete-host')}><Trash2 size={13} />{t.remoteKbDeleteHost}</button>
-                  </div>
-                </section>
               )}
             </div>
           </OverlayDialog>
@@ -1891,7 +2051,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           </OverlayDialog>
         )}
 
-        {showRestoreDialog && (
+        {showRestoreDialog && !confirmation && (
           <OverlayDialog
             testId="shared-kb-restore-dialog"
             title={t.remoteKbRestoreTitle}
@@ -1902,7 +2062,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeDisabled={isBusy('restore-host')}
           >
             <p className={`truncate rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`} title={restoreSource}>{restoreSource}</p>
-            <textarea className={`${field} mt-3 h-24 resize-none py-3 font-mono text-[11px]`} value={restoreCode} onChange={event => setRestoreCode(event.target.value)} placeholder={t.remoteKbRecoveryPlaceholder} />
+            <textarea autoFocus className={`${field} mt-3 h-24 resize-none py-3 font-mono text-[11px]`} value={restoreCode} onChange={event => setRestoreCode(event.target.value)} placeholder={t.remoteKbRecoveryPlaceholder} />
             <p className={`mt-2 text-[11px] leading-5 ${muted}`}>{restoreCode.trim() ? t.remoteKbMigrationMode : t.remoteKbSameHostMode}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button className={quiet} onClick={() => setShowRestoreDialog(false)} disabled={isBusy('restore-host')}>{t.remoteKbCancel}</button>
@@ -2033,7 +2193,38 @@ function RemoteKnowledgeView({ t, embedded = false }) {
           </OverlayDialog>
         )}
 
-        {documentToTrash && (
+        {confirmation && (
+          <OverlayDialog
+            testId={confirmation.testId || 'remote-action-confirm'}
+            title={confirmation.title}
+            description={confirmation.description}
+            icon={AlertTriangle}
+            onClose={() => finishConfirmation(false)}
+            closeLabel={t.remoteKbClose}
+          >
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                autoFocus
+                type="button"
+                data-testid={`${confirmation.testId || 'remote-action-confirm'}-cancel`}
+                className={`${quiet} w-full sm:w-auto`}
+                onClick={() => finishConfirmation(false)}
+              >
+                {t.remoteKbCancel}
+              </button>
+              <button
+                type="button"
+                data-testid={`${confirmation.testId || 'remote-action-confirm'}-submit`}
+                className={`${confirmation.dangerous ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
+                onClick={() => finishConfirmation(true)}
+              >
+                {confirmation.confirmLabel}
+              </button>
+            </div>
+          </OverlayDialog>
+        )}
+
+        {documentToTrash && !confirmation && (
           <OverlayDialog
             testId="remote-document-trash-confirm"
             title={t.remoteKbDocumentTrashConfirm.replace('{name}', documentToTrash.name)}

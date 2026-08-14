@@ -153,11 +153,17 @@ fn secure_file(path: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn secure_directory(_path: &Path) -> Result<(), String> {
+    // Product-hosted shared knowledge is Linux-only. On Windows the standalone
+    // development binary inherits the data directory's user ACL; std::fs cannot
+    // safely replace that ACL without platform security APIs and an explicit
+    // account/SID policy, so we do not pretend POSIX modes provide protection.
     Ok(())
 }
 
 #[cfg(not(unix))]
 fn secure_file(_path: &Path) -> Result<(), String> {
+    // See secure_directory: non-Unix hosting is outside the supported product
+    // boundary and relies on the caller-provided parent directory ACL.
     Ok(())
 }
 
