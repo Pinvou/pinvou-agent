@@ -129,6 +129,8 @@ function injectSource() {
     // 自动探测保存回填 mock:null=不模拟探测(直接保存 auto);设置后 save_model
     // 按该结果回填 override 并返回 SaveModelOutcome(模拟后端 probe_and_fill)。
     var imageProbeResponse = null;
+    // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
+    var saveModelError = null;
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
@@ -178,6 +180,7 @@ function injectSource() {
         case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
+          if (saveModelError) return Promise.reject(new Error(saveModelError));
           var savedModel = Object.assign({}, args.model, {
             has_secret: !!args.model.api_key,
             credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
@@ -185,6 +188,10 @@ function injectSource() {
           // 模拟后端「自动探测」:auto + probe 请求 → 按 imageProbeResponse 回填。
           if (imageProbeResponse && args.model.image_capability_override === 'auto' && args.probeImageCapability) {
             if (imageProbeResponse.applied_override) savedModel.image_capability_override = imageProbeResponse.applied_override;
+            // 明确不支持(unsupported/unverified):后端不写盘,返回待决策信号。
+            if (imageProbeResponse.status === 'unsupported' || imageProbeResponse.status === 'unverified') {
+              return Promise.resolve({ image_probe: imageProbeResponse });
+            }
             models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
             return Promise.resolve({ image_probe: imageProbeResponse });
           }
@@ -270,6 +277,7 @@ function injectSource() {
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setImageProbeResponse: function (next) { imageProbeResponse = next || null; },
+      setSaveModelError: function (message) { saveModelError = message || null; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
       },
@@ -1213,27 +1221,34 @@ async function modalWidth(page, headingText) {
     await sleep(200);
     return state;
   };
-  // 明确不支持:不落盘,弹窗保持 + 三选一;直接保存落「自动处理」。
-  await setCapabilityAndProbe('auto', { status: 'unsupported', applied_override: null, summary: '检测到该模型未能识别图片：this model does not support image input', http_status: 400 });
+  // 明确不支持:后端不写盘,弹窗保持 + 三选一;直接保存落「自动处理」。
+  await setCapabilityAndProbe('auto', { status: 'unsupported', applied_override: null, summary: 'this model does not support image input', http_status: 400 });
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
   const decisionShown = await page.evaluate(() => {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const decision = root && root.querySelector('[data-testid="image-probe-decision"]');
+    const decisionText = decision ? (decision.textContent || '') : '';
     const saveCall = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return {
       dialogOpen: !!root,
-      decisionShown: !!(decision && (decision.textContent || '').includes('检测到该模型未能识别图片')),
+      decisionShown: !!(decision && decisionText.includes('检测到该模型未能识别图片')),
+      decisionHasDetail: decisionText.includes('this model does not support image input'),
+      noDuplicatedPrefix: !decisionText.includes('检测到该模型未能识别图片（检测到'),
       retestBtn: !!root.querySelector('[data-testid="image-probe-retest"]'),
       configureBtn: !!root.querySelector('[data-testid="image-probe-configure-vision"]'),
       saveAutoBtn: !!root.querySelector('[data-testid="image-probe-save-auto"]'),
       probed: !!(saveCall && saveCall.args && saveCall.args.probeImageCapability === true),
       savedWithAuto: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'auto'),
+      // 后端 unsupported 不写盘:models 里不得出现本次保存的 override/名称变更
+      // (mock 在 unsupported 分支不落 models,与后端 save_model 跳过写盘同口径)。
+      modelListUnchanged: window.__SETTINGS_TEST__.models().every(model => model.image_capability_override !== 'auto' || model.name !== '不支持检测临时名'),
     };
   });
-  rec('⑦.img.12 保存时检测明确不支持:弹窗保持并给出三选一决策',
-    decisionShown.dialogOpen && decisionShown.decisionShown && decisionShown.retestBtn
-      && decisionShown.configureBtn && decisionShown.saveAutoBtn
+  rec('⑦.img.12 保存时检测明确不支持:弹窗保持、文案不重复并给出三选一决策',
+    decisionShown.dialogOpen && decisionShown.decisionShown && decisionShown.decisionHasDetail
+      && decisionShown.noDuplicatedPrefix
+      && decisionShown.retestBtn && decisionShown.configureBtn && decisionShown.saveAutoBtn
       && decisionShown.probed && decisionShown.savedWithAuto,
     JSON.stringify(decisionShown));
   await page.click('[data-testid="image-probe-save-auto"]');
@@ -1264,7 +1279,7 @@ async function modalWidth(page, headingText) {
   rec('⑦.img.13b 检测回填持久化:重开表单显示「支持图片」', echoEnabled.includes('支持图片'), echoEnabled);
 
   // 连接不通/瞬时故障 → 无法确认 → 落「自动处理」直接关闭。
-  await setCapabilityAndProbe('auto', { status: 'unknown', applied_override: 'pinvou', summary: '无法连接模型服务，已按自动处理：connection refused', http_status: null });
+  await setCapabilityAndProbe('auto', { status: 'unknown', applied_override: 'pinvou', summary: 'connection refused', http_status: null });
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
   const probeUnknown = await probeSavedState();
@@ -1273,6 +1288,44 @@ async function modalWidth(page, headingText) {
     JSON.stringify(probeUnknown));
   const echoAuto2 = await echoOverride();
   rec('⑦.img.14b 检测回填持久化:重开表单显示「自动处理」', echoAuto2.includes('自动处理'), echoAuto2);
+
+  // 明确不支持时后端不写盘:探测后「取消」放弃 → 模型列表保持原状,
+  // 下次打开表单仍显示原档位(而非被探测结果污染)。
+  await setCapabilityAndProbe('auto', { status: 'unverified', applied_override: null, summary: '未能正确识别图像，原因未知（模型回复：unknown）', http_status: 200 });
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  await clickExact(page, '取消');
+  await sleep(200);
+  const echoAfterAbort = await echoOverride();
+  rec('⑦.img.12d 明确不支持未决策即取消:不写盘,重开表单仍显示「保存时检测」',
+    echoAfterAbort.includes('保存时检测') && !echoAfterAbort.includes('自动处理'),
+    echoAfterAbort);
+  await clickExact(page, '取消');
+  await sleep(200);
+
+  // 保存失败(连接/写盘错误):弹窗保持 + 行内错误提示,表单输入不丢弃;
+  // 修正后重试成功正常关闭(不再依赖不存在的"调用链处理")。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError('磁盘写入失败'));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const saveFailed = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const error = root && root.querySelector('[data-testid="model-form-save-error"]');
+    return {
+      dialogOpen: !!root,
+      errorShown: !!(error && (error.textContent || '').includes('磁盘写入失败')),
+    };
+  });
+  rec('⑦.img.15 保存失败:弹窗保持并显示行内错误',
+    saveFailed.dialogOpen && saveFailed.errorShown,
+    JSON.stringify(saveFailed));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelError(null));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
+  const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
+  rec('⑦.img.15b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
 
   await clickSettingsSection(page, '搜索');
   const searchList = await page.evaluate(() => {

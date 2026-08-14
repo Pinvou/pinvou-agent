@@ -2181,7 +2181,7 @@ fn small_attachment_stays_inline() {
     );
     assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
     assert!(
-        prompt.contains("不需要再调 read_file"),
+        prompt.contains("不需要再调 `File(action=\"read\")`"),
         "内联段应声明无需 read_file"
     );
     assert!(!ws.join("attachments").exists(), "小附件不应落盘");
@@ -2206,7 +2206,7 @@ fn large_spreadsheet_goes_path_mode() {
         "应给出落盘 CSV 相对路径"
     );
     assert!(
-        prompt.contains("read_file") && prompt.contains("exec_shell"),
+        prompt.contains("File(action=\"read\")") && prompt.contains("Bash(action=\"run\")"),
         "应引导工具消化"
     );
     assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");
