@@ -11,7 +11,11 @@ Windows 不给出具体缺哪个 DLL/符号,只能静态解析导入表比对导
 定位每个被导入的 DLL,解析其导出表,报告:
   - 找不到的 DLL(MODULE_NOT_FOUND 类问题)
   - DLL 存在但缺失的导入符号(ENTRYPOINT_NOT_FOUND 类问题)
-仅做诊断,不修改任何文件;exit 0(纯信息输出,不阻断 CI 步骤)。
+exe 旁外部清单声明的 SxS 程序集所覆盖的 DLL(如 comctl32)缺符号时
+降级为预期提示:loader 按程序集版本解析,静态走文件系统只会看到
+System32 副本,其缺 v6 专属符号不构成问题。
+仅做诊断,不修改任何文件;exit 0(纯信息输出,不阻断 CI 步骤),
+脚本自身异常同样 exit 0 兜底。
 """
 import glob
 import io
@@ -121,6 +125,35 @@ def find_dll(name, exe_dir):
     return None
 
 
+# SxS 程序集名 → 其覆盖的 DLL。loader 见到清单声明的程序集依赖时,绑定程序集
+# 版本(如 WinSxS 里的 comctl32 v6)而非 System32 的 v5 副本;脚本静态走文件
+# 系统,只会找到 System32 副本,其缺 v6 专属符号(如 TaskDialogIndirect)属预期。
+SXS_ASSEMBLY_DLLS = {
+    'Microsoft.Windows.Common-Controls': {'comctl32.dll'},
+}
+
+
+def manifest_sxs_dlls(exe):
+    """返回 exe 清单声明的 SxS 程序集所覆盖的 DLL 名集合(小写)。
+
+    只读外部清单(<exe>.manifest,Windows loader 在无嵌入清单时的回退);
+    嵌入清单在 RT_MANIFEST 资源里,当前不解析。
+    """
+    mpath = exe + '.manifest'
+    if not os.path.isfile(mpath):
+        return set()
+    try:
+        with open(mpath, 'r', encoding='utf-8', errors='replace') as f:
+            text = f.read()
+    except OSError:
+        return set()
+    dlls = set()
+    for assembly, names in SXS_ASSEMBLY_DLLS.items():
+        if assembly in text:
+            dlls |= names
+    return dlls
+
+
 def main():
     deps_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
     exes = sorted(glob.glob(os.path.join(deps_dir, 'pinvou3_lib-*.exe')), key=os.path.getmtime)
@@ -133,11 +166,12 @@ def main():
     print('DIAG dlls next to exe:', [f for f in os.listdir(exe_dir) if f.lower().endswith('.dll')])
 
     problems = []
+    sxs_dlls = manifest_sxs_dlls(exe)
     system_dirs = {os.path.normcase(os.path.abspath(p)) for p in (
         os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32'),
         os.environ.get('SystemRoot', r'C:\Windows'),
     )}
-    # exe 直接导入 + 非系统 DLL 的一层递归(loader 递归解析,缺符号可能藏在依赖链)
+    # exe 直接导入 + 非系统 DLL 的传递递归(loader 递归解析,缺符号可能藏在依赖链)
     queue = [(dll, funcs, exe) for dll, funcs in imports_of(exe)]
     seen = set()
     while queue:
@@ -149,12 +183,16 @@ def main():
             problems.append(f'缺模块: {dll} (被 {os.path.basename(importer)} 导入,未在 loader 搜索路径找到)')
             continue
         missing = [f for f in funcs if not f.startswith('#') and f not in exports_of(path)]
-        status = f'缺 {len(missing)} 符号: {missing[:10]}' if missing else 'ok'
         indent = '' if importer == exe else '    ↳ '
-        print(f'  {indent}{dll} -> {path} ({len(funcs)} imports) {status}')
-        if missing:
-            problems.append(f'{path} 缺符号(被 {os.path.basename(importer)} 导入): {missing[:20]}')
-        # 非 System32 的 DLL(如 exe 旁拷贝的运行时 DLL)继续向下钻一层
+        if missing and dll.lower() in sxs_dlls:
+            print(f'  {indent}{dll} -> {path} ({len(funcs)} imports) '
+                  f'缺 {len(missing)} 符号(SxS 清单已声明,loader 按程序集版本解析,属预期)')
+        else:
+            status = f'缺 {len(missing)} 符号: {missing[:10]}' if missing else 'ok'
+            print(f'  {indent}{dll} -> {path} ({len(funcs)} imports) {status}')
+            if missing:
+                problems.append(f'{path} 缺符号(被 {os.path.basename(importer)} 导入): {missing[:20]}')
+        # 非 System32 的 DLL(如 exe 旁拷贝的运行时 DLL)继续传递向下钻
         key = os.path.normcase(path)
         if key not in seen and os.path.normcase(os.path.dirname(path)) not in system_dirs:
             seen.add(key)
@@ -171,4 +209,10 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:  # 诊断自身异常只记录,兑现「纯诊断不阻断」的承诺
+        import traceback
+        traceback.print_exc()
+        sys.stderr.write('DIAG: 诊断自身异常,已忽略(不阻断 CI 步骤)\n')
+        sys.exit(0)

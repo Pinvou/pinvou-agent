@@ -883,7 +883,9 @@ jobs:
 
       # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
       # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
+      # 纯诊断不阻断:脚本异常(如解析到截断 PE)不得挂掉本 job,故 continue-on-error
       - name: Windows 测试二进制导入诊断
+        continue-on-error: true
         run: python scripts/ci-windows-imports-diagnose.py pinvou3-app/src-tauri/target/debug/deps
 
       # 0xc0000139 根因(已由上述诊断定位):muda 静态导入 TaskDialogIndirect,该符号仅
