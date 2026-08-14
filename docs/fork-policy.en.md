@@ -1,14 +1,14 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-08-11. Public maintenance baseline: upstream `v0.9.5` plus five Pinvou themes.
+> Updated: 2026-08-13. Public maintenance baseline: upstream `v0.9.5` plus five Pinvou themes.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md).
 
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`.
-- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`.
+- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02` (`Pinvou/CodeWhale#12`).
 - The pre-upgrade head `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` remains available as tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`.
-- The branch and immutable tag `pinvou-v0.9.5-r5` are publicly reachable and resolve to the same commit as the parent gitlink. `r1` through `r4` remain immutable historical tags.
+- The branch, immutable tag `pinvou-v0.9.5-r6`, and current parent development gitlink resolve to the same commit. `r1` through `r5` remain immutable historical tags.
 - Keep exactly five long-lived topics:
 
   1. Host embedding and routing boundary
@@ -23,7 +23,7 @@ The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`
 
 - Prefer the app bridge, bundle instructions/Skills, MCP/connectors/plugins, then an upstream contribution. Keep a fork patch only when the behavior must be atomic inside CodeWhale's Engine, SubAgent, Task, or Automation lifecycle.
 - Product tool policy, UI, workspace selection, and business routing stay in `pinvou3-app`.
-- The soft drift limits are 1,500 total changed lines and 200 fork-distinct lines per file. The current drift is 48 files and `+2177/-269`; exceeding a limit requires an explicit retention and reduction assessment.
+- The soft drift limits are 1,500 total changed lines and 200 fork-distinct lines per file. The r6 public drift is 52 files and `+2640/-299`. Exceeding a limit requires an explicit retention and reduction assessment. Generic schema-guided tool-argument compatibility has already merged upstream through `Hmbown/CodeWhale#5348`.
 - Fixups are squashed into their owning topic. Topic 5 contains only Three Departments and Six Ministries behavior; generic host configuration, routing, tools, Automation, and OAuth must stay outside it.
 - A fork-distinct change must update the modification register and guard fingerprints, include a result-oriented `forkguard_*` test where applicable, and pass `./scripts/fork-guard.sh --fast`.
 - For a large upstream refactor, clean re-fork from the release tag and re-express each surviving topic. Do not preserve merge-conflict batches as long-lived history.

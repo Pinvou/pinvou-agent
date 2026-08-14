@@ -7,6 +7,10 @@ release/
 *.rs.bk
 *.rlib
 *.prof*
+# Windows 栈 wrapper 由 selector / CI 按需从 .rs 编译,不入库
+# (.exe 及 MSVC 链接生成的 .pdb 均不入库,避免本地 run-dev.sh 首次运行污染工作树)
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.pdb
 
 # Node / frontend
 node_modules/

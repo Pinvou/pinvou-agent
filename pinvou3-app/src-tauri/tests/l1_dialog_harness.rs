@@ -590,10 +590,11 @@ fn ensure_runtime_env() {
     // context_window_for_model 派生 256K 窗口,B2 preflight 才生效)。
     // export DEEPSEEK_MODEL=... 仍可覆盖,这里只改默认。
     set_var_if_unset("DEEPSEEK_MODEL", "qwen36_35b_256k");
-    set_var_if_unset("DEEPSEEK_REASONING_EFFORT", "off");
     // 允许开发者通过 DEEPSEEK_BASE_URL 接入非 loopback 的本地网络 vLLM。
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
+    // L1 是本地 vLLM headless 测试：24576 与 route_limits_for_model 的 is_local_vllm
+    // 分支显式携带的 24K 预算一致（正式 App 已不再全局注入该 env，此处仅测本地预算）。
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
     // 与正式 App 和底座默认值保持一致，避免 L1 仍用旧 90s 配置，
     // 把慢速本地模型的正常长生成误判为运行时回归。

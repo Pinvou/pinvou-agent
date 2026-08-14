@@ -981,7 +981,12 @@
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
     var draftComposer = realId ? "" : (state.composerDraft || "");
-    saveWorkingSetTo(getBuffer(realId));
+    // 进入时就把【当前完整工作集】落进 restoreBuffer：realId 为 null（草稿态）
+    // 时也要保存——草稿态可能已含乐观的 modeState（如刚打开的多智能体开关）、
+    // 未发送文本，finally 里不能拿全新 freshBuffer 覆盖（否则开关状态被后台
+    // 会话事件冲掉，表现为"打开开关后被正在运行的对话覆盖成关"）。
+    var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+    saveWorkingSetTo(restoreBuffer);
     loadWorkingSetFrom(bg);
     state.activeSessionId = sid;
     var prev = suppressNotify; suppressNotify = true;
@@ -990,11 +995,8 @@
       suppressNotify = prev;
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
-      // realId 为 null(草稿态)时 getBuffer(null)=null、loadWorkingSetFrom(null) 是 no-op,
-      // 会把刚处理的后台 session 工作集泄漏进草稿视图(activeSessionId=null 却带着它的 chatItems),
-      // 召唤检阅等依赖 activeSessionId 的操作随之错乱。草稿态须切回干净工作集，
-      // 但要保留用户正在输入的未发送文本。
-      var restoreBuffer = realId ? getBuffer(realId) : freshBuffer();
+      // 恢复的是进入时的同一工作集对象（草稿态下保留乐观 modeState /
+      // 未发送文本），不是全新 buffer。
       if (!realId) restoreBuffer.composerDraft = draftComposer;
       loadWorkingSetFrom(restoreBuffer);
     }
@@ -1430,6 +1432,35 @@
     return "";
   }
 
+  // CodeWhale may append model-only recovery guidance to a persisted tool result
+  // to preserve strict provider role ordering. Keep that guidance in durable/model
+  // context, but remove only the two known internal suffix kinds from tool cards.
+  function stripInternalToolRuntimeSuffix(value) {
+    var text = String(value == null ? "" : value);
+    var marker = "\n\n<codewhale:runtime_event";
+    while (true) {
+      var start = text.lastIndexOf(marker);
+      if (start < 0) return text;
+      var suffix = text.slice(start + 2);
+      var opening = suffix.match(/^<codewhale:runtime_event\b[^>]*>/i);
+      if (!opening || !/<\/codewhale:runtime_event>\s*$/i.test(suffix)) return text;
+      var tag = opening[0];
+      var knownKind = /\bkind=(["'])(?:stuck_guard|tool_error_degradation)\1/i.test(tag);
+      var internal = /\bvisibility=(["'])internal\1/i.test(tag);
+      if (!knownKind || !internal) return text;
+      text = text.slice(0, start);
+    }
+  }
+
+  function toolResultDisplayContent(content) {
+    if (typeof content === "string") return stripInternalToolRuntimeSuffix(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (block) {
+      if (!block || typeof block.text !== "string") return block;
+      return Object.assign({}, block, { text: stripInternalToolRuntimeSuffix(block.text) });
+    });
+  }
+
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
   function parsePlanSnapshot(content) {
     var txt = toolResultText(content);
@@ -1605,11 +1636,13 @@
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
             var blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
-              updateToolItem(c.tool_use_id, c.content, false); // 被拦=失败态,与实时一致
+              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              var contentForCard = (tm.name === "load_skill") ? bt("skillContentHidden") : c.content;
+              var contentForCard = (tm.name === "load_skill")
+                ? bt("skillContentHidden")
+                : toolResultDisplayContent(c.content);
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
@@ -1858,6 +1891,7 @@
     markScheduledInitialTurnTerminal: markScheduledInitialTurnTerminal,
     isAbsPath: isAbsPath,
     addOrMergePruneCompaction: addOrMergePruneCompaction,
+    toolResultDisplayContent: toolResultDisplayContent,
     get currentStreamText() { return currentStreamText; },
     set currentStreamText(value) { currentStreamText = value; },
     get currentStreamId() { return currentStreamId; },

@@ -224,6 +224,7 @@ command_protocol!(
         "list_marketplace_skills",
         "install_marketplace_skill",
         "import_skill_package",
+        "import_skill_package_bytes",
         "uninstall_marketplace_skill"
     ]
 );

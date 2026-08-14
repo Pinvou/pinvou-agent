@@ -575,6 +575,15 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const chatItems = bs ? bs.chatItems : [];
       const activeSessionId = bs ? bs.activeSessionId : null;
       const busy = bs ? bs.busy : false;
+      // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
+      // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
+      // **对应 session** 的按钮（按 session 集合记录而非全局布尔或单个 sid：
+      // ChatView 在切换 active session 时不 remount，全局 single-flight 会阻断
+      // 新会话的停止，直到旧会话的 invoke 返回；单个 sid 无法表示多个会话
+      // 并发取消——A 取消中切到 B 发起取消再切回 A，A 的标记会被 B 覆盖导致
+      // 按钮误启用。Set 让各会话独立记录，配合后端 turn generation 守护，
+      // 消除跨轮误取消窗口）。
+      const [cancellingSessionIds, setCancellingSessionIds] = useState(() => new Set());
       const activeModelLocal = activeModelIsLocal(bs);
       const hasMessages = chatItems.length > 0;
       const attachments = (bs && bs.attachments) || [];
@@ -1282,8 +1291,26 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
-      function handleCancel() {
-        if (bridge.available) bridge.chat.cancelGeneration();
+      async function handleCancel() {
+        // single-flight:同一 session 已在取消中则忽略后续点击，避免并发
+        // cancel_generation。按 session 集合记录（而非全局布尔或单个 sid）——
+        // 多个会话可以同时处于取消中（取消 A 期间切到 B 发起取消，再切回 A，
+        // A 的标记不能被 B 覆盖）。各自 Promise 完成时只删除对应 sid。
+        if (!bridge.available || cancellingSessionIds.has(activeSessionId)) return;
+        const cancellingSid = activeSessionId;
+        setCancellingSessionIds(prev => new Set(prev).add(cancellingSid));
+        try {
+          await bridge.chat.cancelGeneration();
+        } finally {
+          // 只清当前 session 自己的取消标记；若期间已切到别的会话并开始了
+          // 新的取消（cancellingSessionIds 里已有其他 sid），不要误清对方。
+          setCancellingSessionIds(prev => {
+            if (!prev.has(cancellingSid)) return prev;
+            const next = new Set(prev);
+            next.delete(cancellingSid);
+            return next;
+          });
+        }
       }
 
       function finishFloatingVoicePointer(pointerId, event, releaseCapture, reason) {
@@ -1913,8 +1940,8 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </button>
                 )}
                 {busy ? (
-                  <button onClick={handleCancel}
-                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 transition-colors">
+                  <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
+                    className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {

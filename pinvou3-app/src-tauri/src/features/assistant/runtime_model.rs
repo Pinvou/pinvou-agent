@@ -123,6 +123,7 @@ mod tests {
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             model: "model-1".to_string(),
             base_url: "https://example.invalid/v1".to_string(),
             provider_kind: None,

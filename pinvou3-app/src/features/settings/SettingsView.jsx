@@ -18,6 +18,7 @@ import {
   presetOptionsI18n, presetProviderLabel,
   normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
+  reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
@@ -527,9 +528,32 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const busy = busyProp !== undefined ? busyProp : (bs ? bs.busy : false);
       const effectiveId = currentSessionModelId || activeModelId;
       const current = savedModels.find(m => m.id === effectiveId);
+      const reasoningEffortTiers = current ? (reasoningEffortTiersForModel(current) || []) : [];
+      // 存量档位（可能保存过底座归一前的旧值，如 deepseek 的 medium）先归一到
+      // 档位表内等价档位再高亮，避免「档位表不含该值 → 下拉无高亮」。
+      const reasoningEffortValue = current ? normalizeStoredReasoningEffort(current, current.reasoning_effort) : null;
+      const [effortSaveError, setEffortSaveError] = useState('');
+      function setReasoningEffortForCurrent(tier) {
+        if (!current) return;
+        if (tier === reasoningEffortValue) return;
+        setEffortSaveError('');
+        const next = { ...current, reasoning_effort: tier };
+        if (!bridge.available) { setOpen(false); return; }
+        // 保存成功才收弹层；失败保留弹层以便展示 effortSaveError（否则错误渲染
+        // 在已关闭的 popover 内不可达）。
+        bridge.models.saveModel(next)
+          .then(() => { setOpen(false); setEffortSaveError(''); })
+          .catch((error) => {
+            const message = (error && error.message)
+              ? error.message
+              : ((t && t.saveModelFailed) || '保存失败');
+            setEffortSaveError(message);
+          });
+      }
       if (!savedModels.length) return null;
       function pick(id) {
         setOpen(false);
+        setEffortSaveError('');
         if (id === effectiveId) return;
         if (onSwitchModel) { onSwitchModel(activeSessionId, id); return; }
         if (bridge.available) bridge.models.switchModel(activeSessionId, id);
@@ -582,6 +606,29 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     </>
                   );
                 })()}
+                {current && reasoningEffortTiers.length > 0 && (
+                  <>
+                    <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                    <div className="px-3 pt-1 pb-1">
+                      <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 mb-1.5">{t.thinkingDepth}</div>
+                      <div className="flex flex-wrap gap-1">
+                        {reasoningEffortTiers.map(tier => (
+                          <button key={tier} onClick={() => setReasoningEffortForCurrent(tier)}
+                            className={`h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors ${
+                              reasoningEffortValue === tier
+                                ? 'bg-[#007AFF] text-white'
+                                : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]'
+                            }`}>
+                            {t.thinkingDepthTiers[tier] || tier}
+                          </button>
+                        ))}
+                      </div>
+                      {effortSaveError && (
+                        <div className="mt-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]">{effortSaveError}</div>
+                      )}
+                    </div>
+                  </>
+                )}
                 {canMultiAgent && (
                   <>
                     <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
@@ -1236,6 +1283,12 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
+      // 思考深度档位：初始取已保存值（先归一——存量可能是底座归一前的旧值，
+      // 如 deepseek 的 medium），无则按模型默认（vllm→off，其余→high；
+      // 底座不支持的模型无默认，保持 null = 未显式设置，避免保存时污染 SavedModel）。
+      const [reasoningEffort, setReasoningEffort] = useState(
+        normalizeStoredReasoningEffort(initial, initial.reasoning_effort)
+      );
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
@@ -1265,6 +1318,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         ? localizeProvider(CLOUD_MODEL_PROVIDERS.find(group => group.key === providerKey) || findCloudProviderForModel({ preset, model, base_url: baseUrl, provider_kind: providerKind, vendor }) || null)
         : null;
       const isCodingPlan = providerKind === PROVIDER_KIND_CODING_PLAN || (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN);
+      // 当前表单模型可切换的思考深度档位（底座不支持的模型为空 = 不提供切换）。
+      const reasoningEffortTiers = reasoningEffortTiersForModel({ preset, model, vendor, base_url: baseUrl, provider_kind: providerKind }) || [];
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
           const code = String(value.code || (value.ok ? 'ok' : 'unknown'));
@@ -1317,6 +1372,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         setMaxOutput(p === 'local_vllm' ? '24576' : '');
+        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
+        // 无档位模型置 null = 未显式设置）。带上 nextBaseUrl 以按新 route 判定档位。
+        setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         if (p !== 'local_vllm') {
           setApiKey('');
           setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -1327,6 +1385,23 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setCustomModel(!!item.custom);
         setProviderModelPickerOpen(false);
         setPickerOpen(false);
+      }
+      // 手输编辑会改变 reasoning-effort route 的字段（model ID / base_url）后，把思考
+      // 深度归一到新 route：仍在档位表内的值保留（不覆盖用户有效选择，如 vLLM 的 high、
+      // 非 K3 moonshot 的 off），不在档位表内的按底座真实等价值回落（如 K3 的 off→low、
+      // medium→high，或 openai_compatible 改到官方 deepseek 端点后档位从无到有 → 默认
+      // high）。与目录选择（chooseModel / applyCatalogItem）的「重置到默认」区分：目录
+      // 选择是显式换模型，手输是改字段，保留有效值更符合直觉且不会误清用户的旧选择。
+      function renormalizeReasoningEffort(modelDescriptor) {
+        setReasoningEffort(normalizeStoredReasoningEffort(modelDescriptor, reasoningEffort));
+      }
+      function handleModelIdChange(value) {
+        setModel(value);
+        renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+      }
+      function handleBaseUrlChange(value) {
+        setBaseUrl(value);
+        renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
       }
       async function handleTest() {
         if (!bridge.available) return;
@@ -1456,6 +1531,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           id: id, name: saveName, preset: preset,
           context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
           max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+          // 仅当前表单模型支持档位时保存；手输 model 变为无档位模型时置 null。
+          reasoning_effort: reasoningEffortTiers.length > 0 ? (reasoningEffort || null) : null,
           model: model.trim(), base_url: baseUrl.trim(),
           api_key: nextApiKey, credential_action: nextKeyAction,
           provider_kind: providerKind || null,
@@ -1526,6 +1603,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         setLocalKeyEnabled(false);
         setCustomModel(true);
         setPickerOpen(false);
+        // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
+        // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
+        // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
+        // 「vllm→off」的默认约束。与 applyCatalogItem / chooseModel 的切换语义一致。
+        setReasoningEffort(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: '', vendor, base_url: defs.baseUrl }));
       }
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
@@ -1538,6 +1620,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
         const selectedLabel = customModel || !known ? `${settingsCopy.customModel} ID` : ((selectedItem && selectedItem.title) || model);
         const chooseModel = (item) => {
+          const nextModel = (!item || item.custom) ? '' : item.model;
           if (!item || item.custom) {
             setCustomModel(true);
             setModel('');
@@ -1547,6 +1630,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             setModel(item.model);
             if (!nameTouched) setName(item.title || item.model);
           }
+          // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
+          // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
+          setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
           setProviderModelPickerOpen(false);
         };
         return (
@@ -1589,7 +1675,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             {(customModel || !known) && renderInlineField({
               label: settingsCopy.modelId,
               value: model,
-              onChange: e => setModel(e.target.value),
+              onChange: e => handleModelIdChange(e.target.value),
               placeholder: isCodingPlan ? t.uiSettingsView.codingPlanModelIdPlaceholder : settingsCopy.modelIdPlaceholder,
             })}
           </>
@@ -1833,7 +1919,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                       placeholder: settingsCopy.localModel,
                     })}
                     {showProviderModelField && renderProviderModelField()}
-                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => setModel(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
+                    {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
@@ -1843,7 +1929,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                         <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
                       </div>
                     )}
-                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => setBaseUrl(e.target.value) })}
+                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
                     {isLocalPreset && (
                       <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
                         <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.apiKeyRequired}</label>
@@ -1865,6 +1951,29 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                     )}
                   </div>
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                </section>
+              )}
+              {showConfigFields && reasoningEffortTiers.length > 0 && (
+                <section>
+                  <div className={formGroup}>
+                    <div className="min-h-[54px] flex items-center gap-3 px-4 py-2.5">
+                      <span className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.reasoningEffort}</span>
+                      <div className="ml-auto flex flex-wrap justify-end gap-1">
+                        {reasoningEffortTiers.map(tier => (
+                          <button
+                            key={tier}
+                            type="button"
+                            onClick={() => setReasoningEffort(tier)}
+                            className={`h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors ${
+                              reasoningEffort === tier
+                                ? 'bg-[#007AFF] text-white dark:bg-[#0A84FF]'
+                                : 'bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
+                            }`}
+                          >{settingsCopy.reasoningEffortTiers[tier] || tier}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </section>
               )}
               {showConfigFields && (
