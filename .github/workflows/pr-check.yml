@@ -750,6 +750,11 @@ jobs:
       - name: Windows Rust 单元测试链接检查
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
 
+      # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
+      # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
+      - name: Windows 测试二进制导入诊断
+        run: python scripts/ci-windows-imports-diagnose.py pinvou3-app/src-tauri/target/debug/deps
+
       - name: Windows 原子替换状态机回归
         shell: bash
         run: |
