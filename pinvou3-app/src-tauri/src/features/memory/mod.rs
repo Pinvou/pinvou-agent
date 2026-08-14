@@ -2,8 +2,9 @@
 //!
 //! The structured files are the source of truth. `runtime/<session_id>.md` is
 //! only a prompt cache consumed through `InstructionSource::File`.
+// architecture-guard: allow-target-cfg -- 记忆持久化测试需用 Windows 独占句柄覆盖 ReplaceFileW 恢复路径
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as IoWrite};
@@ -135,6 +136,11 @@ ttl_days 规则：
 "#;
 
 fn write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn file_lifecycle_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -377,6 +383,31 @@ pub struct PreferenceFile {
     pub scope: String,
     #[serde(default)]
     pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopicMutation<T> {
+    pub value: T,
+    pub cleanup_warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopicRead<T> {
+    pub value: T,
+    pub cleanup_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TopicMigrationJournal {
+    authority_file: String,
+    authority_hash: String,
+    stale_files: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct TopicReconciliation {
+    hidden_files: BTreeSet<PathBuf>,
+    cleanup_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -677,7 +708,9 @@ pub fn take_turn_capture(session_id: &str) -> Option<TurnMemoryCapture> {
 
 pub fn load_profile() -> io::Result<MemoryProfile> {
     let path = profile_path();
-    match fs::read_to_string(&path) {
+    match read_text_recovering(&path, |raw| {
+        serde_json::from_str::<MemoryProfile>(raw).is_ok()
+    }) {
         Ok(raw) => {
             let mut profile: MemoryProfile = serde_json::from_str(&raw).map_err(invalid_data)?;
             profile.normalize();
@@ -1069,7 +1102,7 @@ fn looks_completed_work_status(value: &str) -> bool {
 
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     let path = recent_work_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<RecentWorkItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -1181,32 +1214,105 @@ pub fn archive_recent_work(id: &str) -> io::Result<bool> {
     Ok(changed)
 }
 
+fn resolve_topic_authorities<T: Clone>(
+    records: Vec<(PathBuf, T)>,
+    topic: impl Fn(&T) -> &str,
+    id: impl Fn(&T) -> &str,
+) -> (Vec<T>, Vec<String>) {
+    let mut grouped = BTreeMap::<String, Vec<(PathBuf, T)>>::new();
+    for (path, item) in records {
+        grouped
+            .entry(topic(&item).to_string())
+            .or_default()
+            .push((path, item));
+    }
+    let mut authorities = Vec::new();
+    let mut cleanup_failures = Vec::new();
+    for (_, mut group) in grouped {
+        group.sort_by_key(|(path, item)| {
+            let canonical = path.file_name().and_then(|value| value.to_str())
+                == Some(format!("{}.json", id(item)).as_str());
+            let modified = fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            (canonical, modified, path.clone())
+        });
+        let (authority_path, authority) = group
+            .pop()
+            .expect("topic groups are constructed from at least one record");
+        for (duplicate, _) in group {
+            // A duplicate that cannot be removed right now (e.g. an open
+            // handle on Windows) must not fail the whole load: keep it on
+            // disk so the next read retries, and surface a cleanup warning
+            // instead of a hard error — mirroring the soft handling in
+            // reconcile_topic_migration_journals_unlocked.
+            if let Err(error) = fs::remove_file(&duplicate) {
+                cleanup_failures.push(format!("{}: {error}", duplicate.display()));
+            }
+        }
+        debug_assert!(authority_path.is_file());
+        authorities.push(authority);
+    }
+    (authorities, cleanup_failures)
+}
+
 pub fn load_work_context() -> io::Result<Vec<WorkContextFile>> {
+    load_work_context_with_cleanup().map(|result| result.value)
+}
+
+pub fn load_work_context_with_cleanup() -> io::Result<TopicRead<Vec<WorkContextFile>>> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    load_work_context_with_cleanup_unlocked()
+}
+
+fn load_work_context_unlocked() -> io::Result<Vec<WorkContextFile>> {
+    load_work_context_with_cleanup_unlocked().map(|result| result.value)
+}
+
+fn load_work_context_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<WorkContextFile>>> {
     let dir = work_context_dir();
+    recover_directory_json_files_unlocked::<WorkContextFile>(&dir)?;
+    let reconciliation = reconcile_topic_migration_journals_unlocked::<WorkContextFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicRead {
+                value: Vec::new(),
+                cleanup_warning: reconciliation.cleanup_warning,
+            });
+        }
         Err(err) => return Err(err),
     };
-    let mut by_topic: BTreeMap<String, WorkContextFile> = BTreeMap::new();
+    let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+        if reconciliation.hidden_files.contains(&path) {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(mut item) = serde_json::from_str::<WorkContextFile>(&raw) else {
-            continue;
-        };
+        let raw = read_text_recovering_unlocked(&path, &|raw| {
+            serde_json::from_str::<WorkContextFile>(raw).is_ok()
+        })?;
+        let mut item = serde_json::from_str::<WorkContextFile>(&raw).map_err(invalid_data)?;
         normalize_work_context(&mut item);
         if !item.topic.is_empty() && !item.text.is_empty() {
-            by_topic.insert(item.topic.clone(), item);
+            records.push((path, item));
         }
     }
-    Ok(by_topic.into_values().collect())
+    let (value, authority_cleanup_failures) =
+        resolve_topic_authorities(records, |item| &item.topic, |item| &item.id);
+    let mut cleanup_parts = Vec::new();
+    if let Some(base) = reconciliation.cleanup_warning {
+        cleanup_parts.push(base);
+    }
+    cleanup_parts.extend(authority_cleanup_failures);
+    Ok(TopicRead {
+        value,
+        cleanup_warning: (!cleanup_parts.is_empty()).then(|| cleanup_parts.join("; ")),
+    })
 }
 
 fn upsert_work_context_unlocked(
@@ -1247,16 +1353,284 @@ fn upsert_work_context_locked(
     upsert_work_context_unlocked(suggestion, confidence)
 }
 
+fn commit_topic_migration_unlocked<T>(
+    new_path: &Path,
+    value: &T,
+    stale_paths: &[PathBuf],
+    validate: impl Fn(&T) -> bool,
+) -> io::Result<TopicMutation<T>>
+where
+    T: Clone + Serialize + serde::de::DeserializeOwned,
+{
+    let journal_path = topic_migration_journal_path(new_path)?;
+    commit_topic_migration_unlocked_with(
+        &journal_path,
+        new_path,
+        value,
+        stale_paths,
+        validate,
+        write_json_atomic_unlocked,
+        |path| fs::remove_file(path),
+    )
+}
+
+fn commit_topic_migration_unlocked_with<T, W, R>(
+    journal_path: &Path,
+    new_path: &Path,
+    value: &T,
+    stale_paths: &[PathBuf],
+    validate: impl Fn(&T) -> bool,
+    write: W,
+    mut remove: R,
+) -> io::Result<TopicMutation<T>>
+where
+    T: Clone + Serialize + serde::de::DeserializeOwned,
+    W: FnOnce(&Path, &T) -> io::Result<()>,
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    let authority_file = new_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid authority filename"))?
+        .to_string();
+    let stale_files = stale_paths
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let authority_json = serde_json::to_string_pretty(value).map_err(invalid_data)? + "\n";
+    let journal = TopicMigrationJournal {
+        authority_file,
+        authority_hash: stable_id_with_prefix("authority", &authority_json),
+        stale_files,
+    };
+    write_topic_migration_journal_unlocked(journal_path, &journal)?;
+    write(new_path, value)?;
+    let raw = fs::read_to_string(new_path)?;
+    let committed = serde_json::from_str::<T>(&raw).map_err(invalid_data)?;
+    if !validate(&committed) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "new memory topic authority failed post-commit validation",
+        ));
+    }
+
+    let mut cleanup_failures = Vec::new();
+    for stale in stale_paths {
+        if stale == new_path || !stale.exists() {
+            continue;
+        }
+        if let Err(error) = remove(stale) {
+            cleanup_failures.push(format!("{}: {error}", stale.display()));
+        }
+    }
+    if cleanup_failures.is_empty() {
+        if let Err(error) = remove(journal_path) {
+            cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+        }
+    }
+    Ok(TopicMutation {
+        value: value.clone(),
+        cleanup_warning: (!cleanup_failures.is_empty()).then(|| cleanup_failures.join("; ")),
+    })
+}
+
+fn topic_migration_journal_path(new_path: &Path) -> io::Result<PathBuf> {
+    let parent = new_path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "topic path has no parent"))?;
+    let name = new_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid topic filename"))?;
+    Ok(parent.join(format!(".topic-migration-{name}.journal")))
+}
+
+fn write_topic_migration_journal_unlocked(
+    journal_path: &Path,
+    journal: &TopicMigrationJournal,
+) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static JOURNAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let parent = journal_path.parent().unwrap_or_else(|| Path::new("."));
+    let sequence = JOURNAL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let staging = parent.join(format!(
+        ".topic-journal-stage-{}-{sequence}.bin",
+        std::process::id()
+    ));
+    let backup = parent.join(format!(
+        ".topic-journal-backup-{}-{sequence}.bin",
+        std::process::id()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)?;
+        serde_json::to_writer_pretty(&mut file, journal).map_err(invalid_data)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        drop(file);
+        match crate::platform::filesystem::replace_file_atomically(&staging, journal_path, &backup)
+        {
+            Ok(crate::platform::filesystem::ReplaceState::Committed) => Ok(()),
+            Ok(state) => Err(io::Error::other(format!(
+                "unexpected journal replacement state: {state:?}"
+            ))),
+            Err(error) => Err(error.into_io_error()),
+        }
+    })();
+    if result.is_err() {
+        // The new authority is not written until the journal succeeds, so
+        // these staging paths can never be required to recover user data.
+        let _ = fs::remove_file(staging);
+        let _ = fs::remove_file(backup);
+    }
+    result
+}
+
+fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+) -> io::Result<TopicReconciliation> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicReconciliation::default());
+        }
+        Err(error) => return Err(error),
+    };
+    let mut hidden_files = BTreeSet::new();
+    let mut cleanup_failures = Vec::new();
+    for entry in entries {
+        let journal_path = entry?.path();
+        let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(".topic-migration-") || !name.ends_with(".journal") {
+            continue;
+        }
+        let journal = match fs::read_to_string(&journal_path).and_then(|raw| {
+            serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
+        }) {
+            Ok(journal) => journal,
+            Err(_) => {
+                // An unparsable journal (truncated write or disk corruption)
+                // must not permanently block loading preferences / work
+                // context. Quarantine it so the next read stops tripping over
+                // it while keeping the bytes for diagnosis.
+                quarantine_unparsable_journal(&journal_path);
+                continue;
+            }
+        };
+        if !is_plain_filename(&journal.authority_file)
+            || journal
+                .stale_files
+                .iter()
+                .any(|name| !is_plain_filename(name))
+        {
+            quarantine_unparsable_journal(&journal_path);
+            continue;
+        }
+        let authority = dir.join(&journal.authority_file);
+        let authority_valid = fs::read_to_string(&authority).is_ok_and(|raw| {
+            serde_json::from_str::<T>(&raw).is_ok()
+                && stable_id_with_prefix("authority", &raw) == journal.authority_hash
+        });
+        if !authority_valid {
+            fs::remove_file(&journal_path)?;
+            continue;
+        }
+        let mut journal_cleanup_pending = false;
+        for stale_name in &journal.stale_files {
+            let stale = dir.join(stale_name);
+            if stale == authority || !stale.exists() {
+                continue;
+            }
+            if let Err(error) = fs::remove_file(&stale) {
+                journal_cleanup_pending = true;
+                hidden_files.insert(stale.clone());
+                cleanup_failures.push(format!("{}: {error}", stale.display()));
+            }
+        }
+        if !journal_cleanup_pending {
+            if let Err(error) = fs::remove_file(&journal_path) {
+                cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            }
+        }
+    }
+    Ok(TopicReconciliation {
+        hidden_files,
+        cleanup_warning: (!cleanup_failures.is_empty()).then(|| cleanup_failures.join("; ")),
+    })
+}
+
+fn is_plain_filename(value: &str) -> bool {
+    !value.is_empty()
+        && Path::new(value).components().count() == 1
+        && matches!(
+            Path::new(value).components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+}
+
+fn quarantine_unparsable_journal(journal_path: &Path) {
+    let Some(name) = journal_path.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let quarantined = journal_path.with_file_name(format!("{name}.corrupt-{}", std::process::id()));
+    if let Err(error) = fs::rename(journal_path, quarantined) {
+        // Rename can fail if the file is momentarily locked (e.g. Windows);
+        // the journal then stays in place and is skipped again on the next
+        // read without blocking the load.
+        let _ = error;
+    }
+}
+
+fn work_context_stale_paths_unlocked(
+    dir: &Path,
+    new_path: &Path,
+    old_topic: &str,
+    new_topic: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let mut stale = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(stale),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let same_topic = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<WorkContextFile>(&raw).ok())
+            .map(|item| {
+                let topic = normalize_work_context_topic(&item.topic);
+                topic == old_topic || topic == new_topic
+            })
+            .unwrap_or(false);
+        if same_topic {
+            stale.push(path);
+        }
+    }
+    Ok(stale)
+}
+
 pub fn update_work_context(
     id: &str,
     patch: MemoryTextPatch,
-) -> io::Result<Option<WorkContextFile>> {
+) -> io::Result<Option<TopicMutation<WorkContextFile>>> {
     let _guard = write_lock().lock();
+    let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(None);
     }
-    let items = load_work_context()?;
+    let items = load_work_context_unlocked()?;
     let Some(existing) = items
         .into_iter()
         .find(|item| clean_id(&item.id) == id || clean_id(&item.topic) == id)
@@ -1290,11 +1664,18 @@ pub fn update_work_context(
     fs::create_dir_all(&dir)?;
     let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
-    if old_path != new_path && old_path.exists() {
-        let _ = fs::remove_file(old_path);
+    let mut stale_paths =
+        work_context_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
+    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+        stale_paths.push(old_path);
     }
-    write_json_atomic(&new_path, &updated)?;
-    Ok(Some(updated))
+    let mutation =
+        commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
+            committed.id == updated.id
+                && committed.topic == updated.topic
+                && committed.text == updated.text
+        })?;
+    Ok(Some(mutation))
 }
 
 pub fn delete_work_context(id: &str) -> io::Result<bool> {
@@ -1507,7 +1888,7 @@ pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
 }
 
 fn load_timed_memory_file(path: &Path, kind: &str) -> io::Result<Vec<TimedMemoryItem>> {
-    let raw = match fs::read_to_string(path) {
+    let raw = match read_text_recovering(path, json_lines_are_valid::<TimedMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -1606,7 +1987,7 @@ fn dedupe_timed_memory_items(mut items: Vec<TimedMemoryItem>) -> Vec<TimedMemory
 
 pub fn load_pending_memory() -> io::Result<Vec<PendingMemoryItem>> {
     let path = pending_memory_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<PendingMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -2747,11 +3128,11 @@ fn refresh_timed_memory_expiry_unlocked(kind: &str, now: DateTime<Utc>) -> io::R
 
 pub fn render_memory_block() -> io::Result<(String, Vec<InjectedMemoryItem>)> {
     let profile = load_profile()?;
-    let preferences = load_preferences().unwrap_or_default();
-    let work_context = load_work_context().unwrap_or_default();
-    let current_focus = load_current_focus().unwrap_or_default();
-    let recent_activity = load_recent_activity().unwrap_or_default();
-    let legacy_recent_work = load_recent_work().unwrap_or_default();
+    let preferences = load_preferences()?;
+    let work_context = load_work_context()?;
+    let current_focus = load_current_focus()?;
+    let recent_activity = load_recent_activity()?;
+    let legacy_recent_work = load_recent_work()?;
     Ok(render_from_parts(
         &profile,
         &preferences,
@@ -3594,7 +3975,7 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
 
 fn load_never_memory_unlocked() -> io::Result<Vec<NeverMemoryItem>> {
     let path = never_memory_path();
-    let raw = match fs::read_to_string(&path) {
+    let raw = match read_text_recovering(&path, json_lines_are_valid::<NeverMemoryItem>) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -3690,13 +4071,53 @@ pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
     load_preferences()
 }
 
-pub fn update_preference(id: &str, patch: MemoryTextPatch) -> io::Result<Option<PreferenceFile>> {
+pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+    load_preferences_with_cleanup()
+}
+
+fn preference_stale_paths_unlocked(
+    dir: &Path,
+    new_path: &Path,
+    old_topic: &str,
+    new_topic: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let mut stale = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(stale),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let same_topic = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
+            .map(|item| {
+                let topic = normalize_preference_topic(&item.topic);
+                topic == old_topic || topic == new_topic
+            })
+            .unwrap_or(false);
+        if same_topic {
+            stale.push(path);
+        }
+    }
+    Ok(stale)
+}
+
+pub fn update_preference(
+    id: &str,
+    patch: MemoryTextPatch,
+) -> io::Result<Option<TopicMutation<PreferenceFile>>> {
     let _guard = write_lock().lock();
+    let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(None);
     }
-    let prefs = load_preferences()?;
+    let prefs = load_preferences_unlocked()?;
     let Some(existing) = prefs.into_iter().find(|pref| clean_id(&pref.id) == id) else {
         return Ok(None);
     };
@@ -3734,27 +4155,18 @@ pub fn update_preference(id: &str, patch: MemoryTextPatch) -> io::Result<Option<
     fs::create_dir_all(&dir)?;
     let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
-    if old_path != new_path && old_path.exists() {
-        let _ = fs::remove_file(old_path);
+    let mut stale_paths =
+        preference_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
+    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+        stale_paths.push(old_path);
     }
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path == new_path || path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let same_topic = fs::read_to_string(&path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
-                .map(|pref| normalize_preference_topic(&pref.topic) == topic)
-                .unwrap_or(false);
-            if same_topic {
-                let _ = fs::remove_file(path);
-            }
-        }
-    }
-    write_json_atomic(&new_path, &updated)?;
-    Ok(Some(updated))
+    let mutation =
+        commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
+            committed.id == updated.id
+                && committed.topic == updated.topic
+                && committed.text == updated.text
+        })?;
+    Ok(Some(mutation))
 }
 
 pub fn delete_preference(id: &str) -> io::Result<bool> {
@@ -3795,25 +4207,46 @@ pub fn delete_preference(id: &str) -> io::Result<bool> {
 }
 
 fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences_with_cleanup().map(|result| result.value)
+}
+
+fn load_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    load_preferences_with_cleanup_unlocked()
+}
+
+fn load_preferences_unlocked() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences_with_cleanup_unlocked().map(|result| result.value)
+}
+
+fn load_preferences_with_cleanup_unlocked() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let dir = paths::user_memory_preferences_dir();
+    recover_directory_json_files_unlocked::<PreferenceFile>(&dir)?;
+    let reconciliation = reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&dir)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(TopicRead {
+                value: Vec::new(),
+                cleanup_warning: reconciliation.cleanup_warning,
+            });
+        }
         Err(err) => return Err(err),
     };
-    let mut by_topic: BTreeMap<String, PreferenceFile> = BTreeMap::new();
+    let mut records = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
+        if reconciliation.hidden_files.contains(&path) {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(mut pref) = serde_json::from_str::<PreferenceFile>(&raw) else {
-            continue;
-        };
+        let raw = read_text_recovering_unlocked(&path, &|raw| {
+            serde_json::from_str::<PreferenceFile>(raw).is_ok()
+        })?;
+        let mut pref = serde_json::from_str::<PreferenceFile>(&raw).map_err(invalid_data)?;
         pref.id = clean_scalar(&pref.id);
         if pref.id.is_empty() {
             pref.id = path
@@ -3826,12 +4259,21 @@ fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
         pref.scope = clean_scalar(&pref.scope);
         pref.text = clean_scalar(&pref.text);
         if !pref.text.is_empty() && !looks_like_profile_preference_text(&pref.text) {
-            by_topic.insert(pref.topic.clone(), pref);
+            records.push((path, pref));
         }
     }
-    let mut out = by_topic.into_values().collect::<Vec<_>>();
+    let (mut out, authority_cleanup_failures) =
+        resolve_topic_authorities(records, |item| &item.topic, |item| &item.id);
     out.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.text.cmp(&b.text)));
-    Ok(out)
+    let mut cleanup_parts = Vec::new();
+    if let Some(base) = reconciliation.cleanup_warning {
+        cleanup_parts.push(base);
+    }
+    cleanup_parts.extend(authority_cleanup_failures);
+    Ok(TopicRead {
+        value: out,
+        cleanup_warning: (!cleanup_parts.is_empty()).then(|| cleanup_parts.join("; ")),
+    })
 }
 
 fn looks_like_profile_preference_text(text: &str) -> bool {
@@ -3923,24 +4365,319 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     write_text_atomic(path, &(text + "\n"))
 }
 
+fn write_json_atomic_unlocked<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let text = serde_json::to_string_pretty(value).map_err(invalid_data)?;
+    write_text_atomic_unlocked(path, &(text + "\n"))
+}
+
 fn write_text_atomic(path: &Path, text: &str) -> io::Result<()> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    write_text_atomic_unlocked(path, text)
+}
+
+fn write_text_atomic_unlocked(path: &Path, text: &str) -> io::Result<()> {
+    write_text_atomic_unlocked_with(
+        path,
+        text,
+        crate::platform::filesystem::replace_file_atomically,
+    )
+}
+
+fn write_text_atomic_unlocked_with<F>(path: &Path, text: &str, replace: F) -> io::Result<()>
+where
+    F: FnOnce(&Path, &Path, &Path) -> crate::platform::filesystem::ReplaceResult,
+{
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&tmp, text)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => return Ok(()),
-        Err(err) if path.exists() => {
-            let _ = fs::remove_file(path);
-            fs::rename(tmp, path).map_err(|rename_err| {
-                io::Error::new(
-                    rename_err.kind(),
-                    format!("replace after rename failed ({err}); {rename_err}"),
-                )
-            })?;
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = path.with_extension(format!("tmp-{}-{timestamp}-{sequence}", std::process::id()));
+    let backup = path.with_extension("bak");
+    let stage_result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    match replace(&tmp, path, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => Ok(()),
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = fs::remove_file(&tmp);
+                let _ = fs::remove_file(&backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && path.exists()
+            {
+                // A target that still exists (e.g. a directory occupying its
+                // path) is a permanent failure: recovery can never promote a
+                // candidate over it, so the staged tmp/backup are garbage. A
+                // truly missing target keeps its candidates for
+                // read_text_recovering_unlocked_with — matching the artifact
+                // write path.
+                let _ = fs::remove_file(&tmp);
+                let _ = fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
         }
-        Err(err) => return Err(err),
+    }
+}
+
+fn json_lines_are_valid<T: for<'de> Deserialize<'de>>(raw: &str) -> bool {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(|line| serde_json::from_str::<T>(line).is_ok())
+}
+
+fn read_text_recovering(path: &Path, validate: impl Fn(&str) -> bool) -> io::Result<String> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    read_text_recovering_unlocked(path, &validate)
+}
+
+fn read_text_recovering_unlocked(
+    path: &Path,
+    validate: &dyn Fn(&str) -> bool,
+) -> io::Result<String> {
+    read_text_recovering_unlocked_with(path, validate, &promote_recovery_candidate)
+}
+
+/// Windows maps `ERROR_SHARING_VIOLATION` (32) / `ERROR_LOCK_VIOLATION` (33) to
+/// `ErrorKind::Uncategorized` rather than `PermissionDenied`, so a file held by
+/// an antivirus scan or another process without read-sharing fails
+/// `fs::read_to_string` this way. Treat those codes as transient so recovery
+/// never promotes a stale backup over a still-valid authoritative file.
+#[cfg(windows)]
+fn is_transient_windows_lock(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32) | Some(33))
+}
+
+#[cfg(not(windows))]
+fn is_transient_windows_lock(_error: &io::Error) -> bool {
+    false
+}
+
+fn read_text_recovering_unlocked_with(
+    path: &Path,
+    validate: &dyn Fn(&str) -> bool,
+    promote: &dyn Fn(&Path, &Path, &[u8]) -> io::Result<()>,
+) -> io::Result<String> {
+    let current_error = match fs::read_to_string(path) {
+        Ok(raw) if validate(&raw) => return Ok(raw),
+        Ok(_) => io::Error::new(
+            io::ErrorKind::InvalidData,
+            "authoritative memory file is invalid",
+        ),
+        Err(error) => {
+            // A transient read failure on an existing authoritative file (e.g.
+            // an antivirus scan lock on Windows) must not trigger recovery:
+            // promoting a stale backup would overwrite the still-valid target.
+            // Deterministic errors (e.g. invalid UTF-8 → InvalidData) still
+            // fall through to recovery so a corrupted authoritative file can
+            // self-heal from a valid backup candidate.
+            let transient = matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::Interrupted
+            ) || is_transient_windows_lock(&error);
+            if transient && path.is_file() {
+                return Err(error);
+            }
+            error
+        }
+    };
+    let Some(parent) = path.parent() else {
+        return Err(current_error);
+    };
+    let file_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("profile");
+    let mut candidates = Vec::new();
+    let backup = path.with_extension("bak");
+    if backup.is_file() {
+        candidates.push((true, backup));
+    }
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let Some(name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let is_regular_file = fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+            if is_regular_file && name.starts_with(&format!("{file_stem}.tmp-")) {
+                candidates.push((false, candidate));
+            }
+        }
+    }
+    // A ReplaceFileW 1177 backup is the old authority under its documented
+    // alternate name. Prefer it over a replacement candidate; otherwise use
+    // the newest valid completed temporary file.
+    candidates.sort_by_key(|(is_backup, candidate)| {
+        (
+            *is_backup,
+            fs::metadata(candidate)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
+    });
+    candidates.reverse();
+    for (_, candidate) in candidates {
+        let Ok(raw) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        if !validate(&raw) {
+            continue;
+        }
+        promote(&candidate, path, raw.as_bytes())?;
+        let restored = fs::read_to_string(path)?;
+        if validate(&restored) {
+            cleanup_recovery_candidates(path);
+            return Ok(restored);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "promoted memory recovery candidate is invalid",
+        ));
+    }
+    Err(current_error)
+}
+
+fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let replacement = target.with_extension(format!("recover-{}-{sequence}", std::process::id()));
+    let backup = target.with_extension("recover-bak");
+    let stage_result = (|| -> io::Result<()> {
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&replacement)?;
+        output.write_all(bytes)?;
+        output.sync_all()?;
+        drop(output);
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let _ = fs::remove_file(replacement);
+        return Err(error);
+    }
+    match crate::platform::filesystem::replace_file_atomically(&replacement, target, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+            let _ = fs::remove_file(candidate);
+            let _ = fs::remove_file(backup);
+            Ok(())
+        }
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = fs::remove_file(replacement);
+                let _ = fs::remove_file(backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && target.exists()
+            {
+                // A permanently blocked target (e.g. a directory occupying its
+                // path) can never accept a promoted candidate: drop the staged
+                // recover-* files instead of leaking one pair per failed read.
+                // A truly missing target keeps them for a later attempt.
+                let _ = fs::remove_file(replacement);
+                let _ = fs::remove_file(backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
+}
+
+fn cleanup_recovery_candidates(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let name = candidate
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if candidate == path.with_extension("bak")
+                || name.starts_with(&format!("{stem}.tmp-"))
+                || name.starts_with(&format!("{stem}.recover-"))
+            {
+                let _ = fs::remove_file(candidate);
+            }
+        }
+    }
+}
+
+fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(dir: &Path) -> io::Result<()> {
+    let _lifecycle = file_lifecycle_lock().lock();
+    recover_directory_json_files_unlocked::<T>(dir)
+}
+
+fn recover_directory_json_files_unlocked<T: for<'de> Deserialize<'de>>(
+    dir: &Path,
+) -> io::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut targets = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let stem = if let Some(stem) = name.strip_suffix(".bak") {
+            Some(stem)
+        } else {
+            name.split_once(".tmp-").map(|(stem, _)| stem)
+        };
+        if let Some(stem) = stem.filter(|stem| !stem.is_empty()) {
+            targets.insert(dir.join(format!("{stem}.json")));
+        }
+    }
+    for target in targets {
+        if target.is_file() {
+            continue;
+        }
+        match read_text_recovering_unlocked(&target, &|raw| serde_json::from_str::<T>(raw).is_ok())
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }
@@ -3952,6 +4689,693 @@ fn invalid_data(err: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-memory-recovery-{name}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn generic_recovery_promotes_newest_valid_candidate_without_hard_links() {
+        let root = recovery_test_root("multiple");
+        let target = root.join("pending.jsonl");
+        let backup = target.with_extension("bak");
+        let older = target.with_extension("tmp-1-1-1");
+        let newer = target.with_extension("tmp-1-2-2");
+        fs::write(&backup, "invalid\n").unwrap();
+        fs::write(&older, "{\"id\":1}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        fs::write(&newer, "{\"id\":2}\n").unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            json_lines_are_valid::<serde_json::Value>(raw)
+        })
+        .unwrap();
+        assert!(restored.contains("\"id\":2"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), restored);
+        assert!(!backup.exists());
+        assert!(!older.exists());
+        assert!(!newer.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn valid_recovery_candidate_with_failed_promotion_is_an_error() {
+        let root = recovery_test_root("promotion-failure");
+        let target = root.join("profile.json");
+        fs::write(target.with_extension("bak"), "{\"version\":1}\n").unwrap();
+
+        let error = read_text_recovering_unlocked_with(
+            &target,
+            &|raw| serde_json::from_str::<MemoryProfile>(raw).is_ok(),
+            &|_, _, _| Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!target.exists());
+        assert!(target.with_extension("bak").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_prefers_replacefile_backup_over_surviving_replacement() {
+        let root = recovery_test_root("replacefile-backup");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let replacement = target.with_extension("tmp-1-2-3");
+        fs::write(&backup, "{\"version\":1,\"revision\":7}\n").unwrap();
+        fs::write(&replacement, "{\"version\":1,\"revision\":8}\n").unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        })
+        .unwrap();
+
+        assert!(restored.contains("\"revision\":7"));
+        assert!(!backup.exists());
+        assert!(!replacement.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transient_read_error_keeps_authoritative_target_untouched() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = recovery_test_root("transient-read-guard");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let authoritative = "{\"version\":1,\"revision\":9,\"identity\":{\"call_name\":\"权威\",\"assistant_alias\":\"品悟\"}}\n";
+        fs::write(&target, authoritative).unwrap();
+        fs::write(
+            &backup,
+            "{\"version\":1,\"revision\":1,\"identity\":{\"call_name\":\"旧值\",\"assistant_alias\":\"品悟\"}}\n",
+        )
+        .unwrap();
+
+        // Simulate a transient read failure (e.g. an antivirus lock on
+        // Windows): the authoritative file exists but cannot be read right now.
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_to_string(&target).is_err();
+        if !unreadable {
+            // Running as root (or on a filesystem that ignores mode bits)
+            // bypasses the permission check, so the guard cannot be exercised
+            // this way; skip instead of failing spuriously.
+            let _ = fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        // The target stays unreadable (mode 000) through the recovery call so
+        // the transient-read guard is actually exercised: a stale backup must
+        // not be promoted over the still-present authoritative file.
+        let result = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        });
+        // Restore readability for the assertions and cleanup below; the
+        // authoritative file was never overwritten by the recovery path.
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(result.is_err());
+        // The authoritative target must be preserved, never overwritten by a
+        // stale backup, and the backup stays as a candidate.
+        assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
+        assert!(backup.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_sharing_violation_is_transient() {
+        // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) surface as
+        // ErrorKind::Uncategorized on Windows, outside the kind-based transient
+        // whitelist; the raw-OS-code guard must still recognize them so recovery
+        // never promotes a stale backup over a still-valid authoritative file.
+        let sharing = io::Error::from_raw_os_error(32);
+        let lock = io::Error::from_raw_os_error(33);
+        #[cfg(windows)]
+        {
+            assert!(is_transient_windows_lock(&sharing));
+            assert!(is_transient_windows_lock(&lock));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(!is_transient_windows_lock(&sharing));
+            assert!(!is_transient_windows_lock(&lock));
+        }
+    }
+
+    #[test]
+    fn memory_write_cleans_tmp_backup_on_permanently_occupied_target() {
+        let root = recovery_test_root("dir-occupied");
+        let target = root.join("profile.json");
+        // A directory occupying the target path is a permanent failure: the
+        // replacement can never be promoted, so the staged tmp/backup must be
+        // cleaned instead of leaking — mirroring the artifact write path
+        // (write_artifact_text_cleans_temp_file_on_error).
+        fs::create_dir(&target).unwrap();
+
+        let result = write_text_atomic_unlocked_with(&target, "new", |_, _, _| {
+            Err(crate::platform::filesystem::ReplaceError::new(
+                crate::platform::filesystem::ReplaceState::RecoveryRequired,
+                io::Error::new(io::ErrorKind::AlreadyExists, "target is a directory"),
+            ))
+        });
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("profile.json.tmp-") || name == "profile.json.bak"
+                    })
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staged tmp/backup must be cleaned: {leftovers:?}"
+        );
+        assert!(target.is_dir());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_promote_cleans_staged_recover_files_on_permanent_failure() {
+        let root = recovery_test_root("recover-cleanup");
+        let target = root.join("profile.json");
+        let candidate = target.with_extension("tmp-1-1-1");
+        fs::write(&candidate, "{\"version\":1}").unwrap();
+        // Directory occupies the target: promotion can never succeed, so the
+        // staged recover-*/recover-bak files must be dropped instead of
+        // leaking one pair per failed read.
+        fs::create_dir(&target).unwrap();
+
+        let result = promote_recovery_candidate(&candidate, &target, b"{\"version\":1}");
+        assert!(result.is_err());
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("profile.json.recover-"))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "recover-* staging must be cleaned: {leftovers:?}"
+        );
+        // The original candidate stays for a later attempt and is re-scanned
+        // by the next read.
+        assert!(candidate.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corrupted_authoritative_file_self_heals_from_backup() {
+        let root = recovery_test_root("corrupt-self-heal");
+        let target = root.join("profile.json");
+        let backup = target.with_extension("bak");
+        let authoritative = "{\"version\":1,\"revision\":9,\"identity\":{\"call_name\":\"权威\",\"assistant_alias\":\"品悟\"}}\n";
+        // The authoritative file is deterministically corrupted (invalid
+        // UTF-8) while a valid older backup exists. The deterministic error
+        // must still fall through to recovery so the file self-heals.
+        fs::write(&target, b"\xff\xfe not utf8").unwrap();
+        fs::write(&backup, authoritative).unwrap();
+
+        let restored = read_text_recovering(&target, |raw| {
+            serde_json::from_str::<MemoryProfile>(raw).is_ok()
+        })
+        .unwrap();
+        assert_eq!(restored, authoritative);
+        assert_eq!(fs::read_to_string(&target).unwrap(), authoritative);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn preference_fixture(id: &str, topic: &str, text: &str) -> PreferenceFile {
+        PreferenceFile {
+            id: id.to_string(),
+            topic: topic.to_string(),
+            scope: "unconditional".to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn topic_migration_staging_failure_preserves_old_authority() {
+        let root = recovery_test_root("topic-stage-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &new,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |_, _| Err(io::Error::new(io::ErrorKind::Other, "staging failpoint")),
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("staging failpoint"));
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&old_path).unwrap())
+                .unwrap()
+                .text,
+            "old value"
+        );
+        assert!(!new_path.exists());
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!journal.exists());
+        assert!(old_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn topic_migration_cleanup_failure_returns_warning_and_retries() {
+        let root = recovery_test_root("topic-cleanup-retry");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let mutation = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &new,
+            std::slice::from_ref(&old_path),
+            |value| value.id == "new",
+            |path, value| write_json_atomic_unlocked(path, value),
+            |_| Err(io::Error::new(io::ErrorKind::PermissionDenied, "occupied")),
+        )
+        .unwrap();
+
+        assert_eq!(mutation.value.text, "new value");
+        assert!(mutation
+            .cleanup_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("occupied")));
+        assert!(old_path.exists());
+        assert!(new_path.exists());
+        assert!(journal.exists());
+
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!old_path.exists());
+        assert!(new_path.exists());
+        assert!(!journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
+        let home = IsolatedPinvouHome::new("topic-public-updates");
+        let preference_dir = paths::user_memory_preferences_dir();
+        let context_dir = work_context_dir();
+        fs::create_dir_all(&preference_dir).unwrap();
+        fs::create_dir_all(&context_dir).unwrap();
+        let old_preference_id = stable_id_with_prefix("pref", "answer_style");
+        let old_preference_path = preference_dir.join(format!("{old_preference_id}.json"));
+        write_json_atomic(
+            &old_preference_path,
+            &preference_fixture(&old_preference_id, "answer_style", "old preference"),
+        )
+        .unwrap();
+        let old_context_id = stable_id_with_prefix("ctx", "role_domain");
+        let old_context_path = context_dir.join(format!("{old_context_id}.json"));
+        write_json_atomic(
+            &old_context_path,
+            &WorkContextFile {
+                id: old_context_id.clone(),
+                kind: "work_context".to_string(),
+                topic: "role_domain".to_string(),
+                text: "old context".to_string(),
+                source: "test".to_string(),
+                confidence: 1.0,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+
+        let preference = update_preference(
+            &old_preference_id,
+            MemoryTextPatch {
+                topic: Some("workflow_preference".to_string()),
+                text: Some("new preference".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let context = update_work_context(
+            &old_context_id,
+            MemoryTextPatch {
+                topic: Some("project_context".to_string()),
+                text: Some("new context".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(preference.cleanup_warning.is_none());
+        assert_eq!(preference.value.topic, "workflow_preference");
+        assert!(context.cleanup_warning.is_none());
+        assert_eq!(context.value.topic, "project_context");
+        assert!(!old_preference_path.exists());
+        assert!(!old_context_path.exists());
+        assert_eq!(list_preferences().unwrap().len(), 1);
+        assert_eq!(load_work_context().unwrap().len(), 1);
+        drop(home);
+    }
+
+    #[test]
+    fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
+        let home = IsolatedPinvouHome::new("topic-concurrent-overview");
+        let dir = paths::user_memory_preferences_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let new = preference_fixture("new", "workflow_preference", "new value");
+        let old_path = dir.join("old.json");
+        let new_path = dir.join("new.json");
+        write_json_atomic(&old_path, &old).unwrap();
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_ready = ready.clone();
+        let writer_release = release.clone();
+        let writer = std::thread::spawn(move || {
+            let _lifecycle = file_lifecycle_lock().lock();
+            let journal = topic_migration_journal_path(&new_path).unwrap();
+            commit_topic_migration_unlocked_with(
+                &journal,
+                &new_path,
+                &new,
+                std::slice::from_ref(&old_path),
+                |_| true,
+                |path, value| {
+                    write_json_atomic_unlocked(path, value)?;
+                    writer_ready.wait();
+                    writer_release.wait();
+                    Ok(())
+                },
+                |path| fs::remove_file(path),
+            )
+            .unwrap();
+        });
+        ready.wait();
+        let (sent, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || sent.send(list_preferences()).unwrap());
+        assert!(received
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_err());
+        release.wait();
+        writer.join().unwrap();
+        let visible = received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        reader.join().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].text, "new value");
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let home = IsolatedPinvouHome::new("preference-pending-cleanup");
+        let dir = paths::user_memory_preferences_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old_id = stable_id_with_prefix("pref", "answer_style");
+        let old_path = dir.join(format!("{old_id}.json"));
+        write_json_atomic(
+            &old_path,
+            &preference_fixture(&old_id, "answer_style", "old preference"),
+        )
+        .unwrap();
+        let occupied = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old_path)
+            .unwrap();
+
+        let updated = update_preference(
+            &old_id,
+            MemoryTextPatch {
+                topic: Some("workflow_preference".to_string()),
+                text: Some("new preference".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(updated.cleanup_warning.is_some());
+        let new_id = updated.value.id.clone();
+
+        for _ in 0..2 {
+            let read = list_preferences_with_cleanup().unwrap();
+            assert!(read.cleanup_warning.is_some());
+            assert_eq!(read.value.len(), 1);
+            assert_eq!(read.value[0].id, new_id);
+            assert_ne!(read.value[0].id, old_id);
+        }
+        assert!(old_path.exists());
+
+        drop(occupied);
+        let read = list_preferences_with_cleanup().unwrap();
+        assert!(read.cleanup_warning.is_none());
+        assert_eq!(read.value.len(), 1);
+        assert_eq!(read.value[0].id, new_id);
+        assert!(!old_path.exists());
+        assert!(fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".topic-migration-")
+        }));
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_work_context_pending_cleanup_stays_available_and_hides_stale_id() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let home = IsolatedPinvouHome::new("work-context-pending-cleanup");
+        let dir = work_context_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let old_id = stable_id_with_prefix("ctx", "role_domain");
+        let old_path = dir.join(format!("{old_id}.json"));
+        write_json_atomic(
+            &old_path,
+            &WorkContextFile {
+                id: old_id.clone(),
+                kind: "work_context".to_string(),
+                topic: "role_domain".to_string(),
+                text: "old context".to_string(),
+                source: "test".to_string(),
+                confidence: 1.0,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        let occupied = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&old_path)
+            .unwrap();
+
+        let updated = update_work_context(
+            &old_id,
+            MemoryTextPatch {
+                topic: Some("project_context".to_string()),
+                text: Some("new context".to_string()),
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(updated.cleanup_warning.is_some());
+        let new_id = updated.value.id.clone();
+
+        for _ in 0..2 {
+            let read = load_work_context_with_cleanup().unwrap();
+            assert!(read.cleanup_warning.is_some());
+            assert_eq!(read.value.len(), 1);
+            assert_eq!(read.value[0].id, new_id);
+            assert_ne!(read.value[0].id, old_id);
+        }
+        assert!(old_path.exists());
+
+        drop(occupied);
+        let read = load_work_context_with_cleanup().unwrap();
+        assert!(read.cleanup_warning.is_none());
+        assert_eq!(read.value.len(), 1);
+        assert_eq!(read.value[0].id, new_id);
+        assert!(!old_path.exists());
+        drop(home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_replacefile_failure_keeps_old_authority() {
+        let root = recovery_test_root("topic-replacefile-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let prior_new = preference_fixture("new", "workflow_preference", "prior value");
+        let expected = preference_fixture("new", "workflow_preference", "expected value");
+        write_json_atomic(&old_path, &old).unwrap();
+        write_json_atomic(&new_path, &prior_new).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &expected,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |path, value| {
+                let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+                write_text_atomic_unlocked_with(path, &text, |tmp, target, backup| {
+                    crate::platform::filesystem::replace_file_atomically_with(
+                        tmp,
+                        target,
+                        backup,
+                        |_, _, _| Err(io::Error::from_raw_os_error(1175)),
+                    )
+                })
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("RolledBack"));
+        assert!(old_path.exists());
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&new_path).unwrap())
+                .unwrap()
+                .text,
+            "prior value"
+        );
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(old_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn topic_migration_promotion_failure_recovers_before_old_cleanup() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let root = recovery_test_root("topic-promotion-failure");
+        let old_path = root.join("old.json");
+        let new_path = root.join("new.json");
+        let journal = topic_migration_journal_path(&new_path).unwrap();
+        let old = preference_fixture("old", "answer_style", "old value");
+        let expected = preference_fixture("new", "workflow_preference", "expected value");
+        write_json_atomic(&old_path, &old).unwrap();
+
+        let error = commit_topic_migration_unlocked_with(
+            &journal,
+            &new_path,
+            &expected,
+            std::slice::from_ref(&old_path),
+            |_| true,
+            |path, value| {
+                let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+                write_text_atomic_unlocked_with(path, &text, |tmp, target, backup| {
+                    let occupied = fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(tmp)
+                        .unwrap();
+                    let result =
+                        crate::platform::filesystem::replace_file_atomically(tmp, target, backup);
+                    drop(occupied);
+                    result
+                })
+            },
+            |path| fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("RecoveryRequired"));
+        assert!(old_path.exists());
+        assert!(!new_path.exists());
+        recover_directory_json_files_unlocked::<PreferenceFile>(&root).unwrap();
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(!old_path.exists());
+        assert_eq!(
+            serde_json::from_str::<PreferenceFile>(&fs::read_to_string(&new_path).unwrap())
+                .unwrap()
+                .text,
+            "expected value"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_profile_directory_source_recovers_missing_authority() {
+        let root = recovery_test_root("directory");
+        let target = root.join("pref_answer.json");
+        fs::write(
+            target.with_extension("bak"),
+            serde_json::to_vec(&PreferenceFile {
+                id: "pref_answer".to_string(),
+                topic: "answer_style".to_string(),
+                scope: "unconditional".to_string(),
+                text: "concise".to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        recover_directory_json_files::<PreferenceFile>(&root).unwrap();
+        let restored: PreferenceFile =
+            serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(restored.id, "pref_answer");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_waits_for_active_writer_lifecycle() {
+        let root = recovery_test_root("concurrent");
+        let target = root.join("recent.jsonl");
+        let guard = file_lifecycle_lock().lock();
+        let active = target.with_extension("tmp-9-9-9");
+        fs::write(&active, "{\"active\":true}\n").unwrap();
+        let target_for_reader = target.clone();
+        let reader = std::thread::spawn(move || {
+            read_text_recovering(&target_for_reader, |raw| {
+                json_lines_are_valid::<serde_json::Value>(raw)
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::remove_file(active).unwrap();
+        fs::write(&target, "{\"committed\":true}\n").unwrap();
+        drop(guard);
+        assert!(reader.join().unwrap().unwrap().contains("committed"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     struct IsolatedPinvouHome {
         root: PathBuf,
@@ -4034,6 +5458,84 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn missing_profile_recovers_latest_valid_interrupted_write() {
+        let home = IsolatedPinvouHome::new("profile-interrupted-recovery");
+        let path = profile_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path.with_extension("tmp-42-1"), "not json").unwrap();
+        let valid_candidate = path.with_extension("tmp-42-2");
+        fs::write(
+            &valid_candidate,
+            r#"{
+  "version": 1,
+  "revision": 7,
+  "identity": { "call_name": "升级用户", "assistant_alias": "小品" }
+}"#,
+        )
+        .unwrap();
+
+        let recovered = load_profile().unwrap();
+        assert_eq!(recovered.identity.call_name, "升级用户");
+        assert_eq!(recovered.identity.assistant_alias, "小品");
+        assert_eq!(recovered.revision, 7);
+        assert!(path.is_file());
+        assert!(!valid_candidate.exists());
+        assert!(fs::read_to_string(&path).unwrap().contains("升级用户"));
+        assert_eq!(load_profile().unwrap(), recovered);
+        drop(home);
+    }
+
+    #[test]
+    fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
+        let home = IsolatedPinvouHome::new("committed-write-derived-failure");
+        let preference = enqueue_memory_candidate(MemorySuggestion {
+            kind: "preference".to_string(),
+            topic: "answer_style".to_string(),
+            content: "Use concise answers".to_string(),
+            source: "test".to_string(),
+        })
+        .unwrap();
+        confirm_pending_memory(&preference.id).unwrap().unwrap();
+        let preference_id = list_preferences().unwrap()[0].id.clone();
+
+        fs::create_dir_all(recent_work_path().parent().unwrap()).unwrap();
+        fs::write(recent_work_path(), "not-json\n").unwrap();
+
+        let updated = update_preference(
+            &preference_id,
+            MemoryTextPatch {
+                text: Some("Use detailed answers".to_string()),
+                topic: None,
+                ttl_days: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.value.text, "Use detailed answers");
+        assert!(updated.cleanup_warning.is_none());
+        assert_eq!(list_preferences().unwrap()[0].text, "Use detailed answers");
+        assert!(render_memory_block().is_err());
+
+        assert!(delete_preference(&preference_id).unwrap());
+        assert!(list_preferences().unwrap().is_empty());
+        assert!(render_memory_block().is_err());
+
+        let profile_candidate = enqueue_memory_candidate(MemorySuggestion {
+            kind: "profile".to_string(),
+            topic: "call_name".to_string(),
+            content: "Ada".to_string(),
+            source: "test".to_string(),
+        })
+        .unwrap();
+        confirm_pending_memory(&profile_candidate.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(load_profile().unwrap().identity.call_name, "Ada");
+        assert!(render_memory_block().is_err());
+        drop(home);
     }
 
     #[test]

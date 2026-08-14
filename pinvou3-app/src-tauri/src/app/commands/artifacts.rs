@@ -1,5 +1,11 @@
 use super::prelude::*;
 use crate::platform::path_policy::validate_user_path;
+use std::sync::OnceLock;
+
+fn artifact_lifecycle_lock() -> &'static parking_lot::Mutex<()> {
+    static LOCK: OnceLock<parking_lot::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+}
 
 /// 产物文件元数据。前端右栏 list 用。
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +25,9 @@ pub async fn read_artifact_text(path: String) -> Result<String, String> {
 
 pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let p = validate_user_path(path)?;
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    recover_interrupted_artifact_write(&p)
+        .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
     std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
@@ -32,6 +41,9 @@ pub async fn write_artifact_text(path: String, content: String) -> Result<(), St
 
 pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), String> {
     let p = validate_user_path(path)?;
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    recover_interrupted_artifact_write(&p)
+        .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
     if !p.is_file() {
         return Err(format!("not a file: {}", p.display()));
     }
@@ -50,7 +62,8 @@ pub(crate) fn write_artifact_text_impl(path: &str, content: &str) -> Result<(), 
         return Err("markdown artifact is too large to save".into());
     }
 
-    atomic_write_utf8(&p, content).map_err(|e| format!("write_artifact_text({}): {e}", p.display()))
+    atomic_write_utf8_unlocked(&p, content)
+        .map_err(|e| format!("write_artifact_text({}): {e}", p.display()))
 }
 
 fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
@@ -90,6 +103,30 @@ fn ensure_editable_artifact_path(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let _lifecycle = artifact_lifecycle_lock().lock();
+    atomic_write_utf8_unlocked(path, content)
+}
+
+fn atomic_write_utf8_unlocked(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    atomic_write_utf8_unlocked_with(
+        path,
+        content,
+        crate::platform::filesystem::replace_file_atomically,
+    )
+}
+
+pub(super) fn atomic_write_utf8_unlocked_with<F>(
+    path: &std::path::Path,
+    content: &str,
+    replace: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(
+        &std::path::Path,
+        &std::path::Path,
+        &std::path::Path,
+    ) -> crate::platform::filesystem::ReplaceResult,
+{
     use std::io::Write;
 
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -97,24 +134,18 @@ pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::i
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("artifact.md");
-    let tmp = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
+    let token = format!(
+        "{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
-    ));
-    let backup = parent.join(format!(
-        ".{file_name}.bak-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    );
+    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
+    let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
-    let write_result = (|| -> std::io::Result<()> {
+    let stage_result = (|| -> std::io::Result<()> {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -122,20 +153,165 @@ pub(super) fn atomic_write_utf8(path: &std::path::Path, content: &str) -> std::i
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
         drop(f);
-
-        crate::platform::filesystem::replace_file_atomically(&tmp, path, &backup)?;
-
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
         Ok(())
     })();
-
-    if write_result.is_err() {
+    if let Err(error) = stage_result {
         let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&backup);
+        return Err(error);
     }
-    write_result
+
+    match replace(&tmp, path, &backup) {
+        Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+            let _ = std::fs::remove_file(&backup);
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+            Ok(())
+        }
+        Ok(state) => Err(std::io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            if error.state() == crate::platform::filesystem::ReplaceState::RolledBack {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            } else if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired
+                && path.exists()
+            {
+                // A target that still exists (e.g. a directory occupying its
+                // path) is a permanent failure: recovery can never promote a
+                // candidate over it, so the staged tmp/backup are garbage. A
+                // truly missing target keeps its candidates for
+                // recover_interrupted_artifact_write.
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
+}
+
+fn recover_interrupted_artifact_write(path: &std::path::Path) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+        return Ok(());
+    };
+    let tmp_prefix = format!(".{file_name}.tmp-");
+    let bak_prefix = format!(".{file_name}.bak-");
+    let mut candidates = std::collections::BTreeMap::<
+        String,
+        (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    >::new();
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if !std::fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+            {
+                continue;
+            }
+            let Some(name) = candidate
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Some(token) = name.strip_prefix(&tmp_prefix) {
+                candidates.entry(token.to_string()).or_default().0 = Some(candidate);
+            } else if let Some(token) = name.strip_prefix(&bak_prefix) {
+                candidates.entry(token.to_string()).or_default().1 = Some(candidate);
+            }
+        }
+    }
+
+    if path.is_file() {
+        cleanup_artifact_recovery_candidates(candidates.values());
+        return Ok(());
+    }
+
+    let mut ordered = candidates
+        .iter()
+        .map(|(token, (tmp, backup))| {
+            (
+                artifact_recovery_sort_key(token, tmp.as_deref(), backup.as_deref()),
+                token.clone(),
+                tmp.clone(),
+                backup.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|(key, _, _, _)| *key);
+    for (_, token, tmp, backup) in ordered.into_iter().rev() {
+        let replacement = tmp.unwrap_or_else(|| parent.join(format!("{tmp_prefix}{token}")));
+        let backup = backup.unwrap_or_else(|| parent.join(format!("{bak_prefix}{token}")));
+        match crate::platform::filesystem::recover_interrupted_replace(&replacement, path, &backup)
+        {
+            Ok(crate::platform::filesystem::ReplaceState::Committed) => {
+                cleanup_artifact_recovery_candidates(candidates.values());
+                return Ok(());
+            }
+            Ok(_) => unreachable!("recovery success is always committed"),
+            Err(error)
+                if error.state() == crate::platform::filesystem::ReplaceState::RolledBack
+                    && path.is_file() =>
+            {
+                cleanup_artifact_recovery_candidates(candidates.values());
+                return Ok(());
+            }
+            Err(error)
+                if error.state() == crate::platform::filesystem::ReplaceState::RecoveryRequired =>
+            {
+                return Err(error.into_io_error());
+            }
+            Err(error) => return Err(error.into_io_error()),
+        }
+    }
+    Ok(())
+}
+
+fn artifact_recovery_sort_key(
+    token: &str,
+    tmp: Option<&std::path::Path>,
+    backup: Option<&std::path::Path>,
+) -> (bool, u128) {
+    let timestamp = token
+        .rsplit_once('-')
+        .and_then(|(_, nanos)| nanos.parse::<u128>().ok())
+        .or_else(|| {
+            [backup, tmp]
+                .into_iter()
+                .flatten()
+                .filter_map(|path| {
+                    std::fs::metadata(path)
+                        .and_then(|value| value.modified())
+                        .ok()
+                })
+                .filter_map(|modified| {
+                    modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|duration| duration.as_nanos())
+                })
+                .max()
+        })
+        .unwrap_or_default();
+    (backup.is_some(), timestamp)
+}
+
+fn cleanup_artifact_recovery_candidates<'a>(
+    candidates: impl Iterator<Item = &'a (Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
+) {
+    for (tmp, backup) in candidates {
+        if let Some(tmp) = tmp {
+            let _ = std::fs::remove_file(tmp);
+        }
+        if let Some(backup) = backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
 }
 
 /// 题目转安全文件名:去掉路径分隔/非法字符,截长,空了给兜底。

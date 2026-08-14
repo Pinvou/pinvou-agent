@@ -1,16 +1,32 @@
 use super::prelude::*;
 use crate::features::assistant::engine_pool::user_display_message;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryWarning {
+    pub code: String,
+    pub source: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemorySourceStatus {
+    pub available: bool,
+    pub code: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryProfileState {
     pub profile: crate::features::memory::MemoryProfile,
     pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
+    pub warnings: Vec<MemoryWarning>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryWriteState<T> {
     pub value: T,
     pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
+    pub warnings: Vec<MemoryWarning>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +41,8 @@ pub struct MemoryOverviewState {
     pub never: Vec<crate::features::memory::NeverMemoryItem>,
     pub runtime: Option<crate::features::memory::RuntimeMemorySnapshot>,
     pub snapshot_path: String,
+    pub warnings: Vec<MemoryWarning>,
+    pub sources: BTreeMap<String, MemorySourceStatus>,
 }
 
 fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
@@ -79,6 +97,100 @@ fn refresh_memory_runtime_for_command(
     }
 }
 
+fn refresh_memory_runtime_best_effort(
+    session_id: Option<String>,
+    store: &SessionStore,
+    app: &AppHandle,
+) -> (
+    Option<crate::features::memory::RuntimeMemorySnapshot>,
+    Vec<MemoryWarning>,
+) {
+    match refresh_memory_runtime_for_command(session_id, store, app) {
+        Ok(runtime) => (runtime, Vec::new()),
+        Err(detail) => {
+            eprintln!("[memory] {detail}");
+            (
+                None,
+                vec![memory_warning("runtime_refresh_failed", "runtime", detail)],
+            )
+        }
+    }
+}
+
+fn memory_warning(code: &str, source: &str, detail: impl Into<String>) -> MemoryWarning {
+    MemoryWarning {
+        code: code.to_string(),
+        source: source.to_string(),
+        detail: detail.into(),
+    }
+}
+
+fn load_memory_source<T: Default>(
+    source: &str,
+    result: std::io::Result<T>,
+    warnings: &mut Vec<MemoryWarning>,
+    sources: &mut BTreeMap<String, MemorySourceStatus>,
+) -> T {
+    match result {
+        Ok(value) => {
+            sources.insert(
+                source.to_string(),
+                MemorySourceStatus {
+                    available: true,
+                    code: None,
+                },
+            );
+            value
+        }
+        Err(error) => {
+            let detail = format!("load {source}: {error}");
+            eprintln!("[memory] {detail}");
+            let code = "memory_source_unavailable";
+            warnings.push(memory_warning(code, source, detail));
+            sources.insert(
+                source.to_string(),
+                MemorySourceStatus {
+                    available: false,
+                    code: Some(code.to_string()),
+                },
+            );
+            T::default()
+        }
+    }
+}
+
+fn load_topic_memory_source<T: Default>(
+    source: &str,
+    result: std::io::Result<crate::features::memory::TopicRead<T>>,
+    warnings: &mut Vec<MemoryWarning>,
+    sources: &mut BTreeMap<String, MemorySourceStatus>,
+) -> T {
+    match result {
+        Ok(read) => {
+            let code = read
+                .cleanup_warning
+                .as_ref()
+                .map(|_| "memory_topic_cleanup_required".to_string());
+            if let Some(detail) = read.cleanup_warning {
+                warnings.push(memory_warning(
+                    "memory_topic_cleanup_required",
+                    source,
+                    detail,
+                ));
+            }
+            sources.insert(
+                source.to_string(),
+                MemorySourceStatus {
+                    available: true,
+                    code,
+                },
+            );
+            read.value
+        }
+        Err(error) => load_memory_source(source, Err(error), warnings, sources),
+    }
+}
+
 #[tauri::command]
 pub async fn get_memory_profile(
     session_id: Option<String>,
@@ -86,14 +198,25 @@ pub async fn get_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile =
         crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let runtime = match resolve_memory_session_id(session_id, &store) {
-        Some(sid) => Some(
-            crate::features::memory::runtime_snapshot(&sid)
-                .map_err(|e| format!("render runtime memory: {e}"))?,
-        ),
-        None => None,
+    let (runtime, warnings) = match resolve_memory_session_id(session_id, &store) {
+        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
+            Ok(snapshot) => (Some(snapshot), Vec::new()),
+            Err(error) => (
+                None,
+                vec![memory_warning(
+                    "runtime_refresh_failed",
+                    "runtime",
+                    format!("render runtime memory: {error}"),
+                )],
+            ),
+        },
+        None => (None, Vec::new()),
     };
-    Ok(MemoryProfileState { profile, runtime })
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -105,8 +228,12 @@ pub async fn update_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile = crate::features::memory::update_profile(patch)
         .map_err(|e| format!("update profile: {e}"))?;
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
-    Ok(MemoryProfileState { profile, runtime })
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -117,8 +244,12 @@ pub async fn clear_memory_profile(
 ) -> Result<MemoryProfileState, String> {
     let profile =
         crate::features::memory::clear_profile().map_err(|e| format!("clear profile: {e}"))?;
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
-    Ok(MemoryProfileState { profile, runtime })
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    Ok(MemoryProfileState {
+        profile,
+        runtime,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -126,43 +257,144 @@ pub async fn get_memory_overview(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryOverviewState, String> {
-    let profile =
-        crate::features::memory::load_profile().map_err(|e| format!("load profile: {e}"))?;
-    let preferences = crate::features::memory::list_preferences()
-        .map_err(|e| format!("load preferences: {e}"))?;
-    let work_context = crate::features::memory::load_work_context()
-        .map_err(|e| format!("load work context: {e}"))?;
-    let current_focus = crate::features::memory::load_current_focus()
-        .map_err(|e| format!("load current focus: {e}"))?;
-    let recent_activity = crate::features::memory::load_recent_activity()
-        .map_err(|e| format!("load recent activity: {e}"))?;
-    let recent_work = crate::features::memory::load_recent_work()
-        .map_err(|e| format!("load recent work: {e}"))?;
-    let pending = crate::features::memory::load_pending_memory()
-        .map_err(|e| format!("load pending memory: {e}"))?;
-    let never = crate::features::memory::load_never_memory()
-        .map_err(|e| format!("load never memory: {e}"))?;
+    let mut warnings = Vec::new();
+    let mut sources = BTreeMap::new();
+    let profile = load_memory_source(
+        "profile",
+        crate::features::memory::load_profile(),
+        &mut warnings,
+        &mut sources,
+    );
+    let preferences = load_topic_memory_source(
+        "preferences",
+        crate::features::memory::list_preferences_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let work_context = load_topic_memory_source(
+        "work_context",
+        crate::features::memory::load_work_context_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let current_focus = load_memory_source(
+        "current_focus",
+        crate::features::memory::load_current_focus(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_activity = load_memory_source(
+        "recent_activity",
+        crate::features::memory::load_recent_activity(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_work = load_memory_source(
+        "recent_work",
+        crate::features::memory::load_recent_work(),
+        &mut warnings,
+        &mut sources,
+    );
+    let pending = load_memory_source(
+        "pending",
+        crate::features::memory::load_pending_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let never = load_memory_source(
+        "never",
+        crate::features::memory::load_never_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let authoritative_sources_available = sources.values().all(|status| status.available);
     let runtime = match resolve_memory_session_id(session_id, &store) {
-        Some(sid) => Some(
-            crate::features::memory::runtime_snapshot(&sid)
-                .map_err(|e| format!("render runtime memory: {e}"))?,
-        ),
-        None => None,
+        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
+            Ok(snapshot) => {
+                sources.insert(
+                    "runtime".to_string(),
+                    MemorySourceStatus {
+                        available: true,
+                        code: None,
+                    },
+                );
+                Some(snapshot)
+            }
+            Err(error) => {
+                let detail = format!("render runtime memory: {error}");
+                eprintln!("[memory] {detail}");
+                warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
+                sources.insert(
+                    "runtime".to_string(),
+                    MemorySourceStatus {
+                        available: false,
+                        code: Some("runtime_refresh_failed".to_string()),
+                    },
+                );
+                None
+            }
+        },
+        None => {
+            sources.insert(
+                "runtime".to_string(),
+                MemorySourceStatus {
+                    available: true,
+                    code: None,
+                },
+            );
+            None
+        }
     };
-    let snapshot_path = crate::features::memory::write_memory_snapshot_document(
-        &profile,
-        &preferences,
-        &work_context,
-        &current_focus,
-        &recent_activity,
-        &recent_work,
-        &pending,
-        &never,
-        runtime.as_ref(),
-    )
-    .map_err(|e| format!("write memory snapshot: {e}"))?
-    .display()
-    .to_string();
+    let snapshot_path = if authoritative_sources_available && sources["runtime"].available {
+        match crate::features::memory::write_memory_snapshot_document(
+            &profile,
+            &preferences,
+            &work_context,
+            &current_focus,
+            &recent_activity,
+            &recent_work,
+            &pending,
+            &never,
+            runtime.as_ref(),
+        ) {
+            Ok(path) => {
+                sources.insert(
+                    "snapshot".to_string(),
+                    MemorySourceStatus {
+                        available: true,
+                        code: None,
+                    },
+                );
+                path.display().to_string()
+            }
+            Err(error) => {
+                let detail = format!("write memory snapshot: {error}");
+                eprintln!("[memory] {detail}");
+                warnings.push(memory_warning(
+                    "snapshot_refresh_failed",
+                    "snapshot",
+                    detail,
+                ));
+                sources.insert(
+                    "snapshot".to_string(),
+                    MemorySourceStatus {
+                        available: false,
+                        code: Some("snapshot_refresh_failed".to_string()),
+                    },
+                );
+                String::new()
+            }
+        }
+    } else {
+        sources.insert(
+            "snapshot".to_string(),
+            MemorySourceStatus {
+                available: false,
+                code: Some("snapshot_refresh_deferred".to_string()),
+            },
+        );
+        String::new()
+    };
     Ok(MemoryOverviewState {
         profile,
         preferences,
@@ -174,6 +406,8 @@ pub async fn get_memory_overview(
         never,
         runtime,
         snapshot_path,
+        warnings,
+        sources,
     })
 }
 
@@ -204,10 +438,11 @@ pub async fn suggest_memory(
             }],
         );
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: item,
         runtime,
+        warnings,
     })
 }
 
@@ -226,10 +461,11 @@ pub async fn confirm_pending_memory(
     ) {
         emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: event,
         runtime,
+        warnings,
     })
 }
 
@@ -248,10 +484,11 @@ pub async fn ignore_pending_memory(
     ) {
         emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: event,
         runtime,
+        warnings,
     })
 }
 
@@ -271,10 +508,11 @@ pub async fn never_pending_memory(
     ) {
         emit_memory_write_events(&app, &sid, std::slice::from_ref(event));
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: event,
         runtime,
+        warnings,
     })
 }
 
@@ -305,10 +543,11 @@ pub async fn upsert_recent_work_memory(
             }],
         );
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: item,
         runtime,
+        warnings,
     })
 }
 
@@ -335,10 +574,11 @@ pub async fn archive_recent_work_memory(
             );
         }
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: changed,
         runtime,
+        warnings,
     })
 }
 
@@ -365,10 +605,11 @@ pub async fn delete_memory_preference(
             );
         }
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: changed,
         runtime,
+        warnings,
     })
 }
 
@@ -380,8 +621,19 @@ pub async fn update_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::PreferenceFile>>, String> {
-    let item = crate::features::memory::update_preference(&id, patch)
+    let mutation = crate::features::memory::update_preference(&id, patch)
         .map_err(|e| format!("update preference: {e}"))?;
+    let mut persistence_warnings = Vec::new();
+    let item = mutation.map(|mutation| {
+        if let Some(detail) = mutation.cleanup_warning {
+            persistence_warnings.push(memory_warning(
+                "memory_topic_cleanup_required",
+                "preferences",
+                detail,
+            ));
+        }
+        mutation.value
+    });
     if let (Some(sid), Some(item)) = (
         resolve_memory_session_id(session_id.clone(), &store),
         item.as_ref(),
@@ -397,10 +649,12 @@ pub async fn update_memory_preference(
             }],
         );
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    persistence_warnings.append(&mut warnings);
     Ok(MemoryWriteState {
         value: item,
         runtime,
+        warnings: persistence_warnings,
     })
 }
 
@@ -412,8 +666,19 @@ pub async fn update_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::WorkContextFile>>, String> {
-    let item = crate::features::memory::update_work_context(&id, patch)
+    let mutation = crate::features::memory::update_work_context(&id, patch)
         .map_err(|e| format!("update work context: {e}"))?;
+    let mut persistence_warnings = Vec::new();
+    let item = mutation.map(|mutation| {
+        if let Some(detail) = mutation.cleanup_warning {
+            persistence_warnings.push(memory_warning(
+                "memory_topic_cleanup_required",
+                "work_context",
+                detail,
+            ));
+        }
+        mutation.value
+    });
     if let (Some(sid), Some(item)) = (
         resolve_memory_session_id(session_id.clone(), &store),
         item.as_ref(),
@@ -429,10 +694,12 @@ pub async fn update_work_context_memory(
             }],
         );
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, mut warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
+    persistence_warnings.append(&mut warnings);
     Ok(MemoryWriteState {
         value: item,
         runtime,
+        warnings: persistence_warnings,
     })
 }
 
@@ -459,10 +726,11 @@ pub async fn delete_work_context_memory(
             );
         }
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: changed,
         runtime,
+        warnings,
     })
 }
 
@@ -492,10 +760,11 @@ pub async fn update_timed_memory(
             }],
         );
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: item,
         runtime,
+        warnings,
     })
 }
 
@@ -523,10 +792,11 @@ pub async fn delete_timed_memory(
             );
         }
     }
-    let runtime = refresh_memory_runtime_for_command(session_id, &store, &app)?;
+    let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store, &app);
     Ok(MemoryWriteState {
         value: changed,
         runtime,
+        warnings,
     })
 }
 
@@ -563,4 +833,79 @@ pub async fn edit_last_turn(
     pool.edit_last_turn_reserved(&sid, full, display_message, reservation)
         .await
         .map_err(|e| format!("edit_last_turn: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overview_source_status_distinguishes_empty_from_unavailable() {
+        let mut warnings = Vec::new();
+        let mut sources = BTreeMap::new();
+        let empty: Vec<String> =
+            load_memory_source("preferences", Ok(Vec::new()), &mut warnings, &mut sources);
+        assert!(empty.is_empty());
+        assert!(warnings.is_empty());
+        assert!(sources["preferences"].available);
+
+        let unavailable: Vec<String> = load_memory_source(
+            "pending",
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "locked",
+            )),
+            &mut warnings,
+            &mut sources,
+        );
+        assert!(unavailable.is_empty());
+        assert!(!sources["pending"].available);
+        assert_eq!(
+            sources["pending"].code.as_deref(),
+            Some("memory_source_unavailable")
+        );
+        assert_eq!(warnings[0].code, "memory_source_unavailable");
+        assert_eq!(warnings[0].source, "pending");
+
+        let pending: Vec<String> = load_topic_memory_source(
+            "preferences",
+            Ok(crate::features::memory::TopicRead {
+                value: vec!["new".to_string()],
+                cleanup_warning: Some("old topic file is occupied".to_string()),
+            }),
+            &mut warnings,
+            &mut sources,
+        );
+        assert_eq!(pending, ["new"]);
+        assert!(sources["preferences"].available);
+        assert_eq!(
+            sources["preferences"].code.as_deref(),
+            Some("memory_topic_cleanup_required")
+        );
+        assert!(warnings.iter().any(|warning| {
+            warning.code == "memory_topic_cleanup_required" && warning.source == "preferences"
+        }));
+    }
+
+    #[test]
+    fn warnings_are_serialized_as_stable_codes() {
+        let warning = memory_warning(
+            "runtime_refresh_failed",
+            "runtime",
+            "runtime cache is occupied",
+        );
+        let value = serde_json::to_value(warning).unwrap();
+        assert_eq!(value["code"], "runtime_refresh_failed");
+        assert_eq!(value["source"], "runtime");
+        assert!(value["detail"].as_str().unwrap().contains("occupied"));
+
+        let cleanup = serde_json::to_value(memory_warning(
+            "memory_topic_cleanup_required",
+            "preferences",
+            "old topic file is occupied",
+        ))
+        .unwrap();
+        assert_eq!(cleanup["code"], "memory_topic_cleanup_required");
+        assert_eq!(cleanup["source"], "preferences");
+    }
 }

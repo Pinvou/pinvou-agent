@@ -72,7 +72,7 @@ function injectSource() {
     var settings = {
       theme: 'liquid-light',
       language: 'zh-Hans',
-      memory_enabled: false,
+      memory_enabled: true,
       notifications: { enabled: true, task_completed: true },
       pet: { enabled: false },
       search: {
@@ -122,6 +122,18 @@ function injectSource() {
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var dependencyCheckResponse = [];
+    var memoryOverview = {
+      profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
+      preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      runtime: null, snapshot_path: '', warnings: [],
+      sources: {
+        profile: { available: true }, preferences: { available: true }, work_context: { available: true },
+        current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
+        pending: { available: true }, never: { available: true },
+      },
+    };
+    var failMemoryOverview = false;
+    var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     window.alert = function (message) { record('window_alert', { message: message }); };
@@ -211,6 +223,20 @@ function injectSource() {
         case 'list_scheduled_tasks': return Promise.resolve([]);
         case 'list_scheduled_task_recent_runs': return Promise.resolve([]);
         case 'get_app_version': return Promise.resolve('0.6.1');
+        case 'get_memory_overview':
+          return failMemoryOverview ? Promise.reject(new Error('snapshot locked')) : Promise.resolve(memoryOverview);
+        case 'update_memory_profile':
+          if (failMemoryUpdate) return Promise.reject(new Error('profile write failed'));
+          memoryOverview = Object.assign({}, memoryOverview, {
+            profile: Object.assign({}, memoryOverview.profile, {
+              identity: Object.assign({}, memoryOverview.profile.identity, args.patch || {}),
+            }),
+          });
+          return Promise.resolve({
+            profile: memoryOverview.profile,
+            runtime: null,
+            warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
+          });
         default: return Promise.resolve(null);
       }
     }
@@ -223,6 +249,8 @@ function injectSource() {
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setDependencyCheckResponse: function (next) { dependencyCheckResponse = (next || []).slice(); },
+      setFailMemoryOverview: function (value) { failMemoryOverview = !!value; },
+      setFailMemoryUpdate: function (value) { failMemoryUpdate = !!value; },
       resolveDownload: function () {
         if (pendingDownloadResolve) {
           var resolve = pendingDownloadResolve;
@@ -379,6 +407,42 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'settings', { timeout: 8000 });
   await sleep(400);
   rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
+
+  await page.click('[data-testid="settings-section-memory"]');
+  await page.waitForFunction(() => (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼'));
+  rec('①a 升级后的记忆资料从权威 profile 正常回显', await page.evaluate(() =>
+    (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级前称呼')));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setFailMemoryOverview(true));
+  await page.click('[data-testid="memory-profile-call-name"] button');
+  await page.click('[data-testid="memory-editor-input"]', { clickCount: 3 });
+  await page.type('[data-testid="memory-editor-input"]', '升级后称呼');
+  await page.click('[data-testid="memory-editor-save"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="memory-editor-input"]'));
+  rec('①b 派生概览刷新失败不吞掉已保存的称呼', await page.evaluate(() =>
+    (document.querySelector('[data-testid="memory-profile-call-name"]')?.textContent || '').includes('升级后称呼')));
+  rec('①c 记忆加载失败有明确提示且不伪装成未设置', await page.evaluate(() =>
+    document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-settings-error"]')?.getAttribute('aria-live') === 'polite'));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setFailMemoryOverview(false);
+    window.__SETTINGS_TEST__.setFailMemoryUpdate(true);
+  });
+  await page.click('[data-testid="memory-profile-call-name"] button');
+  await page.click('[data-testid="memory-editor-input"]', { clickCount: 3 });
+  await page.type('[data-testid="memory-editor-input"]', '不会保存');
+  await page.click('[data-testid="memory-editor-save"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-editor-error"]'));
+  rec('①d 源资料保存失败时保留编辑器并展示错误', await page.evaluate(() =>
+    !!document.querySelector('[data-testid="memory-editor-input"]')
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('role') === 'alert'
+      && document.querySelector('[data-testid="memory-editor-error"]')?.getAttribute('aria-live') === 'assertive'));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setFailMemoryUpdate(false);
+    const input = document.querySelector('[data-testid="memory-editor-input"]');
+    const dialog = input && input.closest('.fixed');
+    const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
+    if (buttons.length) buttons[0].click();
+  });
 
   await clickSettingsSection(page, '更新');
   await page.evaluate(async () => {

@@ -2252,6 +2252,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const SectionButton = ({ id, icon, label, dot }) => (
         <button
           type="button"
+          data-testid={`settings-section-${id}`}
           onClick={() => setActiveSection(id)}
           className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
             activeSection === id
@@ -2324,6 +2325,18 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       const memoryEnabled = !!(bs && bs.settings && bs.settings.memory_enabled);
       const memory = (bs && bs.memory) || {};
+      const memoryWarning = Array.isArray(memory.warnings) ? memory.warnings[0] : null;
+      const memoryWarningCode = memoryWarning && typeof memoryWarning === 'object' ? memoryWarning.code : '';
+      const memoryError = memory.error || memoryWarning;
+      const memoryErrorMessage = memory.error
+        ? settingsCopy.memoryLoadFailed
+        : memoryWarningCode === 'runtime_refresh_failed'
+          ? settingsCopy.memoryRuntimeRefreshFailed
+          : memoryWarningCode === 'memory_topic_cleanup_required'
+            ? settingsCopy.memoryTopicCleanupRequired
+          : memoryWarningCode === 'snapshot_refresh_failed'
+            ? settingsCopy.memorySnapshotRefreshFailed
+            : settingsCopy.memorySourceUnavailable;
       const identity = (memory.profile && memory.profile.identity) || {};
       const longTermItems = [
         ...(memory.preferences || []).map(item => ({ ...item, kind: 'preference', type: settingsCopy.memoryTypes.preference })),
@@ -2340,6 +2353,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         if (updateFocusTick) setActiveSection('update');
       }, [updateFocusTick]);
       const [memoryEditor, setMemoryEditor] = useState(null);
+      const [memorySaving, setMemorySaving] = useState(false);
+      const [memoryEditorError, setMemoryEditorError] = useState('');
+      const [profileSaveError, setProfileSaveError] = useState('');
       const [memoryDeleteConfirm, setMemoryDeleteConfirm] = useState(null);
       const openMemoryItemViewer = item => {
         setMemoryEditor({
@@ -2356,16 +2372,26 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         });
       };
       const saveMemoryEditor = async () => {
-        if (!memoryEditor || !bridge.available) return;
+        if (!memoryEditor || !bridge.available || memorySaving) return;
         const text = String(memoryEditor.value || '').trim();
-        if (memoryEditor.mode === 'memory') {
-          if (!text || !bridge.memory.updateMemoryItem) return;
-          await bridge.memory.updateMemoryItem(memoryEditor.kind, memoryEditor.id, { text });
-        } else if (memoryEditor.mode === 'profile') {
-          if (!bridge.memory.saveMemoryProfilePatch) return;
-          await bridge.memory.saveMemoryProfilePatch({ [memoryEditor.key]: text });
+        setMemorySaving(true);
+        setMemoryEditorError('');
+        setProfileSaveError('');
+        try {
+          if (memoryEditor.mode === 'memory') {
+            if (!text || !bridge.memory.updateMemoryItem) return;
+            await bridge.memory.updateMemoryItem(memoryEditor.kind, memoryEditor.id, { text });
+          } else if (memoryEditor.mode === 'profile') {
+            if (!bridge.memory.saveMemoryProfilePatch) return;
+            await bridge.memory.saveMemoryProfilePatch({ [memoryEditor.key]: text });
+          }
+          setMemoryEditor(null);
+        } catch (error) {
+          setMemoryEditorError(String(error));
+          setProfileSaveError(String(error));
+        } finally {
+          setMemorySaving(false);
         }
-        setMemoryEditor(null);
       };
       const deleteMemoryItem = async item => {
         if (!bridge.available || !bridge.memory.deleteMemoryItem) return;
@@ -2373,6 +2399,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       const editProfile = key => {
         const label = key === 'call_name' ? settingsCopy.userCallName : settingsCopy.assistantNickname;
+        setMemoryEditorError('');
         setMemoryEditor({
           mode: 'profile',
           key,
@@ -2559,10 +2586,21 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </IOSSection>
           {memoryEnabled && (
             <>
+              {profileSaveError ? (
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                  {settingsCopy.memorySaveFailed}
+                </div>
+              ) : memoryError && (
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                  {memoryErrorMessage}
+                </div>
+              )}
               <IOSSection title={settingsCopy.profile}>
-                <IOSRow label={settingsCopy.userCallName} desc={settingsCopy.callNameDesc} value={identity.call_name || settingsCopy.notSet} onClick={() => editProfile('call_name')}>
-                  <ChevronDown size={22} className="-rotate-90 opacity-35" />
-                </IOSRow>
+                <div data-testid="memory-profile-call-name">
+                  <IOSRow label={settingsCopy.userCallName} desc={settingsCopy.callNameDesc} value={identity.call_name || settingsCopy.notSet} onClick={() => editProfile('call_name')}>
+                    <ChevronDown size={22} className="-rotate-90 opacity-35" />
+                  </IOSRow>
+                </div>
                 <IOSRow label={settingsCopy.assistantNickname} desc={settingsCopy.assistantNameDesc} value={identity.assistant_alias || 'PINVOU'} onClick={() => editProfile('assistant_alias')}>
                   <ChevronDown size={22} className="-rotate-90 opacity-35" />
                 </IOSRow>
@@ -2910,14 +2948,14 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           )}
           {editingSearch && <SearchSourceModal provider={editingSearch} isNew={pendingSearchProvider === editingSearch} onClose={() => { setEditingSearch(null); setPendingSearchProvider(null); }} />}
           {memoryEditor && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => setMemoryEditor(null)}>
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => { if (!memorySaving) setMemoryEditor(null); }}>
               <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
                 <div className={`px-6 py-4 flex items-start justify-between border-b border-black/[0.12] dark:border-white/[0.12]`}>
                   <div>
                     <h2 className="text-[22px] leading-7 font-semibold">{memoryEditor.title}</h2>
                     <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{memoryEditor.subtitle}</p>
                   </div>
-                  <button onClick={() => setMemoryEditor(null)} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/[0.08]`}><X size={20} /></button>
+                  <button onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/[0.08] disabled:opacity-40`}><X size={20} /></button>
                 </div>
                 <div className="px-6 py-5">
                   <label className="block">
@@ -2931,15 +2969,17 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                       />
                     ) : (
                       <input
+                        data-testid="memory-editor-input"
                         value={memoryEditor.value}
                         onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
                         className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
                       />
                     )}
                   </label>
+                  {memoryEditorError && <div data-testid="memory-editor-error" role="alert" aria-live="assertive" className="mt-3 text-[13px] leading-5 text-[#FF3B30]">{settingsCopy.memorySaveFailed}</div>}
                   <div className="mt-6 flex justify-end gap-2.5">
-                    <button onClick={() => setMemoryEditor(null)} className={`h-10 px-4 rounded-full text-[14px] font-semibold bg-[#E5E5EA] dark:bg-[#2C2C2E]`}>{settingsCopy.cancel}</button>
-                    <button onClick={saveMemoryEditor} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold">{settingsCopy.save}</button>
+                    <button onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 px-4 rounded-full text-[14px] font-semibold bg-[#E5E5EA] dark:bg-[#2C2C2E] disabled:opacity-40`}>{settingsCopy.cancel}</button>
+                    <button data-testid="memory-editor-save" onClick={saveMemoryEditor} disabled={memorySaving} className="h-10 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold disabled:opacity-40">{memorySaving ? settingsCopy.saving : settingsCopy.save}</button>
                   </div>
                 </div>
               </div>

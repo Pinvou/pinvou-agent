@@ -23,6 +23,7 @@ const documentObject = {
   },
   body: { appendChild() {} },
 };
+let invokeResponse = async () => null;
 const windowObject = {
   PinvouPlatform: {
     kind: 'web',
@@ -32,7 +33,7 @@ const windowObject = {
     canInvoke: () => false,
   },
   __TAURI__: {
-    core: { invoke: async () => null },
+    core: { invoke: (...args) => invokeResponse(...args) },
     event: { listen: async () => function () {} },
     dialog: { open: async () => null },
   },
@@ -93,6 +94,46 @@ assert.ok(Object.hasOwn(state, 'sessions'));
 assert.ok(Object.hasOwn(state, 'settings'));
 assert.equal(Object.hasOwn(state, 'messages'), false);
 assert.throws(() => api.state.get('unknown'), /Unknown Tauri bridge state slice/);
+
+const memorySources = {
+  profile: { available: true }, preferences: { available: true }, work_context: { available: true },
+  current_focus: { available: true }, recent_activity: { available: true }, recent_work: { available: true },
+  pending: { available: true }, never: { available: true }, runtime: { available: true }, snapshot: { available: true },
+};
+const memoryOverview = overrides => ({
+  profile: null, preferences: [], work_context: [], current_focus: [], recent_activity: [],
+  recent_work: [], pending: [], never: [], runtime: null, snapshot_path: '', warnings: [],
+  sources: memorySources, ...(overrides || {}),
+});
+invokeResponse = async command => command === 'get_memory_overview'
+  ? memoryOverview({ preferences: [{ id: 'web-pref-old', text: 'old' }], work_context: [{ id: 'web-ctx-old', text: 'old' }] })
+  : null;
+await api.memory.loadMemoryOverview();
+const preferenceCleanup = { code: 'memory_topic_cleanup_required', source: 'preferences', detail: 'occupied' };
+invokeResponse = async command => command === 'update_memory_preference'
+  ? { value: { id: 'web-pref-new', text: 'new' }, runtime: null, warnings: [{ code: 'runtime_refresh_failed' }, preferenceCleanup] }
+  : memoryOverview({
+      preferences: [{ id: 'web-pref-new', text: 'new' }],
+      work_context: [{ id: 'web-ctx-old', text: 'old' }],
+      warnings: [{ code: 'snapshot_refresh_failed' }, preferenceCleanup],
+    });
+await api.memory.updateMemoryItem('preference', 'web-pref-old', { topic: 'workflow_preference' });
+let memoryState = api.state.get('memory').memory;
+assert.deepEqual(memoryState.preferences.map(item => item.id), ['web-pref-new']);
+assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
+
+const contextCleanup = { code: 'memory_topic_cleanup_required', source: 'work_context', detail: 'occupied' };
+invokeResponse = async command => command === 'update_work_context_memory'
+  ? { value: { id: 'web-ctx-new', text: 'new' }, runtime: null, warnings: [contextCleanup] }
+  : memoryOverview({
+      preferences: [{ id: 'web-pref-new', text: 'new' }],
+      work_context: [{ id: 'web-ctx-new', text: 'new' }],
+      warnings: [contextCleanup],
+    });
+await api.memory.updateMemoryItem('work_context', 'web-ctx-old', { topic: 'project_context' });
+memoryState = api.state.get('memory').memory;
+assert.deepEqual(memoryState.work_context.map(item => item.id), ['web-ctx-new']);
+assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 assert.ok(
