@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 全局鼠标状态(坐标 + 左键按下)。三平台轮询封装。
-/// - Linux: device_query X11
+/// - Linux: X11 XQueryPointer(root 窗口坐标 = 真·全局虚拟桌面坐标)
 /// - macOS: NSEvent 全局监听线程写的原子快照(见 macos_mouse 模块)
 /// - Windows: GetCursorPos + GetAsyncKeyState 同步读
 pub struct GlobalMouse {
@@ -21,13 +21,63 @@ pub struct GlobalMouse {
 }
 
 #[cfg(target_os = "linux")]
-fn poll_global_mouse(dev: &device_query::DeviceState) -> GlobalMouse {
-    use device_query::DeviceQuery;
-    let m = dev.get_mouse();
-    GlobalMouse {
-        x: m.coords.0,
-        y: m.coords.1,
-        left_down: *m.button_pressed.get(1).unwrap_or(&false),
+struct X11Pointer(*mut x11::xlib::Display);
+
+#[cfg(target_os = "linux")]
+impl X11Pointer {
+    fn new() -> Option<Self> {
+        // 纯 Wayland(无 XWayland)时 XOpenDisplay 返回 null —— 返回 None 让调用方降级。
+        // 存裸指针(Display 是 Xlib 不透明类型,不可按值持有);XCloseDisplay 在 Drop 里释放。
+        unsafe {
+            let d = x11::xlib::XOpenDisplay(std::ptr::null());
+            if d.is_null() {
+                None
+            } else {
+                Some(Self(d))
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for X11Pointer {
+    fn drop(&mut self) {
+        // 线程退出时关 Display,避免 X server 侧连接泄漏。
+        unsafe { x11::xlib::XCloseDisplay(self.0); }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn poll_global_mouse(dev: &X11Pointer) -> GlobalMouse {
+    use std::os::raw::{c_int, c_uint, c_ulong};
+    use x11::xlib::{Button1Mask, XDefaultRootWindow, XQueryPointer};
+    unsafe {
+        let root = XDefaultRootWindow(dev.0);
+        let mut root_return: c_ulong = 0;
+        let mut child_return: c_ulong = 0;
+        let mut root_x: c_int = 0;
+        let mut root_y: c_int = 0;
+        let mut win_x: c_int = 0;
+        let mut win_y: c_int = 0;
+        let mut mask: c_uint = 0;
+        XQueryPointer(
+            dev.0,
+            root,
+            &mut root_return,
+            &mut child_return,
+            &mut root_x,
+            &mut root_y,
+            &mut win_x,
+            &mut win_y,
+            &mut mask,
+        );
+        // 读 root_x/root_y(真·全局虚拟桌面坐标),而非 win_x/win_y(相对子窗口)。
+        // 对撕离落位(PhysicalPosition 跨屏)而言这比 device_query 返回的 win 坐标更正确。
+        GlobalMouse {
+            x: root_x,
+            y: root_y,
+            left_down: mask & Button1Mask != 0,
+        }
     }
 }
 
@@ -291,9 +341,17 @@ pub async fn begin_detach_drag(
             }
             let _drag_guard = DragGuard(app_for_thread.clone());
 
-            // 平台特定的轮询设备句柄:Linux 是 device_query DeviceState;其它平台不用句柄。
+            // 平台特定的轮询设备句柄:Linux 是 X11 Display(X11Pointer RAII 包裹,
+            // 纯 Wayland 无 XWayland 时 new() 返回 None → 视为无鼠标输入,拖拽起手即放弃);
+            // 其它平台不用句柄。
             #[cfg(target_os = "linux")]
-            let dev = device_query::DeviceState::new();
+            let dev = match X11Pointer::new() {
+                Some(d) => d,
+                None => {
+                    let _ = app_for_thread.emit("detach:drag-ended", ());
+                    return;
+                }
+            };
             #[cfg(not(target_os = "linux"))]
             let dev = ();
 
