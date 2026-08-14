@@ -47,7 +47,7 @@ impl CodexConfigWriter {
         }
         let raw = fs::read_to_string(&self.config_path)
             .with_context(|| format!("读取 {} 失败", self.config_path.display()))?;
-        raw.parse::<Value>().with_context(|| {
+        toml::from_str::<Value>(&raw).with_context(|| {
             format!(
                 "{} 不是有效的 TOML，拒绝覆盖；请手动修复或删除该文件后重试",
                 self.config_path.display()
@@ -89,7 +89,7 @@ impl CodexConfigWriter {
 /// 认证探测（`codex_authenticated`）使用其中 env_key 非空判定：App 注入的 key
 /// 只在被 spawn 的子进程 env 中可见，探测进程读不到，只能以配置文件为准。
 pub(crate) fn config_relay_effective(raw: &str) -> EffectiveConfig {
-    let Ok(config) = raw.parse::<Value>() else {
+    let Ok(config) = toml::from_str::<Value>(raw) else {
         return EffectiveConfig::default();
     };
     let Some(provider_id) = config
@@ -147,7 +147,7 @@ pub(crate) fn config_relay_effective(raw: &str) -> EffectiveConfig {
 }
 
 pub(crate) fn codex_config_relay_env_key_present(raw: &str) -> bool {
-    let Ok(config) = raw.parse::<Value>() else {
+    let Ok(config) = toml::from_str::<Value>(raw) else {
         return false;
     };
     let Some(provider_id) = config
@@ -292,7 +292,7 @@ impl AgentConfigWriter for CodexConfigWriter {
             .with_context(|| format!("读取 {} 失败", self.config_path.display()))?;
         // 解析失败必须返回 Err（而非静默按官方处理），让 config_unreadable
         // 生效——否则损坏的 config.toml 会显示「官方登录」且无警告条。
-        raw.parse::<Value>()
+        toml::from_str::<Value>(&raw)
             .map(|_| config_relay_effective(&raw))
             .with_context(|| format!("解析 {} 失败", self.config_path.display()))
     }
@@ -338,10 +338,8 @@ mod tests {
         )
         .unwrap();
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
-        let config: Value = fs::read_to_string(dir.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+        let config: Value =
+            toml::from_str(&fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
         let provider = &config["model_providers"]["pv-aaaaaaaaaaaa"];
         assert_eq!(provider["name"], "中转".into());
         assert_eq!(provider["base_url"], "https://api.example.com/v1".into());
@@ -367,7 +365,7 @@ mod tests {
             .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
             .unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
-        let config: Value = raw.parse().unwrap();
+        let config: Value = toml::from_str(&raw).unwrap();
         assert!(config.get("model_provider").is_none());
         assert!(config.get("model").is_none());
         assert!(config
@@ -408,7 +406,7 @@ mod tests {
         let writer = CodexConfigWriter::new(&dir);
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
-        let config: Value = raw.parse().unwrap();
+        let config: Value = toml::from_str(&raw).unwrap();
         let catalog_ref = config["model_catalog_json"].as_str().unwrap();
         assert!(catalog_ref.ends_with("pinvou3-model-catalog.json"));
         // catalog 文件生成且字段满足 codex 0.146 的必填结构
@@ -427,10 +425,8 @@ mod tests {
         writer
             .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
             .unwrap();
-        let config: Value = fs::read_to_string(dir.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+        let config: Value =
+            toml::from_str(&fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
         assert!(config.get("model_catalog_json").is_none());
         assert!(!dir.join("pinvou3-model-catalog.json").exists());
         let _ = fs::remove_dir_all(&dir);
@@ -448,10 +444,8 @@ mod tests {
         writer
             .revert_to_official(Some(&target("pv-aaaaaaaaaaaa")))
             .unwrap();
-        let config: Value = fs::read_to_string(dir.join("config.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+        let config: Value =
+            toml::from_str(&fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
         // 顶层 model 与受管 provider 的 model 不同 → 保留
         assert_eq!(config["model"], "user-model".into());
         let _ = fs::remove_dir_all(&dir);

@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.8.0"
+version = "0.8.1"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -39,7 +39,7 @@ tauri-build = { version = "2.6.1", features = [] }
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8.23"
+toml = "1"
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
@@ -92,12 +92,13 @@ wait-timeout = "0.2"
 # 选定进程级 CryptoProvider(见上方 panic 根因)。只声明 aws-lc-rs;ring 由传递依赖启用。
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
-# Updater 用：sha256 校验；Windows OTA 包使用 MD5；产物卡封面读 .pptx 里的 thumbnail。
+# Updater 用：sha256 校验；产物卡封面读 .pptx 里的 thumbnail。
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
 # (见 src/platform/encoding.rs)。
 sha2 = "0.11"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-md5 = "0.7"
+# 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
+# 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
+zip = { version = "8", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
