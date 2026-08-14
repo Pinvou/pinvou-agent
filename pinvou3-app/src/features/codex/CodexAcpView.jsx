@@ -42,6 +42,7 @@ import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
+  WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
@@ -56,7 +57,11 @@ import {
 } from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
-import { isNearConversationBottom } from '../conversation/conversation-model.js';
+import {
+  collectToolWorkspaceResources,
+  isNearConversationBottom,
+  toolWorkspaceResources,
+} from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -388,30 +393,23 @@ function CommandExecutionItem({ item, now, copy }) {
   );
 }
 
-function GenericToolItem({ item, now, copy, cv }) {
+function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const duration = copy.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? copy.fileChange : (tool.kind || cv.codexTool);
+  const resources = toolWorkspaceResources(tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={tool.title || label}
         meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          {tool.locations && tool.locations.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {tool.locations.map((location, index) => (
-                <span key={index} className="px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono">
-                  {location.path || String(location)}
-                </span>
-              ))}
-            </div>
-          )}
           <StructuredValue label={copy.arguments} value={tool.rawInput} />
           <StructuredValue label={copy.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
         </div>
@@ -420,7 +418,7 @@ function GenericToolItem({ item, now, copy, cv }) {
   );
 }
 
-function ToolGroup({ group, now, copy, cv }) {
+function ToolGroup({ group, now, copy, cv, onOpenResource }) {
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
   const failed = items.some(item => terminalStatus(
@@ -430,6 +428,7 @@ function ToolGroup({ group, now, copy, cv }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const hasDetails = items.length > 0;
+  const resources = collectToolWorkspaceResources(items);
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
@@ -441,11 +440,12 @@ function ToolGroup({ group, now, copy, cv }) {
         <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && hasDetails && (
         <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
             ? <CommandExecutionItem key={item.id} item={item} now={now} copy={copy} />
-            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} />)}
+            : <GenericToolItem key={item.id} item={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />)}
         </div>
       )}
     </div>
@@ -822,9 +822,10 @@ function TurnItem({
   onRespondElicitation,
   responding,
   onOpenExternal,
+  onOpenResource,
 }) {
   if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} />;
+  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />;
   if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
   if (item.type === 'permission') {
     return (
@@ -844,9 +845,9 @@ function TurnItem({
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
     return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal}
+      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
   }
   return null;
 }
@@ -864,6 +865,7 @@ function Turn({
   onRespondElicitation,
   responding,
   onOpenExternal,
+  onOpenResource,
 }) {
   const waitingPermission = turn.permissions.some(permission => !permission.resolved);
   const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
@@ -906,7 +908,7 @@ function Turn({
               agentName={agentName} copy={copy} cv={cv}
               pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
               onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} onOpenExternal={onOpenExternal} />
+              responding={responding} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />
           ))}
           {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
             {assistantAvailable && (
@@ -2608,6 +2610,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+          onOpenResource={openWorkspaceResource}
         />
       );
     }
@@ -2661,6 +2664,18 @@ export function CodexAcpView({
       return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
     }
     return undefined;
+  }
+
+  async function openWorkspaceResource(resourcePath) {
+    if (!activeId || !resourcePath) return;
+    try {
+      await invoke('open_codex_workspace_resource', {
+        sessionId: activeId,
+        resourcePath: String(resourcePath),
+      });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function respond(toolCallId, optionId) {
@@ -2889,6 +2904,7 @@ export function CodexAcpView({
                         : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenResource={openWorkspaceResource}
                   />
                 )
               : (
@@ -2901,7 +2917,8 @@ export function CodexAcpView({
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
                     responding={responding}
-                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)} />
+                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenResource={openWorkspaceResource} />
                 ))}
           </div>
         </div>

@@ -313,6 +313,21 @@ pub async fn preview_codex_workspace_file(
 }
 
 #[tauri::command]
+pub async fn open_codex_workspace_resource(
+    session_id: String,
+    resource_path: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<(), String> {
+    let root = codex_workspace_root(Some(&session_id), None, &acp_pool)?;
+    let path = workspace::resolve_workspace_resource(&root, &resource_path)
+        .map_err(|error| format!("打开 Codex 工作区资源失败: {error:#}"))?;
+    crate::platform::os::open_target(
+        crate::platform::os::external_application_path(&path),
+        "Codex 工作区资源",
+    )
+}
+
+#[tauri::command]
 pub async fn get_codex_workspace_changes(
     session_id: String,
     acp_pool: State<'_, AcpPool>,

@@ -709,6 +709,7 @@ pub fn run() {
             commands::codex::list_codex_workspace,
             commands::codex::search_codex_workspace,
             commands::codex::preview_codex_workspace_file,
+            commands::codex::open_codex_workspace_resource,
             commands::codex::get_codex_workspace_changes,
             commands::codex::get_codex_workspace_diff,
             commands::codex::open_codex_workspace_file,

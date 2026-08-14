@@ -347,10 +347,30 @@ export function CodexWorkspacePanel({
     if (!sessionId || !refreshToken) return;
     const timer = window.setTimeout(() => {
       loadChanges();
-      if (visible && tab === 'files') loadDirectory('', { force: true });
+      if (visible && tab === 'files') {
+        const loadedDirectories = ['', ...expanded];
+        Promise.all(loadedDirectories.map(
+          path => loadDirectory(path, { force: true }),
+        ));
+      }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [refreshToken, sessionId]);
+  }, [refreshToken, sessionId, visible, tab, expanded]);
+
+  useEffect(() => {
+    if (!visible || !browsable) return undefined;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (tab === 'files') {
+        const loadedDirectories = ['', ...expanded];
+        Promise.all(loadedDirectories.map(
+          path => loadDirectory(path, { force: true }),
+        ));
+      }
+      if (sessionId && tab === 'changes') loadChanges();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [visible, browsable, tab, sessionId, browsePath, expanded]);
 
   useEffect(() => {
     if (!browsable || !query.trim()) {
