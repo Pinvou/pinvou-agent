@@ -7,7 +7,7 @@ name: mac-build
 # 与 pr-check.yml 的 rust-test 关系:
 # - rust-test 在 ubuntu 上跑完整 lib tests,是主线 gate。
 # - mac-build 在 macos-15 上只跑 cargo check + cargo test --lib + release-fast 冒烟,
-#   验证 macOS 平台目标零回归。真发版的 fat-LTO --release 产物由 scripts/release-macos.sh 产出。
+#   验证 macOS 平台目标零回归。真发版的 thin-LTO --release 产物由 scripts/release-macos.sh 产出。
 # - mac-build 不跑 relay e2e(那需要 remote-control-relay 的 node_modules,mac-build 不装
 #   该依赖)。因此不设 PINVOU_REQUIRE_REMOTE_E2E,让 e2e 测试在缺依赖时静默跳过而非 panic。
 #
@@ -168,8 +168,8 @@ jobs:
         run: cargo test --target aarch64-apple-darwin --lib -- --test-threads=1
 
       # 编译冒烟用 release-fast(Cargo.toml 里专为 CI 定义的轻量 profile:lto=false、
-      # codegen-units=16、inherits="release"):release 现带 lto="fat"+codegen-units=1,
-      # 全图 fat-LTO 冷编译极易吃满 50min 上限;release-fast 验证 release 路径代码可编译即可。
+      # codegen-units=16、inherits="release"):release 现带 lto="thin"+codegen-units=1,
+      # 全图 thin-LTO 冷编译极易吃满 50min 上限;release-fast 验证 release 路径代码可编译即可。
       # 下方 tauri bundle 冒烟也用同一 release-fast profile —— 同 profile 同 target dir,
       # bundle 的 aarch64 编译腿直接复用本步产物,不再两套 profile 重复编译全图。
       - name: Cargo build (release-fast 冒烟)
@@ -189,7 +189,7 @@ jobs:
         # `-- --profile release-fast`:tauri v2 CLI 的 build 无一等 --profile 选项,
         # 自定义 profile 经 `--` 后的 runner 尾随参数透传给 cargo(CLI 据此定位
         # target/<triple>/release-fast/ 产物);与上方冒烟同 profile,aarch64 腿复用其产物,
-        # x86_64 腿为唯一新增编译。真正发版的 fat-LTO 产物由 release-macos.sh 产出。
+        # x86_64 腿为唯一新增编译。真正发版的 thin-LTO 产物由 release-macos.sh 产出。
         run: node scripts/tauri/build.js build --target universal-apple-darwin -- --profile release-fast
 
       # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(plist/usage-key/bundle targets)。

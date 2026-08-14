@@ -105,7 +105,6 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust_code",
             "rust_dependencies",
             "release_contract",
-            "l1",
             "pet",
             "frontend",
             "relay",
