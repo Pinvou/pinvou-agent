@@ -76,11 +76,13 @@ fn embed_test_manifest() {
     )
     .expect("write test manifest xml");
     // 1 24 是 RT_MANIFEST 资源类型的标准写法;内容与 tauri-build 默认应用清单
-    // (windows-app-manifest.xml)的 Common-Controls 依赖一致。
+    // (windows-app-manifest.xml)的 Common-Controls 依赖一致。rc 语法会把
+    // 反斜杠当转义(\t → 制表符),Windows 绝对路径必须换成正斜杠。
     let rc = out_dir.join("pinvou3-test-manifest.rc");
+    let manifest_path = manifest.display().to_string().replace('\\', "/");
     std::fs::write(
         &rc,
-        format!("1 24 \"{}\"\n", manifest.display()),
+        format!("1 24 \"{manifest_path}\"\n"),
     )
     .expect("write test manifest rc");
     embed_resource::compile_for_tests(rc, embed_resource::NONE)
