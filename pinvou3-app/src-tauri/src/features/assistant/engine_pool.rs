@@ -653,6 +653,10 @@ impl EnginePool {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
         let scheduled_profile = self.store.scheduled_profile(session_id);
+        // 与命令层 chat.rs 的 is_scheduled 同口径(scheduled_profile 存在即算):
+        // scheduled 会话图片固定走 image_analyze 硬规则,即使带 interactive
+        // 模型覆盖也不例外,故 always 标记不得用更窄的 pins_scheduled_model。
+        bridge.image_analyze_always = scheduled_profile.is_some();
         let interactive_model_override = self.store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
             && (scheduled_unattended || interactive_model_override.is_none());

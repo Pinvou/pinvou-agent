@@ -85,12 +85,23 @@ fn apply_model_credential(
     Ok(model)
 }
 
+/// 探测用凭据解析的模型选择规则:指定了 id 却查不到(如前端即时生成、
+/// 尚未落盘的新模型)时**不回退** active_model——那会把另一个模型的凭据
+/// 发往本次探测的 base_url(保存时自动探测即此场景,向新增第三方端点
+/// 静默外发激活模型 key)。仅显式未指定 id 时才回退当前激活模型。
+fn saved_model_for_probe<'a>(
+    prefs: &'a UserPrefs,
+    model_id: Option<&str>,
+) -> Option<&'a SavedModel> {
+    match model_id {
+        Some(id) => prefs.model_by_id(id),
+        None => prefs.active_model(),
+    }
+}
+
 fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
     let prefs = UserPrefs::load();
-    let model = model_id
-        .and_then(|id| prefs.model_by_id(id))
-        .or_else(|| prefs.active_model());
-    let Some(model) = model else {
+    let Some(model) = saved_model_for_probe(&prefs, model_id) else {
         return Ok(None);
     };
     let Some(reference) = &model.credential_ref else {
@@ -1166,6 +1177,14 @@ fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTest
     image_capability_result("error", false, summary, None)
 }
 
+/// 识图探测的 URL 基准:剥掉用户 base_url 末尾的 `/chat/completions`
+/// (及裸 `/completions`)后缀,后续拼接(OpenAI chat/completions、Anthropic
+/// /v1/messages)共用同一基准——否则含后缀的 base_url 在 Anthropic 分支
+/// 会拼出 `.../chat/completions/v1/messages` 这类 404 路径。
+fn image_probe_base_url(base_url: &str) -> String {
+    crate::platform::prefs::model::strip_chat_completions_suffix(base_url)
+}
+
 /// 识图探测核心(设计 §7.3):POST {base_url}/chat/completions 携带内置纯色 PNG,
 /// 返回 `ImageCapabilityTestResult`(不发 Result 错误——连接失败等也收敛为结果)。
 /// 入参与凭据解析和 test_model_connection 一致:表单新填 key 优先,否则读已保存凭据。
@@ -1186,11 +1205,11 @@ pub async fn run_image_capability_probe(
         );
     }
     // 复用 strip_chat_completions_suffix:用户 base_url 已含 /v1/chat/completions 时
-    // 不再拼出重复路径(prefs/model.rs 同一口径)。
-    let url = format!(
-        "{}/chat/completions",
-        crate::platform::prefs::model::strip_chat_completions_suffix(base_url)
-    );
+    // 不再拼出重复路径(prefs/model.rs 同一口径)。strip 后的基准同时用于
+    // 协议判定与 Anthropic Messages URL 拼接(原始 base_url 若保留
+    // /chat/completions 后缀,anthropic_messages_url 会拼出 404 路径)。
+    let base_url_stripped = image_probe_base_url(base_url);
+    let url = format!("{base_url_stripped}/chat/completions");
     let parsed_url = match reqwest::Url::parse(&url) {
         Ok(url) => url,
         Err(e) => {
@@ -1231,7 +1250,7 @@ pub async fn run_image_capability_probe(
         provided_key
     };
     if is_anthropic {
-        let messages_url = crate::core::model_endpoint::anthropic_messages_url(base_url);
+        let messages_url = crate::core::model_endpoint::anthropic_messages_url(&base_url_stripped);
         let mut req = client
             .post(messages_url)
             .json(&image_capability_test_payload_anthropic(&model));
@@ -1427,6 +1446,24 @@ use super::prelude::*;
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    #[test]
+    fn image_probe_base_url_feeds_anthropic_messages_url_without_suffix() {
+        // 含 /chat/completions 后缀的 Anthropic base_url:协议判定与 Messages
+        // URL 拼接都必须基于 strip 后的基准,否则拼出 404 路径误判 error。
+        let stripped = image_probe_base_url("https://api.anthropic.com/v1/chat/completions");
+        assert_eq!(stripped, "https://api.anthropic.com/v1");
+        assert_eq!(
+            crate::core::model_endpoint::anthropic_messages_url(&stripped),
+            "https://api.anthropic.com/v1/messages"
+        );
+        // 官方 preset 形态(无后缀)不受影响。
+        let plain = image_probe_base_url("https://api.anthropic.com/v1");
+        assert_eq!(
+            crate::core::model_endpoint::anthropic_messages_url(&plain),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
 
     #[test]
     fn image_capability_payload_omits_temperature_and_embeds_data_url() {
@@ -1802,6 +1839,50 @@ mod tests {
         let unverified = classify_image_reply("A hundred squares", 200);
         assert_eq!(unverified.status, "unverified");
         assert!(unverified.summary.contains("未能正确识别图像"));
+    }
+
+    #[test]
+    fn saved_model_for_probe_does_not_fall_back_to_active_model_for_unknown_id() {
+        // 指定了未落盘的 id(前端即时生成的新模型)时不得回退激活模型:
+        // 否则保存时自动探测会把激活模型的 key 发往新模型的 base_url。
+        let mut prefs = UserPrefs::default();
+        prefs.migrate_models();
+        let active = SavedModel {
+            id: "saved-active".to_string(),
+            name: "active".to_string(),
+            preset: Default::default(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "active-model".to_string(),
+            base_url: "https://active.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: Default::default(),
+            has_secret: false,
+            credential_action: None,
+        };
+        prefs.advanced.saved_models = vec![active];
+        prefs.advanced.active_model_id = Some("saved-active".to_string());
+        assert_eq!(
+            saved_model_for_probe(&prefs, Some("m_not_yet_persisted")).map(|m| m.id.as_str()),
+            None,
+            "未知 id 不得回退激活模型"
+        );
+        assert_eq!(
+            saved_model_for_probe(&prefs, Some("saved-active")).map(|m| m.id.as_str()),
+            Some("saved-active")
+        );
+        assert_eq!(
+            saved_model_for_probe(&prefs, None).map(|m| m.id.as_str()),
+            Some("saved-active"),
+            "未指定 id 时保留激活模型回退(显式测试连接的既有语义)"
+        );
     }
 
     #[test]

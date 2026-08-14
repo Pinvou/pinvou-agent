@@ -1223,9 +1223,11 @@ async function modalWidth(page, headingText) {
   };
   // 明确不支持:后端不写盘,弹窗保持 + 三选一;直接保存落「自动处理」。
   await setCapabilityAndProbe('auto', { status: 'unsupported', applied_override: null, summary: 'this model does not support image input', http_status: 400 });
+  // 快照已保存模型:探测 unsupported 时后端跳过写盘,mock 同口径,保存后应逐字节不变。
+  const modelsBeforeDecision = await page.evaluate(() => JSON.stringify(window.__SETTINGS_TEST__.models()));
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
-  const decisionShown = await page.evaluate(() => {
+  const decisionShown = await page.evaluate(before => {
     const root = document.querySelector('[data-testid="model-form-dialog"]');
     const decision = root && root.querySelector('[data-testid="image-probe-decision"]');
     const decisionText = decision ? (decision.textContent || '') : '';
@@ -1240,11 +1242,11 @@ async function modalWidth(page, headingText) {
       saveAutoBtn: !!root.querySelector('[data-testid="image-probe-save-auto"]'),
       probed: !!(saveCall && saveCall.args && saveCall.args.probeImageCapability === true),
       savedWithAuto: !!(saveCall && saveCall.args && saveCall.args.model.image_capability_override === 'auto'),
-      // 后端 unsupported 不写盘:models 里不得出现本次保存的 override/名称变更
+      // 后端 unsupported 不写盘:已保存模型列表与保存前快照完全一致
       // (mock 在 unsupported 分支不落 models,与后端 save_model 跳过写盘同口径)。
-      modelListUnchanged: window.__SETTINGS_TEST__.models().every(model => model.image_capability_override !== 'auto' || model.name !== '不支持检测临时名'),
+      modelListUnchanged: JSON.stringify(window.__SETTINGS_TEST__.models()) === before,
     };
-  });
+  }, modelsBeforeDecision);
   rec('⑦.img.12 保存时检测明确不支持:弹窗保持、文案不重复并给出三选一决策',
     decisionShown.dialogOpen && decisionShown.decisionShown && decisionShown.decisionHasDetail
       && decisionShown.noDuplicatedPrefix
@@ -1289,19 +1291,29 @@ async function modalWidth(page, headingText) {
   const echoAuto2 = await echoOverride();
   rec('⑦.img.14b 检测回填持久化:重开表单显示「自动处理」', echoAuto2.includes('自动处理'), echoAuto2);
 
-  // 明确不支持时后端不写盘:探测后「取消」放弃 → 模型列表保持原状,
-  // 下次打开表单仍显示原档位(而非被探测结果污染)。
+  // 未决策即取消不写盘:先把已保存档位固化为「支持图片」(enabled,非 auto 档
+  // 保存不探测、直接落盘),再改 auto 档探测「未能正确识别」→ 后端不落盘、
+  // 弹窗保持 → 点「取消」放弃 → 重开表单仍显示基线「支持图片」(而非被探测
+  // 结果污染成别的档位)。注:必须先固化基线,否则上一轮(⑦.img.14)已把
+  // 已保存值落成「自动处理」,取消后回显「自动处理」与「不写盘」不可区分。
+  await clickRowAction(page, 'deepseek-v4-pro', '编辑');
+  await sleep(300);
+  await page.click('[data-testid="image-capability-toggle"]');
+  await sleep(200);
+  await page.click('[data-testid="image-capability-option-enabled"]');
+  await sleep(200);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setImageProbeResponse(null));
+  await page.click('[data-testid="model-form-save"]');
+  await sleep(400);
   await setCapabilityAndProbe('auto', { status: 'unverified', applied_override: null, summary: '未能正确识别图像，原因未知（模型回复：unknown）', http_status: 200 });
   await page.click('[data-testid="model-form-save"]');
   await sleep(400);
-  await clickExact(page, '取消');
+  await page.click('[data-testid="model-form-cancel"]');
   await sleep(200);
   const echoAfterAbort = await echoOverride();
-  rec('⑦.img.12d 明确不支持未决策即取消:不写盘,重开表单仍显示「保存时检测」',
-    echoAfterAbort.includes('保存时检测') && !echoAfterAbort.includes('自动处理'),
+  rec('⑦.img.12d 未决策即取消不写盘:重开表单仍显示基线「支持图片」',
+    echoAfterAbort.includes('支持图片') && !echoAfterAbort.includes('保存时检测'),
     echoAfterAbort);
-  await clickExact(page, '取消');
-  await sleep(200);
 
   // 保存失败(连接/写盘错误):弹窗保持 + 行内错误提示,表单输入不丢弃;
   // 修正后重试成功正常关闭(不再依赖不存在的"调用链处理")。
