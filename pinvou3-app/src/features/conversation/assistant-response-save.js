@@ -1,5 +1,5 @@
-import { isWeb } from '../shared/platform.js';
-import { invokeTauri } from './tauri/client.js';
+import { isWeb } from '../../shared/platform.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 
 function downloadInBrowser({ content, filename, mimeType }) {
   if (typeof document === 'undefined' || typeof Blob === 'undefined' || !globalThis.URL?.createObjectURL) {

@@ -42,6 +42,11 @@ assert.match(htmlExport.content, /^<!doctype html>/);
 assert.match(htmlExport.content, /<html lang="en">/);
 assert.match(htmlExport.content, /<title>Response &lt;unsafe&gt;<\/title>/);
 assert.doesNotMatch(htmlExport.content, /<script>/i, 'HTML export must not preserve executable response markup');
+assert.match(
+  htmlExport.content,
+  /Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"/,
+  'HTML export CSP must block remote requests (tracking pixels) — the document must stay self-contained',
+);
 assert.throws(
   () => buildAssistantResponseExport('answer', 'pdf'),
   /Unsupported assistant export format/,
@@ -375,10 +380,13 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiConversation.copyReplySuccess, `${language}.uiConversation.copyReplySuccess must exist`);
   assert.ok(dict[language].uiConversation.copyReplyFailed, `${language}.uiConversation.copyReplyFailed must exist`);
   for (const key of [
-    'exportReply', 'exportReplyTitle', 'exportMarkdown', 'exportHtml', 'exportSuccess', 'exportFailed',
-    'shareReply', 'shareReplyTitle', 'shareSystem', 'shareApps', 'shareSuccess', 'shareCopied', 'shareFailed', 'shareUnavailable',
+    'exportReply', 'exportReplyTitle', 'exportMarkdown', 'exportMarkdownHint', 'exportHtml', 'exportHtmlHint', 'exportSuccess', 'exportFailed',
+    'shareReply', 'shareReplyTitle', 'shareSystem', 'shareSystemHint', 'shareApps', 'shareSuccess', 'shareFailed', 'shareUnavailable',
   ]) {
     assert.ok(dict[language].uiConversation[key], `${language}.uiConversation.${key} must exist`);
+  }
+  for (const fn of ['shareCopiedOpen', 'shareCopiedWeb']) {
+    assert.equal(typeof dict[language].uiConversation[fn], 'function', `${language}.uiConversation.${fn} must be a function`);
   }
   for (const target of ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq']) {
     assert.ok(dict[language].uiConversation.shareTargets[target], `${language} share target ${target} must exist`);
@@ -391,7 +399,7 @@ const codexView = source('features/codex/CodexAcpView.jsx');
 const actions = source('features/conversation/AssistantMessageActions.jsx');
 const clipboard = source('features/conversation/message-clipboard.js');
 const exportLogic = source('features/conversation/assistant-response-export.js');
-const platformActions = source('platform/assistant-response.js');
+const saveActions = source('features/conversation/assistant-response-save.js');
 const nativeActions = readFileSync(new URL('../src-tauri/src/app/commands/assistant_response.rs', import.meta.url), 'utf8');
 const nativeHandler = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 assert.match(chatView, /showAssistantActions && assistantCopyAvailable && <AssistantMessageFooter>[\s\S]*?<AssistantMessageActions[\s\S]*?resolveText=\{\(\) => assistantItemCopyText/);
@@ -412,9 +420,9 @@ for (const target of ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq']) {
   assert.match(actions, new RegExp(`assistant-share-\\$\\{target\\}|${target}`));
 }
 assert.match(exportLogic, /renderMarkdown\(normalized\)/);
-assert.match(platformActions, /invokeTauri\('export_assistant_response'/);
-assert.match(platformActions, /navigator\?\.share/);
-assert.match(platformActions, /invokeTauri\('open_assistant_share_target'/);
+assert.match(saveActions, /invokeTauri\('export_assistant_response'/);
+assert.match(saveActions, /navigator\?\.share/);
+assert.match(saveActions, /invokeTauri\('open_assistant_share_target'/);
 assert.match(nativeActions, /MAX_EXPORT_BYTES/);
 assert.match(nativeActions, /share_target_uri\(&target\)/);
 assert.match(nativeHandler, /commands::assistant_response::export_assistant_response/);

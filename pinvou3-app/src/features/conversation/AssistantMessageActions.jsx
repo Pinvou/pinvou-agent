@@ -15,7 +15,7 @@ import {
   openAssistantShareTarget,
   saveAssistantResponseFile,
   shareAssistantResponseWithSystem,
-} from '../../platform/assistant-response.js';
+} from './assistant-response-save.js';
 import {
   assistantExportFilename,
   buildAssistantResponseExport,
