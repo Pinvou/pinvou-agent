@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Check,
@@ -45,10 +45,22 @@ export function AssistantMessageFooter({ children }) {
 }
 
 export function AssistantMessageActions({ text, resolveText, copy }) {
+  const instanceId = useId().replace(/:/g, '');
   const [copyStatus, setCopyStatus] = useState('idle');
   const [menu, setMenu] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const resetTimerRef = useRef(null);
+  const exportTriggerRef = useRef(null);
+  const shareTriggerRef = useRef(null);
+  const menuItemsRef = useRef([]);
+  const triggerIds = {
+    export: `assistant-message-export-trigger-${instanceId}`,
+    share: `assistant-message-share-trigger-${instanceId}`,
+  };
+  const menuIds = {
+    export: `assistant-message-export-menu-${instanceId}`,
+    share: `assistant-message-share-menu-${instanceId}`,
+  };
   const copyLabel = copyStatus === 'copied'
     ? copy.copyReplySuccess
     : copyStatus === 'failed'
@@ -72,24 +84,50 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
 
   useEffect(() => clearResetTimer, [clearResetTimer]);
 
+  const restoreTriggerFocus = useCallback(kind => {
+    window.requestAnimationFrame(() => {
+      const trigger = kind === 'export' ? exportTriggerRef.current : shareTriggerRef.current;
+      trigger?.focus({ preventScroll: true });
+    });
+  }, []);
+
+  const closeMenu = useCallback((kind, restoreFocus = false) => {
+    setMenu(current => current?.kind === kind ? null : current);
+    if (restoreFocus) restoreTriggerFocus(kind);
+  }, [restoreTriggerFocus]);
+
+  useEffect(() => {
+    if (!menu) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      menuItemsRef.current[0]?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [menu]);
+
   useEffect(() => {
     if (!menu) return undefined;
     const close = event => {
       if (event?.target?.closest?.('[data-assistant-message-action-menu]')) return;
-      setMenu(null);
+      if (exportTriggerRef.current?.contains(event?.target)) return;
+      if (shareTriggerRef.current?.contains(event?.target)) return;
+      closeMenu(menu.kind);
     };
-    const onKey = event => { if (event.key === 'Escape') setMenu(null); };
+    const onKey = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeMenu(menu.kind, true);
+    };
     document.addEventListener('mousedown', close, true);
-    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('keydown', onKey);
     window.addEventListener('resize', close);
     window.addEventListener('scroll', close, true);
     return () => {
       document.removeEventListener('mousedown', close, true);
-      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('keydown', onKey);
       window.removeEventListener('resize', close);
       window.removeEventListener('scroll', close, true);
     };
-  }, [menu]);
+  }, [closeMenu, menu]);
 
   const responseText = () => normalizeAssistantMessageText(
     typeof resolveText === 'function' ? resolveText() : text,
@@ -123,8 +161,32 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       : { kind, ...position });
   };
 
+  const handleMenuKeyDown = event => {
+    if (event.key === 'Tab') {
+      closeMenu(menu.kind);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu(menu.kind, true);
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = menuItemsRef.current.filter(item => item && !item.disabled);
+    if (!items.length) return;
+    event.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement);
+    let nextIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else if (event.key === 'ArrowDown') nextIndex = (activeIndex + 1) % items.length;
+    else nextIndex = (activeIndex <= 0 ? items.length : activeIndex) - 1;
+    items[nextIndex].focus({ preventScroll: true });
+  };
+
   const handleExport = async format => {
-    setMenu(null);
+    closeMenu('export', true);
     try {
       const generated = buildAssistantResponseExport(responseText(), format, {
         title: copy.exportReplyTitle,
@@ -144,7 +206,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   const copyForShare = async () => copyClipboardText(responseText());
 
   const handleSystemShare = async () => {
-    setMenu(null);
+    closeMenu('share', true);
     try {
       const value = responseText();
       const result = await shareAssistantResponseWithSystem({
@@ -165,7 +227,7 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
   };
 
   const handleAppShare = async target => {
-    setMenu(null);
+    closeMenu('share', true);
     const appLabel = copy.shareTargets[target];
     try {
       const copied = await copyForShare();
@@ -206,13 +268,17 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
           {copyStatus !== 'idle' && <span aria-live="polite">{copyLabel}</span>}
         </button>
         <button
+          ref={exportTriggerRef}
+          id={triggerIds.export}
           type="button"
+          data-assistant-message-action-trigger
           data-testid="assistant-message-export"
           onClick={event => openMenu('export', event)}
           title={copy.exportReplyTitle}
           aria-label={copy.exportReplyTitle}
           aria-haspopup="menu"
           aria-expanded={menu?.kind === 'export'}
+          aria-controls={menuIds.export}
           className={actionClass}
         >
           <Download size={14} />
@@ -220,13 +286,17 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
           <ChevronDown size={11} className={menu?.kind === 'export' ? 'rotate-180' : ''} />
         </button>
         <button
+          ref={shareTriggerRef}
+          id={triggerIds.share}
           type="button"
+          data-assistant-message-action-trigger
           data-testid="assistant-message-share"
           onClick={event => openMenu('share', event)}
           title={copy.shareReplyTitle}
           aria-label={copy.shareReplyTitle}
           aria-haspopup="menu"
           aria-expanded={menu?.kind === 'share'}
+          aria-controls={menuIds.share}
           className={actionClass}
         >
           <Share2 size={14} />
@@ -245,39 +315,44 @@ export function AssistantMessageActions({ text, resolveText, copy }) {
       </div>
       {menu && createPortal((
         <div
+          id={menuIds[menu.kind]}
           role="menu"
+          aria-labelledby={triggerIds[menu.kind]}
           data-assistant-message-action-menu
           data-testid={`assistant-message-${menu.kind}-menu`}
           className={menuClass}
           style={{ position: 'fixed', zIndex: 9999, left: menu.left, top: menu.top, width: menu.width }}
           onMouseDown={event => event.stopPropagation()}
+          onKeyDown={handleMenuKeyDown}
         >
           {menu.kind === 'export' ? (
             <>
-              <button type="button" role="menuitem" data-testid="assistant-export-md" className={menuItemClass} onClick={() => handleExport('md')}>
+              <button ref={element => { menuItemsRef.current[0] = element; }} type="button" role="menuitem" aria-label={copy.exportMarkdown} data-testid="assistant-export-md" className={menuItemClass} onClick={() => handleExport('md')}>
                 <FileText size={16} className="shrink-0" />
                 <span className="min-w-0 flex-1"><span className="block font-medium">{copy.exportMarkdown}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.exportMarkdownHint}</span></span>
                 <Check size={14} className="shrink-0 text-[#0B57D0] dark:text-[#8AB4F8]" />
               </button>
-              <button type="button" role="menuitem" data-testid="assistant-export-html" className={menuItemClass} onClick={() => handleExport('html')}>
+              <button ref={element => { menuItemsRef.current[1] = element; }} type="button" role="menuitem" aria-label={copy.exportHtml} data-testid="assistant-export-html" className={menuItemClass} onClick={() => handleExport('html')}>
                 <Code size={16} className="shrink-0" />
                 <span className="min-w-0"><span className="block font-medium">{copy.exportHtml}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.exportHtmlHint}</span></span>
               </button>
             </>
           ) : (
             <>
-              <button type="button" role="menuitem" data-testid="assistant-share-system" className={menuItemClass} onClick={handleSystemShare}>
+              <button ref={element => { menuItemsRef.current[0] = element; }} type="button" role="menuitem" aria-label={copy.shareSystem} data-testid="assistant-share-system" className={menuItemClass} onClick={handleSystemShare}>
                 <Share2 size={16} className="shrink-0" />
                 <span className="min-w-0"><span className="block font-medium">{copy.shareSystem}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.shareSystemHint}</span></span>
               </button>
-              <div className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
-              <div className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
-              {SHARE_TARGETS.map(target => (
-                <button key={target} type="button" role="menuitem" data-testid={`assistant-share-${target}`} className={`${menuItemClass} !min-h-9 !py-1.5`} onClick={() => handleAppShare(target)}>
-                  <MessageCircle size={15} className="shrink-0" />
-                  <span>{copy.shareTargets[target]}</span>
-                </button>
-              ))}
+              <div role="separator" className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
+              <div id={`${menuIds.share}-apps-label`} role="presentation" className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
+              <div role="group" aria-labelledby={`${menuIds.share}-apps-label`}>
+                {SHARE_TARGETS.map((target, index) => (
+                  <button ref={element => { menuItemsRef.current[index + 1] = element; }} key={target} type="button" role="menuitem" aria-label={copy.shareTargets[target]} data-testid={`assistant-share-${target}`} className={`${menuItemClass} !min-h-9 !py-1.5`} onClick={() => handleAppShare(target)}>
+                    <MessageCircle size={15} className="shrink-0" />
+                    <span>{copy.shareTargets[target]}</span>
+                  </button>
+                ))}
+              </div>
             </>
           )}
         </div>

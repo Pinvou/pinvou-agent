@@ -1319,17 +1319,63 @@ async function expand(page) {
     const markdownOption = exportMenu?.querySelector('[data-testid="assistant-export-md"]');
     const htmlOption = exportMenu?.querySelector('[data-testid="assistant-export-html"]');
     const markdownDefault = (markdownOption?.querySelectorAll('svg').length || 0) === 2;
-    htmlOption?.click();
+    const exportAriaLinked = exportButton.getAttribute('aria-controls') === exportMenu?.id &&
+      exportMenu?.getAttribute('aria-labelledby') === exportButton.id &&
+      exportButton.getAttribute('aria-haspopup') === 'menu' &&
+      exportButton.getAttribute('aria-expanded') === 'true';
+    const exportInitialFocus = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const exportArrowDown = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const exportArrowWrap = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const exportArrowUpWrap = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    const exportHome = document.activeElement === markdownOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const exportEnd = document.activeElement === htmlOption;
+    exportMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportEscapeRestored = !document.querySelector('[data-testid="assistant-message-export-menu"]') &&
+      document.activeElement === exportButton && exportButton.getAttribute('aria-expanded') === 'false';
+
+    exportButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    document.querySelector('[data-testid="assistant-export-html"]')?.click();
     await new Promise(resolve => setTimeout(resolve, 30));
     const exportInvoke = [...window.__TAURI_INVOKES__]
       .reverse()
       .find(call => call.cmd === 'export_assistant_response');
+    const exportSelectionRestored = document.activeElement === exportButton;
 
     shareButton.click();
     await new Promise(resolve => setTimeout(resolve, 30));
-    const shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
+    let shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     const targets = ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq'];
     const allTargets = targets.every(target => shareMenu?.querySelector(`[data-testid="assistant-share-${target}"]`));
+    const systemShare = shareMenu?.querySelector('[data-testid="assistant-share-system"]');
+    const qqShare = shareMenu?.querySelector('[data-testid="assistant-share-qq"]');
+    const shareAriaLinked = shareButton.getAttribute('aria-controls') === shareMenu?.id &&
+      shareMenu?.getAttribute('aria-labelledby') === shareButton.id &&
+      shareButton.getAttribute('aria-expanded') === 'true';
+    const shareInitialFocus = document.activeElement === systemShare;
+    const shareStructure = shareMenu?.querySelector('[role="separator"]') &&
+      shareMenu?.querySelector('[role="group"][aria-labelledby]') &&
+      [...shareMenu.querySelectorAll('[role="menuitem"]')].every(item => item.getAttribute('aria-label'));
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const shareEnd = document.activeElement === qqShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const shareArrowWrap = document.activeElement === systemShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const shareArrowUpWrap = document.activeElement === qqShare;
+    shareMenu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const tabClosedWithoutRestore = !document.querySelector('[data-testid="assistant-message-share-menu"]') &&
+      document.activeElement !== shareButton;
+
+    shareButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
     shareMenu?.querySelector('[data-testid="assistant-share-feishu"]')?.click();
     await new Promise(resolve => setTimeout(resolve, 30));
     const shareInvoke = [...window.__TAURI_INVOKES__]
@@ -1339,21 +1385,46 @@ async function expand(page) {
       found: true,
       exportMenu: Boolean(exportMenu),
       markdownDefault,
+      exportAriaLinked,
+      exportInitialFocus,
+      exportArrowDown,
+      exportArrowWrap,
+      exportArrowUpWrap,
+      exportHome,
+      exportEnd,
+      exportEscapeRestored,
+      exportSelectionRestored,
       exportFormat: exportInvoke?.args?.format || '',
       exportName: exportInvoke?.args?.defaultName || '',
       htmlStandalone: exportInvoke?.args?.content?.startsWith('<!doctype html>') || false,
       htmlSafe: !/<script>/i.test(exportInvoke?.args?.content || ''),
       shareMenu: Boolean(shareMenu),
       allTargets,
+      shareAriaLinked,
+      shareInitialFocus,
+      shareStructure: Boolean(shareStructure),
+      shareEnd,
+      shareArrowWrap,
+      shareArrowUpWrap,
+      tabClosedWithoutRestore,
+      shareSelectionRestored: document.activeElement === shareButton,
       shareTarget: shareInvoke?.args?.target || '',
       shareFeedback: action.innerText,
     };
   });
   rec('③a-4 回复可默认导出 Markdown、选择 HTML，并复制后打开常见通信应用',
     assistantExportShare.found && assistantExportShare.exportMenu && assistantExportShare.markdownDefault &&
+    assistantExportShare.exportAriaLinked && assistantExportShare.exportInitialFocus &&
+    assistantExportShare.exportArrowDown && assistantExportShare.exportArrowWrap &&
+    assistantExportShare.exportArrowUpWrap && assistantExportShare.exportHome && assistantExportShare.exportEnd &&
+    assistantExportShare.exportEscapeRestored && assistantExportShare.exportSelectionRestored &&
     assistantExportShare.exportFormat === 'html' && assistantExportShare.exportName.endsWith('.html') &&
     assistantExportShare.htmlStandalone && assistantExportShare.htmlSafe && assistantExportShare.shareMenu &&
-    assistantExportShare.allTargets && assistantExportShare.shareTarget === 'feishu' &&
+    assistantExportShare.allTargets && assistantExportShare.shareAriaLinked &&
+    assistantExportShare.shareInitialFocus && assistantExportShare.shareStructure &&
+    assistantExportShare.shareEnd && assistantExportShare.shareArrowWrap && assistantExportShare.shareArrowUpWrap &&
+    assistantExportShare.tabClosedWithoutRestore && assistantExportShare.shareSelectionRestored &&
+    assistantExportShare.shareTarget === 'feishu' &&
     assistantExportShare.shareFeedback.includes('请粘贴发送'),
     JSON.stringify(assistantExportShare));
 
