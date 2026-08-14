@@ -452,24 +452,11 @@
     /* 挂件(lanyard) 入场 + 悬挂摆动 */
     @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
     @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
-    /* 🏛️ 奏折卷轴:纸面从中线向上下展开(clip-path),两根轴杆从中间滚向边缘;收卷反向 */
-    @keyframes memorial-fade { from { opacity: 0 } to { opacity: 1 } }
     /* AI 造卡 banner 头像浮动 */
     @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
     @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
     @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
     @media (max-width: 760px){ .bnr-avatars { display: none; } }
-    @keyframes memorial-paper-open { from { clip-path: inset(50% 0 50% 0) } to { clip-path: inset(0 0 0 0) } }
-    @keyframes memorial-paper-close { from { clip-path: inset(0 0 0 0) } to { clip-path: inset(50% 0 50% 0) } }
-    @keyframes memorial-roller-top-open { from { top: calc(50% - 9px) } to { top: -9px } }
-    @keyframes memorial-roller-top-close { from { top: -9px } to { top: calc(50% - 9px) } }
-    @keyframes memorial-roller-bottom-open { from { bottom: calc(50% - 9px) } to { bottom: -9px } }
-    @keyframes memorial-roller-bottom-close { from { bottom: -9px } to { bottom: calc(50% - 9px) } }
-    @keyframes memorial-stamp { from { opacity: 0; transform: rotate(-14deg) scale(1.8) } 70% { opacity: .9; transform: rotate(-14deg) scale(.94) } to { opacity: .82; transform: rotate(-14deg) scale(1) } }
-    /* 御赐宝箱:开箱金光迸出 + 成品文档逐件弹出 */
-    @keyframes chest-glow { from { opacity: 0; transform: translateX(-50%) scale(.4) } to { opacity: 1; transform: translateX(-50%) scale(1) } }
-    @keyframes chest-item-pop { from { opacity: 0; transform: translateY(16px) scale(.85) } to { opacity: 1; transform: none } }
-    @keyframes chest-open-bounce { 0% { transform: scale(1) } 35% { transform: scale(1.07) rotate(-1.5deg) } 70% { transform: scale(.98) rotate(1deg) } 100% { transform: scale(1.03) } }
     .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
     .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */

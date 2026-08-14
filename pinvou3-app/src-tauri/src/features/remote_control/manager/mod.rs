@@ -3166,15 +3166,9 @@ mod tests {
             "read_artifact_image_b64",
             "read_artifact_thumbnail",
             "render_artifact_visual",
-            "list_deliverables",
-            "get_role_prompt",
-            "get_role_outputs",
-            "get_role_logs",
-            "get_gate_report",
             "update_settings",
             "create_session",
             "load_session",
-            "start_skill_session",
             "web_access_bridge_ready",
             "web_access_rpc_begin",
             "web_access_rpc_respond",
@@ -3191,11 +3185,6 @@ mod tests {
             "web_access_read_artifact_image_b64",
             "web_access_read_artifact_thumbnail",
             "web_access_render_artifact_visual",
-            "web_access_list_deliverables",
-            "web_access_get_role_prompt",
-            "web_access_get_role_outputs",
-            "web_access_get_role_logs",
-            "web_access_get_gate_report",
             "web_access_update_settings",
             "web_access_create_session",
             "web_access_create_session_and_chat",
@@ -3206,7 +3195,6 @@ mod tests {
             "web_access_discard_attachment",
             "web_access_read_conversation_attachment_chunk",
             "web_access_load_session_chunk",
-            "web_access_start_skill_session",
         ] {
             assert!(
                 policy.commands.contains(command),
@@ -3458,7 +3446,7 @@ mod tests {
     #[test]
     fn rpc_command_and_error_envelopes_are_bounded() {
         assert!(validate_rpc_command("web_access_chat").is_ok());
-        assert!(validate_rpc_command("workflow:resume-2").is_ok());
+        assert!(validate_rpc_command("session:resume-2").is_ok());
         assert!(validate_rpc_command("").is_err());
         assert!(validate_rpc_command(&"x".repeat(MAX_RPC_COMMAND_BYTES + 1)).is_err());
         assert!(validate_rpc_command("chat/../../native").is_err());
@@ -3478,9 +3466,7 @@ mod tests {
             "edit_last_turn",
             "get_session_pinvou_scene_events",
             "get_session_timeline",
-            "kick_workflow",
             "save_session_pinvou_scene_events",
-            "stop_workflow",
             "web_access_chat",
         ] {
             assert_eq!(
@@ -3489,19 +3475,14 @@ mod tests {
                 "{command} must require the browser-selected Session"
             );
         }
-        assert_eq!(
-            web_session_scope("start_workflow"),
-            Some(WebSessionScope::Optional("sessionId"))
-        );
     }
 
     #[test]
-    fn workflow_sessions_reject_every_existing_web_session_command() {
+    fn session_scoped_commands_use_the_central_validator() {
         let scoped_commands = [
             ("get_session_timeline", "sessionId"),
             ("web_access_load_session_chunk", "id"),
             ("web_access_artifact_info", "sessionId"),
-            ("web_access_list_deliverables", "sessionId"),
             ("web_access_read_artifact_chunk", "sessionId"),
             ("web_access_read_artifact_image_b64", "sessionId"),
             ("web_access_read_artifact_text", "sessionId"),

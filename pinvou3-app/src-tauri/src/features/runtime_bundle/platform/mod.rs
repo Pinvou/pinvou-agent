@@ -13,10 +13,6 @@ use crate::platform::paths;
 mod extraction;
 pub use extraction::Pinvou3Bundle;
 
-/// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
-static SANSHENG_LIUBU_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/workflow/sansheng-liubu");
-
 /// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
 /// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
 /// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
@@ -77,9 +73,8 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.6: 加 present_artifact 内置 MCP server(成品卡):mcp.json 注册 + server 脚本解包
 /// 0.7: 下线 Pinvou Review v2(EXIT GATE 评审被推翻,等新方案):两个 review skill
 ///      不再解包,既有装机的残留目录启动时清理
-/// 0.8: 上线三省六部卡片流工作流(sansheng-liubu):include_dir 内嵌 + 启动解包
 /// 注:「视觉设计」内置 skill 在 VERSION gate 之前由 write_builtin_skills 每启动防御性写出,
-///     不依赖版本号 bump(同 write_workflows / write_mcp_servers）。
+///     不依赖版本号 bump(同 write_mcp_servers）。
 /// 0.10: 接入飞书官方域技能(lark-shared + calendar/doc/drive/sheets/im/task/wiki/base):
 ///       include_dir 内嵌 + 启动解包到 bundle_skills_dir,供 SkillRegistry 发现
 /// 0.11: Windows 敏感路径硬拦截新增 PowerShell hook,并补充 Credential Manager 相关拦截规则
@@ -91,12 +86,7 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
 /// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
 /// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
-pub const BUNDLE_VERSION: &str = concat!(
-    "0.20-",
-    env!("BUNDLE_INSTRUCTIONS_HASH"),
-    "-",
-    env!("BUNDLE_WORKFLOW_HASH_SANSHENG"),
-);
+pub const BUNDLE_VERSION: &str = concat!("0.21-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -485,20 +475,6 @@ mod tests {
                 "{retired} 已下线,不应再解包"
             );
         }
-        // 三省六部工作流应解包到 bundle/workflow/sansheng-liubu/
-        let wf_dir = paths::bundle_workflow_dir().join("sansheng-liubu");
-        assert!(
-            wf_dir.join("workflow.json").is_file(),
-            "sansheng-liubu/workflow.json 应被解包"
-        );
-        assert!(
-            wf_dir.join("roles").join("taizi.md").is_file(),
-            "sansheng-liubu/roles/taizi.md 应被解包"
-        );
-        assert!(
-            wf_dir.join("scripts").join("scheduler.py").is_file(),
-            "sansheng-liubu/scripts/scheduler.py 应被解包"
-        );
         let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
         assert_eq!(v.trim(), BUNDLE_VERSION);
 

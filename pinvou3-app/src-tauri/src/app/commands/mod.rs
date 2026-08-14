@@ -41,7 +41,6 @@ pub(crate) mod startup;
 pub(crate) mod timeline;
 pub(crate) mod updater;
 pub(crate) mod voice;
-pub(crate) mod workflows;
 
 #[cfg(test)]
 mod protocol_tests;

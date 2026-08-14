@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AppWindow, Award, Briefcase, Check, ChevronLeft, ChevronRight, Cpu, Feather, Globe, Palette, Plus, Radio, Sparkles, Terminal, TrendingUp, User, X } from '../../components/icons.jsx';
-import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
+import { IosSearchField } from '../../components/IosControls.jsx';
 import { bridge } from '../../hooks/useBridge.js';
-import { ExpertTeamsPanel } from '../workflow/WorkflowView.jsx';
 
 const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', finance:'金融', 'game-development':'游戏', hr:'人力', legal:'法务', marketing:'营销', 'paid-media':'投放', product:'产品', 'project-management':'项管', sales:'销售', 'spatial-computing':'空间计算', specialized:'专项', 'supply-chain':'供应链', support:'客服', testing:'测试', tool:'工具' };
     // 部门标签按当前 UI 语言取词(t.depts),DEPT_LABELS(中文)兜底
@@ -288,7 +287,6 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
       const [chooser, setChooser] = useState(false); // 造卡方式选择(AI/手动)
       const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
       const [confirmDelId, setConfirmDelId] = useState(null); // 卡上删除二次确认
-      const [activeTab, setActiveTab] = useState('individual');
 
       useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
       useEffect(() => { setVisible(60); }, [query, activeDept, myOnly]);
@@ -342,42 +340,28 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto p-4 custom-scrollbar sm:p-6 lg:p-10">
             <div className="max-w-[1400px] mx-auto">
 
-              {/* 顶部: iOS Tab + 操作 */}
+              {/* 顶部操作 */}
               <div className="border-b border-slate-200/50 dark:border-white/10">
                 <div className="flex flex-col gap-3 pb-6 lg:flex-row lg:items-center lg:justify-between">
-                  <IosSegmentedControl
-                    value={activeTab}
-                    onChange={setActiveTab}
-                    isDark={isDark}
-                    segments={[
-                      { key: 'individual', label: t.expertPoolIndividualTab },
-                      { key: 'team', label: t.expertPoolTeamTab },
-                    ]}
-                  />
                   <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
-                    {activeTab === 'individual' ? (
-                      <IosSearchField
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder={t.cpSearchPh}
-                        isDark={isDark}
-                        compact
-                        className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
-                      />
-                    ) : null}
+                    <IosSearchField
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={t.cpSearchPh}
+                      isDark={isDark}
+                      compact
+                      className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
+                    />
                     <div className="flex shrink-0 items-center justify-end gap-3">
                       <button
                         data-testid="my-personas-toggle"
                         data-active={myOnly ? 'true' : 'false'}
-                        onClick={() => {
-                          setActiveTab('individual');
-                          setMyOnly(activeTab === 'individual' ? !myOnly : true);
-                        }}
+                        onClick={() => setMyOnly(!myOnly)}
                         className="inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap bg-[#E9E9EB] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-white hover:bg-[#DADADD] dark:hover:bg-[#3A3A3C]">
                         <User size={14} className="mr-2 opacity-70" />
                         {t.cpMyCards}
                       </button>
-                      <button onClick={() => { setActiveTab('individual'); setChooser(true); }} title={t.cpNewCardTitle}
+                      <button onClick={() => setChooser(true)} title={t.cpNewCardTitle}
                         className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
                         <Plus size={14} className="mr-2" />
                         {t.cpNewCard}
@@ -387,8 +371,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                 </div>
               </div>
 
-              {activeTab === 'individual' ? (
-                <>
+              <>
                 {/* AI 造卡推广 banner(搜索框下方,一直显示) */}
                 <div className="pt-3 pb-4">
                   <AICardBanner onStart={onAICreate} isDark={isDark} t={t} />
@@ -450,12 +433,7 @@ const DEPT_LABELS = { academic:'学术', design:'设计', engineering:'工程', 
                     </div>
                   ) : null}
                 </div>
-                </>
-              ) : (
-                <div className="min-h-[520px]">
-                  <ExpertTeamsPanel bs={bs} theme={theme} t={t} />
-                </div>
-              )}
+              </>
 
             </div>
           </div>

@@ -181,7 +181,6 @@ impl SessionStore {
             (modes.len() != before, removed_multi_agent)
         };
         if removed_modes {
-            self.save_skill_bindings();
         }
         if removed_multi_agent {
             // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵

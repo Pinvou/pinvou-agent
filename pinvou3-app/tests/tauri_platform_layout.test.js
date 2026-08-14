@@ -29,7 +29,7 @@ const linux = readJson("config/platforms/linux/tauri.conf.json");
 const macos = readJson("config/platforms/macos/tauri.conf.json");
 const windows = readJson("config/platforms/windows/tauri.conf.json");
 
-assert.ok(resourceSources(common).length > 0, "common Tauri config must declare shared resources");
+assert.equal(resourceSources(common).length, 0, "common bundle assets are embedded by the Rust runtime");
 assert.match(common.build.beforeBuildCommand, /scripts\/tauri\/require-wrapper\.js build/);
 assert.match(common.build.beforeBundleCommand, /scripts\/tauri\/require-wrapper\.js bundle/);
 assert.ok(
@@ -64,7 +64,7 @@ assert.deepEqual(
   "generated Linux startup config must inherit the complete base main window",
 );
 
-for (const legacyPath of ["resources/bundle", "resources/skill-marketplace", "resources/web-template", "resources/asr"]) {
+for (const legacyPath of ["resources/bundle", "resources/skill-marketplace", "resources/asr"]) {
   assert.equal(fs.existsSync(path.join(tauriRoot, legacyPath)), false, `legacy resource root must be removed: ${legacyPath}`);
 }
 const packagingPaths = [
@@ -161,7 +161,7 @@ assert.match(workflow, /npm run test:browser-smoke/);
 assert.doesNotMatch(workflow, /frontend-test:[\s\S]{0,300}\n\s*if:\s*\$\{\{\s*false\s*\}\}/);
 for (const stalePath of [
   "pinvou3-app/src-tauri/src/app/bridge",
-  "pinvou3-app/src-tauri/src/app/harness.rs",
+  "pinvou3-app/src-tauri/src/features/assistant/harness.rs",
   "resources/common/bundle/connectors/linux-arm64",
 ]) {
   assert.equal(workflow.includes(stalePath), false, `PR workflow still references migrated path: ${stalePath}`);

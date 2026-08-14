@@ -4,7 +4,6 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { CardPoolView } from '../features/personas/Personas.jsx';
-import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
@@ -14,7 +13,6 @@ function useDetachedBase() {
   const bs = useBridgeState([
     'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
     'settings', 'personas',
-    'workflow',
   ]);
   const [language, setLanguage] = useState('zh');
   const [activeTheme, setActiveTheme] = useState('dark');
@@ -118,7 +116,6 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
 const DETACHED_VIEWS = {
   session: ({ theme, t, bs }) => <ChatView theme={theme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={() => {}} justInstalledTool={null} setJustInstalledTool={() => {}} onGotoSettings={() => {}} onGotoTools={() => {}} />,
   'codex-session': ({ id, theme, t, bs }) => <DetachedCodexSessionView id={id} theme={theme} t={t} bs={bs} />,
-  workflow: ({ theme, t, bs }) => <WorkflowView theme={theme} t={t} bs={bs} />,
   monitor: ({ theme, t, bs }) => <MonitorView theme={theme} t={t} bs={bs} />,
   cardpool: ({ theme, t, bs }) => <CardPoolView theme={theme} t={t} bs={bs} onEquipped={() => {}} onAICreate={() => {}} initialMyOnly={false} />,
   toolstore: ({ theme, t }) => <ToolStoreView theme={theme} t={t} onNewChat={() => {}} />,

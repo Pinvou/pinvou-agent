@@ -182,7 +182,6 @@ assert.doesNotMatch(
   "release build must not rely on a globally installed Vite binary",
 );
 assert.match(linux.build.beforeBundleCommand, /require-wrapper\.js bundle/);
-assert.ok(linux.bundle.resources["resources/common/web-template/"]);
 assert.equal(linux.bundle.resources["resources/platforms/linux/asr/"], "runtime/asr");
 assert.equal(
   linux.bundle.resources["resources/platforms/linux/codex-bridge/"],
@@ -190,7 +189,6 @@ assert.equal(
 );
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
-assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("web-template/")));
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));
 assert.ok(
   linuxManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
@@ -227,7 +225,6 @@ assert.equal(
 
 const macos = composeEffectiveConfig([platformConfigPath("darwin")]).effectiveConfig;
 assert.deepEqual(macos.bundle.targets, ["app", "dmg"]);
-assert.ok(macos.bundle.resources["resources/common/web-template/"]);
 assert.equal(
   macos.bundle.resources["resources/platforms/macos/codex-bridge/"],
   "runtime/codex-bridge",

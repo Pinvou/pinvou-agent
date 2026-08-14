@@ -4,7 +4,7 @@ import { AlertTriangle, AppWindow, Archive, BookOpen, Check, ChevronDown, Databa
 import { IosSearchField, IosSegmentedControl } from '../../components/IosControls.jsx';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
-import { FilePreviewModal } from '../workflow/WorkflowView.jsx';
+import { FilePreviewModal } from '../artifacts/FilePreviewModal.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';

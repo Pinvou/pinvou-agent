@@ -1262,7 +1262,7 @@ impl Pinvou3Bridge {
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
             max_tool_calls,
             // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
@@ -1430,7 +1430,7 @@ impl Pinvou3Bridge {
             // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
             // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
-            // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
+            // 全开会让子代理思考失控。在 engine 配置层钉死,不依赖对话。
             reasoning_effort: self.request_reasoning_effort(),
             // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
             // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
@@ -1465,7 +1465,7 @@ impl Pinvou3Bridge {
             max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
@@ -1819,8 +1819,7 @@ impl Pinvou3Bridge {
     /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
     /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
     /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
-    /// 因此多智能体工作流由 `engine.rs::apply_workflow_turn_policy` 同时收紧 mode、
-    /// trust 与审批字段，定时任务则按 profile。
+    /// 因此需要审批的运行必须同步收紧 mode、trust 与审批字段；定时任务按 profile。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -3823,7 +3822,7 @@ mod tests {
             Some("off"),
             "本地 vLLM(Qwen3.6)会话初始 thinking 必须关。工作流会话只走 \
              SpawnSubAgent 不发 SendMessage,引擎配置层不钉死 off 角色就全员 \
-             thinking 全开(6/12 taizi 思考失控实证)"
+             thinking 全开会导致子代理思考失控"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(

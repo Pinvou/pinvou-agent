@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 // 整行注释（以 // 或 * 开头，去前导空白后）直接跳过。
 const files = [
   'src/features/tools/ToolStoreView.jsx',
-  'src/features/workflow/WorkflowView.jsx',
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。
@@ -64,5 +63,5 @@ for (const rel of files) {
   total += n;
   if (n > 0) console.error(`${rel}: ${n} active CJK literal(s) remaining`);
 }
-assert.equal(total, 0, `Expected 0 active CJK string literals in ToolStoreView/WorkflowView, found ${total}`);
-console.log('OK: no active CJK string literals in ToolStoreView/WorkflowView');
+assert.equal(total, 0, `Expected 0 active CJK string literals in ToolStoreView, found ${total}`);
+console.log('OK: no active CJK string literals in checked feature views');

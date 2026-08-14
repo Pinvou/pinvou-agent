@@ -315,33 +315,12 @@ fn cleanup_artifact_recovery_candidates<'a>(
     }
 }
 
-/// 成品(交付物)业务逻辑已回流到 `crate::features::deliverables`(衙门式文件名
-/// → 题目命名副本、跨会话产出物索引、旧奏折成品归属语义推断)。这里只留 Tauri
-/// 命令薄壳:路径校验 + canonicalize 后委托装配实现。
-
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
 /// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
 /// 文件已被删则跳过;mtime/size 现取 fs。
 #[tauri::command]
 pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
     Ok(crate::features::deliverables::list_deliverable_index_impl())
-}
-
-/// 奏折「成品箱」:**宝箱内容 = 奏折申报的成品**(白浪定的原则,后端不猜)。
-/// - products:回奏官在 final_report.md「## 成品清单」段申报的文件(硬闸已核验
-///   存在)。衙门式文件名(如 libu_1.md)物化成**以题目命名**的副本给客户——
-///   题目取太子立项 zhiyi.json 的 title;非 md 成品(.pptx 等,名字本来就达意)
-///   原样装箱。旧 run 没有成品清单段 → 回退:题目命名的 final_report 副本 +
-///   deliverables/ 非 md 二进制成品。
-/// - papers:deliverables/ 下未被申报为成品的 md = 六部过程文书,折叠降级。
-#[tauri::command]
-pub async fn list_deliverables(project_dir: String) -> Result<serde_json::Value, String> {
-    let p = validate_user_path(&project_dir)?;
-    let canon_root = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-    Ok(crate::features::deliverables::assemble_deliverables(
-        &p,
-        &canon_root,
-    ))
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。

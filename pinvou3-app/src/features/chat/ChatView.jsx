@@ -842,7 +842,6 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               ? chatViewCopy.placeholderWorkDocument
               : t.placeholder
         : t.placeholder;
-      const hasSkill = !!(bs && bs.workflow && bs.workflow.activeSkillName);
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
@@ -1557,7 +1556,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               空态不滚动，仍需 paddingBottom 让欢迎语在悬浮输入框上方居中。 */}
           <div ref={scrollRef} data-testid="chat-scroll"
             style={hasMessages ? undefined : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }}
-            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col ${hasSkill ? 'pt-3' : 'pt-20'} max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
+            className={`flex-1 min-h-0 min-w-0 overflow-y-auto ${(artifactsVisible && isWide) ? 'px-4 md:px-8' : 'px-4 md:px-20 lg:px-40'} custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
 
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */

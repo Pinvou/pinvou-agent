@@ -67,7 +67,6 @@ function injectSource() {
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
-        case 'list_workflows': return Promise.resolve([]);
         case 'list_deliverable_index': return Promise.resolve(OUTPUTS);
         // ---- kb_* ----
         case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248,dedupDone:0,dedupTotal:0});
