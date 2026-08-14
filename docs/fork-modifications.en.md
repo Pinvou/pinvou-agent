@@ -1,18 +1,27 @@
 # CodeWhale Fork Modification Register
 
-> Updated: 2026-08-17. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
+> Updated: 2026-08-19. Canonical Chinese register: [`docs/fork-modifications.md`](fork-modifications.md).
 
 ## Current baseline
 
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `a36e6cd53` (`pinvou-v0.9.5-r7`) |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `a36e6cd53` (`pinvou-v0.9.5-r7`); the r8 casing fix is pending through `Pinvou/CodeWhale#18` |
 | Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, and `#13` are merged |
-| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r7`, and the parent gitlink resolve to `a36e6cd533024cfe5724bae21875aea42b2ed87a`; `r1` through `r7` remain immutable historical tags |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r7`, and the r7 parent gitlink resolve to `a36e6cd533024cfe5724bae21875aea42b2ed87a`; `r1` through `r7` remain immutable historical tags |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | Published r7 baseline: 46 files, `+1852/-269` |
+| Drift | Published r7 baseline: 46 files, `+1852/-269`; the r8 fix adds 2 files, `+95` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
+
+### r8 strict-direct model-casing route fix (in flight)
+
+- Selecting `glm-5.2` on the GLM Coding Plan global endpoint in the 0.8.1 stable build failed `send_user_message` with `model "glm-5.2" is not served by direct provider zai`: the zai catalog row uses the marketing casing `GLM-5.2`, so the app's lowercase saved selector missed the owning row under exact comparison and then collided with the bare modelstudio wire id `glm-5.2` in the foreign-selector check; a custom `glm-5.3` does not collide and passed through.
+- The original fix in `Pinvou/CodeWhale#14` generalized by provider class; the fork maintainer converged it with review feedback and landed an equivalent implementation upstream through `Hmbown/CodeWhale#5475` (commit `c0f749731`, co-authored with the original author). r8 cherry-picks that upstream commit verbatim onto `pinvou3-clean`, keeping zero drift from upstream.
+- Upstream semantics: the case-fold fallback applies only to official Deepseek/Zai strict-direct endpoints, and only after exact matching is exhausted accepts a unique provider-owned fold hit; case ambiguity falls back to unknown-model pass-through instead of borrowing metadata by catalog order; custom endpoints keep passing the original model string through; a hit goes on the wire with the row's documented casing and catalog limits, and the fallback runs before the foreign-selector check.
+- Audit of analogous paths: the `opencode_go` allowlist, the zai/deepseek/minimax/mimo alias tables, and tui `validate_route` all normalize case already.
+- Locked by CodeWhale `resolver_direct_owned_row_match_survives_casing_mismatch` and `resolver_direct_casefold_match_requires_one_owned_row` (upstream-named regressions, no longer under the `forkguard_` prefix); the parent-side bridge regression ships in PR #295.
+- Verified: full `codewhale-config` 544 passing; fmt and clippy clean.
 
 ### Published session fix
 

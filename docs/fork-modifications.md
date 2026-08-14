@@ -4,19 +4,28 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-19 · v0.9.5 r7 四主题公开基线 + r8 修复在途）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53`（r7）；r8 大小写修复经 `Pinvou/CodeWhale#18` 待合并 |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与 r7 父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
-| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
-| 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行；r8 增量 2 文件 `+95` |
+| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试；r8 另加 2 条上游同源回归 |
+| 父仓适配 | gitlink 暂指向 r8 修复分支 head（与 r6/PR #216、r7/PR #285 同流程），CodeWhale squash 合并后重指 `pinvou3-clean` 并打 `pinvou-v0.9.5-r8` 标签 |
+
+### r8 严格直连模型大小写路由修复（在途）
+
+- 0.8.1 稳定版在 GLM Coding Plan 国际版上选择 `glm-5.2` 时，`send_user_message` 报 `model "glm-5.2" is not served by direct provider zai`：zai 目录行使用市场拼写 `GLM-5.2`，app 保存的小写选择器经精确比较匹配不到自身行，反而在外部模型校验中撞上 modelstudio-* 的裸 wire id `glm-5.2` 被误判拒绝；自定义模型名 `glm-5.3` 不与其他 provider 裸 id 冲突，走透传故可用。
+- 原始修复在 `Pinvou/CodeWhale#14` 按 provider class 泛化；fork 维护者收敛起评审意见后以同源实现提交官方上游并经 `Hmbown/CodeWhale#5475` 合入（commit `c0f749731`，Co-authored-by 原作者）。本 r8 将该上游提交原样 cherry-pick 到 `pinvou3-clean`，与上游零 drift。
+- 上游版语义：大小写折叠回退仅作用于官方 Deepseek/Zai 严格直连端点，且仅在精确匹配穷尽后接受唯一的 provider-owned 折叠命中；大小写歧义时保留未知模型透传，不按目录顺序借用限额或能力；自定义端点继续按原模型字符串透传；命中即以目录行规范大小写上线并携带目录限额，且发生在外部选择器误判之前。
+- 同类排查：`opencode_go` 白名单、zai/deepseek/minimax/mimo 别名表与 tui `validate_route` 均已小写归一化，无同类风险。
+- 行为锁定：CodeWhale `resolver_direct_owned_row_match_survives_casing_mismatch` 与 `resolver_direct_casefold_match_requires_one_owned_row`（上游同源回归，不再使用 `forkguard_` 命名）；父仓 bridge 回归见 PR #295。
+- 验证：`codewhale-config` 全量 544 通过（含 2 个新增）；fmt 与 clippy 通过。
 
 ### 本次会话修复（已验证并发布）
 

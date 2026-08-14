@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: published four-theme r7 baseline
+# plus the r8 strict-direct casing fix in flight (pending pinvou3-clean
+# squash merge via Pinvou/CodeWhale#18, matching the paired-PR flow used
+# by r6/PR #216 and r7/PR #285).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +10,8 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+EXPECTED_HEAD="33ce0c7df7fcbfcb2e27081322453c32ed410f25"
+EXPECTED_COMMITS=10
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,10 +21,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r7 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r7 四主题基线 + r8 大小写修复在途拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的四主题公开基线 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记的 r8 在途修复头 $EXPECTED_HEAD"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
   fail=1
@@ -53,6 +56,8 @@ fingerprints=(
   "T1|只读 worker 不触发重启回收回归      |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_readonly_worker_projection_preserves_live_status"
   "T1|宿主显式 route limits               |CodeWhale/crates/tui/src/route_runtime.rs|pub fn resolve_runtime_route_with_limits("
   "T1|embedding route wire alias 回归      |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_embedding_route_limits_preserve_wire_alias"
+  "T1|严格直连官方端点大小写折叠回退      |CodeWhale/crates/config/src/route/resolver.rs|let allow_casefold_wire_match = class == ProviderClass::StrictDirect"
+  "T1|严格直连大小写折叠行为回归          |CodeWhale/crates/config/src/route/tests.rs|fn resolver_direct_owned_row_match_survives_casing_mismatch"
   "T1|运行时会话快照不推断工具崩溃        |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_runtime_session_snapshot_preserves_in_flight_tool_call"
   "T1|显式重启恢复可观测且幂等            |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save"
   "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
