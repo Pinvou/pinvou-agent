@@ -37,6 +37,8 @@ try {
     projectAcpTimeline,
     resolveAcpSessionControls,
     stripTerminalControlSequences,
+    toolWorkspaceResources,
+    workspaceMarkdownResource,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const events = [
     event(1, 'user_message', {
@@ -193,6 +195,21 @@ try {
     'Unknown JSON field: \"baseRefOid\"\nworktree /workspace/pinvou3\n',
     'command output must not render ANSI colors or OSC hyperlinks as garbage',
   );
+
+  assert.equal(workspaceMarkdownResource('docs/report.md'), 'docs/report.md');
+  assert.equal(workspaceMarkdownResource('file:///workspace/report.md'), 'file:///workspace/report.md');
+  assert.equal(workspaceMarkdownResource('https://example.com/report.md'), '');
+  assert.deepEqual(toolWorkspaceResources({
+    locations: [{ path: '/workspace/docs/report.md' }],
+    content: [
+      { type: 'content', content: { type: 'resource_link', name: '/workspace/docs/diagram.svg', uri: '/workspace/docs/diagram.svg' } },
+      { type: 'diff', path: '/workspace/docs/generated.svg' },
+    ],
+  }), [
+    { path: '/workspace/docs/report.md', name: 'report.md' },
+    { path: '/workspace/docs/diagram.svg', name: 'diagram.svg' },
+    { path: '/workspace/docs/generated.svg', name: 'generated.svg' },
+  ]);
   assert.equal(
     stripTerminalControlSequences('\u009b32m✓ passed\u009b0m'),
     '✓ passed',
@@ -358,6 +375,11 @@ try {
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
   'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
   assert.ok(codexView.includes("directory: true"), 'new Codex sessions must expose a native directory picker');
+  assert.ok(codexView.includes("open_codex_workspace_resource")
+    && conversationView.includes('onOpenResource={onOpenResource}')
+    && codexWorkspace.includes("const loadedDirectories = ['', ...expanded]")
+    && codexWorkspace.includes('window.setInterval'),
+  'ACP workspace resources must open in the preview and event refreshes must reload expanded directories');
   assert.ok(codexView.includes('workspacePath'), 'selected project directory must reach the Tauri command');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
     && codexView.includes('onCodeAgentChange={selectDraftAgent}')

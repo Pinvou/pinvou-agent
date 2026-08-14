@@ -19,6 +19,8 @@ import {
   isSearchTool,
   searchToolDetails,
   terminalStatus,
+  toolWorkspaceResources,
+  workspaceMarkdownResource,
 } from './conversation-model.js';
 import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
@@ -115,7 +117,7 @@ function localizedSemanticLabel(value, copy) {
   }[value] || value;
 }
 
-export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
+export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
@@ -125,6 +127,10 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal }) {
     event.preventDefault();
     const external = externalMarkdownUrl(href);
     if (external && onOpenExternal) onOpenExternal(external);
+    else {
+      const resource = workspaceMarkdownResource(href);
+      if (resource && onOpenResource) onOpenResource(resource);
+    }
   };
   return (
     <div
@@ -456,7 +462,7 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   );
 }
 
-function GenericToolItem({ item, now, copy }) {
+function GenericToolItem({ item, now, onOpenResource, copy }) {
   const c = conversationCopy(copy);
   const tool = item.tool || {};
   const state = terminalStatus(item.status);
@@ -464,23 +470,26 @@ function GenericToolItem({ item, now, copy }) {
   const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const label = item.type === 'file_change' ? c.fileChange : (tool.kind || c.tool);
+  const resources = toolWorkspaceResources(tool);
   return (
     <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
         meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
+      {resources.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+          {resources.map(resource => (
+            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
+              disabled={!onOpenResource} title={resource.path}
+              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
+              {resource.name}
+            </button>
+          ))}
+        </div>
+      )}
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
-          {tool.locations && tool.locations.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {tool.locations.map((location, index) => (
-                <span key={index} className="px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono">
-                  {location.path || String(location)}
-                </span>
-              ))}
-            </div>
-          )}
           <StructuredValue label={c.arguments} value={tool.rawInput} />
           <StructuredValue label={c.result} value={tool.rawOutput != null ? tool.rawOutput : tool.content} />
         </div>
@@ -489,7 +498,7 @@ function GenericToolItem({ item, now, copy }) {
   );
 }
 
-function ToolItem({ item, now, renderToolItem, onOpenExternal, copy }) {
+function ToolItem({ item, now, renderToolItem, onOpenExternal, onOpenResource, copy }) {
   const custom = renderToolItem && renderToolItem(item);
   if (custom !== undefined) return custom;
   if (item.type === 'command_execution') {
@@ -501,7 +510,7 @@ function ToolItem({ item, now, renderToolItem, onOpenExternal, copy }) {
   if (isFetchTool(item.tool)) {
     return <FetchToolItem item={item} now={now} onOpenExternal={onOpenExternal} copy={copy} />;
   }
-  return <GenericToolItem item={item} now={now} copy={copy} />;
+  return <GenericToolItem item={item} now={now} onOpenResource={onOpenResource} copy={copy} />;
 }
 
 function runningToolLabel(item, copy) {
@@ -514,7 +523,7 @@ function runningToolLabel(item, copy) {
   return name || copy.tool;
 }
 
-function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
+function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource, copy }) {
   const c = conversationCopy(copy);
   const items = group.items || [];
   const running = items.some(item => terminalStatus(item.status) === 'running');
@@ -529,6 +538,14 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
   const expanded = running || open;
   const detailsId = useId();
   const hasDetails = items.length > 0;
+  const resources = [];
+  const resourcePaths = new Set();
+  items.forEach(item => toolWorkspaceResources(item.tool).forEach(resource => {
+    if (!resourcePaths.has(resource.path)) {
+      resourcePaths.add(resource.path);
+      resources.push(resource);
+    }
+  }));
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
@@ -540,6 +557,17 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         <ChevronDown size={13} className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
+      {resources.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+          {resources.map(resource => (
+            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
+              disabled={!onOpenResource} title={resource.path}
+              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
+              {resource.name}
+            </button>
+          ))}
+        </div>
+      )}
       {expanded && hasDetails && (
         <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => (
@@ -549,6 +577,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, copy }) {
               now={now}
               renderToolItem={renderToolItem}
               onOpenExternal={onOpenExternal}
+              onOpenResource={onOpenResource}
               copy={c}
             />
           ))}
@@ -659,6 +688,7 @@ function DefaultItem({
   responding,
   renderToolItem,
   onOpenExternal,
+  onOpenResource,
   agentLabel,
   copy,
 }) {
@@ -670,6 +700,7 @@ function DefaultItem({
         now={now}
         renderToolItem={renderToolItem}
         onOpenExternal={onOpenExternal}
+        onOpenResource={onOpenResource}
         copy={copy}
       />
     );
@@ -681,6 +712,7 @@ function DefaultItem({
         now={now}
         renderToolItem={renderToolItem}
         onOpenExternal={onOpenExternal}
+        onOpenResource={onOpenResource}
         copy={copy}
       />
     );
@@ -701,9 +733,9 @@ function DefaultItem({
   if (item.type === 'agent_message') {
     const commentary = item.phase === 'commentary';
     return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal}
+      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} />;
+      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />;
   }
   return null;
 }
@@ -718,6 +750,7 @@ export function ConversationTurn({
   renderItem,
   renderToolItem,
   onOpenExternal,
+  onOpenResource,
   agentLabel = 'Agent',
   assistantAvatar,
   copy,
@@ -799,6 +832,7 @@ export function ConversationTurn({
                 responding={responding}
                 renderToolItem={renderToolItem}
                 onOpenExternal={onOpenExternal}
+                onOpenResource={onOpenResource}
                 agentLabel={agentLabel}
                 copy={c}
               />

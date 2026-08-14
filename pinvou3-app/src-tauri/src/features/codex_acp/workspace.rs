@@ -257,6 +257,23 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
     })
 }
 
+pub fn resolve_workspace_resource(root: &Path, resource_path: &str) -> Result<PathBuf> {
+    let root = canonical_workspace(root)?;
+    let path = resource_path_from_uri(resource_path)?;
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    let canonical = fs::canonicalize(&candidate)
+        .with_context(|| format!("工作区资源不存在: {resource_path}"))?;
+    ensure_path_within_workspace(&root, &canonical)?;
+    if !canonical.is_file() {
+        bail!("工作区资源不是文件: {resource_path}");
+    }
+    Ok(canonical)
+}
+
 pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
     let root = canonical_workspace(root)?;
     let git = git_root(&root).is_some_and(|git_root| git_root == root);
@@ -634,6 +651,30 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
         }
     }
     Ok(parts.join("/"))
+}
+
+fn resource_path_from_uri(raw: &str) -> Result<PathBuf> {
+    let value = raw.trim();
+    if value.is_empty() {
+        bail!("工作区资源路径不能为空");
+    }
+    if let Some(uri_path) = value.strip_prefix("file://") {
+        let bytes = uri_path.as_bytes();
+        let uri_path = if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            &uri_path[1..]
+        } else {
+            uri_path
+        };
+        return Ok(PathBuf::from(uri_path));
+    }
+    if value.contains("://") {
+        bail!("不支持的工作区资源链接");
+    }
+    Ok(PathBuf::from(value))
 }
 
 fn resolve_existing_path(root: &Path, relative: &str, directory: bool) -> Result<PathBuf> {
@@ -1226,6 +1267,28 @@ mod tests {
         let preview = preview_workspace_file(root.path(), "src/main.rs").unwrap();
         assert_eq!(preview.kind, "text");
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
+    }
+
+    #[test]
+    fn resolves_workspace_resources_from_relative_absolute_and_file_uri_paths() {
+        let root = TestDir::new("resource-resolve");
+        let path = root.path().join("docs/report.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "# report\n").unwrap();
+
+        for resource in [
+            "docs/report.md".to_string(),
+            path.to_string_lossy().into_owned(),
+            format!("file://{}", path.to_string_lossy()),
+        ] {
+            assert_eq!(
+                resolve_workspace_resource(root.path(), &resource).unwrap(),
+                path
+            );
+        }
+        assert!(resolve_workspace_resource(root.path(), "https://example.com/report.md").is_err());
+        assert!(resolve_workspace_resource(root.path(), "../report.md").is_err());
+        assert!(resolve_workspace_resource(root.path(), "docs").is_err());
     }
 
     #[test]
