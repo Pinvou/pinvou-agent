@@ -61,5 +61,7 @@ body:
       options:
         - label: I searched existing issues and did not find the same problem.
           required: true
+        - label: I wrote the issue title and description in English.
+          required: true
         - label: This report does not disclose an unpatched security vulnerability.
           required: true
