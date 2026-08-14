@@ -4,10 +4,17 @@
 //! 安装状态持久化在 `~/.pinvou3/marketplace/installed.json`。
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
+mod python_dependencies;
 pub mod skill_marketplace;
 pub mod skill_scope;
 
-use std::path::PathBuf;
+#[cfg(test)]
+pub(crate) fn fail_next_python_dependency_download_for_test() {
+    python_dependencies::fail_next_download_for_test();
+}
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use deepseek_tui::mcp::{McpConfig, McpPool, McpServerConfig, McpTimeouts};
 use serde::{Deserialize, Serialize};
@@ -16,6 +23,144 @@ use crate::platform::credential_store::{
     redact_secret, CredentialError, CredentialReference, CredentialStore, SystemCredentialStore,
 };
 use crate::platform::paths;
+
+/// installed.json、mcp.json 与 Python 环境引用属于同一个 Marketplace 事务域。
+/// 安装、卸载和启动迁移必须按同一顺序持锁，禁止用过期的 installed 快照清理环境。
+static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct InstallPause {
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static INSTALL_PAUSE: Mutex<Option<InstallPause>> = Mutex::new(None);
+
+#[cfg(test)]
+fn pause_install_after_environment_for_test() {
+    let pause = INSTALL_PAUSE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(pause) = pause {
+        pause.entered.wait();
+        pause.release.wait();
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MarketplaceStateSnapshot {
+    installed: Option<Vec<u8>>,
+    mcp: Option<Vec<u8>>,
+}
+
+fn marketplace_transaction_journal() -> PathBuf {
+    paths::pinvou3_home()
+        .join("marketplace")
+        .join("state-transaction.json")
+}
+
+fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取 {} 失败: {error}", path.display())),
+    }
+}
+
+fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败: {error}", parent.display()))?;
+    }
+    deepseek_tui::utils::write_atomic(path, bytes)
+        .map_err(|error| format!("写入 {} 失败: {error}", path.display()))
+}
+
+fn restore_optional_file(path: &Path, content: &Option<Vec<u8>>) -> Result<(), String> {
+    if let Some(bytes) = content {
+        write_atomic_file(path, bytes)
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("删除 {} 失败: {error}", path.display())),
+        }
+    }
+}
+
+fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(), String> {
+    restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp)?;
+    restore_optional_file(
+        &paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json"),
+        &snapshot.installed,
+    )
+}
+
+fn recover_marketplace_transaction() -> Result<(), String> {
+    let journal = marketplace_transaction_journal();
+    let Some(bytes) = read_optional_file(&journal)? else {
+        return Ok(());
+    };
+    let snapshot: MarketplaceStateSnapshot = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Marketplace 事务日志损坏，无法安全恢复: {error}"))?;
+    restore_marketplace_snapshot(&snapshot)?;
+    std::fs::remove_file(&journal)
+        .map_err(|error| format!("清理 Marketplace 事务日志失败: {error}"))
+}
+
+struct MarketplaceStateTransaction {
+    snapshot: MarketplaceStateSnapshot,
+    finished: bool,
+}
+
+impl MarketplaceStateTransaction {
+    fn begin(installed_file: &Path) -> Result<Self, String> {
+        recover_marketplace_transaction()?;
+        let snapshot = MarketplaceStateSnapshot {
+            installed: read_optional_file(installed_file)?,
+            mcp: read_optional_file(&paths::mcp_config_path())?,
+        };
+        let journal = serde_json::to_vec(&snapshot)
+            .map_err(|error| format!("序列化 Marketplace 事务日志失败: {error}"))?;
+        write_atomic_file(&marketplace_transaction_journal(), &journal)?;
+        Ok(Self {
+            snapshot,
+            finished: false,
+        })
+    }
+
+    fn commit(mut self) -> Result<(), String> {
+        std::fs::remove_file(marketplace_transaction_journal())
+            .map_err(|error| format!("提交 Marketplace 事务失败: {error}"))?;
+        self.finished = true;
+        Ok(())
+    }
+
+    fn rollback(mut self) -> Result<(), String> {
+        restore_marketplace_snapshot(&self.snapshot)?;
+        std::fs::remove_file(marketplace_transaction_journal())
+            .map_err(|error| format!("清理 Marketplace 回滚日志失败: {error}"))?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for MarketplaceStateTransaction {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = restore_marketplace_snapshot(&self.snapshot);
+        }
+    }
+}
 
 /// 按会话类型 scope 持久化连接器禁用列表。
 ///
@@ -68,6 +213,10 @@ pub struct ToolManifest {
     pub tool_table_entries: Vec<String>,
     #[serde(default)]
     pub pip_dependencies: Vec<String>,
+    /// 按目标平台锁定的 Python wheel。命中时安装到用户目录中的隔离环境；
+    /// 未命中时仅非 Windows 平台保留 `pip_dependencies` 的旧兼容路径。
+    #[serde(default)]
+    pub(crate) python_dependencies: Option<python_dependencies::PythonDependencyLock>,
     #[serde(default)]
     pub servers: Vec<RemoteServer>,
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
@@ -200,7 +349,7 @@ fn set_remote_secret_header(
 
 fn write_json_pretty(path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    write_atomic_file(path, json.as_bytes())
 }
 
 fn mcp_secret_reference(tool_id: &str, target: &str, key: &str) -> CredentialReference {
@@ -708,25 +857,52 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.install_locked(tool_id, user_config, None)
+    }
+
+    fn install_locked(
+        &self,
+        tool_id: &str,
+        user_config: &std::collections::HashMap<String, String>,
+        python_override: Option<&str>,
+    ) -> Result<(), String> {
         self.migrate_mcp_plaintext_secrets()?;
         let manifest = self
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
-        // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
-        self.pip_install_deps(&manifest)?;
+        // 先装 Python 依赖；命中平台锁时下载并校验 wheel 后安装到用户目录隔离环境，
+        // 失败就不注册，让用户可重试。未提供平台锁的旧 manifest 继续走兼容路径。
+        let python_environment = self.install_python_deps(&manifest, python_override)?;
+        #[cfg(test)]
+        pause_install_after_environment_for_test();
 
-        // 先写 mcp.json(含 resolve_secret_placeholder,缺密钥会失败);成功后才落
-        // installed.json —— 避免「installed 已写、mcp 没注册」的半安装状态。
-        self.add_to_mcp_json(&manifest, user_config)?;
-
-        let mut installed = self.installed_ids();
-        if !installed.contains(&tool_id.to_string()) {
-            installed.push(tool_id.to_string());
+        // 两个状态文件用持久化回滚日志组成可恢复事务。任一步失败都恢复旧快照；
+        // 若进程在两次原子写之间退出，下次启动会在引擎读取 mcp.json 前恢复。
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let result = (|| {
+            self.add_to_mcp_json(&manifest, user_config, python_environment.as_ref())?;
+            let mut installed = self.installed_ids();
+            if !installed.contains(&tool_id.to_string()) {
+                installed.push(tool_id.to_string());
+            }
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => transaction.commit(),
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                drop(python_environment);
+                let _ = self.prune_from_committed_state();
+                Err(error)
+            }
         }
-        self.save_installed(&installed)?;
-
-        Ok(())
     }
 
     /// manifest 显式要求时，把“配置已写入”收紧为“远程 MCP 已握手且工具可发现”。
@@ -842,19 +1018,45 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(result)
     }
 
-    /// 装 `manifest.pip_dependencies` 里的 Python 依赖（跨平台）。
-    /// 用 `python -m pip install`（保证装进跑 MCP server 的同一个 python，不裸 `pip`）。
-    /// ① 先预检依赖是否已可用（系统已装/此前装过）→ 命中即跳过，不跑 pip；
-    /// ② 否则按序兜底：`--user` → `--user --break-system-packages`（PEP 668）→ `--break-system-packages`，任一成功即 Ok。
-    /// 零依赖工具（pip_dependencies 为空）直接返回 Ok，不影响 weather/obsidian 等。
+    /// 优先使用 manifest 的平台 wheel 锁安装隔离依赖；没有当前平台目标时，
+    /// 非 Windows 平台保留旧 `pip_dependencies` 兼容路径。
+    fn install_python_deps(
+        &self,
+        manifest: &ToolManifest,
+        python_override: Option<&str>,
+    ) -> Result<Option<python_dependencies::InstalledPythonEnvironment>, String> {
+        if let Some(lock) = &manifest.python_dependencies {
+            let python_command = match python_override {
+                Some(command) => command.to_string(),
+                None => paths::managed_python_command()?,
+            };
+            if let Some(environment) = python_dependencies::ensure_installed(lock, &python_command)?
+            {
+                return Ok(Some(environment));
+            }
+            if crate::platform::capabilities::is_windows() {
+                return Err(format!(
+                    "工具 '{}' 没有适用于当前 Windows 平台的 Python 依赖锁",
+                    manifest.id
+                ));
+            }
+        }
+
+        self.pip_install_deps(manifest)?;
+        Ok(None)
+    }
+
     fn pip_install_deps(&self, manifest: &ToolManifest) -> Result<(), String> {
         if manifest.pip_dependencies.is_empty() {
             return Ok(());
         }
-        // Windows:python-pptx 等依赖已随内置 python(python-win)预装,不在用户机器
-        // 跑 pip —— 用户也就不需要自己装 python。仅 Linux/macOS 走系统 python3 联网 pip。
+        // Windows 内置 Python 没有 pip，也不能假定依赖随主安装包预装。所有非零依赖的
+        // Windows MCP 必须提供可校验的平台 wheel 锁，禁止再静默跳过。
         if crate::platform::capabilities::is_windows() {
-            return Ok(());
+            return Err(format!(
+                "工具 '{}' 缺少 Windows Python 依赖锁，无法安全安装",
+                manifest.id
+            ));
         }
         let python_cmd = "python3";
         let deps = &manifest.pip_dependencies;
@@ -1092,24 +1294,189 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除
     pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
-        // 删该工具在 keyring 的 secret(防孤儿;此时 manifest 未删、仍可读声明)。
-        // 删不掉不阻断卸载；若用户重新安装并重新填 key，会写入新的系统凭据。
-        if let Some(manifest) = self.load_manifest(tool_id) {
-            for (target, key) in manifest_secret_targets(&manifest) {
-                let reference = mcp_secret_reference(tool_id, &target, &key);
-                let _ = self.credential_store.delete(&reference);
-                std::env::remove_var(mcp_secret_env_var(&key));
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        let secret_targets = self
+            .load_manifest(tool_id)
+            .map(|manifest| manifest_secret_targets(&manifest))
+            .unwrap_or_default();
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let result = (|| {
+            self.remove_from_mcp_json(tool_id)?;
+            let mut installed = self.installed_ids();
+            installed.retain(|id| id != tool_id);
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => transaction.commit()?,
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                return Err(error);
             }
         }
-        // 更新 installed.json
-        let mut installed = self.installed_ids();
-        installed.retain(|id| id != tool_id);
-        self.save_installed(&installed)?;
 
-        // 更新 mcp.json
-        self.remove_from_mcp_json(tool_id)?;
+        // 状态事务提交后统一清理 keyring、scope 与 companion skill；事务失败时旧注册及
+        // 配套能力都保持原样。清理失败不反向破坏已提交的主状态。
+        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+
+        // 依赖环境与 wheel 缓存按仍安装的 MCP 做引用清理。清理失败不回滚已完成的卸载，
+        // 下次卸载仍会重试，避免文件占用导致工具处于“配置已删但卸载报错”的半状态。
+        // 必须在事务锁内从刚提交的 installed.json 重读，不能使用进入锁前的过期快照。
+        if let Err(error) = self.prune_from_committed_state() {
+            eprintln!("[marketplace] prune Python dependencies failed: {error}");
+        }
 
         Ok(())
+    }
+
+    fn active_python_locks_from_committed_state(
+        &self,
+    ) -> Vec<python_dependencies::PythonDependencyLock> {
+        self.installed_ids()
+            .into_iter()
+            .filter_map(|installed_id| self.load_manifest(&installed_id))
+            .filter_map(|manifest| manifest.python_dependencies)
+            .collect()
+    }
+
+    fn prune_from_committed_state(&self) -> Result<(), String> {
+        python_dependencies::prune_unused(&self.active_python_locks_from_committed_state())
+    }
+
+    /// 完成工具注册移除后的领域清理。普通卸载与启动修复失败必须共用同一语义，
+    /// 否则 companion skill 会在 MCP 已不可用时继续进入会话提示。
+    fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
+        for (target, key) in secret_targets {
+            let reference = mcp_secret_reference(tool_id, target, key);
+            let _ = self.credential_store.delete(&reference);
+            std::env::remove_var(mcp_secret_env_var(key));
+        }
+        remove_connector_from_disabled_scopes(tool_id);
+        let unavailable: std::collections::HashSet<String> =
+            self.unavailable_companion_skills().into_iter().collect();
+        for skill_id in self.companion_skills(tool_id) {
+            if !unavailable.contains(&skill_id) {
+                continue;
+            }
+            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
+            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+        }
+    }
+
+    fn mark_tool_uninstalled_locked(&self, tool_id: &str) -> Result<(), String> {
+        let secret_targets = self
+            .load_manifest(tool_id)
+            .map(|manifest| manifest_secret_targets(&manifest))
+            .unwrap_or_default();
+        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let result = (|| {
+            self.remove_from_mcp_json(tool_id)?;
+            let mut installed = self.installed_ids();
+            installed.retain(|id| id != tool_id);
+            self.save_installed(&installed)
+        })();
+        match result {
+            Ok(()) => {
+                transaction.commit()?;
+                self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+                Ok(())
+            }
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .map_err(|rollback| format!("{error}; Marketplace 状态回滚失败: {rollback}"))?;
+                Err(error)
+            }
+        }
+    }
+
+    /// 在引擎读取 mcp.json 前迁移旧版直接启动 server.py 的已安装 Python 工具。
+    /// 修复失败时原子撤销 installed/mcp 注册，使前端显示为可重新安装，不能继续宣称可用。
+    pub fn repair_installed_python_tools(&self) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.repair_installed_python_tools_locked(None)
+    }
+
+    fn repair_installed_python_tools_locked(
+        &self,
+        python_override: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let installed = self.installed_ids();
+        let mut repair_errors = Vec::new();
+        for tool_id in installed {
+            let Some(manifest) = self.load_manifest(&tool_id) else {
+                continue;
+            };
+            if manifest.python_dependencies.is_none() || !manifest.servers.is_empty() {
+                continue;
+            }
+
+            let repair = (|| {
+                let environment = self.install_python_deps(&manifest, python_override)?;
+                let Some(environment) = environment else {
+                    return Ok(());
+                };
+                let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+                let result = self.add_to_mcp_json(
+                    &manifest,
+                    &std::collections::HashMap::new(),
+                    Some(&environment),
+                );
+                match result {
+                    Ok(()) => transaction.commit(),
+                    Err(error) => {
+                        transaction.rollback().map_err(|rollback| {
+                            format!("{error}; Marketplace 状态回滚失败: {rollback}")
+                        })?;
+                        Err(error)
+                    }
+                }
+            })();
+
+            if let Err(error) = repair {
+                self.mark_tool_uninstalled_locked(&tool_id)?;
+                repair_errors.push(format!("工具 '{tool_id}' 需要重新安装: {error}"));
+            }
+        }
+        // repair/downgrade 的持久状态已提交后，未引用缓存的物理清理属于可重试维护任务。
+        // Windows 上孤儿进程、杀毒或索引器可能短暂占用 .pyd，不能因此阻断全部助手启动。
+        if let Err(error) = self.prune_from_committed_state() {
+            eprintln!("[marketplace] prune Python dependencies after repair failed: {error}");
+        }
+        Ok(repair_errors)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn repair_installed_python_tools_with_python(
+        &self,
+        python_command: &str,
+    ) -> Result<Vec<String>, String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.repair_installed_python_tools_locked(Some(python_command))
+    }
+
+    #[cfg(test)]
+    fn install_with_python(
+        &self,
+        tool_id: &str,
+        user_config: &std::collections::HashMap<String, String>,
+        python_command: &str,
+    ) -> Result<(), String> {
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        self.install_locked(tool_id, user_config, Some(python_command))
     }
 
     /// manifest 声明的配套技能 id(装该 MCP 时一并装、卸时一并删)。
@@ -1118,6 +1485,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
+    }
+
+    /// 仅由未安装连接器声明的 companion skills。物化层以此防御物理目录清理失败或
+    /// 异常退出留下的残留；若多个连接器共享技能，只要任一已安装就仍可使用。
+    pub fn unavailable_companion_skills(&self) -> Vec<String> {
+        let installed: std::collections::HashSet<String> =
+            self.installed_ids().into_iter().collect();
+        let mut declared = std::collections::HashSet::new();
+        let mut active = std::collections::HashSet::new();
+        for manifest in self.available_tools() {
+            for skill_id in manifest.companion_skills {
+                declared.insert(skill_id.clone());
+                if installed.contains(&manifest.id) {
+                    active.insert(skill_id);
+                }
+            }
+        }
+        declared.difference(&active).cloned().collect()
     }
 
     pub fn oauth_remote_server_name(&self, tool_id: &str) -> Option<String> {
@@ -1214,10 +1599,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     fn save_installed(&self, ids: &[String]) -> Result<(), String> {
-        let dir = self.installed_file.parent().unwrap();
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        #[cfg(test)]
+        if FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err("测试注入：installed.json 写入失败".to_string());
+        }
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
-        std::fs::write(&self.installed_file, json).map_err(|e| format!("写入失败: {e}"))
+        write_atomic_file(&self.installed_file, json.as_bytes())
     }
 
     fn backup_corrupt_installed(&self, content: &str) {
@@ -1269,6 +1656,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         manifest: &ToolManifest,
         user_config: &std::collections::HashMap<String, String>,
+        python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
     ) -> Result<(), String> {
         let mcp_path = paths::mcp_config_path();
         let mut mcp: serde_json::Value = if mcp_path.is_file() {
@@ -1384,7 +1772,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         } else {
             // ── 本地工具：command/args/env ──
             let server_dir = self.servers_dir.join(&manifest.id);
-            let args: Vec<String> = manifest
+            let mut args: Vec<String> = manifest
                 .args
                 .iter()
                 .map(|a| {
@@ -1395,6 +1783,37 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     }
                 })
                 .collect();
+
+            if let Some(environment) = python_environment {
+                if manifest.command != "python" && manifest.command != "python3" {
+                    return Err(format!(
+                        "工具 '{}' 声明了 Python 依赖，但 command 不是 Python",
+                        manifest.id
+                    ));
+                }
+                let Some(server_script) = args.first().cloned() else {
+                    return Err(format!("工具 '{}' 缺少 Python server 参数", manifest.id));
+                };
+                if !std::path::Path::new(&server_script).is_file() {
+                    return Err(format!(
+                        "工具 '{}' 的 Python server 不存在: {}",
+                        manifest.id, server_script
+                    ));
+                }
+                let runner = paths::bundle_mcp_python_runner();
+                if !runner.is_file() {
+                    return Err("Python MCP 依赖启动器缺失，请重启应用后重试".to_string());
+                }
+                let mut wrapped_args = vec![
+                    "-I".to_string(),
+                    "-S".to_string(),
+                    runner.to_string_lossy().into_owned(),
+                    environment.site_packages.to_string_lossy().into_owned(),
+                    server_script,
+                ];
+                wrapped_args.extend(args.into_iter().skip(1));
+                args = wrapped_args;
+            }
 
             let mut env = manifest
                 .env
@@ -1444,7 +1863,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
 
             // python 工具:Windows 用内置 pythonw(无窗口 + 自带依赖),其他平台系统 python3。
-            let command = if manifest.command == "python" || manifest.command == "python3" {
+            let command = if let Some(environment) = python_environment {
+                environment.python_command.clone()
+            } else if manifest.command == "python" || manifest.command == "python3" {
                 paths::python_command()
             } else {
                 manifest.command.clone()
@@ -1488,8 +1909,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
         }
 
-        let json = serde_json::to_string_pretty(&mcp).map_err(|e| e.to_string())?;
-        std::fs::write(&mcp_path, json).map_err(|e| format!("写入 mcp.json: {e}"))
+        write_json_pretty(&mcp_path, &mcp)
     }
 }
 
@@ -1504,7 +1924,9 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::{CredentialStore, MemoryCredentialStore};
     use crate::platform::paths::tests::ENV_LOCK;
+    use sha2::{Digest, Sha256};
     use std::future::Future;
+    use std::io::{Cursor, Write as _};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1843,6 +2265,109 @@ mod tests {
         let dir = crate::platform::paths::bundle_mcp_servers_dir().join(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+    }
+
+    fn test_python() -> (String, String) {
+        let python = std::env::var("PINVOU3_TEST_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let output = std::process::Command::new(&python)
+            .args([
+                "-I",
+                "-S",
+                "-c",
+                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+            ])
+            .output()
+            .expect("test Python must start");
+        assert!(output.status.success());
+        (
+            python,
+            String::from_utf8(output.stdout).unwrap().trim().to_string(),
+        )
+    }
+
+    fn write_locked_python_tool(tool_id: &str, module: &str, python_version: &str) {
+        let filename = format!("{module}-1.0.0-py3-none-any.whl");
+        let mut wheel = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut wheel);
+            archive
+                .start_file(
+                    format!("{module}/__init__.py"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(b"VALUE = 'managed'\n").unwrap();
+            archive.finish().unwrap();
+        }
+        let wheel = wheel.into_inner();
+        let sha256 = crate::platform::encoding::hex_lower(&Sha256::digest(&wheel));
+        let cache = crate::platform::paths::pinvou3_home()
+            .join("cache")
+            .join("python-wheels");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join(format!("{sha256}.whl")), wheel).unwrap();
+
+        let platform = crate::platform::paths::connector_platform_dir(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "id": tool_id,
+            "name": tool_id,
+            "description": "fixture",
+            "version": "1.0.0",
+            "icon": "fixture",
+            "category": "fixture",
+            "mcp_tools": [format!("mcp_{tool_id}_run")],
+            "command": "python",
+            "args": ["server.py"],
+            "python_dependencies": {
+                "schema_version": 1,
+                "targets": [{
+                    "platform": platform,
+                    "python": python_version,
+                    "imports": [module],
+                    "wheels": [{
+                        "name": module,
+                        "version": "1.0.0",
+                        "filename": filename,
+                        "url": format!("https://files.pythonhosted.org/packages/{filename}"),
+                        "sha256": sha256
+                    }]
+                }]
+            }
+        });
+        write_tool_manifest(tool_id, &serde_json::to_string_pretty(&manifest).unwrap());
+        let server_dir = crate::platform::paths::bundle_mcp_servers_dir().join(tool_id);
+        std::fs::write(
+            server_dir.join("server.py"),
+            format!("from {module} import VALUE\nprint(VALUE)\n"),
+        )
+        .unwrap();
+        let runner = crate::platform::paths::bundle_mcp_python_runner();
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(
+            runner,
+            include_str!(
+                "../../../resources/common/bundle/mcp-servers/python_dependency_runner.py"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_legacy_python_state(tool_id: &str) {
+        write_installed_ids(&[tool_id.to_string()]);
+        let server = crate::platform::paths::bundle_mcp_servers_dir()
+            .join(tool_id)
+            .join("server.py");
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            tool_id.to_string(),
+            serde_json::json!({ "command": "python", "args": [server] }),
+        );
+        let mcp = serde_json::json!({ "servers": servers });
+        write_json_pretty(&crate::platform::paths::mcp_config_path(), &mcp).unwrap();
     }
 
     /// 直接写 installed.json 模拟已安装连接器(避免走完整 install 的远程校验)。
@@ -2671,6 +3196,309 @@ mod tests {
                 !mgr.installed_ids().contains(&"weather-custom".to_string()),
                 "失败时 installed.json 不该记录该工具(否则半安装)"
             );
+        });
+    }
+
+    #[test]
+    fn installed_write_failure_rolls_back_mcp_and_survives_reopen() {
+        with_temp_home(|| {
+            write_installed_ids(&["existing".to_string()]);
+            let old_mcp = serde_json::json!({
+                "servers": { "existing": { "command": "node", "args": ["existing.js"] } }
+            });
+            write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp).unwrap();
+            write_tool_manifest(
+                "half-install",
+                r#"{
+                    "id":"half-install","name":"Half","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"node","args":["server.js"]
+                }"#,
+            );
+
+            FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let error = manager
+                .install("half-install", &std::collections::HashMap::new())
+                .unwrap_err();
+            assert!(error.contains("installed.json 写入失败"));
+
+            let reopened = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert_eq!(reopened.installed_ids(), vec!["existing".to_string()]);
+            assert_eq!(read_mcp_json(), old_mcp);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_recovers_interrupted_cross_file_transaction() {
+        with_temp_home(|| {
+            write_installed_ids(&["old-tool".to_string()]);
+            let old_mcp = serde_json::json!({
+                "servers": { "old-tool": { "command": "node", "args": ["old.js"] } }
+            });
+            write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp).unwrap();
+            let snapshot = MarketplaceStateSnapshot {
+                installed: read_optional_file(
+                    &crate::platform::paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json"),
+                )
+                .unwrap(),
+                mcp: read_optional_file(&crate::platform::paths::mcp_config_path()).unwrap(),
+            };
+            write_atomic_file(
+                &marketplace_transaction_journal(),
+                &serde_json::to_vec(&snapshot).unwrap(),
+            )
+            .unwrap();
+
+            write_installed_ids(&["new-tool".to_string()]);
+            write_json_pretty(
+                &crate::platform::paths::mcp_config_path(),
+                &serde_json::json!({
+                    "servers": { "new-tool": { "command": "node", "args": ["new.js"] } }
+                }),
+            )
+            .unwrap();
+
+            let reopened = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(reopened.repair_installed_python_tools().unwrap().is_empty());
+            assert_eq!(reopened.installed_ids(), vec!["old-tool".to_string()]);
+            assert_eq!(read_mcp_json(), old_mcp);
+            assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    #[test]
+    fn startup_repair_does_not_fail_when_unused_environment_cleanup_is_blocked() {
+        with_temp_home(|| {
+            let unused_environment = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("python-envs")
+                .join("f".repeat(64));
+            let other_unused_environment =
+                unused_environment.parent().unwrap().join("e".repeat(64));
+            std::fs::create_dir_all(&unused_environment).unwrap();
+            std::fs::create_dir_all(&other_unused_environment).unwrap();
+            python_dependencies::fail_next_prune_removal_for_test(unused_environment.clone());
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(unused_environment.is_dir(), "清理失败不应破坏启动修复状态");
+            assert!(
+                !other_unused_environment.exists(),
+                "单个目录清理失败不应阻止其它未引用缓存回收"
+            );
+
+            assert!(manager.repair_installed_python_tools().unwrap().is_empty());
+            assert!(
+                !unused_environment.exists(),
+                "后续启动应重新尝试并完成未引用环境清理"
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_python_install_is_repaired_before_engine_use() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("legacy-doc", "legacy_fixture", &version);
+            write_legacy_python_state("legacy-doc");
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert!(manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap()
+                .is_empty());
+
+            let mcp = read_mcp_json();
+            let entry = &mcp["servers"]["legacy-doc"];
+            let args = entry["args"].as_array().unwrap();
+            assert_eq!(entry["command"], python);
+            assert_eq!(args[0], "-I");
+            assert_eq!(args[1], "-S");
+            assert_eq!(
+                Path::new(args[2].as_str().unwrap()),
+                crate::platform::paths::bundle_mcp_python_runner()
+            );
+            assert!(Path::new(args[3].as_str().unwrap()).is_dir());
+            let output = std::process::Command::new(entry["command"].as_str().unwrap())
+                .args(args.iter().map(|value| value.as_str().unwrap()))
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "managed");
+        });
+    }
+
+    #[test]
+    fn legacy_python_download_failure_becomes_retryable_install() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("legacy-retry", "retry_fixture", &version);
+            write_legacy_python_state("legacy-retry");
+            python_dependencies::fail_next_download_for_test();
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(!manager
+                .installed_ids()
+                .contains(&"legacy-retry".to_string()));
+            assert!(read_mcp_json()["servers"].get("legacy-retry").is_none());
+
+            manager
+                .install_with_python("legacy-retry", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            assert!(manager
+                .installed_ids()
+                .contains(&"legacy-retry".to_string()));
+            assert_eq!(read_mcp_json()["servers"]["legacy-retry"]["args"][0], "-I");
+        });
+    }
+
+    #[test]
+    fn failed_legacy_repair_cleans_companion_state_and_reinstall_restores_it() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("legacy-gongwen", "gongwen_fixture", &version);
+            let manifest_path = crate::platform::paths::bundle_mcp_servers_dir()
+                .join("legacy-gongwen")
+                .join("manifest.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            manifest["companion_skills"] = serde_json::json!(["government-writing"]);
+            write_json_pretty(&manifest_path, &manifest).unwrap();
+            write_legacy_python_state("legacy-gongwen");
+
+            let skills = skill_marketplace::SkillMarketplaceManager::new();
+            skills.install("government-writing").unwrap();
+            save_disabled_connectors_for(ConnectorScope::Plain, &["legacy-gongwen".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Code, &["legacy-gongwen".to_string()]);
+            skill_scope::save_disabled_skills_for(
+                ConnectorScope::Plain,
+                &["government-writing".to_string()],
+            );
+            skill_scope::save_disabled_skills_for(
+                ConnectorScope::Code,
+                &["government-writing".to_string()],
+            );
+
+            python_dependencies::fail_next_download_for_test();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let errors = manager
+                .repair_installed_python_tools_with_python(&python)
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert!(!manager
+                .installed_ids()
+                .contains(&"legacy-gongwen".to_string()));
+            assert!(read_mcp_json()["servers"].get("legacy-gongwen").is_none());
+            assert!(!crate::platform::paths::bundle_skills_dir()
+                .join("government-writing")
+                .exists());
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+            assert!(skill_scope::load_disabled_skills_for(ConnectorScope::Plain).is_empty());
+            assert!(skill_scope::load_disabled_skills_for(ConnectorScope::Code).is_empty());
+
+            manager
+                .install_with_python("legacy-gongwen", &std::collections::HashMap::new(), &python)
+                .unwrap();
+            skills.install("government-writing").unwrap();
+            skill_scope::sync_code_scope_after_skill_install("government-writing");
+            sync_code_scope_after_install("legacy-gongwen");
+            assert!(manager
+                .installed_ids()
+                .contains(&"legacy-gongwen".to_string()));
+            assert!(crate::platform::paths::bundle_skills_dir()
+                .join("government-writing")
+                .join("SKILL.md")
+                .is_file());
+        });
+    }
+
+    #[test]
+    fn shared_companion_remains_available_while_any_connector_is_installed() {
+        with_temp_home(|| {
+            for tool_id in ["connector-a", "connector-b"] {
+                write_tool_manifest(
+                    tool_id,
+                    &serde_json::json!({
+                        "id": tool_id,
+                        "name": tool_id,
+                        "description": "fixture",
+                        "version": "1",
+                        "icon": "x",
+                        "category": "c",
+                        "mcp_tools": [],
+                        "command": "node",
+                        "args": ["server.js"],
+                        "companion_skills": ["shared-skill"]
+                    })
+                    .to_string(),
+                );
+            }
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            write_installed_ids(&["connector-a".to_string()]);
+            assert!(manager.unavailable_companion_skills().is_empty());
+
+            write_installed_ids(&[]);
+            assert_eq!(
+                manager.unavailable_companion_skills(),
+                vec!["shared-skill".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_uninstall_reloads_liveness_after_install_commit() {
+        with_temp_home(|| {
+            let (python, version) = test_python();
+            write_locked_python_tool("old-doc", "old_fixture", &version);
+            write_locked_python_tool("new-doc", "new_fixture", &version);
+            MarketplaceManager::with_store(MemoryCredentialStore::default())
+                .install_with_python("old-doc", &std::collections::HashMap::new(), &python)
+                .unwrap();
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            *INSTALL_PAUSE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(InstallPause {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            });
+
+            let install_python = python.clone();
+            let install = std::thread::spawn(move || {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .install_with_python(
+                        "new-doc",
+                        &std::collections::HashMap::new(),
+                        &install_python,
+                    )
+            });
+            entered.wait();
+            let uninstall = std::thread::spawn(|| {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .uninstall("old-doc")
+            });
+            release.wait();
+            install.join().unwrap().unwrap();
+            uninstall.join().unwrap().unwrap();
+            *INSTALL_PAUSE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            assert_eq!(manager.installed_ids(), vec!["new-doc".to_string()]);
+            let mcp = read_mcp_json();
+            assert!(mcp["servers"].get("old-doc").is_none());
+            let site_packages = mcp["servers"]["new-doc"]["args"][3].as_str().unwrap();
+            assert!(Path::new(site_packages).is_dir());
         });
     }
 

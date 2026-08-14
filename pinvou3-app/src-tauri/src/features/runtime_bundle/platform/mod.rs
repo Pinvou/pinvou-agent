@@ -258,6 +258,8 @@ pub fn install_prompt_overrides() {
 /// `~/.pinvou3/bundle/mcp-servers/`。底座按 mcp.json 用 `python3 <path>` 拉起它。
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
+pub const MCP_PYTHON_DEPENDENCY_RUNNER_PY: &str =
+    include_str!("../../../../resources/common/bundle/mcp-servers/python_dependency_runner.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
 const WEATHER_SERVER_PY: &str =
@@ -346,6 +348,23 @@ impl Pinvou3Bundle {
     /// 替换成 `~/.pinvou3/workspace/` 的实际绝对路径——让 AI 直接拿到完整路径
     /// 给 write_file 用，避免先 exec_shell 探一遍 env var。
     pub fn ensure_extracted(&self) -> std::io::Result<()> {
+        let marketplace = crate::features::marketplace::MarketplaceManager::new();
+        self.ensure_extracted_with_marketplace(&marketplace, |manager| {
+            manager.repair_installed_python_tools()
+        })
+    }
+
+    fn ensure_extracted_with_marketplace<S, F>(
+        &self,
+        marketplace: &crate::features::marketplace::MarketplaceManager<S>,
+        repair_python_tools: F,
+    ) -> std::io::Result<()>
+    where
+        S: crate::platform::credential_store::CredentialStore,
+        F: FnOnce(
+            &crate::features::marketplace::MarketplaceManager<S>,
+        ) -> Result<Vec<String>, String>,
+    {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
         let current = std::fs::read_to_string(&version_file).unwrap_or_default();
@@ -374,9 +393,7 @@ impl Pinvou3Bundle {
         // fails, keep the old files as a recoverable source instead of overwriting the only
         // remaining plaintext copy.
         crate::platform::startup::mark("bundle_extract:migrate_mcp_secrets:start");
-        let mcp_secret_migration_ok = match crate::features::marketplace::MarketplaceManager::new()
-            .migrate_mcp_plaintext_secrets()
-        {
+        let mcp_secret_migration_ok = match marketplace.migrate_mcp_plaintext_secrets() {
             Ok(_) => true,
             Err(err) => {
                 eprintln!("[pinvou3-app] MCP secret migration skipped: {err}");
@@ -429,14 +446,20 @@ impl Pinvou3Bundle {
             self.apply_tmeet_skills(tmeet_show)?;
         }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
-        // MCP server scripts are immutable as well, but wait for secret migration to avoid
-        // deleting legacy plaintext before it has been copied into the credential store.
+        // MCP server scripts and manifests without legacy plaintext are immutable and must be
+        // refreshed even when credential migration fails. Only the three legacy manifests that
+        // may still be the sole plaintext-secret source stay gated until migration succeeds.
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
-        if mcp_secret_migration_ok {
-            self.write_mcp_servers()?;
+        self.write_mcp_servers(mcp_secret_migration_ok)?;
+        // 旧安装的 Python MCP 仍可能直接 `python server.py`，没有受管依赖环境。
+        // 在任何引擎读取 mcp.json 前完成迁移；下载/校验失败会原子撤销该工具注册，
+        // 前端随即可通过普通“安装”入口重试，不能继续显示为已安装可用。
+        let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
+        for error in repair_errors {
+            eprintln!("[pinvou3-app] {error}");
         }
         // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
-        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。
+        // 放在事务恢复/旧态迁移之后，避免崩溃日志回滚覆盖刚写入的内置条目。
         self.ensure_builtin_mcp_servers()?;
         // 启动自愈:刷新 mcp.json 里陈旧的本地 python server command(安装时写死的裸
         // "python" → 重解析成可用路径)。必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
@@ -793,12 +816,16 @@ impl Pinvou3Bundle {
     /// 写出内置 MCP server 脚本到 `~/.pinvou3/bundle/mcp-servers/` + 加可执行位。
     /// 每次启动防御性重写(immutable bundle 资源,无副作用)。底座按 mcp.json
     /// 用 `python <path>` 拉起,不依赖可执行位,但 chmod +x 无害。
-    fn write_mcp_servers(&self) -> std::io::Result<()> {
+    fn write_mcp_servers(&self, write_legacy_secret_manifests: bool) -> std::io::Result<()> {
         let dir = paths::bundle_mcp_servers_dir();
         std::fs::create_dir_all(&dir)?;
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
         std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        std::fs::write(
+            paths::bundle_mcp_python_runner(),
+            MCP_PYTHON_DEPENDENCY_RUNNER_PY,
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -810,16 +837,22 @@ impl Pinvou3Bundle {
         let weather_dir = dir.join("weather");
         std::fs::create_dir_all(&weather_dir)?;
         std::fs::write(weather_dir.join("server.py"), WEATHER_SERVER_PY)?;
-        std::fs::write(weather_dir.join("manifest.json"), WEATHER_MANIFEST_JSON)?;
+        if write_legacy_secret_manifests {
+            std::fs::write(weather_dir.join("manifest.json"), WEATHER_MANIFEST_JSON)?;
+        }
         // 工具市场：同花顺问财 MCP server
         let iwencai_dir = dir.join("iwencai");
         std::fs::create_dir_all(&iwencai_dir)?;
         std::fs::write(iwencai_dir.join("server.py"), IWENCAI_SERVER_PY)?;
-        std::fs::write(iwencai_dir.join("manifest.json"), IWENCAI_MANIFEST_JSON)?;
+        if write_legacy_secret_manifests {
+            std::fs::write(iwencai_dir.join("manifest.json"), IWENCAI_MANIFEST_JSON)?;
+        }
         // 工具市场：企查查（远程 MCP，只有 manifest.json，无 server.py）
         let qcc_dir = dir.join("qcc");
         std::fs::create_dir_all(&qcc_dir)?;
-        std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
+        if write_legacy_secret_manifests {
+            std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
+        }
         // 工具市场：华宇元典（远程 MCP + OAuth，只有 manifest.json，无 server.py）
         let yuandian_dir = dir.join("yuandian-mcp");
         std::fs::create_dir_all(&yuandian_dir)?;
@@ -859,7 +892,31 @@ impl Pinvou3Bundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::credential_store::{
+        CredentialError, CredentialReference, CredentialStore,
+    };
     use crate::platform::paths::tests::ENV_LOCK;
+
+    #[derive(Clone, Default)]
+    struct RejectingCredentialStore;
+
+    impl CredentialStore for RejectingCredentialStore {
+        fn get(&self, _reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+
+        fn set(
+            &self,
+            _reference: &CredentialReference,
+            _value: &str,
+        ) -> Result<(), CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+
+        fn delete(&self, _reference: &CredentialReference) -> Result<(), CredentialError> {
+            Err(CredentialError::new("test credential store unavailable"))
+        }
+    }
 
     #[test]
     fn work_instructions_use_only_canonical_model_visible_tools() {
@@ -988,6 +1045,10 @@ mod tests {
             paths::bundle_present_artifact_server().is_file(),
             "present_artifact server 脚本应被解包"
         );
+        assert!(
+            paths::bundle_mcp_python_runner().is_file(),
+            "Python MCP 依赖启动器应被解包"
+        );
         let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
         assert!(
             mcp.contains("present_artifact_server.py"),
@@ -1053,6 +1114,113 @@ mod tests {
             content, "USER TOUCHED",
             "VERSION 匹配时不应覆写已存在的 bundle 文件"
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn secret_migration_failure_still_releases_runner_and_downgrades_legacy_python_tool() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        let server_root = paths::bundle_mcp_servers_dir();
+
+        let weather_dir = server_root.join("weather");
+        std::fs::create_dir_all(&weather_dir).unwrap();
+        let legacy_weather = r#"{"id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"env":{"AMAP_KEY":"legacy-fixture-value"}}"#;
+        std::fs::write(weather_dir.join("manifest.json"), legacy_weather).unwrap();
+
+        let gongwen_dir = server_root.join("gongwen");
+        std::fs::create_dir_all(&gongwen_dir).unwrap();
+        std::fs::write(gongwen_dir.join("server.py"), "print('legacy')\n").unwrap();
+        std::fs::write(
+            gongwen_dir.join("manifest.json"),
+            r#"{"id":"gongwen","name":"Gongwen","description":"d","version":"0","icon":"x","category":"c","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+        )
+        .unwrap();
+        let marketplace_dir = paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(marketplace_dir.join("installed.json"), r#"["gongwen"]"#).unwrap();
+        std::fs::write(
+            paths::mcp_config_path(),
+            serde_json::to_vec(&serde_json::json!({
+                "servers": {
+                    "gongwen": {"command": "python", "args": [gongwen_dir.join("server.py")]}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("government-writing")
+            .unwrap();
+
+        let python = std::env::var("PINVOU3_TEST_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let version_output = std::process::Command::new(&python)
+            .args([
+                "-I",
+                "-S",
+                "-c",
+                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+            ])
+            .output()
+            .unwrap();
+        assert!(version_output.status.success());
+        let python_version = String::from_utf8(version_output.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let platform =
+            paths::connector_platform_dir(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+        let manager =
+            crate::features::marketplace::MarketplaceManager::with_store(RejectingCredentialStore);
+        bundle
+            .ensure_extracted_with_marketplace(&manager, |manager| {
+                // The immutable manifest has now been released despite migration failure. Make
+                // its first target match this test host, then force the actual download path to
+                // fail so the startup downgrade behavior is deterministic on every platform.
+                let manifest_path = paths::bundle_mcp_servers_dir()
+                    .join("gongwen")
+                    .join("manifest.json");
+                let mut manifest: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap())
+                        .unwrap();
+                manifest["python_dependencies"]["targets"][0]["platform"] =
+                    serde_json::Value::String(platform.to_string());
+                manifest["python_dependencies"]["targets"][0]["python"] =
+                    serde_json::Value::String(python_version.clone());
+                std::fs::write(
+                    &manifest_path,
+                    serde_json::to_vec_pretty(&manifest).unwrap(),
+                )
+                .unwrap();
+                crate::features::marketplace::fail_next_python_dependency_download_for_test();
+                manager.repair_installed_python_tools_with_python(&python)
+            })
+            .unwrap();
+
+        assert!(paths::bundle_mcp_python_runner().is_file());
+        let released_manifest = std::fs::read_to_string(gongwen_dir.join("manifest.json")).unwrap();
+        assert!(released_manifest.contains("python_dependencies"));
+        assert_eq!(
+            std::fs::read_to_string(weather_dir.join("manifest.json")).unwrap(),
+            legacy_weather,
+            "credential failure must preserve the legacy plaintext source"
+        );
+        let installed: Vec<String> = serde_json::from_str(
+            &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(!installed.contains(&"gongwen".to_string()));
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(paths::mcp_config_path()).unwrap())
+                .unwrap();
+        assert!(mcp["servers"].get("gongwen").is_none());
+        assert!(!paths::bundle_skills_dir()
+            .join("government-writing")
+            .exists());
 
         cleanup(&tmp);
     }

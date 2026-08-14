@@ -2,6 +2,7 @@ mod windows_path;
 mod windows_permission;
 mod windows_system;
 
+pub(crate) use windows_path::bundled_python_path;
 pub use windows_path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     filesystem_path_identity_key, kill_pid_tree, obsidian_config_path, path_component_eq,
