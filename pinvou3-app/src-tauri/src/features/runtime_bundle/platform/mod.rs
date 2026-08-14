@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 use include_dir::{include_dir, Dir};
 
+use crate::features::marketplace::bundle::{
+    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
+};
 use crate::platform::paths;
 
 /// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
@@ -19,20 +22,6 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
 /// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
-
-/// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
-/// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
-const LARK_SKILL_DIRS: [&str; 9] = [
-    "lark-shared",
-    "lark-calendar",
-    "lark-doc",
-    "lark-drive",
-    "lark-sheets",
-    "lark-im",
-    "lark-task",
-    "lark-wiki",
-    "lark-base",
-];
 
 /// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
 /// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `skills/`)——
@@ -51,19 +40,8 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 7 个企微域技能目录名(门控写 / 删共用)。
-const WECOM_SKILL_DIRS: [&str; 7] = [
-    "wecomcli-msg",
-    "wecomcli-doc",
-    "wecomcli-meeting",
-    "wecomcli-schedule",
-    "wecomcli-todo",
-    "wecomcli-contact",
-    "wecomcli-smartsheet",
-];
-
-const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
-const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
+// 各连接器的技能目录名常量（LARK/WECOM/DINGTALK/TMEET_SKILL_DIRS）从能力包注册表
+// （marketplace::bundle）导入——门控写/删与 scope 组合目录排除共用同一份名单。
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。

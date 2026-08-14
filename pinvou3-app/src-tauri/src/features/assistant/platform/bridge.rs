@@ -1335,7 +1335,32 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // CLI 硬拦截（scope 门禁的 execpolicy 通道）：spawn 注入初值；开关切换
+        // 后的热刷走 EnginePool::refresh_permission_rulesets，两处同一份计算。
+        cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+            self.cli_deny_ruleset(session_id)
+        ]);
         cfg
+    }
+
+    /// 该会话 scope 被禁 CLI 连接器的 execpolicy deny 规则集（硬拦截）。
+    ///
+    /// 技能组合目录是软门控（模型看不见技能），本规则集是硬兜底：模型即使知道
+    /// 命令，`lark-cli` 等被禁 CLI 二进制也在 spawn 前被底座硬拒（deny 全模式
+    /// 生效，含 YOLO；错误直返模型）。从 scope 禁用集派生，自身无状态。
+    pub(crate) fn cli_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        let scope = self.session_policy(session_id).connector_scope();
+        let rules = crate::features::marketplace::load_disabled_connectors_for(scope)
+            .into_iter()
+            .filter_map(|id| {
+                crate::features::marketplace::bundle::cli_bundle_bin(&id).map(|bin| {
+                    let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(bin);
+                    rule.action = codewhale_execpolicy::PermissionAction::Deny;
+                    rule
+                })
+            })
+            .collect::<Vec<_>>();
+        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules)
     }
 
     /// 多智能体会话专用配置（ADR-0006）。
@@ -2403,6 +2428,92 @@ mod tests {
         // 普通会话保留 plain scope 禁用集，并隐藏代码专用 Git。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
         assert_eq!(shaped, [tools, vec!["Git".to_string()]].concat());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
+    /// CLI 连接器生成二进制 deny 规则——plain 默认无规则；code 未初始化默认
+    /// 全禁 4 个内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
+    /// deny 在直跑 / 链式 / wrapper 形态下都硬拒（AskForApproval::Never 也拦）。
+    #[test]
+    fn cli_deny_ruleset_follows_scope_disabled_connectors() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-bridge-clidny-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+
+        use crate::features::marketplace::ConnectorScope;
+        // plain 无禁用 → 无规则。
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+        assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
+
+        // plain 禁 feishu → 仅 lark-cli deny。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Plain,
+            &["feishu".to_string()],
+        );
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+        assert_eq!(rs.ask_rules.len(), 1);
+        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("lark-cli"));
+        assert_eq!(
+            rs.ask_rules[0].action,
+            codewhale_execpolicy::PermissionAction::Deny
+        );
+
+        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
+        let rs = bridge.cli_deny_ruleset("sess-code");
+        let mut bins: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        bins.sort_unstable();
+        assert_eq!(bins, ["dws", "lark-cli", "tmeet", "wecom-cli"]);
+        assert!(rs
+            .ask_rules
+            .iter()
+            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+
+        // code 显式只禁 dingtalk → 仅剩 dws 被硬拒。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Code,
+            &["dingtalk".to_string()],
+        );
+        let rs = bridge.cli_deny_ruleset("sess-code");
+        assert_eq!(rs.ask_rules.len(), 1);
+        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("dws"));
+
+        // 底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒。
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        for cmd in [
+            "dws todo create",
+            "echo hi && dws todo create",
+            "bash -c \"dws todo create\"",
+        ] {
+            assert!(!check(cmd).allow, "{cmd} 应被 deny 规则硬拒");
+        }
+        // 非禁用命令不受影响（lark-cli 已被显式开启）。
+        assert!(check("lark-cli im send").allow, "未禁用的 CLI 不应被拦");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

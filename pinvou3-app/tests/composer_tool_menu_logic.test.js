@@ -69,6 +69,22 @@ assert.strictEqual(state.connectedServices.length, 1);
 assert.strictEqual(state.connectedServices[0].id, 'feishu');
 assert.strictEqual(state.enabledCount, 2); // feishu + builtin visual-design
 
+// CLI 服务行纳入 scope 门禁：可开关（switchable），scope 禁用集命中 → enabled false
+assert.strictEqual(state.connectedServices[0].switchable, true);
+assert.strictEqual(state.connectedServices[0].enabled, true);
+state = buildComposerToolMenuState({
+  serviceStates: [{ id: 'feishu', title: '飞书（Lark）', connected: true }],
+  disabledIds: ['feishu'],
+});
+assert.strictEqual(state.connectedServices[0].enabled, false);
+assert.strictEqual(state.connectedServices[0].switchable, true, '禁用后开关仍可写(恢复能力)');
+assert.strictEqual(state.enabledCount, 1); // 仅 builtin visual-design
+// 全局停用（marker）与 scope 禁用叠加：marker 停用时即使 scope 未禁也显示关
+state = buildComposerToolMenuState({
+  serviceStates: [{ id: 'feishu', title: '飞书（Lark）', connected: true, enabled: false }],
+});
+assert.strictEqual(state.connectedServices[0].enabled, false);
+
 // skill 双 scope 治理后:code scope 技能行可写(独立双 scope 开关),计入启用数
 state = buildComposerToolMenuState({
   scope: 'code',

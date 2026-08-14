@@ -349,6 +349,62 @@ mod tests {
         });
     }
 
+    /// CLI 连接器（无 manifest）禁用联动：feishu 进 scope 禁用集 → 9 个 lark-*
+    /// 目录全部从组合目录排除（companion 查能力包注册表静态表，无需 manifest）；
+    /// 开回来 → 恢复。
+    #[test]
+    fn cli_connector_companion_skills_excluded_when_disabled() {
+        with_temp_home(|| {
+            for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
+                write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
+            }
+
+            crate::features::marketplace::save_disabled_connectors(&["feishu".to_string()]);
+            let enabled = enabled_skills_for(ConnectorScope::Plain, None);
+            assert!(
+                !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                "禁用 feishu 后 lark-* 技能应从组合目录排除"
+            );
+
+            crate::features::marketplace::save_disabled_connectors(&[]);
+            let enabled = enabled_skills_for(ConnectorScope::Plain, None);
+            assert_eq!(
+                enabled
+                    .iter()
+                    .filter(|(n, _)| n.starts_with("lark-"))
+                    .count(),
+                crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
+                "启用 feishu 后 lark-* 技能应全部恢复"
+            );
+        });
+    }
+
+    /// code scope 未初始化「默认全禁」覆盖 CLI 连接器技能：lark-* 不注册在
+    /// 技能市场清单（连接门控直接解包），仍被 code 默认禁用兜住；plain 不受影响。
+    #[test]
+    fn code_scope_default_disables_cli_connector_skills() {
+        with_temp_home(|| {
+            for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
+                write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
+            }
+
+            let enabled = enabled_skills_for(ConnectorScope::Code, None);
+            assert!(
+                !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                "code 未初始化时 lark-* 技能应默认全禁"
+            );
+            let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
+            assert_eq!(
+                enabled_plain
+                    .iter()
+                    .filter(|(n, _)| n.starts_with("lark-"))
+                    .count(),
+                crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
+                "plain scope 不应受影响"
+            );
+        });
+    }
+
     /// 独立安装的 marketplace skill 没有 companion MCP，但 composer 工具菜单也
     /// 允许直接开关它；技能开关走独立 disabled_skills.json 双 scope 持久化
     /// （不再借道连接器文件的 skill: 前缀）。

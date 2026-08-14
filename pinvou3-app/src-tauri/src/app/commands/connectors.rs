@@ -13,9 +13,10 @@ pub async fn set_disabled_connectors(
     let scope = parse_connector_scope(scope.as_deref())?;
     crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
     // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
-    // 重写在线会话组合目录 + 热刷工具白名单。
+    // 重写在线会话组合目录 + 热刷工具白名单 + 热刷 CLI 硬拦截规则集（execpolicy）。
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
+    pool.refresh_permission_rulesets().await;
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(

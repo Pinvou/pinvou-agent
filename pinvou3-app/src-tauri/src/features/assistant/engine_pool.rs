@@ -1173,6 +1173,31 @@ impl EnginePool {
         }
     }
 
+    /// CLI 硬拦截热刷（scope 门禁的 execpolicy 通道）：连接器开关落盘后按各会话
+    /// 自己的 scope 重算 deny 规则集并广播给所有在跑 engine，下一轮即硬拒被禁
+    /// CLI 二进制。新 spawn / 重建的引擎由 build_engine_config_for_session_at
+    /// 注入初值——两条路径共用 `bridge.cli_deny_ruleset` 同一份计算。
+    pub async fn refresh_permission_rulesets(&self) {
+        let targets = self
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
+            .collect::<Vec<_>>();
+        for (sid, engine) in targets {
+            if let Err(e) = engine
+                .handle
+                .send(Op::SetPermissionRuleset {
+                    ruleset: self.bridge.cli_deny_ruleset(&sid),
+                })
+                .await
+            {
+                eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
+            }
+        }
+    }
+
     /// 专家池增删改后的名册联动（ADR-0006）：刷新所有开着多智能体开关的
     /// 会话，以及仍在运行且留有专家投影的已关闭会话。后者不能跳过：开关
     /// 关闭不会重建引擎，若此时删卡，旧 roster 会让已删除专家继续可用。

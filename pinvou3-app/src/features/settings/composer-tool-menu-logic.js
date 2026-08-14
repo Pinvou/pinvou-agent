@@ -38,9 +38,11 @@ function buildComposerToolMenuState({
       kind: 'service',
       title: service.title || service.name || service.id,
       description: service.description || '',
-      enabled: service.enabled !== false,
+      // scope 门禁开关：enabled = 全局未停用（marker）且本 scope 未禁用
+      // （disabled_connectors.json）。「已连接」徽章表达连接状态，开关表达门禁。
+      enabled: service.enabled !== false && !disabled.has(service.id),
       connected: true,
-      switchable: false,
+      switchable: true,
     }));
 
   const toolRows = installedTools.map(tool => ({

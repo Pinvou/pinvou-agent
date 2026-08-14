@@ -1127,8 +1127,9 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       };
       const switchRow = (row) => (
         <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl font-medium">
-          <span className="min-w-0">
+          <span className="min-w-0 flex items-center gap-1.5">
             <span className="block text-[13px] text-gray-700 dark:text-gray-200 truncate">{row.title}</span>
+            {row.kind === 'service' && statusBadge(t.composerConnected, 'green')}
           </span>
           <button onClick={() => toggleTool(row.id, row.kind)} aria-label={row.id} disabled={!canMutateToolStore}
             className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${!canMutateToolStore ? 'opacity-70' : ''} ${row.enabled ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'}`}>
@@ -1187,7 +1188,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
             menuProps={{ 'data-testid': 'composer-tool-menu' }}
             desktopClassName="absolute bottom-full left-0 mb-2 w-72 max-h-[420px] z-50 overflow-y-auto custom-scrollbar bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
-                {connectedServices.map(row => readonlyRow(row, t.composerConnected, 'green'))}
+                {connectedServices.map(switchRow)}
                 {toolRows.map(switchRow)}
                 {localizedSkillRows.length === 0 ? (
                   <div className="px-3 py-2 text-[13px] text-gray-400 dark:text-gray-500">{t.composerModeNone}</div>

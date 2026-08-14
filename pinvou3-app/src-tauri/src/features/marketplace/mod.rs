@@ -457,8 +457,10 @@ fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
 
 /// 读某 scope 被禁用的连接器 id 列表(读不到/空 → 空)。
 ///
-/// `code` scope 未初始化时(用户从未改过代码会话开关)返回全部已安装连接器 id,
-/// 即「代码会话默认全关,外部能力显式开启」的安全默认。
+/// `code` scope 未初始化时(用户从未改过代码会话开关)返回全部已安装连接器 id
+/// ∪ 全部内置 CLI 连接器 id，即「代码会话默认全关,外部能力显式开启」的安全默认。
+/// CLI 连接器不经 installed.json（连接即解包技能，无安装登记），未连接时纳入无害
+/// （配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
 pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_connectors_file();
     match scope {
@@ -467,7 +469,11 @@ pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
             if file.code_initialized {
                 file.code
             } else {
-                MarketplaceManager::new().installed_ids()
+                MarketplaceManager::new()
+                    .installed_ids()
+                    .into_iter()
+                    .chain(bundle::builtin_cli_bundle_ids().map(str::to_string))
+                    .collect()
             }
         }
     }
@@ -1115,7 +1121,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// manifest 声明的配套技能 id(装该 MCP 时一并装、卸时一并删)。
     /// uninstall 不删 manifest 文件,故卸载后仍可读到。
+    /// CLI 连接器（feishu/wecom/dingtalk/tmeet）无 manifest，配套技能目录查
+    /// 能力包注册表的内置常量表（`bundle::cli_bundle_skill_dirs`）——companion
+    /// 联动排除（`skill_materialization::disabled_skill_names_for`）由此覆盖 CLI 包。
     pub fn companion_skills(&self, tool_id: &str) -> Vec<String> {
+        let cli_dirs = bundle::cli_bundle_skill_dirs(tool_id);
+        if !cli_dirs.is_empty() {
+            return cli_dirs.iter().map(|s| (*s).to_string()).collect();
+        }
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
@@ -2159,11 +2172,18 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁已装连接器;plain 仍按空处理。
+            // 未初始化:code 默认全禁已装连接器 ∪ 内置 CLI 连接器;plain 仍按空处理。
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
             save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
@@ -2187,6 +2207,35 @@ mod tests {
         });
     }
 
+    /// companion_skills：CLI 连接器（无 manifest）查能力包注册表静态表返回配套
+    /// 技能目录；MCP 连接器仍走 manifest 声明；未知 id 返回空。
+    #[test]
+    fn companion_skills_covers_cli_bundles_and_manifests() {
+        with_temp_home(|| {
+            let market = MarketplaceManager::new();
+            // CLI 连接器：静态表（feishu 9 个 lark-* 目录）。
+            assert_eq!(
+                market.companion_skills("feishu"),
+                bundle::LARK_SKILL_DIRS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(market.companion_skills("dingtalk"), vec!["dws".to_string()]);
+            // MCP 连接器：manifest 声明。
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+            assert_eq!(
+                market.companion_skills("gongwen"),
+                vec!["government-writing".to_string()]
+            );
+            // 未知 id → 空。
+            assert!(market.companion_skills("nonexistent").is_empty());
+        });
+    }
+
     /// 旧版裸数组格式 `["a","b"]` 迁移到 plain scope,code 保持未初始化默认。
     #[test]
     fn disabled_connectors_legacy_array_migrates_to_plain() {
@@ -2199,10 +2248,17 @@ mod tests {
                 load_disabled_connectors(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            // 旧格式不初始化 code scope → 仍默认全禁。
+            // 旧格式不初始化 code scope → 仍默认全禁（含内置 CLI 连接器）。
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
             );
         });
     }

@@ -25,12 +25,65 @@ use super::skill_marketplace::SkillMarketplaceManager;
 use super::MarketplaceManager;
 
 // 内置 CLI 连接器清单（修复方案 V2：ima 无 CLI 二进制，移出 CLI 包，归凭据型技能包）。
-const BUILTIN_CLI_BUNDLES: &[(&str, &str)] = &[
-    ("feishu", "飞书（Lark）"),
-    ("wecom", "企业微信"),
-    ("dingtalk", "钉钉"),
-    ("tmeet", "腾讯会议"),
+// 条目 = (id, 展示名, CLI 二进制名, 配套技能目录)。本表是「连接器 → CLI 二进制 /
+// 配套技能」的单一真相源：能力包注册（下方 list_bundles）、companion 联动排除
+// （MarketplaceManager::companion_skills）、execpolicy 硬拦截（engine_pool ruleset）
+// 与技能解包门控（runtime_bundle apply_*_skills）全部从这里取数。
+/// 9 个 lark 域技能目录名（飞书配套技能，门控写/删与组合目录排除共用）。
+pub const LARK_SKILL_DIRS: &[&str] = &[
+    "lark-shared",
+    "lark-calendar",
+    "lark-doc",
+    "lark-drive",
+    "lark-sheets",
+    "lark-im",
+    "lark-task",
+    "lark-wiki",
+    "lark-base",
 ];
+/// 7 个企微域技能目录名。
+pub const WECOM_SKILL_DIRS: &[&str] = &[
+    "wecomcli-msg",
+    "wecomcli-doc",
+    "wecomcli-meeting",
+    "wecomcli-schedule",
+    "wecomcli-todo",
+    "wecomcli-contact",
+    "wecomcli-smartsheet",
+];
+/// 钉钉 mono skill 目录名。
+pub const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
+/// 腾讯会议 mono skill 目录名。
+pub const TMEET_SKILL_DIRS: &[&str] = &["tmeet-skill"];
+
+const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str])] = &[
+    ("feishu", "飞书（Lark）", "lark-cli", LARK_SKILL_DIRS),
+    ("wecom", "企业微信", "wecom-cli", WECOM_SKILL_DIRS),
+    ("dingtalk", "钉钉", "dws", DINGTALK_SKILL_DIRS),
+    ("tmeet", "腾讯会议", "tmeet", TMEET_SKILL_DIRS),
+];
+
+/// 内置 CLI 连接器 id 列表（scope 默认全禁等门禁逻辑的覆盖来源）。
+pub fn builtin_cli_bundle_ids() -> impl Iterator<Item = &'static str> {
+    BUILTIN_CLI_BUNDLES.iter().map(|(id, ..)| *id)
+}
+
+/// CLI 连接器的配套技能目录名（非 CLI id 返回空切片）。
+pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
+    BUILTIN_CLI_BUNDLES
+        .iter()
+        .find(|(cid, ..)| *cid == id)
+        .map(|(.., dirs)| *dirs)
+        .unwrap_or(&[])
+}
+
+/// CLI 连接器的二进制名（execpolicy 硬拦截按它构造 deny 规则）。
+pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
+    BUILTIN_CLI_BUNDLES
+        .iter()
+        .find(|(cid, ..)| *cid == id)
+        .map(|(.., bin, _)| *bin)
+}
 
 /// 凭据目标：env（mcp.json 环境变量占位）、credential（系统凭据存储）、bearer（Authorization 头）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,13 +293,16 @@ impl BundleRegistry {
 
         // 4) CLI 连接器源（内置常量表；V2 后不含 ima。V4 硬约束：desc/version/
         //    auth_required 内容迁移随步骤 6（前端数据源切换）同 PR 完成，此处结构占位）
-        for (id, name) in BUILTIN_CLI_BUNDLES {
+        //    skills 登记配套官方技能目录（kind 仍由 cli 优先派生为 Cli）——注册表
+        //    由此成为「连接器 → 配套技能」的单一真相源，供 companion 联动排除
+        //    与技能解包门控取数。
+        for (id, name, _bin, skill_dirs) in BUILTIN_CLI_BUNDLES {
             out.push(BundleInfo {
                 id: (*id).to_string(),
                 name: (*name).to_string(),
                 kind: BundleKind::Cli,
                 mcp_servers: Vec::new(),
-                skills: Vec::new(),
+                skills: skill_dirs.iter().map(|s| (*s).to_string()).collect(),
                 cli: vec![(*id).to_string()],
                 credentials: Vec::new(),
                 description: String::new(),
@@ -695,7 +751,7 @@ mod tests {
             assert_eq!(upload.kind, BundleKind::Skill);
             assert!(upload.user_uploaded);
             // CLI 包 id 覆盖内置清单（V2：ima 不在 CLI 包）
-            for (id, _) in BUILTIN_CLI_BUNDLES {
+            for (id, ..) in BUILTIN_CLI_BUNDLES {
                 assert!(
                     bundles
                         .iter()

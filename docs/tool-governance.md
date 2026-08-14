@@ -65,6 +65,20 @@ Agent / Yolo 模式注册完整工具面（`with_agent_runtime_surface` + `with_
 | shell 工具 | `allow_shell` | shell 组仅在会话允许时注册（pinvou3 GUI 恒开） |
 | `mcp_pinvou3_present_artifact` | `extra_hidden_tools`（模式固有） | **仅 code 模式**恒藏（原生代码会话无产物卡语义）；走 disallowed 通道 |
 | 市场 MCP 工具 / IMA | 用户安装启用 | 启用后以 `mcp_<server>_<tool>` / `ima_openapi` 形态暴露，禁用则进 disallowed |
+| CLI 连接器（飞书/企微/钉钉/腾讯会议） | scope 门禁（`disabled_connectors.json`） | 配套技能走 companion 联动排除（`companion_skills` 查能力包注册表静态表）；code scope 未初始化默认全关（含 CLI id）；连接成功视同新装，已初始化 code scope 自动保持关 |
+
+### 1.5.1 CLI 连接器的三通道生效（同一 scope 禁用集派生）
+
+CLI 连接器（`bundle::BUILTIN_CLI_BUNDLES` 登记 `cli` 二进制 + 配套技能目录，能力包注册表为单一真相源）被禁后，三个执行通道同时生效，数据全部来自该 scope 的 `disabled_connectors.json`：
+
+| 通道 | 机制 | 生效时机 |
+|---|---|---|
+| ① 技能可见性（软门控） | companion 联动 → 组合目录排除（`skill_materialization::disabled_skill_names_for`） | 下轮 prompt |
+| ② 全局停用（marker，独立一层） | `feishu_disabled` 等 marker 文件 → 删除 `bundle/skills/` 技能文件，全模式不可见 | 立即（删文件） |
+| ③ CLI 二进制硬拦截 | execpolicy deny 规则（`bridge::cli_deny_ruleset` → spawn 注入 + `engine_pool::refresh_permission_rulesets` 热刷），spawn 前硬拒、全模式含 YOLO、链式/wrapper 形态覆盖 | 下轮请求 |
+
+- ②与①③叠加取交集：marker 停用时 scope 开关无法单独放出（技能文件已删）。
+- UI 语义：composer 工具菜单 CLI 行 = 「已连接」徽章（连接状态，只读）+ 开关胶囊（该 scope 门禁，可写）。
 
 ### 1.6 安全边界（任何通道都绕不过）
 
@@ -287,6 +301,11 @@ code 模式恒可见（Yolo） = 31 − 1 + 8 = **38 个**（−1：`mcp_pinvou3
 | hidden_tools 注入 | `pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs::build_engine_config_for_session_at` |
 | 核心工具可见断言 | `pinvou3-app/src-tauri/src/lib.rs` |
 | 工具注册面 | `CodeWhale/crates/tui/src/tools/registry.rs`、`core/engine/tool_setup.rs` |
+| CLI 连接器登记表（二进制 + 配套技能，单一真相源） | `pinvou3-app/src-tauri/src/features/marketplace/bundle.rs::BUILTIN_CLI_BUNDLES` |
+| CLI companion 排除 | `pinvou3-app/src-tauri/src/features/marketplace/mod.rs::companion_skills` |
+| CLI 硬拦截规则集 | `pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs::cli_deny_ruleset` |
+| CLI 硬拦截热刷 | `pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs::refresh_permission_rulesets` |
+| execpolicy deny 执行 | `CodeWhale/crates/tui/src/core/engine/turn_loop.rs::exec_shell_ask_rule_decision` |
 
 ---
 
@@ -296,6 +315,7 @@ code 模式恒可见（Yolo） = 31 − 1 + 8 = **38 个**（−1：`mcp_pinvou3
 
 | 日期 | 变更内容 | PR 提交名 |
 |---|---|---|
+| 2026-08-14 | CLI 连接器纳入 scope 门禁：能力包注册表登记配套技能（单一真相源）、companion 联动排除覆盖 CLI、code scope 默认全关含 CLI id、execpolicy deny 硬拦截 CLI 二进制；composer 工具菜单 CLI 行改「已连接」徽章 + 开关胶囊。**行为变更**：已初始化 code 开关的用户，已连接 CLI 连接器在 code scope 收紧为默认关 | `feat(marketplace): CLI 连接器纳入 scope 门禁统一治理` |
 | 2026-08-10 | code 档案放出 **git 域 5 个**（git_status/git_diff/git_log/git_show/git_blame）——状态/差异/历史/单次/行归属完整认知线 | `feat(codex): code 模式能力档案放出 8 工具 + 工具管理文档`（与下行合并提交） |
 | 2026-08-10 | code 档案追加 **修改/验证/后台取消 3 个**（apply_patch 事务修改、run_verifiers 验证闭环、exec_shell_cancel 后台取消）——code 会话闭环补齐（读/改/验证/后台） | 同上（合并提交） |
 
