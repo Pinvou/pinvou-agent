@@ -167,8 +167,8 @@ for (const stalePath of [
   assert.equal(workflow.includes(stalePath), false, `PR workflow still references migrated path: ${stalePath}`);
   assert.equal(connectorWorkflow.includes(stalePath), false, `connector workflow still references migrated path: ${stalePath}`);
 }
-assert.match(workflow, /src\/features\/assistant\/platform\/\*\*/);
-assert.match(workflow, /src\/features\/assistant\/harness\.rs/);
+// l1 filter 已随 strict_mode 测试并入 lib 单测删除;这些 Rust 路径的 CI 触发
+// 由 rust_code filter 的 **/*.rs 通配覆盖,不再逐路径断言。
 assert.match(workflow, /src\/platform\/prefs\.rs/);
 assert.match(connectorWorkflow, /resources\/platforms\/\*\*\/bundle\/connectors\/\*\*/);
 for (const resources of ["linux/aarch64", "linux/x86_64", "macos/aarch64", "macos/x86_64", "windows/x86_64"]) {
