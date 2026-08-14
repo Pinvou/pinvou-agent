@@ -628,7 +628,9 @@
     }
 
     // load_skill：卡照出，但不把返回的 SKILL.md 全文写进卡，展开只见占位（防设计系统泄露）。
-    var outForCard = (meta && meta.name === "load_skill") ? bt("skillContentHidden") : p.output;
+    var outForCard = (meta && meta.name === "load_skill")
+      ? bt("skillContentHidden")
+      : context.toolResultDisplayContent(p.output);
     var updatedToolItem = updateToolItem(p.id, outForCard, p.success);
     var shellTaskId = p.metadata && (p.metadata.task_id || p.metadata.taskId);
     if (updatedToolItem && shellTaskId) {

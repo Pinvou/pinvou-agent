@@ -802,8 +802,8 @@ async function deepSeekTurnTimelineLifecycleBehavior() {
   assert.strictEqual(completed[3].error, "模型失败");
 }
 
-async function internalSubagentHandoffStaysOutOfPresentation() {
-  var harness = createBridgeHarness();
+async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
+  var harness = createBridgeHarness(null, { bridgeKind: bridgeKind });
   var sessionId = "chat-subagent-handoff";
   var completionText = [
     '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
@@ -812,14 +812,31 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
     '<codewhale:subagent.done>{"agent_id":"agent_7fb1c7be","status":"completed"}</codewhale:subagent.done>',
     '</codewhale:runtime_event>',
   ].join('\n');
+  var persistedToolOutput = [
+    'Error: deterministic provider failure',
+    '',
+    '<codewhale:runtime_event kind="stuck_guard" visibility="internal">',
+    'Change strategy instead of repeating the same tool call.',
+    '</codewhale:runtime_event>',
+    '',
+    '<codewhale:runtime_event kind="tool_error_degradation" visibility="internal">',
+    'Switch to an alternate tool or source.',
+    '</codewhale:runtime_event>',
+  ].join('\n');
   harness.handlers.load_session = function () {
     return {
-      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 3 },
+      metadata: { id: sessionId, title: "Sub-agent handoff", message_count: 5 },
       messages: [
         { role: "user", content: [{ type: "text", text: "请调研这个问题" }] },
         { role: "user", content: [
           { type: "text", text: completionText },
           { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff\nInput authority: non_authoritative\n</turn_meta>" },
+        ] },
+        { role: "assistant", content: [
+          { type: "tool_use", id: "tool-runtime-guidance", name: "host_failure_probe", input: {} },
+        ] },
+        { role: "user", content: [
+          { type: "tool_result", tool_use_id: "tool-runtime-guidance", content: persistedToolOutput, is_error: true },
         ] },
         { role: "assistant", content: [{ type: "text", text: "这是父智能体的最终汇总" }] },
       ],
@@ -837,6 +854,11 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   assert.ok(!visible.includes("codewhale:runtime_event"), "internal runtime XML must stay out of the presentation");
   assert.ok(raw.includes("child-only completion summary"), "sub-agent completion must remain in the parent model context");
   assert.ok(raw.includes("subagent_handoff"), "handoff provenance must remain durable");
+  assert.ok(visible.includes("Error: deterministic provider failure"), "real tool output must remain visible");
+  assert.ok(!visible.includes("Change strategy instead"), "stuck guidance must stay out of restored tool cards");
+  assert.ok(!visible.includes("Switch to an alternate tool"), "degradation guidance must stay out of restored tool cards");
+  assert.ok(raw.includes("Change strategy instead"), "stuck guidance must remain durable for the model");
+  assert.ok(raw.includes("Switch to an alternate tool"), "degradation guidance must remain durable for the model");
 
   await harness.emit("chat:user_message", {
     session_id: sessionId,
@@ -846,6 +868,26 @@ async function internalSubagentHandoffStaysOutOfPresentation() {
   visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
   assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
   assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+
+  await harness.emit("chat:tool_start", {
+    session_id: sessionId,
+    id: "tool-live-runtime-guidance",
+    name: "host_failure_probe",
+    args: {},
+  });
+  await harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: "tool-live-runtime-guidance",
+    success: false,
+    output: persistedToolOutput,
+  });
+  visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+  raw = JSON.stringify(harness.bridge.state.get("chat").messages);
+  assert.ok(visible.includes("Error: deterministic provider failure"), bridgeKind + " live tool output must remain visible");
+  assert.ok(!visible.includes("Change strategy instead"), bridgeKind + " live stuck guidance must stay out of tool cards");
+  assert.ok(!visible.includes("Switch to an alternate tool"), bridgeKind + " live degradation guidance must stay out of tool cards");
+  assert.ok(raw.includes("Change strategy instead"), bridgeKind + " live stuck guidance must remain durable");
+  assert.ok(raw.includes("Switch to an alternate tool"), bridgeKind + " live degradation guidance must remain durable");
 }
 
 async function draftToggleFailureAbortsFirstSend() {
@@ -4232,7 +4274,8 @@ Promise.resolve()
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)
-  .then(internalSubagentHandoffStaysOutOfPresentation)
+  .then(function () { return internalSubagentHandoffStaysOutOfPresentation("tauri"); })
+  .then(function () { return internalSubagentHandoffStaysOutOfPresentation("web"); })
   .then(multiAgentToggleFailureIsRoutedToTriggerSession)
   .then(draftToggleFailureAbortsFirstSend)
   .then(scheduledRunViewExitBehavior)

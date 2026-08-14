@@ -1,7 +1,7 @@
 # CodeWhale 0.9.0 → 0.9.5 底座升级报告
 
 > 日期：2026-08-11
-> 状态：CodeWhale 重建、结构化产出安全加固、会话恢复修复和父仓编译适配已完成，公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r5` 已发布；`r1`/`r2`/`r3`/`r4` 保留为不可变历史标签。
+> 状态：CodeWhale 重建、结构化产出安全加固、会话恢复和本地模型工具续轮兼容修复均已完成，公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r6` 已发布；`r1` 至 `r5` 保留为不可变历史标签。
 
 ## 1. 结论
 
@@ -13,7 +13,7 @@
 4. 定时任务与运行生命周期
 5. 三省六部编排与完成闸
 
-相对官方 v0.9.5，候选 fork 为 45 文件、`+1743/-263`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
+相对官方 v0.9.5，r6 公开 fork 为 52 文件、`+2640/-299`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
 
 ## 2. 版本基线
 
@@ -97,7 +97,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 | 主题 | commit | 主要职责 |
 |---|---|---|
 | T1 宿主嵌入与路由边界 | `331cb1594` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
-| T2 工具兼容与命令执行安全 | `595adce47` | extra tools、动态禁用、File 上限、多行危险命令 fail-closed |
+| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e` | extra tools、动态禁用、File 上限、多行危险命令 fail-closed、schema 容器修复和工具续轮角色兼容 |
 | T3 嵌入上下文与技能来源 | `5a9f52941` | static composer 密封、Skill 单根/disabled、Permissions 100 KiB 窄例外、Working Set 隔离 |
 | T4 定时任务与运行生命周期 | `fc84f7d3e` | model/conversation、历史 schema、thread/turn、misfire/no-overlap、终态清理 |
 | T5 三省六部编排与完成闸 | `3782a78d4` + `d1010aa3b` | role/tool/steps、产物级 write claim、显式项目根、schema/file 安全产出、取消、权威失败终态 |
@@ -152,7 +152,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 ## 9. 当前交付状态
 
 - CodeWhale 分支：`Pinvou/CodeWhale:pinvou3-clean`
-- CodeWhale HEAD：`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`
+- CodeWhale HEAD：`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`
 - 父仓分支：`fix/session-tool-recovery`
-- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r5` 已发布；`r1`/`r2`/`r3`/`r4` 保留为不可变历史标签，旧 v0.9.0 分支已双重备份
+- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r6` 已发布；`r1` 至 `r5` 保留为不可变历史标签，旧 v0.9.0 分支已双重备份
 - 下一步：通过父仓 PR `#247` 合入 gitlink、会话适配代码和维护登记。
