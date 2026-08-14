@@ -755,6 +755,34 @@ jobs:
       - name: Windows 测试二进制导入诊断
         run: python scripts/ci-windows-imports-diagnose.py pinvou3-app/src-tauri/target/debug/deps
 
+      # 0xc0000139 根因(已由上述诊断定位):muda 静态导入 TaskDialogIndirect,该符号仅
+      # 存在于 Common-Controls v6 side-by-side 程序集;主 exe 由 tauri-build 嵌入声明该
+      # 依赖的清单,而 cargo test 的 pinvou3_lib-*.exe 是 lib 单测二进制,既不在
+      # rustc-link-arg-bins 也不在 rustc-link-arg-tests 的作用范围(本地实验已证),
+      # 无清单时 loader 绑定 System32 的 v5 comctl32 → 启动即挂。
+      # Windows loader 支持外部清单:把 <exe>.manifest 放在 exe 旁即可生效,无需改链接。
+      - name: Windows 测试 exe 挂外部 Common-Controls v6 清单
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <dependency>
+              <dependentAssembly>
+                <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+                  version="6.0.0.0" processorArchitecture="*"
+                  publicKeyToken="6595b64144ccf1df" language="*"/>
+              </dependentAssembly>
+            </dependency>
+          </assembly>'
+          count=0
+          for exe in pinvou3-app/src-tauri/target/debug/deps/pinvou3_lib-*.exe; do
+            [ -e "$exe" ] || { echo "FAIL: 未找到测试 exe" >&2; exit 1; }
+            printf '%s' "$MANIFEST" > "${exe}.manifest"
+            count=$((count+1))
+          done
+          echo "已挂外部清单的测试 exe 数: $count"
+
       - name: Windows 原子替换状态机回归
         shell: bash
         run: |
