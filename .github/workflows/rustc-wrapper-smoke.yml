@@ -22,6 +22,7 @@ on:
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
       - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
   merge_group:
   push:
     branches: [main]

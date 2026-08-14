@@ -24,6 +24,10 @@ class CiTriggerRoutingPolicyTests(unittest.TestCase):
         trigger = workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1
         )[0]
+        pull_request = trigger.split("\n  pull_request:", maxsplit=1)[1].split(
+            "\n  merge_group:", maxsplit=1
+        )[0]
+        push = trigger.split("\n  push:", maxsplit=1)[1]
         changes = workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  smoke:", maxsplit=1
         )[0]
@@ -32,6 +36,10 @@ class CiTriggerRoutingPolicyTests(unittest.TestCase):
         self.assertIn("merge_group:", trigger)
         self.assertIn("push:", trigger)
         self.assertIn("paths:", trigger)
+        workflow_path = "'.github/workflows/rustc-wrapper-smoke.yml'"
+        self.assertIn(workflow_path, pull_request)
+        self.assertIn(workflow_path, push)
+        self.assertIn(workflow_path, changes)
         self.assertIn("uses: dorny/paths-filter@v4", changes)
         self.assertIn("wrapper: ${{ steps.filter.outputs.wrapper }}", changes)
         self.assertIn("needs: changes", smoke)

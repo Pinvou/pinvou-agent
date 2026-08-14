@@ -688,7 +688,23 @@ jobs:
     # Merge Queue 按 Rust 路径触发。main 每次保留下来的 push 都执行 Windows 原生
     # 累计验证，避免 concurrency 用后续非 Rust pending 替换含 Rust 变更的 pending
     # 后，按相邻 diff 路由导致中间提交永远未经过 Windows 编译。
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.rust_code == 'true' && github.event.pull_request.draft == false)) }}
+    if: >-
+      ${{
+        !cancelled() &&
+        (
+          github.event_name == 'push' ||
+          (
+            needs.changes.outputs.rust_code == 'true' &&
+            (
+              github.event_name == 'merge_group' ||
+              (
+                github.event_name == 'pull_request' &&
+                github.event.pull_request.draft == false
+              )
+            )
+          )
+        )
+      }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。

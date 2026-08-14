@@ -166,12 +166,14 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "github.event_name == 'push' ||", windows_rust_test
         )
-        self.assertIn("github.event_name == 'merge_group'", windows_rust_test)
         self.assertIn(
-            "github.event.pull_request.draft == false", windows_rust_test
+            "needs.changes.outputs.rust_code == 'true' &&\n"
+            "            (\n"
+            "              github.event_name == 'merge_group' ||",
+            windows_rust_test,
         )
         self.assertIn(
-            "needs.changes.outputs.rust_code == 'true'", windows_rust_test
+            "github.event.pull_request.draft == false", windows_rust_test
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
