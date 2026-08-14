@@ -72,7 +72,7 @@ fn poll_global_mouse(dev: &X11Pointer) -> GlobalMouse {
             &mut mask,
         );
         // 读 root_x/root_y(真·全局虚拟桌面坐标),而非 win_x/win_y(相对子窗口)。
-        // 对撕离落位(PhysicalPosition 跨屏)而言这比 device_query 返回的 win 坐标更正确。
+        // 对撕离落位(PhysicalPosition 跨屏)而言全局坐标才是正确语义。
         GlobalMouse {
             x: root_x,
             y: root_y,
@@ -83,7 +83,7 @@ fn poll_global_mouse(dev: &X11Pointer) -> GlobalMouse {
 
 #[cfg(target_os = "macos")]
 fn poll_global_mouse(_dev: &()) -> GlobalMouse {
-    // CoreGraphics 同步读全局光标(与 Linux device_query / Windows GetCursorPos 同构):
+    // CoreGraphics 同步读全局光标(与 Linux XQueryPointer / Windows GetCursorPos 同构):
     // 任意线程可调、免授权(仅键盘态/事件合成才需 Accessibility)、无需事件监听器。
     macos_mouse::poll()
 }
@@ -120,7 +120,7 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
     }
 }
 
-/// macOS 全局鼠标:CoreGraphics 同步读取(与 Linux device_query / Windows GetCursorPos
+/// macOS 全局鼠标:CoreGraphics 同步读取(与 Linux XQueryPointer / Windows GetCursorPos
 /// 同构)。撕离拖拽的轮询线程直接调用,无需主线程调度、无事件监听器(因此也不会泄漏)。
 ///
 /// 为什么不用 NSEvent global monitor:addGlobalMonitorForEventsMatchingMask 只收**其它
@@ -280,7 +280,7 @@ pub fn create_detached_at(
         .build()
         .map_err(|e| format!("build detached window: {e}"))?;
 
-    // 用 PhysicalPosition 落位:device_query 给的是全局物理像素,绕开 logical/scale 换算。
+    // 用 PhysicalPosition 落位:XQueryPointer 给的是全局物理像素,绕开 logical/scale 换算。
     // 落位即"全屏":先放到目标屏,再 maximize → 填满该显示器(保留标题栏可关)。
     if let Some((x, y)) = pos {
         let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
