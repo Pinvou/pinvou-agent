@@ -1037,6 +1037,35 @@ test('transcript 适配：tool_result 载体不开新轮，结果按 id 回填',
   );
 });
 
+test('transcript 适配：内部运行时信封不得渲染为任务指令气泡', () => {
+  const envelopeText = [
+    '<codewhale:runtime_event kind="subagent_completion" visibility="internal">',
+    'This is an internal runtime event, not user input.',
+    'panel child completion summary',
+    '<codewhale:subagent.done>{"agent_id":"agent_1a2b3c4d","status":"completed"}</codewhale:subagent.done>',
+    '</codewhale:runtime_event>',
+  ].join('\n');
+  const { turns } = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '真实任务指令' }] },
+      { role: 'user', content: [
+        { type: 'text', text: envelopeText },
+        { type: 'text', text: '<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>' },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: '继续执行' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
+      ] },
+    ],
+    agent: { agentId: 'a3', role: 'builder', done: true, failed: false, error: null },
+  });
+  assert.equal(turns.length, 1, '内部信封不得切出假轮次');
+  assert.equal(turns[0].userText, '真实任务指令', '仅真实任务指令进入 userText');
+  assert.ok(!JSON.stringify(turns[0]).includes('child completion summary'), '信封正文不得上屏');
+  assert.ok(!JSON.stringify(turns[0]).includes('codewhale:runtime_event'), '信封 XML 不得进入展示');
+  assert.ok(!JSON.stringify(turns[0]).includes('shell_completion'), '仅-provenance 形态同样不上屏');
+});
+
 test('transcript 适配：文件工具归 file_change，终态后不留转圈条目', () => {
   const { turns } = projectSubagentTranscript({
     messages: [

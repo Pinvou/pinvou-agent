@@ -837,6 +837,7 @@
     discardManagedAttachment: discardManagedAttachment,
     isScheduledRunSession: function () { return isScheduledRunSession.apply(null, arguments); },
     basename: basename,
+    userMessageDisplayText: userMessageDisplayText,
     extractArtifactPaths: extractArtifactPaths,
     fileMutationAction: fileMutationAction,
     parseScheduledTaskDraftFromText: function () { return parseScheduledTaskDraftFromText.apply(null, arguments); },
@@ -1065,9 +1066,12 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
+        // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
+        // 块，避免 XML 痕迹进 sidebar 标题。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -1499,14 +1503,24 @@
       if (!block || block.type !== "text") continue;
       var text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
-      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-      if (match && match[1]) return match[1].trim();
+      // CodeWhale appends human-readable authority detail after the stable
+      // provenance identifier. Parse only that identifier so both the current
+      // one-line shape and legacy two-line metadata remain compatible.
+      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
+  }
+
+  function isInternalRuntimeEnvelopeText(value) {
+    var text = String(value || "").trim();
+    return /^<codewhale:runtime_event\b[^>]*\bvisibility=(["'])internal\1[^>]*>/i.test(text) &&
+      /<\/codewhale:runtime_event>\s*$/i.test(text);
   }
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
@@ -1517,6 +1531,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (textParts.some(isInternalRuntimeEnvelopeText)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
@@ -1824,6 +1839,9 @@
     state: state, listen: listen, invoke: invoke, turnUsageDirty: turnUsageDirty,
     sessionStates: sessionStates, renderMarkdown: renderMarkdown, bt: bt,
     notify: notify, onSessionEvent: onSessionEvent, runSyncOnSession: runSyncOnSession,
+    // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
+    // 避免 live/restore 两处守卫实现漂移。
+    isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
     addChatItem: addChatItem, addSystemItem: addSystemItem,
     addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,

@@ -1288,9 +1288,12 @@
       try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch (_) {}
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         var firstUser = msgs.find(function (m) { return m.role === "user"; });
-        var text = firstUser && firstUser.content && firstUser.content.find(function (c) { return c.type === "text"; });
-        if (text && text.text) {
-          var newTitle = text.text.slice(0, 20);
+        // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
+        // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
+        // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
+        var titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        if (titleText) {
+          var newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
           meta.title = newTitle;
           delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
@@ -3233,15 +3236,21 @@
       if (!block || block.type !== "text") continue;
       var text = String(block.text || "").trim();
       if (text.indexOf("<turn_meta>") !== 0) continue;
-      var match = text.match(/(?:^|\n)Input provenance:\s*([^\r\n<]+)/);
-      if (match && match[1]) return match[1].trim();
+      // CodeWhale appends human-readable authority detail after the stable
+      // provenance identifier. Parse only that identifier so both the current
+      // one-line shape and legacy two-line metadata remain compatible.
+      var match = text.match(/(?:^|\n)Input provenance:\s*([a-z0-9_-]+)/i);
+      if (match && match[1]) return match[1].toLowerCase();
     }
     return "";
   }
 
   function isInternalUserMessageProvenance(provenance) {
-    return provenance === "runtime" || provenance === "subagent_handoff";
+    // shell_completion 同为 CodeWhale 非权威内部来源（SHELL_COMPLETION_HANDOFF_TURN_META）。
+    return provenance === "runtime" || provenance === "subagent_handoff" || provenance === "shell_completion";
   }
+  // isInternalRuntimeUserMessage（下方 live 路径同一判定）与本函数等价：
+  // 历史重载与实时事件两条展示路径共用同一信封判定，避免两处实现漂移。
 
   // Engine 的运行时恢复提示为了兼容模型协议会以 role=user 持久化，但它不是用户输入。
   // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
@@ -3251,6 +3260,7 @@
     var textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
+    if (textParts.some(isInternalRuntimeUserMessage)) return "";
     if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
     if (!hideInternalEnvelope) return textParts.join("");
 
