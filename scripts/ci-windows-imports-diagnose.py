@@ -14,9 +14,14 @@ Windows 不给出具体缺哪个 DLL/符号,只能静态解析导入表比对导
 仅做诊断,不修改任何文件;exit 0(纯信息输出,不阻断 CI 步骤)。
 """
 import glob
+import io
 import os
 import struct
 import sys
+
+# Windows runner 控制台默认 cp1252,打不出中文会 UnicodeEncodeError 崩掉诊断本身
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 
 def read_pe(path):
