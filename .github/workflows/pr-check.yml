@@ -751,6 +751,7 @@ jobs:
         run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
 
       - name: Windows 原子替换状态机回归
+        shell: bash
         run: |
           set -euo pipefail
           # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
