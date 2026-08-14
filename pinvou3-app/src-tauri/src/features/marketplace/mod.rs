@@ -461,7 +461,8 @@ fn load_disabled_connectors_file() -> DisabledConnectorsFile {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                file.initialized.insert(SessionMode::Code.as_str().to_string());
+                file.initialized
+                    .insert(SessionMode::Code.as_str().to_string());
             }
             // 未知键保留(前向兼容);已消费的旧键不带入。
             for (key, v) in obj {
@@ -2251,7 +2252,10 @@ mod tests {
             );
             // 读到即迁移:落盘已是新 map 格式。
             let content = std::fs::read_to_string(&path).unwrap();
-            assert!(content.contains("\"scopes\""), "迁移后应为新格式: {content}");
+            assert!(
+                content.contains("\"scopes\""),
+                "迁移后应为新格式: {content}"
+            );
         });
     }
 
@@ -2280,7 +2284,10 @@ mod tests {
             assert!(file.initialized.contains("code"));
             // 落盘已是新格式,且不再带旧键
             let content = std::fs::read_to_string(&path).unwrap();
-            assert!(content.contains("\"scopes\""), "迁移后应为新格式: {content}");
+            assert!(
+                content.contains("\"scopes\""),
+                "迁移后应为新格式: {content}"
+            );
             assert!(
                 !content.contains("code_initialized"),
                 "旧键不应残留: {content}"

@@ -113,7 +113,8 @@ fn load_disabled_skills_file() -> DisabledSkillsFile {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                file.initialized.insert(SessionMode::Code.as_str().to_string());
+                file.initialized
+                    .insert(SessionMode::Code.as_str().to_string());
             }
             file.project_skills_enabled = obj
                 .get("project_skills_enabled")
@@ -473,7 +474,10 @@ mod tests {
             assert!(project_skills_enabled(), "项目技能开关应随迁移保留");
             // 读到即迁移：落盘已是新格式，旧键不残留
             let content = std::fs::read_to_string(disabled_skills_path()).unwrap();
-            assert!(content.contains("\"scopes\""), "迁移后应为新格式: {content}");
+            assert!(
+                content.contains("\"scopes\""),
+                "迁移后应为新格式: {content}"
+            );
             assert!(
                 !content.contains("code_initialized"),
                 "旧键不应残留: {content}"

@@ -199,7 +199,9 @@ pub async fn install_marketplace_tool(
             }
             // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&sid);
+            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
+                &sid,
+            );
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
         crate::features::marketplace::sync_deny_all_scopes_after_install(&tool_id);

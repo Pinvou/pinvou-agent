@@ -211,7 +211,9 @@ mod tests {
         for mode in SessionMode::ALL {
             assert_eq!(
                 project_skills_opt_in_for(*mode),
-                SessionPolicy::for_mode(*mode).capabilities().project_skills_opt_in,
+                SessionPolicy::for_mode(*mode)
+                    .capabilities()
+                    .project_skills_opt_in,
                 "{mode:?}"
             );
         }

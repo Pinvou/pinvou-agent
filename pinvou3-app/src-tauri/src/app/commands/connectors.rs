@@ -119,9 +119,8 @@ fn parse_connector_scope(
 ) -> Result<crate::features::marketplace::ConnectorScope, String> {
     use crate::core::session_mode::SessionMode;
     match scope {
-        Some(s) if !s.trim().is_empty() => SessionMode::from_scope_str(s).ok_or_else(|| {
-            format!("未知的连接器 scope '{s}'，仅支持 \"plain\"(缺省)或 \"code\"")
-        }),
+        Some(s) if !s.trim().is_empty() => SessionMode::from_scope_str(s)
+            .ok_or_else(|| format!("未知的连接器 scope '{s}'，仅支持 \"plain\"(缺省)或 \"code\"")),
         _ => Ok(SessionMode::Plain),
     }
 }
