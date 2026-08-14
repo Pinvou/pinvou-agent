@@ -4781,17 +4781,23 @@ mod tests {
         // Windows): the authoritative file exists but cannot be read right now.
         fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
         let unreadable = fs::read_to_string(&target).is_err();
-        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
         if !unreadable {
             // Running as root (or on a filesystem that ignores mode bits)
             // bypasses the permission check, so the guard cannot be exercised
             // this way; skip instead of failing spuriously.
+            let _ = fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600));
             let _ = fs::remove_dir_all(root);
             return;
         }
+        // The target stays unreadable (mode 000) through the recovery call so
+        // the transient-read guard is actually exercised: a stale backup must
+        // not be promoted over the still-present authoritative file.
         let result = read_text_recovering(&target, |raw| {
             serde_json::from_str::<MemoryProfile>(raw).is_ok()
         });
+        // Restore readability for the assertions and cleanup below; the
+        // authoritative file was never overwritten by the recovery path.
+        fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         assert!(result.is_err());
         // The authoritative target must be preserved, never overwritten by a
