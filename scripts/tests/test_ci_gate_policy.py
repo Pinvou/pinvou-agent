@@ -264,9 +264,22 @@ class CiGatePolicyTests(unittest.TestCase):
             windows_rust_test,
         )
         self.assertIn(
-            '"-outputresource:$($exe.FullName);#1"',
+            '"-outputresource:$($testExe.FullName);#1"',
             windows_rust_test,
         )
+        self.assertIn(
+            '"PINVOU3_TEST_EXE=$testExe" | Out-File',
+            windows_rust_test,
+        )
+        self.assertIn(
+            'test_exe="$(cygpath -u "$PINVOU3_TEST_EXE")"',
+            windows_rust_test,
+        )
+        regression = windows_rust_test.split(
+            "- name: Windows 原子替换状态机回归", maxsplit=1
+        )[1]
+        self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
+        self.assertNotIn("cargo test", regression)
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         changes = _without_yaml_comments(

@@ -842,7 +842,36 @@ jobs:
           --all-targets --features dev-tools
 
       - name: Windows Rust 单元测试链接检查
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $records = @(& cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml `
+            --lib --no-run --message-format=json)
+          $cargoExit = $LASTEXITCODE
+          $records | ForEach-Object { Write-Host $_ }
+          if ($cargoExit -ne 0) {
+            throw "FAIL: Windows Rust 单元测试链接检查失败(exit=$cargoExit)"
+          }
+
+          $testExe = $null
+          foreach ($line in $records) {
+            try {
+              $record = $line.ToString() | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+              continue
+            }
+            if ($record.reason -eq "compiler-artifact" -and
+                $record.target.name -eq "pinvou3_lib" -and
+                $record.profile.test -eq $true -and
+                $record.executable) {
+              $testExe = $record.executable
+            }
+          }
+          if (-not $testExe -or -not (Test-Path -LiteralPath $testExe -PathType Leaf)) {
+            throw "FAIL: cargo 未报告 pinvou3_lib 测试 exe"
+          }
+          "PINVOU3_TEST_EXE=$testExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Windows Rust 测试 exe: $testExe"
 
       # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
       # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
@@ -880,22 +909,28 @@ jobs:
             throw "FAIL: Windows SDK mt.exe 不存在"
           }
 
-          $testExes = @(Get-ChildItem -Path "pinvou3-app/src-tauri/target/debug/deps/pinvou3_lib-*.exe" -File)
-          if ($testExes.Count -eq 0) {
-            throw "FAIL: 未找到测试 exe"
+          if (-not $env:PINVOU3_TEST_EXE) {
+            throw "FAIL: PINVOU3_TEST_EXE 未设置"
           }
-          foreach ($exe in $testExes) {
-            & $mt.FullName -nologo -manifest $manifestPath "-outputresource:$($exe.FullName);#1"
-            if ($LASTEXITCODE -ne 0) {
-              throw "FAIL: 无法向 $($exe.Name) 嵌入 Common-Controls v6 清单"
-            }
+          $testExe = Get-Item -LiteralPath $env:PINVOU3_TEST_EXE
+          & $mt.FullName -nologo -manifest $manifestPath "-outputresource:$($testExe.FullName);#1"
+          if ($LASTEXITCODE -ne 0) {
+            throw "FAIL: 无法向 $($testExe.Name) 嵌入 Common-Controls v6 清单"
           }
-          Write-Host "已嵌入清单的测试 exe 数: $($testExes.Count)"
+          Write-Host "已嵌入清单的测试 exe: $($testExe.FullName)"
 
       - name: Windows 原子替换状态机回归
         shell: bash
         run: |
           set -euo pipefail
+          # 直接运行已经由 mt.exe 修补的链接产物。这里不能再次调用 cargo test，
+          # 否则 Cargo 可能重链并覆盖 exe，导致 Common-Controls v6 清单丢失。
+          test_exe="$(cygpath -u "$PINVOU3_TEST_EXE")"
+          [[ -f "$test_exe" ]] || {
+            echo "FAIL: 测试 exe 不存在:$test_exe" >&2
+            exit 1
+          }
+          cd pinvou3-app/src-tauri
           # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
           # 导致的静默空跑。
           for filter in \
@@ -904,7 +939,7 @@ jobs:
             'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
             'artifact_public_read_' \
             'features::memory::tests::topic_migration_'; do
-            cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "$filter" -- --test-threads=1 2>&1 | tee /tmp/windows_regression.log
+            "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
               exit 1
