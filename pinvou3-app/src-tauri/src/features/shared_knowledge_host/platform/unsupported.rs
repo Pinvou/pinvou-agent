@@ -18,6 +18,7 @@ pub async fn status() -> SharedKnowledgeHostStatus {
         service_version: None,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         upgrade_available: false,
+        client_outdated: false,
     }
 }
 

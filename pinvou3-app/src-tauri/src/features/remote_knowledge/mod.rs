@@ -530,6 +530,12 @@ impl RemoteKnowledgeService {
                     Some(server.identity),
                 )
             };
+        // Reject a second address for an already connected server before the
+        // server creates a pending join request. The post-response check below
+        // remains as a race guard, but must not be the normal duplicate path.
+        if let Some(server_id) = expected_server.as_deref() {
+            self.ensure_server_id_not_connected(server_id)?;
+        }
         let credentials = new_join_credentials();
         let mut failures = Vec::new();
         for endpoint in endpoints {

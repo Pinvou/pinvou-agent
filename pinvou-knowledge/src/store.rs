@@ -16,6 +16,10 @@ use crate::model::{
 const SCHEMA_VERSION: i64 = 3;
 const VECTOR_SIGNATURE_BITS: u32 = 16;
 const VECTOR_SIGNATURE_RADIUS: u32 = 3;
+// Exact search keeps recall deterministic for the small and medium knowledge
+// bases used by a single team. Above this boundary the signature index bounds
+// the amount of vector data read by one query.
+const VECTOR_EXACT_SCAN_THRESHOLD: i64 = 20_000;
 pub(crate) const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -145,6 +149,12 @@ pub struct Store {
 pub struct StoredDocument {
     pub document: Document,
     pub storage_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreDocumentOutcome {
+    Restored,
+    DuplicateActive { active_document_id: i64 },
 }
 
 pub(crate) struct DocumentIndexUpdate<'a> {
@@ -737,16 +747,39 @@ impl Store {
         Ok(())
     }
 
-    pub fn restore_document(&self, id: i64) -> rusqlite::Result<()> {
-        let changed = self.conn.lock().execute(
-            "UPDATE documents SET deleted_at=NULL,updated_at=?2 WHERE id=?1 AND deleted_at IS NOT NULL \
-             AND EXISTS(SELECT 1 FROM collections c WHERE c.id=documents.collection_id AND c.deleted_at IS NULL)",
+    pub fn restore_document(&self, id: i64) -> rusqlite::Result<RestoreDocumentOutcome> {
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        let (collection_id, sha256): (i64, String) = transaction
+            .query_row(
+                "SELECT d.collection_id,d.sha256 FROM documents d \
+                 JOIN collections c ON c.id=d.collection_id \
+                 WHERE d.id=?1 AND d.deleted_at IS NOT NULL AND c.deleted_at IS NULL",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let duplicate_id = transaction
+            .query_row(
+                "SELECT id FROM documents WHERE collection_id=?1 AND sha256=?2 \
+                 AND deleted_at IS NULL AND id<>?3 ORDER BY id LIMIT 1",
+                params![collection_id, sha256, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(active_document_id) = duplicate_id {
+            return Ok(RestoreDocumentOutcome::DuplicateActive { active_document_id });
+        }
+        let changed = transaction.execute(
+            "UPDATE documents SET deleted_at=NULL,updated_at=?2 WHERE id=?1 AND deleted_at IS NOT NULL",
             params![id, now()],
         )?;
         if changed == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        Ok(())
+        transaction.commit()?;
+        Ok(RestoreDocumentOutcome::Restored)
     }
 
     pub fn permanently_delete_document(&self, id: i64) -> rusqlite::Result<String> {
@@ -1479,11 +1512,25 @@ fn search_vectors_on_connection(
 ) -> rusqlite::Result<Vec<SearchHit>> {
     let transaction = connection.transaction()?;
     let mut best = BinaryHeap::<Reverse<VectorCandidate>>::with_capacity(limit);
-    let signature_ids = id_list(&vector_signature_neighbors(vector_signature(query)));
+    let active_chunks_sql = format!(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM chunks k \
+         JOIN documents d ON d.id=k.document_id JOIN collections c ON c.id=k.collection_id \
+         WHERE k.collection_id IN ({ids}) AND d.status='ready' AND d.deleted_at IS NULL \
+         AND c.deleted_at IS NULL LIMIT {})",
+        VECTOR_EXACT_SCAN_THRESHOLD + 1
+    );
+    let active_chunks =
+        transaction.query_row(&active_chunks_sql, [], |row| row.get::<_, i64>(0))?;
+    let signature_filter = if active_chunks <= VECTOR_EXACT_SCAN_THRESHOLD {
+        String::new()
+    } else {
+        let signature_ids = id_list(&vector_signature_neighbors(vector_signature(query)));
+        format!("AND (k.vec_sig IS NULL OR k.vec_sig IN ({signature_ids}))")
+    };
     let vector_sql = format!(
         "SELECT k.id,k.vec FROM chunks k \
          JOIN documents d ON d.id=k.document_id JOIN collections c ON c.id=k.collection_id \
-         WHERE k.collection_id IN ({ids}) AND (k.vec_sig IS NULL OR k.vec_sig IN ({signature_ids})) \
+         WHERE k.collection_id IN ({ids}) {signature_filter} \
          AND d.status='ready' AND d.deleted_at IS NULL AND c.deleted_at IS NULL"
     );
     {
@@ -1799,7 +1846,10 @@ mod tests {
 
     use rusqlite::Connection;
 
-    use super::{vector_signature_neighbors, DocumentIndexUpdate, Store, VECTOR_SIGNATURE_RADIUS};
+    use super::{
+        vector_signature, vector_signature_neighbors, DocumentIndexUpdate, RestoreDocumentOutcome,
+        Store, VECTOR_SIGNATURE_RADIUS,
+    };
 
     #[test]
     fn collection_trash_is_hidden_and_restorable() {
@@ -2117,6 +2167,43 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_trashed_document_cannot_duplicate_active_content() {
+        let store = Store::in_memory().unwrap();
+        let collection = store.create_collection("共享资料", None).unwrap();
+        let trashed = store
+            .insert_document(
+                collection.id,
+                "original.txt",
+                Some("txt"),
+                "managed-original",
+                4,
+                "same-sha",
+            )
+            .unwrap();
+        store.trash_document(trashed.id).unwrap();
+        let active = store
+            .insert_document_if_new(
+                collection.id,
+                "replacement.txt",
+                Some("txt"),
+                "managed-replacement",
+                4,
+                "same-sha",
+            )
+            .unwrap()
+            .0;
+
+        assert_eq!(
+            store.restore_document(trashed.id).unwrap(),
+            RestoreDocumentOutcome::DuplicateActive {
+                active_document_id: active.id
+            }
+        );
+        assert!(store.document(trashed.id, false).unwrap().is_none());
+        assert_eq!(store.list_documents(collection.id, false).unwrap().len(), 1);
+    }
+
+    #[test]
     fn existing_databases_gain_and_backfill_the_vector_bucket_index() {
         let root = tempfile::tempdir().unwrap();
         let database = root.path().join("knowledge.db");
@@ -2154,6 +2241,50 @@ mod tests {
         assert!(vector_signature_neighbors(42)
             .into_iter()
             .all(|candidate| (candidate ^ 42).count_ones() <= VECTOR_SIGNATURE_RADIUS));
+    }
+
+    #[test]
+    fn small_knowledge_bases_do_not_lose_semantic_hits_to_signature_prefiltering() {
+        let store = Store::in_memory().unwrap();
+        let collection = store.create_collection("semantic recall", None).unwrap();
+        let document = store
+            .insert_document(
+                collection.id,
+                "semantic.txt",
+                Some("txt"),
+                "managed-semantic",
+                1,
+                "semantic-sha",
+            )
+            .unwrap();
+        let chunks = vec!["only semantic candidate".to_string()];
+        let stored_vector = vec![-1.0_f32, 0.0];
+        let query_vector = vec![1.0_f32, 0.0];
+        assert!(
+            (vector_signature(&stored_vector) ^ vector_signature(&query_vector)).count_ones()
+                > VECTOR_SIGNATURE_RADIUS,
+            "the fixture must sit outside the approximate signature neighborhood"
+        );
+        store
+            .replace_document_index(
+                document.id,
+                DocumentIndexUpdate {
+                    name: "semantic.txt",
+                    ext: Some("txt"),
+                    storage_path: "managed-semantic",
+                    size: 1,
+                    sha256: "semantic-sha",
+                    chunks: &chunks,
+                    vectors: &[stored_vector],
+                },
+            )
+            .unwrap();
+
+        let hits = store
+            .search_vectors(&collection.id.to_string(), &query_vector, 5)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document_id, document.id);
     }
 
     #[test]

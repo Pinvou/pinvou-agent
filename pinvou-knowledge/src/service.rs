@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::io::Read;
+use std::future::Future;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,14 +8,13 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use futures_util::StreamExt;
 use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 
 use crate::client::normalize_endpoint;
 use crate::model::*;
 use crate::parser::parse_document;
-use crate::store::{DocumentIndexUpdate, Store};
+use crate::store::{DocumentIndexUpdate, RestoreDocumentOutcome, Store};
 use crate::tls::TlsIdentity;
 use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES};
 
@@ -167,8 +166,19 @@ impl KnowledgeService {
             indexing: tokio::sync::Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(search_parallelism())),
         });
-        if service.model_directory_complete() {
-            if let Err(error) = service.load_model() {
+        // 桌面端可能正在向同一 bind-mounted 目录部署模型。服务启动不能在
+        // 目录替换空窗中先判定完整、随后读取到另一代或已被移动的文件。
+        match crate::try_lock_knowledge_model_install(&service.model_dir) {
+            Ok(_install_lock) => {
+                if service.model_directory_complete() {
+                    if let Err(error) = service.load_model_unlocked() {
+                        *service.model_error.write() = Some(error);
+                    }
+                }
+            }
+            Err(error) => {
+                // 锁冲突不阻止服务和全文检索启动；模型安装完成后再次点击下载
+                // 会在锁内走磁盘快路径并加载已部署的模型。
                 *service.model_error.write() = Some(error);
             }
         }
@@ -1047,9 +1057,18 @@ impl KnowledgeService {
     }
 
     pub fn restore_document(self: &Arc<Self>, id: i64) -> Result<(), String> {
-        self.store
-            .restore_document(id)
-            .map_err(|_| "回收站中未找到该文档，或所属知识集仍在回收站".to_string())?;
+        match self.store.restore_document(id) {
+            Ok(RestoreDocumentOutcome::Restored) => {}
+            Ok(RestoreDocumentOutcome::DuplicateActive { .. }) => {
+                return Err(
+                    "知识集中已存在相同内容的文档，无法恢复此副本；可永久删除回收站中的副本"
+                        .to_string(),
+                );
+            }
+            Err(_) => {
+                return Err("回收站中未找到该文档，或所属知识集仍在回收站".to_string());
+            }
+        }
         self.requeue_pending_indexing();
         Ok(())
     }
@@ -1180,6 +1199,11 @@ impl KnowledgeService {
     }
 
     pub fn load_model(&self) -> Result<(), String> {
+        let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
+        self.load_model_unlocked()
+    }
+
+    fn load_model_unlocked(&self) -> Result<(), String> {
         let embedder = Embedder::from_dir(&self.model_dir, MODEL_NAME)?;
         *self.embedder.write() = Some(Arc::new(embedder));
         *self.model_error.write() = None;
@@ -1203,39 +1227,54 @@ impl KnowledgeService {
     }
 
     pub async fn download_model(self: &Arc<Self>) -> Result<(), String> {
+        self.download_model_with(
+            crate::model_download::knowledge_model_hf_base_url,
+            || async { self.load_model_unlocked() },
+        )
+        .await?;
+        // 模型已经在跨进程锁保护下完成构造，此后索引只使用进程内 Embedder，
+        // 不必继续占用安装锁阻塞桌面端读取同一份模型。
+        self.index_pending_documents().await
+    }
+
+    async fn download_model_with<F, L, Fut>(
+        self: &Arc<Self>,
+        resolve_hf_base_url: F,
+        mut load_complete: L,
+    ) -> Result<(), String>
+    where
+        F: FnOnce() -> String + Send,
+        L: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), String>> + Send,
+    {
+        // 桌面端与共享服务端会使用同一个模型目录。必须在第一次完整性检查前
+        // 获取跨进程锁，避免两端同时下载、替换目录或从替换空窗中加载模型。
+        let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
+        // The desktop client and shared host intentionally reuse one model
+        // directory. The other process may have completed installation after
+        // this service booted, so re-check disk before allocating/download I/O.
+        if self.model_directory_complete() && load_complete().await.is_ok() {
+            return Ok(());
+        }
         let parent = self
             .model_dir
             .parent()
             .ok_or_else(|| "模型目录无父目录".to_string())?
             .to_path_buf();
         std::fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
-        let download = parent.join(format!(".{MODEL_NAME}.tar.gz.part"));
         let candidate = parent.join(format!(".{MODEL_NAME}.candidate-{}", random_secret(8)));
-        let _ = std::fs::remove_file(&download);
         let result = async {
-            std::fs::create_dir_all(&candidate).map_err(|error| error.to_string())?;
-            let url = std::env::var("PINVOU_KNOWLEDGE_MODEL_URL")
-                .unwrap_or_else(|_| crate::KNOWLEDGE_MODEL_ARCHIVE_URL.to_string());
-            if url.trim().is_empty() {
-                return Err("PINVOU_KNOWLEDGE_MODEL_URL 不能为空".to_string());
-            }
-            download_file(&url, &download).await?;
-            let expected = std::env::var("PINVOU_KNOWLEDGE_MODEL_SHA256")
-                .unwrap_or_else(|_| crate::KNOWLEDGE_MODEL_ARCHIVE_SHA256.to_string());
-            verify_file(&download, &expected)?;
-            let archive = std::fs::File::open(&download).map_err(|error| error.to_string())?;
-            let decoder = flate2::read::GzDecoder::new(archive);
-            let mut archive = tar::Archive::new(decoder);
-            for entry in archive.entries().map_err(|error| error.to_string())? {
-                let mut entry = entry.map_err(|error| error.to_string())?;
-                if !entry
-                    .unpack_in(&candidate)
-                    .map_err(|error| error.to_string())?
-                {
-                    return Err("模型压缩包包含不安全路径".to_string());
-                }
-            }
-            Embedder::from_dir(&candidate, MODEL_NAME)?;
+            let hf_base_url = resolve_hf_base_url();
+            crate::model_download::download_knowledge_model_candidate(
+                &candidate,
+                &hf_base_url,
+                |_| {},
+                || false,
+            )
+            .await?;
+            // 候选目录必须经过真实推理模型构造验证。保留这个实例，目录换入后直接
+            // 安装到服务中，避免 568 MB ONNX 在首次部署结束时被连续加载两遍。
+            let candidate_embedder = Embedder::from_dir(&candidate, MODEL_NAME)?;
             let backup = parent.join(format!(".{MODEL_NAME}.backup-{}", random_secret(8)));
             if self.model_dir.exists() {
                 std::fs::rename(&self.model_dir, &backup).map_err(|error| error.to_string())?;
@@ -1246,15 +1285,15 @@ impl KnowledgeService {
                 }
                 return Err(error.to_string());
             }
-            let _ = std::fs::remove_file(&download);
             if backup.exists() {
                 let _ = std::fs::remove_dir_all(backup);
             }
-            self.load_model_and_index_pending().await
+            *self.embedder.write() = Some(Arc::new(candidate_embedder));
+            *self.model_error.write() = None;
+            Ok(())
         }
         .await;
         if result.is_err() {
-            let _ = std::fs::remove_file(&download);
             let _ = std::fs::remove_dir_all(&candidate);
         }
         result
@@ -1296,61 +1335,6 @@ fn hash_secret(value: &str) -> String {
 fn hash_bytes(value: &[u8]) -> String {
     let digest = Sha256::digest(value);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn hash_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
-async fn download_file(url: &str, destination: &Path) -> Result<(), String> {
-    crate::ensure_tls_crypto_provider();
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .read_timeout(std::time::Duration::from_secs(90))
-        .timeout(std::time::Duration::from_secs(60 * 60))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?;
-    let mut file = std::fs::File::create(destination).map_err(|error| error.to_string())?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        use std::io::Write;
-        file.write_all(&chunk.map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    }
-    file.sync_all().map_err(|error| error.to_string())
-}
-
-fn verify_file(path: &Path, expected: &str) -> Result<(), String> {
-    let actual = hash_file(path)?;
-    if expected.eq_ignore_ascii_case(&actual) {
-        Ok(())
-    } else {
-        Err(format!(
-            "模型 SHA-256 校验失败({})：期望 {expected}，实际 {actual}",
-            path.display()
-        ))
-    }
 }
 
 fn normalized_name(value: &str, fallback: &str) -> Result<String, String> {
@@ -1616,6 +1600,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restoring_old_copy_is_rejected_after_same_content_is_uploaded_again() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "shared".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let original = service
+            .upload_document(collection.id, "original.md", b"same content".to_vec())
+            .await
+            .unwrap();
+        service.trash_document(original.id).unwrap();
+        let replacement = service
+            .upload_document(collection.id, "replacement.md", b"same content".to_vec())
+            .await
+            .unwrap();
+
+        let error = service.restore_document(original.id).unwrap_err();
+        assert!(error.contains("相同内容"));
+        assert_eq!(service.documents(collection.id, false).unwrap().len(), 1);
+        assert_eq!(
+            service.documents(collection.id, false).unwrap()[0].id,
+            replacement.id
+        );
+    }
+
+    #[tokio::test]
     async fn permanent_delete_removes_managed_source_bytes() {
         let root = tempfile::tempdir().unwrap();
         let service = KnowledgeService::boot(root.path().to_path_buf(), None)
@@ -1664,5 +1679,119 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn boot_stays_available_when_another_process_is_installing_the_model() {
+        let root = tempfile::tempdir().unwrap();
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        let _install_lock = crate::try_lock_knowledge_model_install(&model_dir).unwrap();
+
+        let boot = KnowledgeService::boot(root.path().join("data"), Some(model_dir)).unwrap();
+
+        assert!(!boot.service.ready());
+        assert_eq!(
+            boot.service.model_error().as_deref(),
+            Some(crate::KNOWLEDGE_MODEL_INSTALL_BUSY)
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_shared_model_is_loaded_without_resolving_download_url() {
+        let root = tempfile::tempdir().unwrap();
+        let model_parent = root.path().join("models");
+        let model_dir = model_parent.join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for (name, contents) in [
+            ("model.onnx", b"not-a-real-onnx".as_slice()),
+            ("tokenizer.json", b"{}".as_slice()),
+            ("config.json", b"{}".as_slice()),
+            ("special_tokens_map.json", b"{}".as_slice()),
+            ("tokenizer_config.json", b"{}".as_slice()),
+        ] {
+            std::fs::write(model_dir.join(name), contents).unwrap();
+        }
+        let resolved = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&resolved);
+        let loaded = Arc::new(AtomicBool::new(false));
+        let loaded_observed = Arc::clone(&loaded);
+
+        let result = service
+            .download_model_with(
+                move || {
+                    observed.store(true, Ordering::Release);
+                    String::new()
+                },
+                move || {
+                    let loaded_observed = Arc::clone(&loaded_observed);
+                    async move {
+                        loaded_observed.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(loaded.load(Ordering::Acquire));
+        assert!(
+            !resolved.load(Ordering::Acquire),
+            "a complete shared directory must bypass the network download path"
+        );
+        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!(".{MODEL_NAME}.candidate-"))));
+    }
+
+    #[tokio::test]
+    async fn invalid_complete_shared_model_falls_back_to_download() {
+        let root = tempfile::tempdir().unwrap();
+        let model_parent = root.path().join("models");
+        let model_dir = model_parent.join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for name in [
+            "model.onnx",
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ] {
+            std::fs::write(model_dir.join(name), b"invalid").unwrap();
+        }
+        let resolved = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&resolved);
+
+        let error = service
+            .download_model_with(
+                move || {
+                    observed.store(true, Ordering::Release);
+                    String::new()
+                },
+                || async { Err("invalid model".to_string()) },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(resolved.load(Ordering::Acquire));
+        assert_eq!(
+            error,
+            format!(
+                "{} 不能为空",
+                crate::model_download::KNOWLEDGE_MODEL_HF_BASE_URL_ENV
+            )
+        );
+        assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!(".{MODEL_NAME}.candidate-"))));
     }
 }

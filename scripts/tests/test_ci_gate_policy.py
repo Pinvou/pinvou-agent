@@ -227,6 +227,14 @@ class CiGatePolicyTests(unittest.TestCase):
             "github.event.pull_request.draft == false", windows_rust_test
         )
 
+        windows_rust_test = self.pr_workflow.split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn(
+            "defaults:\n      run:\n        shell: bash",
+            windows_rust_test,
+        )
+
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         release_contract = self.pr_workflow.split(
             "\n  release-contract-test:", maxsplit=1

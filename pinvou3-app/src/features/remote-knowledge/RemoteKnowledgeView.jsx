@@ -449,6 +449,17 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }, [includeTrash, resetDocumentPaging]);
 
+  const refreshRemoteKnowledge = useCallback(() => run('remote-refresh', async () => {
+    await Promise.all([loadConnections(), loadHostStatus()]);
+    const serverId = selectedServerRef.current;
+    const collectionId = selectedCollectionRef.current;
+    await loadCollections(serverId);
+    if (serverId !== selectedServerRef.current) return;
+    if (collectionId === selectedCollectionRef.current) {
+      await loadDocuments(serverId, collectionId, true);
+    }
+  }), [loadCollections, loadConnections, loadDocuments, loadHostStatus, run]);
+
   useEffect(() => { loadConnections(); }, [loadConnections]);
   useEffect(() => { loadHostStatus(); }, [loadHostStatus]);
   useEffect(() => {
@@ -1276,8 +1287,8 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                   {t.remoteKbReconnectHost}
                 </button>
               )}
-              {hostStatus?.supported && hostStatus.upgradeAvailable && (
-                <button className={soft} onClick={upgradeHost} disabled={isBusy('upgrade-host')}>
+              {hostStatus?.supported && hostStatus.upgradeAvailable && !hostStatus.clientOutdated && (
+                <button data-testid="shared-kb-upgrade-host" className={soft} onClick={upgradeHost} disabled={isBusy('upgrade-host')}>
                   {isBusy('upgrade-host') && <RefreshCw size={14} className="animate-spin" />}
                   {t.remoteKbUpgradeHost}
                 </button>
@@ -1292,17 +1303,36 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               </button>
               <button
                 className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-white/70 px-4 text-[13px] font-semibold text-[#456267] transition-colors hover:bg-white disabled:opacity-45 dark:bg-white/10 dark:text-[#C4C7C5] dark:hover:bg-white/15"
-                onClick={loadConnections}
+                onClick={refreshRemoteKnowledge}
                 disabled={anyBusy}
                 data-testid="remote-refresh-connections"
                 title={t.remoteKbRefresh}
               >
-                <RefreshCw size={14} className={isBusy('connections') ? 'animate-spin' : ''} />
+                <RefreshCw size={14} className={isBusy('remote-refresh') || isBusy('connections') ? 'animate-spin' : ''} />
                 <span className="sr-only">{t.remoteKbRefresh}</span>
               </button>
             </div>
           </div>
         </header>
+
+        {hostStatus?.supported && hostStatus.clientOutdated && (
+          <div
+            data-testid="shared-kb-client-outdated"
+            role="status"
+            aria-live="polite"
+            className="flex items-start gap-3 rounded-2xl border border-[#e6a23c]/25 bg-[#fff8e8] px-4 py-3.5 text-[#805719] dark:border-[#e6a23c]/25 dark:bg-[#3a2b15] dark:text-[#f2c879]"
+          >
+            <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold">{t.remoteKbClientOutdatedTitle}</p>
+              <p className="mt-0.5 text-[12px] leading-5 opacity-85">
+                {t.remoteKbClientOutdatedDesc
+                  .replace('{appVersion}', hostStatus.appVersion || '—')
+                  .replace('{serviceVersion}', hostStatus.serviceVersion || '—')}
+              </p>
+            </div>
+          </div>
+        )}
 
         {notice && (
           <div role="status" className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${notice.type === 'error' ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}>

@@ -123,6 +123,17 @@ assert.deepEqual(
   [linuxStartupOverlay, explicitOverlay],
   "explicit Linux dev overlays must override the automatic cold-start overlay",
 );
+const linuxKnowledgeHostDevOverlay = JSON.stringify({
+  bundle: { resources: { "target/knowledge-host-dev/": "runtime/knowledge-host" } },
+});
+assert.deepEqual(
+  configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], {
+    platform: "linux",
+    additionalConfigs: [linuxKnowledgeHostDevOverlay],
+  })),
+  [linuxStartupOverlay, linuxKnowledgeHostDevOverlay, explicitOverlay],
+  "Linux dev host resources must be injected before caller overrides",
+);
 assert.deepEqual(
   prepareTauriArgs(["dev"], { platform: "darwin" }),
   ["dev", "--config", platformConfigPath("darwin")],

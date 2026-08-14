@@ -767,6 +767,11 @@ jobs:
         )
       }}
     runs-on: windows-latest
+    # 状态机回归使用 Bash 循环；job 级固定 shell 也覆盖 merge ref 从 base
+    # 带入该步骤的场景。本 job 其余 run 命令均兼容 Bash。
+    defaults:
+      run:
+        shell: bash
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。
     timeout-minutes: 90

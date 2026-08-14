@@ -351,7 +351,7 @@
       startupLoading: false, // 已安装模型在首帧后的后台加载状态
       startupReady: null, // null=未知；true=当前进程可用；false=未安装或加载失败
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
-      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
+      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
     },
     scheduledTasks: [],

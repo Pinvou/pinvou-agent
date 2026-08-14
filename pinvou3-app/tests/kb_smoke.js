@@ -122,7 +122,7 @@ function injectSource() {
           identity:'nearby-office',serverId:'nearby-office',name:'Office Shared Knowledge',
           endpoints:['https://192.168.1.50:3210']
         }]);
-        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false});
+        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
         case 'shared_kb_host_lan_endpoints': return Promise.resolve(['https://192.168.1.20:3210']);
         case 'shared_kb_host_reconnect': {
           const connection={serverId:'lan-cube',name:'LAN Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'};
@@ -189,7 +189,8 @@ function injectSource() {
           docCount:window.__REMOTE_DOCUMENT_PAGE_TEST__?201:2,
           chunkCount:window.__REMOTE_DOCUMENT_PAGE_TEST__?222:23,
           totalBytes:15409,createdAt:1,updatedAt:1,deletedAt:null
-        }, ...(window.__REMOTE_CREATED_COLLECTION__ ? [window.__REMOTE_CREATED_COLLECTION__] : [])]);
+        }, ...(window.__REMOTE_EXTERNAL_COLLECTION__ ? [window.__REMOTE_EXTERNAL_COLLECTION__] : []),
+          ...(window.__REMOTE_CREATED_COLLECTION__ ? [window.__REMOTE_CREATED_COLLECTION__] : [])]);
         case 'remote_kb_create_collection': {
           window.__REMOTE_CREATED_COLLECTION__={
             id:102,name:args?.name || 'Published',description:args?.description || null,status:'ready',
@@ -202,6 +203,9 @@ function injectSource() {
             {id:201,collectionId:101,name:'code-plain-decoupling-改动说明.md',ext:'md',size:11196,sha256:'mock-a',status:'ready',nChunks:14,createdAt:1,updatedAt:1,deletedAt:null,error:null},
             {id:202,collectionId:101,name:'fork-modifications.en.md',ext:'md',size:4213,sha256:'mock-b',status:'ready',nChunks:9,createdAt:1,updatedAt:1,deletedAt:null,error:null}
           ];
+          if (window.__REMOTE_EXTERNAL_DOCUMENT__?.collectionId === args?.collectionId) {
+            documents.push(window.__REMOTE_EXTERNAL_DOCUMENT__);
+          }
           if (window.__REMOTE_DOCUMENT_PAGE_TEST__) {
             for (let index = 0; index < 199; index += 1) {
               documents.push({
@@ -581,6 +585,90 @@ async function chooseRemoteUploadSource(page, testId) {
   rec('⓪e 后台提权后刷新即显示上传入口', refreshClicked && managedPermission.manage
     && !managedPermission.hint && managedPermission.upload && managedPermission.remoteCalls === 3,
   JSON.stringify(managedPermission));
+
+  await page.waitForFunction(() => !document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled);
+  await page.evaluate(() => {
+    window.__REMOTE_HOST_STATUS__ = {
+      supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',
+      serviceVersion:'0.10.0',appVersion:'0.9.9',upgradeAvailable:true,clientOutdated:true
+    };
+    document.querySelector('[data-testid="remote-refresh-connections"]')?.click();
+  });
+  await page.waitForSelector('[data-testid="shared-kb-client-outdated"]', { timeout: 5000 }).catch(async error => {
+    const debug = await page.evaluate(() => ({
+      hostStatus: window.__REMOTE_HOST_STATUS__,
+      calls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_host_status').length,
+      panel: document.querySelector('[data-testid="remote-knowledge-panel"]')?.innerText || '',
+      refreshDisabled: document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled,
+    }));
+    throw new Error(`${error.message}: ${JSON.stringify(debug)}`);
+  });
+  const outdatedHostGuard = await page.evaluate(() => ({
+    warning: document.querySelector('[data-testid="shared-kb-client-outdated"]')?.innerText || '',
+    upgradeVisible: !!document.querySelector('[data-testid="shared-kb-upgrade-host"]'),
+  }));
+  rec('⓪f 旧客户端提示升级并禁止服务降级',
+    outdatedHostGuard.warning.includes('0.9.9') && outdatedHostGuard.warning.includes('0.10.0')
+      && !outdatedHostGuard.upgradeVisible,
+    JSON.stringify(outdatedHostGuard));
+  await page.waitForFunction(() => !document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled);
+  await page.evaluate(() => {
+    delete window.__REMOTE_HOST_STATUS__;
+    document.querySelector('[data-testid="remote-refresh-connections"]')?.click();
+  });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="shared-kb-client-outdated"]'));
+
+  await page.waitForFunction(() => !document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled);
+  const remoteContentRefreshBefore = await page.evaluate(() => ({
+    collections: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_collections').length,
+    documents: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_documents').length,
+    hostStatus: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_host_status').length,
+  }));
+  await page.evaluate(() => {
+    window.__REMOTE_EXTERNAL_COLLECTION__ = {
+      id:103,name:'External refresh collection',description:null,status:'ready',
+      docCount:1,chunkCount:3,totalBytes:256,createdAt:3,updatedAt:3,deletedAt:null
+    };
+    window.__REMOTE_EXTERNAL_DOCUMENT__ = {
+      id:206,collectionId:101,name:'external-refresh.md',ext:'md',size:256,sha256:'mock-refresh',
+      status:'ready',nChunks:3,createdAt:3,updatedAt:3,deletedAt:null,error:null
+    };
+    document.querySelector('[data-testid="remote-refresh-connections"]')?.click();
+  });
+  await page.waitForFunction(() => {
+    const collections = document.querySelector('[data-testid="remote-collections-grid"]')?.innerText || '';
+    const documents = [...document.querySelectorAll('[data-testid="remote-document-row"]')]
+      .map(row => row.innerText).join('\n');
+    return collections.includes('External refresh collection') && documents.includes('external-refresh.md');
+  }, { timeout: 5000 }).catch(async error => {
+    const debug = await page.evaluate(() => ({
+      collections: document.querySelector('[data-testid="remote-collections-grid"]')?.innerText || '',
+      documents: [...document.querySelectorAll('[data-testid="remote-document-row"]')].map(row => row.innerText),
+      calls: (window.__KB_CALLS__ || []).filter(call => [
+        'remote_kb_connections', 'remote_kb_collections', 'remote_kb_documents',
+      ].includes(call.cmd)).slice(-8),
+      refreshDisabled: document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled,
+    }));
+    throw new Error(`${error.message}: ${JSON.stringify(debug)}`);
+  });
+  const remoteContentRefresh = await page.evaluate((before) => ({
+    collectionVisible: (document.querySelector('[data-testid="remote-collections-grid"]')?.innerText || '')
+      .includes('External refresh collection'),
+    documentVisible: [...document.querySelectorAll('[data-testid="remote-document-row"]')]
+      .some(row => (row.innerText || '').includes('external-refresh.md')),
+    collectionCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_collections').length - before.collections,
+    documentCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_documents').length - before.documents,
+    hostStatusCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_host_status').length - before.hostStatus,
+  }), remoteContentRefreshBefore);
+  rec('shared knowledge refresh reloads collections and documents created by another client',
+    remoteContentRefresh.collectionVisible && remoteContentRefresh.documentVisible
+      && remoteContentRefresh.collectionCalls >= 1 && remoteContentRefresh.documentCalls >= 1
+      && remoteContentRefresh.hostStatusCalls >= 1,
+    JSON.stringify(remoteContentRefresh));
+  await page.evaluate(() => {
+    delete window.__REMOTE_EXTERNAL_COLLECTION__;
+    delete window.__REMOTE_EXTERNAL_DOCUMENT__;
+  });
 
   const firstDocumentRequest = await page.evaluate(() => (window.__KB_CALLS__ || [])
     .find(call => call.cmd === 'remote_kb_documents'));

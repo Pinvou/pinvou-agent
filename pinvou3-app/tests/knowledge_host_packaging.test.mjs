@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
+const {
+  DEVELOPMENT_RESOURCE_SOURCE,
+  developmentHelperSource,
+  knowledgeHostDevelopmentConfigSpec,
+} = require('../scripts/tauri/knowledge-host.js');
 const helperPath = path.join(
   appRoot,
   'src-tauri/resources/platforms/linux/knowledge-host/pinvou-knowledge-host-helper',
@@ -42,6 +49,36 @@ test('Linux package embeds the host helper and standalone server build', () => {
     { cwd: repositoryRoot, encoding: 'utf8' },
   ).trim();
   assert.match(indexEntry, /^100755\s/u);
+  const eolAttribute = execFileSync(
+    'git',
+    ['check-attr', 'eol', '--', helperRelativePath],
+    { cwd: repositoryRoot, encoding: 'utf8' },
+  ).trim();
+  assert.match(eolAttribute, /: eol: lf$/u);
+});
+
+test('Linux dev stages an explicit user-owned host resource without weakening packages', () => {
+  assert.match(helper, /^DEVELOPMENT_RESOURCE=0$/mu);
+  const developmentHelper = developmentHelperSource(helper);
+  assert.match(developmentHelper, /^DEVELOPMENT_RESOURCE=1$/mu);
+  assert.doesNotMatch(developmentHelper, /^DEVELOPMENT_RESOURCE=0$/mu);
+  assert.deepEqual(JSON.parse(knowledgeHostDevelopmentConfigSpec()), {
+    bundle: {
+      resources: {
+        [DEVELOPMENT_RESOURCE_SOURCE]: 'runtime/knowledge-host',
+      },
+    },
+  });
+  assert.match(buildScript, /prepareKnowledgeHost\(\{ development: true \}\)/u);
+  assert.match(buildScript, /additionalConfigs\.push\(developmentHost\.configSpec\)/u);
+  assert.match(helper, /\[ "\$DEVELOPMENT_RESOURCE" -eq 1 \] \|\| fail "请使用正式安装的 PINVOU/u);
+  assert.match(helper, /\[ "\$owner" -eq "\$service_uid" \]/u);
+  assert.match(helper, /\[ "\$helper_owner" -eq "\$service_uid" \]/u);
+  assert.match(helper, /开发服务资源必须与管理组件同目录/u);
+  assert.match(helper, /validate_development_path_chain "\$resource_dir" "\$service_uid"/u);
+  assert.match(helper, /\[ "\$directory_owner" -eq 0 \] \|\| \[ "\$directory_owner" -eq "\$service_uid" \]/u);
+  assert.match(helper, /开发资源目录链权限不安全/u);
+  assert.match(helper, /开发资源目录权限不安全/u);
 });
 
 test('host helper keeps lifecycle operations explicit and persistent', () => {
@@ -58,6 +95,65 @@ test('host helper keeps lifecycle operations explicit and persistent', () => {
   assert.match(helper, /same-host\|content-only/u);
   assert.match(helper, /systemctl enable/u);
   assert.match(helper, /WantedBy=multi-user\.target/u);
+});
+
+test('host helper compares semantic versions and refuses a service downgrade', () => {
+  assert.match(helper, /command -v setpriv[^\n]+无法安全安装共享知识库/u);
+  assert.match(helper, /version_output=\$\(setpriv --reuid "\$service_uid" --regid "\$service_gid" --clear-groups --/u);
+  assert.doesNotMatch(helper, /version_output=\$\("\$binary" --version/u);
+  assert.match(helper, /source_version=\$\(binary_release_version "\$source_bin" "\$service_uid" "\$service_gid"\)/u);
+  assert.match(helper, /installed_version=\$\(binary_release_version "\$INSTALL_BIN" "\$service_uid" "\$service_gid"\)/u);
+  assert.match(helper, /if \[ -f "\$INSTALL_BIN" \]; then\s+source_version=/u);
+  assert.match(helper, /version_result=\$\(semver_compare "\$source_version" "\$installed_version"\)/u);
+  assert.match(helper, /\[ "\$version_result" -lt 0 \]/u);
+  assert.match(helper, /已拒绝降级/u);
+
+  if (process.platform === 'win32') return;
+  const functionsStart = helper.indexOf('validate_semver_identifiers() {');
+  const functionsEnd = helper.indexOf('\nwrite_unit() {', functionsStart);
+  assert.ok(functionsStart >= 0 && functionsEnd > functionsStart);
+  const semanticVersionFunctions = helper.slice(functionsStart, functionsEnd);
+  const script = `set -eu
+fail() { printf '%s\\n' "$*" >&2; exit 1; }
+${semanticVersionFunctions}
+actual=$(semver_compare "$1" "$2")
+[ "$actual" = "$3" ]`;
+  for (const [left, right, expected] of [
+    ['0.10.0', '0.9.99', '1'],
+    ['0.8.1', '0.8.1', '0'],
+    ['0.8.1-rc.2', '0.8.1', '-1'],
+    ['0.8.1', '0.8.1-rc.2', '1'],
+    ['1.0.0-alpha.1', '1.0.0-alpha.beta', '-1'],
+    ['1.0.0-beta.2', '1.0.0-beta.11', '-1'],
+    ['0.8.1+desktop', '0.8.1+service', '0'],
+  ]) {
+    execFileSync('/bin/sh', ['-c', script, 'semver-test', left, right, expected]);
+  }
+});
+
+test('host helper binds every dropped privilege operation to the account primary group', () => {
+  assert.match(helper, /validate_service_account\(\)[\s\S]*getent passwd "\$candidate_uid"[\s\S]*cut -d: -f4[\s\S]*\[ "\$service_primary_gid" = "\$candidate_gid" \]/u);
+  for (const operation of ['install_or_upgrade', 'set_owner_device', 'recover_owner', 'validate_service_identity']) {
+    const start = helper.indexOf(`${operation}() {`);
+    const end = helper.indexOf('\n}', start);
+    assert.ok(start >= 0 && end > start, operation);
+    assert.match(helper.slice(start, end), /validate_service_account "\$service_uid" "\$service_gid"/u);
+  }
+  assert.match(helper, /setpriv --reuid "\$service_uid" --regid "\$service_gid" --clear-groups -- \\\s*\n\s*"\$INSTALL_BIN" --health-check/u);
+  assert.doesNotMatch(helper, /if "\$INSTALL_BIN" --health-check/u);
+
+  if (process.platform !== 'linux') return;
+  const functionsStart = helper.indexOf('validate_semver_identifiers() {');
+  const functionsEnd = helper.indexOf('\nwrite_unit() {', functionsStart);
+  const accountScript = `set -eu
+fail() { printf '%s\\n' "$*" >&2; exit 1; }
+${helper.slice(functionsStart, functionsEnd)}
+account=$(getent passwd nobody 2>/dev/null || getent passwd | awk -F: '$3 != 0 && $4 != 0 { print; exit }')
+uid=$(printf '%s' "$account" | cut -d: -f3)
+gid=$(printf '%s' "$account" | cut -d: -f4)
+validate_service_account "$uid" "$gid"
+if (validate_service_account "$uid" "$((gid + 1))" >/dev/null 2>&1); then exit 1; fi`;
+  execFileSync('/bin/sh', ['-c', accountScript]);
 });
 
 test('maintenance operations restart the service after failure, cancellation, or success', () => {
@@ -84,7 +180,11 @@ test('owner claim survives until the native client persists it and health uses T
 
 test('host helper reuses the exact local model directory with systemd hardening', () => {
   assert.match(helper, /\.pinvou3\/knowledge\/models\/bge-m3/u);
-  assert.match(helper, /BindPaths=\$model_dir:\$MODEL_MOUNT/u);
+  assert.match(helper, /model_parent=\$\(dirname "\$model_dir"\)/u);
+  assert.match(helper, /model_name=\$\(basename "\$model_dir"\)/u);
+  assert.match(helper, /BindPaths=\$model_parent:\$MODEL_MOUNT/u);
+  assert.match(helper, /--model-dir \$MODEL_MOUNT\/\$model_name/u);
+  assert.match(helper, /install -d -m 0700 -o "\$service_uid" -g "\$service_gid" "\$model_parent"/u);
   assert.match(helper, /ProtectSystem=strict/u);
   assert.match(helper, /ProtectHome=tmpfs/u);
   assert.match(helper, /NoNewPrivileges=true/u);

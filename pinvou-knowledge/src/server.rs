@@ -957,7 +957,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn network_api_requires_the_persisted_service_ca() {
         let root = tempfile::tempdir().unwrap();
-        let service = KnowledgeService::boot(root.path().to_path_buf(), Some("TLS Host".into()))
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
             .unwrap()
             .service;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1010,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn share_join_request_owner_approval_and_independent_token_work_end_to_end() {
         let root = tempfile::tempdir().unwrap();
-        let service = KnowledgeService::boot(root.path().to_path_buf(), Some("Shared Team".into()))
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
             .unwrap()
             .service;
         let owner_token = "host-owner-token-that-is-long-enough-0001";
@@ -1264,7 +1264,7 @@ mod tests {
     #[test]
     fn join_request_host_filter_accepts_http2_authority_without_host_header() {
         let headers = HeaderMap::new();
-        let tailnet: Uri = "https://100.98.184.13:3210/api/v2/join-requests"
+        let tailnet: Uri = "https://100.64.12.34:3210/api/v2/join-requests"
             .parse()
             .unwrap();
         assert!(is_private_network_host(&tailnet, &headers));

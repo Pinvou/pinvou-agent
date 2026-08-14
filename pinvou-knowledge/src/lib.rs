@@ -3,11 +3,14 @@
 //! 本 crate 不依赖 Tauri 或 Pinvou 桌面应用。桌面端通过 [`client`] 访问远程服务，
 //! 服务端通过 [`KnowledgeService`] 持有源文档、索引与授权状态。
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 
 pub mod discovery;
 pub mod embedding;
 pub mod model;
+#[cfg(feature = "client")]
+pub mod model_download;
 #[cfg(feature = "server")]
 pub mod parser;
 #[cfg(feature = "server")]
@@ -32,15 +35,60 @@ pub use service::{KnowledgeService, ServiceBoot};
 /// 客户端和服务端共同执行的单文件上传上限。
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-/// 本地知识库与共享知识库共同使用的 BGE-M3 发布包。
+/// 本地知识库与共享知识库共用模型目录时使用的跨进程安装锁。
 ///
-/// 下载源、摘要和体积必须保持为同一份不可变资产，避免桌面端与服务端
-/// 各自维护一套模型来源。两端仍分别支持环境变量覆盖，用于企业内网镜像。
-pub const KNOWLEDGE_MODEL_ARCHIVE_URL: &str =
-    "https://github.com/Pinvou/pinvou-agent/releases/download/kb-model-v1/bge-m3.tar.gz";
-pub const KNOWLEDGE_MODEL_ARCHIVE_SHA256: &str =
-    "86438791d1ee7c9989c75878d3623ab28a7e4cd57aa3a7816480043d1de62efe";
-pub const KNOWLEDGE_MODEL_ARCHIVE_BYTES: u64 = 407_925_014;
+/// 锁文件位于模型父目录中，因此 Linux 共享服务即使通过 bind mount 使用不同路径，
+/// 仍会锁定同一个底层文件。锁文件本身可以长期保留；进程退出或崩溃时操作系统会
+/// 自动释放文件锁。
+pub const KNOWLEDGE_MODEL_INSTALL_BUSY: &str = "另一进程正在准备知识库模型，请稍后刷新并重试";
+const KNOWLEDGE_MODEL_INSTALL_LOCK_FILE: &str = ".bge-m3.install.lock";
+
+#[derive(Debug)]
+pub struct KnowledgeModelInstallLock {
+    file: File,
+}
+
+impl Drop for KnowledgeModelInstallLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// 尝试获取模型目录的跨进程排他安装锁。
+///
+/// 使用非阻塞锁，避免在 Tauri/Tokio 异步线程上等待数百 MB 的下载过程。调用方应
+/// 将返回的 guard 持有到候选模型验证、目录替换与 Embedder 构造全部完成。
+pub fn try_lock_knowledge_model_install(
+    model_dir: &Path,
+) -> Result<KnowledgeModelInstallLock, String> {
+    let parent = knowledge_model_lock_parent(model_dir)?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建模型父目录({}): {error}", parent.display()))?;
+    let lock_path = parent.join(KNOWLEDGE_MODEL_INSTALL_LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("无法打开模型安装锁({}): {error}", lock_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(KnowledgeModelInstallLock { file }),
+        Err(TryLockError::WouldBlock) => Err(KNOWLEDGE_MODEL_INSTALL_BUSY.to_string()),
+        Err(TryLockError::Error(error)) => Err(format!(
+            "无法锁定模型目录({}): {error}",
+            model_dir.display()
+        )),
+    }
+}
+
+fn knowledge_model_lock_parent(model_dir: &Path) -> Result<&Path, String> {
+    match model_dir.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(parent) => Ok(parent),
+        None => Err("模型目录无父目录".to_string()),
+    }
+}
 
 /// Select one process-wide rustls provider before either reqwest or the
 /// embedded HTTPS server builds a TLS configuration. Linux pulls both ring
@@ -149,9 +197,14 @@ pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
-    use super::{chunk_text, is_supported_document_path};
+    use super::{
+        chunk_text, is_supported_document_path, knowledge_model_lock_parent,
+        try_lock_knowledge_model_install, KNOWLEDGE_MODEL_INSTALL_BUSY,
+    };
 
     #[test]
     fn chunking_keeps_overlap_without_stalling() {
@@ -167,5 +220,70 @@ mod tests {
         assert!(is_supported_document_path(Path::new("sheet.xlsx")));
         assert!(!is_supported_document_path(Path::new("archive.zip")));
         assert!(!is_supported_document_path(Path::new("secret.key")));
+    }
+
+    #[test]
+    fn relative_model_directory_locks_in_the_current_directory() {
+        assert_eq!(
+            knowledge_model_lock_parent(Path::new("bge-m3")).unwrap(),
+            Path::new(".")
+        );
+    }
+
+    #[test]
+    fn model_install_lock_child_process() {
+        let Some(model_dir) = std::env::var_os("PINVOU_TEST_MODEL_LOCK_DIR").map(PathBuf::from)
+        else {
+            return;
+        };
+        let ready = PathBuf::from(
+            std::env::var_os("PINVOU_TEST_MODEL_LOCK_READY").expect("child ready path"),
+        );
+        let release = PathBuf::from(
+            std::env::var_os("PINVOU_TEST_MODEL_LOCK_RELEASE").expect("child release path"),
+        );
+        let _guard = try_lock_knowledge_model_install(&model_dir).expect("child acquires lock");
+        std::fs::write(&ready, b"ready").expect("child reports acquired lock");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !release.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn model_install_lock_serializes_processes_and_releases_on_exit() {
+        let root = tempfile::tempdir().expect("temporary model parent");
+        let model_dir = root.path().join("bge-m3");
+        let ready = root.path().join("child-ready");
+        let release = root.path().join("child-release");
+        let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg("tests::model_install_lock_child_process")
+            .arg("--nocapture")
+            .env("PINVOU_TEST_MODEL_LOCK_DIR", &model_dir)
+            .env("PINVOU_TEST_MODEL_LOCK_READY", &ready)
+            .env("PINVOU_TEST_MODEL_LOCK_RELEASE", &release)
+            .spawn()
+            .expect("spawn lock holder");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not acquire the model lock");
+        }
+
+        let contention = try_lock_knowledge_model_install(&model_dir).unwrap_err();
+        std::fs::write(&release, b"release").expect("release child lock");
+        let status = child.wait().expect("wait for lock holder");
+        assert!(status.success());
+        assert_eq!(contention, KNOWLEDGE_MODEL_INSTALL_BUSY);
+
+        let guard = try_lock_knowledge_model_install(&model_dir)
+            .expect("process exit must release the model lock");
+        drop(guard);
     }
 }

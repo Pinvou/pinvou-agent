@@ -1069,7 +1069,7 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;

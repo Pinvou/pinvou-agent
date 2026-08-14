@@ -19,7 +19,7 @@ required-features = ["server"]
 
 [features]
 default = ["client", "local-embed", "server"]
-client = ["dep:reqwest", "dep:rustls"]
+client = ["dep:futures-util", "dep:reqwest", "dep:rustls"]
 local-embed = ["dep:fastembed"]
 server = [
     "client",
@@ -29,7 +29,6 @@ server = [
     "dep:age",
     "dep:clap",
     "dep:flate2",
-    "dep:futures-util",
     "dep:mime_guess",
     "dep:rcgen",
     "dep:tar",

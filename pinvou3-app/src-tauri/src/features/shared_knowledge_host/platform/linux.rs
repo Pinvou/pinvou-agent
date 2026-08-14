@@ -8,12 +8,13 @@ use pinvou_knowledge::client::KnowledgeClient;
 use pinvou_knowledge::model::DeviceGrant;
 
 use super::super::{
-    HostOwnerClaim, HostRestoreResult, PackagedHostResources, SharedKnowledgeHostStatus,
-    LOCAL_ENDPOINT,
+    compare_host_versions, HostOwnerClaim, HostRestoreResult, HostVersionState,
+    PackagedHostResources, SharedKnowledgeHostStatus, LOCAL_ENDPOINT,
 };
 
 pub async fn status() -> SharedKnowledgeHostStatus {
-    let installed = Path::new("/usr/lib/pinvou/pinvou-knowledge-server").is_file();
+    let installed_binary = Path::new("/usr/lib/pinvou/pinvou-knowledge-server");
+    let installed = installed_binary.is_file();
     let running = tokio::task::spawn_blocking(|| {
         Command::new("systemctl")
             .args(["is-active", "--quiet", "pinvou-knowledge.service"])
@@ -30,9 +31,20 @@ pub async fn status() -> SharedKnowledgeHostStatus {
     } else {
         None
     };
-    let service_version = info.map(|value| value.version);
+    let service_version = if let Some(info) = info {
+        Some(info.version)
+    } else if installed {
+        tokio::task::spawn_blocking(installed_service_version)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
     let app_version = env!("CARGO_PKG_VERSION").to_string();
-    let upgrade_available = installed && service_version.as_deref() != Some(app_version.as_str());
+    let version_state = compare_host_versions(&app_version, service_version.as_deref());
+    let upgrade_available = installed && version_state == HostVersionState::UpgradeAvailable;
+    let client_outdated = installed && version_state == HostVersionState::ClientOutdated;
     SharedKnowledgeHostStatus {
         supported: true,
         installed,
@@ -41,7 +53,27 @@ pub async fn status() -> SharedKnowledgeHostStatus {
         service_version,
         app_version,
         upgrade_available,
+        client_outdated,
     }
+}
+
+fn installed_service_version() -> Option<String> {
+    let output = Command::new("/usr/lib/pinvou/pinvou-knowledge-server")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    service_version_from_output(&output.stdout)
+}
+
+fn service_version_from_output(output: &[u8]) -> Option<String> {
+    std::str::from_utf8(output)
+        .ok()?
+        .split_whitespace()
+        .next_back()
+        .map(str::to_string)
 }
 
 pub async fn install_or_upgrade(
@@ -354,5 +386,15 @@ mod tests {
         for address in ["127.0.0.1", "8.8.8.8", "100.64.12.34", "::1"] {
             assert!(!is_lan_address(address.parse().unwrap()), "{address}");
         }
+    }
+
+    #[test]
+    fn installed_binary_version_is_available_while_the_service_is_stopped() {
+        assert_eq!(
+            service_version_from_output(b"pinvou-knowledge-server 0.10.0\n"),
+            Some("0.10.0".to_string())
+        );
+        assert_eq!(service_version_from_output(b""), None);
+        assert_eq!(service_version_from_output(&[0xff]), None);
     }
 }

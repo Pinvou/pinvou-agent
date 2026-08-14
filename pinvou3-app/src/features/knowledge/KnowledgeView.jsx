@@ -637,18 +637,17 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
       const mb = (n) => Math.round((n || 0) / 1048576);
-      // 进度百分比:download 阶段用真实 downloaded/total(占 0~95%),校验/解压/完成递进到 100。
+      // 进度百分比:download 阶段用真实累计字节(占 0~95%),校验/准备/完成递进到 100。
       const dlPct = (() => {
         if (!dlProg) return 0;
-        if (dlProg.stage === 'download') return dlProg.total > 0 ? Math.min(95, Math.floor(dlProg.downloaded / dlProg.total * 95)) : 0;
-        if (dlProg.stage === 'verify') return 96;
-        if (dlProg.stage === 'extract') return 98;
+        if (dlProg.stage === 'download' || dlProg.stage === 'verify') return dlProg.total > 0 ? Math.min(95, Math.floor(dlProg.downloaded / dlProg.total * 95)) : 0;
+        if (dlProg.stage === 'prepare') return 98;
         if (dlProg.stage === 'done') return 100;
         return 0;
       })();
       const dlStageLabel = !dlProg ? t.kbModelStageDownload
         : dlProg.stage === 'verify' ? t.kbModelStageVerify
-        : dlProg.stage === 'extract' ? t.kbModelStageExtract
+        : dlProg.stage === 'prepare' ? t.kbModelStagePrepare
         : dlProg.stage === 'done' ? t.kbModelStageDone
         : t.kbModelStageDownload;
       const startModelDownload = async (repair = false) => {

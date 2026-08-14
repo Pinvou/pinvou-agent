@@ -271,6 +271,8 @@ async fn install_or_upgrade_inner(
     upgrade: bool,
     operation: &'static str,
 ) -> Result<RemoteConnection, String> {
+    let status = shared_knowledge_host::status().await;
+    shared_knowledge_host::ensure_host_install_allowed(&status)?;
     let resource_dir = app
         .path()
         .resource_dir()
