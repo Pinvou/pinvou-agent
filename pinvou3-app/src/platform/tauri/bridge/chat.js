@@ -693,7 +693,7 @@
       parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
     // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）。
-    if (parts.length && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。

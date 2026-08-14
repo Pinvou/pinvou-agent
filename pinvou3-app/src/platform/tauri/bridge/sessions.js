@@ -539,7 +539,12 @@
         await syncActivePersona();
         await syncMountedCollection();
         notify();
-        return state.activeSessionId;
+        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）：
+        // 与 create_session 窗口同一契约——切走即物化中止，返回 null 让调用方
+        // 放弃（消息回填输入框），不得返回切走后的 active 让操作漂进新会话
+        // （二审 F1）。返回非 null 时 active 必等于 meta.id，调用方重读
+        // state.activeSessionId 即为目标会话。
+        return state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
         return null;

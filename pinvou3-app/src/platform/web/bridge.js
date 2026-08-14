@@ -2999,7 +2999,12 @@
         await syncActivePersona();
         await syncMountedCollection();
         notify();
-        return state.activeSessionId;
+        // 尾部这些 await 期间用户仍可能切走（activeSessionId 已是别的会话）：
+        // 与 create_session 窗口同一契约——切走即物化中止，返回 null 让调用方
+        // 放弃，不得返回切走后的 active 让操作漂进新会话（二审 F1）。
+        // 返回非 null 时 active 必等于 meta.id，调用方重读 state.activeSessionId
+        // 即为目标会话。
+        return state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
         return null;
@@ -5031,7 +5036,12 @@
       // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
       // 错误会话（审计 #257）。
       var materialized = await ensureSession();
-      if (!materialized) return;
+      // 物化中止（await 期间切走）→ 把输入放回输入框，不静默丢字
+      // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
+      if (!materialized) {
+        prefillComposer(text);
+        return;
+      }
     }
     var sid = state.activeSessionId;
     var activeTurnBuffer = getBuffer(sid);
@@ -5195,6 +5205,9 @@
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
   async function resolvePinvouReview(resolutions, actions) {
+    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
+    // 检阅会话，不得漂进当前 active 会话（与 tauri 版对齐，二审 F2）。
+    var reviewSid = state.activeSessionId;
     // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
     // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
     var isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
@@ -5241,7 +5254,10 @@
       fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
       parts.push("（涉及外部事实的，先查证再写、标依据，别凭记忆编。）");
     }
-    if (parts.length) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）；
+    // reviewSid 为 null 的防御：草稿态本不该有检阅，双 null 通过会把指令发给
+    // ensureSession 新建的空会话。
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
   }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
