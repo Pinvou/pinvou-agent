@@ -605,7 +605,10 @@ fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
         push("env", &s.key);
     }
     for s in &manifest.secret_headers {
-        push(bundle::keyring_target(bundle::CredentialTarget::Bearer), &s.source_key);
+        push(
+            bundle::keyring_target(bundle::CredentialTarget::Bearer),
+            &s.source_key,
+        );
     }
     for f in &manifest.config_fields {
         if f.secret {
