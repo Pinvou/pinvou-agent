@@ -379,40 +379,39 @@ pub struct MarketplaceToolValidation {
 }
 
 // ---------------------------------------------------------------------------
-// 会话工具开关:按会话类型(普通 `plain` / 原生代码 `code`)各自持久化的
-// "被禁用连接器"列表。用户在某类会话里关一次,该类型所有新对话/窗口都继承,
-// 直到手动开回 —— 见「工具开关」方案,持久语义。落盘到
-// ~/.pinvou3/disabled_connectors.json。
+// 会话工具开关:按会话模式 scope 各自持久化的 "被禁用连接器"列表。用户在某类
+// 会话里关一次,该类型所有新对话/窗口都继承,直到手动开回 —— 见「工具开关」
+// 方案,持久语义。落盘到 ~/.pinvou3/disabled_connectors.json。
 //
-// 旧版本只存一个裸数组(即 plain 语义),读时兼容;写入总是写带命名空间的
-// 对象,避免两个 scope 互相覆盖。
+// 落盘格式:`{"scopes": {"<mode>": [...]}, "initialized": ["<mode>"]}`,scope
+// 键即 `SessionMode` 的 kebab-case 名。旧格式(裸数组 → plain scope;双 scope
+// 对象 `{plain, code, code_initialized}`)读时迁移并落盘;未知键保留(前向兼容)。
 // ---------------------------------------------------------------------------
 
-/// 两个 scope 的禁用连接器列表。`plain` = 普通会话,`code` = 原生代码会话。
+use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
+
+/// 连接器禁用集 scope：按会话模式键控的命名空间（键即模式 kebab-case 名）。
+/// 历史上是独立的二元枚举；泛化后降为 `SessionMode` 的别名——serde 同为
+/// kebab-case，落盘键与前端协议（`"plain"/"code"`）不变，下游引用零改动。
+pub type ConnectorScope = SessionMode;
+
+/// 按模式 scope 键控的禁用连接器列表。
 ///
-/// `code` scope 遵循「默认全关」安全默认:文件里还没有 code 记录时(首次读取),
-/// 代码会话默认禁用**所有已安装连接器**(外部能力显式开启);一旦用户改过 code
-/// 开关(`code_initialized=true`),就以落盘列表为准。
+/// 某 scope 遵循其模式的包默认策略（`SessionMode::pack_default_policy`）：
+/// `initialized` 不含该 scope 时(用户从未改过这类会话的开关),DenyAll 模式
+/// 默认禁用**所有已安装连接器**(外部能力显式开启的安全姿态),AllowAll 模式
+/// 默认全开;一旦用户改过该 scope 的开关(进入 `initialized`),就以落盘列表为准。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DisabledConnectorsFile {
+    /// scope(模式 kebab-case 名) → 该 scope 被禁用的连接器 id 列表。
     #[serde(default)]
-    pub plain: Vec<String>,
+    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
+    /// 已被用户显式初始化(改过开关)的 scope 集合。
     #[serde(default)]
-    pub code: Vec<String>,
-    /// code scope 是否已被用户显式初始化过(改过开关)。false = 未初始化,按
-    /// 「默认全禁已装连接器」处理。
-    #[serde(default)]
-    pub code_initialized: bool,
-}
-
-/// 会话类型 scope;`plain` 是缺省值。
-/// serde 供 disabled_connectors.json 等按 scope 持久化（kebab-case 与模式命名一致）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConnectorScope {
-    #[default]
-    Plain,
-    Code,
+    pub initialized: std::collections::BTreeSet<String>,
+    /// 未知键原样保留(前向兼容:新版写入的字段经旧版读写后不丢失)。
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn disabled_connectors_path() -> std::path::PathBuf {
@@ -424,21 +423,57 @@ fn disabled_connectors_path() -> std::path::PathBuf {
 /// (单写者内的落盘本身由原子写保证不撕裂,见 `save_disabled_connectors_file`)。
 static DISABLED_CONNECTORS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 读完整文件(兼容旧版裸数组格式 → plain)。
+/// 读完整文件。兼容两种旧格式,首次读到即迁移并落盘新格式:
+///  1. 裸数组 `["a","b"]`(旧版 plain 语义)→ plain scope;
+///  2. 双 scope 对象 `{plain, code, code_initialized}` → scopes map +
+///     initialized 集合(顶层带 `scopes` 键的即新格式,直接解析)。
+/// 迁移失败/内容损坏按默认值兜底(全部落空 → 各模式按包默认策略,与现行一致)。
 fn load_disabled_connectors_file() -> DisabledConnectorsFile {
     let content = match std::fs::read_to_string(disabled_connectors_path()) {
         Ok(c) => c,
         Err(_) => return DisabledConnectorsFile::default(),
     };
-    // 旧格式:裸数组 `["a","b"]` → 视为 plain。
+    // 旧格式一:裸数组 `["a","b"]` → 视为 plain scope。
     if let Ok(legacy) = serde_json::from_str::<Vec<String>>(&content) {
-        return DisabledConnectorsFile {
-            plain: legacy,
-            code: Vec::new(),
-            code_initialized: false,
-        };
+        let mut file = DisabledConnectorsFile::default();
+        file.scopes
+            .insert(SessionMode::Plain.as_str().to_string(), legacy);
+        save_disabled_connectors_file(&file);
+        return file;
     }
-    serde_json::from_str(&content).unwrap_or_default()
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return DisabledConnectorsFile::default();
+    };
+    if value.is_object() && value.get("scopes").is_none() {
+        // 旧格式二:双 scope 对象 `{plain, code, code_initialized}` → 新 map。
+        let mut file = DisabledConnectorsFile::default();
+        if let Some(obj) = value.as_object() {
+            for mode in SessionMode::ALL {
+                if let Some(ids) = obj
+                    .get(mode.as_str())
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                {
+                    file.scopes.insert(mode.as_str().to_string(), ids);
+                }
+            }
+            if obj
+                .get("code_initialized")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                file.initialized.insert(SessionMode::Code.as_str().to_string());
+            }
+            // 未知键保留(前向兼容);已消费的旧键不带入。
+            for (key, v) in obj {
+                if !matches!(key.as_str(), "plain" | "code" | "code_initialized") {
+                    file.extra.insert(key.clone(), v.clone());
+                }
+            }
+        }
+        save_disabled_connectors_file(&file);
+        return file;
+    }
+    serde_json::from_value(value).unwrap_or_default()
 }
 
 /// 写完整文件(总是对象格式)。临时文件 + rename 原子替换,并发读者不会看到
@@ -456,35 +491,32 @@ fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
 
 /// 读某 scope 被禁用的连接器 id 列表(读不到/空 → 空)。
 ///
-/// `code` scope 未初始化时(用户从未改过代码会话开关)返回全部已安装连接器 id,
-/// 即「代码会话默认全关,外部能力显式开启」的安全默认。
+/// 已初始化的 scope 以落盘列表为准;未初始化的 scope 按其模式的包默认策略
+/// 兜底:DenyAll(如 code)返回全部已安装连接器 id ——「默认全关,外部能力
+/// 显式开启」的安全默认;AllowAll(如 plain)返回落盘列表(缺省空 = 全开)。
 pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_connectors_file();
-    match scope {
-        ConnectorScope::Plain => file.plain,
-        ConnectorScope::Code => {
-            if file.code_initialized {
-                file.code
-            } else {
-                MarketplaceManager::new().installed_ids()
-            }
-        }
+    let key = scope.as_str();
+    if file.initialized.contains(key) {
+        return file.scopes.get(key).cloned().unwrap_or_default();
+    }
+    match scope.pack_default_policy() {
+        // AllowAll 无「默认全禁」兜底:落盘列表即真相(旧格式迁移来的 plain
+        // 列表即使未标记 initialized 也必须生效)。
+        PackDefaultPolicy::AllowAll => file.scopes.get(key).cloned().unwrap_or_default(),
+        PackDefaultPolicy::DenyAll => MarketplaceManager::new().installed_ids(),
     }
 }
 
-/// 写某 scope 被禁用的连接器 id 列表。
+/// 写某 scope 被禁用的连接器 id 列表(写入即标记该 scope 已初始化)。
 pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
-    match scope {
-        ConnectorScope::Plain => file.plain = ids.to_vec(),
-        ConnectorScope::Code => {
-            file.code = ids.to_vec();
-            file.code_initialized = true;
-        }
-    }
+    let key = scope.as_str().to_string();
+    file.scopes.insert(key.clone(), ids.to_vec());
+    file.initialized.insert(key);
     save_disabled_connectors_file(&file);
 }
 
@@ -498,34 +530,48 @@ pub fn save_disabled_connectors(ids: &[String]) {
     save_disabled_connectors_for(ConnectorScope::Plain, ids);
 }
 
-/// 连接器安装后同步 code scope:若用户已初始化过代码会话开关(改过),新装的
-/// 连接器默认仍保持关闭(加入 code 禁用集);未初始化时无需处理(load 会按
-/// 「默认全禁已装连接器」兜底)。
-pub fn sync_code_scope_after_install(tool_id: &str) {
+/// 连接器安装后同步所有 DenyAll 且已初始化的 scope:用户已改过这类会话开关时,
+/// 新装的连接器默认仍保持关闭(加入该 scope 禁用集);未初始化时无需处理
+/// (load 会按「默认全禁已装连接器」兜底)。AllowAll 模式无需同步(默认全开)。
+pub fn sync_deny_all_scopes_after_install(tool_id: &str) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
-    if !file.code_initialized {
-        return;
+    let mut changed = false;
+    for mode in SessionMode::ALL {
+        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+            continue;
+        }
+        let key = mode.as_str();
+        if !file.initialized.contains(key) {
+            continue;
+        }
+        let ids = file.scopes.entry(key.to_string()).or_default();
+        if !ids.iter().any(|id| id == tool_id) {
+            ids.push(tool_id.to_string());
+            changed = true;
+        }
     }
-    if !file.code.iter().any(|id| id == tool_id) {
-        file.code.push(tool_id.to_string());
+    if changed {
         save_disabled_connectors_file(&file);
     }
 }
 
-/// 连接器卸载后同步两个 scope:已卸载的连接器从 plain/code 禁用集移除,避免
+/// 连接器卸载后同步所有 scope:已卸载的连接器从各 scope 禁用集移除,避免
 /// 残留 id 指向不存在的工具。
 pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_connectors_file();
-    let before = (file.plain.len(), file.code.len());
-    file.plain.retain(|id| id != tool_id);
-    file.code.retain(|id| id != tool_id);
-    if file.plain.len() != before.0 || file.code.len() != before.1 {
+    let mut changed = false;
+    for ids in file.scopes.values_mut() {
+        let before = ids.len();
+        ids.retain(|id| id != tool_id);
+        changed |= ids.len() != before;
+    }
+    if changed {
         save_disabled_connectors_file(&file);
     }
 }
@@ -2203,26 +2249,116 @@ mod tests {
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
+            // 读到即迁移:落盘已是新 map 格式。
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(content.contains("\"scopes\""), "迁移后应为新格式: {content}");
+        });
+    }
+
+    /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:
+    /// 迁移前后行为一致(code_initialized=true → 以落盘为准;false → 默认全禁)。
+    #[test]
+    fn disabled_connectors_legacy_object_migrates_to_scopes_map() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"plain":["weather"],"code":["pptx"],"code_initialized":true}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["pptx".to_string()]
+            );
+            let file = load_disabled_connectors_file();
+            assert!(file.initialized.contains("code"));
+            // 落盘已是新格式,且不再带旧键
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(content.contains("\"scopes\""), "迁移后应为新格式: {content}");
+            assert!(
+                !content.contains("code_initialized"),
+                "旧键不应残留: {content}"
+            );
+        });
+    }
+
+    /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
+    /// (与迁移前逐字节一致);plain 列表即使无 initialized 标记也必须生效
+    /// (AllowAll 无兜底,落盘即真相)。
+    #[test]
+    fn legacy_object_uninitialized_code_keeps_deny_all_default() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"plain":["weather"],"code":[],"code_initialized":false}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()],
+                "code 未初始化应按 DenyAll 默认全禁已装连接器"
+            );
+        });
+    }
+
+    /// 新格式文件里的未知键经读-改-写后保留(前向兼容:新版字段不被旧版丢弃)。
+    #[test]
+    fn unknown_keys_survive_roundtrip() {
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["weather"]},"initialized":["plain"],"future_field":{"v":1}}"#,
+            )
+            .unwrap();
+            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                content.contains("future_field"),
+                "未知键应在读写后保留: {content}"
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()]
+            );
         });
     }
 
     /// 新装连接器:code 未初始化时无需落盘(load 已默认全禁);已初始化时自动加入禁用集(默认仍关)。
     #[test]
-    fn sync_code_scope_after_install_keeps_new_connector_disabled_by_default() {
+    fn sync_deny_all_scopes_after_install_keeps_new_connector_disabled_by_default() {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_code_scope_after_install("weather");
-            assert!(load_disabled_connectors_file().code.is_empty());
+            sync_deny_all_scopes_after_install("weather");
+            assert!(load_disabled_connectors_file()
+                .scopes
+                .get("code")
+                .map(|ids| ids.is_empty())
+                .unwrap_or(true));
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_connectors_for(ConnectorScope::Code, &[]);
-            sync_code_scope_after_install("weather");
+            sync_deny_all_scopes_after_install("weather");
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
             // 已存在不重复。
-            sync_code_scope_after_install("weather");
+            sync_deny_all_scopes_after_install("weather");
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -2267,9 +2403,9 @@ mod tests {
             code_writer.join().unwrap();
 
             let file = load_disabled_connectors_file();
-            assert_eq!(file.plain, vec!["weather".to_string()]);
-            assert!(file.code_initialized);
-            assert_eq!(file.code, vec!["pptx".to_string()]);
+            assert_eq!(file.scopes.get("plain"), Some(&vec!["weather".to_string()]));
+            assert!(file.initialized.contains("code"));
+            assert_eq!(file.scopes.get("code"), Some(&vec!["pptx".to_string()]));
         });
     }
 

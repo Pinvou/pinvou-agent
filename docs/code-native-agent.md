@@ -65,7 +65,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 3.6 模式策略对象（2026-08-05 解耦，D-2/D-3）
 
-- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`unavailable_tools()`（模式缺席的编译期常量——code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。能力面分化是编译期常量（能力档案 JSON + 统一解析器已退役，见 `docs/capability-governance.md`）。
+- `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：模式能力差量查编译期静态表 `MODE_TABLE`（`unavailable_tools`——code 恒追加 `present_artifact`；`load_skill` 不在此列——按组合目录空否动态决定，由表字段 `skills_empty_hides_load_skill` 驱动，见 §8.6；连接器禁用集 scope 即 `policy.mode()` 本身，scope 键 = 模式名）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。能力面分化是编译期常量（能力档案 JSON + 统一解析器已退役，见 `docs/capability-governance.md`）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
 - 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
 
@@ -202,21 +202,25 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   原生 `fleet.profiles` 随配置提供，不在项目或会话目录生成 `.codewhale/agents/`；个人与项目
   profile 仍按 CodeWhale 原生优先级加载并允许同名覆盖，而子智能体始终在真实项目目录完成任务。
 
-### 8.3 代码会话工具开关（双 scope）
+### 8.3 代码会话工具开关（按模式 scope）
 
-- 连接器禁用列表按会话类型分开持久化（`disabled_connectors.json` 存
-  `{ plain, code, code_initialized }`，旧版裸数组兼容迁移为 plain）。
-- **安全默认**：code scope 未初始化时（用户从未改过代码会话开关），代码会话默认
-  禁用**所有已安装连接器**（外部能力显式开启）；一旦用户改过 code 开关
-  （`code_initialized=true`），以落盘列表为准。
-- 安装连接器后：code 已初始化时新装连接器默认仍关闭（自动加入 code 禁用集）；
-  未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载连接器时从
-  plain/code 两个禁用集移除残留 id（含运行时清理路径）。
+- 连接器禁用列表按会话模式 scope 分开持久化（`disabled_connectors.json` 存
+  `{ "scopes": { "<mode>": [...] }, "initialized": [...] }`，scope 键即
+  `SessionMode` 的 kebab-case 名；旧版裸数组与 `{ plain, code,
+  code_initialized }` 对象读时自动迁移）。
+- **安全默认**：某 scope 未初始化时（用户从未改过该类会话开关），按其模式的
+  包默认策略兜底（`SessionMode::pack_default_policy`）——code 为 DenyAll：
+  默认禁用**所有已安装连接器**（外部能力显式开启）；plain 为 AllowAll：
+  默认全开。一旦用户改过该 scope 开关（进入 `initialized`），以落盘列表为准。
+- 安装连接器后：DenyAll 且已初始化的 scope 中新装连接器默认仍关闭（自动加入
+  禁用集）；未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载
+  连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
   scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
-  按 `policy.connector_scope()` 取 code scope 禁用集替换 plain scope 的（非连接器
-  禁用如 `kb_search` 保留），并按 `policy.unavailable_tools()` 恒隐藏
-  `present_artifact`；`load_skill` 按该会话组合目录是否为空动态决定（§8.6）。
+  按 `policy.mode()` 取 code scope 禁用集替换 plain scope 的（非连接器
+  禁用如 `kb_search` 保留），并按模式能力静态表 `MODE_TABLE` 的
+  `unavailable_tools` 恒隐藏 `present_artifact`；`load_skill` 按该会话组合
+  目录是否为空动态决定（表字段 `skills_empty_hides_load_skill` 驱动，§8.6）。
 
 ### 8.4 远程端过滤原生代码会话事件
 
@@ -254,11 +258,12 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 ### 8.6 skill 按 scope 治理（双 scope 持久化 + 组合目录）
 
-- **开关双 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
-  `{ plain, code, code_initialized, project_skills_enabled }`（与
-  `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
+- **开关按模式 scope 持久化**：`~/.pinvou3/disabled_skills.json` 存
+  `{ "scopes": { "<mode>": [...] }, "initialized": [...], project_skills_enabled }`
+  （与 `disabled_connectors.json` 同构）；旧数据迁移——裸数组 → plain scope，
   旧版借道 `disabled_connectors.json` 的 `skill:<id>` 条目 → 提取进 plain 并
-  清除连接器文件残留。**安全默认**：code scope 未初始化时默认禁用所有已安装
+  清除连接器文件残留，旧 `{ plain, code, code_initialized }` 对象 → 新 map。
+  **安全默认**：DenyAll 模式（code）scope 未初始化时默认禁用所有已安装
   技能（外部能力显式开启）——这一步同时封闭 P1 泄露面（code 默认 catalogue
   为空）。
 - **组合目录物化**：`EngineConfig.skills_dir` 按会话指向

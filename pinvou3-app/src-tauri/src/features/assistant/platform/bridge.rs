@@ -458,19 +458,20 @@ impl Pinvou3Bridge {
     /// 会话级工具整形:按会话策略（[`SessionPolicy`]）并入模式差量——
     /// 无差量时原样返回。spawn 初值与全局热刷都经此整形。
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项：
-    /// - 模式缺席工具（编译期常量 `SessionPolicy::unavailable_tools`；code:
-    ///   产物卡）——"该模式架构上无此能力"，非用户偏好;
-    /// - 连接器禁用集 scope 非 plain 时改用该 scope 的禁用集
-    ///   ——两个 scope 各自持久化(见 [`marketplace::ConnectorScope`]),互不影响;
+    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项（均由编译期
+    /// 静态表 `MODE_TABLE` 驱动，见 session_policy）：
+    /// - 模式缺席工具（表字段 `unavailable_tools`；code: 产物卡）
+    ///   ——"该模式架构上无此能力"，非用户偏好;
+    /// - 连接器禁用集：非 plain 模式改用其 scope 的禁用集
+    ///   ——scope 键即模式，各 scope 各自持久化(见 marketplace),互不影响;
     ///   非连接器禁用(kb_search 等)仍保留;
-    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（V-5 联动,非 plain
-    ///   scope 才检查）——目录为空（无任何启用技能）时隐藏,避免"开关开着但没
-    ///   技能"的假状态;目录非空时放行。判定在 bridge 侧做（目录检查是磁盘 I/O,
-    ///   策略对象保持纯数据）。
+    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（表字段
+    ///   `skills_empty_hides_load_skill` 门控,V-5 联动）——目录为空（无任何
+    ///   启用技能）时隐藏,避免"开关开着但没技能"的假状态;目录非空时放行。
+    ///   判定在 bridge 侧做（目录检查是磁盘 I/O,策略对象保持纯数据）。
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         let policy = self.session_policy(session_id);
-        // 模式缺席工具（编译期常量）：并入 disallowed（所有模式）。
+        // 模式缺席工具（编译期常量表）：并入 disallowed（所有模式）。
         // ⚠️ 顺序约束：先于下方 connector retain——缺席名单应避开连接器全名
         // （当前 code 的 mcp_pinvou3_present_artifact 与连接器禁用集无交集），
         // 否则会被 retain 误删；新增条目时同样注意（或先做 retain 再追加）。
@@ -479,30 +480,30 @@ impl Pinvou3Bridge {
                 tools.push((*name).to_string());
             }
         }
-        // 连接器禁用集：scope 非 plain 时用该 scope 的禁用集替换 plain scope 的
-        // （scope 由会话模式决定；plain 不执行连接器 scope 替换）。
-        if policy.connector_scope() != marketplace::ConnectorScope::Plain {
+        // 连接器禁用集：非 plain 模式用其 scope 的禁用集替换传入的 plain scope
+        // 禁用集（plain 的禁用集就是传入值本身，无需替换）。
+        if policy.mode() != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
             let scoped_connector =
-                crate::features::marketplace::disabled_tool_names_for(policy.connector_scope());
+                crate::features::marketplace::disabled_tool_names_for(policy.mode());
             tools.retain(|tool| !plain_connector.iter().any(|blocked| blocked == tool));
             for blocked in scoped_connector {
                 if !tools.iter().any(|tool| tool == &blocked) {
                     tools.push(blocked);
                 }
             }
-            // 组合目录为空 → load_skill 一并隐藏（空态保护，V-5）。
-            // ⚠️ 设计耦合：load_skill 空目录检查绑定在「scope 非 plain」分支内——
-            // 新增 scope=plain 但需要该检查的模式会静默漏掉（当前仅 plain/code，
-            // code 恒走此分支，行为正确）。如需解耦，应把 load_skill 检查移出
-            // scope 分支，改由独立差量（如档案 tools.exclude 或独立标志）驱动。
-            if crate::features::assistant::skill_materialization::session_skills_is_empty(
+        }
+        // load_skill 空目录隐藏由表字段驱动（与 scope 替换解耦）：组合目录为空 →
+        // 一并隐藏（空态保护，V-5）。行为等价于原「scope 非 plain 分支内检查」：
+        // 当前仅 code 该字段为 true，code 恒非 plain。
+        if policy.capabilities().skills_empty_hides_load_skill
+            && crate::features::assistant::skill_materialization::session_skills_is_empty(
                 session_id,
-            ) {
-                let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
-                if !tools.iter().any(|tool| tool == load_skill) {
-                    tools.push(load_skill.to_string());
-                }
+            )
+        {
+            let load_skill = crate::features::assistant::session_policy::LOAD_SKILL;
+            if !tools.iter().any(|tool| tool == load_skill) {
+                tools.push(load_skill.to_string());
             }
         }
         tools
@@ -1770,7 +1771,7 @@ impl Pinvou3Bridge {
         let project_workspace = self.session_roots(session_id).execution;
         crate::features::assistant::skill_materialization::ensure_session_skills(
             session_id,
-            policy.connector_scope(),
+            policy.mode(),
             Some(&project_workspace),
         );
     }

@@ -608,7 +608,7 @@ impl EnginePool {
             entries.keys().cloned().collect()
         };
         for sid in sids {
-            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
             let _ = tokio::task::spawn_blocking(move || {
                 crate::features::assistant::skill_materialization::rewrite_session_skills(
@@ -629,7 +629,7 @@ impl EnginePool {
             entries.keys().cloned().collect()
         };
         for sid in sids {
-            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
             crate::features::assistant::skill_materialization::rewrite_session_skills(
                 &sid,
@@ -785,7 +785,7 @@ impl EnginePool {
         // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
         {
             let sid = session_id.to_string();
-            let scope = self.bridge.session_policy(&sid).connector_scope();
+            let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
             tokio::task::spawn_blocking(move || {
                 crate::features::assistant::skill_materialization::materialize_session_skills(

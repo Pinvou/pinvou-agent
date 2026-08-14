@@ -197,12 +197,12 @@ pub async fn install_marketplace_tool(
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
                 continue;
             }
-            // 新装的 companion 技能默认加入 code 禁用集（外部能力显式开启，
-            // 与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&sid);
+            // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
+            // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
+            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&sid);
         }
-        // 代码会话的 code scope 已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_code_scope_after_install(&tool_id);
+        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&tool_id);
         Ok::<(), String>(())
     })
     .await
@@ -488,9 +488,9 @@ pub async fn install_marketplace_skill(
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .install(skill_id)?;
-    // 新装技能默认加入 code 禁用集（与连接器同语义：外部能力显式开启）；
-    // 组合目录由调用方在命令层重写（install_marketplace_skill）。
-    crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(skill_id);
+    // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
+    // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(skill_id);
     Ok(())
 }
 
@@ -517,8 +517,9 @@ pub async fn import_skill_package(
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
         let name = mgr.import_package(&path.to_string_lossy())?;
-        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
-        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
+        // （外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name);
         Ok::<String, String>(name)
     })
     .await
@@ -571,8 +572,9 @@ pub async fn import_skill_package_bytes(
     let name = tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
         let name = mgr.import_package_named(&tmp_for_import.to_string_lossy(), &safe_name)?;
-        // 与商店安装同语义：上传技能默认加入 code 禁用集（外部能力显式开启）。
-        crate::features::marketplace::skill_scope::sync_code_scope_after_skill_install(&name);
+        // 与商店安装同语义：上传技能默认加入 DenyAll scope（当前 code）禁用集
+        // （外部能力显式开启）。
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&name);
         Ok::<String, String>(name)
     })
     .await
