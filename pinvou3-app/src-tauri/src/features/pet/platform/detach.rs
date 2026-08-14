@@ -342,15 +342,13 @@ pub async fn begin_detach_drag(
             let _drag_guard = DragGuard(app_for_thread.clone());
 
             // 平台特定的轮询设备句柄:Linux 是 X11 Display(X11Pointer RAII 包裹,
-            // 纯 Wayland 无 XWayland 时 new() 返回 None → 视为无鼠标输入,拖拽起手即放弃);
+            // 纯 Wayland 无 XWayland 时 new() 返回 None → 直接放弃;DRAG_ACTIVE 复位
+            // 与 detach:drag-ended 广播统一由上方 _drag_guard 的 Drop 保证,无需重复 emit)。
             // 其它平台不用句柄。
             #[cfg(target_os = "linux")]
             let dev = match X11Pointer::new() {
                 Some(d) => d,
-                None => {
-                    let _ = app_for_thread.emit("detach:drag-ended", ());
-                    return;
-                }
+                None => return,
             };
             #[cfg(not(target_os = "linux"))]
             let dev = ();
