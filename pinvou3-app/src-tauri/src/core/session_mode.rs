@@ -32,10 +32,27 @@ pub enum PackDefaultPolicy {
     DenyAll,
 }
 
+/// 声明全部已注册模式（单一真源）：展开为 `ALL` 常量 + 编译期穷尽哨兵。
+/// 哨兵是无通配臂的 match——新增枚举变体而漏挂此列表时直接编译失败，
+/// 兜底不依赖遍历 ALL 的测试（那对 ALL 本身漏项是自指的）。
+macro_rules! declare_all_modes {
+    ($($variant:ident),+ $(,)?) => {
+        /// 全部已注册模式。静态表/泛化遍历（MODE_TABLE、DenyAll 同步钩子）以此为准，
+        /// 编译期穷尽哨兵保证与枚举变体同步（见 `declare_all_modes`）。
+        pub const ALL: &[SessionMode] = &[$(SessionMode::$variant),+];
+
+        /// 编译期穷尽哨兵（无通配臂）：仅由 `declare_all_modes` 展开，不直接调用。
+        #[allow(dead_code)]
+        fn exhaustive_mode_guard(mode: SessionMode) {
+            match mode {
+                $(SessionMode::$variant => {})+
+            }
+        }
+    };
+}
+
 impl SessionMode {
-    /// 全部已注册模式。静态表/泛化遍历（MODE_TABLE、DenyAll 同步钩子）以此为准，
-    /// 新增模式漏挂时由穷尽性测试兜底。
-    pub const ALL: &[SessionMode] = &[SessionMode::Plain, SessionMode::Code];
+    declare_all_modes!(Plain, Code);
 
     pub fn is_code(self) -> bool {
         matches!(self, Self::Code)
@@ -85,14 +102,6 @@ mod tests {
             assert_eq!(serialized, format!("\"{}\"", mode.as_str()), "{mode:?}");
             assert_eq!(SessionMode::from_scope_str(mode.as_str()), Some(*mode));
         }
-    }
-
-    /// ALL 必须覆盖全部变体（新增模式漏挂 ALL → 表驱动遍历静默漏掉该模式）。
-    #[test]
-    fn all_covers_every_variant() {
-        assert_eq!(SessionMode::ALL.len(), 2);
-        assert!(SessionMode::ALL.contains(&SessionMode::Plain));
-        assert!(SessionMode::ALL.contains(&SessionMode::Code));
     }
 
     #[test]

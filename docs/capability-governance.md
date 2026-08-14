@@ -7,8 +7,9 @@
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已泛化为按模式键控的 map
 > （`{scopes, initialized}`，见 §3.2），仍是 `disabled_connectors.json` +
-> `disabled_skills.json` 两份（合并为 `disabled_bundles.json` 未做），内置
-> CLI 连接器归并、companion 随包一体化、统一失效入口（现为各开关命令分别
+> `disabled_skills.json` 两份（合并为 `disabled_bundles.json` 未做）；§3.1
+> 的统一包模型与「一个包 = 一个开关」、§3.3 的运行时工具名发现（现为
+> manifest 预测）、内置 CLI 连接器归并、统一失效入口（现为各开关命令分别
 > 触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
 > `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并
 > 更新本注记。
@@ -43,7 +44,9 @@
 - **模式能力静态表 `MODE_TABLE`**（`features/assistant/session_policy.rs`）：
   每模式一行 `ModeCapabilities { unavailable_tools,
   skills_empty_hides_load_skill, project_skills_opt_in }`，编译期常量、
-  查表取数（取代散落的 match 臂），新增模式漏填由穷尽性测试兜底。
+  查表取数（取代散落的 match 臂），新增模式漏填由穷尽性测试兜底
+  （测试遍历的 `SessionMode::ALL` 由编译期穷尽哨兵绑定到枚举变体，
+  漏挂即编译失败）。
   语义全部是"该模式架构上有/无此能力"（如 code 的
   `mcp_pinvou3_present_artifact`：产物卡在代码车道没有 UI 消费者），
   不是"默认关掉"——不出现在任何开关面。
@@ -54,7 +57,11 @@
 
 ## 3. 能力包线（运行期）
 
-### 3.1 数据模型：能力包
+### 3.1 数据模型：能力包（已定方向、未实施）
+
+> 现状：连接器与技能仍是两份独立开关文件（§3.2），companion 技能按
+> scope 联动排除；下述统一「包」模型（含 `bundle_kind` 推导与
+> 「一个包 = 一个开关」）为目标设计，实施时以本节为准。
 
 一切外部能力统一建模为**包**，三个部分均可空：
 
@@ -100,7 +107,7 @@ code_initialized}` 与裸数组读时自动迁移；`disabled_bundles.json` 合�
 
 - 某 scope 无记录 → 回落编译期默认（跟随产品演进）；
 - 用户首次 toggle 时物化整个 scope 列表落盘 → 此后冻结，默认调整不穿透
-  已做过选择的用户（键的有无即初始化标志）；
+  已做过选择的用户（`initialized` 集合标记初始化）；
 - 未知条目（工具下架、上游改名残留）静默忽略，写回时清理。
 
 项目级技能（`.agents/skills` 等）保持**独立开关**、各 scope 默认关：
@@ -119,9 +126,11 @@ code_initialized}` 与裸数组读时自动迁移；`disabled_bundles.json` 合�
                   → 组合目录为空 → load_skill 一并隐藏（无"假开关"状态）
 ```
 
-- **工具名获取以运行时发现为主**：查引擎实际暴露的 `model_name`
-  （底座权威），`mcp_{id}_*` / `mcp_{server}_*` 通配预测仅为引擎不在线时
-  的降级路径——清单错配（如 id 含连字符）不会导致"禁不掉"；
+- **工具名获取以 manifest 预测为主**（现状）：`marketplace/mod.rs` 的
+  `model_tool_names` 按 `mcp_{server}_*` 前缀 + manifest 声明工具名生成
+  禁用名单；查引擎实际暴露的 `model_name`（运行时发现，底座权威）为
+  **已定方向、未实施**——落地后清单错配（如 id 含连字符）才不会导致
+  "禁不掉"；
 - **唯一失效入口** `capability_changed`：任何开关不可能漏刷下游；
 - spawn 初值与热刷同经 `bridge.shape_disallowed_tools` 按会话整形。
 
@@ -130,8 +139,9 @@ code_initialized}` 与裸数组读时自动迁移；`disabled_bundles.json` 合�
 模式是**编译期封闭集合**（模式身份影响 spawn 时的底座配置，不允许运行期
 自定义）。新增一个模式要回答的问题已全部显式化，按清单逐项回答即可：
 
-1. `core/session_mode.rs`：加 `SessionMode` 变体（编译器守所有穷尽 match），
-   挂入 `SessionMode::ALL`、`as_str`/`from_scope_str`；
+1. `core/session_mode.rs`：加 `SessionMode` 变体并挂入 `declare_all_modes!`
+   列表（编译器守所有穷尽 match；漏挂 ALL 直接编译失败），补
+   `as_str`/`from_scope_str`；
 2. **安全姿态决策**：`pack_default_policy()` 为该模式选 AllowAll/DenyAll
    ——依据是该模式会话内容是否会出现不受控外部文本（prompt-injection 面），
    这是代码评审级别的决策；

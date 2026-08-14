@@ -6,9 +6,10 @@
 //! match 臂）；技能线不做设计期差量（运行时按模式 scope 开关 + 组合目录治理，
 //! 见 skill_materialization）。
 //!
-//! 新增模式清单：`SessionMode` 变体 + `SessionMode::ALL` + 本表一行 +
-//! `pack_default_policy()` 决策（AllowAll/DenyAll 是安全姿态决策，见
-//! core::session_mode）——漏填表项由穷尽性测试兜底（编译器守 match 穷尽性）。
+//! 新增模式清单：`SessionMode` 变体 + `SessionMode::ALL`（`declare_all_modes`
+//! 宏展开，漏挂即编译失败）+ 本表一行 + `pack_default_policy()` 决策
+//! （AllowAll/DenyAll 是安全姿态决策，见 core::session_mode）——表项漏填由
+//! 穷尽性测试兜底（测试遍历的 ALL 已被编译期哨兵绑定到枚举变体）。
 
 use crate::core::session_mode::SessionMode;
 use deepseek_tui::tui::approval::ApprovalMode;

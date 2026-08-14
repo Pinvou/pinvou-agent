@@ -135,20 +135,28 @@ fn load_disabled_skills_file() -> DisabledSkillsFile {
         return file;
     }
     let mut file: DisabledSkillsFile = serde_json::from_value(value).unwrap_or_default();
-    strip_skill_prefixes(&mut file);
+    // 新格式读路径同样读到即落盘剥出的前缀残留：与其余迁移路径一致，
+    // 避免磁盘长期保留每次读取都要归一的脏条目（否则只能等下次写操作自愈）。
+    if strip_skill_prefixes(&mut file) {
+        save_disabled_skills_file(&file);
+    }
     file
 }
 
 /// 防御：剥除所有 scope 禁用集里的 `skill:` 前缀（旧前端 bug 窗口期误写入的
 /// 带前缀 id；物化/展示/UI 判定全部按裸 id 匹配，读者在此统一归一）。
-fn strip_skill_prefixes(file: &mut DisabledSkillsFile) {
+/// 返回是否剥出过前缀（调用方决定是否落盘归一结果）。
+fn strip_skill_prefixes(file: &mut DisabledSkillsFile) -> bool {
+    let mut stripped_any = false;
     for ids in file.scopes.values_mut() {
         for id in ids.iter_mut() {
             if let Some(stripped) = id.strip_prefix("skill:") {
                 *id = stripped.to_string();
+                stripped_any = true;
             }
         }
     }
+    stripped_any
 }
 
 /// 用迁移来的 plain 禁用集构造文件（旧数据的全局/进程级语义 → plain scope 透明迁移）。
@@ -482,6 +490,60 @@ mod tests {
                 !content.contains("code_initialized"),
                 "旧键不应残留: {content}"
             );
+        });
+    }
+
+    /// 新格式读路径剥出的 `skill:` 前缀残留必须读到即落盘（与其余迁移路径
+    /// 一致），否则磁盘长期保留每次读取都要归一的脏条目。
+    #[test]
+    fn new_format_strips_skill_prefix_and_persists() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(paths::pinvou3_home()).unwrap();
+            // 新格式 + 前缀残留共存（新版本写入不会产生前缀，此处模拟窗口期
+            // 混入的外部数据）
+            std::fs::write(
+                disabled_skills_path(),
+                r#"{"scopes":{"plain":["skill:visualizer","government-writing"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_skills_for(ConnectorScope::Plain),
+                vec!["visualizer".to_string(), "government-writing".to_string()],
+                "新格式读路径应剥除 skill: 前缀"
+            );
+            let content = std::fs::read_to_string(disabled_skills_path()).unwrap();
+            assert!(
+                !content.contains("skill:visualizer"),
+                "剥出的前缀残留应读到即落盘: {content}"
+            );
+        });
+    }
+
+    /// 未知键前向兼容：新格式文件含未来版本写入的未知键时，经本版本的
+    /// 读-改-写往返后不丢失（与连接器侧 `unknown_keys_survive_roundtrip` 对称；
+    /// PR 自述的降级兼容卖点，skills 侧此前无测试钉住）。
+    #[test]
+    fn unknown_keys_survive_roundtrip() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(paths::pinvou3_home()).unwrap();
+            std::fs::write(
+                disabled_skills_path(),
+                r#"{"scopes":{"plain":["visualizer"]},"initialized":["plain"],"future_field":{"nested":true}}"#,
+            )
+            .unwrap();
+            // 任一写路径（此处用项目技能开关）都必须保留未知键
+            set_project_skills_enabled(true);
+            let content = std::fs::read_to_string(disabled_skills_path()).unwrap();
+            assert!(
+                content.contains("\"future_field\""),
+                "未知键经写回不应丢失: {content}"
+            );
+            assert!(
+                content.contains("\"project_skills_enabled\":true"),
+                "本次写入的字段应生效: {content}"
+            );
+            // 再读一遍：未知键仍可作为新格式解析
+            assert!(project_skills_enabled());
         });
     }
 
