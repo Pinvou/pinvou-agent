@@ -875,7 +875,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         return () => window.clearInterval(timer);
       }, [busy, useUnifiedConversationUi, bs && bs.thinking && bs.thinking.startedAt]);
 
-      // 工作流启用时预填输入框
+      // 外部入口可预填输入框并把焦点移到末尾。
       useEffect(() => {
         if (prefill) {
           setInputText(prefill);

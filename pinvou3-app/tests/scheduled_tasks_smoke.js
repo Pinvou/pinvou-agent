@@ -85,7 +85,6 @@ function injectSource() {
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'list_marketplace_skills': return Promise.resolve([]);
         case 'list_personas': return Promise.resolve([]);
-        case 'list_skills_v2': return Promise.resolve([]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);

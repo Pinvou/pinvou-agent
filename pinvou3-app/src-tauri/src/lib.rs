@@ -463,10 +463,6 @@ pub fn run() {
             // 飞书 / 企微共用,供 *_connect_begin / *_cancel 用。
             app.handle().manage(connector_cli::ConnectorConn::default());
 
-            // 工作流 Phase 可视化:skill 绑定挂在 SessionStore.mode_state 上,
-            // 每个前端会话仍由 SessionStore 保持独立状态。
-            // 不再需要全局 ActiveSkillStore。
-
             // File watcher: 监听 ~/.pinvou3/sessions/ 树,新文件 emit artifact:disk
             file_watcher::spawn(app.handle().clone(), bridge::paths::sessions_root());
             startup::mark("file_watcher:spawned");

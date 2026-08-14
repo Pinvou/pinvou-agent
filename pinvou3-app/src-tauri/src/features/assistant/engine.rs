@@ -1155,9 +1155,8 @@ impl AppEngine {
         shell_manager: SharedShellManager,
         turn_shell_tasks: TurnShellTaskRegistry,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
-        // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
-        // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
-        // 由 agent_registry.json 各自约束,与此处无关。
+        // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
+        // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
         let scheduled_profile = store.scheduled_profile(session_id);
         let scheduled_base_total_tokens = if scheduled_profile.is_some() {
             Some(store.load(session_id)?.metadata.total_tokens)
@@ -1224,8 +1223,8 @@ impl AppEngine {
         // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
         // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
         //
-        // 该列表来自 compute_disallowed_tools;多智能体会话不改写它——
-        // 工具面与主线持平,workflow 与裸 agent 都不在禁用列表。
+        // 该列表来自 compute_disallowed_tools；多智能体会话不改写它，
+        // 工具面与普通会话保持一致。
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -1248,10 +1247,6 @@ impl AppEngine {
             Some(snapshot) => bridge.build_multi_agent_dt_config(snapshot),
             None => bridge.build_dt_config(),
         };
-        // 多智能体宿主不再改写 Workflow 审批配置："每张图必停"的旧约束已按
-        // 产品定义收缩撤除，只读图按底座默认自动起跑，写入/提权图由底座的
-        // require_approval_for_writes 走普通审批（确认卡只在那时出现）。
-
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
             session_id,

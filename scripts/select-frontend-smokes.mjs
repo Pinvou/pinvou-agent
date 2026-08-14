@@ -34,7 +34,6 @@ const FEATURE_COMMANDS = new Map([
   ["tools", [command("npm", "test:tool-store"), command("npm", "test:tool-store-import"), command("npm", "test:tool-store-grouping")]],
   ["updater", [command("node", "tests/update_notice_ui_smoke.js")]],
   ["web", [command("npm", "test:webui")]],
-  ["workflow", [command("node", "tests/scheduled_tasks_smoke.js")]],
 ]);
 
 const FULL_PREFIXES = [

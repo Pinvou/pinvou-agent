@@ -1314,7 +1314,7 @@ impl Pinvou3Bridge {
             instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
-            // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
+            // 默认 10，为会话级多智能体 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
             // 但走 SubAgentManager.max_agents fallback 不 hard crash。
@@ -1427,10 +1427,8 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
-            // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
-            // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
-            // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
-            // 全开会让子代理思考失控。在 engine 配置层钉死,不依赖对话。
+            // 会话初始思考开关：本地 vLLM(Qwen3.6)必须关 thinking。在 engine
+            // 配置层统一钉死，避免子智能体继承到未预期的思考模式。
             reasoning_effort: self.request_reasoning_effort(),
             // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
             // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
@@ -3820,14 +3818,13 @@ mod tests {
         assert_eq!(
             cfg.reasoning_effort.as_deref(),
             Some("off"),
-            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关。工作流会话只走 \
-             SpawnSubAgent 不发 SendMessage,引擎配置层不钉死 off 角色就全员 \
-             thinking 全开会导致子代理思考失控"
+            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关；引擎配置层统一钉死，\
+             避免子智能体继承到未预期的思考模式"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
             cfg.max_subagents, 10,
-            "max_subagents 默认 10：2026-05-27 从 1 解锁，为 PPT 工作流 fan-out 预留。\
+            "max_subagents 默认 10：为会话级多智能体 fan-out 预留。\
              真并发 4+ 在弱模型下仍有 timeout 风险，走 SubAgentManager fallback 不 hard crash"
         );
         assert_eq!(

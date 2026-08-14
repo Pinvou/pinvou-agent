@@ -108,11 +108,11 @@ pub struct SessionStore {
     pub(crate) scheduled_mutation: Arc<Mutex<()>>,
     /// Currently active session id (chat command surface).
     pub(crate) active: Arc<RwLock<Option<String>>>,
-    /// Per-session runtime mode state (mode, plan, skill, persona, ...).
+    /// Per-session runtime mode state (mode, plan, persona, ...).
     pub(crate) mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
     /// per-session 模型绑定:session_id → SavedModel.id。某 session 显式选过模型
     /// 才有条目;没选的回退全局 active_model_id。落盘到 `_session_models.json`
-    /// (仿 skill_bindings),底座 SavedSession 不能加字段故独立存。
+    /// 底座 SavedSession 不能加字段，故通过独立 sidecar 存储。
     pub(crate) session_models: Arc<RwLock<HashMap<String, String>>>,
     /// 历史对话置顶表:session_id -> pinned_at。独立落盘到 `_pinned_sessions.json`,
     /// 不改 SavedSession 结构。

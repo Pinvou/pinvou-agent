@@ -155,10 +155,9 @@ pub fn user_personas_dir() -> PathBuf {
     user_root().join("personas")
 }
 
-/// `~/.deepseek/skills/` — CodeWhale 标准用户 skills 目录,legacy-ppt-workflow /
-/// skill-creator 这种由 `/skill install` 装的 skill 都在这里。跟
-/// [`user_skills_dir`](pinvou3 私有 `~/.pinvou3/user/skills/`) 平行,工作流
-/// 旧版兼容目录；会话物化时用户 Skill 覆盖同名 bundle Skill。
+/// `~/.deepseek/skills/` — CodeWhale 标准用户 skills 目录；通过
+/// `/skill install` 安装的 skill 都在这里。它与 Pinvou 私有的
+/// [`user_skills_dir`] 平行；会话物化时用户 Skill 覆盖同名 bundle Skill。
 pub fn deepseek_skills_dir() -> PathBuf {
     user_home_dir().join(".deepseek").join("skills")
 }
