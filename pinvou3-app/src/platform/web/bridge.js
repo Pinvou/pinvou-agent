@@ -3450,10 +3450,14 @@
             var qs = (b.input && b.input.questions) || [];
             if (Array.isArray(qs) && qs.length) {
               var res = resultById[b.id];
+              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
+              // tool_result，不能按历史恢复为 submitted。跳过，等
+              // chat:user_input_required 事件渲染可交互的 active 卡。
+              if (!res) continue;
               addChatItem({
                 type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: (res && res.is_error) ? "cancelled" : "submitted",
-                restoredAnswers: res ? parseUserAnswers(res.content, qs) : null, time: "",
+                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
+                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
               });
             }
             continue;
@@ -4479,7 +4483,7 @@
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) return;
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       return;
     }
     // The authoritative hydrate above is asynchronous. Never let an input that
@@ -5216,7 +5220,7 @@
       }
     }
 
-    // File.write/File.edit 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
+    // File.write/File.edit/File.patch 改了产物 → 记账,turn 结束(chat:done)统一补成品卡。
     // 改成记账+去重:AI 一个 turn 会 edit_file 改很多次,实时续会刷出一堆卡;且 edit_file
     // 之前不触发续卡 → 改完没新卡片 → 没法对改后产物再召唤 pinvou(核账闭环断裂)。
     var mutationAction = meta && fileMutationAction(meta.name, meta.args);
@@ -6867,7 +6871,7 @@
     }
     var planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItemFor(sid, bt("turnSyncRetry"));
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -7033,7 +7037,7 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addSystemItem(bt("turnSyncRetry"));
+      addAuthoritySyncNotice(bt("turnSyncRetry"));
       notify();
       return;
     }
