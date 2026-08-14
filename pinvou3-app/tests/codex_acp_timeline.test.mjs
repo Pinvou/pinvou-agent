@@ -39,6 +39,7 @@ try {
     stripTerminalControlSequences,
   } = await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`);
   const {
+    collectToolWorkspaceResources,
     toolWorkspaceResources,
     workspaceMarkdownResource,
   } = await import(`${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`);
@@ -211,6 +212,13 @@ try {
     { path: '/workspace/docs/report.md', name: 'report.md' },
     { path: '/workspace/docs/diagram.svg', name: 'diagram.svg' },
     { path: '/workspace/docs/generated.svg', name: 'generated.svg' },
+  ]);
+  assert.deepEqual(collectToolWorkspaceResources([
+    { tool: { locations: [{ path: '/workspace/docs/report.md' }] } },
+    { tool: { locations: [{ path: '/workspace/docs/report.md' }, { path: '/workspace/docs/diagram.svg' }] } },
+  ]), [
+    { path: '/workspace/docs/report.md', name: 'report.md' },
+    { path: '/workspace/docs/diagram.svg', name: 'diagram.svg' },
   ]);
   assert.equal(
     stripTerminalControlSequences('\u009b32m✓ passed\u009b0m'),

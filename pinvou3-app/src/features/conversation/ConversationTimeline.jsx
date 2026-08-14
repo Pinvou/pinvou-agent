@@ -11,6 +11,7 @@ import {
 } from '../../components/icons.jsx';
 import {
   commandExecutionDetails,
+  collectToolWorkspaceResources,
   countsAsFailedOperation,
   elapsedMs,
   externalMarkdownUrl,
@@ -462,6 +463,21 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   );
 }
 
+export function WorkspaceResourceButtons({ resources, onOpenResource }) {
+  if (!resources.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+      {resources.map(resource => (
+        <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
+          disabled={!onOpenResource} title={resource.path}
+          className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
+          {resource.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function GenericToolItem({ item, now, onOpenResource, copy }) {
   const c = conversationCopy(copy);
   const tool = item.tool || {};
@@ -477,17 +493,7 @@ function GenericToolItem({ item, now, onOpenResource, copy }) {
         meta={`${label} · ${state === 'running' ? `${c.inProgress} · ${duration}` : state === 'failed' ? c.failed : `${c.executionFinished} · ${duration}`}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
-      {resources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
-          {resources.map(resource => (
-            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
-              disabled={!onOpenResource} title={resource.path}
-              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
-              {resource.name}
-            </button>
-          ))}
-        </div>
-      )}
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <StructuredValue label={c.arguments} value={tool.rawInput} />
@@ -538,14 +544,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource,
   const expanded = running || open;
   const detailsId = useId();
   const hasDetails = items.length > 0;
-  const resources = [];
-  const resourcePaths = new Set();
-  items.forEach(item => toolWorkspaceResources(item.tool).forEach(resource => {
-    if (!resourcePaths.has(resource.path)) {
-      resourcePaths.add(resource.path);
-      resources.push(resource);
-    }
-  }));
+  const resources = collectToolWorkspaceResources(items);
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
@@ -557,17 +556,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource,
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         <ChevronDown size={13} className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
       </button>
-      {resources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
-          {resources.map(resource => (
-            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
-              disabled={!onOpenResource} title={resource.path}
-              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
-              {resource.name}
-            </button>
-          ))}
-        </div>
-      )}
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {expanded && hasDetails && (
         <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => (

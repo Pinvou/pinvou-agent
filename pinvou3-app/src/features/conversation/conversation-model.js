@@ -105,6 +105,19 @@ export function toolWorkspaceResources(tool) {
   return resources;
 }
 
+export function collectToolWorkspaceResources(items) {
+  const resources = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    for (const resource of toolWorkspaceResources(item.tool)) {
+      if (seen.has(resource.path)) continue;
+      seen.add(resource.path);
+      resources.push(resource);
+    }
+  }
+  return resources;
+}
+
 export function isNearConversationBottom(element, threshold = 96) {
   if (!element) return true;
   return (element.scrollHeight - element.scrollTop - element.clientHeight) < threshold;

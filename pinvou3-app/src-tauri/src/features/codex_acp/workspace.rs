@@ -658,18 +658,14 @@ fn resource_path_from_uri(raw: &str) -> Result<PathBuf> {
     if value.is_empty() {
         bail!("工作区资源路径不能为空");
     }
-    if let Some(uri_path) = value.strip_prefix("file://") {
-        let bytes = uri_path.as_bytes();
-        let uri_path = if bytes.len() >= 3
-            && bytes[0] == b'/'
-            && bytes[1].is_ascii_alphabetic()
-            && bytes[2] == b':'
-        {
-            &uri_path[1..]
-        } else {
-            uri_path
-        };
-        return Ok(PathBuf::from(uri_path));
+    if value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+    {
+        let url = tauri::Url::parse(value).context("工作区资源文件链接无效")?;
+        return url
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("工作区资源文件链接无效"));
     }
     if value.contains("://") {
         bail!("不支持的工作区资源链接");
@@ -1272,15 +1268,15 @@ mod tests {
     #[test]
     fn resolves_workspace_resources_from_relative_absolute_and_file_uri_paths() {
         let root = TestDir::new("resource-resolve");
-        let path = root.path().join("docs/report.md");
+        let path = root.path().join("docs/report file.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "# report\n").unwrap();
         let path = fs::canonicalize(path).unwrap();
 
         for resource in [
-            "docs/report.md".to_string(),
+            "docs/report file.md".to_string(),
             path.to_string_lossy().into_owned(),
-            format!("file://{}", path.to_string_lossy()),
+            tauri::Url::from_file_path(&path).unwrap().to_string(),
         ] {
             assert_eq!(
                 resolve_workspace_resource(root.path(), &resource).unwrap(),

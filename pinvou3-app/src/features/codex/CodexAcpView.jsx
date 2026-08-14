@@ -42,6 +42,7 @@ import {
   ConversationActivityIndicator,
   ConversationMarkdown,
   ConversationTurn,
+  WorkspaceResourceButtons,
 } from '../conversation/ConversationTimeline.jsx';
 import { AssistantMessageActions, AssistantMessageFooter } from '../conversation/AssistantMessageActions.jsx';
 import { assistantResponseAvailable, assistantResponseText } from '../conversation/message-clipboard.js';
@@ -56,7 +57,11 @@ import {
 } from '../chat/composer-controls.jsx';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
-import { isNearConversationBottom, toolWorkspaceResources } from '../conversation/conversation-model.js';
+import {
+  collectToolWorkspaceResources,
+  isNearConversationBottom,
+  toolWorkspaceResources,
+} from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
@@ -402,17 +407,7 @@ function GenericToolItem({ item, now, copy, cv, onOpenResource }) {
         meta={`${label} · ${state === 'running' ? `${copy.inProgress} · ${duration}` : state === 'failed' ? copy.failed : `${cv.ended} · ${duration}`}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
-      {resources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
-          {resources.map(resource => (
-            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
-              disabled={!onOpenResource} title={resource.path}
-              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
-              {resource.name}
-            </button>
-          ))}
-        </div>
-      )}
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
         <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <StructuredValue label={copy.arguments} value={tool.rawInput} />
@@ -433,14 +428,7 @@ function ToolGroup({ group, now, copy, cv, onOpenResource }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const hasDetails = items.length > 0;
-  const resources = [];
-  const resourcePaths = new Set();
-  items.forEach(item => toolWorkspaceResources(item.tool).forEach(resource => {
-    if (!resourcePaths.has(resource.path)) {
-      resourcePaths.add(resource.path);
-      resources.push(resource);
-    }
-  }));
+  const resources = collectToolWorkspaceResources(items);
   return (
     <div className="min-w-0 max-w-full">
       <button type="button" onClick={() => setOpen(value => !value)}
@@ -452,17 +440,7 @@ function ToolGroup({ group, now, copy, cv, onOpenResource }) {
         <span>{running ? copy.executing : failed ? cv.stepsFailed : copy.executionSteps} · {items.length}</span>
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {resources.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pb-2">
-          {resources.map(resource => (
-            <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
-              disabled={!onOpenResource} title={resource.path}
-              className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
-              {resource.name}
-            </button>
-          ))}
-        </div>
-      )}
+      <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && hasDetails && (
         <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => item.type === 'command_execution'
@@ -2632,6 +2610,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+          onOpenResource={openWorkspaceResource}
         />
       );
     }
