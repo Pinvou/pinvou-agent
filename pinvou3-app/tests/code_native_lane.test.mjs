@@ -69,6 +69,61 @@ try {
   const reasoningItems = turn.items.filter(item => item.type === 'reasoning');
   assert.equal(reasoningItems[0].text, '先看代码');
 
+  // ── agent 启动失败：tool_end 的完成态与成功态必须分别保留 ────────────
+  const failedAgentLane = createNativeLane();
+  applyNativeChatEvent(failedAgentLane, 'chat:tool_start', {
+    session_id: 'agent-live',
+    id: 'agent-call-failed',
+    name: 'agent',
+    args: { action: 'start', prompt: '「国际AI新闻采集」只读调研' },
+  });
+  applyNativeChatEvent(failedAgentLane, 'chat:tool_end', {
+    session_id: 'agent-live',
+    id: 'agent-call-failed',
+    name: 'agent',
+    success: false,
+    output: 'Error: write-scope contention with agent_6282bd07',
+  });
+  const failedAgentLive = failedAgentLane.items.find(item => item.toolId === 'agent-call-failed');
+  assert.equal(failedAgentLive.state, 'done', 'tool 调用已收口，不应残留执行中');
+  assert.equal(failedAgentLive.success, false, '失败事实必须独立于完成态保留');
+
+  // ── 产品专家模式关闭时，底座裸 agent 仍是事实委派 ────────────────
+  // 底座允许省略 action/profile（缺省 action=start）。这类调用不能因为
+  // Pinvou 专家名册未开启而折进普通工具组，否则卡片与 transcript 入口会消失。
+  const bareAgentLane = createNativeLane();
+  appendLocalUserMessage(bareAgentLane, '向子智能体问你好');
+  applyNativeChatEvent(bareAgentLane, 'chat:tool_start', {
+    session_id: 'bare-agent-session',
+    id: 'bare-agent-call',
+    name: 'agent',
+    args: { prompt: '向子智能体问你好' },
+  });
+  applyNativeChatEvent(bareAgentLane, 'chat:tool_end', {
+    session_id: 'bare-agent-session',
+    id: 'bare-agent-call',
+    name: 'agent',
+    success: true,
+    output: '{"agent_id":"agent_1234"}',
+  });
+  applyNativeChatEvent(bareAgentLane, 'chat:done', {
+    session_id: 'bare-agent-session',
+    status: 'Completed',
+  });
+  const bareAgentTurn = projectNativeLane(bareAgentLane, 'bare-agent-session').turns[0];
+  const bareAgentPresentation = bareAgentTurn.presentation.find(
+    item => item.legacyItem?.toolId === 'bare-agent-call',
+  );
+  assert.equal(bareAgentPresentation?.type, 'tool', '裸 agent spawn 必须保持为一等子智能体卡');
+  assert.equal(
+    bareAgentTurn.presentation.some(item => (
+      item.type === 'tool_group'
+      && item.items.some(child => child.legacyItem?.toolId === 'bare-agent-call')
+    )),
+    false,
+    '裸 agent spawn 不得折入默认收起的普通工具组',
+  );
+
   // ── 选择确认卡：请求 → 提交后 tool_end 收口 ─────────────────────
   const lane2 = createNativeLane();
   applyNativeChatEvent(lane2, 'chat:tool_start', { session_id: 's2', id: 'call-9', name: 'request_user_input', args: {} });
@@ -143,6 +198,36 @@ try {
     lane4.items.filter(item => item.type === 'assistant').map(item => item.text).join('|'),
     '好的|已完成',
   );
+
+  const failedAgentHydratedLane = createNativeLane();
+  hydrateNativeLane(failedAgentHydratedLane, {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '采集 AI 新闻' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'agent-call-hydrated-failed',
+          name: 'agent',
+          input: { action: 'start', prompt: '「国际AI新闻采集」只读调研' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'agent-call-hydrated-failed',
+          content: 'Error: write-scope contention with agent_6282bd07',
+          is_error: true,
+        }],
+      },
+    ],
+  }, []);
+  const failedAgentHydrated = failedAgentHydratedLane.items.find(
+    item => item.toolId === 'agent-call-hydrated-failed',
+  );
+  assert.equal(failedAgentHydrated.state, 'done', '重开会话后失败工具卡仍是已收口状态');
+  assert.equal(failedAgentHydrated.success, false, '重开会话后必须恢复 is_error 事实');
 
   // ── 切回正在跑的会话：hydration 保留 live busy ──────────────────
   applyNativeChatEvent(lane4, 'chat:turn_started', { session_id: 's4', turn_id: 't2' });

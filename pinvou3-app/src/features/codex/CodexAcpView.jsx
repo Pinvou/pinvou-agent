@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { can } from '../../shared/platform.js';
@@ -8,6 +8,7 @@ import {
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
+import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
@@ -58,12 +59,16 @@ import {
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
 import {
+  captureConversationScrollPosition,
   collectToolWorkspaceResources,
+  isFetchTool,
   isNearConversationBottom,
+  isSearchTool,
+  restoreConversationScrollPosition,
   toolWorkspaceResources,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { PlanLayer, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -1211,6 +1216,7 @@ export function CodexAcpView({
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [subagentPanel, setSubagentPanel] = useState(null);
   const [workspaceChangeCount, setWorkspaceChangeCount] = useState(0);
   const [now, setNow] = useState(Date.now());
   const useUnifiedConversationUi = unifiedConversationUiEnabled();
@@ -1236,6 +1242,7 @@ export function CodexAcpView({
   const [draftConfigSelections, setDraftConfigSelections] = useState({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const scroller = useRef(null);
+  const rightPanelScrollRef = useRef(null);
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
@@ -1328,7 +1335,7 @@ export function CodexAcpView({
   const nativeMemoryItems = isNativeAgent && activeNativeLane && activeNativeLane.memory
     ? activeNativeLane.memory.items
     : [];
-  // 原生车道底栏控件（模型/工具/知识库/模式）的会话态：按 activeId 经 invoke 自查，
+  // 原生车道底栏控件（模型/工具/知识库/模式/多智能体）的会话态：按 activeId 经 invoke 自查，
   // 不读 bridge 聊天 active 绑定（bs.currentSessionModelId/modeState/mountedCollection
   // 都绑聊天 active）。草稿态暂存 nativeDraftControls，建会话成功后再应用。
   // mode 由后端 get_mode_state 驱动（code 会话首次默认 Plan），不写死初值。
@@ -1336,6 +1343,8 @@ export function CodexAcpView({
     modelId: null,
     mountedId: null,
     mode: CODE_MODE_FALLBACK,
+    multiAgent: false,
+    multiAgentAvailable: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
@@ -1380,11 +1389,73 @@ export function CodexAcpView({
   const nativeMountedId = activeId
     ? (nativeControlsSessionRef.current === activeId ? nativeControls.mountedId : null)
     : (nativeDraftControls.mountedId ?? null);
+  const nativeMultiAgentSelected = activeId
+    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgent))
+    : Boolean(nativeDraftControls.multiAgent);
+  // Existing sessions use the backend SessionPolicy result. A Pinvou draft is
+  // known to become a native Code session, so it may stage the same control
+  // before a session id exists.
+  const nativeMultiAgentAvailable = activeId
+    ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgentAvailable))
+    : isNativeAgent;
+  const nativeMultiAgentEnabled = nativeMultiAgentAvailable && nativeMultiAgentSelected;
   const activeAgentName = activeSession?.agent_name
     || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
+  const rememberScrollBeforeRightPanelChange = useCallback(() => {
+    rightPanelScrollRef.current = captureConversationScrollPosition(
+      scroller.current,
+      autoScrollRef.current,
+    );
+  }, []);
+  const closeSubagentPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const toggleWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setSubagentPanel(null);
+    setWorkspaceOpen(value => !value);
+  }, [rememberScrollBeforeRightPanelChange]);
+  const closeWorkspacePanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setWorkspaceOpen(false);
+  }, [rememberScrollBeforeRightPanelChange]);
+  useLayoutEffect(() => {
+    const snapshot = rightPanelScrollRef.current;
+    if (!snapshot) return;
+    rightPanelScrollRef.current = null;
+    const element = scroller.current;
+    if (!element) return;
+    restoreConversationScrollPosition(element, snapshot);
+    lastScrollTopRef.current = element.scrollTop;
+    if (snapshot.stickToBottom) {
+      autoScrollRef.current = true;
+      setShowScrollBottom(false);
+    }
+  }, [subagentPanel, workspaceOpen]);
+  useEffect(() => {
+    setSubagentPanel(null);
+  }, [activeId]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isNativeAgent) return undefined;
+    const onOpen = (event) => {
+      const detail = event && event.detail;
+      const sessionId = detail && detail.sessionId;
+      if (!detail?.agentId || !activeIdRef.current) return;
+      if (sessionId && sessionId !== activeIdRef.current) return;
+      rememberScrollBeforeRightPanelChange();
+      setWorkspaceOpen(false);
+      setSubagentPanel(current => ({
+        agentId: detail.agentId,
+        selectionRequestId: (current?.selectionRequestId || 0) + 1,
+      }));
+    };
+    window.addEventListener('pinvou:open-subagent', onOpen);
+    return () => window.removeEventListener('pinvou:open-subagent', onOpen);
+  }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
   const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
@@ -1488,13 +1559,19 @@ export function CodexAcpView({
       invoke('session_mounted_collection', { sessionId }).catch(() => null),
       invoke('get_mode_state', { sessionId }).catch(() => null),
     ]);
-    setNativeControls({
+    const controls = {
       modelId: modelId || null,
       mountedId: mountedId ?? null,
       // 读取失败兜底走全局默认（首次使用 → Plan 只读），不回退写死 yolo。
       mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
-    });
+      multiAgent: Boolean(modeState && modeState.multi_agent),
+      multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
+    };
+    // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
+    if (sessionId !== activeIdRef.current) return controls;
+    setNativeControls(controls);
     nativeControlsSessionRef.current = sessionId;
+    return controls;
   }
 
   /// 拉取全局 code 权限偏好（last_mode / yolo_confirmed）：草稿态默认 mode
@@ -1511,10 +1588,13 @@ export function CodexAcpView({
     // 仅挂载拉取一次；后续由切换/确认路径就地刷新。
   }, []);
 
-  /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，mode 最后）。
+  /// 草稿态暂存的控件选择在新会话上应用；失败报错不静默（逐个应用，多智能体最后）。
+  /// 任一步失败即整体失败：清空暂存并上抛，由 sendNative 外层 catch 兜住（会话已创建，
+  /// 保留半份暂存会在下次创建会话时把过期的部分选择悄悄应用，形成孤儿暂存）。
   async function applyNativeDraftControls(sessionId) {
     const staged = nativeDraftControls;
-    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode;
+    const hasMultiAgentSelection = Object.prototype.hasOwnProperty.call(staged, 'multiAgent');
+    const hasStaged = staged.modelId || staged.mountedId != null || staged.mode || hasMultiAgentSelection;
     if (!hasStaged) return;
     try {
       if (staged.modelId) {
@@ -1530,9 +1610,18 @@ export function CodexAcpView({
       } else if (staged.mode === 'yolo') {
         await invoke('exit_plan_to_yolo', { sessionId });
       }
+      if (hasMultiAgentSelection) {
+        await invoke('set_multi_agent_mode', {
+          sessionId,
+          enabled: Boolean(staged.multiAgent),
+        });
+      }
       setNativeDraftControls({});
     } catch (err) {
-      showError(err);
+      // 会话已经创建且部分配置可能已生效：清空暂存避免未来复用过期选择，
+      // 错误继续上抛，由 sendNative 的 catch 提示用户并恢复输入框文本。
+      setNativeDraftControls({});
+      throw err;
     }
   }
 
@@ -1547,6 +1636,35 @@ export function CodexAcpView({
       await invoke('set_session_model', { sessionId, modelId });
       await refreshNativeControls(sessionId);
     } catch (err) { showError(err); }
+  }
+
+  async function switchNativeMultiAgent(enabled) {
+    if (!nativeMultiAgentAvailable) return;
+    if (!activeId) {
+      setNativeDraftControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+      return;
+    }
+    if (busy || working) return;
+    const targetSessionId = activeId;
+    const previous = nativeMultiAgentEnabled;
+    setError('');
+    setWorking(true);
+    setConfigApplying('multiagent');
+    setNativeControls(current => ({ ...current, multiAgent: Boolean(enabled) }));
+    try {
+      await invoke('set_multi_agent_mode', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
+    } catch (err) {
+      // 请求期间可能已切换会话：只有仍是目标会话时才回滚旧值，否则交给
+      // 新会话自身的 refresh 覆盖，避免把上一会话的值串写进当前会话。
+      if (targetSessionId === activeIdRef.current) {
+        setNativeControls(current => ({ ...current, multiAgent: previous }));
+      }
+      showError(err);
+    } finally {
+      setWorking(false);
+      setConfigApplying('');
+    }
   }
 
   async function mountNativeKb(collectionId) {
@@ -2402,8 +2520,12 @@ export function CodexAcpView({
       if (!targetId) {
         const created = await createSession(draftWorkspacePath);
         targetId = created.id;
-        // 草稿态暂存的模型/知识库/模式选择先落到新会话（失败会显式报错）。
+        // 草稿态暂存的模型/知识库/模式/多智能体选择先落到新会话（失败会显式报错）。
         await applyNativeDraftControls(targetId);
+        // createSession 内的首次 load 发生在草稿控件落盘之前；若用户在草稿态
+        // 开启了多智能体，那次 load 读到的是旧的 false。首条消息发送前必须
+        // 再读一次后端权威状态，保证输入框开关及时反映刚落盘的会话配置。
+        await refreshNativeControls(targetId);
         setAttachmentDrafts(current => {
           const draftAttachments = current[DRAFT_ATTACHMENT_KEY] || [];
           const next = { ...current, [targetId]: draftAttachments };
@@ -2761,7 +2883,7 @@ export function CodexAcpView({
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
           <button
             type="button"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2784,7 +2906,7 @@ export function CodexAcpView({
           <button
             type="button"
             data-testid="codex-workspace-toggle"
-            onClick={() => setWorkspaceOpen(value => !value)}
+            onClick={toggleWorkspacePanel}
             className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
               workspaceOpen
                 ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -2902,6 +3024,21 @@ export function CodexAcpView({
                             />
                           )
                         : undefined}
+                    renderToolItem={isNativeAgent
+                      ? (item) => item.legacyItem
+                        && !isSearchTool(item.tool)
+                        && !isFetchTool(item.tool)
+                        ? (
+                            <ToolCard
+                              item={{ ...item.legacyItem, sessionId: activeId }}
+                              sessionId={activeId}
+                              theme={theme}
+                              t={t}
+                              variant="timeline"
+                            />
+                          )
+                        : undefined
+                      : undefined}
                     agentLabel={activeAgentName}
                     onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
                     onOpenResource={openWorkspaceResource}
@@ -3167,6 +3304,9 @@ export function CodexAcpView({
                           sessionModelId={nativeSessionModelId}
                           busy={busy || working}
                           onSwitchModel={(sessionId, modelId) => switchNativeModel(sessionId, String(modelId))}
+                          multiAgentEnabled={nativeMultiAgentEnabled}
+                          multiAgentAvailable={nativeMultiAgentAvailable}
+                          onToggleMultiAgent={switchNativeMultiAgent}
                         />
                       )}
                       <ComposerToolMenu
@@ -3413,17 +3553,27 @@ export function CodexAcpView({
           </div>
         </div>
         </div>
-        {(activeSession || draftWorkspacePath) && (
+        {!subagentPanel && (activeSession || draftWorkspacePath) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}
             visible={workspaceOpen}
-            onClose={() => setWorkspaceOpen(false)}
+            onClose={closeWorkspacePanel}
             references={workspaceReferences}
             onAddReference={addWorkspaceReference}
             refreshToken={isNativeAgent ? nativeLaneTick : events.length}
             onChangeCount={setWorkspaceChangeCount}
             copy={t.uiCodexWorkspace}
+          />
+        )}
+        {subagentPanel && activeSession && isNativeAgent && (
+          <SubagentTranscriptPanel
+            sessionId={activeSession.id}
+            initialAgentId={subagentPanel.agentId}
+            selectionRequestId={subagentPanel.selectionRequestId}
+            t={t}
+            theme={theme}
+            onClose={closeSubagentPanel}
           />
         )}
         </div>

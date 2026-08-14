@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
+use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::runtime_model::{
     ModelCredentialMode, PassthroughRuntimeModelProvider, PreparedRuntimeModel,
@@ -780,7 +781,7 @@ impl EnginePool {
             crate::features::connectors::ima::ImaOpenApiTool::new(),
         ));
         // skill 双 scope 治理：spawn 全量拼组合目录（物化时机一，V-7）。组合目录
-        // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_at
+        // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_roots
         // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
         {
             let sid = session_id.to_string();
@@ -1083,23 +1084,9 @@ impl EnginePool {
         enabled: bool,
     ) -> Result<()> {
         if enabled && !self.multi_agent_mode_available(session_id) {
-            anyhow::bail!("Pinvou 多智能体模式本期仅支持工作会话");
+            anyhow::bail!("当前会话不支持 Pinvou 多智能体模式");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
-        if enabled {
-            // 先占 lifecycle 再写名册：慢磁盘期间若允许发送抢先 reserve，首轮会
-            // 落进旧引擎，随后切换失败并回滚，形成界面已开但该轮未受限的竞态。
-            let workspace = self.bridge.session_workspace(session_id);
-            let sid = session_id.to_string();
-            tokio::task::spawn_blocking(move || -> Result<()> {
-                std::fs::create_dir_all(&workspace)
-                    .with_context(|| format!("set_multi_agent_mode({sid}): 建工作区失败"))?;
-                crate::features::multiagent::roster::enroll_expert_roles(&workspace)
-                    .map_err(anyhow::Error::msg)
-            })
-            .await
-            .with_context(|| format!("set_multi_agent_mode({session_id}): 后台任务失败"))??;
-        }
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
         self.store.set_multi_agent(session_id, enabled)?;
@@ -1133,15 +1120,19 @@ impl EnginePool {
     /// by command, prompt, engine and roster paths so a hidden control cannot
     /// be bypassed by stale state or a direct IPC call.
     pub(crate) fn multi_agent_mode_available(&self, session_id: &str) -> bool {
-        self.bridge
-            .session_policy(session_id)
-            .multi_agent_mode_available()
+        self.bridge.multi_agent_mode_available(session_id)
     }
 
-    /// Resolve the Engine workspace, including a project-bound native Code
-    /// session. CodeWhale keeps its project-scoped `.codewhale` state here.
-    pub(crate) fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
-        self.bridge.session_workspace(session_id)
+    /// Resolve the session-owned delegated-agent runtime-state root.
+    /// For project-bound Code sessions this is distinct from the execution root.
+    pub(crate) fn session_state_root(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<std::path::PathBuf, String> {
+        self.store
+            .session_roots(session_id)
+            .map(|roots| roots.ledger)
+            .map_err(|error| format!("解析会话状态根失败: {error:#}"))
     }
 
     /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
@@ -1155,12 +1146,16 @@ impl EnginePool {
     ) -> Result<()> {
         let reservation = self.reserve_turn(session_id)?;
         let display_message = user_display_message(content.clone());
+        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+            && self.multi_agent_mode_available(session_id))
+        .then(ExpertRosterSnapshot::capture);
         self.send_reserved_user_message(
             session_id,
             content,
             display_message,
             mode,
             restrict_tools_for_turn,
+            expert_snapshot,
             reservation,
         )
         .await
@@ -1175,6 +1170,7 @@ impl EnginePool {
         display_message: Message,
         mode: AppMode,
         restrict_tools_for_turn: bool,
+        expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         mut reservation: TurnReservation,
     ) -> Result<()> {
         let baseline_revision = reservation
@@ -1222,6 +1218,7 @@ impl EnginePool {
                 mode,
                 persona_reminder,
                 restrict_tools,
+                expert_snapshot,
                 reservation,
             )
             .await
@@ -1395,77 +1392,6 @@ impl EnginePool {
                 eprintln!("[engine_pool] set_disallowed_all {sid} failed: {e:?}");
             }
         }
-    }
-
-    /// 专家池增删改后的名册联动（ADR-0006）：刷新所有开着多智能体开关的
-    /// 会话，以及仍在运行且留有专家投影的已关闭会话。后者不能跳过：开关
-    /// 关闭不会重建引擎，若此时删卡，旧 roster 会让已删除专家继续可用。
-    /// 返回聚合错误：调用方（专家池命令）要如实告知用户哪些会话没刷新成功，
-    /// 而不是界面显示成功、子智能体却用旧名单。
-    pub async fn refresh_multi_agent_rosters_after_expert_change(&self) -> Result<(), String> {
-        let mut failures: Vec<String> = Vec::new();
-        let mut targets = self
-            .store
-            .multi_agent_session_ids()
-            .into_iter()
-            .filter(|session_id| self.multi_agent_mode_available(session_id))
-            .collect::<std::collections::BTreeSet<_>>();
-        let live_session_ids = self
-            .entries
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for session_id in live_session_ids {
-            if !self.multi_agent_mode_available(&session_id) {
-                continue;
-            }
-            let workspace = self.bridge.session_workspace(&session_id);
-            if crate::features::multiagent::roster::has_expert_role_projection(&workspace) {
-                targets.insert(session_id);
-            }
-        }
-        for session_id in targets {
-            let workspace = self.bridge.session_workspace(&session_id);
-            if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&workspace) {
-                failures.push(format!("{session_id}: {err}"));
-                continue;
-            }
-            if let Err(err) = self.refresh_multi_agent_roster(&session_id).await {
-                failures.push(format!("{session_id}: {err}"));
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(failures.join("；"))
-        }
-    }
-
-    /// 多智能体开关开启后的即时名册刷新（ADR-0006）：把刚装配进会话工作区的
-    /// 专家名册整册推给在跑引擎（底座 `Op::SetFleetRoster`，下一轮生效），
-    /// 否则模型能在提醒里看到专家名字、启动时却报"不存在该 profile"。
-    /// 工具面不随开关变化（与主线持平，不按会话改写禁用列表），引擎没起则 no-op——
-    /// 下次 spawn 由 `build_engine_config_for_multi_agent` 从工作区装配。
-    pub async fn refresh_multi_agent_roster(&self, session_id: &str) -> Result<(), String> {
-        if !self.multi_agent_mode_available(session_id) {
-            return Ok(());
-        }
-        let Some(engine) = self.handle_for(session_id).await else {
-            // 引擎没起不是错误：下次 spawn 从工作区装配。
-            return Ok(());
-        };
-        let workspace = self.bridge.session_workspace(session_id);
-        let roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
-            &codewhale_config::FleetConfigToml::default(),
-            &workspace,
-        ));
-        engine
-            .handle
-            .send(Op::SetFleetRoster { roster })
-            .await
-            .map_err(|e| format!("向在跑引擎推送名册失败: {e:?}"))
     }
 
     /// 当前 UNIX 时刻（毫秒）。引擎纪元与 worker ledger 的

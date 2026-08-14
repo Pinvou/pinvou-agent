@@ -34,6 +34,7 @@ use deepseek_tui::tui::app::AppMode;
 use self::bundle::{instructions_code_md, instructions_md, Pinvou3Bundle};
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::session_mode::SessionMode;
+use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::runtime_model::RuntimeModelCredential;
 use crate::features::assistant::session_policy::SessionPolicy;
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
@@ -49,6 +50,8 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
 const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
 const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
+const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
+const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -129,6 +132,10 @@ pub struct Pinvou3Bridge {
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
     /// 共用 AcpPool 那份 SessionAgentStore 注入。
     pub code_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// 外部 ACP 会话判定。产品多智能体只由 Pinvou 原生 Engine 承载；该谓词
+    /// 与 `code_session_predicate` 一起由同一份 AcpPool 注入，防止外部 ACP 的
+    /// plain 产品模式被误当成 Work 并通过直调 IPC 开启产品开关。
+    pub external_acp_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Pinvou3Bridge {
@@ -148,6 +155,13 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field(
                 "code_session_predicate",
                 &self.code_session_predicate.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "external_acp_session_predicate",
+                &self
+                    .external_acp_session_predicate
+                    .as_ref()
+                    .map(|_| "Some(..)"),
             )
             .finish()
     }
@@ -242,6 +256,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             execution_root_resolver: None,
             code_session_predicate: None,
+            external_acp_session_predicate: None,
         };
         // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
         //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
@@ -403,11 +418,29 @@ impl Pinvou3Bridge {
         self.code_session_predicate = Some(predicate);
     }
 
+    /// 注入外部 ACP 会话判定（与原生 Code 判定同源于 AcpPool）。
+    pub fn set_external_acp_session_predicate(
+        &mut self,
+        predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) {
+        self.external_acp_session_predicate = Some(predicate);
+    }
+
     /// 该 session 是否为原生（品悟 Engine）代码会话（含临时与绑项目两种）。
     pub fn is_code_session(&self, session_id: &str) -> bool {
         self.code_session_predicate
             .as_ref()
             .is_some_and(|predicate| predicate(session_id))
+    }
+
+    /// 产品多智能体可用性同时受产品模式与运行时后端约束。SessionPolicy 只描述
+    /// plain/code 轴；外部 ACP 虽然也是 plain，却不由 Pinvou Engine 执行。
+    pub fn multi_agent_mode_available(&self, session_id: &str) -> bool {
+        let external_acp = self
+            .external_acp_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id));
+        !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
     }
 
     /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
@@ -1314,21 +1347,26 @@ impl Pinvou3Bridge {
     ///
     /// [`build_engine_config`]: Self::build_engine_config
     pub fn build_engine_config_for_session(&self, session_id: &str) -> EngineConfig {
-        self.build_engine_config_for_session_at(session_id, self.session_workspace(session_id))
+        self.build_engine_config_for_session_roots(session_id, self.session_roots(session_id))
     }
 
-    /// Build a session config at an explicit workspace. Scheduled conversations
-    /// use this path so their transcripts stay independent while every run shares
-    /// the ordinary global workspace, without creating a misleading empty
-    /// `sessions/<id>/workspace` directory first.
-    pub(crate) fn build_engine_config_for_session_at(
+    /// Build a session config from its execution and ledger roots.
+    ///
+    /// Project-bound Code sessions execute in the project while delegated-agent
+    /// control-plane state remains under the session-owned ledger root. Scheduled
+    /// conversations pass roots resolved by
+    /// [`crate::features::sessions::SessionStore::session_roots`] so
+    /// their existing shared automation workspace semantics remain unchanged.
+    pub(crate) fn build_engine_config_for_session_roots(
         &self,
         session_id: &str,
-        workspace: PathBuf,
+        roots: SessionRoots,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config();
-        let _ = std::fs::create_dir_all(&workspace);
-        cfg.workspace = workspace;
+        let _ = std::fs::create_dir_all(&roots.execution);
+        let _ = std::fs::create_dir_all(&roots.ledger);
+        cfg.workspace = roots.execution;
+        cfg.subagent_state_root = Some(roots.ledger);
         cfg.instructions = self.session_instructions(session_id);
         // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
         // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
@@ -1341,43 +1379,40 @@ impl Pinvou3Bridge {
 
     /// 多智能体会话专用配置（ADR-0006）。
     ///
-    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡写进
-    /// 会话工作区（`.codewhale/agents/exp-*.toml`），整册装进 `fleet_roster` 供裸
+    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡
+    /// 作为底座原生 `[fleet.profiles]` 内存配置，整册装进 `fleet_roster` 供裸
     /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
     /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。本产品模式仅供 Work 会话使用：默认直属实例为叶子；
-    /// 复杂任务允许直属实例再拆一层，第二层不得继续派生；直属并行 4 / 全树
-    /// 准入 8。更深后代为避免父子互等死锁不占直属 launch gate，但仍受整棵树
-    /// 的准入上限约束。
-    pub fn build_engine_config_for_multi_agent(
+    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
+    /// 第二层不得继续派生。Work 直属并行 4 / 全树准入 8，原生 Code 直属并行
+    /// 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch gate，
+    /// 但仍受整棵树的准入上限约束。
+    pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
-        workspace: PathBuf,
+        roots: SessionRoots,
+        snapshot: &ExpertRosterSnapshot,
     ) -> EngineConfig {
-        let mut cfg = self.build_engine_config_for_session_at(session_id, workspace);
-        // This builder configures Pinvou's opt-in Work multi-agent mode. Keep
-        // it scoped here so stale state or a future direct caller cannot project
-        // expert profiles into a native Code project. Returning the ordinary
-        // config deliberately preserves CodeWhale's base agent/workflow tools.
-        if !self.session_policy(session_id).multi_agent_mode_available() {
-            return cfg;
-        }
-        // spawn 路径不因名册写盘失败而拒绝起引擎（对话本身要能用）；开关
-        // 命令路径（interaction::set_multi_agent_mode）已把写盘失败挡在
-        // 开启之前，这里只兜底记录。
-        if let Err(err) = crate::features::multiagent::roster::enroll_expert_roles(&cfg.workspace) {
-            eprintln!("[multiagent] {err}");
-        }
+        let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
         // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
         // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
         // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
-        let max_concurrent = MULTI_AGENT_WORK_MAX_CONCURRENT;
-        let max_admitted = MULTI_AGENT_WORK_MAX_ADMITTED;
+        let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
+            (
+                MULTI_AGENT_CODE_MAX_CONCURRENT,
+                MULTI_AGENT_CODE_MAX_ADMITTED,
+            )
+        } else {
+            (
+                MULTI_AGENT_WORK_MAX_CONCURRENT,
+                MULTI_AGENT_WORK_MAX_ADMITTED,
+            )
+        };
         // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-        // 使用工作模式的产品默认。
+        // 使用当前会话模式的产品默认。
         cfg.max_subagents = self
             .prefs
             .advanced
@@ -1393,7 +1428,7 @@ impl Pinvou3Bridge {
             .min(cfg.max_subagents);
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
         cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
-            &codewhale_config::FleetConfigToml::default(),
+            snapshot.fleet_config(),
             &cfg.workspace,
         ));
         cfg
@@ -1498,6 +1533,15 @@ impl Pinvou3Bridge {
         // 本地 vLLM 必须关 thinking（防 SSE timeout）；其余默认 high。
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
+    }
+
+    /// 为开启多智能体的 Engine/turn 注入 Pinvou 专家池对应的原生
+    /// `[fleet.profiles]`。调用方必须复用与提醒相同的 [`ExpertRosterSnapshot`]；
+    /// 普通会话继续调用 [`build_dt_config`](Self::build_dt_config)，不会获得专家。
+    pub(crate) fn build_multi_agent_dt_config(&self, snapshot: &ExpertRosterSnapshot) -> DtConfig {
+        let mut config = self.build_dt_config();
+        config.fleet = Some(snapshot.fleet_config().clone());
+        config
     }
 
     /// 注入硬拦截 hook：ToolCallBefore 时 spawn 一个 shell 脚本检查 tool args
@@ -1650,6 +1694,29 @@ impl Pinvou3Bridge {
         route.map_err(anyhow::Error::msg)
     }
 
+    /// 解析携带本轮专家快照的路由。底座在真正执行 `agent(profile=...)` 前会
+    /// 从 `ResolvedRuntimeRoute.config.fleet` 重新构造名册，因此只更新
+    /// `EngineConfig.fleet_roster` 不足以支持 execution != ledger 的 Code 会话。
+    pub(crate) fn resolve_multi_agent_runtime_route_for_model(
+        &self,
+        model: &str,
+        snapshot: &ExpertRosterSnapshot,
+    ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
+        let config = self.build_multi_agent_dt_config(snapshot);
+        let provider = config.api_provider();
+        let route = if let Some(limits) = self.route_limits_for_model(model) {
+            deepseek_tui::route_runtime::resolve_runtime_route_with_limits(
+                &config,
+                provider,
+                Some(model),
+                limits,
+            )
+        } else {
+            deepseek_tui::route_runtime::resolve_runtime_route(&config, provider, Some(model))
+        };
+        route.map_err(anyhow::Error::msg)
+    }
+
     pub fn compaction_config_for_model(
         &self,
         model: &str,
@@ -1677,6 +1744,7 @@ impl Pinvou3Bridge {
             persona_reminder,
             restrict_tools,
             self.build_hook_executor(),
+            None,
         )
     }
 
@@ -1690,6 +1758,7 @@ impl Pinvou3Bridge {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         workspace: &std::path::Path,
+        snapshot: &ExpertRosterSnapshot,
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
         self.build_send_message_op_with_hooks(
@@ -1699,6 +1768,7 @@ impl Pinvou3Bridge {
             persona_reminder,
             restrict_tools,
             self.build_multi_agent_hook_executor(workspace),
+            Some(snapshot),
         )
     }
 
@@ -1722,6 +1792,7 @@ impl Pinvou3Bridge {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         hook_executor: Arc<HookExecutor>,
+        expert_snapshot: Option<&ExpertRosterSnapshot>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1765,10 +1836,14 @@ impl Pinvou3Bridge {
         let model = self.model();
         // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
         let (auto_approve, approval_mode) = policy.approval_params();
+        let route = match expert_snapshot {
+            Some(snapshot) => self.resolve_multi_agent_runtime_route_for_model(&model, snapshot)?,
+            None => self.resolve_runtime_route_for_model(&model)?,
+        };
         Ok(Op::SendMessage {
             content: full_content,
             mode,
-            route: Box::new(self.resolve_runtime_route_for_model(&model)?),
+            route: Box::new(route),
             compaction: Box::new(self.compaction_config_for_model(&model)),
             goal_objective: None,
             // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
@@ -1927,7 +2002,23 @@ mod tests {
             probed_context_tokens: None,
             execution_root_resolver: None,
             code_session_predicate: None,
+            external_acp_session_predicate: None,
         }
+    }
+
+    #[test]
+    fn multi_agent_availability_combines_product_mode_and_native_runtime() {
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id| {
+            session_id == "native-code"
+        }));
+        bridge.set_external_acp_session_predicate(std::sync::Arc::new(|session_id| {
+            session_id == "external-acp"
+        }));
+
+        assert!(bridge.multi_agent_mode_available("work"));
+        assert!(bridge.multi_agent_mode_available("native-code"));
+        assert!(!bridge.multi_agent_mode_available("external-acp"));
     }
 
     #[test]
@@ -4507,7 +4598,7 @@ mod tests {
     }
 
     #[test]
-    fn code_session_keeps_base_agents_without_multi_agent_projection() {
+    fn code_multi_agent_isolates_state_and_roster_from_the_project() {
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "code-session"
@@ -4518,15 +4609,32 @@ mod tests {
             &bridge
         ));
 
-        let plain = bridge.build_engine_config_for_session_at("plain-session", root.join("plain"));
-        let code_workspace = root.join("code");
-        let code =
-            bridge.build_engine_config_for_multi_agent("code-session", code_workspace.clone());
+        let code_workspace = root.join("project");
+        let code_state_root = root.join("sessions").join("code-session").join("workspace");
+        let roots = SessionRoots {
+            execution: code_workspace.clone(),
+            ledger: code_state_root.clone(),
+        };
+        let ordinary_code =
+            bridge.build_engine_config_for_session_roots("code-session", roots.clone());
+        assert_eq!(ordinary_code.workspace, code_workspace);
+        assert_eq!(
+            ordinary_code.subagent_state_root.as_deref(),
+            Some(code_state_root.as_path()),
+            "未开启产品开关的普通 Code Engine 也必须隔离底座委派状态"
+        );
 
-        assert!(plain.subagents_enabled, "Work 会话保持底座委派能力");
+        let snapshot = ExpertRosterSnapshot::capture();
+        let code = bridge.build_engine_config_for_multi_agent("code-session", roots, &snapshot);
+
         assert!(
             code.subagents_enabled,
-            "收缩 Pinvou 多智能体入口不得禁用 CodeWhale 原有 agent/workflow"
+            "Code 会话保持底座 agent/workflow 能力"
+        );
+        assert_eq!(code.workspace, code_workspace);
+        assert_eq!(
+            code.subagent_state_root.as_deref(),
+            Some(code_state_root.as_path())
         );
         let code_has_multi_agent_guard = code.hook_executor.as_ref().is_some_and(|executor| {
             executor
@@ -4536,14 +4644,65 @@ mod tests {
                 .any(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
         });
         assert!(
-            !code_has_multi_agent_guard,
-            "Code 会话不得装配多智能体专用深度护栏"
+            code_has_multi_agent_guard,
+            "Code 多智能体会话必须装配资源护栏"
         );
+        assert_eq!(code.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
+        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
+        assert_eq!(code.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
         assert!(
             !code_workspace.join(".codewhale").exists(),
-            "Code 会话不得向用户项目投影专家名册"
+            "Code 会话不得向用户项目写状态或专家名册"
+        );
+        assert!(
+            !code_state_root
+                .join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR)
+                .exists(),
+            "Code 专家名册不得复制进会话状态根"
+        );
+        assert!(
+            code.fleet_roster
+                .get("exp-engineering-frontend-developer")
+                .is_some(),
+            "全局 Fleet 配置必须装入 Code 引擎"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// scheduled 会话由 SessionStore::session_roots 解析为"两个根都是该
+    /// automation 的共享 workspace"（sessions/mod.rs 契约）。此处验证 EngineConfig
+    /// 消费该 roots 时执行根与状态根同源，且不额外创建会话私有状态根
+    /// （审计补测：scheduled 语义在 EngineConfig 层保持）。
+    #[test]
+    fn scheduled_roots_keep_shared_automation_workspace_in_engine_config() {
+        let bridge = fixture_bridge();
+        let automation = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-automation-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = SessionRoots {
+            execution: automation.clone(),
+            ledger: automation.clone(),
+        };
+
+        let ordinary = bridge.build_engine_config_for_session_roots("sched-run", roots.clone());
+        assert_eq!(ordinary.workspace, automation);
+        assert_eq!(
+            ordinary.subagent_state_root.as_deref(),
+            Some(automation.as_path()),
+            "scheduled 会话的执行根与状态根必须同源（共享 automation workspace）"
+        );
+
+        let snapshot = ExpertRosterSnapshot::capture();
+        let multi_agent = bridge.build_engine_config_for_multi_agent("sched-run", roots, &snapshot);
+        assert_eq!(multi_agent.workspace, automation);
+        assert_eq!(
+            multi_agent.subagent_state_root.as_deref(),
+            Some(automation.as_path())
+        );
+
+        let _ = std::fs::remove_dir_all(automation);
     }
 
     /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
@@ -4559,7 +4718,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
 
         let ordinary = bridge.build_engine_config();
-        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", workspace.clone());
+        let roots = SessionRoots {
+            execution: workspace.clone(),
+            ledger: workspace.clone(),
+        };
+        let snapshot = ExpertRosterSnapshot::capture();
+        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot);
 
         assert_eq!(
             cfg.disallowed_tools, ordinary.disallowed_tools,
@@ -4590,19 +4754,10 @@ mod tests {
         assert!(!ordinary_has_guard, "普通对话不得挂载多智能体深度护栏");
         assert!(multi_agent_has_guard, "多智能体会话必须拦截深度覆盖");
 
-        // 专家池卡片使用 exp-* profile；不得播种旧版非 exp 默认角色文件。
+        // 专家池卡片使用原生 config profiles；不得再向会话或项目播种文件。
         // 底座自带的内置成员（verifier 等）也保持可用。
         let agents_dir = workspace.join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR);
-        let seeded: Vec<String> = std::fs::read_dir(&agents_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .filter(|n| !n.starts_with("exp-"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(seeded.is_empty(), "不得再播种内置角色文件: {seeded:?}");
+        assert!(!agents_dir.exists(), "不得创建会话级 agents 投影目录");
         assert!(
             cfg.fleet_roster
                 .get("exp-engineering-frontend-developer")
@@ -4617,7 +4772,7 @@ mod tests {
         let mut disabled_bridge = fixture_bridge();
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
         let disabled =
-            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", workspace.clone());
+            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", roots, &snapshot);
         assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
         assert_eq!(disabled.launch_concurrency, 0);
 
@@ -4640,6 +4795,7 @@ mod tests {
             .build_send_message_op("plain-session", "hi".into(), AppMode::Yolo, None, false)
             .expect("build op");
         let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
+        let snapshot = ExpertRosterSnapshot::capture();
         let multi_agent_op = bridge
             .build_multi_agent_send_message_op(
                 "multi-agent-session",
@@ -4648,6 +4804,7 @@ mod tests {
                 None,
                 false,
                 &workspace,
+                &snapshot,
             )
             .expect("build multi-agent op");
         let deepseek_tui::core::ops::Op::SendMessage {

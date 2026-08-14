@@ -22,12 +22,25 @@ pub async fn compact_now(
 // ===================== 阶段 D: Plan / YOLO 双模式 =====================
 
 /// 查询当前 session 的 mode 状态（前端启动 / 切换 session 时拉一次）。
+#[derive(Serialize)]
+pub struct SessionModeStateView {
+    #[serde(flatten)]
+    state: SessionModeState,
+    /// Whether the product-level multi-agent mode is available for this session.
+    /// This is resolved by SessionPolicy instead of inferred by the frontend.
+    multi_agent_available: bool,
+}
+
 #[tauri::command]
 pub async fn get_mode_state(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Result<SessionModeState, String> {
-    Ok(store.mode_state(&session_id))
+    pool: State<'_, EnginePool>,
+) -> Result<SessionModeStateView, String> {
+    Ok(SessionModeStateView {
+        state: store.mode_state(&session_id),
+        multi_agent_available: pool.multi_agent_mode_available(&session_id),
+    })
 }
 
 /// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
@@ -91,16 +104,15 @@ pub async fn set_multi_agent_mode(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeState, String> {
-    // 任何副作用（建目录、写角色文件）之前先过两道门：id 形状
-    // 校验（paths::session_workspace_dir 只是 join，`../` 会把副作用落到
-    // 预期目录之外）+ 会话确实存在（防 IPC 直调对不存在的 id 造孤儿目录）。
+    // 持久化开关并回收旧引擎之前先过两道门：id 形状校验（避免非法 id
+    // 逃逸会话边界）+ 会话确实存在（防 IPC 直调给不存在的 id 造孤儿状态）。
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
     store
         .load(&session_id)
         .map_err(|error| format!("set_multi_agent_mode({session_id}): 会话不存在: {error:#}"))?;
     // EngineConfig 的深度、并发、准入上限不能完整热切；同时 SendMessage 会覆盖
-    // engine 级 hook。名册装配、状态持久化与旧引擎回收必须和发送共用同一个
+    // engine 级 hook。内存名册装配、状态持久化与旧引擎回收必须和发送共用同一个
     // lifecycle + turn gate，避免切换/发送竞态。关闭也必须回收，否则普通对话
     // 会继续背着多智能体限制。生成中 reserve 会直接拒绝，不会打断当前回复。
     pool.reconfigure_multi_agent_mode(&session_id, enabled)
@@ -142,7 +154,7 @@ pub async fn accept_plan(
             accepted_mode_state.clone(),
         ))
         .map_err(|error| format!("prepare accept_plan admission: {error:#}"))?;
-    let instruction = super::multiagent::prepend_delegation_reminder(
+    let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool.inner(),
         &session_id,
         accepted_mode_state.multi_agent,
@@ -156,10 +168,11 @@ pub async fn accept_plan(
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
-            instruction,
+            prepared_delegation.content,
             user_display_message(display_content),
             SerializableMode::Yolo.to_app_mode(),
             false,
+            prepared_delegation.expert_snapshot,
             reservation,
         )
         .await

@@ -18,21 +18,59 @@ import { isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 // CodeWhale 的直接子智能体 id 由 UUID 前 8 位生成（agent_ + 8 位十六进制）。
 // 必须按完整契约匹配，不能把工具 schema 里的字段名 `agent_id` 当成实例 id。
-const CODEWHALE_SUBAGENT_ID = /\bagent_[0-9a-f]{8}\b/i;
+const CODEWHALE_SUBAGENT_ID = /^agent_[0-9a-f]{8}$/i;
+
+function formalSubagentId(value) {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  return CODEWHALE_SUBAGENT_ID.test(candidate) ? candidate : null;
+}
+
+function structuredSubagentId(value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const agentId = structuredSubagentId(entry);
+      if (agentId) return agentId;
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const direct = formalSubagentId(value.agent_id);
+  if (direct) return direct;
+  // agent 的原始返回可把实例快照包在 snapshot 中；只沿正式结构字段查找，
+  // 不遍历 error/conflicting_owner 等任意文本，避免把冲突方误认成新实例。
+  return structuredSubagentId(value.snapshot);
+}
 
 export function extractSubagentId(output) {
-  let text;
-  if (typeof output === 'string') {
-    text = output;
-  } else {
-    try {
-      text = JSON.stringify(output ?? '');
-    } catch {
-      text = String(output ?? '');
-    }
+  if (output && typeof output === 'object') return structuredSubagentId(output);
+  const text = typeof output === 'string' ? output.trim() : '';
+  if (!text) return null;
+  const exact = formalSubagentId(text);
+  if (exact) return exact;
+  try {
+    const structured = structuredSubagentId(JSON.parse(text));
+    if (structured) return structured;
+  } catch {
+    // 上下文压缩后的 agent 结果是纯文本摘要，继续按其稳定格式识别。
   }
-  const match = text.match(CODEWHALE_SUBAGENT_ID);
-  return match ? match[0] : null;
+  const jsonField = text.match(/"agent_id"\s*:\s*"(agent_[0-9a-f]{8})"/i);
+  if (jsonField) return jsonField[1];
+  const summaryLine = text.match(
+    /(?:^|\r?\n)\s*-\s*(agent_[0-9a-f]{8})\s+\([^\r\n)]+\)\s+status=/i,
+  );
+  return summaryLine ? summaryLine[1] : null;
+}
+
+/**
+ * 专家卡只绑定一次成功 spawn 返回的实例。工具完成态与成功态是两条轴：
+ * Code 原生车道会把失败的 tool_end 落成 state=done + success=false，冷启动恢复同理。
+ */
+export function resolveSubagentSpawnResult(item) {
+  const failed = !!(item && (item.success === false || item.state === 'failed'));
+  return {
+    failed,
+    agentId: failed ? null : extractSubagentId(item && item.output),
+  };
 }
 
 const FILE_CHANGE_TOOLS = new Set([

@@ -106,9 +106,9 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 ## 5. Pinvou 父仓兼容迁移
 
-- submodule 指向公开 v0.9.5 r4 五主题基线。
+- submodule 指向公开 v0.9.5 r5 五主题基线。
 - `Cargo.lock` 对齐 v0.9.5 workspace crate 和依赖图。
-- `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，显式透传新增 `subagent_state_root`。
+- `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，并按 `SessionRoots` 将新增的 `subagent_state_root` 指向会话 ledger。
 - 会话工具隐藏继续走 `shape_disallowed_tools`，产品语义不变。
 - app 工具白名单继续使用 `allowed_tool_names()` 同源注入 Engine/turn。
 - 三省六部把角色登记的具体产物文件转换为 v0.9.5 有界 write claim，工作区外路径继续拒绝。
@@ -153,6 +153,5 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 - CodeWhale 分支：`Pinvou/CodeWhale:pinvou3-clean`
 - CodeWhale HEAD：`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`
-- 父仓分支：`fix/session-tool-recovery`
+- 父仓状态：会话恢复修复已通过 PR `#247` 合入 `main`，本地模型工具续轮兼容修复已通过 PR `#278` 合入 `main`
 - 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r6` 已发布；`r1` 至 `r5` 保留为不可变历史标签，旧 v0.9.0 分支已双重备份
-- 下一步：通过父仓 PR `#247` 合入 gitlink、会话适配代码和维护登记。

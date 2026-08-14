@@ -36,6 +36,9 @@ use crate::features::assistant::engine_support::{
     apply_scheduled_turn_policy, maybe_notify_task_completed, persist_successful_tool_artifact,
     scheduled_tool_should_auto_approve, TurnCompletionTracker,
 };
+use crate::features::assistant::expert_roster::{
+    cleanup_legacy_expert_projection, ExpertRosterSnapshot,
+};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
@@ -1163,20 +1166,54 @@ impl AppEngine {
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
         let multi_agent_enabled = scheduled_profile.is_none()
-            && bridge
-                .session_policy(session_id)
-                .multi_agent_mode_available()
+            && bridge.multi_agent_mode_available(session_id)
             && store.mode_state(session_id).multi_agent;
-        let workspace = store
-            .session_roots(session_id)
-            .map(|roots| roots.execution)
-            .unwrap_or_else(|_| bridge.session_workspace(session_id));
+        let roots = if scheduled_profile.is_some() {
+            // 定时任务保留既有 profile/fallback 解析；其 ledger 可能是用户选择的
+            // automation workspace，下面不会对它执行任何旧投影删除。
+            store
+                .session_roots(session_id)
+                .unwrap_or_else(|_| bridge.session_roots(session_id))
+        } else {
+            // 普通会话的 roots 是 destructive migration 的权限边界：必须由
+            // SessionStore 校验 session id 并成功解析，禁止用相同的字符串 join
+            // fallback 掩盖非法 id 后再进入清理。
+            store
+                .session_roots(session_id)
+                .with_context(|| format!("resolve managed session roots for {session_id}"))?
+        };
+        if scheduled_profile.is_none() {
+            // 仅对可证明由 Pinvou 管理的 session ledger 做旧投影迁移。定时任务
+            // 的 execution/ledger 可以是用户选择的自动化工作区，绝不能按文件名
+            // 删除其中的项目 profile。
+            let managed_ledger = crate::platform::paths::session_workspace_dir(session_id);
+            if roots.ledger != managed_ledger {
+                anyhow::bail!(
+                    "refusing legacy expert cleanup outside managed session ledger: {}",
+                    roots.ledger.display()
+                );
+            }
+            cleanup_legacy_expert_projection(
+                &managed_ledger,
+                &crate::platform::paths::sessions_root(),
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("clean legacy expert projection for {session_id}"))?;
+        }
+        // 启动配置的 fleet_roster 与传给 spawn_engine 的 DtConfig 必须来自同一
+        // 次专家池读取；否则专家恰好在两次构造之间变更时，首轮就会出现名册
+        // 与 spawn-time route 不一致。
+        let expert_snapshot = multi_agent_enabled.then(ExpertRosterSnapshot::capture);
         let mut engine_config = if multi_agent_enabled {
             // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
             // 完全一致，普通会话不继承这些限制。
-            bridge.build_engine_config_for_multi_agent(session_id, workspace)
+            bridge.build_engine_config_for_multi_agent(
+                session_id,
+                roots,
+                expert_snapshot.as_deref().expect("multi-agent snapshot"),
+            )
         } else {
-            bridge.build_engine_config_for_session_at(session_id, workspace)
+            bridge.build_engine_config_for_session_roots(session_id, roots)
         };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
@@ -1207,7 +1244,10 @@ impl AppEngine {
         } else {
             Some(disallowed)
         };
-        let dt_config = bridge.build_dt_config();
+        let dt_config = match expert_snapshot.as_deref() {
+            Some(snapshot) => bridge.build_multi_agent_dt_config(snapshot),
+            None => bridge.build_dt_config(),
+        };
         // 多智能体宿主不再改写 Workflow 审批配置："每张图必停"的旧约束已按
         // 产品定义收缩撤除，只读图按底座默认自动起跑，写入/提权图由底座的
         // require_approval_for_writes 走普通审批（确认卡只在那时出现）。
@@ -1300,11 +1340,13 @@ impl AppEngine {
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
+        let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
         let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
             restrict_tools,
+            expert_snapshot,
         )?;
         self.send_turn_op(op).await
     }
@@ -1315,6 +1357,7 @@ impl AppEngine {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
+        expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         reservation: TurnReservation,
     ) -> Result<()> {
         let op = self.build_interactive_send_message_op(
@@ -1322,6 +1365,7 @@ impl AppEngine {
             mode,
             persona_reminder,
             restrict_tools,
+            expert_snapshot,
         )?;
         self.send_reserved_turn_op(op, reservation).await
     }
@@ -1332,8 +1376,12 @@ impl AppEngine {
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
+        expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
     ) -> Result<Op> {
         if self.multi_agent_enabled {
+            let snapshot = expert_snapshot
+                .as_deref()
+                .context("multi-agent turn is missing its expert roster snapshot")?;
             self.bridge.build_multi_agent_send_message_op(
                 &self.session_id,
                 content,
@@ -1341,8 +1389,12 @@ impl AppEngine {
                 persona_reminder,
                 restrict_tools,
                 &self.workspace,
+                snapshot,
             )
         } else {
+            if expert_snapshot.is_some() {
+                anyhow::bail!("ordinary turn must not carry a multi-agent expert snapshot");
+            }
             self.bridge.build_send_message_op(
                 &self.session_id,
                 content,
@@ -1509,9 +1561,16 @@ impl AppEngine {
     /// 自动压缩由上游 CompactionConfig.enabled 控制（pinvou3 走默认 = on）。
     pub async fn compact_now(&self) -> Result<()> {
         let model = self.bridge.model();
+        let route = if self.multi_agent_enabled {
+            let snapshot = ExpertRosterSnapshot::capture();
+            self.bridge
+                .resolve_multi_agent_runtime_route_for_model(&model, &snapshot)?
+        } else {
+            self.bridge.resolve_runtime_route_for_model(&model)?
+        };
         self.handle
             .send(Op::CompactContext {
-                route: Box::new(self.bridge.resolve_runtime_route_for_model(&model)?),
+                route: Box::new(route),
                 compaction: Box::new(self.bridge.compaction_config_for_model(&model)),
             })
             .await?;
