@@ -1,6 +1,6 @@
 //! 能力包统一模型 — 步骤 1/2：schema + 注册表 + kind 推导 + 就绪态（只读，不改安装/门禁/投影）。
 //!
-//! 设计依据：`docs/capability-governance.md` §3（能力包线）+ 实施修复方案（V1-V7）。
+//! 设计依据：能力包统一模型实施修复方案（V1-V7，见本模块各处注释与 PR #279 讨论）。
 //! 一切外部能力统一建模为包：
 //!
 //! ```text
@@ -39,6 +39,18 @@ pub enum CredentialTarget {
     Env,
     Credential,
     Bearer,
+}
+
+/// CredentialTarget → 系统凭据存储 keyring target（`CredentialReference::for_mcp_secret`
+/// 的 target 段）。存储侧唯一映射点：bearer 密钥在 install 时落 `"header"`
+/// （见 `manifest_secret_targets` / install 的 `resolve_secret_placeholder`），
+/// 查询侧必须复用本函数，禁止另写映射导致存取漂移。
+pub fn keyring_target(target: CredentialTarget) -> &'static str {
+    match target {
+        CredentialTarget::Env => "env",
+        CredentialTarget::Bearer => "header",
+        CredentialTarget::Credential => "credential",
+    }
 }
 
 /// 包声明的凭据项（修复方案一：从 config_fields/secret_env/secret_headers 收敛）。
@@ -166,11 +178,9 @@ impl BundleRegistry {
             out.push(BundleInfo {
                 id: tool.id.clone(),
                 name: tool.name.clone(),
-                kind: if companions.is_empty() {
-                    BundleKind::Mcp
-                } else {
-                    BundleKind::Bundle
-                },
+                // kind 由内容现算（防自报标签提权）：servers 非空，有 companion 即组合包
+                kind: derive_bundle_kind(std::slice::from_ref(&tool.id), &companions, &[])
+                    .expect("MCP 源 servers 恒非空"),
                 mcp_servers: vec![tool.id.clone()],
                 skills: companions,
                 cli: Vec::new(),
@@ -195,7 +205,8 @@ impl BundleRegistry {
             out.push(BundleInfo {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
-                kind: BundleKind::Skill,
+                kind: derive_bundle_kind(&[], std::slice::from_ref(&skill.id), &[])
+                    .expect("技能源 skills 恒非空"),
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
@@ -217,7 +228,8 @@ impl BundleRegistry {
             out.push(BundleInfo {
                 id: skill.id.clone(),
                 name: skill.title.clone(),
-                kind: BundleKind::Skill,
+                kind: derive_bundle_kind(&[], std::slice::from_ref(&skill.id), &[])
+                    .expect("技能源 skills 恒非空"),
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
@@ -234,13 +246,14 @@ impl BundleRegistry {
         // 4) CLI 连接器源（内置常量表；V2 后不含 ima。V4 硬约束：desc/version/
         //    auth_required 内容迁移随步骤 6（前端数据源切换）同 PR 完成，此处结构占位）
         for (id, name) in BUILTIN_CLI_BUNDLES {
+            let cli = vec![(*id).to_string()];
             out.push(BundleInfo {
                 id: (*id).to_string(),
                 name: (*name).to_string(),
-                kind: BundleKind::Cli,
+                kind: derive_bundle_kind(&[], &[], &cli).expect("CLI 源 cli 恒非空"),
                 mcp_servers: Vec::new(),
                 skills: Vec::new(),
-                cli: vec![(*id).to_string()],
+                cli,
                 credentials: Vec::new(),
                 description: String::new(),
                 version: String::new(),
@@ -252,43 +265,43 @@ impl BundleRegistry {
         }
 
         // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）
-        let ima_skills = ["ima-skills"];
+        // 凭据 key 与真实存储对齐：ima 走 `CredentialReference::for_ima_secret`
+        // （ima 专用 service，key 为 client_id/api_key，见 connectors/ima.rs），
+        // 非 mcp secret 命名空间——通用 readiness 路径查不到，命令层特判走 ima_status。
+        let ima_skills: Vec<String> = vec!["ima-skills".to_string()];
+        let ima_credentials = vec![
+            CredentialSpec {
+                key: "client_id".to_string(),
+                target: CredentialTarget::Credential,
+                required: true,
+            },
+            CredentialSpec {
+                key: "api_key".to_string(),
+                target: CredentialTarget::Credential,
+                required: true,
+            },
+        ];
         out.push(BundleInfo {
             id: "ima".to_string(),
             name: "腾讯 ima".to_string(),
-            kind: BundleKind::Skill,
+            kind: derive_bundle_kind(&[], &ima_skills, &[]).expect("ima skills 恒非空"),
             mcp_servers: Vec::new(),
-            skills: ima_skills.iter().map(|s| s.to_string()).collect(),
+            skills: ima_skills,
             cli: Vec::new(),
-            credentials: vec![
-                CredentialSpec {
-                    key: "IMA_CLIENT_ID".to_string(),
-                    target: CredentialTarget::Credential,
-                    required: true,
-                },
-                CredentialSpec {
-                    key: "IMA_API_KEY".to_string(),
-                    target: CredentialTarget::Credential,
-                    required: true,
-                },
-            ],
+            // config_fields 与 credentials 是同一份功能事实，由 credentials 派生避免漂移
+            config_fields: ima_credentials
+                .iter()
+                .map(|c| ConfigFieldSpec {
+                    key: c.key.clone(),
+                    required: c.required,
+                    target: c.target,
+                    secret: true,
+                })
+                .collect(),
+            credentials: ima_credentials,
             description: String::new(),
             version: String::new(),
             auth_required: true,
-            config_fields: vec![
-                ConfigFieldSpec {
-                    key: "IMA_CLIENT_ID".to_string(),
-                    required: true,
-                    target: CredentialTarget::Credential,
-                    secret: true,
-                },
-                ConfigFieldSpec {
-                    key: "IMA_API_KEY".to_string(),
-                    required: true,
-                    target: CredentialTarget::Credential,
-                    secret: true,
-                },
-            ],
             installed: self.cli_bundle_installed("ima"),
             user_uploaded: false,
         });
@@ -300,8 +313,9 @@ impl BundleRegistry {
         self.list_bundles().into_iter().find(|b| b.id == id)
     }
 
-    /// CLI 包安装态：飞书/企微/钉钉/腾讯会议走 CLI 认证状态，ima 走凭据配置态。
-    /// 现有判定散落在前端连接态/后端 status 命令，此处先给保守默认（未安装），
+    /// CLI/ima 包安装态的保守占位（恒 false）：连接器 installed 需查询 CLI 二进制
+    /// 或凭据存储（async/运行时状态），同步注册表不直连——权威 (installed, ready)
+    /// 由命令层 `bundle_readiness` 从各连接器 status 现算并覆盖本字段。
     /// 安装态状态机后续步骤统一定义。
     fn cli_bundle_installed(&self, _id: &str) -> bool {
         false
@@ -403,8 +417,9 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 /// - 本地免凭据：恒 Ready
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI 包授权态由调用方（命令层）注入；此处按 installed 保守返回——
-        // 命令层 `bundle_readiness` 覆盖 CLI 分派后，此分支不达。
+        // CLI 包授权态由调用方（命令层）注入；命令层 `bundle_readiness` 对 CLI 包
+        // 先分派到连接器 status，不会走到本函数——此分支仅为纯函数完备性保留，
+        // 按 installed 保守返回，不得作为 CLI 包的真实就绪态来源。
         BundleKind::Cli => {
             if bundle.installed {
                 Readiness::Ready
@@ -412,21 +427,9 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 Readiness::NotReady("cli_not_installed")
             }
         }
-        BundleKind::Mcp | BundleKind::Bundle => {
-            // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
-            let missing: Vec<&str> = bundle
-                .credentials
-                .iter()
-                .filter(|c| c.required && !credential_has(&c.key))
-                .map(|c| c.key.as_str())
-                .collect();
-            if missing.is_empty() {
-                Readiness::Ready
-            } else {
-                Readiness::NotReady("missing_credentials")
-            }
-        }
-        BundleKind::Skill => {
+        // MCP/组合/技能包同一规则：本地免凭据（无必填凭据）恒 Ready；
+        // 有必填凭据则查系统凭据。
+        _ => {
             let missing: Vec<&str> = bundle
                 .credentials
                 .iter()
@@ -615,15 +618,30 @@ mod tests {
                 provider: String::new(),
                 required: true,
             }],
-            secret_headers: vec![],
-            validate_on_install: false,
-            config_fields: vec![super::super::ConfigField {
-                key: "KEY".into(),
-                label: String::new(),
+            secret_headers: vec![super::super::SecretHeader {
+                header: "Authorization".into(),
+                scheme: "Bearer".into(),
+                source_key: "API_KEY".into(),
+                provider: String::new(),
                 required: true,
-                target: "env".into(),
-                secret: false,
             }],
+            validate_on_install: false,
+            config_fields: vec![
+                super::super::ConfigField {
+                    key: "KEY".into(),
+                    label: String::new(),
+                    required: true,
+                    target: "env".into(),
+                    secret: false,
+                },
+                super::super::ConfigField {
+                    key: "TOKEN".into(),
+                    label: String::new(),
+                    required: true,
+                    target: "bearer".into(),
+                    secret: true,
+                },
+            ],
             routing_rules: vec![],
             tool_table_entries: vec![],
             pip_dependencies: vec![],
@@ -631,11 +649,25 @@ mod tests {
             companion_skills: vec![],
         };
         let creds = tool_credentials(&tool);
-        assert_eq!(creds.len(), 2);
+        assert_eq!(creds.len(), 4);
         assert_eq!(creds[0].key, "KEY");
         assert_eq!(creds[0].target, CredentialTarget::Env);
         assert!(creds[0].required);
-        assert_eq!(creds[1].key, "SEC");
+        // config_field target="bearer" → Bearer；secret_headers → Bearer
+        assert_eq!(creds[1].key, "TOKEN");
+        assert_eq!(creds[1].target, CredentialTarget::Bearer);
+        assert_eq!(creds[2].key, "SEC");
+        assert_eq!(creds[3].key, "API_KEY");
+        assert_eq!(creds[3].target, CredentialTarget::Bearer);
+    }
+
+    /// 就绪态查询的 keyring target 必须与 install 存储对齐：bearer 落 "header"
+    /// （评审 BLOCKER 回归：查询 "bearer" 会永久 missing_credentials）。
+    #[test]
+    fn keyring_target_matches_install_storage() {
+        assert_eq!(keyring_target(CredentialTarget::Env), "env");
+        assert_eq!(keyring_target(CredentialTarget::Bearer), "header");
+        assert_eq!(keyring_target(CredentialTarget::Credential), "credential");
     }
 
     #[test]
@@ -706,8 +738,8 @@ mod tests {
             assert!(
                 ima.credentials
                     .iter()
-                    .any(|c| c.key == "IMA_API_KEY" && c.required),
-                "ima 应声明必填凭据"
+                    .any(|c| c.key == "api_key" && c.required),
+                "ima 应声明必填凭据（key 与 ima 专用凭据存储对齐）"
             );
             // ima-skills 不得再独立成包（被 ima 认领）
             assert!(

@@ -624,19 +624,23 @@ pub struct BundleReadinessResult {
 }
 
 /// 统一就绪态查询：
-/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready
-/// - ima（凭据型技能包）→ ima_status 的 credentials_present（凭据齐即 ready）
+/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready；
+///   installed 取 status 的 installed/configured 真实字段
+/// - ima（凭据型技能包）→ ima_status：ready = connected（凭据齐且 companion 技能已装），
+///   installed = 凭据或技能任一已配置
 /// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
 #[tauri::command]
 pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
     use crate::features::marketplace::bundle::{
-        readiness_for, BundleKind, BundleRegistry, CredentialTarget, Readiness,
+        keyring_target, readiness_for, BundleKind, BundleRegistry, Readiness,
     };
     let reg = BundleRegistry::new();
     let Some(bundle) = reg.bundle(&bundle_id) else {
         return Err(format!("未知能力包 '{bundle_id}'"));
     };
-    let (ready, reason, detail) = match bundle.kind {
+    // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
+    // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
+    let (installed, ready, reason, detail) = match bundle.kind {
         BundleKind::Cli => {
             let (connected, detail) = match bundle_id.as_str() {
                 "feishu" => {
@@ -657,7 +661,18 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
                 }
                 other => return Err(format!("未知 CLI 包 '{other}'")),
             };
+            // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
+            // feishu 返回 configured（已配置）；都没有则退化为 connected。
+            let installed = detail
+                .as_ref()
+                .and_then(|v| {
+                    v.get("installed")
+                        .or_else(|| v.get("configured"))
+                        .and_then(|x| x.as_bool())
+                })
+                .unwrap_or(connected);
             (
+                installed,
                 connected,
                 if connected {
                     None
@@ -673,15 +688,20 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
                 .get("credentials_present")
                 .and_then(|x| x.as_bool())
                 .unwrap_or(false);
-            (
-                creds,
-                if creds {
-                    None
-                } else {
-                    Some("missing_credentials".to_string())
-                },
-                Some(v),
-            )
+            let skill = v
+                .get("skill_installed")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            // ready 与 ima_status.connected 同义：凭据齐且 companion 技能已装
+            let ready = creds && skill;
+            let reason = if ready {
+                None
+            } else if !creds {
+                Some("missing_credentials".to_string())
+            } else {
+                Some("skill_not_installed".to_string())
+            };
+            (creds || skill, ready, reason, Some(v))
         }
         _ => {
             let store = crate::platform::credential_store::SystemCredentialStore::new();
@@ -690,11 +710,7 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
                     .credentials
                     .iter()
                     .find(|c| c.key == key)
-                    .map(|c| match c.target {
-                        CredentialTarget::Env => "env",
-                        CredentialTarget::Bearer => "bearer",
-                        CredentialTarget::Credential => "credential",
-                    })
+                    .map(|c| keyring_target(c.target))
                     .unwrap_or("env");
                 store
                     .get(
@@ -706,15 +722,16 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
                     .flatten()
                     .is_some()
             };
-            match readiness_for(&bundle, has) {
-                Readiness::Ready => (true, None, None),
-                Readiness::NotReady(reason) => (false, Some(reason.to_string()), None),
-            }
+            let (ready, reason) = match readiness_for(&bundle, has) {
+                Readiness::Ready => (true, None),
+                Readiness::NotReady(reason) => (false, Some(reason.to_string())),
+            };
+            (bundle.installed, ready, reason, None)
         }
     };
     Ok(BundleReadinessResult {
         bundle_id,
-        installed: bundle.installed,
+        installed,
         ready,
         reason,
         detail,
