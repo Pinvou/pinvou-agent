@@ -386,16 +386,25 @@ impl BrowserManager {
 
     /// 查询状态（前端挂载/轮询用）。
     pub async fn status(&self) -> Value {
-        let inner = self.inner.lock().await;
-        let mut status = json!({
-            "running": inner.session.is_some(),
-            "port": inner.port,
-            "activeTab": inner.active_session,
-        });
-        if let (Some(session), Some(sid)) = (inner.session.as_ref(), inner.active_session.as_ref())
-        {
+        // 锁内只取快照（running/port/activeTab + clone 会话/sid），随后释放锁再做
+        // CDP 调用：getNavigationHistory 经网络往返，最多 30s；持锁期间 stop() 被阻塞、
+        // shutdown_on_exit 的 try_lock 直接放弃同步清理。
+        let (mut status, active) = {
+            let inner = self.inner.lock().await;
+            let status = json!({
+                "running": inner.session.is_some(),
+                "port": inner.port,
+                "activeTab": inner.active_session,
+            });
+            let active = match active_arc(&inner) {
+                Ok(tuple) => Some(tuple),
+                Err(_) => None,
+            };
+            (status, active)
+        };
+        if let Some((session, sid)) = active {
             if let Ok(v) = session
-                .call(Some(sid), "Page.getNavigationHistory", json!({}))
+                .call(Some(&sid), "Page.getNavigationHistory", json!({}))
                 .await
             {
                 let entries = v
@@ -501,11 +510,13 @@ impl BrowserManager {
 
     /// 导航到指定 URL。
     pub async fn navigate(&self, url: String) -> Result<(), String> {
-        let inner = self.inner.lock().await;
-        let (session, sid) = active_locked(&inner)?;
         if !url.starts_with("http://") && !url.starts_with("https://") && url != "about:blank" {
             return Err("仅支持 http/https/about:blank 协议".to_string());
         }
+        let (session, sid) = {
+            let inner = self.inner.lock().await;
+            active_arc(&inner)?
+        };
         session
             .call(Some(&sid), "Page.navigate", json!({ "url": url }))
             .await
@@ -522,8 +533,10 @@ impl BrowserManager {
     }
 
     async fn history_step(&self, delta: i64) -> Result<(), String> {
-        let inner = self.inner.lock().await;
-        let (session, sid) = active_locked(&inner)?;
+        let (session, sid) = {
+            let inner = self.inner.lock().await;
+            active_arc(&inner)?
+        };
         let v = session
             .call(Some(&sid), "Page.getNavigationHistory", json!({}))
             .await
@@ -554,8 +567,10 @@ impl BrowserManager {
     }
 
     pub async fn reload(&self) -> Result<(), String> {
-        let inner = self.inner.lock().await;
-        let (session, sid) = active_locked(&inner)?;
+        let (session, sid) = {
+            let inner = self.inner.lock().await;
+            active_arc(&inner)?
+        };
         session
             .call(Some(&sid), "Page.reload", json!({ "ignoreCache": false }))
             .await
@@ -566,8 +581,10 @@ impl BrowserManager {
     /// 转发用户输入事件（前端 → CDP Input 域）。
     /// payload: { type: "click"|"move"|"wheel"|"key"|"insertText", ... }
     pub async fn input_event(&self, payload: Value) -> Result<(), String> {
-        let inner = self.inner.lock().await;
-        let (session, sid) = active_locked(&inner)?;
+        let (session, sid) = {
+            let inner = self.inner.lock().await;
+            active_arc(&inner)?
+        };
         let ty = payload
             .get("type")
             .and_then(Value::as_str)
@@ -841,16 +858,20 @@ async fn run_event_loop(
 // 内部工具（free functions，便于无 &self 时调用）
 // ---------------------------------------------------------------------------
 
-fn active_locked(inner: &Inner) -> Result<(&CdpSession, String), String> {
+/// 取激活会话的 `Arc` 与 sid（clone，非借用 Inner）。
+/// 供需要跨 `.await` 调用 CDP 的只读命令使用：在锁内 clone 会话与 sid 后立即释放锁，
+/// 避免卡住的 Chrome（单次 call 最多 30s）长时间持 inner 锁，进而阻塞 stop()/
+/// shutdown_on_exit（后者为 try_lock，持锁期间直接放弃同步清理）。
+fn active_arc(inner: &Inner) -> Result<(Arc<CdpSession>, String), String> {
     let session = inner
         .session
-        .as_ref()
+        .clone()
         .ok_or_else(|| "浏览器未启动".to_string())?;
     let sid = inner
         .active_session
         .clone()
         .ok_or_else(|| "没有激活的标签页".to_string())?;
-    Ok((session.as_ref(), sid))
+    Ok((session, sid))
 }
 
 async fn attach_first_page(session: &CdpSession) -> Result<String, String> {
@@ -970,20 +991,47 @@ async fn switch_screencast_locked(inner: &mut Inner, sid: &str) -> Result<(), St
                 .await;
         }
     }
-    session
-        .call(Some(sid), "Page.enable", json!({}))
-        .await
-        .map_err(|e| format!("Page.enable 失败: {e}"))?;
-    session
-        .call(
-            Some(sid),
-            "Page.startScreencast",
-            json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1, "maxWidth": 1280 }),
-        )
-        .await
-        .map_err(|e| format!("Page.startScreencast 失败: {e}"))?;
-    inner.active_session = Some(sid.to_string());
-    Ok(())
+    // 新会话的 enable + startScreencast 任一失败时，active_session 仍指向旧会话，
+    // 但旧会话的截图流刚被 stop——此时 ensure_started 快速路径（session 与
+    // active_session 均 Some）会直接返回 Ok 而无画面，前端冻结且无自愈触发。
+    // 失败时重启旧会话截图流，保持「active_session 指向的会话必有运行中截图流」
+    // 的不变量；仅当 Chrome 整体 wedged（旧会话也重启失败）时才退化为崩溃恢复场景。
+    let switched = async {
+        session
+            .call(Some(sid), "Page.enable", json!({}))
+            .await
+            .map_err(|e| format!("Page.enable 失败: {e}"))?;
+        session
+            .call(
+                Some(sid),
+                "Page.startScreencast",
+                json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1, "maxWidth": 1280 }),
+            )
+            .await
+            .map_err(|e| format!("Page.startScreencast 失败: {e}"))?;
+        Ok::<(), String>(())
+    }
+    .await;
+    match switched {
+        Ok(()) => {
+            inner.active_session = Some(sid.to_string());
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(old) = inner.active_session.as_deref() {
+                if old != sid {
+                    let _ = session
+                        .call(
+                            Some(old),
+                            "Page.startScreencast",
+                            json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1, "maxWidth": 1280 }),
+                        )
+                        .await;
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

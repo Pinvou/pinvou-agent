@@ -270,6 +270,18 @@ function startChrome(port) {
       if (startedByUs) clearPortFile();
       chromeChild = null;
     });
+    // 异步 spawn 失败（如 Chrome 后台自动更新替换二进制致 ETXTBSY、existsSync
+    // 与 spawn 之间二进制被删致 ENOENT/EACCES）触发 'error' 事件——无监听器时 Node
+    // 抛 uncaughtException 致 wrapper 崩溃，绕过 writeLastError 合约（模型不可见）、
+    // 且 main 的 try/finally 不捕获（事件在未来 tick），start.lock 泄漏至 60s stale。
+    // 这里落盘失败原因并清掉持有状态，让 exit 兜底与 cleanup 幂等。
+    chromeChild.on('error', (e) => {
+      log('Chrome spawn 失败:', e.message);
+      writeLastError(`Chrome 启动失败: ${e.message}`);
+      startedByUs = false; // 防止 cleanup() 再对已失败句柄 kill
+      chromeChild = null;
+      clearPortFile();
+    });
     return true;
   } catch (e) {
     log('启动 Chrome 失败:', e.message);

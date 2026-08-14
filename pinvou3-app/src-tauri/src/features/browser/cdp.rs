@@ -128,16 +128,21 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     // 全路径带超时：Chrome 可能"接受 TCP 但永不响应"（wedged / SIGSTOP），
     // 若此处无界等待，ensure_started 持 start_mtx 会把整个浏览器生命周期冻结
     // （stop()/watch 自动接入/后续 ensure_started 全部被卡住）。reqwest 默认
-    // client 无超时，WS 握手同样无超时，必须显式包 timeout。
-    let body = tokio::time::timeout(Duration::from_secs(10), reqwest::get(&version_url))
-        .await
-        .map_err(|_| anyhow!("CDP 版本端点请求超时（10s）"))?
-        .context("GET /json/version")?
-        .error_for_status()
-        .context("CDP 版本端点非 2xx")?
-        .text()
-        .await
-        .context("读取 /json/version")?;
+    // client 无超时，WS 握手同样无超时，必须显式包 timeout。注意 timeout 必须覆盖
+    // 整条链（含 .text() 读 body）——只包 reqwest::get 仅在响应头就绪时返回，
+    // wedged Chrome 可在发完 header 后停住，导致 .text() 无界等待。
+    let body = tokio::time::timeout(Duration::from_secs(10), async {
+        reqwest::get(&version_url)
+            .await
+            .context("GET /json/version")?
+            .error_for_status()
+            .context("CDP 版本端点非 2xx")?
+            .text()
+            .await
+            .context("读取 /json/version")
+    })
+    .await
+    .map_err(|_| anyhow!("CDP 版本端点请求超时（10s）"))??;
     let version: Value = serde_json::from_str(&body).context("解析 /json/version")?;
     let ws_url = version
         .get("webSocketDebuggerUrl")

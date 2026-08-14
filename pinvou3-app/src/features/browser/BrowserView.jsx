@@ -21,7 +21,7 @@ import {
 
 const HOME_URL = 'https://www.bing.com';
 
-export function BrowserView({ theme, t }) {
+export function BrowserView({ theme, t, onExit }) {
   const isDark = theme === 'dark';
   const [frameData, setFrameData] = useState(null); // base64 jpeg
   const [frameMeta, setFrameMeta] = useState(null); // viewport metadata
@@ -290,6 +290,13 @@ export function BrowserView({ theme, t }) {
 
   const onFrameKeyDown = useCallback(
     (e) => {
+      // Shift+Esc：退出浏览器视图回 chat（键盘逃生口）——无此前缀时浏览器容器会
+      // 捕获 Tab/普通 Esc 转发进页面，纯键盘用户无法离开浏览器视图。
+      if (e.shiftKey && e.key === 'Escape' && onExit) {
+        e.preventDefault();
+        onExit();
+        return;
+      }
       // IME 组合输入中的 keydown（isComposing / keyCode 229 / key==='Process'）
       // 不转发；文本由 onCompositionEnd 统一发送。
       if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
@@ -297,12 +304,18 @@ export function BrowserView({ theme, t }) {
       const keyMap = {
         Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
         Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+        Delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
         Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
         Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
         ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
         ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
         ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
         ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+        Home: { key: 'Home', code: 'Home', keyCode: 36 },
+        End: { key: 'End', code: 'End', keyCode: 35 },
+        PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+        PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+        Insert: { key: 'Insert', code: 'Insert', keyCode: 45 },
         ' ': { key: ' ', code: 'Space', keyCode: 32 },
       };
       const m = keyMap[e.key];
@@ -319,7 +332,7 @@ export function BrowserView({ theme, t }) {
       e.preventDefault();
       sendInput({ type: 'key', key: m.key, code: m.code, keyCode: m.keyCode, text: e.key.length === 1 ? e.key : '' });
     },
-    [sendInput]
+    [sendInput, onExit]
   );
 
   // ---- 渲染 ----

@@ -2128,7 +2128,7 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
-            {browserActive && currentView === 'browser' && <BrowserView theme={activeTheme} t={t} />}
+            {browserActive && currentView === 'browser' && <BrowserView theme={activeTheme} t={t} onExit={() => setCurrentView('chat')} />}
             {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
