@@ -14,6 +14,16 @@
 | Drift | r6 public baseline: 52 files, `+2640/-299` |
 | Organization | Five long-lived topics and eight published linear commits replayed from `v0.9.5` |
 
+### r6 local-model tool-call compatibility fix (verified and published)
+
+- Some OpenAI-compatible backends return tool parameters that are structurally valid but re-encode schema-declared nested object/array values as JSON strings; this makes strongly typed tools such as `request_user_input` fail before reaching business validation.
+- T2 repairs such a container only when the schema explicitly declares `object`/`array`, the string is strict JSON no larger than 64 KiB, and the decoded type matches; plain text and numeric/boolean strings are not loosely converted, and the original tool validation still runs afterward.
+- When repeated tool calls trigger `stuck_guard`, or consecutive tool errors trigger a degradation hint, the internal policy notice is folded into the corresponding `tool_result` instead of appending a standalone runtime `user` message for these two paths, so strict OpenAI-compatible backends no longer reject the next turn over the role sequence.
+- The Tauri/Web bridge strips only the `stuck_guard` / `tool_error_degradation` known internal suffixes from the tool-card presentation projection; persisted messages and the model-facing context stay unchanged.
+- This change intentionally does not cover real-user `pending_steers`, loop-entry steers, LSP diagnostics, or subagent handoff, among other runtime injection paths; these paths involve user authority and context semantics, so this PR introduces neither a global role normalizer nor synthetic assistant messages, and they will be designed separately later.
+- The base fix was squash-merged through `Pinvou/CodeWhale#12`; its public commit is `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`, published by the immutable tag `pinvou-v0.9.5-r6`.
+- The generic schema-parameter repair merged upstream through `Hmbown/CodeWhale#5348`; the latest upstream has removed `stuck_guard` and this fork's consecutive-error degradation path, so the role-continuation compatibility remains scoped to the current v0.9.5 fork lifecycle.
+
 ### Published session fix
 
 - v0.9.5 `load_session` treats an unmatched `tool_use` as evidence of a crashed process. That assumption is invalid when Pinvou persists a live tool call and reads the same session again during the turn.
