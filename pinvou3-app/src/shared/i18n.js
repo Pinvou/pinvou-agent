@@ -1607,7 +1607,7 @@ const dict = {
       stockOpen: '今开', stockHigh: '最高', stockLow: '最低',
       builtinEnabled: '内置 · 已启用', comingSoon: '即将上线',
       disconnect: '断开', uninstall: '卸载', reauthorize: '重新授权',
-      connect: '连接', configure: '配置', install: '安装',
+      connect: '连接', configure: '配置', install: '安装', update: '更新',
     };
     dict.en.uiToolCommon = {
       open: 'Open', coverAlt: 'Cover',
@@ -1621,7 +1621,7 @@ const dict = {
       stockOpen: 'Open', stockHigh: 'High', stockLow: 'Low',
       builtinEnabled: 'Built-in · Enabled', comingSoon: 'Coming soon',
       disconnect: 'Disconnect', uninstall: 'Uninstall', reauthorize: 'Reauthorize',
-      connect: 'Connect', configure: 'Configure', install: 'Install',
+      connect: 'Connect', configure: 'Configure', install: 'Install', update: 'Update',
     };
     dict.ja.uiToolCommon = {
       open: '開く', coverAlt: 'カバー',
@@ -1635,7 +1635,7 @@ const dict = {
       stockOpen: '始値', stockHigh: '高値', stockLow: '安値',
       builtinEnabled: '内蔵 · 有効', comingSoon: '近日公開',
       disconnect: '切断', uninstall: 'アンインストール', reauthorize: '再認証',
-      connect: '接続', configure: '設定', install: 'インストール',
+      connect: '接続', configure: '設定', install: 'インストール', update: '更新',
     };
 
 dict.zh.uiChatScenes = {
@@ -2329,6 +2329,8 @@ Object.assign(dict.zh.uiToolStore, {
   operationFailedWith:e=>`操作失败：${e}`,
   importingSkill:'正在导入技能包…', validatingSkillPackage:'校验并解压中', skillImported:'技能包已导入', importFailedWith:e=>`导入失败：${e}`,
   uploadSkillPackage:'上传技能包', dropSkillZipHere:'松开以导入技能包 (zip)', invalidSkillZipDrop:'仅支持 .zip 技能包',
+  updatedQuoted:name=>`已更新「${name}」`, updateSkillTitle:name=>`更新「${name}」`,
+  updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
   notConnectedYet:name=>`尚未连接「${name}」。`,
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
@@ -2387,6 +2389,8 @@ Object.assign(dict.en.uiToolStore, {
   operationFailedWith:e=>`Operation failed: ${e}`,
   importingSkill:'Importing skill package…', validatingSkillPackage:'Validating and extracting', skillImported:'Skill package imported', importFailedWith:e=>`Import failed: ${e}`,
   uploadSkillPackage:'Upload Skill Package', dropSkillZipHere:'Drop to import a skill package (zip)', invalidSkillZipDrop:'Only .zip skill packages are supported',
+  updatedQuoted:name=>`"${name}" updated`, updateSkillTitle:name=>`Update "${name}"`,
+  updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
@@ -2445,6 +2449,8 @@ Object.assign(dict.ja.uiToolStore, {
   operationFailedWith:e=>`操作に失敗しました：${e}`,
   importingSkill:'スキルパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'スキルパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
   uploadSkillPackage:'スキルパッケージをアップロード', dropSkillZipHere:'離してスキルパッケージ (zip) をインポート', invalidSkillZipDrop:'対応するのは .zip スキルパッケージのみです',
+  updatedQuoted:name=>`「${name}」を更新しました`, updateSkillTitle:name=>`「${name}」を更新`,
+  updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },

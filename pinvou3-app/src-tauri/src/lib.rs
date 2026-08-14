@@ -959,6 +959,7 @@ pub fn run() {
             commands::knowledge::session_mounted_collections_snapshot,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
+            commands::marketplace::update_marketplace_skill,
             commands::marketplace::import_skill_package,
             commands::marketplace::import_skill_package_bytes,
             commands::marketplace::uninstall_marketplace_skill,

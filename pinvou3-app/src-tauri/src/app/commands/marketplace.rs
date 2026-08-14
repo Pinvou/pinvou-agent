@@ -494,6 +494,33 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// 更新已安装的预置技能:复用 `install` 的原子覆盖管线落最新嵌入资源。
+/// 与"新装"的差异:不调 `sync_code_scope_after_skill_install`——更新保留
+/// 用户现有的启用/停用状态,不把技能重新塞回 code 禁用集。
+#[tauri::command]
+pub async fn update_marketplace_skill(
+    skill_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        // 只接受"已安装的预置技能";未安装走 install,上传技能无嵌入新版可更。
+        let installed = mgr
+            .list_skills()
+            .into_iter()
+            .any(|s| s.id == skill_id && s.installed && !s.user_uploaded);
+        if !installed {
+            return Err(format!("技能 '{skill_id}' 非已安装预置技能,无法更新"));
+        }
+        mgr.install(&skill_id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(())
+}
+
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
 /// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
 /// 返回 true=已导入,false=用户取消。

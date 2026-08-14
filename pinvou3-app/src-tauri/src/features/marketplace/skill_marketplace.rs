@@ -9,6 +9,11 @@
 //! 联动(见 `marketplace::companion_skills`:装「公文写作」gongwen MCP 时一并装
 //! government-writing、装「PPT 生成」pptx MCP 时一并装 pptx),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
 //!
+//! 更新机制:无版本号/无自动更新。每次列出技能(打开工具商店)时对已装预置技能
+//! 做"磁盘目录 vs 当前嵌入资源"的无状态逐文件比对,不一致即 `update_available`,
+//! 前端显示"更新"按钮,用户确认后走 `install` 的原子覆盖重装(保留启用状态)。
+//! 上传技能无嵌入对应物,不参与检测。
+//!
 //! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
 //! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
 //! 自带等价的路径穿越/symlink/大小安全防护(参照底座 install.rs 的判断)。
@@ -116,6 +121,11 @@ pub struct MarketplaceSkillInfo {
     pub installed: bool,
     /// true = 用户上传的(非预置),前端用默认图标渲染。
     pub user_uploaded: bool,
+    /// true = 已安装预置技能的磁盘内容与当前嵌入资源不一致(App 升级带来新版,
+    /// 或本地被改过),前端据此显示"更新"按钮;更新=覆盖重装,用户确认后执行。
+    /// 无版本号概念:打开商店列表时做无状态目录树比对(见
+    /// [`SkillMarketplaceManager::preset_update_available`])。未安装/上传技能恒 false。
+    pub update_available: bool,
 }
 
 // 停用开关(双 scope 持久化)-----------------------------------------------------
@@ -169,6 +179,7 @@ impl SkillMarketplaceManager {
                 color: m.color.to_string(),
                 installed: self.is_installed(m.skill_name),
                 user_uploaded: false,
+                update_available: self.preset_update_available(m),
             })
             .collect();
 
@@ -201,6 +212,8 @@ impl SkillMarketplaceManager {
                     color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
                     installed: true,
                     user_uploaded: true,
+                    // 上传技能无嵌入对应物,不参与更新检测
+                    update_available: false,
                 });
             }
         }
@@ -209,6 +222,28 @@ impl SkillMarketplaceManager {
 
     fn is_installed(&self, skill_name: &str) -> bool {
         self.skills_dir.join(skill_name).join("SKILL.md").is_file()
+    }
+
+    /// 预置技能"可更新"检测:无状态目录树比对——磁盘安装目录与当前嵌入资源
+    /// 逐文件比对(嵌入侧跳过 SOURCE.md,磁盘侧跳过 `.installed-from`,与
+    /// [`Self::install`] 的落盘口径一致)。相对路径集合不同或任一文件字节不同
+    /// 即视为可更新(App 升级带来新版,或本地被改过)。未安装恒 false;
+    /// 磁盘遍历失败按 true 处理(提示可更新,重装即自愈)。
+    fn preset_update_available(&self, m: &SkillManifest) -> bool {
+        if !self.is_installed(m.skill_name) {
+            return false;
+        }
+        let mut embedded: Vec<(String, Vec<u8>)> = Vec::new();
+        if let Some(dir) = MARKETPLACE_DIR.get_dir(m.source_dir) {
+            collect_embedded_files(dir, m.source_dir, &mut embedded);
+        }
+        embedded.sort();
+        let mut on_disk: Vec<(String, Vec<u8>)> = Vec::new();
+        if collect_disk_files(&self.skills_dir.join(m.skill_name), &mut on_disk).is_err() {
+            return true;
+        }
+        on_disk.sort();
+        embedded != on_disk
     }
 
     /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
@@ -461,6 +496,55 @@ impl SkillMarketplaceManager {
 }
 
 // 辅助 ------------------------------------------------------------------------
+
+/// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
+/// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md。
+fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String, Vec<u8>)>) {
+    let prefix = format!("{source_dir}/");
+    for file in dir.files() {
+        let p = file.path().to_string_lossy();
+        let rel = p.strip_prefix(&prefix).unwrap_or(&p);
+        if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
+            continue;
+        }
+        out.push((rel.to_string(), file.contents().to_vec()));
+    }
+    for sub in dir.dirs() {
+        collect_embedded_files(sub, source_dir, out);
+    }
+}
+
+/// 递归收集磁盘技能目录的 `(相对路径, 内容)` 列表,供更新检测比对。
+/// 跳过 `.installed-from` 安装标记(非技能内容);相对路径统一用 `/` 分隔,
+/// 与嵌入侧口径一致。遍历失败返回 Err(调用方按"可更新"处理,重装自愈)。
+fn collect_disk_files(dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> std::io::Result<()> {
+    collect_disk_files_under(dir, dir, out)
+}
+
+fn collect_disk_files_under(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_disk_files_under(root, &path, out)?;
+            continue;
+        }
+        if entry.file_name().to_string_lossy() == INSTALLED_FROM_MARKER {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((rel, std::fs::read(&path)?));
+    }
+    Ok(())
+}
 
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
@@ -936,6 +1020,83 @@ mod tests {
         let marker =
             std::fs::read_to_string(tmp.join("named-skill").join(".installed-from")).unwrap();
         assert_eq!(marker.trim(), "upload:my skill.zip");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 更新检测:刚安装与嵌入资源一致(false);篡改/删除/新增文件 → true;
+    /// 重装(=更新)后恢复 false。未安装恒 false。
+    #[test]
+    fn update_available_detects_disk_drift() {
+        let tmp = fresh_dir("update");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let flagged = |mgr: &SkillMarketplaceManager| {
+            mgr.list_skills()
+                .into_iter()
+                .find(|s| s.id == "visualizer")
+                .unwrap()
+                .update_available
+        };
+
+        assert!(!flagged(&mgr), "未安装应恒 false");
+
+        mgr.install("visualizer").unwrap();
+        assert!(!flagged(&mgr), "刚安装应与嵌入资源一致");
+
+        // 篡改文件内容 → true
+        let skill_dir = tmp.join("visualizer");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: visualizer\n---\n本地改过",
+        )
+        .unwrap();
+        assert!(flagged(&mgr), "内容被改应检出");
+
+        // 重装(=更新)后复原 → false
+        mgr.install("visualizer").unwrap();
+        assert!(!flagged(&mgr), "重装后应恢复一致");
+
+        // 删除文件 → true
+        std::fs::remove_file(
+            skill_dir
+                .join("references")
+                .join("visualizer-design-system.md"),
+        )
+        .unwrap();
+        assert!(flagged(&mgr), "缺文件应检出");
+
+        // 复原后新增多余文件 → true
+        mgr.install("visualizer").unwrap();
+        std::fs::write(skill_dir.join("local-notes.md"), "my notes").unwrap();
+        assert!(flagged(&mgr), "多文件应检出");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 上传技能无嵌入对应物,不参与更新检测(改内容也恒 false)。
+    #[test]
+    fn uploaded_skill_never_update_available() {
+        use std::io::Write;
+        let tmp = fresh_dir("upload_no_update");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("up-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: up-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        mgr.import_package(zip_path.to_str().unwrap()).unwrap();
+        std::fs::write(tmp.join("up-skill").join("SKILL.md"), "---\nname: up-skill\n---\n改过")
+            .unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "up-skill")
+            .unwrap();
+        assert!(listed.user_uploaded && !listed.update_available);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

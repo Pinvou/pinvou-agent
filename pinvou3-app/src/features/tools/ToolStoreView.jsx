@@ -867,6 +867,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           authMessage: authState?.message || '',
           mcpConfigured: !!authState?.mcp_configured,
           oauthTokenPresent: !!authState?.oauth_token_present,
+          // ima 连接器卡认领 ima-skills(不单独成卡):其可更新态挂在连接器卡上,
+          // 更新时映射回 update_marketplace_skill('ima-skills')(见 handleSkillUpdate)。
+          updateAvailable: t.imaOpenapi
+            ? !!(skillBackend.find(x => x.id === 'ima-skills') || {}).update_available
+            : false,
         };
       });
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
@@ -882,10 +887,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (s.builtin) return { ...s, installed: true };
         // 有配套 MCP 的技能(公文=gongwen,manifest companion_skills 声明)→ 跟随该 MCP 工具态;
         // 否则读独立 skill 后端(纯技能,如 visualizer)。
-        const mcpId = skillToMcp[s.backendId] || null;
-        if (mcpId) return { ...s, installed: !!toolStates[mcpId] };
+        // 可更新态始终读技能后端(内容与嵌入资源比对),与安装态来源无关。
         const be = skillBackend.find(x => x.id === s.backendId);
-        return { ...s, installed: be ? be.installed : false };
+        const updateAvailable = !!(be && be.update_available);
+        const mcpId = skillToMcp[s.backendId] || null;
+        if (mcpId) return { ...s, installed: !!toolStates[mcpId], updateAvailable };
+        return { ...s, installed: be ? be.installed : false, updateAvailable };
       });
       // 后端技能卡合成(统一路径):预置技能中无静态卡的(公文/PPT/可视化等)由
       // list_marketplace_skills 数据合成——真实预置技能取代前端空壳卡,
@@ -912,6 +919,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? !!toolStates[mcpId] : !!x.installed,
+            updateAvailable: !!x.update_available,
             ...(tsSkillFeaturedAssets[x.id] || {}),
           });
         });
@@ -1244,6 +1252,34 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('skill action failed:', e);
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      // 预置技能更新:先弹二次确认(覆盖式更新会丢本地修改),确认后调
+      // update_marketplace_skill 复用原子覆盖管线;保留技能启用状态(后端不重置 scope)。
+      const [updateConfirm, setUpdateConfirm] = useState(null); // { backendId, skillId, name }
+      const handleSkillUpdate = (backendId) => {
+        if (!canMutateToolStore) return;
+        // ima 连接器卡的更新落在其认领的 ima-skills 上(该技能不单独成卡)
+        const skillId = backendId === 'ima' ? 'ima-skills' : backendId;
+        const card = skillCards.find(x => x.backendId === backendId) || tools.find(x => x.backendId === backendId);
+        setUpdateConfirm({ backendId, skillId, name: card ? card.title : skillId });
+      };
+      const doSkillUpdate = async () => {
+        if (!updateConfirm) return;
+        const { backendId, skillId, name } = updateConfirm;
+        setUpdateConfirm(null);
+        setBusyId(backendId);
+        try {
+          await invokeTauri('update_marketplace_skill', { skillId });
+          await loadBackendState();
+          setAlert({ visible: true, loading: false, title: storeCopy.updatedQuoted(name), isInstall: true, isError: false });
+          notifyComposerToolsChanged();
+        } catch (e) {
+          console.error('skill update failed:', e);
           setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId(null);
@@ -1669,6 +1705,26 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               else setObsidianGuide(g => g ? { ...g, ...(st || {}) } : g);
             }}
           />, document.body)}
+          {/* 预置技能更新二次确认:覆盖为商店最新版本,本地修改会丢失(WebView2 下
+              window.confirm 不弹,应用内自绘,风格对齐 TsAlert) */}
+          {updateConfirm && createPortal((
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setUpdateConfirm(null)}>
+              <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
+                <div className="px-6 pt-6 pb-5 text-center">
+                  <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{storeCopy.updateSkillTitle(updateConfirm.name)}</div>
+                  <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{storeCopy.updateSkillOverwriteHint}</div>
+                </div>
+                <div className="border-t border-slate-200 dark:border-white/10 flex">
+                  <button onClick={() => setUpdateConfirm(null)} className="flex-1 py-3 text-[17px] text-center transition-colors text-slate-500 active:bg-slate-100 dark:text-slate-400 dark:active:bg-white/5 border-r border-slate-200 dark:border-white/10">
+                    {storeCopy.cancel}
+                  </button>
+                  <button onClick={doSkillUpdate} className="flex-1 py-3 text-[17px] font-semibold text-center transition-colors text-[#007AFF] active:bg-slate-100 dark:text-[#0A84FF] dark:active:bg-white/5">
+                    {(t.uiToolCommon || {}).update}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ), document.body)}
           {/* 飞书扫码二维码已内联进 FeishuFlowCard（详情弹窗内），不再单独浮层 */}
           {wecomQr && (() => {
             const cancel = () => { invokeTauri('wecom_cancel').catch(() => {}); setWecomQr(null); setBusyId(null); };
@@ -1827,7 +1883,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                     const cf = tool.feishuCli ? feishuFlow : tool.wecomCli ? wecomFlow : tool.dingtalkCli ? dingtalkFlow : tool.tmeetCli ? tmeetFlow : null;
                                     return (externalAuthAvailable && cf && (cf.phase === 'running' || cf.phase === 'qr'))
                                       ? <FeishuMini flow={cf} onClick={() => setSelectedTool(tool)} copy={storeCopy.mini} />
-                                      : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} copy={storeCopy} t={t} />;
+                                      : <PlatformToolAction tool={tool} busy={busyId === tool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} copy={storeCopy} t={t} />;
                                   })()}
                                 </div>
                               </div>
@@ -1886,7 +1942,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <div className="flex flex-col items-end gap-1.5">
                         {(() => { const sf = selectedTool.feishuCli ? feishuFlow : selectedTool.wecomCli ? wecomFlow : selectedTool.dingtalkCli ? dingtalkFlow : selectedTool.tmeetCli ? tmeetFlow : null; return (externalAuthAvailable && sf && (sf.phase === 'running' || sf.phase === 'qr'))
                           ? <FeishuMini flow={sf} onClick={() => {}} copy={storeCopy.mini} />
-                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} size="lg" copy={storeCopy} t={t} />; })()}
+                          : <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} size="lg" copy={storeCopy} t={t} />; })()}
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>

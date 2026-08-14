@@ -719,7 +719,7 @@ const AcFmtIcon = FileTypeIcon;
       return TOOL_BUSINESS_GROUPS.includes(tool.category) ? tool.category : 'life';
     };
 
-    const TsActionBtn = ({ tool, busy, onAction, size = 'sm', t }) => {
+    const TsActionBtn = ({ tool, busy, onAction, onUpdate, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
       const actionAttrs = {
@@ -747,7 +747,7 @@ const AcFmtIcon = FileTypeIcon;
         );
       }
       if (tool.installed) {
-        return (
+        const uninstallBtn = (
           <button
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
@@ -755,6 +755,23 @@ const AcFmtIcon = FileTypeIcon;
           >
             {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
           </button>
+        );
+        // 预置技能内容落后于商店版本(App 升级带入新版)时,并列给出"更新"入口;
+        // 仅技能卡传 onUpdate 且带 updateAvailable,MCP/连接器卡行为不变。
+        if (!tool.updateAvailable || !onUpdate) return uninstallBtn;
+        return (
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="tool-store-update"
+              data-tool-id={tool.backendId || ''}
+              data-tool-title={tool.title || ''}
+              onClick={(e) => { e.stopPropagation(); onUpdate(tool.backendId); }}
+              className={`${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 whitespace-nowrap`}
+            >
+              {T.update}
+            </button>
+            {uninstallBtn}
+          </div>
         );
       }
       if (tool.oauthMcp) {
