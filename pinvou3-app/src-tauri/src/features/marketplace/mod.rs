@@ -423,12 +423,22 @@ fn disabled_connectors_path() -> std::path::PathBuf {
 /// (单写者内的落盘本身由原子写保证不撕裂,见 `save_disabled_connectors_file`)。
 static DISABLED_CONNECTORS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 读完整文件。兼容两种旧格式,首次读到即迁移并落盘新格式:
+/// 读完整文件（取文件锁）。可能触发「读到即迁移落盘」的读路径都必须走本入口与
+/// 持锁写方串行：否则无锁读者把迁移前的旧快照写回，会覆盖并发写方刚保存的开关。
+fn load_disabled_connectors_file() -> DisabledConnectorsFile {
+    let _guard = DISABLED_CONNECTORS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_disabled_connectors_file_locked()
+}
+
+/// 已持锁读实现（调用方必须已持有 `DISABLED_CONNECTORS_FILE_LOCK`）。兼容两种
+/// 旧格式,首次读到即迁移并落盘新格式:
 ///  1. 裸数组 `["a","b"]`(旧版 plain 语义)→ plain scope;
 ///  2. 双 scope 对象 `{plain, code, code_initialized}` → scopes map +
 ///     initialized 集合(顶层带 `scopes` 键的即新格式,直接解析)。
 /// 迁移失败/内容损坏按默认值兜底(全部落空 → 各模式按包默认策略,与现行一致)。
-fn load_disabled_connectors_file() -> DisabledConnectorsFile {
+fn load_disabled_connectors_file_locked() -> DisabledConnectorsFile {
     let content = match std::fs::read_to_string(disabled_connectors_path()) {
         Ok(c) => c,
         Err(_) => return DisabledConnectorsFile::default(),
@@ -514,7 +524,7 @@ pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file();
+    let mut file = load_disabled_connectors_file_locked();
     let key = scope.as_str().to_string();
     file.scopes.insert(key.clone(), ids.to_vec());
     file.initialized.insert(key);
@@ -538,7 +548,7 @@ pub fn sync_deny_all_scopes_after_install(tool_id: &str) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file();
+    let mut file = load_disabled_connectors_file_locked();
     let mut changed = false;
     for mode in SessionMode::ALL {
         if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
@@ -565,7 +575,7 @@ pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
     let _guard = DISABLED_CONNECTORS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file();
+    let mut file = load_disabled_connectors_file_locked();
     let mut changed = false;
     for ids in file.scopes.values_mut() {
         let before = ids.len();
@@ -2257,6 +2267,42 @@ mod tests {
                 "迁移后应为新格式: {content}"
             );
         });
+    }
+
+    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_CONNECTORS_FILE_LOCK` 与持锁
+    /// 写方串行：本测试持锁期间并发 load（磁盘为旧格式、必然触发迁移落盘）不得
+    /// 先行落盘。若读路径被改回无锁直读（丢更新竞态回归），本测试即红。
+    #[test]
+    fn read_path_migration_serializes_with_file_lock() {
+        with_temp_home(|| {
+            let legacy = r#"["weather"]"#;
+            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, legacy).unwrap();
+            let guard = DISABLED_CONNECTORS_FILE_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let reader = std::thread::spawn(load_disabled_connectors_for_lock_test);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                legacy,
+                "持锁期间读路径不得先行迁移落盘"
+            );
+            drop(guard);
+            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                content.contains("\"scopes\""),
+                "释放锁后迁移完成: {content}"
+            );
+        });
+    }
+
+    /// 仅供上测试的线程入口（`ConnectorScope` 为 `Send`，抽名函数避免行内闭包
+    /// 遮断言意图）。
+    fn load_disabled_connectors_for_lock_test() -> Vec<String> {
+        load_disabled_connectors()
     }
 
     /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:

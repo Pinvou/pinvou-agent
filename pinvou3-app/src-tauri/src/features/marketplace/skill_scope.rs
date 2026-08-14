@@ -53,14 +53,25 @@ fn disabled_skills_path() -> PathBuf {
 /// 并发触发同一份文件的读-改-写，串行化避免交错丢更新（与连接器文件同一范式）。
 static DISABLED_SKILLS_FILE_LOCK: Mutex<()> = Mutex::new(());
 
-/// 读完整文件。兼容三种旧数据，首次读到时迁移并落盘：
+/// 读完整文件（取文件锁）。所有可能触发「读到即迁移/归一落盘」的读路径都必须
+/// 走本入口与持锁写方串行：否则无锁读者把迁移前的旧快照写回，会覆盖并发写方
+/// 刚保存的开关（丢更新，`load_disabled_skills_for` 是每轮物化的高频路径）。
+fn load_disabled_skills_file() -> DisabledSkillsFile {
+    let _guard = DISABLED_SKILLS_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_disabled_skills_file_locked()
+}
+
+/// 已持锁读实现（调用方必须已持有 `DISABLED_SKILLS_FILE_LOCK`）。兼容三种旧
+/// 数据，首次读到时迁移并落盘：
 ///  1. 裸数组 `["a","b"]`（方案 §2.1 的旧 disabled_skills.json 形态）→ plain scope；
 ///  2. 旧版借道 `disabled_connectors.json` 的 `skill:<id>` 条目（本分支历史实现）
 ///     → 提取进 plain scope，并从连接器文件清除 `skill:` 残留；
 ///  3. 旧双 scope 对象 `{plain, code, code_initialized, ...}` → scopes map +
 ///     initialized 集合（顶层带 `scopes` 键的即新格式，直接解析）。
 /// 迁移失败按「全部启用（plain）+ DenyAll 模式默认全禁」安全兜底（全部落空 → 默认值）。
-fn load_disabled_skills_file() -> DisabledSkillsFile {
+fn load_disabled_skills_file_locked() -> DisabledSkillsFile {
     let path = disabled_skills_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -291,7 +302,7 @@ pub fn save_disabled_skills_for(scope: ConnectorScope, ids: &[String]) {
         .iter()
         .map(|id| id.strip_prefix("skill:").unwrap_or(id).to_string())
         .collect();
-    let mut file = load_disabled_skills_file();
+    let mut file = load_disabled_skills_file_locked();
     let key = scope.as_str().to_string();
     file.scopes.insert(key.clone(), normalized);
     file.initialized.insert(key);
@@ -308,7 +319,7 @@ pub fn set_project_skills_enabled(enabled: bool) {
     let _guard = DISABLED_SKILLS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_skills_file();
+    let mut file = load_disabled_skills_file_locked();
     if file.project_skills_enabled == enabled {
         return;
     }
@@ -329,7 +340,7 @@ pub fn sync_deny_all_scopes_after_skill_install(skill_id: &str) {
     let _guard = DISABLED_SKILLS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_skills_file();
+    let mut file = load_disabled_skills_file_locked();
     let mut changed = false;
     for mode in SessionMode::ALL {
         if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
@@ -356,7 +367,7 @@ pub fn remove_skill_from_disabled_scopes(skill_id: &str) {
     let _guard = DISABLED_SKILLS_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_skills_file();
+    let mut file = load_disabled_skills_file_locked();
     let mut changed = false;
     for ids in file.scopes.values_mut() {
         let before = ids.len();
@@ -433,6 +444,41 @@ mod tests {
                 "迁移后应为对象格式: {content}"
             );
         });
+    }
+
+    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_SKILLS_FILE_LOCK` 与持锁写方
+    /// 串行：本测试持锁期间并发 load（磁盘为旧格式、必然触发迁移落盘）不得先行
+    /// 落盘。若读路径被改回无锁直读（丢更新竞态回归），本测试即红。
+    #[test]
+    fn read_path_migration_serializes_with_file_lock() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(paths::pinvou3_home()).unwrap();
+            let legacy = r#"["visualizer"]"#;
+            std::fs::write(disabled_skills_path(), legacy).unwrap();
+            let guard = DISABLED_SKILLS_FILE_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let reader = std::thread::spawn(load_disabled_skills_for_plain_for_lock_test);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert_eq!(
+                std::fs::read_to_string(disabled_skills_path()).unwrap(),
+                legacy,
+                "持锁期间读路径不得先行迁移落盘"
+            );
+            drop(guard);
+            assert_eq!(reader.join().unwrap(), vec!["visualizer".to_string()]);
+            let content = std::fs::read_to_string(disabled_skills_path()).unwrap();
+            assert!(
+                content.contains("\"scopes\""),
+                "释放锁后迁移完成: {content}"
+            );
+        });
+    }
+
+    /// 仅供上测试的线程入口（`ConnectorScope` 为 `Send`，直接闭包亦可，
+    /// 抽名函数避免行内闭包遮断言意图）。
+    fn load_disabled_skills_for_plain_for_lock_test() -> Vec<String> {
+        load_disabled_skills_for(ConnectorScope::Plain)
     }
 
     #[test]
