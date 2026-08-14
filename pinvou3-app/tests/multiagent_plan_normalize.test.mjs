@@ -1267,3 +1267,120 @@ test('详情清单未解析或终态无 transcript 时不发起读取', async ()
     assert.equal(reads, 0, `${testCase.name} 的详情读取次数必须为 0`);
   }
 });
+// ── modeState 竞态回归：陈旧读取不得覆盖权威改写（审计意见）────────
+// 装载 interaction 桥的 runtime 快照，用可控 invoke 精确编排异步返回顺序。
+// 场景：syncModeState 先发起 get_mode_state（将返回旧值），toggle 先落盘
+// （in-flight 清空）后旧读取才返回。只靠瞬时 in-flight 集合识别不了这种
+// 顺序——epoch 校验必须在场（审计 P1）。
+function loadInteractionRuntime() {
+  const root = {};
+  vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });
+  const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
+  const state = {
+    activeSessionId: 'chat-a',
+    modeState: { mode: 'yolo', multiAgent: false },
+    pendingDraftMultiAgent: false,
+    chatItems: [],
+    messages: [],
+  };
+  const deferred = {};
+  const calls = [];
+  const runtime = {
+    state,
+    calls,
+    notifyCount: 0,
+    defer(name) {
+      deferred[name] = deferred[name] || {};
+      deferred[name].promise = new Promise((resolve, reject) => {
+        deferred[name].resolve = resolve;
+        deferred[name].reject = reject;
+      });
+      return deferred[name];
+    },
+  };
+  runtime.api = factory({
+    state,
+    notify() { runtime.notifyCount += 1; },
+    bt(key) { return key; },
+    addSystemItem() {},
+    addAuthoritySyncNotice() {},
+    addChatItem() {},
+    timeStr() { return ''; },
+    runSyncOnSession(sid, fn) {
+      // 记录跨会话定向调用：sid !== active 时 fn 必须落在 sid 的 buffer 上，
+      // 不能直接改当前显示。本 mock 简化执行 fn 但保留调用证据。
+      if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
+      fn();
+    },
+    getBuffer() { return null; },
+    flushAssistantMessageToHistory() {},
+    resetPendingAssistant() {},
+    rerenderFromMessages() {},
+    ensureSession: async () => (state.activeSessionId || 'chat-a'),
+    sendMessage: async () => {},
+    reconcileRemoteTurn: async () => true,
+    isBusyFor() { return false; },
+    markRemoteTurn() {},
+    turnUsageDirty: {},
+    invoke(name, args) {
+      calls.push(name);
+      if (deferred[name] && deferred[name].promise) return deferred[name].promise;
+      return Promise.resolve({ mode: 'yolo', multi_agent: false });
+    },
+  });
+  return runtime;
+}
+
+test('陈旧 get_mode_state 不得覆盖已完成 toggle：set 先落盘、旧读取后返回', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();                    // t0: get 挂起（将返回旧值 false）
+  const toggleP = rt.api.setMultiAgentMode(true);          // t1: 乐观翻转 true，set 在途
+  set.resolve({ mode: 'yolo', multi_agent: true });        // t2: toggle 先落盘，finally 清空 in-flight
+  await toggleP;
+  get.resolve({ mode: 'yolo', multi_agent: false });       // t3: 旧 get 最后返回
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    'toggle 已完成的权威值 true 不得被旧读取 false 覆盖（审计 P1 顺序）');
+});
+
+test('get_mode_state 返回时 toggle 仍在途：旧读取丢弃，乐观态保持', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();
+  const toggleP = rt.api.setMultiAgentMode(true);          // 乐观翻转 true，set 在途
+  get.resolve({ mode: 'yolo', multi_agent: false });       // get 先返回（toggle 尚未落盘）
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    '在途 toggle 期间的旧读取不得把乐观态覆盖回去');
+  set.resolve({ mode: 'yolo', multi_agent: true });
+  await toggleP;
+});
+
+test('get_mode_state 失败且期间发生 toggle：默认值不得覆盖权威改写', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const set = rt.defer('set_multi_agent_mode');
+  const syncP = rt.api.syncModeState();
+  const toggleP = rt.api.setMultiAgentMode(true);
+  set.resolve({ mode: 'yolo', multi_agent: true });
+  await toggleP;
+  get.reject(new Error('backend down'));                   // get 失败（旧值本不可信）
+  await syncP;
+  assert.equal(rt.state.modeState.multiAgent, true,
+    'get 失败也不得用 yolo/false 默认值把已完成的切换砸掉');
+});
+
+test('无权威改写时 syncModeState 正常写回后端值（epoch 不变）', async () => {
+  const rt = loadInteractionRuntime();
+  const get = rt.defer('get_mode_state');
+  const syncP = rt.api.syncModeState();
+  get.resolve({ mode: 'plan', multi_agent: true });
+  await syncP;
+  // 逐字段断言（vm 上下文的对象原型与主上下文不同，deepEqual 不可用）
+  assert.equal(rt.state.modeState.mode, 'plan');
+  assert.equal(rt.state.modeState.multiAgent, true,
+    '没有发生过 toggle 的普通读取必须照常生效');
+});
