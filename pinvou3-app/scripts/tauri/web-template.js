@@ -12,6 +12,7 @@ const WEB_TEMPLATE_ROOT = path.join(
   "common",
   "web-template",
 );
+const PACKAGE_JSON_PATH = path.join(WEB_TEMPLATE_ROOT, "package.json");
 const LOCKFILE_PATH = path.join(WEB_TEMPLATE_ROOT, "package-lock.json");
 const MARKER_PATH = path.join(
   WEB_TEMPLATE_ROOT,
@@ -73,10 +74,20 @@ function expectedMarker({
   };
 }
 
+function declaredPackageNames(packageJsonPath = PACKAGE_JSON_PATH) {
+  const manifest = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  return [
+    ...new Set([
+      ...Object.keys(manifest.dependencies || {}),
+      ...Object.keys(manifest.devDependencies || {}),
+    ]),
+  ].sort();
+}
+
 function isPrepared(expected = expectedMarker()) {
   try {
     const actual = JSON.parse(fs.readFileSync(MARKER_PATH, "utf8"));
-    const requiredPackages = ["vite", "esbuild", "react", "react-dom"];
+    const requiredPackages = declaredPackageNames();
     return (
       JSON.stringify(actual) === JSON.stringify(expected) &&
       requiredPackages.every((packageName) =>
@@ -148,7 +159,9 @@ if (require.main === module) {
 module.exports = {
   LOCKFILE_PATH,
   MARKER_PATH,
+  PACKAGE_JSON_PATH,
   WEB_TEMPLATE_ROOT,
+  declaredPackageNames,
   expectedMarker,
   isPrepared,
   main,

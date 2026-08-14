@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const {
+  declaredPackageNames,
   npmInstallInvocation,
   npmInvocation,
 } = require("../scripts/tauri/web-template.js");
@@ -28,6 +29,22 @@ for (const required of ["package.json", "package-lock.json"]) {
     `网页模板必须保留 ${required}`,
   );
 }
+
+const templateManifest = JSON.parse(
+  fs.readFileSync(path.join(TEMPLATE_ROOT, "package.json"), "utf8"),
+);
+const declaredPackages = [
+  ...new Set([
+    ...Object.keys(templateManifest.dependencies || {}),
+    ...Object.keys(templateManifest.devDependencies || {}),
+  ]),
+].sort();
+assert.deepEqual(
+  declaredPackageNames(),
+  declaredPackages,
+  "网页模板准备校验必须跟随直接依赖，不能保留已移除依赖的硬编码",
+);
+assert.ok(!declaredPackages.includes("esbuild"), "Vite 8 模板不再直接依赖 esbuild");
 
 const trackedNodeModules = execFileSync(
   "git",
