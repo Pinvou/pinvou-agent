@@ -8,6 +8,8 @@ name: PR Check
 # - frontend-test:Draft 跑 lint/build/逻辑测试；Ready PR 跑定向浏览器 smoke；
 #   Merge Queue 对最新组合提交跑完整受影响前端门禁。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
+# - knowledge-rust:独立 pinvou-knowledge crate 改动跑 fmt/clippy/test；依赖或策略
+#   改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
 # - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
 #   标签提前跑；Merge Queue 对最新组合提交运行；main push 无条件累计验证并写暖
 #   cache(防 concurrency pending 替换盲区)。
@@ -121,6 +123,8 @@ jobs:
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
+      knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
+      knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -152,6 +156,16 @@ jobs:
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
               - '.github/workflows/mac-build.yml'
+            knowledge_rust:
+              - 'pinvou-knowledge/**/*.rs'
+              - 'pinvou-knowledge/Cargo.toml'
+              - 'pinvou-knowledge/Cargo.lock'
+              - '.github/workflows/pr-check.yml'
+            knowledge_dependencies:
+              - 'pinvou-knowledge/Cargo.toml'
+              - 'pinvou-knowledge/Cargo.lock'
+              - 'pinvou3-app/src-tauri/deny.toml'
+              - '.github/workflows/pr-check.yml'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -427,6 +441,56 @@ jobs:
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
           npm --prefix pinvou3-app run test:macos-phase2
+
+  # pinvou-knowledge 是可单独部署的 crate，必须直接验证自己的
+  # 默认 feature 图和测试，而不只依赖 Tauri 作为 client-only path dependency
+  # 的间接编译。四项收在同一 job 复用一份缓存，避免过度分拆。
+  knowledge-rust:
+    name: knowledge-rust
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.knowledge_rust == 'true' || needs.changes.outputs.knowledge_dependencies == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou-knowledge
+          shared-key: knowledge-rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path pinvou-knowledge/Cargo.toml -- --check
+
+      - name: cargo clippy (all targets, all features)
+        run: cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps
+
+      - name: cargo test
+        run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features
+
+      - name: cargo-deny
+        if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # 共用现有许可证/来源策略，但审计对象显式指向独立 crate。
+      - name: cargo deny check
+        if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
+        run: >-
+          cargo deny
+          --manifest-path pinvou-knowledge/Cargo.toml
+          --config pinvou3-app/src-tauri/deny.toml
+          check advisories licenses bans sources
 
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
@@ -877,6 +941,7 @@ jobs:
       - frontend-test
       - relay-test
       - release-contract-test
+      - knowledge-rust
       - rust-lint
       - rust-test
       - macos-codex-runtime-test
@@ -894,6 +959,7 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend-test.result }}
           RELAY_RESULT: ${{ needs.relay-test.result }}
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
+          KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
@@ -916,6 +982,7 @@ jobs:
             "frontend-test:$FRONTEND_RESULT" \
             "relay-test:$RELAY_RESULT" \
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
+            "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \

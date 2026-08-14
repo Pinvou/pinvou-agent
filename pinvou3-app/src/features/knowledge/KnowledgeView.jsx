@@ -5,6 +5,7 @@ import { IosSearchField, IosSegmentedControl } from '../../components/IosControl
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { OFFICE_HTML_STYLE } from '../artifacts/ArtifactsPanel.jsx';
 import { FilePreviewModal } from '../artifacts/FilePreviewModal.jsx';
+import { RemoteKnowledgeView } from '../remote-knowledge/RemoteKnowledgeView.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import { resolveAppAssetUrl } from '../../shared/asset-url.mjs';
 import { can, isWeb } from '../../shared/platform.js';
@@ -23,7 +24,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
       const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
 
-      const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb'；本地知识默认落知识库
+      const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb' | 'remote'；统一知识库入口默认落本地知识库
 
       // ---------- 共用 ----------
       const openFile = (p) => canOpenSystemFiles ? inv('open_in_system', { path: p }).catch(() => {}) : Promise.resolve(false);
@@ -603,7 +604,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       }, []);
       const [newColl, setNewColl] = useState(null);
       const [delColl, setDelColl] = useState(null); // 待删除知识集(二次确认),null=无
-      const [confirmDoc, setConfirmDoc] = useState(null); // 行内二次确认中的文档 id,null=无
+      const [confirmDoc, setConfirmDoc] = useState(null); // 待从知识库移除的文档,null=无
+      const [removeDocError, setRemoveDocError] = useState('');
       const [embedInfo, setEmbedInfo] = useState(kbCache.embedInfo);
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
@@ -616,7 +618,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
         try { replaceIndexState(await inv('kb_index_status')); } catch (e) {}
       }, [replaceIndexState]);
-      // 本地知识的两个 subtab 都依赖知识集数据；随 sub 切换刷新一次。
+      // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
         if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
@@ -772,6 +774,39 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         if (activeColl && activeColl.id === id) setActiveColl(null);
         loadColls();
       };
+      const removeDocument = async (document) => {
+        const previousDocs = docs;
+        const previousAllDocs = allDocs;
+        const previousColls = colls;
+        const previousActiveColl = activeColl;
+        setConfirmDoc(null);
+        setRemoveDocError('');
+        setDocs((current) => current.filter((item) => item.id !== document.id));
+        setAllDocs((current) => {
+          const next = current.filter((item) => item.id !== document.id);
+          kbCache.allDocs = next;
+          return next;
+        });
+        setColls((current) => current.map((collection) => (collection.id === document.collectionId ? {
+          ...collection,
+          docCount: Math.max(0, (collection.docCount || 0) - 1),
+          chunkCount: Math.max(0, (collection.chunkCount || 0) - (document.nChunks || 0)),
+          totalBytes: Math.max(0, (collection.totalBytes || 0) - (document.size || 0)),
+        } : collection)));
+        try {
+          await inv('kb_remove_document', { docId: document.id });
+        } catch (error) {
+          setDocs(previousDocs);
+          setAllDocs(previousAllDocs);
+          kbCache.allDocs = previousAllDocs;
+          setColls(previousColls);
+          setActiveColl(previousActiveColl);
+          setRemoveDocError(`${t.kbRemoveFailed}: ${String((error && error.message) || error)}`);
+          return;
+        }
+        if (activeColl) await loadDocs(activeColl.id);
+        await loadColls();
+      };
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。
       const openColl = (c) => { if (activeColl && activeColl.id === c.id) setActiveColl(null); else { setActiveColl(c); loadDocs(c.id); } };
       // kind='files' 走文件多选；kind='folders' 走目录选择，后端 WalkDir 递归展开。
@@ -841,6 +876,7 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                     segments={[
                       { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
                       { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
+                      { key: 'remote', label: t.kbSubRemote },
                     ]}
                   />
                 )}
@@ -1198,6 +1234,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} theme={theme} t={t} onClose={() => setOutputPreview(null)} />}
 
+            {sub === 'remote' && <RemoteKnowledgeView t={t} embedded />}
+
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
             {sub === 'kb' && !modelUsable && (
               <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
@@ -1465,23 +1503,16 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                               <span className="truncate">{d.collName}</span>
                             </span>}
                             <span className={`w-24 text-right text-[12px] ${muted}`}>{docStatusLabel(d)}</span>
-                            {confirmDoc === d.id ? (
-                              <div className="flex items-center justify-end gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                                <span className="text-[12px] font-medium" style={{ color: '#d63a3a' }}>{t.kbRemoveQ}</span>
-                                <button title={t.kbRemove} onClick={async () => { setConfirmDoc(null); await inv('kb_remove_document', { docId: d.id }); if (activeColl) loadDocs(activeColl.id); loadColls(); }} className={`p-1 rounded-full ${iconHover}`} style={{ color: '#d63a3a' }}><Check size={15} /></button>
-                                <button title={t.kbCancel} onClick={() => setConfirmDoc(null)} className={`p-1 rounded-full ${iconHover} ${muted}`}><X size={15} /></button>
-                              </div>
-                            ) : (
-                              <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="w-16 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               {canOpenSystemFiles && <button title={t.kbOpen} onClick={() => openFile(d.path)} className={`p-1.5 rounded-full ${iconHover}`}><ExternalLink size={14} /></button>}
-                                <button title={t.kbRemove} onClick={() => setConfirmDoc(d.id)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
-                              </div>
-                            )}
+                              <button data-testid="kb-remove-document" title={t.kbRemove} onClick={() => setConfirmDoc(d)} className={`p-1.5 rounded-full ${iconHover}`}><Trash2 size={14} /></button>
+                            </div>
                           </div>
                         );})}
                       </div>
                       );
                     })()}
+                    {removeDocError && <div role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3 py-2 text-[12px] text-[#d63a3a]">{removeDocError}</div>}
                   </div>
                 )}
 
@@ -1509,6 +1540,23 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                 <div className="flex justify-end gap-2">
                   <button onClick={() => setDelColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
                   <button onClick={() => { deleteColl(delColl.id); setDelColl(null); }} className="px-4 py-2 rounded-full text-[13px] font-medium text-white" style={{ background: '#d63a3a' }}>{t.kbDelete}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 从本地知识库移除文档：只删除索引，不触碰磁盘原文件。 */}
+          {confirmDoc && (
+            <div data-testid="kb-remove-document-confirm" className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmDoc(null)}>
+              <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()} className="w-[400px] rounded-2xl bg-white p-6 dark:bg-[#1E1F20]">
+                <div className={`mb-2 flex items-center gap-2 text-[16px] font-bold ${ink}`}>
+                  <AlertTriangle size={18} style={{ color: '#d63a3a' }} />
+                  {t.kbRemoveDocConfirm.replace('{n}', confirmDoc.name)}
+                </div>
+                <div className={`mb-5 text-[13px] leading-relaxed ${muted}`}>{t.kbRemoveDocWarn}</div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setConfirmDoc(null)} className={`rounded-full px-4 py-2 text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
+                  <button onClick={() => removeDocument(confirmDoc)} className="rounded-full bg-[#d63a3a] px-4 py-2 text-[13px] font-medium text-white">{t.kbRemove}</button>
                 </div>
               </div>
             </div>

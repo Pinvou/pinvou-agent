@@ -238,14 +238,19 @@ pub(crate) async fn chat_with_reservation(
     // 若 kb_search 当前仍不可用,不要注入“必须调用 kb_search”的提示,避免模型把提示/sudo
     // 状态当普通文本复述给用户。
     let mounted_collection_ids = store.mounted_collection_ids(&sid);
-    if !mounted_collection_ids.is_empty() {
+    let mounted_remote_collections = store
+        .mounted_remote_collections(&sid)
+        .into_iter()
+        .filter(|collection| collection.enabled)
+        .collect::<Vec<_>>();
+    if !mounted_collection_ids.is_empty() || !mounted_remote_collections.is_empty() {
         let disallowed = pool.compute_disallowed_tools();
         let kb_search_hidden = disallowed
             .iter()
             .any(|t| t.eq_ignore_ascii_case("kb_search"));
         pool.set_disallowed_all(disallowed).await;
         if !kb_search_hidden {
-            let collection_names = app
+            let mut collection_names = app
                 .try_state::<KnowledgeService>()
                 .map(|kb| {
                     mounted_collection_ids
@@ -256,6 +261,17 @@ pub(crate) async fn chat_with_reservation(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            if let Some(remote) =
+                app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+            {
+                collection_names.extend(mounted_remote_collections.iter().map(|collection| {
+                    let server = remote
+                        .connection(&collection.server_id)
+                        .map(|connection| connection.name)
+                        .unwrap_or_else(|_| collection.server_id.clone());
+                    format!("{server} / #{}", collection.collection_id)
+                }));
+            }
             full = format!(
                 "{}\n\n---\n\n{full}",
                 build_kb_agentic_guide(&collection_names)

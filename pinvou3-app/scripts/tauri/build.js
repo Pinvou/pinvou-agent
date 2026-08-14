@@ -12,6 +12,7 @@ const {
   platformConfigPath,
 } = require("./platform-config.js");
 const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
+const { prepareKnowledgeHost } = require("./knowledge-host.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
 const {
@@ -152,6 +153,7 @@ function main() {
   if (hasTauriBuildCommand) {
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
+    prepareKnowledgeHost();
     if (process.platform === "win32") {
       additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
     }
@@ -186,6 +188,7 @@ module.exports = {
   configSpecs,
   main,
   prepareCodexBridge,
+  prepareKnowledgeHost,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
   stageWindowsOnnxRuntime,

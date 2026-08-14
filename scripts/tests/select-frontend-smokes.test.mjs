@@ -54,6 +54,29 @@ test("feature-local changes select core and feature smokes", () => {
   );
 });
 
+test("knowledge changes select the desktop knowledge smoke", () => {
+  assert.deepEqual(
+    labels(
+      selectFrontendSmokes([
+        "pinvou3-app/src/features/knowledge/KnowledgeBaseView.jsx",
+      ]),
+    ),
+    [
+      "npm:test:ui-smoke",
+      "npm:test:kb-smoke",
+    ],
+  );
+});
+
+test("Linux knowledge host package resources run the full suite", () => {
+  assert.deepEqual(
+    labels(selectFrontendSmokes([
+      "pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/pinvou-knowledge-host-helper",
+    ])),
+    fullLabels,
+  );
+});
+
 test("relay changes select the web UI smoke", () => {
   assert.deepEqual(
     labels(selectFrontendSmokes(["remote-control-relay/server.js"])),

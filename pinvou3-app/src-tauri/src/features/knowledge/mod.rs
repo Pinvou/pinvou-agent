@@ -127,12 +127,14 @@ impl KnowledgeService {
     /// 构建 embedding 模型。调用方必须把它放进 `spawn_blocking`，该过程会同步读取约
     /// 558 MiB 的 ONNX/Tokenizer 文件并创建推理会话。
     fn load_embedder(model_dir: Option<&Path>) -> Result<Arc<embed::Embedder>, String> {
+        crate::platform::os::configure_onnxruntime_dylib()?;
         embed::Embedder::from_env_or_dir(model_dir).map(Arc::new)
     }
 
     /// 严格从调用方指定目录构建 embedding，不读取开发环境的模型目录覆盖。
     /// 下载修复必须使用该入口验证候选目录，避免验证了外部目录却替换托管目录。
     fn load_embedder_from_dir(model_dir: &Path) -> Result<Arc<embed::Embedder>, String> {
+        crate::platform::os::configure_onnxruntime_dylib()?;
         let name = std::env::var("PINVOU3_KB_EMBED_MODEL")
             .ok()
             .filter(|value| !value.trim().is_empty())

@@ -1190,30 +1190,7 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
 /// 把正文切成 ~max_chars 的块，相邻块重叠 overlap 字符。按字符窗口滑动（中文友好）。
 /// 短于一块的整体返回一块；空白块丢弃。
 pub fn chunk_text(text: &str, max_chars: usize, overlap: usize) -> Vec<String> {
-    let normalized = text.trim();
-    if normalized.is_empty() {
-        return vec![];
-    }
-    let chars: Vec<char> = normalized.chars().collect();
-    if chars.len() <= max_chars {
-        return vec![normalized.to_string()];
-    }
-    let step = max_chars.saturating_sub(overlap).max(1);
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let end = (i + max_chars).min(chars.len());
-        let s: String = chars[i..end].iter().collect();
-        let s = s.trim();
-        if !s.is_empty() {
-            out.push(s.to_string());
-        }
-        if end == chars.len() {
-            break;
-        }
-        i += step;
-    }
-    out
+    pinvou_knowledge::chunk_text(text, max_chars, overlap)
 }
 
 #[cfg(test)]

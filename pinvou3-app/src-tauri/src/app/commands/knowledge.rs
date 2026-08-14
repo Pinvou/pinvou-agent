@@ -1,6 +1,6 @@
 pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
     let titles = if collection_names.is_empty() {
-        "《本地知识集》".to_string()
+        "《知识集》".to_string()
     } else {
         collection_names
             .iter()
@@ -10,7 +10,7 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
     };
     format!(
         "<system-reminder>\n\
-         本会话启用了知识集{titles}。涉及用户本地资料/文档的问题,你**必须先调用 \
+         本会话启用了本地或远程知识集{titles}。涉及这些资料/文档的问题,你**必须先调用 \
          `kb_search` 工具**检索,再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
          内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
          只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\

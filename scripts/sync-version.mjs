@@ -8,8 +8,9 @@
 // 同步目标：
 //   1. pinvou3-app/src-tauri/tauri.conf.json 的 "version" 字段
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
-//   3. pinvou3-app/package.json 的 "version" 字段
-//   4. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
+//   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
+//   4. pinvou3-app/package.json 的 "version" 字段
+//   5. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -22,6 +23,7 @@ const CHECK_ONLY = process.argv.includes('--check');
 const VERSION_FILE = resolve(REPO_ROOT, 'VERSION');
 const TAURI_CONF = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/tauri.conf.json');
 const CARGO_TOML = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.toml');
+const KNOWLEDGE_CARGO_TOML = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.toml');
 const PACKAGE_JSON = resolve(REPO_ROOT, 'pinvou3-app/package.json');
 const PACKAGE_LOCK = resolve(REPO_ROOT, 'pinvou3-app/package-lock.json');
 
@@ -116,6 +118,7 @@ export function main() {
   const targets = [
     { name: 'pinvou3-app/src-tauri/tauri.conf.json', read: () => readJsonVersion(TAURI_CONF), write: () => writeJsonVersion(TAURI_CONF, target) },
     { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(CARGO_TOML), write: () => writeCargoVersion(CARGO_TOML, target) },
+    { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(KNOWLEDGE_CARGO_TOML), write: () => writeCargoVersion(KNOWLEDGE_CARGO_TOML, target) },
     { name: 'pinvou3-app/package.json', read: () => readJsonVersion(PACKAGE_JSON), write: () => writeJsonVersion(PACKAGE_JSON, target) },
   ];
   // package-lock.json 可能不存在（未提交 lock 等场景），存在才纳入同步/校验

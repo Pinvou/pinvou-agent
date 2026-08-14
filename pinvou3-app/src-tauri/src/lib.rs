@@ -18,6 +18,7 @@ use crate::features::{
     monitor::MonitorState,
     pet::{pet_window, selected_pet},
     remote_control::RemoteControlManager,
+    remote_knowledge::RemoteKnowledgeService,
     scheduled::tasks as scheduled_tasks,
     sessions::SessionStore,
 };
@@ -357,7 +358,11 @@ pub fn run() {
                     let kb_usable = app
                         .try_state::<knowledge::KnowledgeService>()
                         .map(|service| service.has_indexed_content() && service.semantic_ready())
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || app
+                            .try_state::<RemoteKnowledgeService>()
+                            .map(|service| service.has_connections())
+                            .unwrap_or(false);
                     if !kb_usable {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
@@ -497,6 +502,15 @@ pub fn run() {
             }
             startup::mark("knowledge_service:done");
 
+            match RemoteKnowledgeService::load(RemoteKnowledgeService::default_path()) {
+                Ok(service) => {
+                    app.handle().manage(service);
+                    eprintln!("[pinvou3-app] remote knowledge service ready");
+                }
+                Err(error) => {
+                    eprintln!("[pinvou3-app] remote knowledge service init failed: {error}")
+                }
+            }
             // 桌宠:settings.json 里 pet.enabled 为真时随主窗口一起拉起。
             pet_window::spawn_if_enabled(app.handle());
 
@@ -839,6 +853,56 @@ pub fn run() {
             commands::knowledge::session_mounted_collection,
             commands::knowledge::session_mounted_collections,
             commands::knowledge::session_mounted_collections_snapshot,
+            commands::remote_knowledge::remote_kb_connections,
+            commands::remote_knowledge::remote_kb_accept_invite,
+            commands::remote_knowledge::remote_kb_request_join,
+            commands::remote_knowledge::remote_kb_pending_joins,
+            commands::remote_knowledge::remote_kb_refresh_join,
+            commands::remote_knowledge::remote_kb_cancel_join,
+            commands::remote_knowledge::remote_kb_create_share,
+            commands::remote_knowledge::remote_kb_shares,
+            commands::remote_knowledge::remote_kb_stop_share,
+            commands::remote_knowledge::remote_kb_join_requests,
+            commands::remote_knowledge::remote_kb_approve_join_request,
+            commands::remote_knowledge::remote_kb_reject_join_request,
+            commands::remote_knowledge::remote_kb_model_status,
+            commands::remote_knowledge::remote_kb_download_model,
+            commands::remote_knowledge::remote_kb_devices,
+            commands::remote_knowledge::remote_kb_update_device,
+            commands::remote_knowledge::remote_kb_remove_device,
+            commands::remote_knowledge::remote_kb_trashed_collections,
+            commands::remote_knowledge::remote_kb_trashed_documents,
+            commands::remote_knowledge::remote_kb_permanently_delete_collection,
+            commands::remote_knowledge::remote_kb_permanently_delete_document,
+            commands::shared_knowledge_host::shared_kb_host_status,
+            commands::shared_knowledge_host::shared_kb_host_lan_endpoints,
+            commands::shared_knowledge_host::shared_kb_discover_nearby,
+            commands::shared_knowledge_host::shared_kb_host_install,
+            commands::shared_knowledge_host::shared_kb_host_upgrade,
+            commands::shared_knowledge_host::shared_kb_host_reconnect,
+            commands::shared_knowledge_host::shared_kb_host_set_owner_device,
+            commands::shared_knowledge_host::shared_kb_host_remove,
+            commands::shared_knowledge_host::shared_kb_host_backup,
+            commands::shared_knowledge_host::shared_kb_host_restore,
+            commands::remote_knowledge::remote_kb_remove_connection,
+            commands::remote_knowledge::remote_kb_collections,
+            commands::remote_knowledge::remote_kb_create_collection,
+            commands::remote_knowledge::remote_kb_update_collection,
+            commands::remote_knowledge::remote_kb_delete_collection,
+            commands::remote_knowledge::remote_kb_restore_collection,
+            commands::remote_knowledge::remote_kb_documents,
+            commands::remote_knowledge::remote_kb_document_statuses,
+            commands::remote_knowledge::remote_kb_discover_folder_files,
+            commands::remote_knowledge::remote_kb_upload_files,
+            commands::remote_knowledge::remote_kb_replace_document,
+            commands::remote_knowledge::remote_kb_delete_document,
+            commands::remote_knowledge::remote_kb_restore_document,
+            commands::remote_knowledge::remote_kb_download_document,
+            commands::remote_knowledge::remote_kb_search,
+            commands::remote_knowledge::session_mounted_remote_collections,
+            commands::remote_knowledge::session_add_mounted_remote_collection,
+            commands::remote_knowledge::session_set_mounted_remote_collection_enabled,
+            commands::remote_knowledge::session_remove_mounted_remote_collection,
             commands::marketplace::list_marketplace_skills,
             commands::marketplace::install_marketplace_skill,
             commands::marketplace::import_skill_package,

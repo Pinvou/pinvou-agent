@@ -117,6 +117,8 @@ class CiGatePolicyTests(unittest.TestCase):
         for output in (
             "rust_code",
             "rust_dependencies",
+            "knowledge_rust",
+            "knowledge_dependencies",
             "release_contract",
             "pet",
             "frontend",
@@ -139,6 +141,42 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertNotIn("完整门禁已在 PR 入队前验证", required_gate)
         self.assertIn("Merge Queue 基础检查失败", required_gate)
+
+    def test_standalone_knowledge_crate_has_its_own_required_gate(self):
+        changes = self.pr_workflow.split(
+            "\n  changes:", maxsplit=1
+        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        self.assertIn("knowledge_rust:", changes)
+        self.assertIn("- 'pinvou-knowledge/**/*.rs'", changes)
+        self.assertIn("knowledge_dependencies:", changes)
+
+        knowledge = self.pr_workflow.split(
+            "\n  knowledge-rust:", maxsplit=1
+        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        self.assertIn("needs.changes.outputs.knowledge_rust == 'true'", knowledge)
+        self.assertIn(
+            "cargo fmt --manifest-path pinvou-knowledge/Cargo.toml -- --check",
+            knowledge,
+        )
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
+            knowledge,
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
+            knowledge,
+        )
+        self.assertIn(
+            "needs.changes.outputs.knowledge_dependencies == 'true'",
+            knowledge,
+        )
+        self.assertIn("--manifest-path pinvou-knowledge/Cargo.toml", knowledge)
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- knowledge-rust", required_gate)
+        self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
     def test_rust_modes_preserve_fast_drafts_and_final_queue_validation(self):
         self.assertIn("merge_group:", self.pr_workflow)
