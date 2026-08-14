@@ -1359,7 +1359,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                             if field.secret {
                                 self.resolve_secret_placeholder(
                                     &manifest.id,
-                                    "header",
+                                    bundle::keyring_target(bundle::CredentialTarget::Bearer),
                                     &field.key,
                                     user_config,
                                     &manifest.env,
@@ -1385,7 +1385,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 for secret in &manifest.secret_headers {
                     self.resolve_secret_placeholder(
                         &manifest.id,
-                        "header",
+                        bundle::keyring_target(bundle::CredentialTarget::Bearer),
                         &secret.source_key,
                         user_config,
                         &manifest.env,
@@ -1405,7 +1405,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         if is_sensitive_key_name(k) {
                             let placeholder = self.resolve_secret_placeholder(
                                 &manifest.id,
-                                "header",
+                                bundle::keyring_target(bundle::CredentialTarget::Bearer),
                                 k,
                                 user_config,
                                 &manifest.env,
