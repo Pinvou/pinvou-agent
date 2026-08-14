@@ -2487,12 +2487,16 @@
       // 该会话自己的 per-session 记录，全局默认不受影响）。
       var laneDefault = state.modeDefaults
         && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
-      if (laneDefault === "plan" && state.activeSessionId) {
+      // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
+      // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
+      if (laneDefault === "plan") {
         try {
-          var laneModeState = await invoke("set_plan_mode_next", { sessionId: state.activeSessionId });
-          applyAuthoritativeModeState(state.activeSessionId, laneModeState);
+          var laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+          applyAuthoritativeModeState(meta.id, laneModeState);
         } catch (laneModeError) {
-          addSystemItem(bt("switchModeFailed") + laneModeError);
+          runSyncOnSession(meta.id, function () {
+            addSystemItem(bt("switchModeFailed") + laneModeError);
+          });
         }
       }
       await syncActivePersona();

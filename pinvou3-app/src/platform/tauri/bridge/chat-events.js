@@ -1095,6 +1095,10 @@
           item.statusLabel = bt("planDiscarded");
         }
       });
+      var resolvedMode = p.mode_state || p.modeState;
+      // 事件负载的权威 mode 写回走收敛点（bump epoch 防在途旧读覆盖），
+      // 与 web 版对齐：方案在别处（另一窗口/远端）被 discard 时 chip 须刷新。
+      if (resolvedMode) applyAuthoritativeModeState(sid, resolvedMode);
     });
     notify();
   });

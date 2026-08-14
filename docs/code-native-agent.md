@@ -67,7 +67,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 - `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：`connector_scope()`（连接器禁用集 scope）、`extra_hidden_tools()`（code 恒追加 `present_artifact`；`load_skill` 不在此列——skill 双 scope 治理后按组合目录空否动态决定，见 §8.6）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
-- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
+- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-mode-解耦与权限持久化-改动说明.md`。
 
 ## 4. 开发节点记录（19 个提交）
 

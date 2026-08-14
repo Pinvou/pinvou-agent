@@ -96,10 +96,11 @@ pub(crate) fn recover_interrupted_replace(
 /// 原子写文件：先写同目录临时文件并 sync，再原子替换目标。
 ///
 /// 直接 `std::fs::write(target)` 在进程被中断（强杀/崩溃）时会留下截断或
-/// 半写的目标文件；对持久化的会话状态（如 `_code_mode_states.json`、
+/// 半写的目标文件；对持久化的会话状态（如 `_session_mode_states.json`、
 /// settings.json）而言，一个损坏的目标会让启动恢复静默失败，表现为
 /// "切换成功但重启后丢失"。tmp + rename 保证目标要么是旧完整内容、
-/// 要么是新完整内容，永无中间态；失败时清理临时文件。
+/// 要么是新完整内容，永无中间态。失败清理按替换终态区分（对齐
+/// artifacts 版）：不得把装着旧完整内容的恢复候选一并删掉。
 pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
 
@@ -108,24 +109,18 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("state.json");
-    let tmp = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
+    let token = format!(
+        "{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
-    ));
-    let backup = parent.join(format!(
-        ".{file_name}.bak-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    );
+    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
+    let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
-    let write_result = (|| -> io::Result<()> {
+    let stage_result = (|| -> io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -133,27 +128,40 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
         file.write_all(content)?;
         file.sync_all()?;
         drop(file);
-        if path.exists() {
-            // Windows 的 rename 不能覆盖已存在文件，走「旧文件改名备份 → tmp 顶替」
-            // 的两步替换；POSIX 直接原子覆盖。
-            replace_file_atomically(&tmp, path, &backup)
-                .map_err(ReplaceError::into_io_error)?;
-        } else {
-            // 首次创建：Windows 上 rename 目标不存在会直接报 NotFound，须走
-            // 普通 rename（单文件移动，无覆盖语义，天然安全）。
-            std::fs::rename(&tmp, path)?;
-        }
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
         Ok(())
     })();
-
-    if write_result.is_err() {
+    if let Err(error) = stage_result {
         let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&backup);
+        return Err(error);
     }
-    write_result
+
+    // Windows 状态机内部自带「目标不存在 → promote（单文件移动）」分支，
+    // POSIX 实现就是 rename，无需外层再区分首写/覆盖。
+    match replace_file_atomically(&tmp, path, &backup) {
+        Ok(ReplaceState::Committed) => {
+            let _ = std::fs::remove_file(&backup);
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+            Ok(())
+        }
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            // RolledBack：布局已收敛回旧内容，tmp/backup 是残留垃圾；
+            // RecoveryRequired 且目标路径仍被占用（如目录占位）：恢复永无
+            // 可能，同样是垃圾；目标真正丢失的 RecoveryRequired 保留候选，
+            // 供恢复流程 promote——这正是不能无条件清理的原因。
+            if error.state() == ReplaceState::RolledBack
+                || (error.state() == ReplaceState::RecoveryRequired && path.exists())
+            {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
 }
 
 /// 以 0600 权限创建（或截断）文件：写入含明文密钥的 CLI 配置时**直接**以

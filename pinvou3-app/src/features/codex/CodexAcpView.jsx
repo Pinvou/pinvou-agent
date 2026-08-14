@@ -2575,7 +2575,7 @@ export function CodexAcpView({
           sessionId: targetId,
           // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
           // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
-          // 按 SessionPolicy 逐轮驱动（docs/code-plain-decoupling-改动说明.md）。
+          // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
           restrictTools: false,
         });
       } catch (sendError) {
