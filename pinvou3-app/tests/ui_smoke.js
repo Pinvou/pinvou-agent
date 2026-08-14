@@ -1306,6 +1306,57 @@ async function expand(page) {
     assistantCopy.singleAction && assistantCopy.sharedFooter && assistantCopy.sameRow,
     JSON.stringify(assistantCopy));
 
+  const assistantExportShare = await page.evaluate(async () => {
+    const action = [...document.querySelectorAll('[data-testid="assistant-message-actions"]')]
+      .find(node => node.closest('[data-conversation-turn]')?.innerText.includes('已生成会议纪要'));
+    const exportButton = action?.querySelector('[data-testid="assistant-message-export"]');
+    const shareButton = action?.querySelector('[data-testid="assistant-message-share"]');
+    if (!exportButton || !shareButton) return { found: false };
+
+    exportButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportMenu = document.querySelector('[data-testid="assistant-message-export-menu"]');
+    const markdownOption = exportMenu?.querySelector('[data-testid="assistant-export-md"]');
+    const htmlOption = exportMenu?.querySelector('[data-testid="assistant-export-html"]');
+    const markdownDefault = (markdownOption?.querySelectorAll('svg').length || 0) === 2;
+    htmlOption?.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const exportInvoke = [...window.__TAURI_INVOKES__]
+      .reverse()
+      .find(call => call.cmd === 'export_assistant_response');
+
+    shareButton.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const shareMenu = document.querySelector('[data-testid="assistant-message-share-menu"]');
+    const targets = ['wechat', 'wecom', 'feishu', 'dingtalk', 'qq'];
+    const allTargets = targets.every(target => shareMenu?.querySelector(`[data-testid="assistant-share-${target}"]`));
+    shareMenu?.querySelector('[data-testid="assistant-share-feishu"]')?.click();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const shareInvoke = [...window.__TAURI_INVOKES__]
+      .reverse()
+      .find(call => call.cmd === 'open_assistant_share_target');
+    return {
+      found: true,
+      exportMenu: Boolean(exportMenu),
+      markdownDefault,
+      exportFormat: exportInvoke?.args?.format || '',
+      exportName: exportInvoke?.args?.defaultName || '',
+      htmlStandalone: exportInvoke?.args?.content?.startsWith('<!doctype html>') || false,
+      htmlSafe: !/<script>/i.test(exportInvoke?.args?.content || ''),
+      shareMenu: Boolean(shareMenu),
+      allTargets,
+      shareTarget: shareInvoke?.args?.target || '',
+      shareFeedback: action.innerText,
+    };
+  });
+  rec('③a-4 回复可默认导出 Markdown、选择 HTML，并复制后打开常见通信应用',
+    assistantExportShare.found && assistantExportShare.exportMenu && assistantExportShare.markdownDefault &&
+    assistantExportShare.exportFormat === 'html' && assistantExportShare.exportName.endsWith('.html') &&
+    assistantExportShare.htmlStandalone && assistantExportShare.htmlSafe && assistantExportShare.shareMenu &&
+    assistantExportShare.allTargets && assistantExportShare.shareTarget === 'feishu' &&
+    assistantExportShare.shareFeedback.includes('请粘贴发送'),
+    JSON.stringify(assistantExportShare));
+
   // 会话输入框是页面条件渲染的：跳工具商店会卸载 ChatView，返回同一 session
   // 必须恢复未发送内容，不得因组件重建清空。
   const composerDraft = '这是尚未发送的 session 草稿';

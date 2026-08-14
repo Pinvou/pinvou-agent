@@ -608,6 +608,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat,
+            commands::assistant_response::export_assistant_response,
+            commands::assistant_response::open_assistant_share_target,
             commands::startup::report_frontend_startup,
             commands::startup::reveal_startup_window,
             commands::connectors::refresh_connector_auth_gates,
