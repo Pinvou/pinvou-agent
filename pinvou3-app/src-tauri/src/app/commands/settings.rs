@@ -1064,7 +1064,14 @@ fn reply_explicitly_cannot_see(reply: &str) -> bool {
 /// ——可能是请求层(图片未送达/网关剥离)、模型行为(拒绝回答)或能力,不冒充结论。
 fn classify_image_reply(reply: &str, status_code: u16) -> ImageCapabilityTestResult {
     let summarized = summarize_image_probe_text(reply, 120);
-    let recognized = reply.to_lowercase().contains("red") || reply.contains('红');
+    // 英文按词边界匹配:contains("red") 会被幻觉回复里的 blurred/tired/scared 等
+    // 常见词误判 supported 并持久化 Enabled,之后图片持续路由到非视觉模型。
+    // 中文无空格分词,「红」保留子串匹配(中文含「红」的误伤词在识图回复场景极少)。
+    let recognized = reply.contains('红')
+        || reply.split_whitespace().any(|word| {
+            let word = word.trim_end_matches(['.', ',', '!', '?', ';', ':']);
+            word.eq_ignore_ascii_case("red")
+        });
     if recognized {
         image_capability_result("supported", true, summarized, Some(status_code))
     } else if reply_explicitly_cannot_see(reply) {
@@ -1577,6 +1584,31 @@ mod tests {
         let result = classify_image_capability_http(reqwest::StatusCode::OK, body);
         assert_eq!(result.status, "unverified");
         assert!(result.summary.contains("未能正确识别图像"));
+    }
+
+    #[test]
+    fn image_capability_red_substring_does_not_false_positive() {
+        // 词边界:幻觉回复里含 red 子串的常见词(blurred/tired/scared/covered…)
+        // 不得误判 supported——误判会持久化 Enabled,之后图片持续路由到非视觉模型。
+        for reply in [
+            "The image appears blurred and I cannot make out details",
+            "I feel tired of guessing, the picture is unclear",
+            "The content is covered by something",
+            "A hundred squares, maybe",
+        ] {
+            let body = format!(r#"{{"choices":[{{"message":{{"content":"{reply}"}}}}]}}"#);
+            let result = classify_image_capability_http(reqwest::StatusCode::OK, &body);
+            assert_ne!(
+                result.status, "supported",
+                "含 red 子串不应误判支持: {reply}"
+            );
+        }
+        // 词边界命中仍判支持:独立词 red / 红 / 红色,含标点结尾。
+        for reply in ["It is red.", "红色", "纯红色图片", "The answer is RED"] {
+            let body = format!(r#"{{"choices":[{{"message":{{"content":"{reply}"}}}}]}}"#);
+            let result = classify_image_capability_http(reqwest::StatusCode::OK, &body);
+            assert_eq!(result.status, "supported", "独立颜色词应判支持: {reply}");
+        }
     }
 
     #[test]
