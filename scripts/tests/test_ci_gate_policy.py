@@ -151,17 +151,28 @@ class CiGatePolicyTests(unittest.TestCase):
             "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
             rust_test,
         )
+        # main push 无条件累计验证(防 concurrency pending 替换盲区),
+        # 不与 rust_code 路径条件短路。
         self.assertIn(
-            "github.event_name == 'push'",
+            "github.event_name == 'push' ||",
             rust_test,
         )
-        self.assertNotIn(
-            "github.event_name == 'push' || needs.changes.outputs.rust_code == 'true'",
-            rust_test,
+
+    def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
+        # concurrency 可能用后续非 Rust pending 替换含 Rust 变更的 pending;main 的
+        # Windows 累计验证不得依赖单次 push 的相邻路径 diff,push 无条件执行。
+        windows_rust_test = self.pr_workflow.split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn(
+            "github.event_name == 'push' ||", windows_rust_test
+        )
+        self.assertIn("github.event_name == 'merge_group'", windows_rust_test)
+        self.assertIn(
+            "github.event.pull_request.draft == false", windows_rust_test
         )
         self.assertIn(
-            "needs.changes.outputs.l1 == 'true'",
-            rust_test,
+            "needs.changes.outputs.rust_code == 'true'", windows_rust_test
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):

@@ -26,6 +26,8 @@ on:
   push:
     branches: [main]
     paths:
+      # 纯前端 src/** 已由 PR/Queue 的 frontend-test 覆盖，不启动昂贵的
+      # Tauri/Rust universal 构建；package manifest 仍可能改变构建工具链，保留。
       - 'pinvou3-app/src-tauri/**'
       - 'pinvou3-app/scripts/tauri/**'
       - 'pinvou3-app/package.json'

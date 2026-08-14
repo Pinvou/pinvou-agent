@@ -9,13 +9,15 @@ name: PR Check
 #   Merge Queue 对最新组合提交跑完整受影响前端门禁。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
 # - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
-#   标签提前跑；Merge Queue 对最新组合提交运行；main push 写暖 cache。
+#   标签提前跑；Merge Queue 对最新组合提交运行；main push 无条件累计验证并写暖
+#   cache(防 concurrency pending 替换盲区)。
 # - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
 #   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
-# - windows-rust-test:Rust 相关 Ready PR、Merge Queue 与 main push 跑 Windows 原生编译/单测；Draft 跳过。
+# - windows-rust-test:Windows 专属原语在原生 runner 执行;Ready PR/Merge Queue
+#   按 Rust 路径触发;main 每次保留下来的 push 无条件累计验证(防 pending 替换盲区)。
 # - windows-codex-runtime-test:相关 PR 在 Windows 原生准备 Node + ACP Bridge，并核对安装包资源。
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -24,6 +26,7 @@ name: PR Check
 # Cache 策略(2026-07 诊断:PR cache 挂 refs/pull/N/merge 作用域互不可见 + 1.3GB/份
 # 顶死 10GB 限额被 LRU 秒驱逐 → 每轮全冷编译 ~9min):
 # - Rust 相关 push main 跑 rust-test:cache 存 main 作用域,供 Merge Queue/显式 PR 复用。
+#   rust-test 的独立缓存缺失时先只读复用 rust-lint 暖缓存(见该 job 注释)。
 # - save-if 仅 main:PR 侧只读不写,不再刷爆限额挤掉暖 cache。
 # - rust-cache 的 restore 有前缀回退(restoreKey 不含 lockfile hash),PR 改 Cargo.lock
 #   也能从 main cache 增量编译,不再全冷。
@@ -53,8 +56,11 @@ permissions:
   contents: read
   pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
 
-# 同一 PR 连续 push 或被合并/关闭时取消旧检查；main 的完整 Rust 验证不取消，
-# 避免 cache writer 反复被截断导致后续持续冷编译。
+# 同一 PR 连续 push 或被合并/关闭时取消上一次未跑完的检查,省 runner。
+# main push 保留当前正在运行的暖缓存任务；GitHub 同一 concurrency group 最多保留
+# 一个 running 和一个 pending，新 push 会替换旧 pending。为避免被替换的 pending
+# 恰好包含 Rust 变更、而保留下来的后续 push 只看相邻非 Rust diff，main 的 Rust
+# 累计验证不依赖单次 push 的 paths-filter(见 rust-test/windows-rust-test)。
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -106,7 +112,8 @@ jobs:
   # PR、Merge Queue 与 main push 均按实际改动路径选择检查。
   # paths-filter v4 在 merge_group 上使用事件 base/head SHA 比较队列组合提交。
   # push(main) 下 dorny/paths-filter 用 before..sha 本地 diff(需 fetch-depth:0),
-  # 供 windows-rust-test 按路径触发(docs-only 推送不再烧 32min Windows runner)。
+  # 供其余按路径 job 使用；rust-test/windows-rust-test 的 main 累计验证为规避
+  # concurrency pending 替换盲区，有意不依赖单次 push 的相邻 diff。
   changes:
     name: changes
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
@@ -531,20 +538,25 @@ jobs:
   rust-test:
     name: rust-test
     needs: changes
-    # Draft/普通 PR 默认跳过；Merge Queue 对最新组合提交跑；
-    # main push 写暖 cache；Ready 高风险 PR 可用标签提前跑。
+    # Draft/普通 PR 默认跳过；可信高风险场景按路径/标签触发；Ready 高风险 PR
+    # 可用标签提前跑。main push 无条件执行累计状态验证,避免 concurrency 用后续
+    # 非 Rust pending 替换含 Rust 变更的 pending 后,只看相邻 diff 而漏检。
     if: >-
       ${{
         !cancelled() &&
         github.event.action != 'closed' &&
-        needs.changes.outputs.rust_code == 'true' &&
         (
-          github.event_name == 'merge_group' ||
           github.event_name == 'push' ||
           (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
+            needs.changes.outputs.rust_code == 'true' &&
+            (
+              github.event_name == 'merge_group' ||
+              (
+                github.event_name == 'pull_request' &&
+                github.event.pull_request.draft == false &&
+                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
+              )
+            )
           )
         )
       }}
@@ -684,9 +696,11 @@ jobs:
   windows-rust-test:
     name: windows-rust-test
     needs: changes
-    # Windows 专属原语必须在原生 runner 执行；Draft 保持快速反馈，Ready PR、Merge Queue
-    # 与 main push 按 Rust 路径触发，docs-only 变更不消耗 Windows runner。
-    if: ${{ !cancelled() && needs.changes.outputs.rust_code == 'true' && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
+    # Windows 专属原语必须在原生 runner 执行；Draft 保持快速反馈，Ready PR 与
+    # Merge Queue 按 Rust 路径触发。main 每次保留下来的 push 都执行 Windows 原生
+    # 累计验证，避免 concurrency 用后续非 Rust pending 替换含 Rust 变更的 pending
+    # 后，按相邻 diff 路由导致中间提交永远未经过 Windows 编译。
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.rust_code == 'true' && github.event.pull_request.draft == false)) }}
     runs-on: windows-latest
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。

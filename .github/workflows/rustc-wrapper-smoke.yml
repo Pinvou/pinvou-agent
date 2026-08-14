@@ -25,16 +25,50 @@ on:
   merge_group:
   push:
     branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/.cargo/config.toml'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+      - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: rustc-wrapper-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # merge_group 不支持事件级 paths 过滤，先在一个轻量 Linux job 中判断组合
+  # diff；无关 PR 入队时跳过后续三个平台 runner。PR/push 的事件级 paths 仍
+  # 保留，避免这些事件连轻量路由 job 都启动。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      wrapper: ${{ steps.filter.outputs.wrapper }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            wrapper:
+              - 'pinvou3-app/src-tauri/.cargo/config.toml'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+              - 'pinvou3-app/run-dev.sh'
+              - '.github/workflows/rustc-wrapper-smoke.yml'
+
   smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.wrapper == 'true' }}
     strategy:
       fail-fast: false
       matrix:
