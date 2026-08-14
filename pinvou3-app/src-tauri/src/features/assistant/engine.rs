@@ -85,6 +85,20 @@ struct TurnLifecycleState {
     reclaimed: bool,
     admission_emitted: bool,
     next_reservation_id: u64,
+    /// 单调递增的轮次身份（turn generation）。每次 turn 从 idle 变 active
+    /// 时自增（[`reserve`](TurnLifecycle::reserve) / [`on_submitted`] /
+    /// [`on_started_transition`] 的 newly_active 分支），用于把 cancel 请求
+    /// 绑定到发起时刻的轮次：cancel 在取 `turn_lock` 前后比对 epoch，不匹配
+    /// 说明目标轮已结束（新一轮已 reserve），当前请求必须 no-op，避免跨轮
+    /// 误取消随后启动的新 turn。
+    ///
+    /// 不能复用 `next_reservation_id`：`on_submitted`（定时任务路径）与
+    /// `on_started_transition`（stale TurnStarted）激活 turn 时都不碰它，
+    /// 会让定时 turn 的 generation 恒为旧值。
+    ///
+    /// [`on_submitted`]: TurnLifecycle::on_submitted
+    /// [`on_started_transition`]: TurnLifecycle::on_started_transition
+    turn_epoch: u64,
     active_reservation_id: Option<u64>,
     transcript_rules: Vec<TranscriptSanitizationRule>,
     /// 用户在 turn 已 submit 但尚未收到 TurnStarted 时点了停止。
@@ -99,9 +113,14 @@ struct TurnLifecycleState {
     /// [`take_pending_cancel`] 原子取出并重新 `cancel_current()`——此时
     /// `reset_cancel_token()` 已经执行过，cancel 命中的是当前轮次的活跃 token。
     ///
-    /// [`arm_pending_cancel`]: TurnLifecycle::arm_pending_cancel
+    /// 携带 arming 时的 [`turn_epoch`]：并发取消请求（C1/C2）中，排队较晚的
+    /// C2 在恢复后读到的是「当前 lifecycle」（可能已是新轮）。`take_pending_cancel`
+    /// 会校验 epoch 仍是当前轮，跨轮泄漏的 stale pending 被丢弃，不误取消新轮。
+    ///
+    /// [`arm_pending_cancel`]: TurnLifecycle::arm_pending_cancel_and_cancel
     /// [`take_pending_cancel`]: TurnLifecycle::take_pending_cancel
-    pending_cancel: bool,
+    /// [`turn_epoch`]: TurnLifecycleState::turn_epoch
+    pending_cancel: Option<u64>,
 }
 
 /// The durable, user-visible meaning of a submitted engine operation.
@@ -388,6 +407,28 @@ impl TurnLifecycle {
         state.active || state.terminal_closing
     }
 
+    /// 当前活动轮的 turn generation（epoch），供 cancel 请求绑定发起时刻的
+    /// 轮次身份。与 [`is_active`](Self::is_active) 同口径：turn 活动期间
+    /// （`active` 或终态发送临界区 `terminal_closing`）返回 `Some(epoch)`，
+    /// 空闲返回 `None`。cancel 在取 `turn_lock` 前后各读一次，不匹配则 no-op。
+    pub(crate) fn current_turn_generation(&self) -> Option<u64> {
+        let state = self.state.lock();
+        if state.active || state.terminal_closing {
+            Some(state.turn_epoch)
+        } else {
+            None
+        }
+    }
+
+    /// 当前活动轮是否已提交（`SendMessage` 已入队 / `TurnStarted` 已抵达）。
+    /// 供 cancel 阶段二在 generation mismatch（新轮已 reserve）时判断新轮是否
+    /// 已经真正开始：仅 reserve 未 send 时，engine 里仍是旧轮遗留的子代理，
+    /// 补发级联取消（CancelSubAgents）不会误杀新轮刚启动的子代理（reviewer 点 9）。
+    pub(crate) fn is_current_turn_submitted(&self) -> bool {
+        let state = self.state.lock();
+        state.active && state.submitted
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();
@@ -396,6 +437,7 @@ impl TurnLifecycle {
             }
             state.next_reservation_id = state.next_reservation_id.wrapping_add(1).max(1);
             let reservation_id = state.next_reservation_id;
+            state.turn_epoch = state.turn_epoch.wrapping_add(1).max(1);
             state.active = true;
             state.submitted = false;
             state.turn_id = None;
@@ -404,7 +446,7 @@ impl TurnLifecycle {
             state.reclaimed = false;
             state.admission_emitted = false;
             state.active_reservation_id = Some(reservation_id);
-            state.pending_cancel = false;
+            state.pending_cancel = None;
             reservation_id
         };
         Ok(TurnReservation::new(self.clone(), reservation_id))
@@ -585,6 +627,7 @@ impl TurnLifecycle {
     pub(crate) fn on_submitted(&self) -> bool {
         let mut state = self.state.lock();
         if !state.active && !state.terminal_closing {
+            state.turn_epoch = state.turn_epoch.wrapping_add(1).max(1);
             state.active = true;
             state.submitted = true;
             state.turn_id = None;
@@ -619,6 +662,10 @@ impl TurnLifecycle {
         let newly_active = !state.active;
         if newly_active {
             state.admission_emitted = false;
+            // forwarder 收到 stale/repeat TurnStarted 时可能从 idle 激活 turn
+            // （reserve/on_submitted 之外的第三个 active 入口）。同样推进 epoch
+            // 保证 cancel generation 严格单调，覆盖该边缘路径。
+            state.turn_epoch = state.turn_epoch.wrapping_add(1).max(1);
         }
         state.active = true;
         state.submitted = true;
@@ -730,6 +777,20 @@ impl TurnLifecycle {
             .map(|transition| transition.terminal)
     }
 
+    /// 测试专用：认领一个未提交 turn 的终态并立即重开闸门，等价于
+    /// `emit_unsubmitted_interrupted_terminal` 去掉发 `chat:done` 的副作用，
+    /// 供跨模块测试（engine_pool 的 cancel 并发测试）驱动 turn 收尾而无需 AppHandle。
+    /// 不发终态信号——这些测试只关心 lifecycle 状态机的轮次切换，不验证 emit。
+    #[cfg(test)]
+    pub(crate) fn finish_unsubmitted_once(&self) -> bool {
+        if self.claim_unsubmitted_terminal() {
+            self.finish_terminal_emission();
+            true
+        } else {
+            false
+        }
+    }
+
     fn claim_terminal_with_admission(
         &self,
         app: &AppHandle,
@@ -801,8 +862,27 @@ impl TurnLifecycle {
     /// [`claim_terminal_transition`]: Self::claim_terminal_transition
     /// [`claim_reclaimed_transition`]: Self::claim_reclaimed_transition
     pub(crate) fn claim_unsubmitted_terminal(&self) -> bool {
+        self.claim_unsubmitted_terminal_impl(None)
+    }
+
+    /// 带目标 epoch 的原子认领：在 lifecycle state 锁内**同时**校验
+    /// `turn_epoch == target` 并认领，二者之间不存在可插入轮次切换的窗口。
+    ///
+    /// 供 cancel 阶段二使用（`reserve_turn` 不取 `turn_lock`，generation 检查
+    /// 与认领若分离，另一 worker 可在检查通过后结束旧轮并 reserve 新轮，
+    /// 无 epoch 校验的认领会把新轮 reservation 误认领为 Interrupted）：
+    /// epoch 不匹配时返回 `false` 且不产生任何副作用，调用方必须整体 no-op。
+    pub(crate) fn claim_unsubmitted_terminal_for_epoch(&self, target: u64) -> bool {
+        self.claim_unsubmitted_terminal_impl(Some(target))
+    }
+
+    fn claim_unsubmitted_terminal_impl(&self, expected_epoch: Option<u64>) -> bool {
         let _emission = self.emission.lock();
         let mut state = self.state.lock();
+        if expected_epoch.is_some_and(|epoch| state.turn_epoch != epoch) {
+            // 轮次已切换（目标轮已结束、新轮已 reserve）：不得认领新轮。
+            return false;
+        }
         if !state.active || state.submitted || state.terminal_emitted {
             return false;
         }
@@ -840,10 +920,28 @@ impl TurnLifecycle {
         true
     }
 
+    /// 带目标 epoch 的未提交认领 + 补发 `chat:done`：认领在 state 锁内与
+    /// `turn_epoch == target` 校验原子完成，目标轮已结束（新轮已 reserve）时
+    /// 返回 `false` 且无副作用，避免把新轮 reservation 误认领为 Interrupted。
+    pub(crate) fn emit_unsubmitted_interrupted_terminal_for_epoch(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        target: u64,
+    ) -> bool {
+        if !self.claim_unsubmitted_terminal_for_epoch(target) {
+            return false;
+        }
+        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        self.finish_terminal_emission();
+        true
+    }
+
     /// 标记「cancel 在 turn 已 submit 但尚未 TurnStarted 时发起」。
     ///
     /// 仅当 turn 处于 active、已 `submitted`、且 `turn_id` 仍为 None（TurnStarted
-    /// 未抵达）时设置 `pending_cancel`：
+    /// 未抵达）、且 `turn_epoch == epoch`（仍是发起 cancel 的那一轮）时设置
+    /// `pending_cancel = Some(epoch)`：
     /// - 必须 `submitted`：未提交的 reservation（消息尚未入队 engine）应由 cancel
     ///   走未提交认领终态路径（`emit_unsubmitted_interrupted_terminal`）立即发
     ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
@@ -851,16 +949,88 @@ impl TurnLifecycle {
     ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
     /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，`cancel_current()`
     ///   直接命中当前活跃 token，无需补打。
+    /// - 必须 `turn_epoch == epoch`：并发取消请求（C1/C2）中，排队较晚的 C2 在
+    ///   持锁恢复后读到的是「当前 lifecycle」。cancel 已在取 `turn_lock` 前后比对
+    ///   过 epoch（见 [`current_turn_generation`]/cancel 路径），此处传入**当前**
+    ///   epoch 作二次锚定，确保 pending 只 arm 到目标轮，不跨轮泄漏到新轮的
+    ///   TurnStarted（forwarder 经 [`take_pending_cancel`] 校验 epoch 后才重放）。
     ///
     /// **调用顺序**：必须在 `cancel_current()` **之前**调用。两者取不同的锁
     /// （lifecycle state mutex vs cancel_token mutex），无法原子合并。先 arm
     /// 再 cancel 保证：即使 TurnStarted 在两步之间抵达转发器并消费了标记，
     /// 随后的 `cancel_current()` 也只是幂等 no-op（转发器已重新 cancel）。
-    pub(crate) fn arm_pending_cancel(&self) {
+    ///
+    /// **返回值**：`false` 表示 `state.turn_epoch != epoch`——generation 复查
+    /// 通过之后、arm 之前另一 worker 已结束目标轮并启动新轮（`reserve_turn`
+    /// 不取 `turn_lock`，可在 cancel 的同步段中间完成切换）。调用方**必须**
+    /// 在收到 `false` 时跳过 `cancel_current` 及其级联副作用，否则取消会命中
+    /// 新轮已 `reset_cancel_token` 的活跃 token，造成跨轮误取消。
+    ///
+    /// 其余条件不满足（未 submitted / 已 started / 非 active）时仍返回 `true`：
+    /// 这些情况 epoch 匹配、仍是目标轮，`cancel_current` 命中目标轮 token
+    /// （已 started 直接命中活跃 token；未 submitted 时 engine 尚无该轮 token，
+    /// 取消是幂等 no-op），调用方可以安全继续。
+    ///
+    /// [`current_turn_generation`]: Self::current_turn_generation
+    /// [`take_pending_cancel`]: Self::take_pending_cancel
+    ///
+    /// 在 lifecycle state 锁内原子完成「epoch 校验 + arm pending + 同步取消」。
+    ///
+    /// 与 [`arm_pending_cancel`] 的区别：`cancel` 闭包在**同一临界区内**持锁
+    /// 执行。单独 arm 时锁在校验后即释放，调用方随后才执行 `cancel_current`，
+    /// 两条同步调用之间没有 `.await` 也不构成原子性保证——多线程 runtime/OS
+    /// 可以在任意指令边界切换线程。若另一 worker 在该窗口内完成「旧轮终态
+    /// 收口 + 新轮 reserve/send + `reset_cancel_token`」，恢复后的旧 cancel 会
+    /// 命中新轮活跃 token（reviewer 点 8）。把取消闭包移入同一临界区后，
+    /// `reserve_turn`（取同一把 state 锁）无法插入「校验/arm」与「取消」之间，
+    /// 跨轮窗口闭合。
+    ///
+    /// **idle 守卫**（G2/epoch-0 哨兵）：`turn_epoch` 从 1 起自增，但 fresh
+    /// 会话（从未有过 turn）初始为 0。此时发起 cancel 快照 `target = None`，
+    /// 调用方以 `target.unwrap_or(0)` 传入后，`turn_epoch != epoch` 校验（0 != 0
+    /// 不成立）会通过——若 engine 已为「即将启动的定时轮」在场（`run_scheduled_turn`
+    /// 的 spawn→submit 窗口），执行 `cancel_current` 会命中该新 token，取消信号
+    /// 与 `reset_cancel_token` 竞速、结果不确定（定时轮被意外取消或停止丢失）。
+    /// 因此 epoch 匹配后仍需 `state.active || state.terminal_closing` 才执行
+    /// `cancel` 闭包：空闲（无活跃轮）时跳过取消（幂等 no-op），但返回 `true`
+    /// 让调用方继续（级联取消仍由调用方按 armed 路径执行，只取消 engine 遗留
+    /// 子代理、不取消尚未启动的轮）。
+    ///
+    /// 锁序：本方法持 lifecycle state 锁调用 `cancel` 闭包，闭包内
+    /// `engine.cancel_current()` 取 engine 的 cancel_token 锁（与 state 锁无
+    /// 反向依赖，forwarder 消费 pending 也是先 state 后 token），无死锁。
+    /// `cancel` 必须同步、不 panic（panic 会使 Mutex 中毒），且不得再次获取
+    /// 本 lifecycle 的 state 锁。
+    ///
+    /// 其余语义与 [`arm_pending_cancel`] 一致：epoch 匹配则设置 pending（条件
+    /// 满足时）并执行 `cancel` 后返回 `true`；epoch 不匹配返回 `false` 且
+    /// **不执行** `cancel`，调用方必须整体 no-op。
+    ///
+    /// [`arm_pending_cancel`]: Self::arm_pending_cancel_and_cancel
+    pub(crate) fn arm_pending_cancel_and_cancel<F>(&self, epoch: u64, cancel: F) -> bool
+    where
+        F: FnOnce(),
+    {
         let mut state = self.state.lock();
-        if state.submitted && state.turn_id.is_none() && state.active {
-            state.pending_cancel = true;
+        if state.turn_epoch != epoch {
+            // 轮次已切换（目标轮已结束、新轮已 reserve）：不 arm、不取消。
+            return false;
         }
+        if !state.active && !state.terminal_closing {
+            // idle（无活跃轮、非终态收口期）：target 快照为 None 时以 0 哨兵
+            // 传入，epoch 校验通过但并无可取消的轮。执行 cancel 会命中「即将
+            // 启动的定时轮」的新 token（G2）。跳过取消闭包、不 arm（idle 也
+            // 不满足 submitted 前置），但返回 true：调用方按 armed 路径继续，
+            // 级联取消只清 engine 遗留子代理，不误伤尚未启动的轮。
+            return true;
+        }
+        if state.submitted && state.turn_id.is_none() && state.active {
+            state.pending_cancel = Some(epoch);
+        }
+        // 持锁执行同步取消：reserve_turn 需要同一把 state 锁，无法在
+        // 「校验/arm」与「取消」之间插入轮次切换，旧 cancel 不可能命中新轮。
+        cancel();
+        true
     }
 
     /// 原子取出并清除 `pending_cancel` 标记。
@@ -868,9 +1038,20 @@ impl TurnLifecycle {
     /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
     /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前），
     /// 重新 `cancel_current()` 命中的正是本轮的活跃 token。
-    pub(crate) fn take_pending_cancel(&self) -> bool {
+    ///
+    /// 仅当记录的 epoch 仍是 `current_epoch`（仍是 arming 时的那一轮）时才取出
+    /// 并返回 `Some`，否则清空并返回 `None`：跨轮泄漏的 stale pending（cancel
+    /// arm 到旧轮后，新一轮 TurnStarted 先抵达）被丢弃，不误取消新轮。空闲时
+    /// `current_epoch` 由调用方传 0（epoch 自增从 1 起，恒不匹配）。
+    pub(crate) fn take_pending_cancel(&self, current_epoch: u64) -> Option<u64> {
         let mut state = self.state.lock();
-        std::mem::take(&mut state.pending_cancel)
+        match state.pending_cancel {
+            Some(epoch) if epoch == current_epoch => state.pending_cancel.take(),
+            _ => {
+                state.pending_cancel = None;
+                None
+            }
+        }
     }
 }
 
@@ -1778,6 +1959,7 @@ mod turn_lifecycle_tests {
     use crate::features::sessions::SessionModeState;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     fn message(role: &str, text: &str) -> Message {
@@ -1911,18 +2093,19 @@ mod turn_lifecycle_tests {
 
         // reserve 后 active=true 但 submitted=false → arm 不得置位。
         let reservation = lifecycle.reserve().expect("reserve");
-        lifecycle.arm_pending_cancel();
+        let epoch = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch, || {});
         assert!(
-            !lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch).is_none(),
             "must not arm pending_cancel for an unsubmitted reservation"
         );
 
         // 走真实 send 路径：handle.send 成功后 mark_submitted → submitted=true。
         lifecycle.mark_reservation_submitted(reservation.reservation_id);
         // 已 submitted + active + turn_id=None（TurnStarted 未抵达）→ arm 置位。
-        lifecycle.arm_pending_cancel();
+        lifecycle.arm_pending_cancel_and_cancel(epoch, || {});
         assert!(
-            lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch).is_some(),
             "pending_cancel must be armed after submission, before TurnStarted"
         );
         // 消费 reservation 避免 Drop 副作用。
@@ -1967,29 +2150,303 @@ mod turn_lifecycle_tests {
         // 3. 已 started 的 turn 不 arm（cancel_current 直接命中活跃 token）。
         let lifecycle = Arc::new(TurnLifecycle::default());
 
-        // --- 场景 A：submit 后、TurnStarted 前 arm → take 返回 true ---
+        // --- 场景 A：submit 后、TurnStarted 前 arm → take 返回 Some ---
         lifecycle.on_submitted();
-        lifecycle.arm_pending_cancel();
+        let epoch_a = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch_a, || {});
         assert!(
-            lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch_a).is_some(),
             "pending_cancel must be armed before TurnStarted"
         );
-        // take 已消费，再次取返回 false。
+        // take 已消费，再次取返回 None。
         assert!(
-            !lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch_a).is_none(),
             "pending_cancel must be consumed exactly once"
         );
 
         // --- 场景 B：TurnStarted 后 arm → 不置标记 ---
         lifecycle.on_started("turn-1".to_string());
-        lifecycle.arm_pending_cancel();
+        let epoch_b = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch_b, || {});
         assert!(
-            !lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch_b).is_none(),
             "must not arm pending_cancel after TurnStarted"
         );
 
         // 清理：结束当前 turn。
         assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn arm_pending_cancel_uses_target_snapshot_not_reread_current() {
+        // reviewer 点 3 的确定性回归：cancel 在 generation 复查通过后 arm
+        // pending 时，必须使用发起时快照 target，而不是此刻重读的当前 epoch。
+        // 若重读 current：复查通过后、arm 前另一 worker 结束旧轮并启动新轮，
+        // 读到的是新轮 epoch，arm_pending_cancel(新epoch) 会把 pending 绑定到
+        // 新轮（新轮恰好处于 submitted 未 started 时），后面的 cancel_current
+        // 命中新 token → 原始跨轮误取消窗口仍未关闭。
+        //
+        // 这里直接编排「复查通过后轮次切换」：turn1 处于 submitted 未 started
+        // （arm 前置满足），快照 target=epoch1；切换 turn2 并提交后，用 target
+        // arm 必须被拒绝（turn_epoch 已 != target），pending 不落到新轮。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：on_submitted 激活（active+submitted+epoch=1，turn_id=None）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+
+        // 复查通过后、arm 前轮次切换：turn1 终态 → turn2 reserve + 提交。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // 用发起时快照 target arm：turn_epoch 已是 epoch2 != target → 拒绝并
+        // 返回 false（reviewer 点 6：调用方据返回值跳过 cancel_current，否则
+        // 取消会命中新轮已 reset_cancel_token 的活跃 token）。
+        assert!(
+            !lifecycle.arm_pending_cancel_and_cancel(target, || {}),
+            "arm with the stale target snapshot must report epoch mismatch"
+        );
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "arm with the stale target snapshot must not bind pending to the new turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_reports_epoch_mismatch_and_arms_current() {
+        // reviewer 点 6 的原子边界：arm 在 state 锁内校验 turn_epoch == epoch。
+        // 轮次已切换 → 返回 false 且不置 pending（调用方必须跳过取消副作用）；
+        // epoch 匹配 → 返回 true 并正常 arm（submitted 未 started 时置 pending）。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：on_submitted 激活（active+submitted+epoch=1，turn_id=None）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+
+        // 轮次切换：turn1 终态 → turn2 reserve + 提交（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // stale target：拒绝 + pending 不落到新轮。
+        assert!(!lifecycle.arm_pending_cancel_and_cancel(target, || {}));
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "rejected arm must not set pending on the new turn"
+        );
+
+        // 当前 epoch：接受 + pending 置位（turn2 仍 submitted 未 started）。
+        assert!(lifecycle.arm_pending_cancel_and_cancel(epoch2, || {}));
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_some(),
+            "accepted arm must set pending for the current turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_holds_state_lock_through_cancel() {
+        // reviewer 点 8 的确定性回归：epoch 校验/arm 与取消副作用必须在同一
+        // lifecycle state 锁临界区内原子完成。若 arm 后释放锁、再单独执行
+        // cancel_current，两条同步调用之间没有 await 也不构成原子性保证——
+        // 另一 worker 可在该窗口内收口旧轮、reserve/发送新轮并
+        // reset_cancel_token，恢复后旧 cancel 命中新轮活跃 token。
+        //
+        // 编排：cancel 闭包（持锁）进入后阻塞，期间另一线程尝试 reserve——
+        // 必须被 state 锁挡住；放行 cancel 后 reserve 才得以完成。若实现把
+        // cancel 放在锁外，reserve 会在 cancel 完成前成功，断言失败。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        // turn1：on_submitted 激活（active+submitted+epoch=1），cancel 目标轮。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle.current_turn_generation().expect("turn1 epoch");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        // cancel 线程：arm_pending_cancel_and_cancel 持锁执行 cancel 闭包，
+        // 闭包通知「已进入临界区」后阻塞，模拟取消副作用执行中。
+        let lc_for_cancel = lifecycle.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            let ok = lc_for_cancel.arm_pending_cancel_and_cancel(target, || {
+                entered_tx.send(()).expect("entered");
+                release_rx.recv().expect("release");
+            });
+            assert!(ok, "epoch must match when the cancel side effect runs");
+        });
+
+        // 等 cancel 进入临界区（已持 state 锁）。
+        entered_rx.recv().expect("cancel entered");
+
+        // 另一 worker 尝试 reserve 新轮：应被 state 锁阻塞，直到 cancel 完成。
+        let (reserve_done_tx, reserve_done_rx) = std::sync::mpsc::channel::<()>();
+        let lc_for_reserve = lifecycle.clone();
+        let reserve_thread = std::thread::spawn(move || {
+            let _ = lc_for_reserve.reserve();
+            reserve_done_tx.send(()).expect("reserve done");
+        });
+
+        // 确定性断言：cancel 持锁期间 reserve 不能完成。
+        assert!(
+            reserve_done_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "reserve must be blocked while the cancel side effect holds the state lock"
+        );
+
+        // 放行 cancel → reserve 随后完成。
+        release_tx.send(()).expect("release cancel");
+        cancel_thread.join().expect("cancel thread joins");
+        reserve_thread.join().expect("reserve thread joins");
+        assert!(
+            reserve_done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok(),
+            "reserve must complete after the cancel side effect releases the state lock"
+        );
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_skips_cancel_on_stale_epoch() {
+        // reviewer 点 6 + 8：epoch 不匹配（轮次已切换）时，cancel 闭包不得
+        // 执行——stale 的取消不能落到新轮已 reset_cancel_token 的活跃 token 上。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        // turn1：on_submitted 激活（epoch=1）。
+        assert!(lifecycle.on_submitted());
+        let target = lifecycle.current_turn_generation().expect("turn1 epoch");
+
+        // 轮次切换：turn1 终态 → turn2 reserve + 提交（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        lifecycle.mark_reservation_submitted(reservation2.reservation_id);
+        let epoch2 = lifecycle
+            .current_turn_generation()
+            .expect("turn2 active epoch");
+        assert_eq!(epoch2, target + 1, "turn2 must bump the epoch past target");
+
+        // 用发起时快照 target 组合 arm+cancel：epoch 不匹配 → 返回 false 且
+        // cancel 闭包不执行（若误执行，探针会置位）。
+        let cancel_ran = Arc::new(AtomicBool::new(false));
+        let probe = cancel_ran.clone();
+        assert!(
+            !lifecycle.arm_pending_cancel_and_cancel(target, move || {
+                probe.store(true, Ordering::Release);
+            }),
+            "stale epoch must be rejected and the cancel closure skipped"
+        );
+        assert!(
+            !cancel_ran.load(Ordering::Acquire),
+            "cancel closure must not run when the epoch no longer matches"
+        );
+        assert!(
+            lifecycle.take_pending_cancel(epoch2).is_none(),
+            "stale cancel must not bind pending to the new turn"
+        );
+
+        // 防 Drop 副作用。
+        reservation2.mark_submitted();
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_skips_cancel_when_idle_epoch_zero() {
+        // G2/epoch-0 哨兵守卫：fresh 会话（从未有过 turn，turn_epoch==0）时
+        // 发起 cancel，调用方以 target.unwrap_or(0) 传入 0，`turn_epoch != 0`
+        // 校验会通过（0 == 0）。若 engine 已为「即将启动的定时轮」在场
+        // （run_scheduled_turn 的 spawn→submit 窗口），执行 cancel 闭包会命中
+        // 该新 token，取消信号与 reset_cancel_token 竞速、结果不确定。
+        // idle 守卫必须跳过取消闭包（返回 true 但不执行），且不 arm pending。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        // fresh 会话：Default 的 TurnLifecycleState.turn_epoch == 0、active == false。
+        assert_eq!(
+            lifecycle.current_turn_generation(),
+            None,
+            "idle fresh session"
+        );
+
+        let cancel_ran = Arc::new(AtomicBool::new(false));
+        let probe = cancel_ran.clone();
+        // target=None 时调用方以 0 哨兵传入；epoch 匹配（0==0）但 idle →
+        // 不执行 cancel 闭包、返回 true（调用方按 armed 路径继续，只清遗留
+        // 子代理，不误伤尚未启动的定时轮）。
+        assert!(
+            lifecycle.arm_pending_cancel_and_cancel(0, move || {
+                probe.store(true, Ordering::Release);
+            }),
+            "idle must report success so the caller can continue (cascade only)"
+        );
+        assert!(
+            !cancel_ran.load(Ordering::Acquire),
+            "cancel closure must not run on an idle fresh session (epoch-0 sentinel)"
+        );
+        assert!(
+            lifecycle.take_pending_cancel(0).is_none(),
+            "idle must not arm pending_cancel"
+        );
+    }
+
+    #[test]
+    fn claim_unsubmitted_terminal_for_epoch_rejects_stale_target() {
+        // reviewer 点 7 的原子边界：未提交认领必须在 state 锁内与
+        // turn_epoch == target 同时校验。generation 检查与认领分离时，
+        // reserve_turn（不取 turn_lock）可在两者之间完成切轮，无 epoch 校验
+        // 的认领会把新轮 reservation 误认领为 Interrupted、清掉新轮 busy。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // turn1：reserve 未提交（epoch=1），cancel 阶段二走认领路径。
+        let reservation1 = lifecycle.reserve().expect("turn1 reserve");
+        let target = lifecycle
+            .current_turn_generation()
+            .expect("turn1 active epoch");
+        assert_eq!(target, 1);
+
+        // 模拟「generation 检查通过后、认领前」另一 worker 切轮：
+        // turn1 终态（未提交认领路径）→ turn2 reserve（epoch=2，未提交）。
+        assert!(lifecycle.finish_unsubmitted_once());
+        let reservation2 = lifecycle.reserve().expect("turn2 reserve");
+        assert_eq!(
+            lifecycle.current_turn_generation(),
+            Some(target + 1),
+            "turn2 must bump the epoch past target"
+        );
+
+        // stale target 认领被拒：返回 false 且无副作用，turn2 完好。
+        assert!(
+            !lifecycle.claim_unsubmitted_terminal_for_epoch(target),
+            "claim with a stale target must no-op"
+        );
+        assert!(
+            reservation2.ensure_active().is_ok(),
+            "new turn unsubmitted reservation must survive a stale claim"
+        );
+
+        // 当前 epoch 认领成功：原子校验通过后正常认领，turn2 被失效。
+        assert!(lifecycle.claim_unsubmitted_terminal_for_epoch(target + 1));
+        assert!(
+            reservation2.ensure_active().is_err(),
+            "claimed reservation must be invalidated"
+        );
+        lifecycle.finish_terminal_emission();
+
+        // 防 Drop 副作用：turn1/turn2 均已认领终态（reservation 幂等）。
+        drop(reservation1);
+        drop(reservation2);
     }
 
     #[test]
@@ -1999,14 +2456,16 @@ mod turn_lifecycle_tests {
         let lifecycle = Arc::new(TurnLifecycle::default());
 
         lifecycle.on_submitted();
-        lifecycle.arm_pending_cancel();
+        let epoch_prev = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch_prev, || {});
         // 模拟 turn 未正常 started 就结束（如 engine spawn 失败）。
         assert!(lifecycle.finish_once(|| {}).is_some());
 
         // 新一轮 reserve 后，pending_cancel 必须被清除。
         let _reservation = lifecycle.reserve().expect("reserve");
+        let epoch_next = lifecycle.current_turn_generation().expect("active epoch");
         assert!(
-            !lifecycle.take_pending_cancel(),
+            lifecycle.take_pending_cancel(epoch_next).is_none(),
             "stale pending_cancel from previous turn must be cleared by reserve"
         );
     }
@@ -2021,20 +2480,96 @@ mod turn_lifecycle_tests {
         lifecycle.on_submitted();
 
         // cancel 路径：arm_pending_cancel（turn_id 仍为 None → 置标记）。
-        lifecycle.arm_pending_cancel();
+        let epoch = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch, || {});
 
         // Engine 执行 reset_cancel_token + 发 TurnStarted → 转发器先
         // on_started_transition（设 turn_id），再 take_pending_cancel。
+        // 同一轮内 on_started 不 bump epoch（active 已 true），take 仍匹配。
         lifecycle.on_started("turn-reset".to_string());
-        let pending = lifecycle.take_pending_cancel();
+        let pending = lifecycle.take_pending_cancel(epoch);
         assert!(
-            pending,
+            pending.is_some(),
             "pending_cancel must survive until TurnStarted consumes it"
         );
 
         // 消费后标记清除，下一轮不受影响。
-        assert!(!lifecycle.take_pending_cancel());
+        assert!(lifecycle.take_pending_cancel(epoch).is_none());
         assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn turn_epoch_advances_on_every_admission_path_and_survives_terminal() {
+        // turn_epoch 是 cancel generation 的身份来源，必须在三个 active 入口
+        // （reserve / on_submitted / on_started_transition newly_active）都单调
+        // 自增，且与 is_active() 同口径：终态发送临界区（terminal_closing）内
+        // 仍是本轮 epoch，finish 后才回 None。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // 空闲 → None。
+        assert_eq!(lifecycle.current_turn_generation(), None);
+
+        // reserve 推进到 epoch=1（reserve 后未 submitted，走未提交认领终态）。
+        let reservation = lifecycle.reserve().expect("reserve");
+        assert_eq!(lifecycle.current_turn_generation(), Some(1));
+
+        // 结束本轮（claim_unsubmitted 进入 terminal_closing 临界区，epoch 仍是 1）。
+        // claim 成功后 reservation 失效（ensure_active 失败），无需 mark_submitted。
+        assert!(lifecycle.claim_unsubmitted_terminal());
+        assert_eq!(
+            lifecycle.current_turn_generation(),
+            Some(1),
+            "terminal_closing 临界区内 generation 仍是本轮 epoch"
+        );
+        // finish 释放闸门后回到空闲 → None。
+        lifecycle.finish_terminal_emission();
+        drop(reservation);
+        assert_eq!(lifecycle.current_turn_generation(), None);
+
+        // finish 释放闸门后回到空闲 → None。
+        assert_eq!(lifecycle.current_turn_generation(), None);
+
+        // on_submitted（定时任务路径，非 reservation）推进到 epoch=2。
+        assert!(lifecycle.on_submitted());
+        assert_eq!(lifecycle.current_turn_generation(), Some(2));
+        assert!(lifecycle.finish_once(|| {}).is_some());
+
+        // on_started_transition 从 idle 激活（newly_active 分支）推进到 epoch=3。
+        assert!(lifecycle
+            .on_started_transition("turn-stale".to_string())
+            .is_some());
+        assert_eq!(lifecycle.current_turn_generation(), Some(3));
+        assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn pending_cancel_tied_to_epoch_is_dropped_after_turn_change() {
+        // reviewer 点 4 的核心回归：并发取消请求 C2 在旧轮 arm 了 pending_cancel，
+        // 恢复时已变成新轮。pending_cancel 携带 epoch，take 时校验不匹配 → 丢弃，
+        // 不误取消新轮（不触发 approve_handle.cancel 重放）。
+        //
+        // 现有 pending_cancel_does_not_leak_across_turns 只测 reserve 清除，不覆盖
+        // 「新轮已 reserve 后 C2 才 arm」的窗口——此测试直接覆盖该缺口。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // 旧轮：submit（epoch=1），arm pending_cancel 绑定到 epoch=1。
+        lifecycle.on_submitted();
+        let epoch_old = lifecycle.current_turn_generation().expect("old epoch");
+        lifecycle.arm_pending_cancel_and_cancel(epoch_old, || {});
+
+        // 结束旧轮，新一轮 reserve（epoch=2）。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+        let _reservation = lifecycle.reserve().expect("new turn");
+        let epoch_new = lifecycle.current_turn_generation().expect("new epoch");
+        assert_ne!(epoch_old, epoch_new);
+
+        // forwarder 在新轮 TurnStarted 后用新轮 epoch 取 pending_cancel：
+        // C2 留下的 stale pending（epoch_old）必须被丢弃，不重放 cancel。
+        assert_eq!(
+            lifecycle.take_pending_cancel(epoch_new),
+            None,
+            "stale pending_cancel bound to a previous epoch must be dropped, not replayed onto the new turn"
+        );
     }
 
     #[test]

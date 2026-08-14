@@ -397,7 +397,7 @@ impl SessionStore {
     }
 
     pub fn scheduled_session_exists(&self, id: &str) -> bool {
-        self.scheduled_profile(id).is_some() && self.manager.load_session(id).is_ok()
+        self.scheduled_profile(id).is_some() && self.manager.load_session_snapshot(id).is_ok()
     }
 
     pub fn persist_scheduled_engine_state(
@@ -416,7 +416,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
         let total_tokens = match state.token_accounting {
             ScheduledTokenAccounting::PreservePersisted => session.metadata.total_tokens,
@@ -458,7 +458,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for token persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
@@ -553,7 +553,7 @@ impl SessionStore {
         validate_scheduled_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for artifact append"))?;
         if session
             .artifacts

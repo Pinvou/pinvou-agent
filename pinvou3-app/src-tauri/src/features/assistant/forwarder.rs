@@ -90,7 +90,10 @@ pub(crate) fn spawn_event_forwarder(
                     // 消费 pending_cancel（无论 admitted 与否，防止跨轮泄漏）。
                     // reset_cancel_token() 在 TurnStarted 之前已执行，若 cancel
                     // 在此之前 arm 了标记，现在重新 cancel 命中的是本轮活跃 token。
-                    let pending_cancel = turn_lifecycle.take_pending_cancel();
+                    // pending_cancel 携带 arming 时的 turn_epoch：只有匹配当前轮
+                    // 的 arm 才在此重放 cancel，跨轮的 stale arm 被丢弃（#207）。
+                    let epoch = turn_lifecycle.current_turn_generation().unwrap_or(0);
+                    let pending_cancel = turn_lifecycle.take_pending_cancel(epoch).is_some();
                     if !admitted {
                         continue;
                     }

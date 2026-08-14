@@ -38,7 +38,62 @@ use super::{session_roots_for, ExecutionRootResolver, SessionKind, SessionRoots,
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
 impl SessionStore {
+    /// Repair persisted tool histories only at process boot, before any
+    /// session engine can own an in-flight tool call. Runtime reads use the
+    /// snapshot API and must never infer a crash from a dangling `tool_use`.
+    fn recover_interrupted_tool_histories_locked(&self) -> Result<usize> {
+        let sessions = self
+            .manager
+            .list_sessions()
+            .context("list sessions for tool history recovery")?;
+        let mut recovered = 0usize;
+        for metadata in sessions {
+            let recovery = match self.manager.recover_session_for_resume(&metadata.id) {
+                Ok(recovery) => recovery,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] skip tool history recovery for {}: {error}",
+                        metadata.id
+                    );
+                    continue;
+                }
+            };
+            if !recovery.changed {
+                continue;
+            }
+            if let Err(error) = self.save_session_atomic(&recovery.session) {
+                eprintln!(
+                    "[sessions] persist tool history recovery for {} failed: {error:#}",
+                    metadata.id
+                );
+                continue;
+            }
+            recovered = recovered.saturating_add(1);
+            eprintln!(
+                "[sessions] recovered interrupted tool history for {}: repaired={} duplicate={} orphan={}",
+                metadata.id,
+                recovery.repaired_call_count,
+                recovery.duplicate_result_count,
+                recovery.orphan_result_count,
+            );
+        }
+        Ok(recovered)
+    }
+
+    /// Open `~/.pinvou3/sessions/` without inferring that a live tool call
+    /// crashed. This constructor is safe for secondary stores opened while the
+    /// application process is already running.
     pub fn boot() -> Result<Self> {
+        Self::boot_inner(false)
+    }
+
+    /// Open the process-owned session store and recover tool histories left
+    /// incomplete by a previous process, before any Engine is started.
+    pub fn boot_for_process_startup() -> Result<Self> {
+        Self::boot_inner(true)
+    }
+
+    fn boot_inner(recover_interrupted_tools: bool) -> Result<Self> {
         let store = Self::from_paths(
             paths::sessions_root(),
             paths::scheduled_run_profiles_path(),
@@ -56,6 +111,9 @@ impl SessionStore {
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
+            if recover_interrupted_tools {
+                store.recover_interrupted_tool_histories_locked()?;
+            }
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
@@ -135,7 +193,7 @@ impl SessionStore {
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
         self.manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id})"))
     }
 
@@ -289,7 +347,7 @@ impl SessionStore {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for title update"))?;
         session.metadata.title = title;
         self.persist_then_reconcile(&session, "title update")?;
@@ -301,7 +359,7 @@ impl SessionStore {
         validate_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for activity update"))?;
         session.metadata.updated_at = Utc::now();
         self.persist_then_reconcile(&session, "activity update")?;
@@ -346,7 +404,7 @@ impl SessionStore {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for transcript update"))?;
         if looks_like_truncating_overwrite(&session.messages, &messages) {
             anyhow::bail!(
@@ -374,7 +432,7 @@ impl SessionStore {
         }
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for transcript CAS"))?;
         let current_revision = transcript_revision(&session.messages)?;
         if current_revision != expected_revision {
@@ -403,7 +461,7 @@ impl SessionStore {
         }
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for artifact update"))?;
         let session_id = session.metadata.id.clone();
         let now = Utc::now();
@@ -452,7 +510,7 @@ impl SessionStore {
 
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for engine persistence"))?;
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
@@ -480,7 +538,7 @@ impl SessionStore {
         validate_session_id(id)?;
         let mut session = self
             .manager
-            .load_session(id)
+            .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for admitted display fallback"))?;
         if transcript_revision(&session.messages)? != expected_revision {
             return Ok(session);

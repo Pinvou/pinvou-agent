@@ -61,6 +61,18 @@ fn assistant_text(text: &str) -> Message {
     }
 }
 
+fn assistant_tool_use(id: &str) -> Message {
+    Message {
+        role: "assistant".into(),
+        content: vec![ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "printf still-running"}),
+            caller: None,
+        }],
+    }
+}
+
 /// Reopen the same on-disk stores without consulting the process-global
 /// PINVOU3_HOME again, so restart assertions retain the paths captured at boot.
 fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
@@ -1305,6 +1317,79 @@ fn transcript_cas_commits_and_returns_content_revision() {
         store.load(&session.metadata.id).expect("load").messages,
         messages
     );
+}
+
+#[test]
+fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call() {
+    let (store, _guard) = isolated_store();
+    let session = store
+        .create_new("model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let messages = vec![assistant_tool_use("call-in-flight")];
+    store
+        .update_messages(&session.metadata.id, messages.clone())
+        .expect("persist in-flight call");
+
+    let loaded = store.load(&session.metadata.id).expect("snapshot load");
+
+    assert_eq!(loaded.messages, messages);
+    assert_eq!(loaded.metadata.message_count, 1);
+    assert!(!loaded.messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolResult { content, .. }
+                    if content.contains("crashed_and_repaired")
+            )
+        })
+    }));
+
+    let secondary = SessionStore::boot().expect("open secondary runtime store");
+    let secondary_loaded = secondary
+        .load(&session.metadata.id)
+        .expect("secondary snapshot load");
+    assert_eq!(secondary_loaded.messages, messages);
+    assert_eq!(secondary_loaded.metadata.message_count, 1);
+}
+
+#[test]
+fn forkguard_boot_repairs_interrupted_tool_call_once() {
+    let (store, _guard) = isolated_store();
+    let session = store
+        .create_new("model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .update_messages(
+            &session.metadata.id,
+            vec![assistant_tool_use("call-crashed")],
+        )
+        .expect("persist interrupted call");
+
+    let recovered = SessionStore::boot_for_process_startup().expect("recover on boot");
+    let first = recovered
+        .load(&session.metadata.id)
+        .expect("load recovered");
+    assert_eq!(first.messages.len(), 3);
+    assert_eq!(first.metadata.message_count, 3);
+    assert!(first.messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error: Some(true),
+                    ..
+                } if tool_use_id == "call-crashed"
+                    && content.contains("crashed_and_repaired")
+            )
+        })
+    }));
+
+    let reopened = SessionStore::boot_for_process_startup().expect("recover twice");
+    let second = reopened.load(&session.metadata.id).expect("load twice");
+    assert_eq!(second.messages, first.messages);
+    assert_eq!(second.metadata.message_count, 3);
 }
 
 #[test]
