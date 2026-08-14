@@ -28,7 +28,7 @@ pub(super) fn kimi_authenticated(_kimi: &Path) -> bool {
 /// 写为默认模型及其 provider。要求默认模型能解析到现有 provider，避免登录后半段
 /// 失败时把“凭证已写入”误报成“已登录”。
 pub(super) fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
-    let Ok(config) = raw.parse::<toml::Value>() else {
+    let Ok(config) = toml::from_str::<toml::Value>(raw) else {
         return false;
     };
     let Some(default_model) = config
