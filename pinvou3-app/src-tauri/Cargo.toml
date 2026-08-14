@@ -253,7 +253,13 @@ wildcard_dependencies = "deny"
 # 改 abort 会破坏「单次工具 panic 不拖垮整个会话」的设计。
 [profile.release]
 opt-level = 3
-lto = "fat"
+# Thin LTO 替代 fat:fat 在 ubuntu 16GB runner 上编译 codewhale-tui + tauri 全图
+# 会 link 越线被 SIGTERM(merge_group run 实证)。thin 内存峰值与耗时远低于 fat,
+# 运行时优化损失可忽略(官方:大型项目 thin 常优于 fat)。
+# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode,
+# 把跨 crate LTO 推迟到 link 阶段),故 release 构建 link 阶段必须用支持 LLVM bitcode
+# 的链接器(lld);release-packages 的 Linux 发布 job 已注入 -fuse-ld=lld。
+lto = "thin"
 codegen-units = 1
 # macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
 # 本设置主要作用于 Linux deb / Windows MSI 产物。
@@ -265,7 +271,7 @@ incremental = false
 # 专为 Release 测试/CI 用的轻量 profile:不 LTO、不禁 incremental,编译快但仍走 release 优化。
 # mac-build.yml 的编译冒烟与 universal bundle 冒烟均用此 profile,
 # 两者产物可互相复用(同 profile 同 target dir),避免 CI 里两套 profile 重复编译全图。
-# 真正发版的 fat-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
+# 真正发版的 thin-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
 [profile.release-fast]
 inherits = "release"
 lto = false

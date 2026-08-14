@@ -86,12 +86,16 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
-      # v0.9.5 升级后 release(fat-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
+      # v0.9.5 升级后 release(thin-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
       # (SIGBUS,Linux 与 macOS 同源风险)。.cargo/config.toml 不设置 rustc-wrapper
       # (全局键无法按平台条件化),由本 Linux 发布 job 显式注入 RUSTC_WRAPPER
       # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。
       # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
       # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
+      # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64);
+      # release profile 的 thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
+      # (生成 LLVM bitcode),link 阶段必须用支持 bitcode 的链接器。
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
@@ -112,7 +116,7 @@ jobs:
 
       # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
       # ubuntu runner 默认没装;cmake:reqwest 的 rustls 用 aws-lc-rs,其 build script
-      # 需 cmake + C 编译器。清单同 pr-check.yml。
+      # 需 cmake + C 编译器。清单同 pr-check.yml(含 lld,thin LTO 的 link 依赖)。
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
@@ -121,7 +125,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
+            build-essential pkg-config cmake lld
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -189,6 +193,11 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
+      # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
+      # lld 是必需的:thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
+      # (生成 LLVM bitcode,link 阶段做跨 crate 合并),BFD ld 无法处理 LLVM bitcode。
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
@@ -389,13 +398,13 @@ jobs:
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
     runs-on: macos-15
-    # 冷缓存双 target + fat LTO 实测可能超过 90 分钟（0.7.4 发布构建曾逼近上限），
+    # 冷缓存双 target + thin LTO 实测可能超过 90 分钟（0.7.4 发布构建曾逼近上限），
     # 放宽至 150 分钟以覆盖冷缓存与 runner 抖动，避免发布构建被超时取消。
     timeout-minutes: 150
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
-      # v0.9.5 升级后 release(fat-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
+      # v0.9.5 升级后 release(thin-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
       # (SIGBUS,run 31558490865 实证)。.cargo/config.toml 不设置 rustc-wrapper
       # (全局键无法按平台条件化),由本 macOS 发布 job 显式注入 RUSTC_WRAPPER
       # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。

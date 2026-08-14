@@ -558,6 +558,16 @@ jobs:
       # rustc,codegen 仍会溢出。必须用 ${{ github.workspace }} 绝对路径(Cargo 按
       # 进程 cwd 解析 RUSTC_WRAPPER 相对路径会双拼成不存在的路径)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      # codewhale-tui 恢复依赖级 O2 后,test binary 变大,link 阶段在 ubuntu 16GB
+      # runner 上内存峰值越线被 SIGTERM(merge_group run 实证,exit 143)。
+      # 实测(CI 对照):thin LTO + lld 能 Finished + 全量通过;
+      # lld-only(无 LTO)仍 OOM(binary 太大,lld 独立不够)。故两者都必需:
+      #   - Thin LTO:跨 crate 死代码消除 → test binary 变小(rustc 给依赖 crate 传
+      #     -C linker-plugin-lto,生成 LLVM bitcode,link 阶段合并——故依赖 lld)。
+      #   - lld:link 阶段处理 LLVM bitcode(lld 原生支持,BFD ld 不支持)。
+      # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
+      CARGO_PROFILE_DEV_LTO: "thin"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -572,6 +582,7 @@ jobs:
       # pinvou3 编译链接的系统库(本地 pkg-config 实测:gtk/webkit/soup/rsvg/openssl/
       # X11×3/appindicator)。ubuntu runner 默认没装,否则 glib-sys 等 build script 失败。
       # cmake:reqwest 0.13 的 rustls 改用 aws-lc-rs,其 build script 需 cmake + C 编译器。
+      # lld:上方注入 CARGO_PROFILE_DEV_LTO=thin 后 link 阶段需支持 LLVM bitcode 的链接器。
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
@@ -580,7 +591,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
-            build-essential pkg-config cmake
+            build-essential pkg-config cmake lld
 
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
