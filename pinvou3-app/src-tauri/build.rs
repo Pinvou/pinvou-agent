@@ -37,57 +37,6 @@ fn main() {
         hash_dir(Path::new("resources/common/bundle/workflow/sansheng-liubu"));
     println!("cargo:rustc-env=BUNDLE_WORKFLOW_HASH_SANSHENG={sansheng_workflow_hash:016x}");
     tauri_build::build();
-    embed_test_manifest();
-}
-
-/// Windows 测试 exe 嵌入 Common-Controls v6 清单。
-///
-/// muda(tauri 菜单依赖)静态导入 TaskDialogIndirect,该符号只存在于 comctl32 v6
-/// (side-by-side 程序集)。主 exe 由 tauri-build 经 winres 嵌入声明该依赖的清单
-/// (cargo:rustc-link-arg-bins),cargo test 生成的 pinvou3_lib-*.exe 不在 bins 之列:
-/// 无清单时 loader 把 comctl32 解析到 System32 的 v5 版本,进程启动即
-/// STATUS_ENTRYPOINT_NOT_FOUND(0xc0000139)——Windows CI 与本地 Windows 均复现,
-/// 此前测试 exe 从未真正执行过所以一直潜伏。用 embed-resource 的 compile_for_tests
-/// (cargo:rustc-link-arg-tests)给测试 exe 链入同一份依赖声明;非 Windows 目标跳过。
-fn embed_test_manifest() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-    let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let manifest = out_dir.join("pinvou3-test-manifest.xml");
-    std::fs::write(
-        &manifest,
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <dependency>
-    <dependentAssembly>
-      <assemblyIdentity
-        type="win32"
-        name="Microsoft.Windows.Common-Controls"
-        version="6.0.0.0"
-        processorArchitecture="*"
-        publicKeyToken="6595b64144ccf1df"
-        language="*"
-      />
-    </dependentAssembly>
-  </dependency>
-</assembly>
-"#,
-    )
-    .expect("write test manifest xml");
-    // 1 24 是 RT_MANIFEST 资源类型的标准写法;内容与 tauri-build 默认应用清单
-    // (windows-app-manifest.xml)的 Common-Controls 依赖一致。rc 语法会把
-    // 反斜杠当转义(\t → 制表符),Windows 绝对路径必须换成正斜杠。
-    let rc = out_dir.join("pinvou3-test-manifest.rc");
-    let manifest_path = manifest.display().to_string().replace('\\', "/");
-    std::fs::write(
-        &rc,
-        format!("1 24 \"{manifest_path}\"\n"),
-    )
-    .expect("write test manifest rc");
-    embed_resource::compile_for_tests(rc, embed_resource::NONE)
-        .manifest_optional()
-        .expect("embed Common-Controls v6 manifest into test binaries");
 }
 
 /// 递归 hash 目录：收集所有文件、按路径排序(确定性)、把相对路径+内容滚进 FNV-1a，

@@ -33,11 +33,6 @@ dev-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
-# 仅 Windows 测试目标用:把 Common-Controls v6 清单链接进 cargo test 的测试 exe
-# (见 build.rs embed_test_manifest)。embed-resource 已在依赖树(tauri-build 经
-# tauri-winres 引用,当前 3.0.9),此处显式声明以直接调用 compile_for_tests;
-# 锁定 =3.0.9 避免显式声明把 lockfile 无谓升到 3.0.11。
-embed-resource = "=3.0.9"
 
 [dependencies]
 # workflow 整目录内嵌(含二进制),include_str 撑不住
