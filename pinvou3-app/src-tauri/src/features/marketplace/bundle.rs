@@ -154,6 +154,16 @@ impl BundleRegistry {
         let mut out: Vec<BundleInfo> = Vec::new();
         // 已被 MCP/凭据型包认领的技能 id（ima-skills 须在预置扫描前声明，避免先独立成包）
         let mut skill_claimed: Vec<String> = vec!["ima-skills".to_string()];
+        // 跨源 id 查重，优先级 = 注册序：MCP manifest > 内置 CLI/ima > 技能源。
+        // 否则同名包（如上传技能撞 MCP 工具 id weather）会让 bundle() 的 find
+        // 只命中先入者，后者永远不可寻址，违反"一个包 = 一个开关"。
+        let mut taken_ids: Vec<String> = Vec::new();
+        // 内置 CLI/ima id 编译期即保留：上传/预置技能撞名时以内置包为准
+        let builtin_ids: Vec<String> = BUILTIN_CLI_BUNDLES
+            .iter()
+            .map(|(id, _)| (*id).to_string())
+            .chain(std::iter::once("ima".to_string()))
+            .collect();
         let installed_mcp_ids = self.mcp_manager.installed_ids();
 
         // 1) MCP 源（含组合包；凭据项从 manifest config_fields/secret_env 收敛）
@@ -167,6 +177,7 @@ impl BundleRegistry {
                 Vec::new()
             };
             skill_claimed.extend(companions.iter().cloned());
+            taken_ids.push(tool.id.clone());
             let credentials = tool_credentials(&tool);
             let config_fields = tool_config_fields(&tool);
             // auth_required 功能事实：有必填凭据或远程 server（OAuth）即需授权；
@@ -194,12 +205,15 @@ impl BundleRegistry {
             });
         }
 
-        // 2) 预置技能源（未被认领的独立成包）
+        // 2) 预置技能源（未被认领的独立成包；id 不得与 MCP/内置 CLI/ima 撞名）
         for skill in self.skill_manager.list_skills() {
             if skill.user_uploaded {
                 continue; // 上传技能单独处理
             }
             if skill_claimed.contains(&skill.id) {
+                continue;
+            }
+            if taken_ids.contains(&skill.id) || builtin_ids.contains(&skill.id) {
                 continue;
             }
             out.push(BundleInfo {
@@ -220,9 +234,14 @@ impl BundleRegistry {
             });
         }
 
-        // 3) 上传技能源（独立纯技能包；后续步骤改走统一安装管线）
+        // 3) 上传技能源（独立纯技能包；后续步骤改走统一安装管线）。
+        //    id 撞 MCP/内置 CLI/ima 名时跳过：注册表侧无重命名权，冲突须上传侧
+        //    预防（本 PR 仅保证清单不再产出不可寻址的重复 id）。
         for skill in self.skill_manager.list_skills() {
             if !skill.user_uploaded {
+                continue;
+            }
+            if taken_ids.contains(&skill.id) || builtin_ids.contains(&skill.id) {
                 continue;
             }
             out.push(BundleInfo {
@@ -246,6 +265,9 @@ impl BundleRegistry {
         // 4) CLI 连接器源（内置常量表；V2 后不含 ima。V4 硬约束：desc/version/
         //    auth_required 内容迁移随步骤 6（前端数据源切换）同 PR 完成，此处结构占位）
         for (id, name) in BUILTIN_CLI_BUNDLES {
+            if taken_ids.contains(&(*id).to_string()) {
+                continue; // 自建 manifest 撞内置连接器 id：以先注册的 MCP 源为准
+            }
             let cli = vec![(*id).to_string()];
             out.push(BundleInfo {
                 id: (*id).to_string(),
@@ -268,6 +290,9 @@ impl BundleRegistry {
         // 凭据 key 与真实存储对齐：ima 走 `CredentialReference::for_ima_secret`
         // （ima 专用 service，key 为 client_id/api_key，见 connectors/ima.rs），
         // 非 mcp secret 命名空间——通用 readiness 路径查不到，命令层特判走 ima_status。
+        if taken_ids.iter().any(|i| i == "ima") {
+            return out; // 自建 manifest 撞内置 ima id：以先注册的 MCP 源为准
+        }
         let ima_skills: Vec<String> = vec!["ima-skills".to_string()];
         let ima_credentials = vec![
             CredentialSpec {
@@ -777,6 +802,52 @@ mod tests {
                 .expect("government-writing 应独立成包");
             assert_eq!(skill.kind, BundleKind::Skill);
             assert!(skill.installed, "存量单装技能保持已装态");
+        });
+    }
+
+    /// 跨源 id 撞名（真实场景：上传技能 weather 撞 MCP 工具 weather）：
+    /// 注册表按优先级（MCP > 内置 CLI/ima > 技能源）只保留一个包，
+    /// 保证 bundle() 可寻址、id 唯一。
+    #[test]
+    fn cross_source_id_collision_keeps_single_bundle() {
+        with_temp_home(|| {
+            let home = std::env::var("PINVOU3_HOME").unwrap();
+            seed_fixture(std::path::Path::new(&home), true);
+            let write = |rel: &str, content: &str| {
+                let p = std::path::Path::new(&home).join(rel);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, content).unwrap();
+            };
+            // 上传技能撞 MCP 工具 id（weather）与内置 CLI id（wecom）
+            for name in ["weather", "wecom"] {
+                write(
+                    &format!("bundle/skills/{name}/SKILL.md"),
+                    &format!("---\nname: {name}\n---\n# hi"),
+                );
+                write(
+                    &format!("bundle/skills/{name}/.installed-from"),
+                    "upload:p.zip",
+                );
+            }
+            let reg = BundleRegistry::new();
+            let bundles = reg.list_bundles();
+            // weather 只出现一次，且是 MCP 包（高优先级源胜出）
+            let weather: Vec<_> = bundles.iter().filter(|b| b.id == "weather").collect();
+            assert_eq!(weather.len(), 1, "撞名 id 只得一个包");
+            assert_eq!(weather[0].kind, BundleKind::Mcp, "MCP 源优先于上传技能");
+            // wecom 只出现一次，且是内置 CLI 包（builtin 预留优先于上传技能）
+            let wecom: Vec<_> = bundles.iter().filter(|b| b.id == "wecom").collect();
+            assert_eq!(wecom.len(), 1, "撞名 id 只得一个包");
+            assert_eq!(
+                wecom[0].kind,
+                BundleKind::Cli,
+                "内置 CLI 预留优先于上传技能"
+            );
+            // id 全局唯一
+            let mut ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), bundles.len(), "包 id 必须唯一");
         });
     }
 }

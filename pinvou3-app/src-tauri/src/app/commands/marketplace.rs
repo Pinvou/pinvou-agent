@@ -704,24 +704,39 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
             (creds || skill, ready, reason, Some(v))
         }
         _ => {
-            let store = crate::platform::credential_store::SystemCredentialStore::new();
-            let has = |key: &str| {
-                let target = bundle
-                    .credentials
-                    .iter()
-                    .find(|c| c.key == key)
-                    .map(|c| keyring_target(c.target))
-                    .unwrap_or("env");
-                store
-                    .get(
-                        &crate::platform::credential_store::CredentialReference::for_mcp_secret(
-                            &bundle_id, target, key,
-                        ),
-                    )
-                    .ok()
-                    .flatten()
-                    .is_some()
-            };
+            // keychain 读可能阻塞数秒甚至数分钟（macOS 首次访问弹授权窗），
+            // 与 ima/install 命令一致移出 async 线程：spawn_blocking 里按声明序
+            // 预查必填凭据（同 key 多 target 取首个声明，保持原 find-first 语义），
+            // has 闭包只读内存结果。
+            let mut specs: Vec<(String, &'static str)> = Vec::new();
+            for c in &bundle.credentials {
+                if c.required && !specs.iter().any(|(k, _)| k == &c.key) {
+                    specs.push((c.key.clone(), keyring_target(c.target)));
+                }
+            }
+            let id = bundle_id.clone();
+            let present: std::collections::HashSet<String> =
+                tokio::task::spawn_blocking(move || {
+                    let store = crate::platform::credential_store::SystemCredentialStore::new();
+                    specs
+                        .into_iter()
+                        .filter(|(key, target)| {
+                            store
+                                .get(
+                                    &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                                        &id, target, key,
+                                    ),
+                                )
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                        .map(|(key, _)| key)
+                        .collect()
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking: {e}"))?;
+            let has = |key: &str| present.contains(key);
             let (ready, reason) = match readiness_for(&bundle, has) {
                 Readiness::Ready => (true, None),
                 Readiness::NotReady(reason) => (false, Some(reason.to_string())),
