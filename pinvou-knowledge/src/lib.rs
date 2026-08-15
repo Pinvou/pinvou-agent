@@ -33,6 +33,7 @@ pub use service::{KnowledgeService, ServiceBoot};
 
 /// 客户端和服务端共同执行的单文件上传上限。
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+pub const EXPECTED_SERVER_ID_HEADER: &str = "x-pinvou-expected-server-id";
 
 /// 本地知识库与共享知识库共用模型目录时使用的跨进程安装锁。
 ///

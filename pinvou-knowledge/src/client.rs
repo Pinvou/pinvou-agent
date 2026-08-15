@@ -27,6 +27,7 @@ const REPLACE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub struct KnowledgeClient {
     endpoint: String,
     token: String,
+    expected_server_id: Option<String>,
     http: reqwest::Client,
 }
 
@@ -69,6 +70,7 @@ impl KnowledgeClient {
         Ok(Self {
             endpoint,
             token: token.into(),
+            expected_server_id: None,
             http,
         })
     }
@@ -77,11 +79,19 @@ impl KnowledgeClient {
         endpoint: impl Into<String>,
         token: impl Into<String>,
         tls_ca: &str,
+        expected_server_id: &str,
     ) -> Result<Self, String> {
         crate::ensure_tls_crypto_provider();
         let endpoint = normalize_endpoint(&endpoint.into())?;
         if !endpoint.starts_with("https://") {
             return Err("共享知识库加密连接必须使用 HTTPS".to_string());
+        }
+        let expected_server_id = expected_server_id.trim();
+        if expected_server_id.is_empty()
+            || expected_server_id.len() > 512
+            || expected_server_id.chars().any(char::is_control)
+        {
+            return Err("共享知识库服务身份无效".to_string());
         }
         let certificate_pem = URL_SAFE_NO_PAD
             .decode(tls_ca.trim())
@@ -103,6 +113,7 @@ impl KnowledgeClient {
         Ok(Self {
             endpoint,
             token: token.into(),
+            expected_server_id: Some(expected_server_id.to_string()),
             http,
         })
     }
@@ -145,7 +156,7 @@ impl KnowledgeClient {
         // carry the CA in a reusable share link; learning it from the same
         // unauthenticated network connection would be circular TOFU.
         let info = Self::local_health_untrusted(&endpoint).await?;
-        let verified = Self::new_pinned(endpoint, "", &info.tls_ca)?
+        let verified = Self::new_pinned(endpoint, "", &info.tls_ca, &info.server_id)?
             .health()
             .await?;
         if verified.server_id != info.server_id
@@ -163,8 +174,7 @@ impl KnowledgeClient {
 
     pub async fn health(&self) -> Result<ServerInfo, String> {
         let response = self
-            .http
-            .get(self.url("/api/v1/info"))
+            .authorized(self.http.get(self.url("/api/v1/info")))
             .timeout(PROBE_TIMEOUT)
             .send()
             .await
@@ -193,11 +203,12 @@ impl KnowledgeClient {
     pub async fn request_join(
         endpoint: &str,
         tls_ca: &str,
+        expected_server_id: &str,
         device_name: &str,
         share_secret: Option<&str>,
         credentials: &NewJoinCredentials,
     ) -> Result<JoinRequestReceipt, String> {
-        let client = Self::new_pinned(endpoint, "", tls_ca)?;
+        let client = Self::new_pinned(endpoint, "", tls_ca, expected_server_id)?;
         client
             .post_with_timeout(
                 "/api/v2/join-requests",
@@ -215,10 +226,11 @@ impl KnowledgeClient {
     pub async fn join_request_status(
         endpoint: &str,
         tls_ca: &str,
+        expected_server_id: &str,
         request_id: &str,
         claim_secret: &str,
     ) -> Result<JoinRequestReceipt, String> {
-        let client = Self::new_pinned(endpoint, "", tls_ca)?;
+        let client = Self::new_pinned(endpoint, "", tls_ca, expected_server_id)?;
         client
             .post_with_timeout(
                 &format!("/api/v2/join-requests/{request_id}/status"),
@@ -233,10 +245,11 @@ impl KnowledgeClient {
     pub async fn cancel_join_request(
         endpoint: &str,
         tls_ca: &str,
+        expected_server_id: &str,
         request_id: &str,
         claim_secret: &str,
     ) -> Result<JoinRequestRecord, String> {
-        let client = Self::new_pinned(endpoint, "", tls_ca)?;
+        let client = Self::new_pinned(endpoint, "", tls_ca, expected_server_id)?;
         client
             .post_with_timeout(
                 &format!("/api/v2/join-requests/{request_id}/cancel"),
@@ -589,6 +602,11 @@ impl KnowledgeClient {
     }
 
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = if let Some(expected_server_id) = &self.expected_server_id {
+            request.header(crate::EXPECTED_SERVER_ID_HEADER, expected_server_id)
+        } else {
+            request
+        };
         if self.token.is_empty() {
             request
         } else {

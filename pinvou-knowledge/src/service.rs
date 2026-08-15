@@ -35,6 +35,9 @@ const TRASH_CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const JOIN_REQUEST_RATE_WINDOW: Duration = Duration::from_secs(60);
 const JOIN_REQUEST_PER_SOURCE_LIMIT: usize = 6;
 const JOIN_REQUEST_GLOBAL_LIMIT: usize = 300;
+const JOIN_CLAIM_PER_SOURCE_LIMIT: usize = 120;
+const JOIN_CLAIM_GLOBAL_LIMIT: usize = 2_000;
+const MAX_SEARCH_COLLECTIONS: usize = 200;
 const DEFAULT_SHARE_HOURS: u64 = 24;
 const MAX_SHARE_HOURS: u64 = 7 * 24;
 const JOIN_REQUEST_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -48,12 +51,14 @@ pub struct KnowledgeService {
     data_dir: PathBuf,
     documents_dir: PathBuf,
     model_dir: PathBuf,
+    server_id: String,
     tls: TlsIdentity,
     store: Store,
     embedder: RwLock<Option<Arc<Embedder>>>,
     model_error: RwLock<Option<String>>,
     model_downloading: AtomicBool,
     join_request_rate: Mutex<AttemptRate>,
+    join_claim_rate: Mutex<AttemptRate>,
     indexing: tokio::sync::Mutex<()>,
     search_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -120,6 +125,10 @@ impl KnowledgeService {
                 .set_meta("server_id", &random_secret(18))
                 .map_err(|error| error.to_string())?;
         }
+        let server_id = store
+            .meta("server_id")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "共享知识库服务身份缺失".to_string())?;
         if store
             .meta("server_name")
             .map_err(|error| error.to_string())?
@@ -152,12 +161,14 @@ impl KnowledgeService {
             data_dir,
             documents_dir,
             model_dir,
+            server_id,
             tls,
             store,
             embedder: RwLock::new(None),
             model_error: RwLock::new(None),
             model_downloading: AtomicBool::new(false),
             join_request_rate: Mutex::new(AttemptRate::default()),
+            join_claim_rate: Mutex::new(AttemptRate::default()),
             indexing: tokio::sync::Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(search_parallelism())),
         });
@@ -166,10 +177,18 @@ impl KnowledgeService {
         // 目录替换空窗中先判定完整、随后读取到另一代或已被移动的文件。
         match crate::try_lock_knowledge_model_install(&service.model_dir) {
             Ok(_install_lock) => {
-                if service.model_directory_complete() {
-                    if let Err(error) = service.load_model_unlocked() {
-                        *service.model_error.write() = Some(error);
+                match crate::model_download::recover_model_directory(&service.model_dir) {
+                    Ok(warning) => {
+                        if let Some(warning) = warning {
+                            eprintln!("[knowledge] {warning}");
+                        }
+                        if service.model_directory_complete() {
+                            if let Err(error) = service.load_model_unlocked() {
+                                *service.model_error.write() = Some(error);
+                            }
+                        }
                     }
+                    Err(error) => *service.model_error.write() = Some(error),
                 }
             }
             Err(error) => {
@@ -222,11 +241,7 @@ impl KnowledgeService {
 
     pub fn server_info(&self) -> Result<ServerInfo, String> {
         Ok(ServerInfo {
-            server_id: self
-                .store
-                .meta("server_id")
-                .map_err(|error| error.to_string())?
-                .unwrap_or_default(),
+            server_id: self.server_id.clone(),
             identity: self
                 .store
                 .meta("server_identity")
@@ -628,6 +643,29 @@ impl KnowledgeService {
             }
             RateDecision::SourceLimited => {
                 return Err("此设备申请过于频繁，请稍后重试".to_string());
+            }
+            RateDecision::Allowed => {}
+        }
+        Ok(())
+    }
+
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    pub fn check_join_claim_rate(&self, source: IpAddr) -> Result<(), String> {
+        match check_attempt_rate(
+            &self.join_claim_rate,
+            source,
+            JOIN_REQUEST_RATE_WINDOW,
+            JOIN_CLAIM_PER_SOURCE_LIMIT,
+            JOIN_CLAIM_GLOBAL_LIMIT,
+        ) {
+            RateDecision::GlobalLimited => {
+                return Err("加入状态查询过多，请稍后重试".to_string());
+            }
+            RateDecision::SourceLimited => {
+                return Err("此设备查询加入状态过于频繁，请稍后重试".to_string());
             }
             RateDecision::Allowed => {}
         }
@@ -1070,6 +1108,11 @@ impl KnowledgeService {
     }
 
     pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchHit>, String> {
+        if request.collection_ids.len() > MAX_SEARCH_COLLECTIONS {
+            return Err(format!(
+                "单次检索最多选择 {MAX_SEARCH_COLLECTIONS} 个知识集"
+            ));
+        }
         let query = request.query.trim();
         if query.is_empty() {
             return Ok(Vec::new());
@@ -1156,6 +1199,9 @@ impl KnowledgeService {
 
     pub fn load_model(&self) -> Result<(), String> {
         let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
+        if let Some(warning) = crate::model_download::recover_model_directory(&self.model_dir)? {
+            eprintln!("[knowledge] {warning}");
+        }
         self.load_model_unlocked()
     }
 
@@ -1206,6 +1252,9 @@ impl KnowledgeService {
         // 桌面端与共享服务端会使用同一个模型目录。必须在第一次完整性检查前
         // 获取跨进程锁，避免两端同时下载、替换目录或从替换空窗中加载模型。
         let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
+        if let Some(warning) = crate::model_download::recover_model_directory(&self.model_dir)? {
+            eprintln!("[knowledge] {warning}");
+        }
         // The desktop client and shared host intentionally reuse one model
         // directory. The other process may have completed installation after
         // this service booted, so re-check disk before allocating/download I/O.
@@ -1231,21 +1280,10 @@ impl KnowledgeService {
             // 候选目录必须经过真实推理模型构造验证。保留这个实例，目录换入后直接
             // 安装到服务中，避免 568 MB ONNX 在首次部署结束时被连续加载两遍。
             let candidate_embedder = Embedder::from_dir(&candidate, MODEL_NAME)?;
-            let backup = parent.join(format!(".{MODEL_NAME}.backup-{}", random_secret(8)));
-            if self.model_dir.exists() {
-                std::fs::rename(&self.model_dir, &backup).map_err(|error| error.to_string())?;
-            }
-            if let Err(error) = std::fs::rename(&candidate, &self.model_dir) {
-                if backup.exists() {
-                    let _ = std::fs::rename(&backup, &self.model_dir);
-                }
-                return Err(error.to_string());
-            }
-            if backup.exists() {
-                let _ = std::fs::remove_dir_all(backup);
-            }
+            let cleanup_warning =
+                crate::model_download::install_model_candidate(&candidate, &self.model_dir)?;
             *self.embedder.write() = Some(Arc::new(candidate_embedder));
-            *self.model_error.write() = None;
+            *self.model_error.write() = cleanup_warning;
             Ok(())
         }
         .await;
@@ -1256,20 +1294,7 @@ impl KnowledgeService {
     }
 
     fn model_directory_complete(&self) -> bool {
-        (self.model_dir.join("model.onnx").is_file()
-            || self
-                .model_dir
-                .join("onnx")
-                .join("model_int8.onnx")
-                .is_file())
-            && [
-                "tokenizer.json",
-                "config.json",
-                "special_tokens_map.json",
-                "tokenizer_config.json",
-            ]
-            .iter()
-            .all(|file| self.model_dir.join(file).is_file())
+        crate::model_download::model_directory_is_complete(&self.model_dir)
     }
 }
 
@@ -1716,6 +1741,41 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn search_rejects_unbounded_collection_selection_before_embedding() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let error = service
+            .search(SearchRequest {
+                collection_ids: (0..=MAX_SEARCH_COLLECTIONS as i64).collect(),
+                query: "bounded search".to_string(),
+                limit: 8,
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("单次检索最多选择 {MAX_SEARCH_COLLECTIONS} 个知识集")
+        );
+    }
+
+    #[test]
+    fn join_claim_polling_is_rate_limited_independently() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let source = "192.168.8.20".parse().unwrap();
+        for _ in 0..JOIN_CLAIM_PER_SOURCE_LIMIT {
+            service.check_join_claim_rate(source).unwrap();
+        }
+        assert!(service
+            .check_join_claim_rate(source)
+            .unwrap_err()
+            .contains("过于频繁"));
     }
 
     #[test]

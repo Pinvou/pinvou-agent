@@ -121,9 +121,11 @@ pub fn create_encrypted_backup(
             row.get::<_, String>(0)
         })
         .map_err(|error| format!("无法读取共享知识库身份：{error}"))?;
+    let snapshot_documents = snapshot_dir.path().join(DOCUMENTS_NAME);
+    copy_snapshot_documents(&snapshot_connection, &documents_dir, &snapshot_documents)?;
     drop(snapshot_connection);
 
-    let mut documents = collect_documents(&documents_dir)?;
+    let mut documents = collect_documents(&snapshot_documents)?;
     documents.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = BackupManifest {
         format: BACKUP_FORMAT,
@@ -171,9 +173,9 @@ pub fn create_encrypted_backup(
         archive
             .append_path_with_name(&snapshot_database, DATABASE_NAME)
             .map_err(|error| format!("无法备份数据库：{error}"))?;
-        if documents_dir.is_dir() {
+        if snapshot_documents.is_dir() {
             archive
-                .append_dir_all(DOCUMENTS_NAME, &documents_dir)
+                .append_dir_all(DOCUMENTS_NAME, &snapshot_documents)
                 .map_err(|error| format!("无法备份源文档：{error}"))?;
         }
         let compressed = archive
@@ -457,6 +459,57 @@ fn collect_documents(root: &Path) -> Result<Vec<BackupFile>, String> {
     Ok(output)
 }
 
+fn copy_snapshot_documents(
+    snapshot: &Connection,
+    source_root: &Path,
+    snapshot_root: &Path,
+) -> Result<(), String> {
+    let mut statement = snapshot
+        .prepare("SELECT storage_path,size,sha256 FROM documents ORDER BY id")
+        .map_err(|error| format!("无法读取备份文档清单：{error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("无法读取备份文档清单：{error}"))?;
+    for row in rows {
+        let (storage_path, expected_size, expected_sha256) =
+            row.map_err(|error| format!("无法读取备份文档：{error}"))?;
+        let relative = safe_relative_path(&storage_path)?;
+        let source = source_root.join(&relative);
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("备份源文档不存在({}): {error}", source.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("备份源文档不是普通文件({})", source.display()));
+        }
+        let destination = snapshot_root.join(&relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("无法创建文档快照目录：{error}"))?;
+        }
+        fs::copy(&source, &destination)
+            .map_err(|error| format!("无法复制备份源文档({}): {error}", source.display()))?;
+        let actual_size = destination
+            .metadata()
+            .map_err(|error| format!("无法检查文档快照({}): {error}", destination.display()))?
+            .len();
+        let actual_sha256 = hash_file(&destination)?;
+        if expected_size < 0
+            || actual_size != expected_size as u64
+            || !actual_sha256.eq_ignore_ascii_case(&expected_sha256)
+        {
+            return Err(format!(
+                "源文档在备份期间发生变化({})，请稍后重试",
+                storage_path
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     if value.is_empty()
@@ -574,6 +627,18 @@ mod tests {
             )
             .unwrap();
         connection.execute("INSERT INTO devices(id,name,scope,token_hash,created_at,revoked) VALUES(?1,'Owner','owner','hash',1,0)", [device_id]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO collections(id,name,status,created_at,updated_at) VALUES(1,'Backup','ready',1,1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO documents(id,collection_id,name,ext,storage_path,size,sha256,status,n_chunks,created_at,updated_at) VALUES(1,1,'sample.txt','txt','sample.txt',12,?1,'ready',0,1,1)",
+                [hash_file(&root.join(DOCUMENTS_NAME).join("sample.txt")).unwrap()],
+            )
+            .unwrap();
     }
 
     #[test]
@@ -785,6 +850,25 @@ mod tests {
             tar::EntryType::Regular,
             crate::MAX_UPLOAD_BYTES as u64 + 1,
         ));
+    }
+
+    #[test]
+    fn backup_rejects_source_bytes_that_no_longer_match_the_database_snapshot() {
+        let source = tempfile::tempdir().unwrap();
+        seed_data(source.path(), "source-server", "source-owner");
+        fs::write(
+            source.path().join(DOCUMENTS_NAME).join("sample.txt"),
+            b"changed after database commit",
+        )
+        .unwrap();
+        let (_, recipient) = generate_identity();
+        let output_root = tempfile::tempdir().unwrap();
+        let output = output_root.path().join("inconsistent.pinbak");
+
+        let error = create_encrypted_backup(source.path(), &output, &[recipient]).unwrap_err();
+
+        assert!(error.contains("源文档在备份期间发生变化"));
+        assert!(!output.exists());
     }
 
     #[test]

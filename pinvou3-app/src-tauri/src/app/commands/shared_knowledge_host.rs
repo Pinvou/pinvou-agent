@@ -10,6 +10,7 @@ use crate::features::sessions::SessionStore;
 use crate::features::shared_knowledge_host::{self, packaged_resources, SharedKnowledgeHostStatus};
 
 const HOST_PROGRESS_EVENT: &str = "shared-knowledge-host-progress";
+static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +71,7 @@ pub async fn shared_kb_host_reconnect(
     app: AppHandle,
     remote: State<'_, RemoteKnowledgeService>,
 ) -> Result<RemoteConnection, String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     emit_host_progress(&app, "reconnect", "prepare", 10, None);
     let result = reconnect_host_inner(&app, remote.inner()).await;
     if let Err(error) = &result {
@@ -106,6 +108,7 @@ pub async fn shared_kb_host_set_owner_device(
     device_id: String,
     owner: bool,
 ) -> Result<pinvou_knowledge::model::DeviceGrant, String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     let resource_dir = app
         .path()
         .resource_dir()
@@ -122,6 +125,7 @@ pub async fn shared_kb_host_remove(
     server_id: String,
     delete_data: bool,
 ) -> Result<(), String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     let resource_dir = app
         .path()
         .resource_dir()
@@ -144,6 +148,7 @@ pub async fn shared_kb_host_backup(
     remote: State<'_, RemoteKnowledgeService>,
     destination: PathBuf,
 ) -> Result<shared_knowledge_host::HostBackupResult, String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     let local_identity = match remote.shared_backup_identity()? {
         Some(identity) => age::x25519::Identity::from_str(&identity)
             .map_err(|_| "本机备份密钥已损坏，请修复系统凭据库".to_string())?,
@@ -180,6 +185,7 @@ pub async fn shared_kb_host_restore(
     source: PathBuf,
     recovery_code: Option<String>,
 ) -> Result<RemoteConnection, String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     let content_only = recovery_code
         .as_ref()
         .is_some_and(|value| !value.trim().is_empty());
@@ -245,6 +251,7 @@ async fn install_or_upgrade(
     remote: &RemoteKnowledgeService,
     upgrade: bool,
 ) -> Result<RemoteConnection, String> {
+    let _host_guard = HOST_LIFECYCLE_LOCK.lock().await;
     let operation = if upgrade { "upgrade" } else { "install" };
     emit_host_progress(app, operation, "prepare", 10, None);
     let result = install_or_upgrade_inner(app, remote, upgrade, operation).await;

@@ -575,6 +575,8 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
       // ================= 知识库 (L1) =================
       const [colls, setColls] = useState(kbCache.colls);
       const [activeColl, setActiveColl] = useState(null);
+      const activeCollRef = useRef(activeColl);
+      useEffect(() => { activeCollRef.current = activeColl; }, [activeColl]);
       const [docs, setDocs] = useState([]);
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
       const [idx, setIdx] = useState(null);
@@ -612,7 +614,12 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
 
       const loadDocs = async (cid) => { try { setDocs(await inv('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch (e) {} };
       const loadColls = useCallback(async () => {
-        try { const c = await inv('kb_collection_list') || []; setColls(c); kbCache.colls = c; } catch (e) {}
+        try {
+          const c = await inv('kb_collection_list') || [];
+          setColls(c);
+          setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
+          kbCache.colls = c;
+        } catch (e) {}
         try { const d = await inv('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = d; } catch (e) {}
         try { const ei = await inv('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch (e) {}
         try { const m = await inv('kb_model_status'); setKbModel(m); kbCache.model = m; } catch (e) {}
@@ -774,10 +781,6 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         loadColls();
       };
       const removeDocument = async (document) => {
-        const previousDocs = docs;
-        const previousAllDocs = allDocs;
-        const previousColls = colls;
-        const previousActiveColl = activeColl;
         setConfirmDoc(null);
         setRemoveDocError('');
         setDocs((current) => current.filter((item) => item.id !== document.id));
@@ -795,15 +798,15 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
         try {
           await inv('kb_remove_document', { docId: document.id });
         } catch (error) {
-          setDocs(previousDocs);
-          setAllDocs(previousAllDocs);
-          kbCache.allDocs = previousAllDocs;
-          setColls(previousColls);
-          setActiveColl(previousActiveColl);
           setRemoveDocError(`${t.kbRemoveFailed}: ${String((error && error.message) || error)}`);
+          const currentCollectionId = activeCollRef.current?.id;
+          await Promise.all([
+            loadColls(),
+            currentCollectionId ? loadDocs(currentCollectionId) : Promise.resolve(),
+          ]);
           return;
         }
-        if (activeColl) await loadDocs(activeColl.id);
+        if (activeCollRef.current) await loadDocs(activeCollRef.current.id);
         await loadColls();
       };
       // 点知识库卡片=就地聚焦该集(再点同卡/「全部」取消),下方文件表随之切换。不再跳二级详情页。

@@ -119,6 +119,125 @@ where
     .await
 }
 
+/// 检查模型目录是否包含 PINVOU 运行所需的 ONNX 与 tokenizer 文件。
+pub fn model_directory_is_complete(dir: &Path) -> bool {
+    let onnx = dir.join("model.onnx").is_file()
+        || dir.join("onnx").join("model_int8.onnx").is_file()
+        || dir.join("onnx").join("model.onnx").is_file();
+    onnx && [
+        "tokenizer.json",
+        "config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+    ]
+    .iter()
+    .all(|file| dir.join(file).is_file())
+}
+
+/// 恢复上次在目录切换窗口中中断的模型安装，并清理旧版服务遗留的随机备份。
+pub fn recover_model_directory(destination: &Path) -> Result<Option<String>, String> {
+    let backup = destination.with_extension("backup");
+    if backup.exists() {
+        if destination.exists() {
+            std::fs::remove_dir_all(&backup).map_err(|error| {
+                format!("清理上次遗留的模型备份失败({}): {error}", backup.display())
+            })?;
+        } else {
+            std::fs::rename(&backup, destination).map_err(|error| {
+                format!(
+                    "恢复上次中断留下的模型备份失败({} -> {}): {error}",
+                    backup.display(),
+                    destination.display()
+                )
+            })?;
+        }
+    }
+
+    let Some(parent) = destination.parent() else {
+        return Ok(None);
+    };
+    if !parent.exists() {
+        return Ok(None);
+    }
+    let Some(name) = destination.file_name().and_then(|value| value.to_str()) else {
+        return Ok(None);
+    };
+    let legacy_prefix = format!(".{name}.backup-");
+    let mut legacy = std::fs::read_dir(parent)
+        .map_err(|error| format!("无法检查模型父目录({}): {error}", parent.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.starts_with(&legacy_prefix))
+        })
+        .collect::<Vec<_>>();
+    legacy.sort();
+    if !destination.exists() {
+        if legacy.len() == 1 {
+            std::fs::rename(&legacy[0], destination).map_err(|error| {
+                format!(
+                    "恢复旧版中断留下的模型备份失败({} -> {}): {error}",
+                    legacy[0].display(),
+                    destination.display()
+                )
+            })?;
+            legacy.clear();
+        } else if !legacy.is_empty() {
+            return Err("发现多份旧版模型备份，无法安全判断应恢复哪一份".to_string());
+        }
+    }
+    let failed = legacy
+        .into_iter()
+        .filter_map(|path| {
+            std::fs::remove_dir_all(&path)
+                .err()
+                .map(|error| format!("{}: {error}", path.display()))
+        })
+        .collect::<Vec<_>>();
+    Ok((!failed.is_empty()).then(|| format!("清理旧版模型备份失败：{}", failed.join("；"))))
+}
+
+/// 将已通过真实加载验证的候选目录原子换入正式目录，失败时恢复旧模型。
+pub fn install_model_candidate(
+    candidate: &Path,
+    destination: &Path,
+) -> Result<Option<String>, String> {
+    let recovery_warning = recover_model_directory(destination)?;
+    let backup = destination.with_extension("backup");
+    let had_destination = destination.exists();
+    if had_destination {
+        std::fs::rename(destination, &backup)
+            .map_err(|error| format!("备份现有模型失败: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(candidate, destination) {
+        if had_destination {
+            if let Err(rollback_error) = std::fs::rename(&backup, destination) {
+                return Err(format!(
+                    "部署模型失败: {error}; 回滚旧模型也失败: {rollback_error}; 旧模型仍保留在 {}",
+                    backup.display()
+                ));
+            }
+        }
+        return Err(format!("部署模型失败: {error}"));
+    }
+    let cleanup_warning = had_destination
+        .then(|| std::fs::remove_dir_all(&backup))
+        .and_then(Result::err)
+        .map(|error| {
+            format!(
+                "新模型已部署，但清理旧模型备份失败({}): {error}",
+                backup.display()
+            )
+        });
+    Ok(match (recovery_warning, cleanup_warning) {
+        (Some(left), Some(right)) => Some(format!("{left}；{right}")),
+        (Some(warning), None) | (None, Some(warning)) => Some(warning),
+        (None, None) => None,
+    })
+}
+
 async fn download_knowledge_model_candidate_with<P, C>(
     client: &reqwest::Client,
     candidate: &Path,
@@ -625,5 +744,38 @@ mod tests {
 
         assert!(result.unwrap_err().contains("模型文件大小不符"));
         assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn installation_recovers_stable_backup_and_removes_it_after_replace() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("bge-m3");
+        let backup = destination.with_extension("backup");
+        let candidate = root.path().join("candidate");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("model.onnx"), b"old").unwrap();
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(candidate.join("model.onnx"), b"new").unwrap();
+
+        assert!(install_model_candidate(&candidate, &destination)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            std::fs::read(destination.join("model.onnx")).unwrap(),
+            b"new"
+        );
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn recovery_cleans_legacy_random_service_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("bge-m3");
+        let legacy = root.path().join(".bge-m3.backup-old-service");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        assert!(recover_model_directory(&destination).unwrap().is_none());
+        assert!(!legacy.exists());
     }
 }

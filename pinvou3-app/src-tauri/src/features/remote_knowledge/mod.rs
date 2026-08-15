@@ -364,7 +364,8 @@ impl RemoteKnowledgeService {
         let _pairing = self.pairing.lock().await;
         let endpoint = normalize_user_endpoint(endpoint)?;
         let server = KnowledgeClient::bootstrap_identity(&endpoint).await?;
-        let client = KnowledgeClient::new_pinned(&endpoint, token, &server.tls_ca)?;
+        let client =
+            KnowledgeClient::new_pinned(&endpoint, token, &server.tls_ca, &server.server_id)?;
         let grant = client
             .access()
             .await?
@@ -447,10 +448,11 @@ impl RemoteKnowledgeService {
             .get(&reference)
             .map_err(|error| error.user_message())?
             .ok_or_else(|| "本机共享知识库的所有者凭据不存在".to_string())?;
-        let grant = KnowledgeClient::new_pinned(&endpoint, &token, &server.tls_ca)?
-            .access()
-            .await?
-            .ok_or_else(|| "服务端不支持所有者凭据校验".to_string())?;
+        let grant =
+            KnowledgeClient::new_pinned(&endpoint, &token, &server.tls_ca, &server.server_id)?
+                .access()
+                .await?
+                .ok_or_else(|| "服务端不支持所有者凭据校验".to_string())?;
         if !grant.scope.is_owner() || grant.id != existing.device_id {
             return Err("本机共享知识库的所有者凭据与服务身份不一致".to_string());
         }
@@ -513,6 +515,7 @@ impl RemoteKnowledgeService {
             match KnowledgeClient::request_join(
                 &endpoint,
                 &tls_ca,
+                expected_server.as_deref().unwrap_or_default(),
                 device_name,
                 share_secret.as_deref(),
                 &credentials,
@@ -530,6 +533,7 @@ impl RemoteKnowledgeService {
                         let _ = KnowledgeClient::cancel_join_request(
                             &endpoint,
                             &tls_ca,
+                            expected_server.as_deref().unwrap_or_default(),
                             &receipt.request.id,
                             &credentials.claim_secret,
                         )
@@ -564,6 +568,7 @@ impl RemoteKnowledgeService {
         let receipt = KnowledgeClient::join_request_status(
             &pending.endpoint,
             &pending.tls_ca,
+            &pending.server_id,
             request_id,
             &secrets.claim_secret,
         )
@@ -600,6 +605,7 @@ impl RemoteKnowledgeService {
         let remote = KnowledgeClient::cancel_join_request(
             &pending.endpoint,
             &pending.tls_ca,
+            &pending.server_id,
             request_id,
             &secrets.claim_secret,
         )
@@ -1002,7 +1008,12 @@ impl RemoteKnowledgeService {
         if connection.tls_ca.is_empty() {
             KnowledgeClient::new(connection.endpoint, token)
         } else {
-            KnowledgeClient::new_pinned(connection.endpoint, token, &connection.tls_ca)
+            KnowledgeClient::new_pinned(
+                connection.endpoint,
+                token,
+                &connection.tls_ca,
+                &connection.server_id,
+            )
         }
     }
 

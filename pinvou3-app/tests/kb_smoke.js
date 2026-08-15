@@ -93,6 +93,14 @@ function injectSource() {
         case 'kb_collection_create': return Promise.resolve(3);
         case 'kb_collection_add_sources': return Promise.resolve({running:true,phase:'parsing',done:0,total:2});
         case 'kb_remove_document': {
+          if (window.__KB_FAIL_REMOVE_DOCUMENT__) {
+            window.__KB_FAIL_REMOVE_DOCUMENT__ = false;
+            if (window.__KB_CONCURRENT_DOCUMENT__) {
+              DOCS = [...DOCS, window.__KB_CONCURRENT_DOCUMENT__];
+              delete window.__KB_CONCURRENT_DOCUMENT__;
+            }
+            return Promise.reject(new Error('mock remove failure'));
+          }
           const finish = () => {
             DOCS = DOCS.filter(document => document.id !== args?.docId);
           };
@@ -1148,6 +1156,25 @@ async function chooseRemoteUploadSource(page, testId) {
       && shareEndpoints.has('cube.example.ts.net:3210')
       && !shareEndpoints.has('https://127.0.0.1:3210'),
     JSON.stringify(shareCreation));
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error('clipboard denied')) },
+    });
+    document.execCommand = command => {
+      window.__REMOTE_COPY_FALLBACK__ = command;
+      return command === 'copy';
+    };
+  });
+  await page.click('[data-testid="remote-copy-share"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="remote-owner-panel"]')?.innerText.includes('共享链接已复制'));
+  const shareCopy = await page.evaluate(() => ({
+    fallback: window.__REMOTE_COPY_FALLBACK__,
+    text: document.querySelector('[data-testid="remote-owner-panel"]')?.innerText || '',
+  }));
+  rec('分享链接复制失败时回退并给出成功反馈',
+    shareCopy.fallback === 'copy' && shareCopy.text.includes('共享链接已复制'),
+    JSON.stringify(shareCopy));
   await page.click('[data-testid="remote-owner-host-tab"]');
   await page.waitForSelector('[data-testid="shared-kb-backup"]');
   const ownerHostTab = await page.evaluate(() => ({
@@ -1188,6 +1215,15 @@ async function chooseRemoteUploadSource(page, testId) {
     call: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_host_backup').at(-1),
     modalCount: document.querySelectorAll('[aria-modal="true"]').length,
   }));
+  await page.evaluate(() => { document.execCommand = () => false; });
+  await page.click('[data-testid="shared-kb-copy-recovery"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-kb-recovery-code"]')?.innerText.includes('复制失败'));
+  const recoveryCopyFeedback = await page.evaluate(() => ({
+    alert: document.querySelector('[data-testid="shared-kb-recovery-code"] [role="alert"]')?.innerText || '',
+  }));
+  rec('恢复码复制失败时在当前弹窗明确提示手动复制',
+    recoveryCopyFeedback.alert.includes('复制失败') && recoveryCopyFeedback.alert.includes('手动'),
+    JSON.stringify(recoveryCopyFeedback));
   await page.click('[data-testid="shared-kb-recovery-done"]');
 
   await page.click('[data-testid="shared-kb-restore"]');
@@ -1487,6 +1523,30 @@ async function chooseRemoteUploadSource(page, testId) {
     && localOptimisticDelete.pending && localDeleted.rows === localRowsBeforeDelete - 1
     && localDeleted.calls === 1,
   JSON.stringify({ localRowsBeforeDelete, localDeleteConfirm, localOptimisticDelete, localDeleted }));
+
+  await page.evaluate(() => {
+    window.__KB_FAIL_REMOVE_DOCUMENT__ = true;
+    window.__KB_CONCURRENT_DOCUMENT__ = {
+      id: 13, collectionId: 1, collName: '产品资料库', path: '/home/x/并发新增.md',
+      name: '并发新增.md', ext: 'md', size: 1200, mtime: 1700000001,
+      parseStatus: 'parsed', nChunks: 2,
+    };
+  });
+  await page.click('[data-testid="kb-remove-document"]');
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="kb-remove-document-confirm"]');
+    [...(dialog?.querySelectorAll('button') || [])]
+      .find(button => (button.textContent || '').trim() === '移除')?.click();
+  });
+  await page.waitForFunction(() => document.body.innerText.includes('移除失败'));
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="kb-remove-document"]').length === 2);
+  const failedDeleteRefresh = await page.evaluate(() => ({
+    rows: document.querySelectorAll('[data-testid="kb-remove-document"]').length,
+    text: document.body.innerText,
+  }));
+  rec('⑩b 本地移除失败重新读取权威状态且不覆盖并发新增文档',
+    failedDeleteRefresh.rows === 2 && failedDeleteRefresh.text.includes('并发新增.md'),
+    JSON.stringify({ rows: failedDeleteRefresh.rows, hasConcurrent: failedDeleteRefresh.text.includes('并发新增.md') }));
 
   rec('⑪ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 

@@ -86,6 +86,10 @@ test('Linux dev stages an explicit user-owned host resource without weakening pa
 });
 
 test('host helper keeps lifecycle operations explicit and persistent', () => {
+  assert.match(hostCommands, /static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<\(\)>/u);
+  assert.match(hostCommands, /HOST_LIFECYCLE_LOCK\.lock\(\)\.await/u);
+  assert.match(helper, /exec 9>\/run\/lock\/pinvou-knowledge-host\.lock/u);
+  assert.match(helper, /flock -n 9 \|\| fail/u);
   assert.match(helper, /install\|upgrade/u);
   assert.match(helper, /set-owner/u);
   assert.match(helper, /recover-owner/u);
@@ -136,6 +140,11 @@ actual=$(semver_compare "$1" "$2")
 });
 
 test('host helper binds every dropped privilege operation to the account primary group', () => {
+  assert.match(helper, /PKEXEC_CALLER_UID=\$PKEXEC_UID/u);
+  assert.match(helper, /\[ "\$candidate_uid" = "\$PKEXEC_CALLER_UID" \]/u);
+  assert.match(helper, /flock -n 9/u);
+  assert.match(helper, /validate_model_path_chain "\$model_dir" "\$user_home" "\$service_uid"/u);
+  assert.match(helper, /已拒绝静默变更所有权/u);
   assert.match(helper, /validate_service_account\(\)[\s\S]*getent passwd "\$candidate_uid"[\s\S]*cut -d: -f4[\s\S]*\[ "\$service_primary_gid" = "\$candidate_gid" \]/u);
   for (const operation of ['install_or_upgrade', 'set_owner_device', 'recover_owner', 'validate_service_identity']) {
     const start = helper.indexOf(`${operation}() {`);
@@ -155,6 +164,7 @@ ${helper.slice(functionsStart, functionsEnd)}
 account=$(getent passwd nobody 2>/dev/null || getent passwd | awk -F: '$3 != 0 && $4 != 0 { print; exit }')
 uid=$(printf '%s' "$account" | cut -d: -f3)
 gid=$(printf '%s' "$account" | cut -d: -f4)
+PKEXEC_CALLER_UID=$uid
 validate_service_account "$uid" "$gid"
 if (validate_service_account "$uid" "$((gid + 1))" >/dev/null 2>&1); then exit 1; fi`;
   execFileSync('/bin/sh', ['-c', accountScript]);
@@ -197,6 +207,7 @@ test('native Linux host commands have bounded execution and explicit pkexec canc
   assert.match(hostPlatformLinux, /BACKUP_HELPER_TIMEOUT: Duration = Duration::from_secs\(60 \* 60\)/u);
   assert.match(hostPlatformLinux, /Some\(126\) => format!\("\{operation\}已取消"\)/u);
   assert.match(hostPlatformLinux, /Some\(127\).*未获系统管理员授权/u);
+  assert.match(hostPlatformLinux, /系统操作可能仍在收尾，请刷新状态后再重试/u);
 });
 
 test('owner claim survives until the native client persists it and health uses TLS', () => {

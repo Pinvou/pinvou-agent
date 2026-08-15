@@ -125,9 +125,29 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
         .route("/api/v1/search", post(search))
         .route("/api/v1/source/window", post(source_window))
         .layer(middleware::from_fn(apply_route_body_limit))
+        .layer(middleware::from_fn_with_state(
+            service.clone(),
+            enforce_expected_server,
+        ))
         .layer(CatchPanicLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(service)
+}
+
+async fn enforce_expected_server(
+    State(service): State<Arc<KnowledgeService>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    if let Some(expected) = request.headers().get(crate::EXPECTED_SERVER_ID_HEADER) {
+        let Ok(expected) = expected.to_str() else {
+            return ApiError::bad_request("共享知识库服务身份无效").into_response();
+        };
+        if expected != service.server_id() {
+            return ApiError::conflict("共享知识库服务身份与连接记录不一致").into_response();
+        }
+    }
+    next.run(request).await
 }
 
 async fn apply_route_body_limit(
@@ -193,9 +213,15 @@ async fn claim_join_request(
     Json(request): Json<JoinRequestClaim>,
 ) -> ApiResult<impl IntoResponse> {
     require_private_direct_connection(source.ip(), &uri, &headers)?;
-    let receipt = service
-        .claim_join_request(&id, &request.claim_secret)
-        .map_err(ApiError::not_found)?;
+    service
+        .check_join_claim_rate(source.ip())
+        .map_err(map_join_request_error)?;
+    let claim_secret = request.claim_secret;
+    let receipt =
+        tokio::task::spawn_blocking(move || service.claim_join_request(&id, &claim_secret))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(ApiError::not_found)?;
     let mut response_headers = HeaderMap::new();
     response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((response_headers, Json(receipt)))
@@ -210,9 +236,15 @@ async fn cancel_join_request(
     Json(request): Json<JoinRequestClaim>,
 ) -> ApiResult<impl IntoResponse> {
     require_private_direct_connection(source.ip(), &uri, &headers)?;
-    let request = service
-        .cancel_join_request(&id, &request.claim_secret)
-        .map_err(ApiError::conflict)?;
+    service
+        .check_join_claim_rate(source.ip())
+        .map_err(map_join_request_error)?;
+    let claim_secret = request.claim_secret;
+    let request =
+        tokio::task::spawn_blocking(move || service.cancel_join_request(&id, &claim_secret))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(ApiError::conflict)?;
     let mut response_headers = HeaderMap::new();
     response_headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((response_headers, Json(request)))
@@ -929,6 +961,7 @@ mod tests {
             &endpoint,
             "",
             &service.tls_identity().ca_encoded,
+            service.server_id(),
         )
         .unwrap();
         let mut info = None;
@@ -960,6 +993,18 @@ mod tests {
             .await,
             Ok(Err(_))
         ));
+        let wrong_identity = crate::client::KnowledgeClient::new_pinned(
+            &endpoint,
+            "",
+            &service.tls_identity().ca_encoded,
+            "different-server-id",
+        )
+        .unwrap();
+        assert!(wrong_identity
+            .health()
+            .await
+            .unwrap_err()
+            .contains("服务身份与连接记录不一致"));
         server.abort();
     }
 

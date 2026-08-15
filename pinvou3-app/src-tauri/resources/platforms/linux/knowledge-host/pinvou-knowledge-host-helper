@@ -28,6 +28,14 @@ require_absolute_path() {
 
 [ "$(id -u)" -eq 0 ] || fail "需要管理员权限"
 [ "$(uname -s)" = Linux ] || fail "仅支持 Linux"
+case "${PKEXEC_UID:-}" in
+  0|''|*[!0-9]*) fail "无法确认发起操作的 PINVOU 用户" ;;
+esac
+PKEXEC_CALLER_UID=$PKEXEC_UID
+getent passwd "$PKEXEC_CALLER_UID" >/dev/null || fail "发起操作的 PINVOU 用户不存在"
+command -v flock >/dev/null 2>&1 || fail "系统缺少 flock，无法安全管理共享知识库"
+exec 9>/run/lock/pinvou-knowledge-host.lock
+flock -n 9 || fail "另一项共享知识库管理操作正在进行，请稍后再试"
 
 validate_development_path_chain() {
   current_dir=$1
@@ -284,10 +292,36 @@ validate_service_account() {
     *[!0-9:]*|0:*|*:0) fail "宿主用户无效" ;;
   esac
   service_account=$(getent passwd "$candidate_uid") || fail "宿主用户不存在"
+  [ "$candidate_uid" = "$PKEXEC_CALLER_UID" ] || fail "宿主用户与授权操作的 PINVOU 用户不一致"
   service_primary_gid=$(printf '%s' "$service_account" | cut -d: -f4)
   [ "$service_primary_gid" = "$candidate_gid" ] || fail "宿主用户主组不匹配"
   validated_service_home=$(printf '%s' "$service_account" | cut -d: -f6)
   [ -n "$validated_service_home" ] || fail "宿主用户目录无效"
+}
+
+validate_model_path_chain() {
+  current_dir=$1
+  user_home=$2
+  service_uid=$3
+  while :; do
+    if [ -e "$current_dir" ]; then
+      [ -d "$current_dir" ] || fail "模型目录链包含非目录路径"
+      [ ! -L "$current_dir" ] || fail "拒绝使用符号链接模型目录"
+      directory_owner=$(stat -c %u "$current_dir" 2>/dev/null) || fail "无法检查模型目录链"
+      [ "$directory_owner" -eq "$service_uid" ] || fail "模型目录链不属于当前 PINVOU 用户"
+    fi
+    [ "$current_dir" = "$user_home" ] && break
+    parent_dir=$(dirname "$current_dir")
+    [ "$parent_dir" != "$current_dir" ] || fail "模型目录不属于当前 PINVOU 用户"
+    current_dir=$parent_dir
+  done
+}
+
+validate_existing_host_owner() {
+  validate_data_dir
+  [ -d "$DATA_DIR" ] || fail "共享知识库数据不存在"
+  data_owner=$(stat -c %u "$DATA_DIR" 2>/dev/null) || fail "无法检查共享知识库数据目录"
+  [ "$data_owner" = "$PKEXEC_CALLER_UID" ] || fail "共享知识库数据不属于当前 PINVOU 用户"
 }
 
 write_unit() {
@@ -426,6 +460,7 @@ install_or_upgrade() {
     "$user_home"/.pinvou3/knowledge/models/bge-m3) ;;
     *) fail "模型目录不属于当前 PINVOU 用户" ;;
   esac
+  validate_model_path_chain "$model_dir" "$user_home" "$service_uid"
   secure_packaged_file "$source_bin" "$service_uid"
   command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全安装共享知识库"
   if [ -f "$INSTALL_BIN" ]; then
@@ -445,6 +480,8 @@ install_or_upgrade() {
     had_data=1
     old_data_uid=$(stat -c %u "$DATA_DIR") || fail "无法检查共享知识库数据目录"
     old_data_gid=$(stat -c %g "$DATA_DIR") || fail "无法检查共享知识库数据目录"
+    [ "$old_data_uid" = "$service_uid" ] && [ "$old_data_gid" = "$service_gid" ] || \
+      fail "共享知识库数据属于其他用户，已拒绝静默变更所有权"
   fi
   had_unit=0
   [ -f "$UNIT_FILE" ] && {
@@ -496,6 +533,7 @@ install_or_upgrade() {
 }
 
 claim_owner() {
+  validate_existing_host_owner
   claim=$DATA_DIR/host-owner.claim
   [ -s "$claim" ] || fail "没有可领取的本机所有者凭据"
   cat "$claim"
@@ -618,6 +656,8 @@ restore_host() {
 
 remove_host() {
   mode=$1
+  case "$mode" in keep-data|delete-data) ;; *) fail "移除模式无效" ;; esac
+  validate_existing_host_owner
   systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
   rm -f "$UNIT_FILE" "$INSTALL_BIN" "$INSTALL_BIN.previous"
   rmdir "$MODEL_MOUNT" >/dev/null 2>&1 || true
@@ -627,8 +667,6 @@ remove_host() {
     resolved=$(readlink -f "$DATA_DIR" 2>/dev/null || true)
     [ "$resolved" = "$DATA_DIR" ] || fail "拒绝删除异常的数据目录"
     rm -rf -- "$DATA_DIR"
-  elif [ "$mode" != keep-data ]; then
-    fail "移除模式无效"
   fi
 }
 

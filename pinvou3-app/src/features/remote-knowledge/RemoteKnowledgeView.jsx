@@ -6,6 +6,7 @@ import {
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { invokeTauri, isTauriAvailable, listenTauri, openTauriDialog, saveTauriDialog } from '../../platform/tauri/client.js';
+import { copyClipboardText } from '../../shared/clipboard.js';
 import remoteKnowledgeHeroImage from '../../assets/remote-knowledge/remote-knowledge-hero.webp';
 
 const panel = 'border border-[#ececf1] bg-white dark:border-white/10 dark:bg-[#1E1F20]';
@@ -165,6 +166,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const [busyCounts, setBusyCounts] = useState({});
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [recoveryCopyFeedback, setRecoveryCopyFeedback] = useState(null);
   const selectedServerRef = useRef('');
   const selectedCollectionRef = useRef(null);
   const collectionsRequestRef = useRef(0);
@@ -249,6 +251,16 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       });
     }
   }, []);
+
+  async function copyWithFeedback(value, successMessage, local = false) {
+    const copied = await copyClipboardText(value);
+    const feedback = {
+      type: copied ? 'success' : 'error',
+      text: copied ? successMessage : t.remoteKbCopyFailed,
+    };
+    if (local) setRecoveryCopyFeedback(feedback);
+    else setNotice(feedback);
+  }
 
   useEffect(() => {
     if (!isTauriAvailable()) return undefined;
@@ -887,6 +899,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const result = await run('backup-host', () => invokeTauri('shared_kb_host_backup', { destination }));
     if (!result) return;
     setBackupRecoveryCode(result.recoveryCode);
+    setRecoveryCopyFeedback(null);
     setShowRecoveryCode(true);
   }
 
@@ -1920,7 +1933,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                     {shareLink && (
                       <div className="mt-3 flex items-center gap-2 rounded-xl bg-[#F0F4F9] p-2 dark:bg-[#2A2B2D]">
                         <input readOnly className={`${field} border-0 bg-transparent`} value={shareLink} />
-                        <button type="button" className={iconButton} title={t.remoteKbCopy} aria-label={t.remoteKbCopy} onClick={() => navigator.clipboard.writeText(shareLink)}><Copy size={15} /></button>
+                        <button data-testid="remote-copy-share" type="button" className={iconButton} title={t.remoteKbCopy} aria-label={t.remoteKbCopy} onClick={() => copyWithFeedback(shareLink, t.remoteKbLinkCopied)}><Copy size={15} /></button>
                       </div>
                     )}
                     {!!ownerShares.filter(item => !item.stoppedAt && item.expiresAt > Date.now() / 1000).length && (
@@ -2044,8 +2057,13 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             closeLabel={t.remoteKbClose}
           >
             <textarea className={`${field} h-24 resize-none py-3 font-mono text-[11px]`} readOnly value={backupRecoveryCode} />
+            {recoveryCopyFeedback && (
+              <p role={recoveryCopyFeedback.type === 'error' ? 'alert' : 'status'} className={`mt-3 text-[12px] ${recoveryCopyFeedback.type === 'error' ? 'text-[#b72f2f]' : 'text-[#16894a]'}`}>
+                {recoveryCopyFeedback.text}
+              </p>
+            )}
             <div className="mt-5 flex justify-end gap-2">
-              <button className={quiet} onClick={() => navigator.clipboard?.writeText(backupRecoveryCode)}><Copy size={13} />{t.remoteKbCopyRecovery}</button>
+              <button data-testid="shared-kb-copy-recovery" className={quiet} onClick={() => copyWithFeedback(backupRecoveryCode, t.remoteKbRecoveryCopied, true)}><Copy size={13} />{t.remoteKbCopyRecovery}</button>
               <button data-testid="shared-kb-recovery-done" className={primary} onClick={() => setShowRecoveryCode(false)}>{t.remoteKbDone}</button>
             </div>
           </OverlayDialog>

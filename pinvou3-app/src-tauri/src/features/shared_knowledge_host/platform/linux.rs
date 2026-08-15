@@ -332,7 +332,9 @@ fn privileged_helper<const N: usize>(
 
 fn privileged_helper_execution_error(operation: &str, error: &str) -> String {
     if error.contains(" timed out after ") {
-        format!("{operation}等待超时，已终止本次操作：{error}")
+        format!(
+            "{operation}等待超时，已停止等待；系统操作可能仍在收尾，请刷新状态后再重试：{error}"
+        )
     } else {
         format!("无法打开系统管理员确认：{error}")
     }
