@@ -522,7 +522,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 转交修订`, draftingScheduled:'⏰ 正在整理定时任务草稿…' },
         expertPoolIndividualTab:'个人专家', expertPoolTeamTab:'专家团队',
         uiWorkflow: { pick:'选择一个工作流模板开始', empty:'没有可用的工作流（请检查工作流资源）', workflow:'工作流', stopFailed:e=>`停止工作流失败：${e}`, completed:'🎉 工作流完成' },
-        uiToolStore: { title:'工具商店', search:'搜索连接器、技能、插件等', card:'卡片', list:'列表', myTools:'我的工具', featured:'精选连接器', skills:'独家技能', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部工具', internalCount:n=>`${n} 个工具 · 需内网`, view:'查看' },
+        uiToolStore: { title:'工具商店', search:'搜索连接器、技能、插件等', myTools:'我的工具', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部工具', internalCount:n=>`${n} 个工具 · 需内网`, view:'查看' },
         uiToolDetails: { tools:{
           ima:{ title:'腾讯 ima', subtitle:'用 OpenAPI 操作 ima 笔记与知识库', latency:'云端', desc:'接入腾讯 ima OpenAPI Skill，可搜索、读取、创建和追加笔记，也可搜索、浏览知识库并导入网页或内容。凭据只保存在本机。', configTitle:'连接腾讯 ima', configDescription:'凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocLabel:'获取 Client ID / API Key', welcomeQueries:['搜索我的 ima 知识库','列出我有哪些 ima 笔记','把这段内容新建为 ima 笔记','在 ima 知识库里查产品方案'] },
           tmeet:{ title:'腾讯会议', subtitle:'以本人身份管理会议、录制、纪要和参会报告', type:'CLI + 官方技能', latency:'云端', desc:'接入腾讯会议官方 CLI 和技能，可创建、查询、修改和取消会议，查询参会报告、录制、转写与智能纪要。连接时会打开授权页扫码登录。', welcomeQueries:['帮我创建一个腾讯会议','查一下我的腾讯会议录制','看看最近会议的智能纪要','查询这场腾讯会议的参会人'] },
@@ -873,7 +873,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · Revision handoff`, draftingScheduled:'⏰ Preparing scheduled task draft…' },
         expertPoolIndividualTab:'Individual Experts', expertPoolTeamTab:'Expert Teams',
         uiWorkflow: { pick:'Choose a workflow template to begin', empty:'No workflows are available. Check the bundled workflow resources.', workflow:'Workflow', stopFailed:e=>`Failed to stop workflow: ${e}`, completed:'🎉 Workflow complete' },
-        uiToolStore: { title:'Tool Store', search:'Search connectors, skills, and plugins', card:'Cards', list:'List', myTools:'My Tools', featured:'Featured Connectors', skills:'Exclusive Skills', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Tools', internalCount:n=>`${n} tools · Intranet required`, view:'View' },
+        uiToolStore: { title:'Tool Store', search:'Search connectors, skills, and plugins', myTools:'My Tools', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Tools', internalCount:n=>`${n} tools · Intranet required`, view:'View' },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'Manage ima notes and knowledge bases through OpenAPI', latency:'Cloud', desc:'Connect the Tencent ima OpenAPI Skill to search, read, create, and append notes, or search and browse knowledge bases and import web pages or content. Credentials stay on this device.', configTitle:'Connect Tencent ima', configDescription:'Credentials stay on this device and are used only to enable the IMA OpenAPI Skill.', configDocLabel:'Get Client ID / API Key', welcomeQueries:['Search my ima knowledge bases','List my ima notes','Create an ima note from this content','Find the product plan in my ima knowledge base'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'Manage meetings, recordings, minutes, and attendance reports as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Tencent Meeting CLI and skill to create, query, update, and cancel meetings, and access attendance reports, recordings, transcripts, and AI minutes. Connecting opens the authorization page for QR-code sign-in.', welcomeQueries:['Create a Tencent Meeting for me','Show my Tencent Meeting recordings','Show the latest meeting minutes','List the attendees of this Tencent Meeting'] },
@@ -1223,7 +1223,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 修正を引き継ぎ`, draftingScheduled:'⏰ 定期タスクの下書きを準備中…' },
         expertPoolIndividualTab:'個人エキスパート', expertPoolTeamTab:'エキスパートチーム',
         uiWorkflow: { pick:'ワークフローテンプレートを選択してください', empty:'利用可能なワークフローがありません。リソースを確認してください。', workflow:'ワークフロー', stopFailed:e=>`ワークフローの停止に失敗: ${e}`, completed:'🎉 ワークフロー完了' },
-        uiToolStore: { title:'ツールストア', search:'コネクター、スキル、プラグインを検索', card:'カード', list:'リスト', myTools:'マイツール', featured:'注目のコネクター', skills:'限定スキル', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内ツール', internalCount:n=>`${n} 個のツール · 社内ネットワーク必須`, view:'表示' },
+        uiToolStore: { title:'ツールストア', search:'コネクター、スキル、プラグインを検索', myTools:'マイツール', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内ツール', internalCount:n=>`${n} 個のツール · 社内ネットワーク必須`, view:'表示' },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'OpenAPI で ima のノートとナレッジベースを操作', latency:'クラウド', desc:'Tencent ima OpenAPI Skill に接続し、ノートの検索、閲覧、作成、追記や、ナレッジベースの検索、閲覧、Web ページとコンテンツの追加ができます。認証情報はこの端末だけに保存されます。', configTitle:'Tencent ima に接続', configDescription:'認証情報はこの端末だけに保存され、IMA OpenAPI Skill の有効化にのみ使用されます。', configDocLabel:'Client ID / API Key を取得', welcomeQueries:['ima のナレッジベースを検索','ima のノート一覧を表示','この内容から ima ノートを作成','ima のナレッジベースで製品案を検索'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続時は認証ページで QR コードによりログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
@@ -2307,7 +2307,7 @@ Object.assign(dict.ja.uiAttachments, { uploading:pct=>`アップロード中 ${p
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。
 Object.assign(dict.zh.uiToolStore, {
   toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
-  connected:'已连接', installed:'已安装', builtin:'内置', skillLabel:'技能', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
+  connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
   installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
   configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
@@ -2352,9 +2352,9 @@ Object.assign(dict.zh.uiToolStore, {
     { key:'qr', label:'扫码登录', sub:'钉钉 App 扫一扫' },
   ],
   connFailed:'连接失败', dingtalkSkillsFailed:err=>`钉钉已授权，但技能启用失败：${err}`, tmeetAuthIncomplete:'腾讯会议授权未完成，请完成浏览器登录后重试',
-  emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoSkills:'没有技能', emptyNoTools:'未检索到工具',
+  emptyNoMatch:'未找到匹配的工具', emptyNoInstalled:'还没有已安装的工具', emptyNoTools:'未检索到工具',
   emptyNoMatchHint:'换个关键词试试，或检查一下拼写。', emptyNoInstalledHint:'去商店安装连接器或技能后，会出现在这里。', emptyNoInstalledHintReadonly:'桌面端尚未安装工具或技能。',
-  emptyNoSkillsHint:'点右上「上传技能包」导入 zip。', emptyNoSkillsHintReadonly:'当前没有可浏览的技能。', emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
+  emptyNoToolsHint:'请尝试修改搜索词或查阅 API 开发文档。',
   detailInterfaceType:'接口类型', detailOfficialSupport:'官方支持', detailVersion:'当前版本', detailStableRelease:'稳定版发布', detailLatency:'平均延迟', detailGlobalAccel:'全球加速',
   aboutTitle:'关于此能力',
   oauthOutcome:{
@@ -2365,7 +2365,7 @@ Object.assign(dict.zh.uiToolStore, {
 });
 Object.assign(dict.en.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
-  connected:'Connected', installed:'Installed', builtin:'Built-in', skillLabel:'Skill', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
+  connected:'Connected', installed:'Installed', builtin:'Built-in', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
   installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
   configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide', configHelpFeishu:'No app yet? Create one on the Feishu Open Platform →',
@@ -2410,9 +2410,9 @@ Object.assign(dict.en.uiToolStore, {
     { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
   connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish signing in in the browser and retry',
-  emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoSkills:'No skills', emptyNoTools:'No tools found',
+  emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
-  emptyNoSkillsHint:'Import a zip via "Upload Skill Package" at the top right.', emptyNoSkillsHintReadonly:'No skills available to browse.', emptyNoToolsHint:'Try another search term or check the API documentation.',
+  emptyNoToolsHint:'Try another search term or check the API documentation.',
   detailInterfaceType:'Interface Type', detailOfficialSupport:'Official support', detailVersion:'Version', detailStableRelease:'Stable release', detailLatency:'Avg Latency', detailGlobalAccel:'Global acceleration',
   aboutTitle:'About',
   oauthOutcome:{
@@ -2423,7 +2423,7 @@ Object.assign(dict.en.uiToolStore, {
 });
 Object.assign(dict.ja.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
-  connected:'接続済み', installed:'インストール済み', builtin:'内蔵', skillLabel:'スキル', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
+  connected:'接続済み', installed:'インストール済み', builtin:'内蔵', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
   installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
   configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る', configHelpFeishu:'アプリの作成方法が分からない場合は Feishu オープンプラットフォームで作成 →',
@@ -2468,9 +2468,9 @@ Object.assign(dict.ja.uiToolStore, {
     { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
   connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
-  emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoSkills:'スキルがありません', emptyNoTools:'ツールが見つかりません',
+  emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
-  emptyNoSkillsHint:'右上の「スキルパッケージをアップロード」から zip をインポートしてください。', emptyNoSkillsHintReadonly:'閲覧できるスキルは現在ありません。', emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',
+  emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',
   detailInterfaceType:'インターフェース種別', detailOfficialSupport:'公式サポート', detailVersion:'現在のバージョン', detailStableRelease:'安定版リリース', detailLatency:'平均レイテンシー', detailGlobalAccel:'グローバルアクセラレーション',
   aboutTitle:'この機能について',
   oauthOutcome:{
@@ -2485,60 +2485,49 @@ Object.assign(dict.zh.uiChatView, { memStatusRemembered:'已记住', memStatusAr
 Object.assign(dict.en.uiChatView, { memStatusRemembered:'Remembered', memStatusArchived:'Archived', memStatusDeleted:'Deleted', memStatusArchivedNotice:'Memory archived', memStatusDeletedNotice:'Memory deleted' });
 Object.assign(dict.ja.uiChatView, { memStatusRemembered:'記憶しました', memStatusArchived:'アーカイブしました', memStatusDeleted:'削除しました', memStatusArchivedNotice:'メモリをアーカイブしました', memStatusDeletedNotice:'メモリを削除しました' });
 
-// tool-common.jsx 内容数据（tsSkillsData / tsCategories / tsFeaturedCollections）的三语 overlay：
-// ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory / localizeCollection），数据文件本身不改。
+// tool-common.jsx 内容数据（tsSkillsData / tsCategories）的三语 overlay：
+// ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
 Object.assign(dict.zh.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', todayLabel:'编辑之选 · 专业辅助', todayTitle:'规范公文\n一键起草', latency:'本地' },
-    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', todayLabel:'演示利器', todayTitle:'一句话\n做完\nPPT', latency:'本地' },
-    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', todayLabel:'数据洞察', todayTitle:'一段数据\n生成\n仪表盘', latency:'本地' },
-    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', todayLabel:'创意探索', todayTitle:'视觉设计\n信手拈来', version:'内置', latency:'本地' },
+    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
+    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', latency:'本地' },
+    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', latency:'本地' },
+    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
   },
   categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', skill:'技能' },
-  featuredCollections: {
-    f6: { label:'即装即用', title:'实时天气随口问', subtitle:'接入高德天气 API，自然语言查全国城市实时天气与多日预报，零配置一键安装。' },
-    f4: { label:'数据引擎', title:'打造智能投研助理', subtitle:'集成同花顺问财 12 项金融工具，利用大模型快速输出深度个股诊断报告。' },
-    f7: { label:'企业数据', title:'一键查透企业全貌', subtitle:'接入企查查 182 个工具，工商/风控/知产/经营数据信手拈来，免配置即装即用。' },
-    f1: { label:'即时沟通', title:'打通企业微信', subtitle:'以你本人身份操作企微消息、文档、会议与日程，扫码授权、全程不填 key。' },
-    f2: { label:'个人知识', title:'激活你的本地笔记', subtitle:'接入本机 Obsidian 笔记库，全文检索、读写与维护双链，让 AI 基于你的知识作答。' },
-    f3: { label:'效率编排', title:'跨平台消息中转', subtitle:'无缝打通企微、飞书与钉钉，实现重要告警与工作流消息的自动化流转。' },
-  },
 } });
 Object.assign(dict.en.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', todayLabel:"Editor's Choice · Professional Aid", todayTitle:'Compliant documents,\ndrafted in one click', latency:'Local' },
-    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', todayLabel:'Presentation Powerhouse', todayTitle:'Finish a PPT\nin one\nsentence', latency:'Local' },
-    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', todayLabel:'Data Insights', todayTitle:'One dataset,\none\ndashboard', latency:'Local' },
-    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', todayLabel:'Creative Exploration', todayTitle:'Visual design,\neffortlessly', version:'Built-in', latency:'Local' },
+    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', latency:'Local' },
+    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', latency:'Local' },
+    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', latency:'Local' },
+    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', version:'Built-in', latency:'Local' },
   },
   categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', skill:'Skills' },
-  featuredCollections: {
-    f6: { label:'Ready to Install', title:'Ask for Real-Time Weather', subtitle:'Powered by the Amap Weather API—ask in natural language for real-time weather and multi-day forecasts in cities nationwide. Zero configuration, one-click install.' },
-    f4: { label:'Data Engine', title:'Build a Smart Investment Research Assistant', subtitle:'Integrates 12 financial tools from THS iWencai, using LLMs to quickly produce in-depth stock diagnostic reports.' },
-    f7: { label:'Enterprise Data', title:'See Through Any Company in One Click', subtitle:'Connects 182 Qichacha tools—business registration, risk control, IP, and operations data at your fingertips. No configuration; install and use.' },
-    f1: { label:'Instant Messaging', title:'Connect WeCom', subtitle:'Act as yourself across WeCom messages, docs, meetings, and calendars—scan to authorize, no keys required.' },
-    f2: { label:'Personal Knowledge', title:'Activate Your Local Notes', subtitle:'Connect your local Obsidian vault—full-text search, read/write, and backlink maintenance, so AI answers based on your knowledge.' },
-    f3: { label:'Workflow Orchestration', title:'Cross-Platform Message Relay', subtitle:'Seamlessly connect WeCom, Feishu, and DingTalk to automate the flow of critical alerts and workflow messages.' },
-  },
 } });
 Object.assign(dict.ja.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', todayLabel:'編集部のおすすめ · プロ向け補助', todayTitle:'規範公文を\nワンクリックで起草', latency:'ローカル' },
-    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', todayLabel:'プレゼンの利器', todayTitle:'一言で\nPPT を\n完成', latency:'ローカル' },
-    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', todayLabel:'データインサイト', todayTitle:'データから\nダッシュボードを\n生成', latency:'ローカル' },
-    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', todayLabel:'クリエイティブ探索', todayTitle:'ビジュアルデザインを\n手軽に', version:'内蔵', latency:'ローカル' },
+    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', latency:'ローカル' },
+    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', latency:'ローカル' },
+    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', latency:'ローカル' },
+    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', skill:'スキル' },
-  featuredCollections: {
-    f6: { label:'すぐに使える', title:'リアルタイムの天気を気軽に', subtitle:'高徳地図（Amap）天気 API に接続。自然言語で全国の都市のリアルタイム天気と多日予報を確認できます。設定不要でワンクリックインストール。' },
-    f4: { label:'データエンジン', title:'スマート投資リサーチアシスタントを構築', subtitle:'同花順 iWencai の 12 の金融ツールを統合し、大規模モデルで個別株の詳細な診断レポートをすばやく出力します。' },
-    f7: { label:'企業データ', title:'ワンクリックで企業の全貌を把握', subtitle:'企查查（Qichacha）の 182 のツールに接続。工商登記・リスク管理・知的財産・経営データを自在に取得。設定不要でインストール後すぐ使えます。' },
-    f1: { label:'インスタントコミュニケーション', title:'WeCom と連携', subtitle:'本人のIDで WeCom のメッセージ・ドキュメント・会議・スケジュールを操作。スキャン認証でキー入力は一切不要。' },
-    f2: { label:'個人ナレッジ', title:'ローカルノートを活性化', subtitle:'本機の Obsidian 保管庫に接続。全文検索・読み書き・バックリンクの保守ができ、AI があなたの知識に基づいて回答します。' },
-    f3: { label:'効率オーケストレーション', title:'クロスプラットフォームのメッセージ中継', subtitle:'WeCom・Feishu・DingTalk をシームレスに連携し、重要なアラートやワークフローメッセージの自動転送を実現します。' },
-  },
 } });
 
+// 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
+Object.assign(dict.zh.uiToolStore, {
+  groupByType:'按类型', groupByBusiness:'按业务',
+  typeGroups:{ bundle:'工具包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+});
+Object.assign(dict.en.uiToolStore, {
+  groupByType:'By Type', groupByBusiness:'By Domain',
+  typeGroups:{ bundle:'Tool Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+});
+Object.assign(dict.ja.uiToolStore, {
+  groupByType:'タイプ別', groupByBusiness:'業務別',
+  typeGroups:{ bundle:'ツールパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
+});
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';

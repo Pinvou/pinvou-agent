@@ -145,10 +145,12 @@ async function search(page, query) {
   const input = await getToolStoreSearchInput(page);
   if (!input) throw new Error('工具商店搜索框未渲染');
   await input.click();
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up('Control');
-  await page.keyboard.press('Backspace');
+  // macOS 上 Ctrl+A 不触发全选,用原生 setter 清空并派发 input,保证跨平台一致
+  await page.evaluate((el) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, input);
   await input.type(query);
   await sleep(180);
 }
