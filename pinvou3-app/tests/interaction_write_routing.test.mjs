@@ -29,6 +29,15 @@ function loadInteractionRuntime() {
   };
   const deferred = {};
   const calls = [];
+  const epochTable = {};                                    // 与 bridge.js 共享 epoch 表同构（#263）
+  // 简化 mock：真实 runSyncOnSession（bridge.js）会 swap 到 sid 的工作集执行
+  // 并在结束后 restore 当前显示，且 sid 无 buffer 时静默丢弃；本 mock 只记录
+  // 定向调用证据后直接执行 fn。因此下方对 state.modeState 的断言验证的是
+  // 「fn 携权威 st 被执行」，非端到端显示语义。
+  function runSyncMock(sid, fn) {
+    if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
+    fn();
+  }
   const runtime = {
     state,
     calls,
@@ -51,13 +60,16 @@ function loadInteractionRuntime() {
     addAuthoritySyncNotice() {},
     addChatItem() {},
     timeStr() { return ''; },
-    // 简化 mock：真实 runSyncOnSession（bridge.js）会 swap 到 sid 的工作集执行
-    // 并在结束后 restore 当前显示，且 sid 无 buffer 时静默丢弃；本 mock 只记录
-    // 定向调用证据后直接执行 fn。因此下方对 state.modeState 的断言验证的是
-    // 「fn 携权威 st 被执行」，非端到端显示语义。
-    runSyncOnSession(sid, fn) {
-      if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
-      fn();
+    runSyncOnSession: runSyncMock,
+    // #263 注入的权威写回收敛点（bridge.js）：任何权威 modeState 写回必须经它
+    // （bump epoch + 定向写）。mock 镜像真实实现，走 runSyncMock 保留路由证据。
+    modeStateEpochs: epochTable,
+    bumpModeStateEpoch(sid) { epochTable[sid] = (epochTable[sid] || 0) + 1; },
+    applyAuthoritativeModeState(sid, st) {
+      epochTable[sid] = (epochTable[sid] || 0) + 1;
+      runSyncMock(sid, function () {
+        state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+      });
     },
     getBuffer() { return null; },
     flushAssistantMessageToHistory() {},
@@ -68,6 +80,10 @@ function loadInteractionRuntime() {
     itemIdSeq: 1000,
     ensureSession: async () => (state.activeSessionId || 'chat-a'),
     sendMessage: async () => {},
+    sendMessageToSession: async (sid) => {
+      calls.push('sendMessageToSession:' + sid);
+      if (runtime.failSendMessageToSession) throw new Error('target session missing');
+    },
     reconcileRemoteTurn: async () => true,
     isBusyFor() { return false; },
     markRemoteTurn() {},
@@ -155,4 +171,20 @@ test('editLastTurn 失败恢复定向触发会话：切走后 busy/错误提示�
     '失败后 busy 必须复位（否则触发会话被永久卡成忙碌）');
   assert.equal(rt.errorItems.length, 1,
     '失败提示恰好一条（"⚠️ Error: boom"，落进定向恢复的会话）');
+});
+
+test('planStuckGo 补充指令失败定向提示：sendMessageToSession 抛错不得成为 unhandled rejection', async () => {
+  const rt = loadInteractionRuntime();
+  rt.failSendMessageToSession = true;                        // 模拟目标会话已删/对账中
+  const goP = rt.api.planStuckGo('card-1');                  // A 会话发起
+  rt.state.activeSessionId = 'chat-b';                       // await 期间切走
+  await goP;                                                 // 无 catch 时此处即 rejected（用例直接红）
+  assert.ok(rt.calls.includes('sendMessageToSession:chat-a'),
+    '补充指令必须发往触发会话 chat-a');
+  assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
+    '失败提示必须定向回触发会话（不得落进当前显示的 chat-b）');
+  assert.equal(rt.errorItems.length, 1,
+    '失败提示恰好一条（planContinueFailed + 原因）');
+  assert.ok(String(rt.errorItems[0]).includes('planContinueFailed'),
+    '失败提示必须携带 planContinueFailed 文案而非静默吞掉');
 });

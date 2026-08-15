@@ -395,7 +395,11 @@
     await exitPlanToYolo();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
-    await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
+    // 定向提示，否则成为 React onClick 上的 unhandled rejection，用户无感知。
+    try {
+      await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
