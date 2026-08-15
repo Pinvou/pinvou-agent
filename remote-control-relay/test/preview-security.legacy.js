@@ -1,3 +1,7 @@
+// 历史 v1 页面的预览安全回归(白名单 raster data URL + object URL 回收)。
+// 目标代码是 web/index.html(自标 LEGACY,server.js 默认只服务 v2 构建产物),
+// v2 WebUI 的对应场景尚未覆盖,故保留为显式 legacy 入口(npm run test:legacy-v1-ui),
+// 不进默认 `npm test` 发现范围。v1 页面退役时应连同本文件一起删除。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

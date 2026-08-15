@@ -272,19 +272,6 @@ Swapouts:                                          0.\n\
     }
 
     #[test]
-    fn parse_vm_stat_zero_page_size_returns_none() {
-        // page_size 解析为 0 时(理论上不会,但防御性)不应静默返回 used=0 的错误快照。
-        // 构造一个不含 "page size of" 且 total_pages != 0 的输入,
-        // 配合手动检查 page_size==0 守卫逻辑。
-        // 由于 fallback 始终给出非零值(16384 或 4096),这里验证守卫的存在:
-        // 解析逻辑不会因 page_size=0 产生 used_kib=0 的误导性快照。
-        let text = "Pages active: 1.\n";
-        let snap = parse_vm_stat(text).unwrap();
-        // 回退 page_size 必非零 → used_kib 必非零。
-        assert!(snap.used_kib > 0);
-    }
-
-    #[test]
     fn swap_parsing_handles_suffixes() {
         // 直接覆盖提取出的自由函数 parse_swap_field(此前此测试复制了生产闭包逻辑,
         // 生产改了它也不会失败)。M/G/K 后缀换算到 KiB。

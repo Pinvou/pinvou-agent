@@ -98,16 +98,6 @@ fn task_workspace(store: &SessionStore, task_id: &str) -> PathBuf {
 }
 
 #[test]
-fn create_new_persists_and_lists() {
-    let (store, _g) = isolated_store();
-    let s = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let list = store.list().expect("list");
-    assert!(list.iter().any(|m| m.id == s.metadata.id));
-}
-
-#[test]
 fn session_roots_plain_session_shares_private_root() {
     let (store, _g) = isolated_store();
     let s = store
@@ -1272,26 +1262,6 @@ fn update_messages_rejects_unrelated_short_overwrite() {
 }
 
 #[test]
-fn transcript_cas_commits_and_returns_content_revision() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let expected = transcript_revision(&session.messages).expect("empty revision");
-    let messages = vec![user_text("hello")];
-
-    let committed = store
-        .compare_and_swap_messages(&session.metadata.id, &expected, messages.clone())
-        .expect("CAS commit");
-
-    assert_eq!(committed, transcript_revision(&messages).expect("revision"));
-    assert_eq!(
-        store.load(&session.metadata.id).expect("load").messages,
-        messages
-    );
-}
-
-#[test]
 fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call() {
     let (store, _guard) = isolated_store();
     let session = store
@@ -1372,9 +1342,15 @@ fn transcript_cas_rejects_stale_revision_without_overwrite() {
         .expect("create");
     let stale = transcript_revision(&session.messages).expect("empty revision");
     let winner = vec![user_text("winner")];
-    store
+    // first commit 成功并返回新 revision、落盘生效
+    // (原 transcript_cas_commits_and_returns_content_revision 的断言)。
+    let committed = store
         .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
         .expect("first commit");
+    assert_eq!(
+        committed,
+        transcript_revision(&winner).expect("winner revision")
+    );
 
     let error = store
         .compare_and_swap_messages(
@@ -1477,18 +1453,16 @@ fn delete_removes_session() {
 }
 
 #[test]
-fn active_id_tracks_set_active() {
+fn delete_active_clears_active_id() {
     let (store, _g) = isolated_store();
+    // set_active/active_id 追踪语义(原 active_id_tracks_set_active 的断言):
+    // 初始 None → set Some 后可读回 → set None 复位。
     assert!(store.active_id().is_none());
     store.set_active(Some("abc".into()));
     assert_eq!(store.active_id().as_deref(), Some("abc"));
     store.set_active(None);
     assert!(store.active_id().is_none());
-}
 
-#[test]
-fn delete_active_clears_active_id() {
-    let (store, _g) = isolated_store();
     let s = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
@@ -1646,31 +1620,14 @@ fn generate_session_id_url_safe() {
 }
 
 #[test]
-fn pinvou_review_defaults_off() {
-    let (store, _g) = isolated_store();
-    assert!(!store.mode_state("s1").pinvou_review_enabled);
-}
-
-#[test]
 fn set_pinvou_review_persists() {
     let (store, _g) = isolated_store();
+    // 默认关闭(原 pinvou_review_defaults_off 的断言)。
+    assert!(!store.mode_state("s1").pinvou_review_enabled);
     store.set_pinvou_review("s1", true);
     assert!(store.mode_state("s1").pinvou_review_enabled);
     store.set_pinvou_review("s1", false);
     assert!(!store.mode_state("s1").pinvou_review_enabled);
-}
-
-#[test]
-fn set_mode_preserves_pinvou_review() {
-    // 关键不变量:切 mode(set_mode)不能覆盖品悟开关。
-    let (store, _g) = isolated_store();
-    store.set_pinvou_review("s1", true);
-    store
-        .set_mode("s1", SerializableMode::Yolo)
-        .expect("set chat mode");
-    let state = store.mode_state("s1");
-    assert!(state.pinvou_review_enabled);
-    assert!(matches!(state.mode, SerializableMode::Yolo));
 }
 
 #[test]

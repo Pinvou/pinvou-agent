@@ -12,8 +12,7 @@
 //!
 //! On-device vs. Apple 服务识别在运行时按当前 recognizer/locale 的
 //! `supportsOnDeviceRecognition` 决定：支持时强制端上识别，否则由系统使用在线
-//! Speech 服务。该能力不是处理器架构的固定属性。决策纯函数
-//! [`decide_on_device`] 可单测。
+//! Speech 服务。该能力不是处理器架构的固定属性。
 //!
 //! 参考的 objc2 调用风格：`pet_window.rs:1048-1076`；block2 回调包装见 crate 文档
 //! （`block2::RcBlock::new`，`DynBlock` 是 `Block` 的类型别名）。
@@ -229,16 +228,6 @@ fn ensure_authorized() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decide_on_device_returns_true_when_supported() {
-        assert!(decide_on_device(true));
-    }
-
-    #[test]
-    fn decide_on_device_returns_false_when_unsupported() {
-        assert!(!decide_on_device(false));
-    }
 
     #[test]
     fn auth_decision_ok_when_authorized() {

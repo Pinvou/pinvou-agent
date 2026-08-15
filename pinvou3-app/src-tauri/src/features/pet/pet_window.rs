@@ -739,9 +739,10 @@ mod tests {
         assert_eq!(legacy.position_space, None);
         assert!(!legacy.activity_visible);
         assert_eq!(legacy.vertical_alignment, PetVerticalAlignment::Bottom);
-        // 空文件/缺字段 → 全默认
+        // 空文件/缺字段 → 全默认(默认 scale 即 MIN_SCALE,首启最小尺寸)
         let empty: PetWindowState = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, PetWindowState::default());
+        assert_eq!(PetWindowState::default().scale, MIN_SCALE);
     }
 
     #[test]

@@ -57,6 +57,55 @@ const modeStateSource = read('src-tauri', 'src', 'features', 'sessions', 'mode_s
 const rosterSource = read('src-tauri', 'src', 'features', 'assistant', 'expert_roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
 
+
+test('多智能体第一阶段只在桌面宿主开放', () => {
+  const platform = read('src', 'shared', 'platform.js');
+  const bootstrap = read('src', 'platform', 'web', 'bootstrap.js');
+  const webBridge = read('src', 'platform', 'web', 'bridge.js');
+  const policy = JSON.parse(read('src', 'platform', 'web', 'access-policy.json'));
+
+  assert.match(platform, /\bmultiAgent:\s*true\b/, '桌面默认能力必须显式开放');
+  assert.doesNotMatch(bootstrap, /\bmultiAgent\s*:\s*true\b/, 'Web capability 不得提前开放');
+
+  for (const command of [
+    'set_multi_agent_mode',
+    'list_subagent_transcripts',
+    'read_subagent_transcript',
+  ]) {
+    assert.equal(policy.allowed_commands.includes(command), false, `${command} 必须保持桌面专属`);
+    assert.equal(webBridge.includes(command), false, `Web bridge 不得代理 ${command}`);
+  }
+});
+
+test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会话', () => {
+  const main = read('src', 'app', 'main.jsx');
+  const detached = read('src', 'app', 'DetachedShell.jsx');
+  const tauriBridge = read('src', 'platform', 'tauri', 'bridge.js');
+  const remoteCommands = read('src-tauri', 'src', 'app', 'commands', 'remote_control.rs');
+
+  assert.doesNotMatch(
+    main,
+    /APP_BRIDGE_STATE_DOMAINS\s*=\s*\[[\s\S]{0,400}['"]multiAgent['"]/,
+    '多智能体投影由命令与 DOM 事件提供，不得订阅已退役的空运行态',
+  );
+  assert.doesNotMatch(detached, /useBridgeState\(\[\[\s\S]{0,300}['"]multiAgent['"]/);
+  assert.doesNotMatch(tauriBridge, /activeRunId/, '旧 Workflow 运行台账状态不得残留');
+  assert.match(
+    chatViewSource,
+    /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)/,
+    'Web 只读判定看会话级开关（modeState.multiAgent 双端同步）',
+  );
+  assert.match(chatViewSource, /data-testid="multiagent-desktop-only"/);
+  assert.match(settingsSource, /const canMultiAgent = can\('multiAgent'\)/, '开关行必须按 capability 门禁');
+  assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/);
+  assert.match(
+    remoteCommands,
+    /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
+    'Web 续写必须校验多智能体开关（桌面专属）',
+  );
+  assert.equal((i18nSource.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
+});
+
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
   vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });

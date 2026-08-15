@@ -1558,44 +1558,10 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_remote_secret_header_removes_credential_and_env() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "patsnap-search",
-                r#"{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
-                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
-            );
-            let store = MemoryCredentialStore::default();
-            let secret = secret_value("patsnap-uninstall");
-            let reference = mcp_secret_reference("patsnap-search", "header", "PATSNAP_API_KEY");
-            store.set(&reference, &secret).unwrap();
-            let mgr = MarketplaceManager::with_store(store.clone());
-
-            mgr.install("patsnap-search", &std::collections::HashMap::new())
-                .unwrap();
-            assert_eq!(
-                std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY")
-                    .ok()
-                    .as_deref(),
-                Some(secret.as_str())
-            );
-
-            mgr.uninstall("patsnap-search").unwrap();
-
-            assert!(!mgr.installed_ids().contains(&"patsnap-search".to_string()));
-            let mcp = read_mcp_json();
-            assert!(mcp["servers"].get("patsnap-search").is_none());
-            assert_eq!(store.get(&reference).unwrap(), None);
-            assert!(std::env::var("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_err());
-        });
-    }
-
-    #[test]
     fn uninstall_patsnap_does_not_remove_other_connector_secrets() {
+        // 同时覆盖单连接器卸载契约(原 uninstall_remote_secret_header_removes_
+        // credential_and_env):卸载必须删除 server 条目、凭据引用与回灌 env;
+        // 并额外断言其他连接器(qcc)的凭据与 env 不受影响。
         with_temp_home(|| {
             write_tool_manifest(
                 "patsnap-search",
@@ -1761,34 +1727,10 @@ mod tests {
     }
 
     #[test]
-    fn install_failure_does_not_leave_half_installed_state() {
-        // #2 半安装回归:缺密钥导致 add_to_mcp_json 失败时,installed.json 不该记录该工具
-        // (顺序修复=先写 mcp 成功、再 save_installed)。
-        with_temp_home(|| {
-            write_tool_manifest(
-                "weather-custom",
-                r#"{
-                    "id":"weather-custom","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"WEATHER_TEST_KEY","provider":"weather-test","required":true}]
-                }"#,
-            );
-            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            // 不提供 key + keyring 空 → install 必失败
-            assert!(
-                mgr.install("weather-custom", &std::collections::HashMap::new())
-                    .is_err(),
-                "缺密钥应安装失败"
-            );
-            assert!(
-                !mgr.installed_ids().contains(&"weather-custom".to_string()),
-                "失败时 installed.json 不该记录该工具(否则半安装)"
-            );
-        });
-    }
-
-    #[test]
     fn weather_missing_user_key_fails_without_fallback() {
+        // 同时覆盖半安装回归(原 install_failure_does_not_leave_half_installed_state):
+        // 缺密钥导致失败时 installed.json 不该记录该工具(顺序=先写 mcp 成功、再
+        // save_installed);且 mcp.json 不得残留。
         with_temp_home(|| {
             write_tool_manifest(
                 "weather",
