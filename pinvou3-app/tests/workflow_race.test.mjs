@@ -21,6 +21,7 @@ function loadFeature(fileName, state, contextOverrides) {
   vm.runInNewContext(src, {
     window: root,
     globalThis: root,
+    console,   // feature 的 catch 分支会 console.warn；不注入会在验证错误路径时 ReferenceError
     setTimeout,
     clearTimeout,
   });
@@ -34,6 +35,7 @@ function loadFeature(fileName, state, contextOverrides) {
     addSystemItem() {},
     addChatItem() {},
     timeStr() { return ''; },
+    itemIdSeq: 0,   // workflow-runtime 的 pushRunCard 用 ++context.itemIdSeq 发卡号
     invoke(name, args) {
       calls.invoke.push(name);
       if (deferreds[name] && deferreds[name].promise) return deferreds[name].promise;
@@ -68,6 +70,7 @@ function loadWorkflowFeature() {
       reachedPhaseIds: [],
       loadState: 'ready',
       skills: [],
+      starting: false,
     },
     messages: [],
     chatItems: [],
@@ -217,4 +220,35 @@ test('activateSkill 响应时已新建会话则不得劫持 activeSessionId', as
   await p;
   assert.equal(rt.state.activeSessionId, 'new-chat', '不得劫持用户新建的会话');
   assert.deepEqual(rt.state.messages, [], '消息区未被技能会话清空');
+});
+
+test('deactivateSkill 切走后仍须删除入口会话的 bindings 且不清空全局技能字段', async () => {
+  const rt = loadWorkflowFeature();
+  rt.state.workflow.bindings = { 'chat-a': 'skill-a', 'chat-b': 'skill-b' };
+  rt.state.workflow.activeSkillName = 'skill-a';
+  rt.state.workflow.phases = [{ id: 'p1' }];
+  const unbind = rt.defer('unbind_session_skill');
+  const p = rt.api.deactivateSkill();                 // 解绑 chat-a 的技能
+  rt.state.activeSessionId = 'chat-b';               // await 期间用户切到 chat-b
+  unbind.resolve({});
+  await p;
+  // 后端 unbind 已生效：bindings 键是入口 sid，与 await 后谁 active 无关，必须删除
+  //（bindings 无重算路径，漏删会让侧边栏对 chat-a 永久显示幽灵技能徽标）。
+  assert.equal(rt.state.workflow.bindings['chat-a'], undefined, '入口会话的 bindings 条目必须无条件删除');
+  assert.equal(rt.state.workflow.bindings['chat-b'], 'skill-b', '切走目标会话的 bindings 不受影响');
+  assert.equal(rt.state.workflow.activeSkillName, 'skill-a', '切走后不得清空全局技能字段');
+  assert.deepEqual(rt.state.workflow.phases, [{ id: 'p1' }], '切走后不得清空 phases');
+});
+
+test('startWorkflowTask busy 闸防双击重复建 run', async () => {
+  const rt = loadWorkflowFeature();
+  const start = rt.defer('start_workflow');
+  const first = rt.api.startWorkflowTask('scenario-a', 'brief');
+  assert.equal(rt.state.workflow.starting, true, '第一次调用进行中闸保持');
+  const secondP = rt.api.startWorkflowTask('scenario-a', 'brief'); // 双击：立即被闸拒绝
+  start.resolve({ session_id: 'run-a' });             // 放行第一次（闸若失效，两次共用同一 deferred 也能落定）
+  assert.equal(await secondP, null, 'busy 期间第二次调用直接返回 null');
+  assert.deepEqual(await first, { session_id: 'run-a' }, '第一次调用正常完成');
+  assert.equal(rt.state.workflow.starting, false, '结束后闸释放');
+  assert.deepEqual(rt.calls.invoke, ['start_workflow', 'kick_workflow'], '只发一次 start+kick，不得双份');
 });
