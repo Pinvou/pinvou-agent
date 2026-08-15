@@ -22,7 +22,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
-use deepseek_tui::error_taxonomy::ErrorEnvelope;
 use deepseek_tui::tui::app::AppMode;
 use pinvou3_lib::features::assistant::engine::AppEngine;
 use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
@@ -418,69 +417,11 @@ fn record_transcript(
     path
 }
 
-#[test]
-fn strict_mode_rejects_runtime_engine_error() {
-    let timeline = vec![(
-        0.1,
-        Event::error(ErrorEnvelope::classify(
-            "stream read error: response body decode failed".to_string(),
-            true,
-        )),
-    )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
-
-    assert_eq!(summary.engine_errors.len(), 1);
-    assert!(summary.engine_errors[0].contains("stream read error"));
-    assert!(validate_engine_errors(&summary.engine_errors, true).is_err());
-    assert!(validate_engine_errors(&summary.engine_errors, false).is_ok());
-    assert!(validate_engine_errors(&[], true).is_ok());
-}
-
-#[test]
-fn strict_mode_rejects_failed_turn_without_error_event() {
-    use deepseek_tui::models::Usage;
-
-    let timeline = vec![(
-        0.1,
-        Event::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Failed,
-            error: Some("engine task panicked".to_string()),
-            tool_catalog: None,
-            base_url: None,
-        },
-    )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
-
-    assert!(summary.engine_errors.is_empty());
-    assert_eq!(summary.terminal_status, Some(TurnOutcomeStatus::Failed));
-    assert_eq!(
-        summary.terminal_error.as_deref(),
-        Some("engine task panicked")
-    );
-    assert!(validate_terminal_outcome(&summary, true).is_err());
-    assert!(validate_terminal_outcome(&summary, false).is_ok());
-}
-
-#[test]
-fn strict_mode_waits_for_turn_complete_after_error() {
-    use deepseek_tui::models::Usage;
-
-    let error = Event::error(ErrorEnvelope::classify(
-        "temporary stream error".to_string(),
-        true,
-    ));
-    let complete = Event::TurnComplete {
-        usage: Usage::default(),
-        status: TurnOutcomeStatus::Failed,
-        error: Some("stream recovery failed".to_string()),
-        tool_catalog: None,
-        base_url: None,
-    };
-
-    assert!(!is_authoritative_turn_complete(&error));
-    assert!(is_authoritative_turn_complete(&complete));
-}
+// strict_mode_ 的三个确定性测试已移入 src/features/assistant/strict_mode_validation_tests.rs
+// (pinvou3_lib 单测模块):它们只依赖 deepseek_tui 类型,却因本文件 import
+// AppEngine/Pinvou3Bridge 被迫链接 fastembed/tauri/aws-lc-sys 全树,在 ubuntu 16GB
+// runner 上 link OOM(exit 143)。此处保留的同名 helper 副本仍被真模型
+// scenario(#[ignore])使用,改动需两边同步。
 
 fn render_timeline(timeline: &[(f64, Event)]) -> String {
     let mut s = String::new();

@@ -22,19 +22,54 @@ on:
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
       - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
       - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
   merge_group:
   push:
     branches: [main]
+    paths:
+      - 'pinvou3-app/src-tauri/.cargo/config.toml'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+      - 'pinvou3-app/run-dev.sh'
+      - '.github/workflows/rustc-wrapper-smoke.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: rustc-wrapper-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # merge_group 不支持事件级 paths 过滤，先在一个轻量 Linux job 中判断组合
+  # diff；无关 PR 入队时跳过后续三个平台 runner。PR/push 的事件级 paths 仍
+  # 保留，避免这些事件连轻量路由 job 都启动。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      wrapper: ${{ steps.filter.outputs.wrapper }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            wrapper:
+              - 'pinvou3-app/src-tauri/.cargo/config.toml'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
+              - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
+              - 'pinvou3-app/run-dev.sh'
+              - '.github/workflows/rustc-wrapper-smoke.yml'
+
   smoke:
+    needs: changes
+    if: ${{ needs.changes.outputs.wrapper == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -122,10 +157,13 @@ jobs:
             # 编译 .exe 版 wrapper(与 selector 同一命令),再直接执行它跑 env
             # 观测注入结果(.exe 是原生二进制,可直接运行,无 .cmd 嵌套引号问题)。
             rustc -O scripts/rustc-stack-wrapper.rs -o scripts/rustc-stack-wrapper.exe
-            scripts/rustc-stack-wrapper.exe env | grep -q "^RUST_MIN_STACK=16777216$"
+            out="$(scripts/rustc-stack-wrapper.exe env)"
           else
-            scripts/rustc-stack-wrapper env | grep -q "^RUST_MIN_STACK=16777216$"
+            out="$(scripts/rustc-stack-wrapper env)"
           fi
+          # 用命令替换(非管道)避免 grep -q 提前关闭管道导致 env SIGPIPE
+          # (set -o pipefail 下 SIGPIPE 会让 step flaky 失败)。
+          echo "$out" | grep -q "^RUST_MIN_STACK=16777216$"
 
       # 4) 运行时契约:不继承编译器栈覆盖。
       #    复制仓库契约测试到最小 crate,按正式入口方式注入 wrapper 后跑
@@ -169,9 +207,11 @@ jobs:
           unset RUST_MIN_STACK
           if [ "$RUNNER_OS" = "Windows" ]; then
             rustc -O rustc-stack-wrapper.rs -o rustc-stack-wrapper.exe
-            RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper.exe env | grep -q "^RUST_MIN_STACK=16777216$"
+            out="$(RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper.exe env)"
           else
             # `env env`:链上命令 `env` 执行参数中的 `env`(无参),打印当前环境,
             # 应包含经 wrapper 注入的 RUST_MIN_STACK=16777216。
-            RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper env | grep -q "^RUST_MIN_STACK=16777216$"
+            out="$(RUSTC_WRAPPER_CHAIN=env ./rustc-stack-wrapper env)"
           fi
+          # 命令替换(非管道)避免 grep -q 提前关闭管道导致 env SIGPIPE(同上)。
+          echo "$out" | grep -q "^RUST_MIN_STACK=16777216$"

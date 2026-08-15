@@ -16,3 +16,5 @@ pub(crate) mod turn_shell_tasks;
 
 #[cfg(test)]
 mod multiagent_regression_tests;
+#[cfg(test)]
+mod strict_mode_validation_tests;
