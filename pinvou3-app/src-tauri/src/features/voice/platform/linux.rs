@@ -126,5 +126,8 @@ pub fn native_recognition_source() -> &'static str {
 }
 
 pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {
+    // Linux webkit2gtk 的麦克风放行是 lib.rs 里无状态的 permission-request 处理器
+    // （每次 getUserMedia 即时 allow），应用侧没有可重置的持久授权；返回 false
+    // 让前端保留原始失败文案（此时失败多在系统层 pipewire/设备，重置无济于事）。
     Ok(false)
 }

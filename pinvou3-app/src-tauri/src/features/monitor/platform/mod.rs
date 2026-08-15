@@ -16,7 +16,11 @@
 //! 跨平台的 `nvidia-smi` 探针（见 `super::nvidia_gpu_snapshot`），无 Linux 专属实现。
 
 #[cfg(target_os = "linux")]
+mod linux_cpu;
+#[cfg(target_os = "linux")]
 mod linux_memory;
+#[cfg(target_os = "macos")]
+mod macos_cpu;
 #[cfg(target_os = "macos")]
 mod macos_gpu;
 #[cfg(target_os = "macos")]
@@ -30,13 +34,12 @@ mod windows_gpu;
 #[cfg(target_os = "windows")]
 mod windows_memory;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn cpu_snapshot() -> Option<super::CpuSnapshot> {
-    None
-}
-
+#[cfg(target_os = "linux")]
+pub use linux_cpu::cpu_snapshot;
 #[cfg(target_os = "linux")]
 pub use linux_memory::ram_snapshot;
+#[cfg(target_os = "macos")]
+pub use macos_cpu::cpu_snapshot;
 #[cfg(target_os = "macos")]
 pub use macos_memory::ram_snapshot;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

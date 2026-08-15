@@ -122,6 +122,29 @@ pub fn native_recognition_source() -> &'static str {
     "system_speech"
 }
 
-pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {
-    Ok(false)
+pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
+    use tauri::Manager;
+
+    // WKWebView 的麦克风授权走系统 TCC：清掉本应用 bundle 的麦克风记录后，
+    // 下一次 getUserMedia 会重新弹系统授权——等价于 Windows 侧把 WebView2 权限
+    // 状态重置为 DEFAULT。返回 true 后前端把失败文案换成"请重试"提示。
+    let identifier = window.app_handle().config().identifier.clone();
+    if identifier.trim().is_empty() {
+        return Err("无法确定应用标识符，重置麦克风权限失败".to_string());
+    }
+    let output = tokio::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", "Microphone", &identifier])
+        .output()
+        .await
+        .map_err(|e| format!("启动 tccutil 失败：{e}"))?;
+    if output.status.success() {
+        Ok(true)
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            "重置麦克风权限失败".to_string()
+        } else {
+            format!("重置麦克风权限失败：{detail}")
+        })
+    }
 }
