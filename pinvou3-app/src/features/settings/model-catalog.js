@@ -887,6 +887,7 @@ export {
   findCloudProviderForModel,
   providerLabelForModel,
   isCodingPlanModel,
+  catalogItemMatchesModel,
   isPresetModel,
   groupModelsForSelector,
   localUserNamed,

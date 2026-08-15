@@ -16,7 +16,7 @@ import {
   MODEL_CATALOG_SECTIONS, MODEL_CATALOG, CLOUD_MODEL_PROVIDERS,
   BRAND_ICON_BY_PRESET, BRAND_ICON_BY_VENDOR,
   presetOptionsI18n, presetProviderLabel,
-  normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel,
+  normalizedProviderBaseUrl, findCloudProviderForModel, providerLabelForModel, isCodingPlanModel, catalogItemMatchesModel,
   groupModelsForSelector, selectorMainLabel, selectorSubLabel,
   reasoningEffortTiersForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort,
 } from './model-catalog.js';
@@ -1269,7 +1269,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const initialCatalogMatch = initialCatalogGroups.some(group =>
         group.preset === initial.preset
         && (!initialProvider || group.key === initialProvider.key)
-        && group.items.some(item => !item.custom && item.model === initial.model)
+        && group.items.some(item => !item.custom && catalogItemMatchesModel(item, initial.model))
       );
       const canSetUpLocalModel = can('localModelSetup');
       const [name, setName] = useState(initial.name || '');
@@ -1616,8 +1616,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
       const renderProviderModelField = () => {
         const items = activeProvider ? activeProvider.items : [];
-        const known = items.some(item => !item.custom && item.model === model);
-        const selectedItem = known ? items.find(item => !item.custom && item.model === model) : null;
+        const known = items.some(item => !item.custom && catalogItemMatchesModel(item, model));
+        const selectedItem = known ? items.find(item => !item.custom && catalogItemMatchesModel(item, model)) : null;
         const selectedLabel = customModel || !known ? `${settingsCopy.customModel} ID` : ((selectedItem && selectedItem.title) || model);
         const chooseModel = (item) => {
           const nextModel = (!item || item.custom) ? '' : item.model;
@@ -1652,7 +1652,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             {providerModelPickerOpen && (
               <div className={`border-b last:border-b-0 ${formDivider}`}>
                 {items.map(item => {
-                  const active = item.custom ? (customModel || !known) : (!customModel && item.model === model);
+                  const active = item.custom ? (customModel || !known) : (!customModel && catalogItemMatchesModel(item, model));
                   return (
                     <button
                       type="button"
