@@ -24,6 +24,8 @@ function loadInteractionRuntime() {
     pendingDraftMultiAgent: false,
     chatItems: [],
     messages: [],
+    busy: false,
+    thinking: {},
   };
   const deferred = {};
   const calls = [];
@@ -49,9 +51,11 @@ function loadInteractionRuntime() {
     addAuthoritySyncNotice() {},
     addChatItem() {},
     timeStr() { return ''; },
+    // 简化 mock：真实 runSyncOnSession（bridge.js）会 swap 到 sid 的工作集执行
+    // 并在结束后 restore 当前显示，且 sid 无 buffer 时静默丢弃；本 mock 只记录
+    // 定向调用证据后直接执行 fn。因此下方对 state.modeState 的断言验证的是
+    // 「fn 携权威 st 被执行」，非端到端显示语义。
     runSyncOnSession(sid, fn) {
-      // 记录跨会话定向调用：sid !== active 时 fn 必须落在 sid 的 buffer 上，
-      // 不能直接改当前显示。本 mock 简化执行 fn 但保留调用证据。
       if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
       fn();
     },
@@ -59,6 +63,9 @@ function loadInteractionRuntime() {
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
     rerenderFromMessages() {},
+    currentStreamText: '',
+    currentStreamId: 0,
+    itemIdSeq: 1000,
     ensureSession: async () => (state.activeSessionId || 'chat-a'),
     sendMessage: async () => {},
     reconcileRemoteTurn: async () => true,
@@ -86,7 +93,7 @@ test('exitPlanToYolo 权威写回定向触发会话：await 期间切走不污�
   await exitP;
   assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
     'exitPlanToYolo 写回必须定向触发会话 chat-a（修复前直接写全局、无此调用）');
-  // 成功路径必须真实执行：bumpModeStateEpoch 在 #250 未合并时不得被 ReferenceError
+  // 成功路径必须真实执行：#250 的 bumpModeStateEpoch 缺失时会被 ReferenceError
   // 打成失败提示（历史假阳性：错误路径也记录 runSyncOnSession，仅靠上面断言无法区分）。
   assert.equal(rt.errorItems.length, 0,
     '成功路径不得走错误分支（不得出现 exitPlanFailed + ReferenceError 提示）');
@@ -141,4 +148,11 @@ test('editLastTurn 失败恢复定向触发会话：切走后 busy/错误提示�
   await editP;
   assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
     'editLastTurn 失败恢复（messages/busy/错误提示）必须定向回发起会话 chat-a');
+  // 恢复内容：messages 回滚到编辑前快照、busy 复位、错误提示恰好落一次。
+  assert.equal(rt.state.messages.length, 0,
+    '失败后 messages 必须回滚到快照（编辑重跑的乐观 user 消息被撤销）');
+  assert.equal(rt.state.busy, false,
+    '失败后 busy 必须复位（否则触发会话被永久卡成忙碌）');
+  assert.equal(rt.errorItems.length, 1,
+    '失败提示恰好一条（"⚠️ Error: boom"，落进定向恢复的会话）');
 });
