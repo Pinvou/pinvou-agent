@@ -422,6 +422,8 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
+      imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
@@ -509,6 +511,8 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
+      imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
@@ -596,6 +600,8 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
+      imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
@@ -1988,6 +1994,8 @@
   var loadSessionModel = settingsFeature.loadSessionModel;
   var switchModel = settingsFeature.switchModel;
   var testModelConnection = settingsFeature.testModelConnection;
+  var getImageInputCapability = settingsFeature.getImageInputCapability;
+  var testImageInputCapability = settingsFeature.testImageInputCapability;
   var testSearchProvider = settingsFeature.testSearchProvider;
 
   var interactionFeature = installBridgeFeature("interaction", {
@@ -2334,6 +2342,8 @@
       loadSessionModel: loadSessionModel,
       switchModel: switchModel,
       testModelConnection: testModelConnection,
+      getImageInputCapability: getImageInputCapability,
+      testImageInputCapability: testImageInputCapability,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
       // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回

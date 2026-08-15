@@ -1260,7 +1260,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
     };
 
     // 添加/编辑模型模态弹窗。
-    const ModelFormModal = ({ t, initial, onCancel, onSave, bs }) => {
+    const ModelFormModal = ({ isDark, t, initial, onCancel, onSave, bs, models = [] }) => {
       const settingsCopy = t.uiSettingsDetail;
       const localVllmSupported = !!(bs.platformCapabilities && bs.platformCapabilities.localVllmSupported);
       const modelScope = initial.__scope || (initial.preset === 'local_vllm' ? 'local' : 'cloud');
@@ -1304,6 +1304,27 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [detectResult, setDetectResult] = useState(null); // { candidates } | { error } | null
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // 图片输入能力三档(auto/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
+      const [imageCapability, setImageCapability] = useState(initial.image_capability_override || 'auto');
+      const [visionModelId, setVisionModelId] = useState(initial.vision_model_id || '');
+      const [imageCapabilityPickerOpen, setImageCapabilityPickerOpen] = useState(false);
+      // 「自动探测」保存时按钮转「正在探测图片能力…」,探测随保存完成、弹窗直接关闭。
+      const [savingModel, setSavingModel] = useState(false);
+      // 「保存时检测」检测到明确不支持时的待决策信号(ImageProbeOutcome);
+      // 非空时弹窗保持,给出再次检测/去配置视觉模型/直接保存(自动处理)三选一。
+      const [probeDecision, setProbeDecision] = useState(null);
+      // 保存失败(连接/写盘错误)行内提示:非空时弹窗保持,交用户修正后重试,
+      // 不静默关闭丢弃表单输入。
+      const [saveError, setSaveError] = useState('');
+      // 视觉模型选择探测:选中模型必须先通过图片识别探测——探测中列表保持
+      // 展开、该行右侧显示忙转圈;通过后收起列表选中,未通过则拒绝并提示排查。
+      const [visionProbingKey, setVisionProbingKey] = useState(null);
+      const [visionProbeError, setVisionProbeError] = useState(null);
+      const [visionModelPickerOpen, setVisionModelPickerOpen] = useState(false);
+      // 测试图片能力(设计 §7.3):仅主动点击触发;表单关键值变化后上一次结果不再可信,清除。
+      const [imageTesting, setImageTesting] = useState(false);
+      const [imageTestResult, setImageTestResult] = useState(null); // { status, verified, summary } | null
+      useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset]);
       // 本机预装大模型「再入口」:检测无运行实例但有预装时,提示启用;走同一 bootstrap。
       const [offerSetup, setOfferSetup] = useState(false);   // 检测到预装,显示启用提示
       const [bootstrapHere, setBootstrapHere] = useState(false); // 从本页发起了 bootstrap(隔离全局态,避免开机引导的成功态串到这里)
@@ -1415,6 +1436,27 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         }
         finally { setTesting(false); }
       }
+      // 测试图片能力(设计 §7.3):与测试连接同一模式——表单未保存也按当前表单值发测,
+      // 凭据优先用新填的 key,否则由后端按 model_id 读已保存凭据。
+      function normalizeImageCapabilityTestResult(value) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const status = ['supported', 'unsupported', 'unverified', 'error'].includes(value.status) ? value.status : 'error';
+          return { status, verified: !!value.verified, summary: value.summary ? String(value.summary) : '' };
+        }
+        return { status: 'error', verified: false, summary: String(value || '') };
+      }
+      async function handleImageCapabilityTest() {
+        if (!bridge.available || !bridge.models.testImageInputCapability) return;
+        setImageTesting(true); setImageTestResult(null);
+        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        try {
+          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          setImageTestResult(normalizeImageCapabilityTestResult(result));
+        } catch (e) {
+          setImageTestResult({ status: 'error', verified: false, summary: String(e && e.message ? e.message : e) });
+        }
+        finally { setImageTesting(false); }
+      }
       // 探测本机 vLLM：只扫 127.0.0.1/localhost 的 8000-8002，探到唯一可用实例直接自动填充。
       function applyCandidate(c) {
         if (!c) return;
@@ -1516,8 +1558,11 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         }
         setShowKey(nextVisible);
       }
-      function doSave() {
-        if (!canSave) return;
+      // 「保存时检测」流程:检测支持 → 回填落盘后直接关闭;检测明确不支持 →
+      // 后端**不落盘**,弹窗保持并给出三选一(再次检测/去配置视觉模型/
+      // 直接保存落自动处理);error/连接不通 → 后端已落「自动处理」,直接关闭。
+      async function doSave(skipProbe) {
+        if (!canSave || savingModel) return;
         const id = initial.__new ? ('m_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)) : initial.id;
         const contextTokens = Number.parseInt(contextWindow, 10);
         const outputTokens = Number.parseInt(maxOutput, 10);
@@ -1527,18 +1572,80 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         const nextApiKey = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
           : (!isLocalPreset && apiKey.trim() ? apiKey.trim() : '');
-        onSave({
-          id: id, name: saveName, preset: preset,
-          context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
-          max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
-          // 仅当前表单模型支持档位时保存；手输 model 变为无档位模型时置 null。
-          reasoning_effort: reasoningEffortTiers.length > 0 ? (reasoningEffort || null) : null,
-          model: model.trim(), base_url: baseUrl.trim(),
-          api_key: nextApiKey, credential_action: nextKeyAction,
-          provider_kind: providerKind || null,
-          vendor: vendor || null,
-          endpoint_mode: endpointMode || null,
-        });
+        setSavingModel(true);
+        setSaveError('');
+        try {
+          const outcome = await onSave({
+            id: id, name: saveName, preset: preset,
+            context_window_tokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : null,
+            max_output_tokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : null,
+            // 仅当前表单模型支持档位时保存；手输 model 变为无档位模型时置 null(#209)。
+            reasoning_effort: reasoningEffortTiers.length > 0 ? (reasoningEffort || null) : null,
+            model: model.trim(), base_url: baseUrl.trim(),
+            api_key: nextApiKey, credential_action: nextKeyAction,
+            provider_kind: providerKind || null,
+            vendor: vendor || null,
+            endpoint_mode: endpointMode || null,
+            // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
+            // 用户「直接保存(自动处理)」时带 pinvou 档且不再检测。
+            image_capability_override: skipProbe ? 'pinvou' : (imageCapability || 'auto'),
+            vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
+            // 「保存时检测」档:后端在保存时检测连接+识图,按结果回填。
+            probe_image_capability: !skipProbe && imageCapability === 'auto',
+          });
+          const probe = outcome && outcome.image_probe;
+          if (probe && (probe.status === 'unsupported' || probe.status === 'unverified')) {
+            // 明确不支持:后端未写盘,弹窗保持,交用户决策。
+            setProbeDecision(probe);
+          } else {
+            // supported 已回填落盘 / error/unknown 已落自动处理 / 无检测:直接关闭。
+            onCancel();
+          }
+        } catch (e) {
+          // 保存失败(连接/写盘错误):保持弹窗并给行内提示,不丢弃表单输入。
+          setSaveError(String(e && e.message ? e.message : e));
+        } finally {
+          setSavingModel(false);
+        }
+      }
+      // 视觉模型选择:一律识图探测(无表内加速)——识别出测试图(supported)
+      // 才收起列表并选中;未通过则列表保持展开、该模型被拒绝并提示排查,
+      // 用户可继续选择其他模型。
+      async function handleVisionModelChoose(key) {
+        if (visionProbingKey) return; // 探测中忽略其他点击
+        setVisionProbeError(null);
+        if (!key) {
+          setVisionModelId('');
+          setVisionModelPickerOpen(false);
+          return;
+        }
+        const candidate = visionCandidates.find(item => item.id === key);
+        if (!candidate || !bridge.available || !bridge.models.testImageInputCapability) {
+          setVisionModelId(key);
+          setVisionModelPickerOpen(false);
+          return;
+        }
+        setVisionProbingKey(key); // 列表保持展开,该行右侧显示忙转圈
+        try {
+          const result = await bridge.models.testImageInputCapability(
+            candidate.model || candidate.name || '',
+            candidate.base_url || '',
+            '',
+            candidate.id,
+          );
+          if (result && result.status === 'supported') {
+            setVisionModelId(key);
+            setVisionModelPickerOpen(false); // 成功按最终结果收起列表
+          } else {
+            setVisionProbeError(settingsCopy.visionModelProbeError(
+              result && result.summary ? result.summary : ''));
+          }
+        } catch (e) {
+          setVisionProbeError(settingsCopy.visionModelProbeError(
+            String(e && e.message ? e.message : e)));
+        } finally {
+          setVisionProbingKey(null);
+        }
       }
       function makeModelId() {
         return 'm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1823,6 +1930,138 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </div>
         );
       };
+      // 图片输入能力 + 兜底视觉模型(阶段 G):与发送时后端复核同一组 SavedModel 字段。
+      const imageCapabilityOptions = [
+        // 自动探测(auto):保存时探测连接+识图并回填;能(enabled)/不能(disabled):
+        // 人工钉死;pinvou 决策(pinvou):内置已验证表判断,不探测。
+        { key: 'auto', label: settingsCopy.imageCapabilityAuto },
+        { key: 'enabled', label: settingsCopy.imageCapabilityEnabled },
+        { key: 'disabled', label: settingsCopy.imageCapabilityDisabled },
+        { key: 'pinvou', label: settingsCopy.imageCapabilityPinvou },
+      ];
+      // 视觉兜底候选:显示除当前模型外的全部模型,不做能力过滤——选择时
+      // 一律识图探测,supported 才允许选中(探测是唯一闸门;disabled 可能是
+      // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
+      const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
+      const visionOptions = [{ key: '', label: settingsCopy.visionModelNone }]
+        .concat(visionCandidates.map(item => ({ key: item.id, label: item.name || item.model })));
+      const renderPickerRow = ({ testId, label, value, options, currentKey, open, onToggle, onChoose, probingKey, probeError }) => (
+        <>
+          <button
+            type="button"
+            data-testid={`${testId}-toggle`}
+            onClick={onToggle}
+            className={`w-full min-h-[54px] flex items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 ${formDivider}`}
+          >
+            <span className={`shrink-0 text-[14px] leading-5 ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{label}</span>
+            <span className={`min-w-0 flex-1 text-right text-[14px] leading-5 truncate ${isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]'}`}>{value}</span>
+            <ChevronDown
+              size={16}
+              className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}
+            />
+          </button>
+          {open && (
+            <div className={`border-b last:border-b-0 ${formDivider}`}>
+              {options.map(option => {
+                const active = option.key === currentKey;
+                const probing = probingKey === option.key;
+                return (
+                  <button
+                    type="button"
+                    data-testid={`${testId}-option-${option.key || 'none'}`}
+                    key={option.key || '__none__'}
+                    onClick={() => onChoose(option.key)}
+                    disabled={probingKey ? !probing : false}
+                    className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'} ${probing ? 'opacity-70' : ''}`}
+                  >
+                    <span className={`min-w-0 flex-1 text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{option.label}</span>
+                    {probing ? (
+                      <span data-testid={`${testId}-probing`} className="shrink-0 flex items-center gap-1.5 text-[12px] leading-4 text-[#0A84FF]">
+                        <RefreshCw size={13} className="animate-spin" />
+                        {settingsCopy.visionModelProbing}
+                      </span>
+                    ) : active ? <Check size={17} strokeWidth={2.4} className={isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]'} /> : null}
+                  </button>
+                );
+              })}
+              {probeError && (
+                <div data-testid={`${testId}-probe-error`} className={`px-7 py-2.5 text-[12px] leading-4 border-b last:border-b-0 ${isDark ? 'text-[#FFD60A] border-white/[0.08]' : 'text-[#B25E00] border-black/[0.08]'}`}>{probeError}</div>
+              )}
+            </div>
+          )}
+        </>
+      );
+      const renderImageInputSection = () => {
+        const capabilityLabel = (imageCapabilityOptions.find(option => option.key === imageCapability) || imageCapabilityOptions[0]).label;
+        const visionLabel = (visionOptions.find(option => option.key === visionModelId) || visionOptions[0]).label;
+        // 结果文案:supported 附模型回复摘要;仅当结果为 supported 且档位为 auto 时提示可设「支持图片」。
+        // unverified(未识别出测试色 / 400 非图片拒绝)统一「原因未知」,不得宣称支持或不支持。
+        const imageTestText = !imageTestResult
+          ? settingsCopy.imageCapabilityTestHint
+          : imageTestResult.status === 'supported'
+            ? settingsCopy.imageCapabilityTestSupported
+              + (imageTestResult.summary ? ` · ${settingsCopy.imageCapabilityTestReply(imageTestResult.summary)}` : '')
+              + (imageCapability === 'auto' ? ` · ${settingsCopy.imageCapabilityTestEnableHint}` : '')
+            : imageTestResult.status === 'unsupported'
+              ? settingsCopy.imageCapabilityTestUnsupported + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '')
+              : imageTestResult.status === 'unverified'
+                // 后端 summary 已自带「未能正确识别图像，原因未知」完整句,直接展示避免重复。
+                ? (imageTestResult.summary || settingsCopy.imageCapabilityTestUnverified)
+                : settingsCopy.imageCapabilityTestError + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '');
+        const imageTestColor = !imageTestResult
+          ? (isDark ? 'text-[#98989D]' : 'text-[#8A8A8E]')
+          : imageTestResult.status === 'supported'
+            ? (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
+            : imageTestResult.status === 'unsupported'
+              ? (isDark ? 'text-[#FFD60A]' : 'text-[#FF9500]')
+              : imageTestResult.status === 'unverified'
+                ? (isDark ? 'text-[#FFD60A]' : 'text-[#B25E00]')
+                : 'text-[#FF3B30]';
+        return (
+          <section>
+            <div className={formGroup}>
+              {renderPickerRow({
+                testId: 'image-capability',
+                label: settingsCopy.imageCapability,
+                value: capabilityLabel,
+                options: imageCapabilityOptions,
+                currentKey: imageCapability,
+                open: imageCapabilityPickerOpen,
+                onToggle: () => { setImageCapabilityPickerOpen(open => !open); setVisionModelPickerOpen(false); },
+                onChoose: key => { setImageCapability(key); setImageCapabilityPickerOpen(false); },
+              })}
+              {renderPickerRow({
+                testId: 'vision-model',
+                label: settingsCopy.visionModel,
+                value: visionLabel,
+                options: visionOptions,
+                currentKey: visionModelId,
+                open: visionModelPickerOpen,
+                onToggle: () => { setVisionModelPickerOpen(open => !open); setImageCapabilityPickerOpen(false); },
+                onChoose: handleVisionModelChoose,
+                // 选择探测:探测中该行右侧显示忙转圈,未通过在该行下方提示排查。
+                probingKey: visionProbingKey,
+                probeError: visionProbeError,
+              })}
+            </div>
+            <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.visionModelDesc}</div>
+            {/* §11.8/§11.9 静态隐私说明:云端模型图片随消息外发,本地模型图片不离开本机。 */}
+            <div data-testid="image-privacy-desc" className={`px-1 mt-1 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.imagePrivacyDesc}</div>
+            <div className={`mt-3 ${formGroup}`}>
+              <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}`}>
+                <span data-testid="image-capability-test-result" className={`min-w-0 flex-1 text-[13px] leading-5 ${imageTestColor}`}>
+                  {imageTestText}
+                </span>
+                <button type="button" data-testid="image-capability-test" onClick={handleImageCapabilityTest}
+                  disabled={imageTesting || !model.trim() || !baseUrl.trim()}
+                  className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>
+                  {imageTesting ? t.testingConn : settingsCopy.imageCapabilityTest}
+                </button>
+              </div>
+            </div>
+          </section>
+        );
+      };
       if (initial.__new && pickerOpen) {
         return (
           <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
@@ -1953,6 +2192,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                   {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
+              {renderImageInputSection()}
               {showConfigFields && reasoningEffortTiers.length > 0 && (
                 <section>
                   <div className={formGroup}>
@@ -2057,10 +2297,44 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
                 </div>
               )}
             </div>
+            {/* 保存失败行内提示:弹窗保持,交用户修正后重试。 */}
+            {saveError && (
+              <div data-testid="model-form-save-error" className={`px-5 py-3 border-t ${formDivider}`}>
+                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#FF453A]' : 'text-[#D70015]'}`}>
+                  {settingsCopy.imageCapabilitySaveFailed(saveError)}
+                </div>
+              </div>
+            )}
+            {/* 「保存时检测」明确不支持:后端未写盘,弹窗保持,交用户决策。
+                summary 为 provider/模型回复原文,由 i18n 函数 key 决定是否展示。 */}
+            {probeDecision && (
+              <div data-testid="image-probe-decision" className={`px-5 py-3 border-t ${formDivider}`}>
+                <div className={`text-[13px] leading-5 ${isDark ? 'text-[#FFD60A]' : 'text-[#B25E00]'}`}>
+                  {settingsCopy.imageCapabilityDecisionTitle}
+                  {settingsCopy.imageCapabilityDecisionDetail(probeDecision.summary)}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button data-testid="image-probe-retest" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(); }}
+                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF]' : 'bg-[#007AFF]/10 text-[#007AFF]'}`}>
+                    {settingsCopy.imageCapabilityDecisionRetest}
+                  </button>
+                  <button data-testid="image-probe-configure-vision" disabled={savingModel} onClick={() => setProbeDecision(null)}
+                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+                    {settingsCopy.imageCapabilityDecisionConfigureVision}
+                  </button>
+                  <button data-testid="image-probe-save-auto" disabled={savingModel} onClick={() => { setProbeDecision(null); doSave(true); }}
+                    className={`h-8 px-3 rounded-full text-[13px] font-medium disabled:opacity-35 ${isDark ? 'bg-white/[0.08] text-[#C7C7CC]' : 'bg-[#E5E5EA] text-[#636366]'}`}>
+                    {settingsCopy.imageCapabilityDecisionSaveAuto}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
               <button data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
-              <button onClick={doSave} disabled={!canSave}
-                className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">{t.modelSaveBtn}</button>
+              <button data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
+                className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
+                {savingModel ? settingsCopy.imageCapabilitySaving : t.modelSaveBtn}
+              </button>
             </div>
           </div>
         </div>
@@ -2903,9 +3177,10 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             </main>
           </div>
           {canManageModels && editingModel && (
-            <ModelFormModal t={t} initial={editingModel} bs={bs}
+            <ModelFormModal isDark={activeTheme === 'dark'} t={t} initial={editingModel} bs={bs} models={userModels}
               onCancel={() => setEditingModel(null)}
-              onSave={m => { onSaveModel(m); setEditingModel(null); }} />
+              // 保存/探测结果由弹窗内部控制关闭(自动探测有结论时保持打开展示)。
+              onSave={async m => onSaveModel(m)} />
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} />}

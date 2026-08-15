@@ -653,6 +653,10 @@ impl EnginePool {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
         let scheduled_profile = self.store.scheduled_profile(session_id);
+        // 与命令层 chat.rs 的 is_scheduled 同口径(scheduled_profile 存在即算):
+        // scheduled 会话图片固定走 image_analyze 硬规则,即使带 interactive
+        // 模型覆盖也不例外,故 always 标记不得用更窄的 pins_scheduled_model。
+        bridge.image_analyze_always = scheduled_profile.is_some();
         let interactive_model_override = self.store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
             && (scheduled_unattended || interactive_model_override.is_none());
@@ -1667,7 +1671,7 @@ mod scheduled_model_tests {
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
-    use crate::platform::prefs::{ModelPreset, SavedModel};
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1701,6 +1705,8 @@ mod scheduled_model_tests {
             provider_kind: None,
             vendor: None,
             endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
             api_key: String::new(),
             credential_ref: None,
             credential_state: CredentialState::Missing,

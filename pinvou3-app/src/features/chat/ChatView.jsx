@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, BookOpen, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, ImageIcon, Mic, Monitor, Package, Palette, Paperclip, Presentation, Send, Sparkles, StopCircle, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -1274,6 +1274,41 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
+      // 普通会话选图即时警告(阶段 G):当前模型图片路由为 unsupported 时在附件区提示,
+      // 仅提示不拦截,发送时后端仍按同一路径复核(chat 命令 image_input_unsupported)。
+      // scheduled 会话发送时不做图片路由(固定工具兜底),这里同样不提示。
+      const hasImageAttachment = attachments.some(a => !!(a && a.result && a.result.kind === 'image'));
+      const isScheduledSession = !!(scheduledRunContext || isScheduledTaskCreationChat);
+      const sessionModelKey = (bs && bs.currentSessionModelId) || (bs && bs.activeModelId) || '';
+      const [imageInputInfo, setImageInputInfo] = useState(null);
+      useEffect(() => {
+        if (!hasImageAttachment || isScheduledSession || !bridge.available
+          || !bridge.models || typeof bridge.models.getImageInputCapability !== 'function') {
+          setImageInputInfo(null);
+          return undefined;
+        }
+        let cancelled = false;
+        bridge.models.getImageInputCapability(activeSessionId)
+          .then(info => { if (!cancelled) setImageInputInfo(info || null); })
+          // 查询失败(如凭据未备/旧后端无此命令)按无警告处理,绝不误报。
+          .catch(() => { if (!cancelled) setImageInputInfo(null); });
+        return () => { cancelled = true; };
+      }, [hasImageAttachment, isScheduledSession, activeSessionId, sessionModelKey, bs && bs.savedModels]);
+      const imageInputWarning = imageInputInfo && imageInputInfo.image_mode === 'unsupported'
+        ? (imageInputInfo.capability === 'unknown' ? t.uiAttachments.imageUnknown : t.uiAttachments.imageUnsupported)
+        : '';
+      // 云上传隐私提示(§11.8/§11.9):图片字节离开本机时告知去向——native 直发看主模型
+      // 端点,fallback 看兜底视觉模型端点(图片实际发给视觉模型);本机 loopback 不显示
+      // 任何云上传字样;查询失败或旧后端无对应字段时 fail-open 不显示。
+      const imagePrivacyHint = imageInputInfo && (
+        (imageInputInfo.image_mode === 'native' && imageInputInfo.is_local_endpoint === false)
+        || (imageInputInfo.image_mode === 'vision_tool_fallback' && imageInputInfo.vision_is_local_endpoint === false)
+      )
+        ? (imageInputInfo.image_mode === 'vision_tool_fallback'
+          ? t.uiAttachments.imageCloudUploadVision
+          : t.uiAttachments.imageCloudUpload)
+        : '';
+
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
         if (isMultiAgentReadOnly || !canSend) return;
@@ -1768,6 +1803,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
+            {imageInputWarning && (
+              <div data-testid="image-capability-warning"
+                className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="shrink-0 text-amber-500" />
+                <span className="min-w-0">{imageInputWarning}</span>
+              </div>
+            )}
+            {imagePrivacyHint && (
+              <div data-testid="image-privacy-hint"
+                className="mb-2 px-3 text-[11px] leading-4 text-black/45 dark:text-white/45">
+                {imagePrivacyHint}
+              </div>
+            )}
             {voiceNotice && (
               <div className={`flex items-center justify-between gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] ${
                 voiceInput.status === 'failed'
