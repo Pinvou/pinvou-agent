@@ -55,6 +55,7 @@ pub struct ActiveSkillBinding {
 /// UI can toggle a mount on/off without losing its position in the ordered
 /// list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MountedCollection {
     pub collection_id: i64,
     pub enabled: bool,
@@ -65,6 +66,7 @@ pub struct MountedCollection {
 /// revisioned event that lets concurrent clients reconcile out-of-order
 /// updates.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MountedCollectionsSnapshot {
     pub revision: u64,
     pub collections: Vec<MountedCollection>,
