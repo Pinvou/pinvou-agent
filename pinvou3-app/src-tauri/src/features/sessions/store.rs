@@ -23,7 +23,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::platform::paths;
 
-use super::mode_state::SerializableMode;
+use crate::core::mode_state::SerializableMode;
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
@@ -155,6 +155,7 @@ impl SessionStore {
     ) -> Result<Self> {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
+        let prefs_snapshot = UserPrefs::load();
         let store = Self {
             manager: Arc::new(manager),
             scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
@@ -169,8 +170,9 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             code_session_predicate: Arc::new(RwLock::new(None)),
-            code_mode_states: Arc::new(RwLock::new(HashMap::new())),
-            code_permission: Arc::new(RwLock::new(UserPrefs::load().code_permission)),
+            session_mode_states: Arc::new(RwLock::new(HashMap::new())),
+            code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
+            mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;

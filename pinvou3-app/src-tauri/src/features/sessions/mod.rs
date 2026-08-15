@@ -46,12 +46,13 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::core::mode_state::{
-    ActiveSkillBinding, ModeLane, MountedCollection, MountedCollectionsSnapshot, SerializableMode,
-    SessionModeState,
-};
+pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
-use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs, UserPrefs};
+use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
+
+pub use self::mode_state::{
+    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, SessionModeState,
+};
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{

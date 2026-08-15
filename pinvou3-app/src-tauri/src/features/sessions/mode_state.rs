@@ -18,9 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::{bail, Context, Result};
 
-use crate::core::mode_state::{
-    ActiveSkillBinding, ModeDefaultsView, ModeLane, SerializableMode, SessionModeState,
-};
+use crate::core::mode_state::{ModeDefaultsView, ModeLane, SerializableMode};
 
 use super::injections::{PendingPlanClaim, PendingTurnInjections};
 use super::SessionStore;
@@ -153,8 +151,6 @@ impl Default for SessionModeState {
     }
 }
 
-/// 序列化镜像(跨层协议类型),定义在 core。
-pub use crate::core::mode_state::SerializableMode;
 
 #[cfg(test)]
 mod type_tests {
