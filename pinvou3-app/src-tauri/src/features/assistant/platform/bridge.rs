@@ -4539,6 +4539,38 @@ mod tests {
     }
 
     #[test]
+    fn zai_direct_route_survives_model_casing_mismatch() {
+        // 底座 zai 目录行是市场拼写 GLM-5.2；设置页与存量配置可能保存小写
+        // glm-5.2。resolve_runtime_route_for_model 是 send_user_message 实际使用
+        // 的路由入口，两种拼写在 z.ai 直连端点都必须解析成功，且上线模型收敛
+        // 为底座目录的规范拼写（与 CodeWhale resolver 的大小写折叠回退配套，
+        // Pinvou/CodeWhale#18，上游 Hmbown/CodeWhale#5475 同源）。
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for model in ["glm-5.2", "GLM-5.2"] {
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                model,
+                "https://api.z.ai/api/coding/paas/v4",
+                "sk-zai",
+            );
+            bridge.prefs.normalize_saved_model_metadata();
+            assert_eq!(bridge.provider(), "zai", "vendor=glm 应路由到 zai provider");
+
+            let route = bridge
+                .resolve_runtime_route_for_model(model)
+                .unwrap_or_else(|error| panic!("{model} 路由解析失败: {error}"));
+            assert_eq!(route.model(), "GLM-5.2", "{model} 应上线底座目录规范拼写");
+        }
+    }
+
+    #[test]
     fn known_reasoning_routes_preserve_provider_identity_and_stream_shape() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
