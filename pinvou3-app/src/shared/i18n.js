@@ -2489,28 +2489,28 @@ Object.assign(dict.ja.uiChatView, { memStatusRemembered:'記憶しました', me
 // ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
 Object.assign(dict.zh.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', todayLabel:'编辑之选 · 专业辅助', todayTitle:'规范公文\n一键起草', latency:'本地' },
-    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', todayLabel:'演示利器', todayTitle:'一句话\n做完\nPPT', latency:'本地' },
-    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', todayLabel:'数据洞察', todayTitle:'一段数据\n生成\n仪表盘', latency:'本地' },
-    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', todayLabel:'创意探索', todayTitle:'视觉设计\n信手拈来', version:'内置', latency:'本地' },
+    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
+    pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', latency:'本地' },
+    visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', latency:'本地' },
+    s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
   },
   categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', skill:'技能' },
 } });
 Object.assign(dict.en.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', todayLabel:"Editor's Choice · Professional Aid", todayTitle:'Compliant documents,\ndrafted in one click', latency:'Local' },
-    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', todayLabel:'Presentation Powerhouse', todayTitle:'Finish a PPT\nin one\nsentence', latency:'Local' },
-    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', todayLabel:'Data Insights', todayTitle:'One dataset,\none\ndashboard', latency:'Local' },
-    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', todayLabel:'Creative Exploration', todayTitle:'Visual design,\neffortlessly', version:'Built-in', latency:'Local' },
+    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', latency:'Local' },
+    pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', latency:'Local' },
+    visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', latency:'Local' },
+    s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', version:'Built-in', latency:'Local' },
   },
   categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', skill:'Skills' },
 } });
 Object.assign(dict.ja.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', todayLabel:'編集部のおすすめ · プロ向け補助', todayTitle:'規範公文を\nワンクリックで起草', latency:'ローカル' },
-    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', todayLabel:'プレゼンの利器', todayTitle:'一言で\nPPT を\n完成', latency:'ローカル' },
-    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', todayLabel:'データインサイト', todayTitle:'データから\nダッシュボードを\n生成', latency:'ローカル' },
-    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', todayLabel:'クリエイティブ探索', todayTitle:'ビジュアルデザインを\n手軽に', version:'内蔵', latency:'ローカル' },
+    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', latency:'ローカル' },
+    pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', latency:'ローカル' },
+    visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', latency:'ローカル' },
+    s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', skill:'スキル' },
 } });
@@ -2528,6 +2528,7 @@ Object.assign(dict.ja.uiToolStore, {
   groupByType:'タイプ別', groupByBusiness:'業務別',
   typeGroups:{ bundle:'ツールパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
 });
+// 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dict.zh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 dict.zh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';

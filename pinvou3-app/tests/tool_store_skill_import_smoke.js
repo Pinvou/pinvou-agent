@@ -95,8 +95,7 @@ async function clickExact(page, text) {
     const importedToast = await page.evaluate(() => document.body.innerText.includes('技能包已导入'));
     rec('导入成功弹窗「技能包已导入」', importedToast);
 
-    // 3. 列表视图展示上传技能;点击列表项 → 详情弹窗显示 description
-    rec('切换到列表视图', await clickExact(page, '列表'));
+    // 3. 列表视图(唯一视图)展示上传技能;点击列表项 → 详情弹窗显示 description
     await sleep(400);
     const listed = await page.evaluate(() => document.body.innerText.includes('my-test-skill'));
     rec('列表渲染上传技能条目', listed);
