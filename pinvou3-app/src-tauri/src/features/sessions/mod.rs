@@ -40,6 +40,9 @@ mod store;
 mod transcript;
 mod validators;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
