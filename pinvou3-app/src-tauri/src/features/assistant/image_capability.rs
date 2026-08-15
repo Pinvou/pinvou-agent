@@ -5,11 +5,10 @@
 //!
 //! 解析优先级:
 //! 1. 用户对 SavedModel 的显式 override(`Enabled`→Supported,`Disabled`→Unsupported);
-//! 2. 底座模型目录(`deepseek_tui::model_catalog`,合并链:用户覆盖 → provider 缓存
-//!    → 内置快照)条目 `modalities` 含 `image` → Supported;命中但不含 image **不下
-//!    否定结论**(目录否定标记不可全信,如 claude-opus-4-8 标 text-only),继续下落;
-//! 3. 内置已验证能力表(`VERIFIED_IMAGE_CAPABLE_MODELS`);
-//! 4. 都判不出 → `Unknown`(默认不冒充支持,允许用户在设置里 override Enabled)。
+//! 2. 内置已验证能力表(`VERIFIED_IMAGE_CAPABLE_MODELS`);v0.9.5 前还有底座
+//!    模型目录(`deepseek_tui::model_catalog`)一级,现已不再公开(见
+//!    `effective_image_capability` 第②级注释);
+//! 3. 都判不出 → `Unknown`(默认不冒充支持,允许用户在设置里 override Enabled)。
 //!
 //! ⚠️ 内置表宁可 Unknown 不可误判 Supported:只对明确多模态的模型名子串判中。
 //! 本地自定义模型(尤其 LocalVllm 的 `qwen36_35b_256k`,文本/多模态两种部署都存在,
@@ -62,10 +61,12 @@ impl ImageInputMode {
     }
 }
 
-/// Moonshot always-thinking 模型判定(bridge `moonshot_model_requires_explicit_thinking`
-/// 同一名单):这些模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,
-/// 省略该参数的请求会被网关拒绝。探测请求与真实链路必须同一口径,否则
-/// kimi-for-coding 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
+/// Moonshot always-thinking 模型判定(**探测专用**名单,真实链路不需要):
+/// 这些模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,省略该参数的
+/// 请求会被网关拒绝。真实链路由 bridge `request_reasoning_effort` 默认 high
+/// (底座翻译成 `thinking: {"type":"enabled"}`)天然满足,无名单;探测 payload
+/// 不带 reasoning 设置,必须按本名单显式注入 thinking,否则 kimi-for-coding
+/// 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
 pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),

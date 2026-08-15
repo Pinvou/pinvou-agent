@@ -898,9 +898,10 @@ impl Pinvou3Bridge {
 
     /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
     /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
-    ///    id 失效、凭据缺失,或该模型自身图片能力被显式 Disabled → 记 warning
-    ///    并优雅降级为不注册,不硬错(Disabled 的模型不能当视觉兜底,否则
-    ///    `image_analyze` 直到调用时才失败)。
+    ///    id 失效、凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
+    ///    **自身**的图片能力不在此处拒绝——选择器已用识图探测闸门验证(supported
+    ///    才允许选中),override 标记(disabled)可能是历史探测误判残留,运行时
+    ///    按实际被选中的事实使用(见函数体内注释)。
     /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
     ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
     /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
@@ -2939,11 +2940,13 @@ mod tests {
         assert!(no_key.resolve_vision_model_config().is_none());
     }
 
-    /// §9.3 规则 1 的图片能力校验:视觉模型自身被显式 Disabled(override)时
-    /// 不得用作视觉兜底——否则文本模型被配成视觉模型直到 image_analyze 调用
-    /// 时才失败(审阅缺口 #104)。Supported/Unknown(默认态)放行。
+    /// §9.3 规则 1 的视觉候选能力口径:视觉模型**自身**的 override 不在运行时
+    /// 拒绝——选择器已用识图探测闸门验证(supported 才允许选中),disabled 标记
+    /// 可能是历史探测误判残留,按被选中的事实使用;文本模型混入由前端闸门挡住
+    /// (曾按审阅缺口 #104 拒绝 disabled,后续轮次反转,见 `resolve_vision_model_config`
+    /// 规则 1 注释)。Supported/Unknown(默认态)同样放行。
     #[test]
-    fn vision_config_rejects_disabled_vision_model() {
+    fn vision_config_allows_disabled_vision_model() {
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,

@@ -313,9 +313,18 @@ pub async fn save_model(
     let mut model = model;
     // 自动探测在写盘前执行:结果回填 override 后随本次保存一起落盘;
     // 明确不支持时保持 Auto 并跳过本次写盘(见函数头注释)。
-    let image_probe = if probe_image_capability.unwrap_or(false)
-        && model.image_capability_override == ImageCapabilityOverride::Auto
-    {
+    // 探测是两个串行 HTTP 请求(最长约 38s await),期间用户可能删除该模型
+    // 或触发第二次保存——探测前记下 id 存在性,写盘事务内复查,翻转即放弃:
+    // 否则旧快照 upsert 会复活已删模型(credential_ref 悬空),或把更旧的
+    // 表单快照盖在探测期间完成的更新保存之上。
+    let probe_requested = probe_image_capability.unwrap_or(false)
+        && model.image_capability_override == ImageCapabilityOverride::Auto;
+    let existed_before_probe = if probe_requested {
+        UserPrefs::load().model_by_id(&model.id).is_some()
+    } else {
+        false
+    };
+    let image_probe = if probe_requested {
         Some(probe_and_fill_image_capability(&mut model).await)
     } else {
         None
@@ -323,17 +332,30 @@ pub async fn save_model(
     if image_probe_denies_persist(&image_probe) {
         return Ok(SaveModelOutcome { image_probe });
     }
+    let mut persisted = false;
     UserPrefs::update_transaction(|prefs| {
+        if probe_requested && prefs.model_by_id(&model.id).is_some() != existed_before_probe {
+            // 探测窗口内该 id 的存在性翻转了(已删 / 期间已被另一次保存落盘):
+            // 放弃本次写入,不做静默覆盖。
+            return Err(PROBE_STALE_SNAPSHOT_ERROR.to_string());
+        }
         let old = prefs.model_by_id(&model.id).cloned();
         let model = apply_model_credential(model, old.as_ref())
             .map_err(|e| sanitize_command_error("save_model", e))?;
         prefs.upsert_model(model);
+        persisted = true;
         Ok(())
     })
     .map_err(|e| sanitize_command_error("save_model", e))?;
-    pool.mark_model_updated(&model_id);
+    if persisted {
+        pool.mark_model_updated(&model_id);
+    }
     Ok(SaveModelOutcome { image_probe })
 }
+
+/// 探测期间模型行被删除/替换时 `save_model` 的放弃写盘提示(见函数体注释)。
+const PROBE_STALE_SNAPSHOT_ERROR: &str =
+    "检测期间该模型已被删除或已有新的保存，本次更改未写入；请重新打开表单确认最新内容。";
 
 /// 保存时探测结论是否要求**跳过写盘**(交用户在三选一弹窗决策):
 /// 明确不支持(unsupported)/未能确认识别(unverified)不落盘;supported/
@@ -359,7 +381,14 @@ fn image_probe_denies_persist(probe: &Option<ImageProbeOutcome>) -> bool {
 /// summary 只放 provider/模型回复原文(结论性措辞由前端 i18n 拼接),
 /// 避免与前端标题重复、避免中文结论冒泡到英/日界面。
 async fn probe_and_fill_image_capability(model: &mut SavedModel) -> ImageProbeOutcome {
-    let connection = probe_model_connection(&model.base_url, &model.api_key, Some(&model.id)).await;
+    // 连接门与识图探测同用 strip 后基准:base_url 含 /chat/completions 后缀时
+    // GET {base}/models 必 404,会在识图探测前就短路成"连接不通"。
+    let connection = probe_model_connection(
+        &image_probe_base_url(&model.base_url),
+        &model.api_key,
+        Some(&model.id),
+    )
+    .await;
     if !connection.ok {
         model.image_capability_override = ImageCapabilityOverride::Pinvou;
         return ImageProbeOutcome {
@@ -505,10 +534,12 @@ pub async fn get_image_input_capability(
     // vLLM served name 探测与运行时凭据准备)。尚无会话(全新草稿)时退化为
     // get_effective_model_config 同款 prefs 直读,按全局默认模型解析。
     let bridge = match session_id.or_else(|| store.active_id()) {
-        Some(sid) => pool
-            .fresh_bridge_for(&sid)
-            .await
-            .map_err(|error| format!("resolve image input capability for {sid}: {error:#}"))?,
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
+            sanitize_command_error(
+                &format!("resolve image input capability for {sid}"),
+                format!("{error:#}"),
+            )
+        })?,
         None => {
             let mut bridge = pool.bridge.clone();
             bridge.prefs = refresh_safe_prefs(UserPrefs::load());
@@ -1177,10 +1208,10 @@ fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTest
     image_capability_result("error", false, summary, None)
 }
 
-/// 识图探测的 URL 基准:剥掉用户 base_url 末尾的 `/chat/completions`
-/// (及裸 `/completions`)后缀,后续拼接(OpenAI chat/completions、Anthropic
-/// /v1/messages)共用同一基准——否则含后缀的 base_url 在 Anthropic 分支
-/// 会拼出 `.../chat/completions/v1/messages` 这类 404 路径。
+/// 识图探测的 URL 基准:剥掉用户 base_url 末尾的 `/chat/completions` 后缀,
+/// 后续拼接(OpenAI chat/completions、Anthropic /v1/messages)共用同一基准
+/// ——否则含后缀的 base_url 在 Anthropic 分支会拼出
+/// `.../chat/completions/v1/messages` 这类 404 路径。
 fn image_probe_base_url(base_url: &str) -> String {
     crate::platform::prefs::model::strip_chat_completions_suffix(base_url)
 }

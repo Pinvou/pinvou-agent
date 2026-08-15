@@ -346,6 +346,8 @@
       personaUnequipped: "🎴 Expert card removed: ",
       planHistorical: "📜 Past plan", planSuperseded: "📜 Superseded by a newer plan",
       attachStillParsing: "⚠️ Attachment still parsing, try again shortly",
+      imageUnsupported: "The current model does not support images. Switch to an image-capable model, or configure a vision model in model settings.",
+      imageUnknown: "Image input capability of the current model is unknown. If it supports images, set image input to “Supports images” in model settings; you can also configure a vision model.",
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
       deviceUploadFailed: "⚠️ Upload failed: ",
@@ -458,6 +460,8 @@
       personaUnequipped: "🎴 エキスパートカードを外しました: ",
       planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
       attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
+      imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
+      imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
       deviceUploadFailed: "⚠️ アップロードに失敗: ",
@@ -570,6 +574,8 @@
       personaUnequipped: "🎴 已卸下专家卡牌: ",
       planHistorical: "📜 历史方案", planSuperseded: "📜 已被新方案覆盖",
       attachStillParsing: "⚠️ 附件还在解析,请稍后再发",
+      imageUnsupported: "当前模型不支持图片。请切换到支持图片的模型，或在模型设置中配置视觉模型。",
+      imageUnknown: "当前模型的图片输入能力未知。如果它支持图片，请在模型设置中将图片输入能力设为“支持图片”后重试；也可以配置视觉模型。",
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
       deviceUploadFailed: "⚠️ 上传失败: ",
@@ -3980,11 +3986,15 @@
   }
 
   // 后端命令错误的展示文本:稳定错误码(如 image_input_unsupported,与
-  // src-tauri chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR 对应)剥掉码前缀,
-  // 只给用户看可操作的中文指引;码本身仍可被 indexOf 匹配。
+  // src-tauri chat.rs IMAGE_INPUT_*_ERROR 对应)按码替换为三语指引,而非剥前缀
+  // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView 前置警告
+  // (t.uiAttachments.*)同源语义。与 tauri bridge chat.js 同一口径。
   function displayTurnError(err) {
     var text = String(err && err.toString ? err.toString() : err || "");
-    return text.replace(/^image_input_unsupported[:：]?\s*/, "");
+    if (text.indexOf("image_input_unsupported") === 0) {
+      return text.indexOf("能力未知") >= 0 ? bt("imageUnknown") : bt("imageUnsupported");
+    }
+    return text;
   }
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。

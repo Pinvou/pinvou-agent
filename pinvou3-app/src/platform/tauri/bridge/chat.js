@@ -288,10 +288,16 @@
         });
         if (concurrentTurn && turnOwnerBuffer) markRemoteTurn(sid, turnOwnerBuffer);
         runSyncOnSession(sid, function () {
-          // 稳定错误码(如 image_input_unsupported)剥掉码前缀,只给用户看可操作指引;
-          // 与 web bridge displayTurnError 同一口径(chat.rs IMAGE_INPUT_UNSUPPORTED_ERROR)。
+          // 稳定错误码(如 image_input_unsupported)按码替换为三语指引,而非剥前缀
+          // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView
+          // 前置警告(t.uiAttachments.*)同源。与 web bridge displayTurnError
+          // 同一口径(chat.rs IMAGE_INPUT_*_ERROR)。
           var errorText = String(err && err.toString ? err.toString() : err || "");
-          errorText = errorText.replace(/^image_input_unsupported[:：]?\s*/, "");
+          if (errorText.indexOf("image_input_unsupported") === 0) {
+            errorText = errorText.indexOf("能力未知") >= 0
+              ? bt("imageUnknown")
+              : bt("imageUnsupported");
+          }
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")
             : "⚠️ " + errorText, {

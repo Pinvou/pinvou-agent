@@ -130,7 +130,14 @@ pub use model::{
 /// 用户对某条 [`SavedModel`] 图片输入能力的显式覆盖(模型设置页「图片输入能力」,
 /// 设计 §6.3/§7.3)。`Auto` = 走能力解析链(模型目录→内置已验证表→Unknown);
 /// `Enabled`/`Disabled` 直接钉死,供本地自定义模型人工确认用。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+///
+/// 反序列化手写兜底:未知档位值落 `Auto` 而非报错。没有这一层,单个未知值
+/// (未来版本新增枚举后降级运行/手工编辑)会让整份 `UserPrefs` 反序列化失败,
+/// `load` 整体回退默认值,此后任意一次设置写入都会把用户的全部模型条目与
+/// 凭据引用不可逆覆盖。落 `Auto` 后写回即规范化为 `"auto"`。不能改用
+/// `#[serde(other)]`:它要求挂在最后一个变体上,而"未知=Disabled"语义危险,
+/// 新增兜底变体又会破坏穷举 match 且无法序列化。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageCapabilityOverride {
     /// 自动探测(默认;旧 settings.json 无该字段反序列化即落这里,无感迁移)。
@@ -143,6 +150,36 @@ pub enum ImageCapabilityOverride {
     Enabled,
     /// 探测/用户确认该模型不支持图片输入(「不能」)。
     Disabled,
+}
+
+impl<'de> Deserialize<'de> for ImageCapabilityOverride {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = ImageCapabilityOverride;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("image capability override (auto/pinvou/enabled/disabled)")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "auto" => Ok(ImageCapabilityOverride::Auto),
+                    "pinvou" => Ok(ImageCapabilityOverride::Pinvou),
+                    "enabled" => Ok(ImageCapabilityOverride::Enabled),
+                    "disabled" => Ok(ImageCapabilityOverride::Disabled),
+                    // 未知值兜底:见枚举头注释。走 Auto 而非 Disabled——
+                    // "判不出"绝不能冒充"确认不支持"。
+                    _ => Ok(ImageCapabilityOverride::Auto),
+                }
+            }
+        }
+        deserializer.deserialize_str(Visitor)
+    }
 }
 
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
@@ -1349,6 +1386,26 @@ mod tests {
 
         let json = serde_json::to_string(&model).unwrap();
         assert!(!json.contains("vision_model_id"));
+    }
+
+    #[test]
+    fn saved_model_image_capability_unknown_value_falls_back_to_auto() {
+        // 未知档位值(未来版本新增枚举后降级运行/手工编辑)必须落 Auto,
+        // 而不是让整份 UserPrefs 反序列化失败——后者会让 `load` 整体回退
+        // 默认值,此后任意一次设置写入把用户的全部模型条目与凭据引用覆盖。
+        let future = r#"{
+            "id": "m1",
+            "name": "DeepSeek 线上",
+            "preset": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com",
+            "image_capability_override": "agentic_probe_v2"
+        }"#;
+        let model: SavedModel = serde_json::from_str(future).expect("unknown override value");
+        assert_eq!(
+            model.image_capability_override,
+            ImageCapabilityOverride::Auto
+        );
     }
 
     #[test]
