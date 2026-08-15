@@ -4032,7 +4032,11 @@
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
-          state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
+          // 按提交位置 + 身份移除：buffer 被权威重载后原引用消失，纯身份过滤
+          // 失效会残留幽灵气泡；位置匹配且身份一致才删（审计 d）。
+          state.messages = state.messages.filter(function (message, index) {
+            return index !== submittedMessagePos || message !== submittedMessage;
+          });
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
           });
@@ -6633,7 +6637,8 @@
       notify();
       return;
     }
-    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    // sid 前缀省略：isActionablePlanCard 首判已校验 sid === active（审计清理）。
+    if (isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
     if (planBuffer) {
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
@@ -6803,6 +6808,7 @@
   }
   async function cancelUserInput(itemId, toolCallId) {
     var sid = state.activeSessionId;
+    if (!sid) return;
     try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();

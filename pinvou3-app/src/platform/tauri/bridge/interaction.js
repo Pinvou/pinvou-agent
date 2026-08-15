@@ -208,7 +208,8 @@
       notify();
       return;
     }
-    if (state.activeSessionId !== sid || isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
+    // sid 前缀省略：isActionablePlanCard 首判已校验 sid === active（审计清理）。
+    if (isBusyFor(sid) || !isActionablePlanCard(sid, itemId, planTicket)) return;
     if (planBuffer) {
       planBuffer.localTurnOwned = true;
       planBuffer.remoteTurnActive = false;
@@ -431,6 +432,7 @@
   }
   async function cancelUserInput(itemId, toolCallId) {
     var sid = state.activeSessionId;
+    if (!sid) return;
     try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
     patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
@@ -460,6 +462,16 @@
       editBuffer.remoteTerminalSeen = false;
       editBuffer.remoteCommittedRevision = "";
     }
+    // 失败回滚快照（与 web bridge 的 editLastTurn 对齐）：await 期间可能
+    // 切走，恢复必须定向回 sid 的 buffer，不能直接改全局显示。
+    var previous = {
+      messages: state.messages.slice(),
+      chatItems: state.chatItems.slice(),
+      busy: state.busy,
+      thinking: Object.assign({}, state.thinking),
+      currentStreamText: context.currentStreamText,
+      currentStreamId: context.currentStreamId,
+    };
     // 删除末尾最近的 user 及之后所有，push 新 user，重渲染
     var cut = -1;
     for (var i = state.messages.length - 1; i >= 0; i--) {
@@ -476,12 +488,22 @@
     context.currentStreamId = ++context.itemIdSeq;
     state.chatItems.push({ id: context.currentStreamId, type: "assistant", text: "", html: "", time: timeStr(), streaming: true });
     notify();
-    turnUsageDirty[state.activeSessionId] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
+    turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护（用捕获的 sid，web 对齐）
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
     } catch (e) {
-      addSystemItem("⚠️ " + e);
-      state.busy = false;
+      // 失败恢复必须定向触发会话（web 对齐）：直接写全局会把 busy/错误提示
+      // 砸进别的会话（编辑是在 sid 上发起的）。
+      if (editBuffer) editBuffer.localTurnOwned = false;
+      runSyncOnSession(sid, function () {
+        state.messages = previous.messages;
+        state.chatItems = previous.chatItems;
+        state.busy = previous.busy;
+        state.thinking = previous.thinking;
+        context.currentStreamText = previous.currentStreamText;
+        context.currentStreamId = previous.currentStreamId;
+        addSystemItem("⚠️ " + e);
+      });
       notify();
     }
   }
