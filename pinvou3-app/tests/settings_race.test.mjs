@@ -1,9 +1,7 @@
 /**
- * 子代理全量审计产出的同类竞态回归测试（PR #250 延续）：
- * 陈旧读取覆盖 / await 后写入漂移 / 并发重入——修复后的行为快照。
- * 覆盖 tauri memory/personas/workflow/settings 四个可单测 feature；
- * sessions.js（ensureSession/refreshHistoryList/archiveSession）内部依赖
- * 太重（sessionStates/switchActiveTo 等），由代码审查 + 既有套件保证。
+ * 同类竞态回归测试（PR #250 审计 → #260 settings 域）：
+ * 陈旧读取覆盖 / await 后写入漂移——修复后的行为快照。
+ * 覆盖 tauri settings（vllm 检测/bootstrap 重检/loadModels）。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,12 +12,6 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
-
-function deferred() {
-  let resolve, reject;
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
 
 /** 通用 feature 装载器：vm 加载 IIFE(window) 形态的桥 feature 文件。 */
 function loadFeature(fileName, state, contextOverrides) {
@@ -62,7 +54,7 @@ function loadFeature(fileName, state, contextOverrides) {
   };
 }
 
-// ── memory.js：loadMemoryOverview 陈旧覆盖 ──────────────────────────
+// ── settings.js：vllm 检测 / bootstrap 重检 / loadModels ─────────────
 
 function loadSettingsFeature() {
   const state = { settings: {}, vllmSetup: undefined, vllmBootstrapping: false };
@@ -114,4 +106,19 @@ test('loadModels 后发者胜（旧列表不得覆盖新列表）', async () => 
   await p2;
   assert.equal(rt.state.savedModels[0].id, 'new', '新列表正常写入');
   assert.equal(rt.state.activeModelId, 'new', '新 activeModelId 正常写入');
+});
+
+test('loadModels 陈旧失败不覆盖（后发者胜同样适用于 catch 分支）', async () => {
+  const rt = loadSettingsFeature();
+  const d1 = rt.defer('list_models');
+  const p1 = rt.api.loadModels();                    // 加载 1（序号 1）
+  const d2 = rt.defer('list_models');
+  const p2 = rt.api.loadModels();                    // 加载 2（序号 2）
+  d2.resolve({ models: [{ id: 'new' }], active_model_id: 'new' }); // 新响应先落地
+  await p2;
+  assert.equal(rt.state.savedModels[0].id, 'new', '新列表正常写入');
+  d1.reject(new Error('stale network failure'));     // 旧请求后失败
+  await p1.catch(function () { /* 已知 reject */ });
+  assert.equal(rt.state.savedModels[0].id, 'new', '陈旧失败不得清空新列表');
+  assert.equal(rt.state.activeModelId, 'new', '陈旧失败不得覆盖 activeModelId');
 });
