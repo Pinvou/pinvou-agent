@@ -70,6 +70,11 @@ command_protocol!(
     ]
 );
 command_protocol!(attachments_protocol, "attachments.rs", []);
+command_protocol!(
+    assistant_response_protocol,
+    "assistant_response.rs",
+    ["export_assistant_response", "open_assistant_share_target"]
+);
 command_protocol!(chat_protocol, "chat.rs", ["chat"]);
 command_protocol!(
     connectors_protocol,
