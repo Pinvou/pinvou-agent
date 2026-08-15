@@ -69,6 +69,11 @@ test('OpenAI Compatible 命中目录 ID 仍为自定义', () => {
 test('Coding Plan 命中目录(glm-5.2) -> 预设', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.2' })), true);
 });
+test('z.ai 直连存量小写配置仍命中大写目录行 -> 预设', () => {
+  // 目录拼写以底座为准（GLM-5.2），存量配置可能保存旧小写 glm-5.2。
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5.2' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'GLM-5.2' })), true);
+});
 test('Coding Plan 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'my-custom-glm' })), false);
 });
