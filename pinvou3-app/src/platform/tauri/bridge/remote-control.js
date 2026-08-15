@@ -210,7 +210,7 @@
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
       state.webAccess = Object.assign({}, state.webAccess, {
         active: false, endpoint_id: null, url: null, qr_data_url: null,
-        web_client_connected: false, status: "stopped",
+        web_client_connected: false, status: "stopped", starting: false,
       });
       notify();
     }
@@ -221,7 +221,7 @@
         var info = await invoke("web_access_rotate");
         if (seq !== webAccessIntentSeq) return info;
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
-          active: true, web_client_connected: false, last_error: null,
+          active: true, web_client_connected: false, last_error: null, starting: false,
         });
         notify();
         await refreshRemoteControlStatus();
