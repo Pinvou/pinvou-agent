@@ -46,16 +46,18 @@ const Fixture = () => {
         onCancel={() => setResolved(true)}
       />
       {resolved && (
-        <QuestionChoiceCard
-          title="已提交（锁定）"
-          questions={questions}
-          initialAnswers={[
-            { id: 'q-lang', label: 'Python', value: 'Python' },
-            { id: 'q-skill', label: '前端', value: '前端' },
-          ]}
-          resolved
-          statusText="已提交"
-        />
+        <div data-testid="locked-restore-card">
+          <QuestionChoiceCard
+            title="已提交（锁定）"
+            questions={questions}
+            initialAnswers={[
+              { id: 'q-lang', label: 'Python', value: 'Python' },
+              { id: 'q-skill', label: '前端', value: '前端' },
+            ]}
+            resolved
+            statusText="已提交"
+          />
+        </div>
       )}
       {/* 评审 P2 回归：其他值 == 预设 value 时，重挂载应还原为“其他”而非高亮预设。 */}
       <div data-testid="other-collision-card">

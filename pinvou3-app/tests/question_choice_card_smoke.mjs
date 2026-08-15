@@ -164,11 +164,20 @@ try {
   assert(JSON.stringify(skillLabels) === JSON.stringify(['后端', '运维']), '多选答案 后端+运维 提交', submits);
 
   // 锁定卡渲染 initialAnswers 选中态（resolved 卡高亮恢复）。
+  // 断言精确到具体选项 label（testid 定位锁定卡，避免交互卡选中态混入；
+  // checkbox 的 input.value 是默认 "on"，故取 label 文本）：q-lang=Python、q-skill=前端。
   const lockedChecked = await page.evaluate(() => {
-    const cards = Array.from(document.querySelectorAll('fieldset'));
-    return cards.map((f) => Array.from(f.querySelectorAll('input')).filter((i) => i.checked).length);
+    const card = document.querySelector('[data-testid="locked-restore-card"]');
+    const fieldsets = Array.from(card.querySelectorAll('fieldset'));
+    return fieldsets.map((f) => Array.from(f.querySelectorAll('label'))
+      .filter((l) => l.querySelector('input') && l.querySelector('input').checked)
+      .map((l) => l.textContent.trim()));
   });
-  assert(lockedChecked.some((n) => n > 0), '锁定卡 restoredAnswers 还原选中态', lockedChecked);
+  assert(lockedChecked.length === 2, '锁定卡含两个 fieldset（q-lang/q-skill）', lockedChecked);
+  assert(JSON.stringify(lockedChecked[0]) === JSON.stringify(['Python通用脚本']),
+    '锁定卡还原单选 q-lang=Python', lockedChecked);
+  assert(JSON.stringify(lockedChecked[1]) === JSON.stringify(['前端界面']),
+    '锁定卡还原多选 q-skill=前端', lockedChecked);
 
   // ── 评审 P2：其他值 == 预设 value 时还原为“其他”而非预设 ─────────
   const otherCollision = await page.evaluate(() => {
@@ -197,7 +206,7 @@ try {
     };
   });
   assert(presetNamedOther.hasOtherInput === false, 'allowOther=false 不应渲染自定义输入', presetNamedOther);
-  assert(presetNamedOther.presetNamedOtherChecked === true || presetNamedOther.anyChecked === 1,
+  assert(presetNamedOther.presetOtherChecked === true,
     '预设项名为“其他”+ other:false 应高亮该预设项（不得被 label 兼容判定误归为自定义）', presetNamedOther);
 
   // ── 评审第五轮 P2-B：跨语言冷重载——other 被剥离，label 仍中文“其他”，界面切英文 ─

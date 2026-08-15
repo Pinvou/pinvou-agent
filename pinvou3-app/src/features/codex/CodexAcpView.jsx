@@ -2606,26 +2606,31 @@ export function CodexAcpView({
   /// cancel_user_input（显式 sessionId，不经过 bridge 全局 activeSession）。
   async function respondNativeInput(toolCallId, answers) {
     if (!activeId) return;
+    // entry 捕获 sid：invoke 挂起期间用户切到别的原生会话时，await 后重新读
+    // activeId 会把 restoredAnswers 写进（或找不到卡而漏写）错误 lane——与 bridge
+    // submitUserInput 的 sid 捕获同一约定。
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('submit_user_input', { toolCallId, answers, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'submitted', answers);
+      await invoke('submit_user_input', { toolCallId, answers, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'submitted', answers);
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
   async function cancelNativeInput(toolCallId) {
     if (!activeId) return;
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('cancel_user_input', { toolCallId, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'cancelled');
+      await invoke('cancel_user_input', { toolCallId, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'cancelled');
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
-  function markNativeInputResolved(toolCallId, cardState, answers) {
-    const lane = getNativeLane(activeId);
+  function markNativeInputResolved(sessionId, toolCallId, cardState, answers) {
+    const lane = getNativeLane(sessionId);
     // 无条件按 type + toolCallId 定位：chat:tool_end（applyNativeChatEvent 同样按
     // !item.resolved 查找）可能先于 invoke 返回把卡置为 resolved，若这里仍要求
     // !item.resolved 会因竞态漏写 restoredAnswers，重挂载时历史卡丢失选中态。

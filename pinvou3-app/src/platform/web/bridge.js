@@ -404,6 +404,7 @@
       attachNoProgress: "Attachment download made no progress",
       artifactNoProgress: "Artifact download made no progress",
       newChatFallbackTitle: "New chat",
+      echoOtherPrefix: "(Other) ",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
@@ -510,6 +511,7 @@
       attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
       artifactNoProgress: "成果物のダウンロードが進みませんでした",
       newChatFallbackTitle: "新しいチャット",
+      echoOtherPrefix: "(その他) ",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
@@ -616,6 +618,7 @@
       attachNoProgress: "附件下载没有进展",
       artifactNoProgress: "产物下载没有进展",
       newChatFallbackTitle: "新对话",
+      echoOtherPrefix: "(其他) ",
       mountCollectionFailed: "挂载知识集失败: ",
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
@@ -6782,7 +6785,7 @@
         if (!list || !list.length) return null;
         var header = q.header || ("Q" + (qi + 1));
         return header + ": " + list.map(function (a) {
-          var text = a.label === "其他" ? "(其他) " + a.value : a.label;
+          var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
           return text;
         }).join(" · ");
       }).filter(Boolean).join(" · ");
