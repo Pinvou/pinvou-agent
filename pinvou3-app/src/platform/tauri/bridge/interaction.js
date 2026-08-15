@@ -16,12 +16,18 @@
     var resetPendingAssistant = context.resetPendingAssistant;
     var rerenderFromMessages = context.rerenderFromMessages;
     var turnUsageDirty = context.turnUsageDirty;
-    var ensureSession = context.ensureSession;
     var sendMessage = context.sendMessage;
     var getBuffer = context.getBuffer;
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var isBusyFor = context.isBusyFor;
     var markRemoteTurn = context.markRemoteTurn;
+    // 共享的 modeState epoch 表与权威写回收敛点（bridge.js 注入，评审 P1）：
+    // interaction 与 chat-events 必须用同一份 epoch 表，否则事件直写与
+    // 本模块的读取校验互不感知，竞态照样敞口。
+    var modeStateEpochs = context.modeStateEpochs;
+    var bumpModeStateEpoch = context.bumpModeStateEpoch;
+    var applyAuthoritativeModeState = context.applyAuthoritativeModeState;
+    var currentDraftModeState = context.currentDraftModeState;
 
   // ── Super permission ─────────────────────────────────────────────
   async function refreshSuperPerm() {
@@ -62,15 +68,13 @@
   //    返回后校验，epoch 变了即丢弃陈旧读取，权威值由对应操作写回。
   //    只看瞬时 in-flight 集合识别不了"toggle 已完成（集合已清空）、旧读取
   //    才返回"的顺序（审计意见），epoch 一并覆盖在途与已完成两种顺序。
-  var modeStateEpochs = {};
-  function bumpModeStateEpoch(sid) {
-    if (!sid) return;
-    modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
-  }
+  //    epoch 表与 bump/权威写回由 bridge.js 共享（评审 P1）：任何权威
+  //    modeState 写回一律走 applyAuthoritativeModeState，禁止散点手工写。
   async function syncModeState() {
     var sid = state.activeSessionId;
     if (!sid) {
-      state.modeState = { mode: "yolo", multiAgent: false };
+      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      state.modeState = currentDraftModeState();
       return;
     }
     if (multiAgentToggleInFlight.has(sid)) return;
@@ -97,6 +101,47 @@
       if (state.activeSessionId !== sid) return;
       state.modeState = { mode: "yolo", multiAgent: false };
     }
+  }
+
+  // ── lane 全局默认（工作/设计/代码三分，复审拍板）─────────────────
+  // 草稿态 mode = 本 lane 全局默认；草稿切换只写全局默认（不物化会话），
+  // 已生成会话的切换只写会话自己的记录（set_plan_mode_next 等 per-session
+  // 命令，后端不再渗全局）。
+  async function refreshModeDefaults() {
+    try {
+      var defaults = await invoke("get_mode_defaults");
+      if (defaults) state.modeDefaults = defaults;
+    } catch (e) { /* 读取失败保留旧值/缺省，不打扰交互 */ }
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
+  function setModeLane(lane) {
+    var next = lane === "design" ? "design" : "work";
+    if (state.modeLane === next) return;
+    state.modeLane = next;
+    if (!state.activeSessionId) {
+      state.modeState = currentDraftModeState();
+      notify();
+    }
+  }
+  // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
+  // 物化时由 ensureSession 把 lane 默认应用到新会话）。
+  async function setDraftMode(target) {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    try {
+      var defaults = await invoke("set_mode_default", { lane: lane, mode: target });
+      if (defaults) state.modeDefaults = defaults;
+      if (!state.activeSessionId) {
+        state.modeState = {
+          mode: target,
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        };
+      }
+    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+    notify();
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
@@ -135,9 +180,6 @@
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
   function thinkingIdle() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function stopThinking() { state.thinking = { active: false, phase: "thinking", toolName: "", startedAt: 0 }; }
-  function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
-  }
 
   function isActionablePlanCard(sid, itemId, planId) {
     if (!sid || sid !== state.activeSessionId || !itemId || !planId) return false;
@@ -186,8 +228,7 @@
         displayMessage: displayEcho,
       });
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
-      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
       var concurrentTurn = errorText.indexOf("session_turn_in_progress") >= 0;
@@ -207,8 +248,7 @@
       if (concurrentTurn && planBuffer) markRemoteTurn(sid, planBuffer);
       try {
         var currentMode = await invoke("get_mode_state", { sessionId: sid });
-        bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
-        runOnSession(sid, function () { applyModeFromState(currentMode); });
+        applyAuthoritativeModeState(sid, currentMode);
       } catch (_) {}
       addSystemItemFor(sid, bt("acceptPlanFailed") + e);
     }
@@ -225,8 +265,7 @@
     notify();
     try {
       var st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
-      bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
-      runOnSession(sid, function () { applyModeFromState(st); });
+      applyAuthoritativeModeState(sid, st);
       patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
     } catch (e) {
       var errorText = String(e && e.message ? e.message : e || "");
@@ -250,8 +289,7 @@
       if (planNotActive) {
         try {
           var currentMode = await invoke("get_mode_state", { sessionId: sid });
-          bumpModeStateEpoch(sid); // 权威 mode 写回前让在途读取作废
-          runOnSession(sid, function () { applyModeFromState(currentMode); });
+          applyAuthoritativeModeState(sid, currentMode);
         } catch (_) {}
       }
       addSystemItemFor(sid, bt("discardPlanFailed") + e);
@@ -259,23 +297,27 @@
     notify();
   }
   async function exitPlanToYolo() {
-    if (!state.activeSessionId) return;
+    var sid = state.activeSessionId;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    if (!sid) { await setDraftMode("yolo"); return; }
     try {
+      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
+      // 计算）；发起瞬间 activeSessionId === sid，await 返回后按 sid 定向写回。
       var st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("exitPlanFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态(无 session)先物化:mode 是 per-session 状态,进 Plan 必须先有 session,
-    // 否则草稿页点 Plan 会静默 return 不切换(composer chip 入口暴露的缺陷)。
-    var sid = await ensureSession();
-    if (!sid) return;
+    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
+    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    var sid = state.activeSessionId;
+    if (!sid) { await setDraftMode("plan"); return; }
     try {
       var st = await invoke("set_plan_mode_next", { sessionId: sid });
-      applyModeFromState(st);
-    } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
     notify();
   }
   // 多智能体开关（ADR-0006）：模型列表下方的会话级开关。后端做名册装配
@@ -320,7 +362,7 @@
       notify();
       try {
         var st = await invoke("set_multi_agent_mode", { sessionId: sid, enabled: !!enabled });
-        runOnSession(sid, function () { applyModeFromState(st); });
+        applyAuthoritativeModeState(sid, st);
       } catch (invokeError) {
         // 回滚与报错必须定向回触发会话：await 期间用户可能已切走，直接改
         // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
@@ -441,11 +483,13 @@
       thinkingTool: thinkingTool,
       thinkingIdle: thinkingIdle,
       stopThinking: stopThinking,
-      applyModeFromState: applyModeFromState,
       acceptPlan: acceptPlan,
       discardPlan: discardPlan,
       exitPlanToYolo: exitPlanToYolo,
       setPlanModeNext: setPlanModeNext,
+      setDraftMode: setDraftMode,
+      setModeLane: setModeLane,
+      refreshModeDefaults: refreshModeDefaults,
       setMultiAgentMode: setMultiAgentMode,
       planStuckReplan: planStuckReplan,
       planStuckGo: planStuckGo,

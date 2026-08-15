@@ -93,6 +93,77 @@ pub(crate) fn recover_interrupted_replace(
     ))
 }
 
+/// 原子写文件：先写同目录临时文件并 sync，再原子替换目标。
+///
+/// 直接 `std::fs::write(target)` 在进程被中断（强杀/崩溃）时会留下截断或
+/// 半写的目标文件；对持久化的会话状态（如 `_session_mode_states.json`、
+/// settings.json）而言，一个损坏的目标会让启动恢复静默失败，表现为
+/// "切换成功但重启后丢失"。tmp + rename 保证目标要么是旧完整内容、
+/// 要么是新完整内容，永无中间态。失败清理按替换终态区分（对齐
+/// artifacts 版）：不得把装着旧完整内容的恢复候选一并删掉。
+pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("state.json");
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
+    let backup = parent.join(format!(".{file_name}.bak-{token}"));
+
+    let stage_result = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+
+    // Windows 状态机内部自带「目标不存在 → promote（单文件移动）」分支，
+    // POSIX 实现就是 rename，无需外层再区分首写/覆盖。
+    match replace_file_atomically(&tmp, path, &backup) {
+        Ok(ReplaceState::Committed) => {
+            let _ = std::fs::remove_file(&backup);
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+            Ok(())
+        }
+        Ok(state) => Err(io::Error::other(format!(
+            "unexpected successful replacement state: {state:?}"
+        ))),
+        Err(error) => {
+            // RolledBack：布局已收敛回旧内容，tmp/backup 是残留垃圾；
+            // RecoveryRequired 且目标路径仍被占用（如目录占位）：恢复永无
+            // 可能，同样是垃圾；目标真正丢失的 RecoveryRequired 保留候选，
+            // 供恢复流程 promote——这正是不能无条件清理的原因。
+            if error.state() == ReplaceState::RolledBack
+                || (error.state() == ReplaceState::RecoveryRequired && path.exists())
+            {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&backup);
+            }
+            Err(error.into_io_error())
+        }
+    }
+}
+
 /// 以 0600 权限创建（或截断）文件：写入含明文密钥的 CLI 配置时**直接**以
 /// 0600 创建，避免「先按默认 umask 0644 写、再收紧」的暴露窗口（复审低危 4）；
 /// Windows 无 POSIX 权限概念，忽略权限位。
@@ -267,6 +338,69 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
+
+    use super::atomic_write;
+
+    #[test]
+    fn atomic_write_round_trips_content() {
+        let dir = std::env::temp_dir().join(format!("pinvou3-atomic-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // 首次创建（目标不存在）：Windows 上必须走普通 rename，不能失败。
+        let target = dir.join("_code_mode_states.json");
+        atomic_write(&target, br#"{"session-1":"yolo"}"#).expect("first write");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read back"),
+            r#"{"session-1":"yolo"}"#
+        );
+
+        // 覆盖写入仍保持完整内容（原子替换语义）。
+        atomic_write(&target, br#"{"session-1":"plan","session-2":"yolo"}"#).expect("rewrite");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read rewritten"),
+            r#"{"session-1":"plan","session-2":"yolo"}"#
+        );
+
+        // 成功后不残留临时/备份文件。
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name != "_code_mode_states.json"
+            })
+            .collect();
+        assert!(leftover.is_empty(), "leftover files: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_failure_is_reported_without_residue() {
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-atomic-write-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // 父级是普通文件 → tmp 无法创建，写入必须报错且不留任何残留。
+        let file_as_parent = dir.join("not-a-dir");
+        std::fs::write(&file_as_parent, "x").expect("seed parent file");
+        let target = file_as_parent.join("state.json");
+        assert!(atomic_write(&target, b"new").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&file_as_parent).expect("parent untouched"),
+            "x"
+        );
+
+        let leftover: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list dir")
+            .filter_map(|entry| entry.ok())
+            .collect();
+        assert_eq!(leftover.len(), 1, "no tmp/backup residue: {leftover:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     pub(crate) fn try_link_file(target: &Path, link: &Path) -> bool {
         try_link_file_impl(target, link)

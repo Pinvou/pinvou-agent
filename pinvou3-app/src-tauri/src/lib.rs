@@ -867,6 +867,8 @@ pub fn run() {
             commands::interaction::get_mode_state,
             commands::interaction::get_code_permission_prefs,
             commands::interaction::confirm_code_yolo,
+            commands::interaction::get_mode_defaults,
+            commands::interaction::set_mode_default,
             commands::interaction::set_plan_mode_next,
             commands::interaction::exit_plan_to_yolo,
             commands::interaction::set_multi_agent_mode,

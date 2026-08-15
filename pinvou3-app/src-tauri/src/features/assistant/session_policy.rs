@@ -150,7 +150,7 @@ impl SessionPolicy {
 
     /// 审批参数（auto_approve, approval_mode）：本期两模式同为「全自动 + Auto」，
     /// 与 D-2 前共享 op 的写死值逐字节一致（行为不变）。S-1 安全分化（
-    /// docs/code-plain-decoupling-改动说明.md 挂起项）落地时按模式差异化，
+    /// docs/code-mode-解耦与权限持久化-改动说明.md 挂起项）落地时按模式差异化，
     /// 调用点已策略取数，无需再动共享链路。
     pub fn approval_params(&self) -> (bool, ApprovalMode) {
         (true, ApprovalMode::Auto)

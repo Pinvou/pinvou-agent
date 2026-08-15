@@ -153,6 +153,8 @@ command_protocol!(
         "get_mode_state",
         "get_code_permission_prefs",
         "confirm_code_yolo",
+        "get_mode_defaults",
+        "set_mode_default",
         "set_plan_mode_next",
         "exit_plan_to_yolo",
         "set_multi_agent_mode",

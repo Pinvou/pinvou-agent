@@ -20,7 +20,7 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { SettingsView, WebAccessModal } from '../features/settings/SettingsView.jsx';
 import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
-import { savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
+import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
@@ -997,12 +997,32 @@ function workspaceDisplayName(path) {
           setCodexDraftEpoch(value => value + 1);
           setCurrentView('codex');
         } else if (mode === 'design') {
-          savePinvouModeState({ mode: 'design' });
-          if (bridge.available) bridge.sessions.createNewSession();
+          // 仅草稿态（无活跃会话）才开新会话：从 code 页切回时 bridge 的
+          // activeSessionId 仍是原工作会话，强制 createNewSession 会新建一个
+          // plain 会话（默认 Yolo），把用户切过的 Plan 顶掉——表现为「从代码
+          // 切回工作/设计，审批模式变回 Yolo」。保留原会话，ChatView 挂载后
+          // 显示其实测 mode。与 ChatView 内 work↔design 本地切换（不建会话）
+          // 行为保持一致。
+          const scopeKey = bridge.activeSessionId
+            ? createPinvouModeScopeKey(bridge.activeSessionId)
+            : undefined;
+          savePinvouModeState({ mode: 'design' }, undefined, scopeKey);
+          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
+          // code 页期间原工作会话的 mode 可能已被修改（code 页独立链路），
+          // 切回前拉一次实测值，避免 ChatView 挂载后显示旧 modeState。
+          if (bridge.available && bridge.activeSessionId) {
+            bridge.interaction.syncModeState().catch(() => {});
+          }
           setCurrentView('chat');
         } else if (mode === 'work') {
-          savePinvouModeState({ mode: 'work' });
-          if (bridge.available) bridge.sessions.createNewSession();
+          const scopeKey = bridge.activeSessionId
+            ? createPinvouModeScopeKey(bridge.activeSessionId)
+            : undefined;
+          savePinvouModeState({ mode: 'work' }, undefined, scopeKey);
+          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
+          if (bridge.available && bridge.activeSessionId) {
+            bridge.interaction.syncModeState().catch(() => {});
+          }
           setCurrentView('chat');
         }
         closeMobileSidebar();

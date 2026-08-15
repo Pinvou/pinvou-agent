@@ -253,6 +253,14 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
+    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
+    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
+    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
+    modeDefaults: { work: null, design: null, code: null },
+    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
+    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
+    // localStorage。
+    modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
@@ -897,6 +905,8 @@
     stopThinking: function () { return stopThinking.apply(null, arguments); },
     rerenderFromMessages: rerenderFromMessages,
     syncModeState: function () { return syncModeState.apply(null, arguments); },
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
+    currentDraftModeState: currentDraftModeState,
     syncActivePersona: function () { return syncActivePersona(); },
     syncMountedCollection: function () { return syncMountedCollection(); },
     reconcileArtifacts: reconcileArtifacts,
@@ -980,7 +990,6 @@
     var bg = sessionStates[sid]; if (!bg) return;
     touchSessionBuffer(sid, bg, isScheduledRunSession(sid));
     var realId = state.activeSessionId;
-    var draftComposer = realId ? "" : (state.composerDraft || "");
     // 进入时就把【当前完整工作集】落进 restoreBuffer：realId 为 null（草稿态）
     // 时也要保存——草稿态可能已含乐观的 modeState（如刚打开的多智能体开关）、
     // 未发送文本，finally 里不能拿全新 freshBuffer 覆盖（否则开关状态被后台
@@ -996,11 +1005,36 @@
       saveWorkingSetTo(bg);
       state.activeSessionId = realId;
       // 恢复的是进入时的同一工作集对象（草稿态下保留乐观 modeState /
-      // 未发送文本），不是全新 buffer。
-      if (!realId) restoreBuffer.composerDraft = draftComposer;
+      // 未发送文本——saveWorkingSetTo 已含 composerDraft），不是全新 buffer。
       loadWorkingSetFrom(restoreBuffer);
     }
   }
+  // ── modeState 权威写回收敛点（评审 P1）────────────────────────────
+  // 任何「invoke 返回 / 事件负载」带来的权威 modeState 更新都必须走
+  // applyAuthoritativeModeState：内部统一 bump per-session epoch（作废
+  // 在途 syncModeState 的旧读取）+ 定向写回触发会话（await 期间用户可能
+  // 已切走）。interaction / chat-events 两个 feature 共享同一份 epoch 表，
+  // 散点手工 bump+写漏一处就会重现「旧读取覆盖权威值」竞态。
+  var modeStateEpochs = {};
+  function bumpModeStateEpoch(sid) {
+    if (!sid) return;
+    modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
+  }
+  function applyAuthoritativeModeState(sid, st) {
+    bumpModeStateEpoch(sid);
+    runSyncOnSession(sid || state.activeSessionId, function () {
+      state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+    });
+  }
+
+  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo
+  // （与后端 plain 缺省方向一致）。三分 lane 语义：草稿显示 = 本 lane 全局默认。
+  function currentDraftModeState() {
+    var lane = state.modeLane === "design" ? "design" : "work";
+    var d = state.modeDefaults && state.modeDefaults[lane];
+    return { mode: d || "yolo", multiAgent: false };
+  }
+
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
   function markRemoteTurn(sid, buf, preserveCommittedRevision) {
     if (!sid || !buf || buf.localTurnOwned) return;
@@ -1842,6 +1876,7 @@
     // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
     // 避免 live/restore 两处守卫实现漂移。
     isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
     addChatItem: addChatItem, addSystemItem: addSystemItem,
     addAuthoritySyncNotice: addAuthoritySyncNotice, timeStr: timeStr,
     toolCallAlreadyStarted: toolCallAlreadyStarted,
@@ -1960,11 +1995,13 @@
     addSystemItem: addSystemItem, addAuthoritySyncNotice: addAuthoritySyncNotice,
     addChatItem: addChatItem, timeStr: timeStr,
     runSyncOnSession: runSyncOnSession,
+    modeStateEpochs: modeStateEpochs, bumpModeStateEpoch: bumpModeStateEpoch,
+    applyAuthoritativeModeState: applyAuthoritativeModeState,
+    currentDraftModeState: currentDraftModeState,
     flushAssistantMessageToHistory: flushAssistantMessageToHistory,
     resetPendingAssistant: resetPendingAssistant,
     rerenderFromMessages: rerenderFromMessages,
     turnUsageDirty: turnUsageDirty,
-    ensureSession: ensureSession,
     sendMessage: sendMessage,
     getBuffer: getBuffer,
     reconcileRemoteTurn: reconcileRemoteTurn,
@@ -1990,11 +2027,13 @@
   var thinkingTool = interactionFeature.thinkingTool;
   var thinkingIdle = interactionFeature.thinkingIdle;
   var stopThinking = interactionFeature.stopThinking;
-  var applyModeFromState = interactionFeature.applyModeFromState;
   var acceptPlan = interactionFeature.acceptPlan;
   var discardPlan = interactionFeature.discardPlan;
   var exitPlanToYolo = interactionFeature.exitPlanToYolo;
   var setPlanModeNext = interactionFeature.setPlanModeNext;
+  var setDraftMode = interactionFeature.setDraftMode;
+  var setModeLane = interactionFeature.setModeLane;
+  var refreshModeDefaults = interactionFeature.refreshModeDefaults;
   var setMultiAgentMode = interactionFeature.setMultiAgentMode;
   var planStuckReplan = interactionFeature.planStuckReplan;
   var planStuckGo = interactionFeature.planStuckGo;
@@ -2159,6 +2198,8 @@
     var needsSessionRuntime = !isDetachedWindow || detachedWindowKind === "session";
     if (needsSessionRuntime) {
       await startupAwait("bridge:refresh_super_permission", refreshSuperPerm);
+      // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+      startupAwait("bridge:refresh_mode_defaults", refreshModeDefaults);
     }
     if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
       loadPersonas(); // 会话和卡池需要本窗口自己的卡牌投影，fire-and-forget
@@ -2295,11 +2336,17 @@
       testModelConnection: testModelConnection,
     },
     interaction: { toggleSuperPerm: toggleSuperPerm,
+      // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回
+      // 工作/设计时拉一次实测值，避免 ChatView 挂载后显示旧 modeState）
+    syncModeState: syncModeState,
       // Plan/YOLO
     acceptPlan: acceptPlan,
     discardPlan: discardPlan,
     exitPlanToYolo: exitPlanToYolo,
     setPlanModeNext: setPlanModeNext,
+    setDraftMode: setDraftMode,
+    setModeLane: setModeLane,
+    refreshModeDefaults: refreshModeDefaults,
     setMultiAgentMode: setMultiAgentMode,
     planStuckReplan: planStuckReplan,
     planStuckGo: planStuckGo,

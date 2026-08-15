@@ -143,6 +143,40 @@ impl SerializableMode {
     }
 }
 
+/// 三个工作区 lane（工作 work / 设计 design / 代码 code）的全局默认 mode 标识。
+/// 草稿态显式切换只写本 lane 的全局默认（`set_mode_default`）；已生成会话的
+/// 切换只写会话自己的 per-session 记录，不渗全局（复审拍板的三分 lane 语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeLane {
+    Work,
+    Design,
+    Code,
+}
+
+impl ModeLane {
+    /// 从命令字符串参数解析；非法值给出明确错误（防 IPC 直调写入未知 lane）。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "work" => Ok(Self::Work),
+            "design" => Ok(Self::Design),
+            "code" => Ok(Self::Code),
+            other => Err(format!(
+                "unknown mode lane: {other:?}（期望 work/design/code）"
+            )),
+        }
+    }
+}
+
+/// `get_mode_defaults` 的返回视图：三个 lane 的全局默认 mode（None = 该 lane
+/// 从未显式选过；前端缺省解析 code→plan、work/design→yolo）。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ModeDefaultsView {
+    pub work: Option<SerializableMode>,
+    pub design: Option<SerializableMode>,
+    pub code: Option<SerializableMode>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

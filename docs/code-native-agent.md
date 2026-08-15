@@ -2,7 +2,7 @@
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
 > 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
-> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-plain-decoupling-改动说明.md`（2026-08-05 模式解耦与能力回补）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
+> 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-mode-解耦与权限持久化-改动说明.md`（模式解耦、能力回补与 mode 持久化的合并留档）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档已随主线清理下线）。
 
 ## 1. 背景与目标
 
@@ -67,7 +67,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 - `SessionPolicy`（`features/assistant/session_policy.rs`）把 plain/code 的行为差异收敛为数据：模式能力差量查编译期静态表 `MODE_TABLE`（`unavailable_tools`——code 恒追加 `present_artifact`；`load_skill` 不在此列——按组合目录空否动态决定，由表字段 `skills_empty_hides_load_skill` 驱动，见 §8.6；连接器禁用集 scope 即 `policy.mode()` 本身，scope 键 = 模式名）、`plan_reminder()`（两模式同文，R-1 审批卡落地后为真实描述）、`approval_params()`（本期两模式同为全自动+Auto，S-1 安全分化的挂载点）。能力面分化是编译期常量（能力档案 JSON + 统一解析器已退役，见 `docs/capability-governance.md`）。
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
-- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-plain-decoupling-改动说明.md`。
+- 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-mode-解耦与权限持久化-改动说明.md`。
 
 ## 4. 开发节点记录（19 个提交）
 

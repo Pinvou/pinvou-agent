@@ -1349,6 +1349,10 @@ export function CodexAcpView({
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // nativeControls 的会话归属：切会话后、refresh 返回前不展示上一会话的控件值。
   const nativeControlsSessionRef = useRef(null);
+  // refreshNativeControls 请求序号：快速切会话时多个 get_* invoke 并发在途，
+  // 后发起的请求应胜出。没有它，先发起的慢响应会晚返回并把控件值/归属 ref 覆盖
+  // 成旧会话——mode chip 随即显示全局 fallback 而非新会话实测值（串台/陈旧覆盖，
+  // 与聊天页 modeState epoch 修复同款竞态）。
   // code 会话权限模式全局偏好（{ last_mode, yolo_confirmed }，null=未拉到）：
   // 驱动草稿态/刷新途中的默认 mode 展示，以及首次切 yolo 的一次性确认门。
   const [codePermPrefs, setCodePermPrefs] = useState(null);
@@ -1623,6 +1627,12 @@ export function CodexAcpView({
       setNativeDraftControls({});
       throw err;
     }
+    // 暂存落地后必须再刷新一次实测值：会话物化时 effect 触发的
+    // refreshNativeControls 通常在暂存应用链（mode 排最后）落地前就带着
+    // 后端默认值返回了，chip 停在旧 mode（如 plan），要重进对话才刷新。
+    // 此处以应用后的实测值收口；refreshNativeControls 的请求序号保证在途
+    // 旧读返回时被丢弃，不会反向覆盖。
+    await refreshNativeControls(sessionId);
   }
 
   /// 切模型：set_session_model 会 evict 该会话 engine，lane busy 时由控件禁用兜底。
@@ -1708,10 +1718,19 @@ export function CodexAcpView({
     await performNativeModeSwitch(target, { isPlan, chipBusy });
   }
 
+  /// 草稿态暂存 mode 选择：本地暂存（新建会话时应用）+ 刷新 code lane 全局
+  /// 默认（三分 lane 语义：草稿切换写全局；已生成会话的切换不碰全局）。
+  function stageDraftMode(target) {
+    setNativeDraftControls(current => ({ ...current, mode: target }));
+    invoke('set_mode_default', { lane: 'code', mode: target })
+      .then(() => refreshCodePermPrefs())
+      .catch(err => showError(err));
+  }
+
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
   async function performNativeModeSwitch(target, { isPlan, chipBusy } = {}) {
     if (!activeId) {
-      setNativeDraftControls(current => ({ ...current, mode: target }));
+      stageDraftMode(target);
       return;
     }
     setError('');
@@ -1723,8 +1742,6 @@ export function CodexAcpView({
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
       }
       await refreshNativeControls(activeId);
-      // 显式切 mode 会更新全局 code_last_mode：刷新草稿态默认展示。
-      refreshCodePermPrefs().catch(() => {});
     } catch (err) { showError(err); }
   }
 
@@ -1738,7 +1755,7 @@ export function CodexAcpView({
       if (prefs) setCodePermPrefs(prefs);
       setPendingYoloSwitch(null);
       if (pending.draft) {
-        setNativeDraftControls(current => ({ ...current, mode: 'yolo' }));
+        stageDraftMode('yolo');
       } else {
         await performNativeModeSwitch('yolo', { isPlan: true, chipBusy: pending.chipBusy });
       }
@@ -2558,7 +2575,7 @@ export function CodexAcpView({
           sessionId: targetId,
           // 逐轮工具白名单入口（R-2）：参数链路对 code 会话已贯通（后端 op
           // allowed_tools 按此生效），本期恒 false 不限制；S-1 安全分化落地时
-          // 按 SessionPolicy 逐轮驱动（docs/code-plain-decoupling-改动说明.md）。
+          // 按 SessionPolicy 逐轮驱动（docs/code-mode-解耦与权限持久化-改动说明.md）。
           restrictTools: false,
         });
       } catch (sendError) {

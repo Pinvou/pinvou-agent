@@ -507,18 +507,32 @@ impl Default for SidebarPrefs {
 
 /// 品悟原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
 /// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
-/// - 新建 code 会话的默认 mode = 上次在 code 会话显式使用的 mode；
+/// - 新建 code 会话的默认 mode = code lane 的全局 last_mode；
+/// - last_mode 只由「code 页草稿态显式切换」写入（已生成会话的切换只写
+///   会话自己的记录，不再渗全局——三分 lane 语义复审拍板）；
 /// - 首次切 yolo 弹一次性确认卡，确认后全局记住、之后切换不再弹。
 ///
 /// 不进设置 UI；写入走字段级事务（同 PetPrefs），per-session mode 另存
-/// `sessions/_code_mode_states.json`（见 `features::sessions`）。
+/// `sessions/_session_mode_states.json`（见 `features::sessions`）。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodePermissionPrefs {
-    /// 上次在任意 code 会话显式使用的 mode。None = 从未使用过 code 模式。
+    /// code lane 的全局默认 mode（草稿态显式切换时写入）。None = 从未使用过
+    /// code 模式。
     pub last_mode: Option<SerializableMode>,
     /// yolo 一次性确认（"全自动读写项目目录、可执行 shell、无逐步审批"）标志。
     pub yolo_confirmed: bool,
+}
+
+/// 工作（work）/ 设计（design）两个 plain lane 的全局默认 mode。
+/// 与 code lane（`code_permission.last_mode`）并列——三个工作区 lane 各有
+/// 独立全局默认；只由对应 lane 草稿态的显式切换写入，已生成会话的切换不碰。
+/// None = 该 lane 从未显式选过 → 缺省 Yolo（与 plain 历史默认一致）。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModeDefaultPrefs {
+    pub work: Option<SerializableMode>,
+    pub design: Option<SerializableMode>,
 }
 
 /// 用户偏好。`settings.json` 顶层结构。
@@ -534,6 +548,7 @@ pub struct UserPrefs {
     pub pet: PetPrefs,
     pub sidebar: SidebarPrefs,
     pub code_permission: CodePermissionPrefs,
+    pub mode_defaults: ModeDefaultPrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -599,7 +614,11 @@ impl UserPrefs {
         }
         normalized.sanitize_plaintext_api_keys();
         let s = serde_json::to_string_pretty(&normalized).expect("UserPrefs serialize");
-        std::fs::write(path, s)
+        // 原子写：直接 std::fs::write 在进程中断时可能留下截断文件，而 load 对
+        // 损坏的 settings.json 是回退默认值——code_permission.last_mode 等持久化
+        // 偏好会整体丢失，表现为「重启后设置回到默认」。tmp + rename 保证目标
+        // 文件永远完整。
+        crate::platform::filesystem::atomic_write(&path, s.as_bytes())
     }
 
     /// 在同一临界区内读取磁盘最新偏好、修改指定字段并写回。
@@ -1334,6 +1353,7 @@ mod tests {
             pet: PetPrefs::default(),
             sidebar: SidebarPrefs::default(),
             code_permission: CodePermissionPrefs::default(),
+            mode_defaults: ModeDefaultPrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),
