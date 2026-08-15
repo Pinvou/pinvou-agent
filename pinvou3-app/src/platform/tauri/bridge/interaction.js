@@ -21,6 +21,7 @@
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var isBusyFor = context.isBusyFor;
     var markRemoteTurn = context.markRemoteTurn;
+    var sendMessageToSession = context.sendMessageToSession;
     // 共享的 modeState epoch 表与权威写回收敛点（bridge.js 注入，评审 P1）：
     // interaction 与 chat-events 必须用同一份 epoch 表，否则事件直写与
     // 本模块的读取校验互不感知，竞态照样敞口。
@@ -388,9 +389,13 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
+    var sid = state.activeSessionId;
+    if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
-    await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
+    // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
+    await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -448,7 +453,7 @@
     // 编辑前先收敛远端对账(与 web bridge 的 editLastTurn 对齐):失败对账
     // 状态下编辑会被陈旧 committed 事件重武装旧 revision,污染新一轮。
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("remoteTurnSyncing"));
+      addAuthoritySyncNoticeFor(sid, bt("remoteTurnSyncing"));
       notify();
       return;
     }
@@ -508,7 +513,9 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
   }
 
 

@@ -4032,11 +4032,10 @@
         if (turnOwnerBuffer) turnOwnerBuffer.localTurnOwned = false;
         emitPetEvent("pet:turn_end", sid);
         runSyncOnSession(sid, function () {
-          // 按提交位置 + 身份移除：buffer 被权威重载后原引用消失，纯身份过滤
-          // 失效会残留幽灵气泡；位置匹配且身份一致才删（审计 d）。
-          state.messages = state.messages.filter(function (message, index) {
-            return index !== submittedMessagePos || message !== submittedMessage;
-          });
+          // 按引用移除本地乐观提交：buffer 权威重载后引用自然消失，无需按位置
+          // 二次限定（位置过滤在"引用仍在但位置移动"时会残留本地消息，且与
+          // tauri 端纯身份过滤分叉——审计后回退该谓词微调）。
+          state.messages = state.messages.filter(function (message) { return message !== submittedMessage; });
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
           });
@@ -6764,9 +6763,13 @@
     await sendMessage("请用 todo_write 工具输出完整方案步骤,不要直接调写工具。");
   }
   async function planStuckGo(itemId) {
+    var sid = state.activeSessionId;
+    if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
     await exitPlanToYolo();
-    await sendMessage("按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
+    // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
+    // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
+    await sendMessageToSession(sid, "按上面讨论的方案继续执行任务,直接写文件/跑命令,不要再讨论方案。");
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -6822,7 +6825,8 @@
     var sid = state.activeSessionId;
     var editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      addAuthoritySyncNotice(bt("turnSyncRetry"));
+      // 对账失败通知定向触发会话：await 期间切走后不得落进当前显示（与 acceptPlan 同）。
+      runOnSession(sid, function () { addAuthoritySyncNotice(bt("turnSyncRetry")); });
       notify();
       return;
     }
@@ -6891,7 +6895,9 @@
     }
   }
   async function compactNow() {
-    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItem(bt("compactFail") + ": " + e); }
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    try { await invoke("compact_now", { sessionId: state.activeSessionId }); } catch (e) { addSystemItemFor(sid, bt("compactFail") + ": " + e); }
   }
 
   // ── 产物面板 ─────────────────────────────────────────────────────

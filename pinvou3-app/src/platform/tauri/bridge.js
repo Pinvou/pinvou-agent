@@ -1933,6 +1933,7 @@
     rerenderFromMessages: rerenderFromMessages,
     turnUsageDirty: turnUsageDirty,
     sendMessage: sendMessage,
+    sendMessageToSession: sendMessageToSession,
     getBuffer: getBuffer,
     reconcileRemoteTurn: reconcileRemoteTurn,
     isBusyFor: isBusyFor,

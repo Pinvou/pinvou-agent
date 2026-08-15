@@ -1,4 +1,4 @@
-/** 多智能体（会话内主动委派，ADR-0006）薄层契约：桥、专家卡、只读面板与取消级联。 */
+/** interaction 桥「写入定向触发会话」契约：await 挂起期间切走，权威写回/恢复/提示必须落回触发会话。 */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +30,7 @@ function loadInteractionRuntime() {
   const runtime = {
     state,
     calls,
+    errorItems: [],
     notifyCount: 0,
     defer(name) {
       deferred[name] = deferred[name] || {};
@@ -44,7 +45,7 @@ function loadInteractionRuntime() {
     state,
     notify() { runtime.notifyCount += 1; },
     bt(key) { return key; },
-    addSystemItem() {},
+    addSystemItem(text) { runtime.errorItems.push(String(text)); },
     addAuthoritySyncNotice() {},
     addChatItem() {},
     timeStr() { return ''; },
@@ -81,10 +82,16 @@ test('exitPlanToYolo 权威写回定向触发会话：await 期间切走不污�
   const exit = rt.defer('exit_plan_to_yolo');
   const exitP = rt.api.exitPlanToYolo();                    // A 会话发起，invoke 挂起
   rt.state.activeSessionId = 'chat-b';                      // await 期间切走
-  exit.resolve({ mode: 'yolo', multi_agent: false });
+  exit.resolve({ mode: 'yolo', multi_agent: true });
   await exitP;
   assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
     'exitPlanToYolo 写回必须定向触发会话 chat-a（修复前直接写全局、无此调用）');
+  // 成功路径必须真实执行：bumpModeStateEpoch 在 #250 未合并时不得被 ReferenceError
+  // 打成失败提示（历史假阳性：错误路径也记录 runSyncOnSession，仅靠上面断言无法区分）。
+  assert.equal(rt.errorItems.length, 0,
+    '成功路径不得走错误分支（不得出现 exitPlanFailed + ReferenceError 提示）');
+  assert.equal(rt.state.modeState.multiAgent, true,
+    '权威写回必须被应用（成功路径的 applyModeFromState 生效）');
 });
 
 test('setPlanModeNext 权威写回定向触发会话：await 期间切走不污染当前显示', async () => {
@@ -96,6 +103,10 @@ test('setPlanModeNext 权威写回定向触发会话：await 期间切走不污�
   await modeP;
   assert.ok(rt.calls.includes('runSyncOnSession:chat-a'),
     'setPlanModeNext 写回必须定向触发会话 chat-a');
+  assert.equal(rt.errorItems.length, 0,
+    '成功路径不得走错误分支（不得出现 switchModeFailed + ReferenceError 提示）');
+  assert.equal(rt.state.modeState.mode, 'plan',
+    '权威写回必须被应用（成功路径的 applyModeFromState 生效）');
 });
 
 test('submitUserInput 响应写入定向触发会话：切走后 echo/卡片状态不进错会话', async () => {
