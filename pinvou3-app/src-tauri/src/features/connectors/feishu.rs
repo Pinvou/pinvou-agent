@@ -84,9 +84,17 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
 
 /// 查询当前飞书连接状态:`lark-cli auth status --json`。
 /// 返回 lark-cli 的原始 JSON(含 appId / identities.user.status 等);未配置 app
-/// 或未登录则 connected=false。
+/// 或未登录则 connected=false。未装 CLI 时返回结构化 `installed:false`
+/// (与 wecom/dingtalk/tmeet 一致),不向消费方抛 Err。
 pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
+        // 没装就别 spawn auth status —— 未装用户每次白等子进程且拿到的是 Err,
+        // 统一返回结构化未装态(其余 CLI 连接器同款短路)。
+        if !lark_cli_present() {
+            return Ok::<Value, String>(json!({
+                "ok": false, "connected": false, "configured": false, "installed": false
+            }));
+        }
         let (ok, so, se) = cc::run(lark(&["auth", "status", "--json"]))?;
         let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
         let connected = parsed
@@ -107,6 +115,7 @@ pub async fn feishu_status() -> Result<Value, String> {
             "ok": ok,
             "connected": connected,
             "configured": configured,
+            "installed": true,
         }))
     })
     .await

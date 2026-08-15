@@ -608,4 +608,154 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(skill_id);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// 能力包就绪态（修复方案 V1：统一 bundle_readiness，收敛五个连接器 status 命令）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BundleReadinessResult {
+    pub bundle_id: String,
+    pub installed: bool,
+    pub ready: bool,
+    pub reason: Option<String>,
+    /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
+    pub detail: Option<serde_json::Value>,
+}
+
+/// 统一就绪态查询：
+/// - CLI 包（feishu/wecom/dingtalk/tmeet）→ 分派到各连接器 status，connected 即 ready；
+///   installed 取 status 的 installed/configured 真实字段
+/// - ima（凭据型技能包）→ ima_status：ready = connected（凭据齐且 companion 技能已装），
+///   installed = 凭据或技能任一已配置
+/// - MCP/技能/上传包 → 注册表 `readiness_for`（credentials 必填项查系统凭据现算）
+#[tauri::command]
+pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult, String> {
+    use crate::features::marketplace::bundle::{
+        keyring_target, readiness_for, BundleKind, BundleRegistry, Readiness,
+    };
+    let reg = BundleRegistry::new();
+    let Some(bundle) = reg.bundle(&bundle_id) else {
+        return Err(format!("未知能力包 '{bundle_id}'"));
+    };
+    // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
+    // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
+    let (installed, ready, reason, detail) = match bundle.kind {
+        BundleKind::Cli => {
+            let (connected, detail) = match bundle_id.as_str() {
+                "feishu" => {
+                    let v = crate::features::connectors::feishu::feishu_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "wecom" => {
+                    let v = crate::features::connectors::wecom::wecom_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "dingtalk" => {
+                    let v = crate::features::connectors::dingtalk::dingtalk_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                "tmeet" => {
+                    let v = crate::features::connectors::tmeet::tmeet_status().await?;
+                    (connected_of(&v), Some(v))
+                }
+                other => return Err(format!("未知 CLI 包 '{other}'")),
+            };
+            // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
+            // feishu 返回 configured（已配置）；都没有则退化为 connected。
+            let installed = detail
+                .as_ref()
+                .and_then(|v| {
+                    v.get("installed")
+                        .or_else(|| v.get("configured"))
+                        .and_then(|x| x.as_bool())
+                })
+                .unwrap_or(connected);
+            (
+                installed,
+                connected,
+                if connected {
+                    None
+                } else {
+                    Some("not_connected".to_string())
+                },
+                detail,
+            )
+        }
+        BundleKind::Skill if bundle.id == "ima" => {
+            let v = crate::features::connectors::ima::ima_status().await?;
+            let creds = v
+                .get("credentials_present")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            let skill = v
+                .get("skill_installed")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            // ready 与 ima_status.connected 同义：凭据齐且 companion 技能已装
+            let ready = creds && skill;
+            let reason = if ready {
+                None
+            } else if !creds {
+                Some("missing_credentials".to_string())
+            } else {
+                Some("skill_not_installed".to_string())
+            };
+            (creds || skill, ready, reason, Some(v))
+        }
+        _ => {
+            // keychain 读可能阻塞数秒甚至数分钟（macOS 首次访问弹授权窗），
+            // 与 ima/install 命令一致移出 async 线程：spawn_blocking 里按声明序
+            // 预查必填凭据（同 key 多 target 取首个声明，保持原 find-first 语义），
+            // has 闭包只读内存结果。
+            let mut specs: Vec<(String, &'static str)> = Vec::new();
+            for c in &bundle.credentials {
+                if c.required && !specs.iter().any(|(k, _)| k == &c.key) {
+                    specs.push((c.key.clone(), keyring_target(c.target)));
+                }
+            }
+            let id = bundle_id.clone();
+            let present: std::collections::HashSet<String> =
+                tokio::task::spawn_blocking(move || {
+                    let store = crate::platform::credential_store::SystemCredentialStore::new();
+                    specs
+                        .into_iter()
+                        .filter(|(key, target)| {
+                            store
+                                .get(
+                                    &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                                        &id, target, key,
+                                    ),
+                                )
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                        .map(|(key, _)| key)
+                        .collect()
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking: {e}"))?;
+            let has = |key: &str| present.contains(key);
+            let (ready, reason) = match readiness_for(&bundle, has) {
+                Readiness::Ready => (true, None),
+                Readiness::NotReady(reason) => (false, Some(reason.to_string())),
+            };
+            (bundle.installed, ready, reason, None)
+        }
+    };
+    Ok(BundleReadinessResult {
+        bundle_id,
+        installed,
+        ready,
+        reason,
+        detail,
+    })
+}
+
+fn connected_of(v: &serde_json::Value) -> bool {
+    v.get("connected")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false)
+}
 use super::prelude::*;
