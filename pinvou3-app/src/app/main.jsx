@@ -1033,7 +1033,7 @@ function workspaceDisplayName(path) {
         handleNewChat();
         if (!bridge.available) return;
         await bridge.personas.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
-        bridge.personas.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢)
+        bridge.personas.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢);内部定向最近 equip 的会话,切走不串台
       }
 
       async function handleSwitchSession(id) {
