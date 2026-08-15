@@ -290,6 +290,7 @@
       reachedPhaseIds: [],
       bindings: {},      // session_id → skill_name
       demo: null,        // { open, name, loading, kind, content, error, description, duration }
+      starting: false,   // startWorkflowTask busy 闸：防双击重复建 run（审计复审补丁）
       // 卡片流工作流运行态（无聊天，事件驱动看板）。详见 09-ui-plane 决策。
       run: {
         active: false,       // 是否有进行中的工作流

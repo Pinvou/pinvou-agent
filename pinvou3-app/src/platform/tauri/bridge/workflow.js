@@ -74,9 +74,11 @@
     if (sid) {
       // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
       try { await invoke("unbind_session_skill", { sessionId: state.activeSessionId }); } catch (_) {}
+      // 后端解绑已生效：bindings 键是入口 sid、与 await 后谁 active 无关，必须
+      // 无条件同步删除（bindings 无重算路径，漏删会留下永久幽灵徽标，复审补丁）。
+      delete state.workflow.bindings[sid];
     }
     if (sid && state.activeSessionId !== sid) return;
-    if (sid) delete state.workflow.bindings[sid];
     state.workflow.activeSkillName = null;
     state.workflow.phases = [];
     state.workflow.currentPhaseId = null;
@@ -106,21 +108,26 @@
 
   // ── 卡片流工作流：动作（invoke 包装）────────────────────────────
   // 新建任务：建项目（project_started 事件设 run 态）→ kick 派发首个 agent（无聊天）。
+  // busy 闸防双击重复建 run（与 web 版对齐，复审补丁；UI 模态的 starting 闸为主防）。
   async function startWorkflowTask(scenario, brief) {
-    var res;
+    if (state.workflow.starting) return null;
+    state.workflow.starting = true;
     try {
-      res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
-    } catch (e) {
-      addSystemItem(bt("workflowCreateFailed") + e);
-      throw e;
-    }
-    try {
-      await invoke("kick_workflow", { sessionId: res.session_id });
-    } catch (e) {
-      addSystemItem(bt("workflowStartFailed") + e);
-      throw e;
-    }
-    return res;
+      var res;
+      try {
+        res = await invoke("start_workflow", { scenario: scenario, briefInit: brief || null });
+      } catch (e) {
+        addSystemItem(bt("workflowCreateFailed") + e);
+        throw e;
+      }
+      try {
+        await invoke("kick_workflow", { sessionId: res.session_id });
+      } catch (e) {
+        addSystemItem(bt("workflowStartFailed") + e);
+        throw e;
+      }
+      return res;
+    } finally { state.workflow.starting = false; }
   }
   // 停止整个 run：后端先落 stop marker 再取消所有后台 SubAgent；返回旧 brief，
   // 供工作流页打开“修改需求并重新开始”的预填表单。
@@ -226,7 +233,10 @@
       resolveRunCardsForRole(roleId, "approved");
       await refreshRunState();   // 刷新真实状态:huizou gate_waiting→completed,看板按钮随之消失
       notify();
-    } catch (e) { addSystemItem(bt("workflowApproveFailed") + e); }
+    } catch (e) {
+      // 陈旧失败提示不得弹给新 run 用户（复审补丁：catch 与成功路径同款 run 身份校验）。
+      if (state.workflow.run.sessionId === runSid) addSystemItem(bt("workflowApproveFailed") + e);
+    }
   }
   async function rejectWorkflowGate(cardId, roleId, reason) {
     var runSid = state.workflow.run.sessionId;
@@ -237,7 +247,9 @@
       resolveRunCardsForRole(roleId, "rejected");
       await refreshRunState();
       notify();
-    } catch (e) { addSystemItem(bt("workflowRejectFailed") + e); }
+    } catch (e) {
+      if (state.workflow.run.sessionId === runSid) addSystemItem(bt("workflowRejectFailed") + e);
+    }
   }
   // 从失败节点续跑:重置该角色为 pending(清重试)后重新调度,上游已完成节点不重跑。
   async function retryWorkflowRole(roleId) {
