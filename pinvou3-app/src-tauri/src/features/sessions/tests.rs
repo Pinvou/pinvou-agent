@@ -2087,5 +2087,3 @@ fn deleting_collection_removes_mount_from_every_affected_session() {
         "unaffected sessions must not receive a spurious revision"
     );
 }
-
-

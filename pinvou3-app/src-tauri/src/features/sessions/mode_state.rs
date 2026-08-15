@@ -151,7 +151,6 @@ impl Default for SessionModeState {
     }
 }
 
-
 #[cfg(test)]
 mod type_tests {
     use super::*;
@@ -782,8 +781,7 @@ impl SessionStore {
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
     /// per-session mode 记录永久丢失，表现为「显式切过 mode，重启后回 Plan」。
     pub fn save_session_mode_states(&self) {
-        let states_file =
-            crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
         let modes = self.session_mode_states.read();
         if modes.is_empty() {
             let _ = std::fs::remove_file(&states_file);
@@ -793,8 +791,7 @@ impl SessionStore {
             eprintln!("[sessions] serialize _session_mode_states.json failed");
             return;
         };
-        if let Err(error) =
-            crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
+        if let Err(error) = crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
         {
             eprintln!("[sessions] persist _session_mode_states.json failed: {error}");
         }
@@ -805,10 +802,8 @@ impl SessionStore {
     /// 兼容：新文件不存在时回退读旧的 `_code_mode_states.json`（只含 code 会话
     /// 的时代产物），下次保存自然写到新文件，旧文件不删。
     pub fn load_session_mode_states(&self) {
-        let states_file =
-            crate::platform::paths::sessions_root().join("_session_mode_states.json");
-        let legacy_file =
-            crate::platform::paths::sessions_root().join("_code_mode_states.json");
+        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
         let source = if states_file.exists() {
             states_file
         } else if legacy_file.exists() {

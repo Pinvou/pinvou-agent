@@ -3,6 +3,7 @@
 //!
 //! 抽离自 `mod.rs`——这些 helper 被实体存储（io）、LLM 审查（llm_review）与
 //! 渲染（render）多处复用，集中放这里避免循环依赖。纯函数，行为与原实现一致。
+// architecture-guard: allow-target-cfg -- Windows 瞬态锁判定需按 os 错误码分支（ERROR_SHARING_VIOLATION 等），无跨平台抽象可复用
 
 use std::fs;
 use std::io;
@@ -95,7 +96,11 @@ pub(super) fn write_text_atomic_unlocked(path: &Path, text: &str) -> io::Result<
     )
 }
 
-pub(super) fn write_text_atomic_unlocked_with<F>(path: &Path, text: &str, replace: F) -> io::Result<()>
+pub(super) fn write_text_atomic_unlocked_with<F>(
+    path: &Path,
+    text: &str,
+    replace: F,
+) -> io::Result<()>
 where
     F: FnOnce(&Path, &Path, &Path) -> crate::platform::filesystem::ReplaceResult,
 {
@@ -160,7 +165,10 @@ pub(super) fn json_lines_are_valid<T: for<'de> Deserialize<'de>>(raw: &str) -> b
         .all(|line| serde_json::from_str::<T>(line).is_ok())
 }
 
-pub(super) fn read_text_recovering(path: &Path, validate: impl Fn(&str) -> bool) -> io::Result<String> {
+pub(super) fn read_text_recovering(
+    path: &Path,
+    validate: impl Fn(&str) -> bool,
+) -> io::Result<String> {
     let _lifecycle = file_lifecycle_lock().lock();
     read_text_recovering_unlocked(path, &validate)
 }
@@ -275,7 +283,11 @@ pub(super) fn read_text_recovering_unlocked_with(
     Err(current_error)
 }
 
-pub(super) fn promote_recovery_candidate(candidate: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn promote_recovery_candidate(
+    candidate: &Path,
+    target: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -353,7 +365,9 @@ fn cleanup_recovery_candidates(path: &Path) {
     }
 }
 
-pub(super) fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(dir: &Path) -> io::Result<()> {
+pub(super) fn recover_directory_json_files<T: for<'de> Deserialize<'de>>(
+    dir: &Path,
+) -> io::Result<()> {
     let _lifecycle = file_lifecycle_lock().lock();
     recover_directory_json_files_unlocked::<T>(dir)
 }

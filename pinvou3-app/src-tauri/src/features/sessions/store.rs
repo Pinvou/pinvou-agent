@@ -23,11 +23,11 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::platform::paths;
 
-use crate::core::mode_state::SerializableMode;
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
 use super::CodeSessionPredicate;
+use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
 use std::collections::HashSet;
 

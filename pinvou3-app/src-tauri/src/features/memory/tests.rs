@@ -1,6 +1,7 @@
 //! Tests for the memory feature. 抽离自 `mod.rs` 的 `#[cfg(test)] mod tests`，
 //! 逐字保留原测试体，仅通过 `use` 把拆分到各子模块的内部 helper 重新引入作用域。
 //! 4 个仅测试用的确定性提取器（`extract_deterministic_profile` 等）也搬到了这里。
+// architecture-guard: allow-target-cfg -- 记忆持久化测试需用 Windows 独占句柄覆盖 ReplaceFileW 恢复路径（自 mod.rs 拆分迁入，原豁免随文件迁移）
 
 use std::fs;
 use std::io;
@@ -827,7 +828,6 @@ fn recovery_waits_for_active_writer_lifecycle() {
     assert!(reader.join().unwrap().unwrap().contains("committed"));
     let _ = fs::remove_dir_all(root);
 }
-
 
 impl IsolatedPinvouHome {
     fn new(name: &str) -> Self {
