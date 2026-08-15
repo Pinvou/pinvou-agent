@@ -172,7 +172,7 @@ const tableScriptCell = renderMarkdownMarkup([
 assert.match(tableScriptCell, /CRITICAL/u);
 assert.match(tableScriptCell, /RAISED/u);
 assert.match(tableScriptCell, /&lt;script/u);
-assert.doesNotMatch(tableScriptCell, /<script>/u);
+assert.doesNotMatch(tableScriptCell, /<script>/iu);
 
 // 反引号包的 `<script>` 不被双重转义(代码块内是字面量)。
 const inlineCodeScript = renderMarkdownMarkup('`<script>` 标签');
@@ -183,7 +183,7 @@ assert.match(inlineCodeScript, /&lt;script&gt;/u);
 const rawIframe = renderMarkdownMarkup('before <iframe src="evil"></iframe> after');
 assert.match(rawIframe, /&lt;iframe/u);
 assert.match(rawIframe, /&lt;\/iframe/u);
-assert.doesNotMatch(rawIframe, /<iframe/u);
+assert.doesNotMatch(rawIframe, /<iframe/iu);
 
 // 合法的 <br> 与 marked 自己产出的结构标签(<h1>/<table>/<td>)不能被误伤。
 assert.match(renderMarkdownMarkup('line1<br>line2'), /<br>/u);
@@ -195,6 +195,10 @@ assert.match(structured, /<td>/u);
 const dangerousRawHtml = renderMarkdownMarkup('before <script>alert("x")</script> after');
 assert.match(dangerousRawHtml, /&lt;script&gt;/u);
 assert.doesNotMatch(dangerousRawHtml, /<script>/iu);
+// 大写变体同样必须抹平(生产 DANGEROUS_TAGS_RE 带 giu 标志)。
+const uppercaseScript = renderMarkdownMarkup('before <SCRIPT>alert("x")</SCRIPT> after');
+assert.match(uppercaseScript, /&lt;SCRIPT&gt;/u);
+assert.doesNotMatch(uppercaseScript, /<SCRIPT>/iu);
 
 const css = readApp('src', 'styles', 'base.css');
 assert.match(css, /\.dark-code \.msg-md :not\(pre\) > code/u);

@@ -28,7 +28,6 @@ use super::llm_review::{
 use super::render::render_from_parts;
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
 use super::types::*;
-use super::util::{clean_memory_label, clean_scalar};
 
 // 重新暴露 super::* 上的 pub 面（MemoryProfile / ProfileIdentity / ... ）
 use super::*;
