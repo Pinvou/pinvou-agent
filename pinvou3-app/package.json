@@ -119,7 +119,7 @@
   "dependencies": {
     "dompurify": "^3.4.13",
     "highlight.js": "^11.11.1",
-    "marked": "^18",
+    "marked": "^16.4.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "turndown": "^7.2.4",

@@ -43,7 +43,9 @@ impl X11Pointer {
 impl Drop for X11Pointer {
     fn drop(&mut self) {
         // 线程退出时关 Display,避免 X server 侧连接泄漏。
-        unsafe { x11::xlib::XCloseDisplay(self.0); }
+        unsafe {
+            x11::xlib::XCloseDisplay(self.0);
+        }
     }
 }
 
