@@ -6,6 +6,7 @@ import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, TsActionBtn, tsCategories, tsSkillsData, tsToolsData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillZip, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
+import { IosSegmentedControl } from '../../components/IosControls.jsx';
 import { can } from '../../shared/platform.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
@@ -626,7 +627,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ToolStoreView = ({ theme, t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
-      // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
+      // 数据文件(tool-common.jsx)里技能/分类的中文 label/title/subtitle/desc:
       // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
       const storeData = storeCopy.storeData || {};
       const localizeSkill = (s) => {
@@ -1728,18 +1729,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     {!installedOnly && (
                       <div className="flex flex-col gap-3">
                         {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
-                        <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
-                          {[{ key: 'type', label: storeCopy.groupByType }, { key: 'business', label: storeCopy.groupByBusiness }].map(seg => (
-                            <button key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); setInstalledOnly(false); }}
-                              className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
-                                groupBy === seg.key
-                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
-                                  : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
-                              }`}>
-                              {seg.label}
-                            </button>
-                          ))}
-                        </div>
+                        <IosSegmentedControl
+                          value={groupBy}
+                          onChange={(key) => { setGroupBy(key); setActiveCategory('all'); setInstalledOnly(false); }}
+                          isDark={theme === 'dark'}
+                          compact
+                          className="self-start shadow-sm"
+                          segments={[
+                            { key: 'type', label: storeCopy.groupByType },
+                            { key: 'business', label: storeCopy.groupByBusiness },
+                          ]}
+                        />
                         <div className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth">
                           {groupChips.map((chip) => {
                             const isActive = activeCategory === chip.id;

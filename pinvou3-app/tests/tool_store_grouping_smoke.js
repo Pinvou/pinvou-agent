@@ -86,9 +86,24 @@ async function clickExact(page, text) {
       rec(`按类型时业务分区「${label}」渲染`, sectionsByType.includes(label));
     }
 
-    // 二级筛选:MCP → 只剩 MCP 条目,仍按业务分区
+    // 数量徽标 == 分区内实际渲染条目数(分区内工具卡标题同为 h3,故条目数 = h3 总数 - 1)
+    const badgeSections = await page.evaluate(() => [...document.querySelectorAll('div.items-baseline')].map(head => ({
+      label: (head.querySelector('h3')?.textContent || '').trim(),
+      badge: (head.querySelector('span.tabular-nums')?.textContent || '').trim(),
+      items: head.parentElement ? head.parentElement.querySelectorAll('h3').length - 1 : -1,
+    })));
+    rec('分区渲染带数量徽标', badgeSections.length > 0 && badgeSections.every(s => s.badge !== '' && /^\d+$/.test(s.badge)));
+    rec('数量徽标与分区条目数一致', badgeSections.length > 0 && badgeSections.every(s => s.badge === String(s.items)),
+      JSON.stringify(badgeSections));
+
+    // 二级筛选:MCP → 只剩 MCP 条目,仍按业务分区;金融分区应为 企查查+同花顺问财 共 2 条
     rec('点击「MCP」chip', await clickExact(page, 'MCP'));
     await sleep(300);
+    const mcpBadge = await page.evaluate(() => {
+      const head = [...document.querySelectorAll('div.items-baseline')].find(h => (h.querySelector('h3')?.textContent || '').trim() === '金融数据');
+      return head ? (head.querySelector('span.tabular-nums')?.textContent || '').trim() : null;
+    });
+    rec('MCP 筛选后金融分区徽标为 2', mcpBadge === '2', `实际=${mcpBadge}`);
     const mcpOnly = await page.evaluate(() => {
       const text = document.body.innerText;
       return text.includes('高德天气') && text.includes('企查查') && !text.includes('飞书（Lark）') && !text.includes('党政机关公文写作');
@@ -130,6 +145,15 @@ async function clickExact(page, text) {
       return document.body.innerText.includes('企查查') && !h3s.includes('MCP') && !h3s.includes('金融数据');
     });
     rec('搜索时平铺、无分区标题', searching);
+
+    // 「我的工具」:恒为平铺,不按维度分区
+    rec('点击「我的工具」', await clickExact(page, '我的工具'));
+    await sleep(300);
+    const myToolsFlat = await page.evaluate(() => {
+      const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
+      return document.body.innerText.includes('我的工具') && !h3s.includes('MCP') && !h3s.includes('金融数据') && !h3s.includes('CLI 集成');
+    });
+    rec('我的工具平铺、无分区标题', myToolsFlat);
   } finally {
     await browser.close();
   }
