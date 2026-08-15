@@ -108,10 +108,11 @@ pub struct MarketplaceSkillInfo {
     pub user_uploaded: bool,
 }
 
-// 停用开关(双 scope 持久化)-----------------------------------------------------
+// 停用开关(按模式 scope 持久化)------------------------------------------------
 //
-// 技能停用按会话类型 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
-// (`{plain, code, code_initialized}`,与连接器双 scope 同构),过滤职责移交
+// 技能停用按会话模式 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
+// (`{scopes: {<mode>: [...]}, initialized: [...]}`,scope 键即模式名,与连接器
+// 开关同构),过滤职责移交
 // **按会话拼的组合 skills_dir**(`features/assistant/skill_materialization.rs`):
 // 组合目录内容 = 该会话 scope 的启用技能集,底座每轮重扫组合目录渲染
 // `## Skills`。全局进程级 `DISABLED_SKILLS` 已退役(`set_disabled_skills(vec![])`,

@@ -111,19 +111,17 @@ pub async fn get_project_skills_enabled() -> Result<bool, String> {
     Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
 }
 
-/// 解析前端传入的 scope:缺省/空 = plain;"plain"/"code" 显式对应两个 scope;
-/// 其余未识别的非空字符串返回错误(前端笔误直接报错,不静默回退 plain)。
+/// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的
+/// kebab-case,当前 "plain"/"code")显式对应;其余未识别的非空字符串返回错误
+/// (前端笔误直接报错,不静默回退 plain)。前端协议字符串不变。
 fn parse_connector_scope(
     scope: Option<&str>,
 ) -> Result<crate::features::marketplace::ConnectorScope, String> {
-    use crate::features::marketplace::ConnectorScope;
+    use crate::core::session_mode::SessionMode;
     match scope {
-        Some("code") => Ok(ConnectorScope::Code),
-        Some("plain") => Ok(ConnectorScope::Plain),
-        Some(other) if !other.trim().is_empty() => Err(format!(
-            "未知的连接器 scope '{other}'，仅支持 \"plain\"(缺省)或 \"code\""
-        )),
-        _ => Ok(ConnectorScope::Plain),
+        Some(s) if !s.trim().is_empty() => SessionMode::from_scope_str(s)
+            .ok_or_else(|| format!("未知的连接器 scope '{s}'，仅支持 \"plain\"(缺省)或 \"code\"")),
+        _ => Ok(SessionMode::Plain),
     }
 }
 
