@@ -129,8 +129,6 @@ fn validate_multi_agent_session_web_scope(
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RPC_LEDGER_VERSION: u8 = 1;
-const MAX_HOST_ENTRIES: usize = 5_000;
-pub const MAX_ARTIFACT_CHUNK_BYTES: usize = 256 * 1024;
 /// 会话分块单独放大：首开会话在高延迟链路上按 256KB 串行拉取过慢。
 /// 上限受 `MAX_RPC_RESPONSE_BYTES`（2MiB）约束，base64 膨胀后仍需留出 JSON 外壳余量。
 pub const MAX_SESSION_CHUNK_BYTES: usize = 1024 * 1024;
