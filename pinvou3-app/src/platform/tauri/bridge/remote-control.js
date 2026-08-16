@@ -160,8 +160,9 @@
     }
 
     // webAccess 状态写入无意图排序：start/stop/rotate 并发时后完成者会把
-    // UI 指示写反（审计 a）。用户操作意图序号——陈旧响应作废，权威状态由
-    // 下一次 web_access:status 事件收敛。
+    // UI 指示写反（审计 a）。用户操作意图序号——陈旧响应作废，终态由最新
+    // 意图的完成写入收敛：web_access:status 事件 payload 不含 starting，
+    // 事件无法清理该标志，须由每个意图完成路径（含失败）显式兜底。
     var webAccessIntentSeq = 0;
 
     async function refreshRemoteControlStatus() {
@@ -203,7 +204,7 @@
         await invoke("web_access_disable");
       } catch (error) {
         if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
-        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error) });
+        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), starting: false });
         notify();
         throw error;
       }
@@ -228,7 +229,7 @@
         return info;
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
-        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error) });
+        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), starting: false });
         notify();
         throw error;
       }

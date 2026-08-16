@@ -79,7 +79,9 @@
   async function downloadAndInstallUpdate() {
     if (!state.updateInfo || !state.updateInfo.available || state.updateDownloading) return false;
     // 入口捕获发起时的更新信息：下载/安装期间静默检查可能替换 updateInfo，
-    // install 参数必须仍指向发起时的版本（审计）。invoke 文本保持原样。
+    // download/install 参数须仍指向发起时的版本（审计）。当前基线的 install_update
+    // 为 unsupported 桩（info 未参与行为），此配对为面向完整平台实现的防御性修复。
+    // invoke 文本保持原样。
     var info = state.updateInfo;
     var shouldRestartAfterInstall = info.platform !== "windows";
     var installed = false;

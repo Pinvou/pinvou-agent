@@ -132,7 +132,8 @@
   // autoPoll 只供内部定时器续接；用户手动检测会重置本轮截止时间。
   // 陈旧检测快照覆盖（审计）：检测与长任务引导（bootstrap_local_vllm）并发时，
   // 旧快照会把已就绪引擎覆盖回 starting。任何新检测与引导完成都递增序号，
-  // 在途读取一律作废。
+  // 在途读取一律作废。社区版后端 detect 恒 stopped / bootstrap 恒 Err（厂商版
+  // 语义的桩），此守卫为防御性：后端恢复真实探测时竞态即真实存在。
   var vllmDetectSeq = 0;
   async function detectLocalVllmSetup(options) {
     var autoPoll = !!(options && options.autoPoll);
@@ -192,7 +193,7 @@
     notify();
     // 作废在途读取会中断 autoPoll 续排链（被作废的检测不再续排定时器），
     // 引导完成后主动重检一次，让引擎就绪状态及时收敛（审计补充）。
-    detectLocalVllmSetup({ autoPoll: true }).catch(function () {});
+    detectLocalVllmSetup({ autoPoll: true });
   }
   // 点「跳过」:仅本次会话内不再弹(不写持久标记,下次启动若仍未配好会再次友好提示)。
   function dismissVllmSetup() {
