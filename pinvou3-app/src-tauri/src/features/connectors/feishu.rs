@@ -275,6 +275,7 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
             "--json",
         ]));
         if is_user_ready() {
+            cc::bundle_store_on_connected(ID);
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
         }
@@ -294,6 +295,9 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
+        if ok {
+            cc::bundle_store_on_disconnected(ID);
+        }
         Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
     })
     .await
@@ -341,6 +345,11 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?;
+    // scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入 code
+    // 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
+    if show {
+        crate::features::marketplace::sync_deny_all_scopes_after_install("feishu");
+    }
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
     Ok(json!({ "visible": show }))

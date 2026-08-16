@@ -13,9 +13,10 @@ pub async fn set_disabled_connectors(
     let scope = parse_connector_scope(scope.as_deref())?;
     crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
     // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
-    // 重写在线会话组合目录 + 热刷工具白名单。
+    // 重写在线会话组合目录 + 热刷工具白名单 + 热刷 CLI 硬拦截规则集（execpolicy）。
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
+    pool.refresh_permission_rulesets().await;
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -34,6 +35,43 @@ pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String
     Ok(crate::features::marketplace::load_disabled_connectors_for(
         scope,
     ))
+}
+
+/// 商店「管理可见性」：读某 scope 被「不可见」的包 id 列表（可见性预过滤，非开关）。
+/// 缺省空 = 全可见。`scope` = "plain"(缺省)或 "code"。
+#[tauri::command]
+pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+}
+
+/// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
+/// 底座可用集（union 开关关+不可见）。与开关（set_disabled_connectors）正交。
+#[tauri::command]
+pub async fn set_bundle_visibility(
+    bundle_ids: Vec<String>,
+    scope: Option<String>,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    let ids = bundle_ids.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::save_hidden_bundles_for(scope, &ids);
+    })
+    .await
+    .map_err(|e| format!("set_bundle_visibility join: {e}"))?;
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_permission_rulesets().await;
+    let payload = serde_json::json!({});
+    let _ = app.emit("remote_control:tools_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(
+        &app,
+        "remote_control:tools_changed",
+        payload,
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

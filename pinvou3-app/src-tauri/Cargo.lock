@@ -5576,6 +5576,7 @@ dependencies = [
  "calamine",
  "chrono",
  "codewhale-config",
+ "codewhale-execpolicy",
  "codewhale-secrets",
  "codewhale-tui",
  "device_query",

@@ -44,6 +44,12 @@ pub fn bundle_instructions() -> PathBuf {
 pub fn bundle_skills_dir() -> PathBuf {
     bundle_root().join("skills")
 }
+/// `~/.pinvou3/bundles/` —— 按包聚合的包目录根（marketplace-unification §4：
+/// 一个包 = 一个目录 = 一个属主）。市场技能落 `bundles/<pkg-id>/skills/<name>/`；
+/// 内置释放技能（visual-design 等，非市场包）仍住 `bundle/skills/`。
+pub fn bundles_root() -> PathBuf {
+    pinvou3_home().join("bundles")
+}
 /// 工作流(Harness Loop)定义目录,跟 `skills/` 并列。
 /// skill = LLM 挂载的标准附件(pinvou-review-*);workflow = harness 读、LLM 不挂载(legacy-ppt-workflow)。
 pub fn bundle_workflow_dir() -> PathBuf {
@@ -59,12 +65,31 @@ pub fn bundle_mcp_servers_dir() -> PathBuf {
 pub fn managed_connectors_dir() -> PathBuf {
     pinvou3_home().join("connectors")
 }
+/// 旧版（无版本）CLI 布局：`connectors/<platform>/bin/`。Phase 2 第四刀起新装
+/// 落 `assets/cli/<name>/<version>/`，本入口保留给存量迁移与 spawn 回退解析。
 pub fn managed_connector_bin_dir() -> Option<PathBuf> {
     managed_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 pub fn managed_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
     connector_platform_dir(os, arch)
         .map(|platform| managed_connectors_dir().join(platform).join("bin"))
+}
+
+/// `~/.pinvou3/assets/` —— 版本化外部资产库（marketplace-unification §4：
+/// 包只引用不拥有，生命周期由 lock 表驱动）。
+pub fn assets_root() -> PathBuf {
+    pinvou3_home().join("assets")
+}
+
+/// `~/.pinvou3/assets/cli/<name>/<version>/` —— CLI 二进制按 lock 表钉住的版本落位，
+/// 升级 = 新版本目录就位，不再原地覆盖。
+pub fn assets_cli_dir(name: &str, version: &str) -> PathBuf {
+    assets_root().join("cli").join(name).join(version)
+}
+
+/// `~/.pinvou3/assets/.staging/` —— 下载/解包暂存（收编退役的 `cache/connectors/`）。
+pub fn assets_staging_dir() -> PathBuf {
+    assets_root().join(".staging")
 }
 
 /// 支持按需下载安装连接器 CLI 的平台目录名。目录名同时用于选择编译期锁文件，
@@ -129,6 +154,10 @@ fn bundled_connector_runtime_paths_for(
 /// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
+}
+/// spanner 扳手插件包的通用 MCP 适配器脚本绝对路径（mcp.json 的 args 指向它）。
+pub fn bundle_spanner_runner() -> PathBuf {
+    bundle_root().join("spanner_runner.py")
 }
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")

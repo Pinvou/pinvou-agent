@@ -330,6 +330,49 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
     })
 }
 
+// ─────────────── BundleStore 镜像（marketplace-unification Phase 2）───────────────
+//
+// 过渡期纪律：连接器的授权文件 / 技能目录 / CLI 二进制仍是权威，bundles.json
+// 只镜像安装态；镜像写失败不影响主操作，fail loud 到日志。
+
+/// 连接成功（授权就绪）后登记 CLI 包：`source=Builtin`，assets 按 lock 表钉住的
+/// 版本/SHA-256 登记（连接路径已经过 `ensure_native_cli` 校验；tmeet 走 npm 无
+/// lock 条目，自然无 asset），并清除 `degraded`（重连即修复，§3.2）。
+/// 既有记录保留首次登记时间与 extra（见 `BundleStore::upsert_preserving`）。
+pub fn bundle_store_on_connected(id: &str) {
+    use crate::features::marketplace::bundle;
+    use crate::features::marketplace::store::{
+        AssetRef, BundleRecord, BundleSource, BundleStore, ASSET_KIND_CLI,
+    };
+    let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
+    if let Some(bin) = bundle::cli_bundle_bin(id) {
+        if let Some(pin) = crate::platform::connector_lock::artifact_pin(bin) {
+            record.assets.push(AssetRef {
+                kind: ASSET_KIND_CLI.to_string(),
+                name: bin.to_string(),
+                version: pin.version,
+                sha256: pin.binary_sha256,
+            });
+        }
+    }
+    if let Err(e) = BundleStore::new().upsert_preserving(record) {
+        log::warn!("[connectors] bundles.json 镜像写入失败（connect {id}）: {e}");
+    }
+}
+
+/// 断开（删授权）≠ 卸载：**记录保留** —— `installed` 是存储态，授权存在与否是
+/// `ready` 派生态、现算且永不进存储（§3.2）。但当前实现断开后 apply_skills 会
+/// 删掉 companion 技能目录，包内容不完整，故按 §3.2 的 Degraded（登记在、资源缺）
+/// 标记；修复动作 = 重新连接（重解包技能），与预置重装/上传重导入同构。
+/// 记录不存在（从未连接成功过）时 mark_degraded 返回 false，天然无操作。
+pub fn bundle_store_on_disconnected(id: &str) {
+    if let Err(e) = crate::features::marketplace::store::BundleStore::new()
+        .mark_degraded(id, "已断开授权：配套技能已随断开移除，重新连接即可恢复")
+    {
+        log::warn!("[connectors] bundles.json 镜像写入失败（disconnect {id}）: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

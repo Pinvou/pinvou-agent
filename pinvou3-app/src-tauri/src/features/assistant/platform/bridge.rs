@@ -238,6 +238,12 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:bundle_extract:start");
         bundle.ensure_extracted()?;
         crate::platform::startup::mark("bridge_boot:bundle_extract:done");
+        // 旧布局 CLI 二进制（connectors/<platform>/bin/）→ 版本化资产库的一次性
+        // 迁移（marketplace-unification §9.3）：验过 SHA-256 才移动，不匹配的不动
+        // （store 侧 degraded 语义，重连重下）。放 app 侧 boot 而非 runtime_bundle
+        // 内部：connectors → runtime_bundle 依赖已存在，反向调用会成环（架构守卫
+        // rust_feature_cycles 基线为空）。幂等、内部不返回错误，不阻塞启动。
+        crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_env_vars() {
             eprintln!("[pinvou3-app] MCP secret env sync skipped: {err}");
@@ -1521,7 +1527,82 @@ impl Pinvou3Bridge {
         // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
         // 目录在下次物化时机前被重建。
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
+        // CLI 硬拦截（scope 门禁的 execpolicy 通道）：spawn 注入初值；开关切换
+        // 后的热刷走 EnginePool::refresh_permission_rulesets，两处同一份计算。
+        // 规则集 = CLI 二进制名 deny + 禁用技能脚本路径 deny（§5.1 通道③）。
+        cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+            self.scope_deny_ruleset(session_id)
+        ]);
         cfg
+    }
+
+    /// 该会话 scope 被禁 CLI 连接器的 execpolicy deny 规则集（硬拦截）。
+    ///
+    /// 技能组合目录是软门控（模型看不见技能），本规则集是硬兜底：模型即使知道
+    /// 命令，`lark-cli` 等被禁 CLI 二进制也在 spawn 前被底座硬拒（deny 全模式
+    /// 生效，含 YOLO；错误直返模型）。从 scope 禁用集派生，自身无状态。
+    pub(crate) fn cli_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        codewhale_execpolicy::Ruleset::user(vec![], vec![])
+            .with_ask_rules(self.cli_deny_rules(session_id))
+    }
+
+    fn cli_deny_rules(&self, session_id: &str) -> Vec<codewhale_execpolicy::ToolAskRule> {
+        let scope = self.session_policy(session_id).mode();
+        // 不可用集 = 开关关 + 不可见，两套门控都硬拒 CLI 二进制。
+        crate::features::marketplace::unavailable_bundles_for(scope)
+            .into_iter()
+            .filter_map(|id| {
+                crate::features::marketplace::bundle::cli_bundle_bin(&id).map(|bin| {
+                    let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(bin);
+                    rule.action = codewhale_execpolicy::PermissionAction::Deny;
+                    rule
+                })
+            })
+            .collect::<Vec<_>>()
+    }
+
+    /// scope 门禁的完整 execpolicy 硬拦截规则集 = CLI 二进制名 deny + 禁用技能的
+    /// 脚本路径 deny（§5.1 通道③）。spawn 注入初值与开关热刷共用这一份计算。
+    pub(crate) fn scope_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        let mut rules = self.cli_deny_rules(session_id);
+        rules.extend(self.skill_script_deny_rules(session_id));
+        codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules)
+    }
+
+    /// 带脚本技能的执行点硬拦截（marketplace-unification §5.1 通道③）。
+    ///
+    /// 缺口：物化排除只让模型「看不见」禁用技能，脚本仍物理存在于
+    /// `bundle/skills/<name>/`，模型可凭路径经 exec_shell 直接执行。本规则集在
+    /// spawn 前硬拒（typed Deny 短路于一切审批模式，含 YOLO）。
+    ///
+    /// 取数与物化排除同一口径（`disabled_skill_names_for`：scope 禁用集 +
+    /// 被禁连接器的 companion 技能联动）。
+    ///
+    /// 底座 DSL 现状（调研结论）：`ToolAskRule.command` 是 word-boundary 前缀匹配
+    /// （参数位精确 token 匹配），能表达「解释器 + 脚本完整路径」，**不能表达目录
+    /// 前缀**（模式后必须是空格或结尾）。故按目录内脚本文件逐个枚举生成规则。
+    /// 已知残余面（注释登记，不阻塞）：非常用解释器、stdin 喂脚本（`python < x.py`）、
+    /// 拷贝后执行、引号/正反斜杠拼写差异可绕过；目录级前缀规则需底座 execpolicy
+    /// 支持参数级路径前缀匹配（底座缝候选）。
+    fn skill_script_deny_rules(&self, session_id: &str) -> Vec<codewhale_execpolicy::ToolAskRule> {
+        let scope = self.session_policy(session_id).mode();
+        // 技能目录定位经 `find_skill_dir`：新布局（bundles/<pkg>/skills/）优先、
+        // 旧扁平布局回退——取数与物化排除同一口径（disabled_skill_names_for）。
+        let manager =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        let mut rules = Vec::new();
+        let mut names: Vec<String> =
+            crate::features::assistant::skill_materialization::disabled_skill_names_for(scope)
+                .into_iter()
+                .collect();
+        names.sort();
+        for name in names {
+            let Some(dir) = manager.find_skill_dir(&name) else {
+                continue; // 未安装/已物化排除：无脚本可拦
+            };
+            rules.extend(skill_script_deny_rules_for(&dir));
+        }
+        rules
     }
 
     /// 多智能体会话专用配置（ADR-0006）。
@@ -2090,6 +2171,74 @@ fn is_plain_file(path: &std::path::Path) -> bool {
 // Plan reminder 文案与按 mode 的选择已收进 `session_policy`(D-2 策略化);
 // 本模块只经 `SessionPolicy::plan_reminder` 取数。
 
+// ─── 带脚本技能的 execpolicy 硬拦截：纯函数部分（可独立测试）───────────────
+
+/// 单个技能目录的脚本 deny 规则（纯函数：输入目录，输出规则）。
+/// 每个脚本文件生成「解释器 × 脚本完整路径」+「脚本路径直跑」两类 typed Deny
+/// 规则（底座 command 匹配语义见 `skill_script_deny_rules` 的调研注释）。
+fn skill_script_deny_rules_for(dir: &std::path::Path) -> Vec<codewhale_execpolicy::ToolAskRule> {
+    let mut scripts = Vec::new();
+    collect_script_files(dir, &mut scripts);
+    scripts.sort();
+    let mut rules = Vec::new();
+    for script in scripts {
+        for interpreter in interpreters_for_script(&script) {
+            let mut rule = codewhale_execpolicy::ToolAskRule::exec_shell(format!(
+                "{interpreter} {}",
+                script.display()
+            ));
+            rule.action = codewhale_execpolicy::PermissionAction::Deny;
+            rules.push(rule);
+        }
+        // 直跑形态（shebang / 可执行位 / 双击关联）：脚本路径本身作命令词。
+        let mut direct =
+            codewhale_execpolicy::ToolAskRule::exec_shell(script.display().to_string());
+        direct.action = codewhale_execpolicy::PermissionAction::Deny;
+        rules.push(direct);
+    }
+    rules
+}
+
+/// 递归收集目录内的脚本文件（按扩展名识别；跳过隐藏目录如 `.git`）。
+fn collect_script_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if !name.starts_with('.') {
+                collect_script_files(&path, out);
+            }
+            continue;
+        }
+        if !interpreters_for_script(&path).is_empty() {
+            out.push(path);
+        }
+    }
+}
+
+/// 脚本扩展名 → 常见解释器集合（空切片 = 非脚本）。
+fn interpreters_for_script(path: &std::path::Path) -> &'static [&'static str] {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("py") => &["python", "python3", "pythonw", "py"],
+        Some("sh") => &["bash", "sh"],
+        Some("js" | "mjs" | "cjs") => &["node"],
+        Some("ps1") => &["pwsh", "powershell"],
+        Some("bat" | "cmd") => &["cmd"],
+        Some("rb") => &["ruby"],
+        Some("pl") => &["perl"],
+        _ => &[],
+    }
+}
+
 #[cfg(test)]
 // 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
 #[allow(clippy::await_holding_lock)]
@@ -2646,6 +2795,238 @@ mod tests {
         // 普通会话保留 plain scope 禁用集，无模式差量（Git 已放开）。
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
         assert_eq!(shaped, tools);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
+    /// CLI 连接器生成二进制 deny 规则——plain 默认无规则；code 未初始化默认
+    /// 全禁 4 个内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
+    /// deny 在直跑 / 链式 / wrapper 形态下都硬拒（AskForApproval::Never 也拦）。
+    #[test]
+    fn cli_deny_ruleset_follows_scope_disabled_connectors() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-bridge-clidny-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+
+        use crate::features::marketplace::ConnectorScope;
+        // plain 无禁用 → 无规则。
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+        assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
+
+        // plain 禁 feishu → 仅 lark-cli deny。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Plain,
+            &["feishu".to_string()],
+        );
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+        assert_eq!(rs.ask_rules.len(), 1);
+        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("lark-cli"));
+        assert_eq!(
+            rs.ask_rules[0].action,
+            codewhale_execpolicy::PermissionAction::Deny
+        );
+
+        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
+        let rs = bridge.cli_deny_ruleset("sess-code");
+        let mut bins: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        bins.sort_unstable();
+        assert_eq!(bins, ["dws", "lark-cli", "tmeet", "wecom-cli"]);
+        assert!(rs
+            .ask_rules
+            .iter()
+            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+
+        // code 显式只禁 dingtalk → 仅剩 dws 被硬拒。
+        crate::features::marketplace::save_disabled_connectors_for(
+            ConnectorScope::Code,
+            &["dingtalk".to_string()],
+        );
+        let rs = bridge.cli_deny_ruleset("sess-code");
+        assert_eq!(rs.ask_rules.len(), 1);
+        assert_eq!(rs.ask_rules[0].command.as_deref(), Some("dws"));
+
+        // 底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒。
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        for cmd in [
+            "dws todo create",
+            "echo hi && dws todo create",
+            "bash -c \"dws todo create\"",
+        ] {
+            assert!(!check(cmd).allow, "{cmd} 应被 deny 规则硬拒");
+        }
+        // 非禁用命令不受影响（lark-cli 已被显式开启）。
+        assert!(check("lark-cli im send").allow, "未禁用的 CLI 不应被拦");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 脚本 deny 规则生成（纯函数）：脚本文件 × 解释器 + 直跑路径；非脚本文件与
+    /// 隐藏目录不生成规则。
+    #[test]
+    fn skill_script_deny_rules_cover_interpreters_and_direct_exec() {
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-skilldeny-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let scripts = dir.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let py = scripts.join("make_pptx.py");
+        let sh = scripts.join("render.sh");
+        std::fs::write(&py, "print(1)").unwrap();
+        std::fs::write(&sh, "echo hi").unwrap();
+        std::fs::write(scripts.join("notes.md"), "not a script").unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git").join("hook.py"), "x").unwrap();
+
+        let rules = skill_script_deny_rules_for(&dir);
+        // x.py: 4 解释器 + 1 直跑 = 5；y.sh: 2 + 1 = 3；notes.md / .git 无规则
+        assert_eq!(rules.len(), 8, "规则数: {rules:?}");
+        assert!(rules
+            .iter()
+            .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny));
+
+        // 引擎级行为：直跑 / 带参数 / 链式都硬拒（Never 模式也不放水）；
+        // 其它路径的同名解释器调用不受影响。
+        let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+            codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules),
+        ]);
+        let check = |command: &str| {
+            engine
+                .check(codewhale_execpolicy::ExecPolicyContext {
+                    command,
+                    cwd: ".",
+                    tool: Some("exec_shell"),
+                    path: None,
+                    ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
+                    sandbox_mode: None,
+                })
+                .unwrap()
+        };
+        let py_cmd = format!("python {}", py.display());
+        assert!(!check(&py_cmd).allow, "{py_cmd} 应被硬拒");
+        assert!(!check(&format!("{py_cmd} --flag")).allow, "带参数应被硬拒");
+        assert!(
+            !check(&format!("echo a && {py_cmd}")).allow,
+            "链式段应被硬拒"
+        );
+        assert!(
+            !check(&format!("{}", sh.display())).allow,
+            "直跑脚本路径应被硬拒"
+        );
+        let other = scripts.join("other.py");
+        assert!(
+            check(&format!("python {}", other.display())).allow,
+            "非禁用脚本不应被拦"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 通道③ 取数口径：scope 禁用技能（含 code 未初始化默认全禁）的脚本目录生成
+    /// deny 规则；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
+    #[test]
+    fn scope_deny_ruleset_covers_disabled_skill_scripts() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-bridge-scriptdny-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        // 盘上放一个带脚本的市场技能目录（SKILL.md + upload 标记 → 对已装技能
+        // 集合可见，code 未初始化「默认全禁」才能覆盖它）。市场技能已迁到按包聚合
+        // 的新布局 `bundles/<pkg>/skills/<name>/`（旧扁平 `bundle/skills/` 仅存内置技能）。
+        let script = dir.join("bundles/my-skill/skills/my-skill/scripts/run.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print(1)").unwrap();
+        std::fs::write(
+            dir.join("bundles/my-skill/skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bundles/my-skill/skills/my-skill/.installed-from"),
+            "upload:pkg.zip",
+        )
+        .unwrap();
+        // 上传技能的枚举自刀十起是 BundleStore 记录驱动：code「默认全禁已装技能」
+        // 依赖 installed_skill_ids → list_skills → store 记录，此处对齐生产语义
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "my-skill",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "pkg.zip".to_string(),
+                    ),
+                ),
+            )
+            .unwrap();
+
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code"
+        }));
+        use crate::features::marketplace::ConnectorScope;
+
+        // plain 无禁用 → 无脚本规则
+        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+
+        // plain 禁 my-skill → 含指向该脚本的 deny 规则
+        crate::features::marketplace::skill_scope::save_disabled_skills_for(
+            ConnectorScope::Plain,
+            &["my-skill".to_string()],
+        );
+        let rs = bridge.scope_deny_ruleset("sess-plain");
+        assert!(
+            rs.ask_rules.iter().any(|r| r
+                .command
+                .as_deref()
+                .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
+                && r.action == codewhale_execpolicy::PermissionAction::Deny),
+            "禁用技能脚本应有 deny 规则: {:?}",
+            rs.ask_rules
+        );
+
+        // 开回 → 规则消失（热刷重算的同一口径）
+        crate::features::marketplace::skill_scope::save_disabled_skills_for(
+            ConnectorScope::Plain,
+            &[],
+        );
+        assert!(bridge.scope_deny_ruleset("sess-plain").ask_rules.is_empty());
+
+        // code 未初始化 → 默认全禁已装技能 → 同样生成脚本规则
+        let rs = bridge.scope_deny_ruleset("sess-code");
+        assert!(
+            rs.ask_rules
+                .iter()
+                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
+            "code 默认全禁应覆盖技能脚本"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

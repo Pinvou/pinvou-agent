@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 use include_dir::{include_dir, Dir};
 
+use crate::features::marketplace::bundle::{
+    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
+};
 use crate::platform::paths;
 
 /// 三省六部工作流：编译期内嵌整个目录树（roles/*.md + scripts/*.py + json）。
@@ -15,29 +18,17 @@ static SANSHENG_LIUBU_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/workflow/sansheng-liubu");
 
 /// 飞书官方域技能（lark-*，MIT，sync 自 github.com/larksuite/cli `skills/`）：
-/// 编译期内嵌整个 skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
-/// 启动解包到 `bundle_skills_dir`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
+/// 编译期内嵌整个 lark-skills 目录树（各域 SKILL.md + references/*.md + NOTICE.md）。
+/// 启动解包到 `bundles/feishu/skills/`，供引擎 `SkillRegistry` 发现、`load_skill` 渐进披露。
+/// 独立放 `lark-skills/`（与内置技能 `builtin-skills/` 分离）：只内嵌飞书自有技能，
+/// 不再连带 visual-design / package-author 等非飞书技能（历史教训见下条 wecom 注释）。
 static LARK_SKILLS_DIR: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
-
-/// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
-/// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
-const LARK_SKILL_DIRS: [&str; 9] = [
-    "lark-shared",
-    "lark-calendar",
-    "lark-doc",
-    "lark-drive",
-    "lark-sheets",
-    "lark-im",
-    "lark-task",
-    "lark-wiki",
-    "lark-base",
-];
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/lark-skills");
 
 /// 企微官方域技能(wecomcli-*,MIT,来自 github.com/WecomTeam/wecom-cli `skills/`):
-/// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `skills/`)——
-/// `skills/` 整目录被 `LARK_SKILLS_DIR` 内嵌、随飞书门控解包,企微若混进去会被飞书
-/// 连带控制,故隔离成独立 include_dir + 独立门控。
+/// 编译期内嵌整个 wecom-skills 目录树。**单独放 `wecom-skills/`**(不进 `lark-skills/`)——
+/// 早先 `skills/` 整目录被 `LARK_SKILLS_DIR` 内嵌、随飞书门控解包,非飞书技能混进去会被
+/// 飞书连带控制,故各连接器与内置技能均隔离成独立 include_dir + 独立门控。
 static WECOM_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/wecom-skills");
 
@@ -51,19 +42,8 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-/// 7 个企微域技能目录名(门控写 / 删共用)。
-const WECOM_SKILL_DIRS: [&str; 7] = [
-    "wecomcli-msg",
-    "wecomcli-doc",
-    "wecomcli-meeting",
-    "wecomcli-schedule",
-    "wecomcli-todo",
-    "wecomcli-contact",
-    "wecomcli-smartsheet",
-];
-
-const DINGTALK_SKILL_DIRS: [&str; 1] = ["dws"];
-const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
+// 各连接器的技能目录名常量（LARK/WECOM/DINGTALK/TMEET_SKILL_DIRS）从能力包注册表
+// （marketplace::bundle）导入——门控写/删与 scope 组合目录排除共用同一份名单。
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
 /// 改 INSTRUCTIONS_MD 时不需要 bump base —— hash 自动变，ensure_extracted 自动覆写。
@@ -165,7 +145,7 @@ pub fn instructions_code_md(workspace_hint: &str) -> String {
 /// 目录。目录名与 frontmatter 均使用 v0.9 要求的安全命令名 `visual-design`；中文触发词
 /// 继续由 description / 正文承载。
 const VISUAL_DESIGN_SKILL_MD: &str =
-    include_str!("../../../../resources/common/bundle/skills/visual-design/SKILL.md");
+    include_str!("../../../../resources/common/bundle/builtin-skills/visual-design/SKILL.md");
 
 /// pinvou3 版 base prompt，编译期内嵌。通过底座 `prompts::set_base_prompt_override`
 /// 注入，替换底座的上游 `BASE_PROMPT`。这样 pinvou3 的 prompt 定制活在 app,
@@ -259,36 +239,15 @@ pub fn install_prompt_overrides() {
 pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
-// --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-const WEATHER_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/weather/server.py");
-const WEATHER_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/weather/manifest.json");
-const IWENCAI_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/iwencai/server.py");
-const IWENCAI_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/iwencai/manifest.json");
-const QCC_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/qcc/manifest.json");
-const YUANDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/yuandian-mcp/manifest.json");
-const CANVA_MCP_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/canva-mcp/manifest.json");
-const PATSNAP_SEARCH_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/patsnap-search/manifest.json");
-const OBSIDIAN_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/obsidian/server.py");
-const OBSIDIAN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/obsidian/manifest.json");
-const PPTX_SERVER_PY: &str = include_str!("../../../../../resources/mcp-servers/pptx/server.py");
-const PPTX_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/pptx/manifest.json");
-const GONGWEN_SERVER_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/server.py");
-const GONGWEN_MANIFEST_JSON: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
-const GONGWEN_STYLES_PY: &str =
-    include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
+/// spanner 扳手插件包的通用 MCP 适配器（plugin-protocol §15）：把
+/// `bundles/<id>/plugin.json` 声明的 stdin→stdout 入口包装成单工具 MCP server。
+/// 解包到 `~/.pinvou3/bundle/spanner_runner.py`，mcp.json 用 `<python> <path> <plugin.json>` 拉起。
+pub const SPANNER_RUNNER_PY: &str =
+    include_str!("../../../../resources/common/bundle/spanner_runner.py");
+
+// --- 工具市场：内置 MCP server 资源 ---
+// 编译期内嵌资源已收编到 `marketplace::mcp_catalog`（单一真相源：清单、释放、
+// 校验同一份数据）；未安装包不再每启动全量释放到 bundle/mcp-servers/（§4）。
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。
@@ -429,8 +388,34 @@ impl Pinvou3Bundle {
             self.apply_tmeet_skills(tmeet_show)?;
         }
         crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
+        // 首启一次性导入旧布局安装态到 BundleStore（marketplace-unification §9）。
+        // 位置：cleanups 之后（退役目录不导入）、write_mcp_servers 之前（该步骤按
+        // 已装记录补齐包目录，依赖 import 的登记）；manifest 清单取自内嵌目录，
+        // 不再依赖 write_mcp_servers 的落盘。必须在 `if !bundle_changed` 提前返回
+        // 之前——bundle 版本不变的老用户首次跑到新版本时也要完成导入；
+        // `legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
+        Self::import_legacy_bundle_store();
+        // 扁平技能布局 → 按包聚合的一次性物理迁移（§9.1，刀十）。排在 import 之后：
+        // import 按旧布局反推登记，迁移随后把目录搬进 bundles/<pkg>/skills/ 并补写
+        // 预置技能指纹。幂等；单个目录失败保留旧位置（读路径 find_skill_dir 回退）。
+        let migration =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .migrate_flat_skills_layout();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:skills_migration:done",
+            &format!(
+                "moved={} stale={} kept={}",
+                migration.moved.len(),
+                migration.removed_stale.len(),
+                migration.kept.len()
+            ),
+        );
+
         // MCP server scripts are immutable as well, but wait for secret migration to avoid
         // deleting legacy plaintext before it has been copied into the credential store.
+        // 刀十一起本步骤同时承担「按已装记录补齐包目录资源 + mcp.json 路径迁移 +
+        // 旧布局清理」，依赖 import 先跑完（已装记录是校验依据）。
         crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
         if mcp_secret_migration_ok {
             self.write_mcp_servers()?;
@@ -515,6 +500,38 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
+    /// 首启导入旧布局安装态 → BundleStore（bundles.json，Phase 2 真相源）。
+    /// 失败不阻塞启动（fail loud 到日志）；报告主要内容落启动标记与日志
+    /// （迁移决策可观测，§10.5）。幂等由 `legacy_imported` 闸保证。
+    fn import_legacy_bundle_store() {
+        crate::platform::startup::mark("bundle_extract:bundle_store_import:start");
+        match crate::features::marketplace::store::BundleStore::new().import_legacy() {
+            Ok(report) => {
+                crate::platform::startup::mark_with_detail(
+                    "rust",
+                    "bundle_extract:bundle_store_import:done",
+                    &format!(
+                        "already={} imported={} kept={} degraded={}",
+                        report.already_imported,
+                        report.imported.len(),
+                        report.kept_existing.len(),
+                        report.degraded.len()
+                    ),
+                );
+                if !report.already_imported && !report.imported.is_empty() {
+                    log::info!(
+                        "[runtime-bundle] bundles.json 首启导入完成: imported={:?} degraded={:?}",
+                        report.imported,
+                        report.degraded
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!("[runtime-bundle] bundles.json 首启导入失败（不阻塞启动）: {e}")
+            }
+        }
+    }
+
     /// 清理已从技能市场移除的预置技能残留(dir 名 → 原市场 id)。
     ///
     /// 与 [`Self::cleanup_retired_skills`] 相反:这些**曾是** marketplace 技能、装时写了
@@ -538,6 +555,15 @@ impl Pinvou3Bundle {
             }
             if marker.is_empty() || marker == format!("pinvou3-marketplace:{market_id}") {
                 let _ = std::fs::remove_dir_all(&dir);
+                // 镜像同步：首启导入可能已为这些退役技能登记过记录，目录删除后
+                // 清除 bundles.json 残留（失败只记日志，目录仍是权威）。
+                if let Err(e) =
+                    crate::features::marketplace::store::BundleStore::new().remove(market_id)
+                {
+                    log::warn!(
+                        "[runtime-bundle] bundles.json 镜像删除失败（cleanup {market_id}）: {e}"
+                    );
+                }
             }
         }
         Ok(())
@@ -562,6 +588,8 @@ impl Pinvou3Bundle {
             crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
 
             let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
+            // 新布局包目录（刀十一起）同样清理
+            let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
         }
         Ok(())
     }
@@ -570,9 +598,17 @@ impl Pinvou3Bundle {
     /// 后 catalogue 与 `load_skill` 都只扫描此目录，不再写 `~/.agents/skills`。
     /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
     fn write_builtin_skills(&self) -> std::io::Result<()> {
-        let dir = self.skills_dir.join("visual-design");
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
+        let visual_dir = self.skills_dir.join("visual-design");
+        std::fs::create_dir_all(&visual_dir)?;
+        std::fs::write(visual_dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
+        // 历史清理：早先 `LARK_SKILLS_DIR` 内嵌整个 `skills/`（含 visual-design），飞书
+        // 连接时会把内置技能一并解到 `bundles/feishu/skills/` 且断连不删，残留副本会按
+        // `skill_source_dirs` 的 first-wins 顺序遮蔽 `bundle/skills/` 的新副本。源目录现已
+        // 拆成 `lark-skills/` + `builtin-skills/`，这里防御性清掉老装机上的残留（幂等）。
+        let feishu_skills = Self::connector_package_skills_dir("feishu");
+        for stale in ["visual-design"] {
+            let _ = std::fs::remove_dir_all(feishu_skills.join(stale));
+        }
         Ok(())
     }
 
@@ -586,21 +622,28 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 解包内嵌的飞书官方域技能(lark-*)到 `~/.pinvou3/bundle/skills/`。
+    /// CLI 连接器的包内技能目录（§4 按包聚合：`bundles/<id>/skills/`）。
+    /// 门控写/删与可见性判定共用这一入口。
+    fn connector_package_skills_dir(id: &str) -> std::path::PathBuf {
+        paths::bundles_root().join(id).join("skills")
+    }
+
+    /// 解包内嵌的飞书官方域技能(lark-*)到 `bundles/feishu/skills/`。
     /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
-    /// `bundle/skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到
-    /// `skills_dir`——引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
+    /// 包内 `skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到目标——
+    /// 引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
     /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
-    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到 `skills_dir`;否则**删掉**它们(+ NOTICE.md)。
+    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
     /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
     pub fn apply_feishu_skills(&self, show: bool) -> std::io::Result<()> {
+        let target = Self::connector_package_skills_dir("feishu");
         if show {
-            Self::extract_dir(&LARK_SKILLS_DIR, &self.skills_dir)?;
+            Self::extract_dir(&LARK_SKILLS_DIR, &target)?;
         } else {
             for d in LARK_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+                let _ = std::fs::remove_dir_all(target.join(d));
             }
-            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE.md"));
+            let _ = std::fs::remove_file(target.join("NOTICE.md"));
         }
         Ok(())
     }
@@ -608,80 +651,87 @@ impl Pinvou3Bundle {
     /// 启动缓存只在 9 个飞书域技能全部完整落盘时判 visible，避免上次异常中断留下
     /// 半套目录却被 SkillRegistry 当成已连接。实时真相在首屏后的 CLI 探测中刷新。
     fn cached_feishu_skills_visible(&self) -> bool {
+        let target = Self::connector_package_skills_dir("feishu");
         crate::platform::connector_state::feishu_skills_visible()
             && LARK_SKILL_DIRS
                 .iter()
-                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+                .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到 `skills_dir`;否则**删掉**它们。
+    /// 企微域技能门控:`show` → 解包 7 个 wecomcli 技能到包目录;否则**删掉**它们。
     /// 幂等。与飞书门控正交(各自的连接 / 停用状态独立)。
     /// 注:`WECOM_SKILLS_DIR` 根 = `wecom-skills/`,内含 `wecomcli-<域>/SKILL.md`(+ NOTICE.md);
-    /// 直接铺到 `skills_dir`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
+    /// 直接铺到 `bundles/wecom/skills/`,引擎 `SkillRegistry` 扫每个含 `SKILL.md` 的子目录。
     /// 出处声明用 `NOTICE-wecom.md`(避开飞书的 `NOTICE.md`,两者解包到同一 skills_dir
     /// 不会互相覆盖)。隐藏时一并删掉。
     pub fn apply_wecom_skills(&self, show: bool) -> std::io::Result<()> {
+        let target = Self::connector_package_skills_dir("wecom");
         if show {
-            Self::extract_dir(&WECOM_SKILLS_DIR, &self.skills_dir)?;
+            Self::extract_dir(&WECOM_SKILLS_DIR, &target)?;
         } else {
             for d in WECOM_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+                let _ = std::fs::remove_dir_all(target.join(d));
             }
-            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-wecom.md"));
+            let _ = std::fs::remove_file(target.join("NOTICE-wecom.md"));
         }
         Ok(())
     }
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的企微技能目录作为启动缓存。
     fn cached_wecom_skills_visible(&self) -> bool {
+        let target = Self::connector_package_skills_dir("wecom");
         crate::platform::connector_state::wecom_skills_visible()
             && WECOM_SKILL_DIRS
                 .iter()
-                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+                .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 钉钉 mono skill 门控:`show` → 解包 `dws` 到 `skills_dir`;否则删除。
+    /// 钉钉 mono skill 门控:`show` → 解包 `dws` 到包目录;否则删除。
     /// 出处声明用 `NOTICE-dingtalk.md`,避免覆盖飞书 / 企微的 NOTICE。
     pub fn apply_dingtalk_skills(&self, show: bool) -> std::io::Result<()> {
+        let target = Self::connector_package_skills_dir("dingtalk");
         if show {
-            Self::extract_dir(&DINGTALK_SKILLS_DIR, &self.skills_dir)?;
+            Self::extract_dir(&DINGTALK_SKILLS_DIR, &target)?;
         } else {
             for d in DINGTALK_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+                let _ = std::fs::remove_dir_all(target.join(d));
             }
-            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-dingtalk.md"));
+            let _ = std::fs::remove_file(target.join("NOTICE-dingtalk.md"));
         }
         Ok(())
     }
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的钉钉技能目录作为启动缓存。
     fn cached_dingtalk_skills_visible(&self) -> bool {
+        let target = Self::connector_package_skills_dir("dingtalk");
         crate::platform::connector_state::dingtalk_skills_visible()
             && DINGTALK_SKILL_DIRS
                 .iter()
-                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+                .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
 
-    /// 腾讯会议 mono skill 门控:`show` → 解包 `tmeet-skill` 到 `skills_dir`;否则删除。
+    /// 腾讯会议 mono skill 门控:`show` → 解包 `tmeet-skill` 到包目录;否则删除。
     /// 出处声明用 `NOTICE-tmeet.md`,避免覆盖其他 CLI 连接器 NOTICE。
     pub fn apply_tmeet_skills(&self, show: bool) -> std::io::Result<()> {
+        let target = Self::connector_package_skills_dir("tmeet");
         if show {
-            Self::extract_dir(&TMEET_SKILLS_DIR, &self.skills_dir)?;
+            Self::extract_dir(&TMEET_SKILLS_DIR, &target)?;
         } else {
             for d in TMEET_SKILL_DIRS {
-                let _ = std::fs::remove_dir_all(self.skills_dir.join(d));
+                let _ = std::fs::remove_dir_all(target.join(d));
             }
-            let _ = std::fs::remove_file(self.skills_dir.join("NOTICE-tmeet.md"));
+            let _ = std::fs::remove_file(target.join("NOTICE-tmeet.md"));
         }
         Ok(())
     }
 
     /// 同 [`cached_feishu_skills_visible`]，以完整的腾讯会议技能目录作为启动缓存。
     fn cached_tmeet_skills_visible(&self) -> bool {
+        let target = Self::connector_package_skills_dir("tmeet");
         crate::platform::connector_state::tmeet_skills_visible()
             && TMEET_SKILL_DIRS
                 .iter()
-                .all(|dir| self.skills_dir.join(dir).join("SKILL.md").is_file())
+                .all(|dir| target.join(dir).join("SKILL.md").is_file())
     }
     /// 递归解包 `include_dir::Dir` 到磁盘目标路径。
     /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。
@@ -790,15 +840,19 @@ impl Pinvou3Bundle {
         lower.contains("python") && !std::path::Path::new(cmd).exists()
     }
 
-    /// 写出内置 MCP server 脚本到 `~/.pinvou3/bundle/mcp-servers/` + 加可执行位。
-    /// 每次启动防御性重写(immutable bundle 资源,无副作用)。底座按 mcp.json
-    /// 用 `python <path>` 拉起,不依赖可执行位,但 chmod +x 无害。
+    /// 写出内置 MCP server 资源。present_artifact（pinvou 内置，非市场包）布局不变；
+    /// 市场 MCP 包按 BundleStore 已装记录校验/补齐（§4：启动不再全量释放，
+    /// 未安装包不占盘），随后做存量 mcp.json 路径迁移与旧布局工具目录清理。
+    /// 每次启动跑（immutable 资源，内容一致时零写盘）。
     fn write_mcp_servers(&self) -> std::io::Result<()> {
         let dir = paths::bundle_mcp_servers_dir();
         std::fs::create_dir_all(&dir)?;
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
         std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
+        // spanner 扳手插件包的通用 MCP 适配器（每次启动防御性重写，immutable 资源）
+        let spanner_runner = paths::bundle_spanner_runner();
+        std::fs::write(&spanner_runner, SPANNER_RUNNER_PY)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -806,52 +860,48 @@ impl Pinvou3Bundle {
             perm.set_mode(0o755);
             std::fs::set_permissions(&server, perm)?;
         }
-        // 工具市场：天气 MCP server
-        let weather_dir = dir.join("weather");
-        std::fs::create_dir_all(&weather_dir)?;
-        std::fs::write(weather_dir.join("server.py"), WEATHER_SERVER_PY)?;
-        std::fs::write(weather_dir.join("manifest.json"), WEATHER_MANIFEST_JSON)?;
-        // 工具市场：同花顺问财 MCP server
-        let iwencai_dir = dir.join("iwencai");
-        std::fs::create_dir_all(&iwencai_dir)?;
-        std::fs::write(iwencai_dir.join("server.py"), IWENCAI_SERVER_PY)?;
-        std::fs::write(iwencai_dir.join("manifest.json"), IWENCAI_MANIFEST_JSON)?;
-        // 工具市场：企查查（远程 MCP，只有 manifest.json，无 server.py）
-        let qcc_dir = dir.join("qcc");
-        std::fs::create_dir_all(&qcc_dir)?;
-        std::fs::write(qcc_dir.join("manifest.json"), QCC_MANIFEST_JSON)?;
-        // 工具市场：华宇元典（远程 MCP + OAuth，只有 manifest.json，无 server.py）
-        let yuandian_dir = dir.join("yuandian-mcp");
-        std::fs::create_dir_all(&yuandian_dir)?;
-        std::fs::write(yuandian_dir.join("manifest.json"), YUANDIAN_MANIFEST_JSON)?;
-        // 工具市场：Canva 可画（远程 MCP + OAuth，只有 manifest.json，无 server.py）
-        let canva_dir = dir.join("canva-mcp");
-        std::fs::create_dir_all(&canva_dir)?;
-        std::fs::write(canva_dir.join("manifest.json"), CANVA_MCP_MANIFEST_JSON)?;
-        // 工具市场：智慧芽专利&文献融合检索（远程 MCP，API Key 通过请求头占位符注入）
-        let patsnap_dir = dir.join("patsnap-search");
-        std::fs::create_dir_all(&patsnap_dir)?;
-        std::fs::write(
-            patsnap_dir.join("manifest.json"),
-            PATSNAP_SEARCH_MANIFEST_JSON,
-        )?;
-        // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
-        let obsidian_dir = dir.join("obsidian");
-        std::fs::create_dir_all(&obsidian_dir)?;
-        std::fs::write(obsidian_dir.join("server.py"), OBSIDIAN_SERVER_PY)?;
-        std::fs::write(obsidian_dir.join("manifest.json"), OBSIDIAN_MANIFEST_JSON)?;
-        // 工具市场：PPT 生成 MCP server（本地 stdio，python-pptx 直出 .pptx；非零依赖，装时自动 pip install）
-        let pptx_dir = dir.join("pptx");
-        std::fs::create_dir_all(&pptx_dir)?;
-        std::fs::write(pptx_dir.join("server.py"), PPTX_SERVER_PY)?;
-        std::fs::write(pptx_dir.join("manifest.json"), PPTX_MANIFEST_JSON)?;
-        // 工具市场：公文写作 MCP server（本地 stdio，python-docx 直出 GB/T 9704 .docx；
-        // 比别的多一个 gbt9704_styles.py 渲染模块，server.py 同目录 import 它）
-        let gongwen_dir = dir.join("gongwen");
-        std::fs::create_dir_all(&gongwen_dir)?;
-        std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
-        std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
-        std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
+
+        // 市场包：按已装记录校验/补齐包目录资源（内嵌目录为比对基准）。
+        // store 读失败不阻塞启动（fail loud 到日志，下个启动周期自愈）。
+        match crate::features::marketplace::store::BundleStore::new().records() {
+            Ok(records) => {
+                for record in records.iter().filter(|r| r.installed) {
+                    if crate::features::marketplace::mcp_catalog::spec_for(&record.id).is_none() {
+                        continue; // 非内嵌包（自定义/上传），无内嵌资源可校验
+                    }
+                    if let Err(e) =
+                        crate::features::marketplace::mcp_catalog::ensure_package_released(
+                            &record.id,
+                        )
+                    {
+                        log::warn!("[runtime-bundle] MCP 包资源补齐失败（{}）: {e}", record.id);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("[runtime-bundle] BundleStore 读取失败，跳过 MCP 包资源校验: {e}")
+            }
+        }
+        // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
+        // bundles/<id>/mcp/。幂等；旧布局随后只保留 present_artifact_server.py。
+        match crate::features::marketplace::migrate_custom_mcp_layout() {
+            Ok((moved, kept)) => {
+                if moved > 0 || kept > 0 {
+                    log::info!("[runtime-bundle] 自定义 MCP 迁移: moved={moved} kept={kept}");
+                }
+            }
+            Err(e) => log::warn!("[runtime-bundle] 自定义 MCP 迁移失败: {e}"),
+        }
+        // 存量 mcp.json 条目路径迁移：旧布局前缀 → 新包目录（幂等，只改本 app 写的文件）
+        if let Err(e) = crate::features::marketplace::migrate_mcp_json_paths() {
+            log::warn!("[runtime-bundle] mcp.json 路径迁移失败: {e}");
+        }
+        // 旧布局工具目录清理：只删内嵌清单内的 id（present_artifact_server.py 与
+        // 未知/自定义目录保留）。调用方已保证明文密钥迁移完成（mcp_secret_migration_ok），
+        // 旧 manifest 不再是唯一明文救援副本，可删。
+        for spec in crate::features::marketplace::mcp_catalog::MCP_PACKAGES {
+            let _ = std::fs::remove_dir_all(dir.join(spec.id));
+        }
         Ok(())
     }
 }
@@ -1006,16 +1056,16 @@ mod tests {
             "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
             server_keys.keys().collect::<Vec<_>>()
         );
+        // 刀十一起市场 MCP 包不再每启动全量释放：未安装的 canva-mcp 不应落盘；
+        // 其清单由内嵌目录（mcp_catalog）供给。
         let canva_dir = paths::bundle_mcp_servers_dir().join("canva-mcp");
-        let canva_manifest = canva_dir.join("manifest.json");
-        assert!(canva_manifest.is_file(), "Canva 可画 manifest 应被解包");
-        let canva_json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap()).unwrap();
-        assert_eq!(canva_json["id"], "canva-mcp");
-        assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
         assert!(
-            !canva_dir.join("server.py").exists(),
-            "Canva 远程 MCP 不应解包本地 server.py"
+            !canva_dir.exists(),
+            "未安装的 MCP 包不应释放到旧布局（§4 按需释放）"
+        );
+        assert!(
+            crate::features::marketplace::mcp_catalog::spec_for("canva-mcp").is_some(),
+            "未安装包的清单应由内嵌目录供给"
         );
         // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
         for retired in [
@@ -1129,7 +1179,11 @@ mod tests {
         let tmp = tempdir();
         std::env::set_var("PINVOU3_HOME", &tmp);
         let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        // 连接器技能按包聚合：bundles/<id>/skills/<dir>（§4）
+        let feishu_dir = Pinvou3Bundle::connector_package_skills_dir("feishu");
+        let wecom_dir = Pinvou3Bundle::connector_package_skills_dir("wecom");
+        let dingtalk_dir = Pinvou3Bundle::connector_package_skills_dir("dingtalk");
+        let tmeet_dir = Pinvou3Bundle::connector_package_skills_dir("tmeet");
 
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
@@ -1137,22 +1191,22 @@ mod tests {
         assert!(!bundle.cached_tmeet_skills_visible());
 
         for dir in LARK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = feishu_dir.join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in WECOM_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = wecom_dir.join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in DINGTALK_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = dingtalk_dir.join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
         for dir in TMEET_SKILL_DIRS {
-            let path = bundle.skills_dir.join(dir);
+            let path = tmeet_dir.join(dir);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("SKILL.md"), "test").unwrap();
         }
@@ -1174,16 +1228,10 @@ mod tests {
         std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
         std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
 
-        std::fs::remove_file(bundle.skills_dir.join(LARK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(WECOM_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
-        std::fs::remove_file(
-            bundle
-                .skills_dir
-                .join(DINGTALK_SKILL_DIRS[0])
-                .join("SKILL.md"),
-        )
-        .unwrap();
-        std::fs::remove_file(bundle.skills_dir.join(TMEET_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(feishu_dir.join(LARK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(wecom_dir.join(WECOM_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(dingtalk_dir.join(DINGTALK_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
+        std::fs::remove_file(tmeet_dir.join(TMEET_SKILL_DIRS[0]).join("SKILL.md")).unwrap();
         assert!(!bundle.cached_feishu_skills_visible());
         assert!(!bundle.cached_wecom_skills_visible());
         assert!(!bundle.cached_dingtalk_skills_visible());
@@ -1539,18 +1587,119 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
 
         bundle.apply_dingtalk_skills(true).unwrap();
-        let skill = bundle.skills_dir.join("dws");
+        // 按包聚合：bundles/dingtalk/skills/dws
+        let target = Pinvou3Bundle::connector_package_skills_dir("dingtalk");
+        let skill = target.join("dws");
         assert!(skill.join("SKILL.md").is_file());
         assert!(skill
             .join("references")
             .join("global-reference.md")
             .is_file());
-        assert!(bundle.skills_dir.join("NOTICE-dingtalk.md").is_file());
+        assert!(target.join("NOTICE-dingtalk.md").is_file());
 
         bundle.apply_dingtalk_skills(false).unwrap();
         assert!(!skill.exists());
-        assert!(!bundle.skills_dir.join("NOTICE-dingtalk.md").exists());
+        assert!(!target.join("NOTICE-dingtalk.md").exists());
 
+        cleanup(&tmp);
+    }
+
+    /// 首启导入接线：旧布局（installed.json）安装态反推进 BundleStore 且幂等闸
+    /// 置位；二次调用不新增、不改写。导入逻辑本身的覆盖面测试在 store.rs。
+    #[test]
+    fn import_legacy_bundle_store_wiring_imports_once() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        // 路径必须经 pinvou3_home() 取（Windows 上 platform_compat_path 会做盘符
+        // 归一，直接 join 原始 tmp 字符串会写到不同位置）
+        let marketplace = crate::platform::paths::pinvou3_home().join("marketplace");
+        std::fs::create_dir_all(&marketplace).unwrap();
+        std::fs::write(marketplace.join("installed.json"), r#"["weather"]"#).unwrap();
+
+        Pinvou3Bundle::import_legacy_bundle_store();
+        let store = crate::features::marketplace::store::BundleStore::new();
+        assert!(
+            store.get("weather").unwrap().is_some(),
+            "installed.json 的 weather 应被导入"
+        );
+        assert!(store.load().unwrap().legacy_imported, "幂等闸应置位");
+        let after_first = std::fs::read_to_string(store.file_path()).unwrap();
+
+        Pinvou3Bundle::import_legacy_bundle_store();
+        assert_eq!(
+            std::fs::read_to_string(store.file_path()).unwrap(),
+            after_first,
+            "二次调用不得改写文件"
+        );
+        cleanup(&tmp);
+    }
+
+    /// 刀十一：write_mcp_servers 只按已装记录补齐包目录（bundles/<id>/mcp/），
+    /// 未安装包不占盘；旧布局内嵌清单目录清理、未知/自定义目录强制迁移到新布局、
+    /// present_artifact 不受影响；指纹补写进 store 记录。
+    #[test]
+    fn write_mcp_servers_syncs_only_installed_packages() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        // 旧布局残留：weather（已装）+ my-custom（未知自定义目录）
+        let legacy = paths::bundle_mcp_servers_dir();
+        std::fs::create_dir_all(legacy.join("weather")).unwrap();
+        std::fs::write(legacy.join("weather/manifest.json"), "old").unwrap();
+        std::fs::create_dir_all(legacy.join("my-custom")).unwrap();
+        std::fs::write(legacy.join("my-custom/manifest.json"), "{}").unwrap();
+        // store：weather 已装
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "weather",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+
+        bundle.write_mcp_servers().unwrap();
+
+        assert!(
+            paths::bundles_root()
+                .join("weather/mcp/server.py")
+                .is_file(),
+            "已装包应补齐到新布局"
+        );
+        assert!(paths::bundles_root()
+            .join("weather/mcp/manifest.json")
+            .is_file());
+        let record = crate::features::marketplace::store::BundleStore::new()
+            .get("weather")
+            .unwrap()
+            .unwrap();
+        assert!(record.content_fingerprint.is_some(), "应补写包内容指纹");
+        assert!(!legacy.join("weather").exists(), "内嵌清单内的旧目录应清理");
+        assert!(
+            !legacy.join("my-custom").exists(),
+            "未知/自定义目录应迁移到新布局（旧布局不再保留）"
+        );
+        assert!(
+            paths::bundles_root()
+                .join("my-custom/mcp/manifest.json")
+                .is_file(),
+            "自定义目录迁移后落位新布局"
+        );
+        assert!(
+            paths::bundle_present_artifact_server().is_file(),
+            "present_artifact 不受影响"
+        );
+        assert!(
+            !paths::bundles_root().join("canva-mcp").exists(),
+            "未安装包不占盘"
+        );
+        // 幂等：二次运行零差异（目录已一致）
+        bundle.write_mcp_servers().unwrap();
+        assert!(paths::bundles_root()
+            .join("weather/mcp/server.py")
+            .is_file());
         cleanup(&tmp);
     }
 

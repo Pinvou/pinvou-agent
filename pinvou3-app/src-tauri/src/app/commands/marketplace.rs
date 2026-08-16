@@ -496,6 +496,33 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// 更新已安装的预置技能:复用 `install` 的原子覆盖管线落最新嵌入资源。
+/// 与"新装"的差异:不调 `sync_code_scope_after_skill_install`——更新保留
+/// 用户现有的启用/停用状态,不把技能重新塞回 code 禁用集。
+#[tauri::command]
+pub async fn update_marketplace_skill(
+    skill_id: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        // 只接受"已安装的预置技能";未安装走 install,上传技能无嵌入新版可更。
+        let installed = mgr
+            .list_skills()
+            .into_iter()
+            .any(|s| s.id == skill_id && s.installed && !s.user_uploaded);
+        if !installed {
+            return Err(format!("技能 '{skill_id}' 非已安装预置技能,无法更新"));
+        }
+        mgr.install(&skill_id)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(())
+}
+
 /// 弹文件选择框选 zip 技能包并导入。前端无法用 plugin-dialog 的 JS API
 /// (单 HTML 无 bundler 引不进),所以选文件走 Rust 端 dialog。
 /// 返回 true=已导入,false=用户取消。
@@ -527,6 +554,187 @@ pub async fn import_skill_package(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 重写在线会话组合目录（下一轮 prompt 生效）。
+    pool.refresh_live_sessions_skills().await;
+    Ok(true)
+}
+
+/// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
+/// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
+/// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
+fn import_skill_md_content(
+    md: String,
+    filename: &str,
+) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
+    use std::io::Write;
+    let stem = filename
+        .rfind('.')
+        .map(|i| &filename[..i])
+        .unwrap_or(filename);
+    let fallback = crate::features::marketplace::skill_marketplace::sanitize_skill_name(stem);
+    let mut md = md;
+    if crate::features::marketplace::skill_marketplace::read_skill_name_from_str(&md).is_none() {
+        md = format!("---\nname: {fallback}\n---\n\n{md}");
+    }
+    // 包装成临时 zip（根放 SKILL.md）走统一导入。
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-skillmd-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    {
+        let f = std::fs::File::create(&tmp).map_err(|e| format!("写临时文件: {e}"))?;
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("SKILL.md", opts).map_err(|e| e.to_string())?;
+        zw.write_all(md.as_bytes()).map_err(|e| e.to_string())?;
+        zw.finish().map_err(|e| e.to_string())?;
+    }
+    // 展示名 = 原始文件名（写 bundles.json 的 upload 来源标记）。
+    let display: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let result = crate::features::marketplace::plugin_import::import_plugin_package(
+        &tmp.to_string_lossy(),
+        &display,
+    );
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    result
+}
+
+/// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：spanner/mcp/skill/组合包），
+/// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 true=已导入，
+/// false=用户取消。
+#[tauri::command]
+pub async fn import_spanner_package(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("技能/插件包 (zip, md)", &["zip", "md", "markdown"])
+        .blocking_pick_file()
+    else {
+        return Ok(false); // 用户取消
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    let display = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "plugin.zip".to_string());
+    let is_md = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false);
+
+    let report = tokio::task::spawn_blocking(move || {
+        if is_md {
+            let md = std::fs::read_to_string(&path)
+                .map_err(|e| format!("读技能文件失败（{}）: {e}", path.display()))?;
+            import_skill_md_content(md, &display)
+        } else {
+            crate::features::marketplace::plugin_import::import_plugin_package(
+                &path.to_string_lossy(),
+                &display,
+            )
+        }
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_live_sessions_skills().await;
+    log::info!(
+        "[marketplace] 插件导入: id={} kind={:?} icon={}",
+        report.id,
+        report.kind,
+        report.icon
+    );
+    Ok(true)
+}
+
+/// 拖放导入插件包（统一上传，与 `import_spanner_package` 同语义）：前端把 zip 读成
+/// base64 传这里，临时落盘后走 `import_plugin_package`。返回 true=已导入。
+#[tauri::command]
+pub async fn import_spanner_package_bytes(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    if !filename.to_ascii_lowercase().ends_with(".zip") {
+        return Err("仅支持 .zip 插件包".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码 zip 数据失败: {e}"))?;
+    let max_bytes = crate::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("插件包超过 {} MiB 上限", max_bytes / 1024 / 1024));
+    }
+    // 展示名净化(仅写 bundles.json 的 upload 来源标记用):去路径分隔符/控制字符,截 128
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(128)
+        .collect();
+    let tmp = std::env::temp_dir().join(format!(
+        "pinvou3-plugin-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
+    let tmp_for_import = tmp.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::plugin_import::import_plugin_package(
+            &tmp_for_import.to_string_lossy(),
+            &safe_name,
+        )
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?;
+    let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
+    report?;
+    // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_live_sessions_skills().await;
+    Ok(true)
+}
+
+/// 拖放导入单个 `.md`/`.markdown` 技能文件：把裸 markdown 包装成「根放 SKILL.md 的
+/// 裸 skill 包」走统一导入（复用裸技能回退识别 + 落盘 + 登记）。frontmatter 有
+/// `name` 用之；没有则用文件名 stem 兜底并注入一个最小 frontmatter。返回 true=已导入。
+#[tauri::command]
+pub async fn import_skill_md_bytes(
+    filename: String,
+    data_base64: String,
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<bool, String> {
+    use base64::Engine as _;
+    let lower = filename.to_ascii_lowercase();
+    if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
+        return Err("仅支持 .md / .markdown 技能文件".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| format!("解码数据失败: {e}"))?;
+    let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
+    let filename_for_import = filename.clone();
+    tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))??;
     pool.refresh_live_sessions_skills().await;
     Ok(true)
 }
@@ -621,6 +829,15 @@ pub struct BundleReadinessResult {
     pub reason: Option<String>,
     /// 原连接器 status 的完整 detail（CLI/ima 型透传，向前兼容）
     pub detail: Option<serde_json::Value>,
+    /// 动作下发（§3.3）：后端按当前状态推导的可用动作集。serde default 保持
+    /// 契约纯增量；前端切换为动作渲染器在后续 PR。
+    #[serde(default)]
+    pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
+    /// 包功能事实全量（§3.1：description/version/category/config_fields 等，
+    /// 第九刀增补）——前端详情三栏与配置弹窗的后端数据源；serde default 保持
+    /// 契约纯增量。
+    #[serde(default)]
+    pub bundle: Option<crate::features::marketplace::bundle::BundleInfo>,
 }
 
 /// 统一就绪态查询：
@@ -744,12 +961,24 @@ pub async fn bundle_readiness(bundle_id: String) -> Result<BundleReadinessResult
             (bundle.installed, ready, reason, None)
         }
     };
+    // 动作推导输入的 Readiness 重建：CLI/ima 分支的 reason 是自定义字符串，
+    // 推导只区分 Ready / missing_credentials / 其它（见 actions.rs 规则注释）。
+    let readiness = if ready {
+        Readiness::Ready
+    } else if reason.as_deref() == Some("missing_credentials") {
+        Readiness::NotReady("missing_credentials")
+    } else {
+        Readiness::NotReady("not_ready")
+    };
+    let actions = crate::features::marketplace::actions::actions_for(&bundle, readiness);
     Ok(BundleReadinessResult {
         bundle_id,
         installed,
         ready,
         reason,
         detail,
+        actions,
+        bundle: Some(bundle),
     })
 }
 
@@ -759,3 +988,94 @@ fn connected_of(v: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 use super::prelude::*;
+
+/// 导出《插件包设计规范》Markdown：打开系统保存对话框写入规范文档，方便用户
+/// 直接下载、分发给第三方包作者。规范单一真相源在 `docs/plugin-package-spec.md`
+/// （编译期内嵌，离线可用，不与运行时磁盘状态耦合）。
+#[tauri::command]
+pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    const SPEC_MD: &str = include_str!("../../../../../docs/plugin-package-spec.md");
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name("pinvou-plugin-package-spec.md")
+        .add_filter("Markdown", &["md"])
+        .blocking_save_file()
+    else {
+        return Ok(false); // 用户取消保存对话框
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_spec_export_path: {error}"))?;
+    tokio::task::spawn_blocking(move || std::fs::write(&path, SPEC_MD))
+        .await
+        .map_err(|error| format!("spec_export_task_failed: {error}"))?
+        .map_err(|error| format!("spec_export_write_failed: {error}"))?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
+    #[test]
+    fn bundle_readiness_carries_bundle_facts() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-readiness-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        // 带必填凭据的 MCP manifest + BundleStore 安装记录
+        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("weather");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.json"),
+            r#"{"id":"weather","name":"高德天气","description":"天气查询","version":"1.2.3","icon":"","category":"life","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"AMAP_KEY","label":"k","required":true,"secret":true}]}"#,
+        )
+        .unwrap();
+        let store = crate::features::marketplace::store::BundleStore::new();
+        store
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "weather",
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ),
+            )
+            .unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt
+            .block_on(bundle_readiness("weather".to_string()))
+            .unwrap();
+
+        assert!(result.installed, "store 有记录应已安装");
+        assert!(!result.ready, "缺必填凭据应未就绪");
+        assert!(result.actions.iter().any(|a| a.id == "configure"));
+        let bundle = result.bundle.expect("响应应携带 BundleInfo");
+        assert_eq!(bundle.version, "1.2.3");
+        assert_eq!(bundle.description, "天气查询");
+        assert_eq!(bundle.category, "life");
+        assert_eq!(bundle.config_fields.len(), 1);
+        assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
+        assert!(bundle.config_fields[0].secret);
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

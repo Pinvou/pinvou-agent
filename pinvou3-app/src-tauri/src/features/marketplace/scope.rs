@@ -1,0 +1,577 @@
+//! 包 id × SessionMode 的单一禁用集（`~/.pinvou3/disabled_bundles.json`）。
+//!
+//! 这是「工具市场统一治理」scope 收敛（todo A 节）的单一真相源：取代原先
+//! `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）两份
+//! 文件。开关粒度收敛为**包 id**（= `bundle.rs` 里 `BundleInfo.id`，即 MCP 工具 id /
+//! 技能 id / CLI 连接器 id），一个包 = 一个开关，包内技能（companion skills）可见性
+//! 唯一跟随所属包（§5.2 不变量）。
+//!
+//! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes: {"<mode>": [...]},
+//! "initialized": ["<mode>"], project_skills_enabled}`，scope 键即 `SessionMode` 的
+//! kebab-case 名。首个版本读取时把两份旧文件迁移到本文件（读到即迁移）：
+//! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
+//! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
+//! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
+//!
+//! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
+//! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
+
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
+use crate::features::marketplace::bundle::{builtin_cli_bundle_ids, skill_owner_package};
+use crate::features::marketplace::skill_marketplace::SkillMarketplaceManager;
+use crate::features::marketplace::{ConnectorScope, MarketplaceManager};
+use crate::platform::paths;
+
+/// 按模式 scope 键控的禁用**包**列表（包 id 集合）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DisabledBundlesFile {
+    /// scope（模式 kebab-case 名）→ 该 scope 被禁用（开关关）的包 id 列表。
+    #[serde(default)]
+    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
+    /// scope → 该 scope 被「不可见」（可见性过滤，从 composer 列表消失）的包 id 列表。
+    /// 与 `scopes`（开关）正交：开关控制 on/off，可见性控制是否出现在列表。
+    #[serde(default)]
+    pub hidden_scopes: std::collections::BTreeMap<String, Vec<String>>,
+    /// 已被用户显式初始化（改过开关）的 scope 集合。
+    #[serde(default)]
+    pub initialized: std::collections::BTreeSet<String>,
+    /// 项目级 skills 是否对 code 会话开启（默认关）。随技能侧迁入本文件。
+    #[serde(default)]
+    pub project_skills_enabled: bool,
+    /// 未知键原样保留（前向兼容）。
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn disabled_bundles_path() -> PathBuf {
+    paths::pinvou3_home().join("disabled_bundles.json")
+}
+
+/// `disabled_bundles.json` 读-改-写的进程内串行化。
+static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
+
+/// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
+/// 串行（与旧两份文件的 #287 竞态范式一致）。
+pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_disabled_bundles_file_locked()
+}
+
+/// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
+/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
+fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
+    let path = disabled_bundles_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => {
+            let file = migrate_from_legacy_files();
+            if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
+                save_disabled_bundles_file(&file);
+            }
+            return file;
+        }
+    };
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(f) => f,
+        Err(_) => DisabledBundlesFile::default(),
+    };
+    if strip_skill_prefixes(&mut file) {
+        save_disabled_bundles_file(&file);
+    }
+    file
+}
+
+/// 防御：剥除所有 scope 禁用集里的 `skill:` 前缀（旧前端 bug 窗口期误写入的带前缀
+/// id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
+fn strip_skill_prefixes(file: &mut DisabledBundlesFile) -> bool {
+    let mut stripped = false;
+    for ids in file.scopes.values_mut() {
+        for id in ids.iter_mut() {
+            if let Some(s) = id.strip_prefix("skill:") {
+                *id = s.to_string();
+                stripped = true;
+            }
+        }
+    }
+    stripped
+}
+
+/// 原始条目 → 包 id。连接器/CLI id 原样保留（`skill_owner_package` 对它们恒等）；
+/// `skill:` 前缀剥除后按技能名映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）。
+fn to_package_id(raw: &str) -> String {
+    let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
+    skill_owner_package(stripped)
+}
+
+/// 首启迁移：读旧 `disabled_connectors.json` + `disabled_skills.json`（各兼容三种
+/// 旧形态），把条目映射为包 id 后按 scope 取并集，`project_skills_enabled` 取自技能
+/// 文件。迁移不删旧文件（本版本内保留为惰性历史，只读新文件；下个版本周期随
+/// 旧布局退役一并清理，见 todo C 节）。
+fn migrate_from_legacy_files() -> DisabledBundlesFile {
+    let mut file = DisabledBundlesFile::default();
+    merge_connector_scopes_into(&mut file);
+    merge_skill_scopes_into(&mut file);
+    file
+}
+
+/// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`。
+fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
+    let path = paths::pinvou3_home().join("disabled_connectors.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    // 裸数组 → plain scope
+    if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
+        let ids: Vec<String> = list.iter().map(|id| to_package_id(id)).collect();
+        if !ids.is_empty() {
+            file.scopes
+                .insert(SessionMode::Plain.as_str().to_string(), ids);
+        }
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(obj) = value.as_object() else {
+        return;
+    };
+    if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
+        for (key, arr) in scopes {
+            if let Some(arr) = arr.as_array() {
+                let ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(to_package_id))
+                    .collect();
+                if !ids.is_empty() {
+                    file.scopes.insert(key.clone(), ids);
+                }
+            }
+        }
+        if let Some(initialized) = obj.get("initialized").and_then(|v| v.as_array()) {
+            for key in initialized.iter().filter_map(|v| v.as_str()) {
+                file.initialized.insert(key.to_string());
+            }
+        }
+    } else {
+        // 旧双 scope 对象 {plain, code, code_initialized}
+        for key in ["plain", "code"] {
+            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+                let ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(to_package_id))
+                    .collect();
+                if !ids.is_empty() {
+                    file.scopes.insert(key.to_string(), ids);
+                }
+            }
+        }
+        if obj
+            .get("code_initialized")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            file.initialized
+                .insert(SessionMode::Code.as_str().to_string());
+        }
+    }
+}
+
+/// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
+/// 并继承 `project_skills_enabled`。
+fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
+    let path = paths::pinvou3_home().join("disabled_skills.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    // 裸数组 → plain scope
+    if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
+        let ids: Vec<String> = list.iter().map(|id| to_package_id(id)).collect();
+        if !ids.is_empty() {
+            merge_ids_into_scope(file, SessionMode::Plain.as_str(), ids);
+        }
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(obj) = value.as_object() else {
+        return;
+    };
+    if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
+        for (key, arr) in scopes {
+            if let Some(arr) = arr.as_array() {
+                let ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(to_package_id))
+                    .collect();
+                merge_ids_into_scope(file, key, ids);
+            }
+        }
+        if let Some(initialized) = obj.get("initialized").and_then(|v| v.as_array()) {
+            for key in initialized.iter().filter_map(|v| v.as_str()) {
+                file.initialized.insert(key.to_string());
+            }
+        }
+    } else {
+        for key in ["plain", "code"] {
+            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+                let ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(to_package_id))
+                    .collect();
+                merge_ids_into_scope(file, key, ids);
+            }
+        }
+        if obj
+            .get("code_initialized")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            file.initialized
+                .insert(SessionMode::Code.as_str().to_string());
+        }
+    }
+    if let Some(enabled) = obj.get("project_skills_enabled").and_then(|v| v.as_bool()) {
+        file.project_skills_enabled = enabled;
+    }
+}
+
+/// 并集合并到某 scope（去重、保序）。
+fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<String>) {
+    if ids.is_empty() {
+        return;
+    }
+    let entry = file.scopes.entry(key.to_string()).or_default();
+    for id in ids {
+        if !entry.iter().any(|e| e == &id) {
+            entry.push(id);
+        }
+    }
+}
+
+/// 写完整文件（原子替换，与旧文件同范式）。
+fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
+    if let Ok(json) = serde_json::to_string(file) {
+        if let Err(error) =
+            deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
+        {
+            eprintln!("[scope] write disabled_bundles.json failed: {error}");
+        }
+    }
+}
+
+/// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
+///
+/// 已初始化的 scope 以落盘列表为准；未初始化的 scope 按其模式的包默认策略兜底：
+/// DenyAll（如 code）返回全部已安装包 id ∪ 全部内置 CLI 包 id ——「默认全关，外部
+/// 能力显式开启」；AllowAll（如 plain）返回落盘列表（缺省空 = 全开）。CLI 包未连接时
+/// 纳入无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
+pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
+    let file = load_disabled_bundles_file();
+    let key = scope.as_str();
+    if file.initialized.contains(key) {
+        return file.scopes.get(key).cloned().unwrap_or_default();
+    }
+    match scope.pack_default_policy() {
+        PackDefaultPolicy::AllowAll => file.scopes.get(key).cloned().unwrap_or_default(),
+        PackDefaultPolicy::DenyAll => {
+            let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
+            ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+            for skill_id in SkillMarketplaceManager::new().installed_skill_ids() {
+                let pkg = skill_owner_package(&skill_id);
+                if !ids.iter().any(|id| id == &pkg) {
+                    ids.push(pkg);
+                }
+            }
+            ids
+        }
+    }
+}
+
+/// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
+/// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
+pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    let mut file = load_disabled_bundles_file_locked();
+    let key = scope.as_str().to_string();
+    file.scopes.insert(key.clone(), normalized);
+    file.initialized.insert(key);
+    save_disabled_bundles_file(&file);
+}
+
+/// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
+/// 与 `load_disabled_bundles_for`（开关）正交：可见性只决定是否出现在 composer 列表，
+/// 不决定 on/off。
+pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
+    let file = load_disabled_bundles_file();
+    file.hidden_scopes
+        .get(scope.as_str())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
+pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    let mut file = load_disabled_bundles_file_locked();
+    file.hidden_scopes
+        .insert(scope.as_str().to_string(), normalized);
+    save_disabled_bundles_file(&file);
+}
+
+/// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
+/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。
+pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
+    let mut ids = load_disabled_bundles_for(scope);
+    for id in load_hidden_bundles_for(scope) {
+        if !ids.iter().any(|x| x == &id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// 读全局（plain）被禁用的包 id 列表。兼容既有调用方。
+pub fn load_disabled_bundles() -> Vec<String> {
+    load_disabled_bundles_for(ConnectorScope::Plain)
+}
+
+/// 写全局（plain）被禁用的包 id 列表。兼容既有调用方。
+pub fn save_disabled_bundles(ids: &[String]) {
+    save_disabled_bundles_for(ConnectorScope::Plain, ids);
+}
+
+/// 包安装/连接后同步所有 DenyAll 且已初始化的 scope：用户已改过这类会话开关时，
+/// 新装的包默认仍保持关闭（加入该 scope 禁用集）；未初始化时无需处理（load 会按
+/// 「默认全禁已装包」兜底）。AllowAll 模式无需同步（默认全开）。连接器与技能安装
+/// 共用本入口：入参可为连接器 id / 技能 id / 包 id，统一归一为包 id。
+pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
+    let package_id = to_package_id(raw_id);
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let mut changed = false;
+    for mode in SessionMode::ALL {
+        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+            continue;
+        }
+        let key = mode.as_str();
+        if !file.initialized.contains(key) {
+            continue;
+        }
+        let ids = file.scopes.entry(key.to_string()).or_default();
+        if !ids.iter().any(|id| id == &package_id) {
+            ids.push(package_id.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
+    }
+}
+
+/// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
+/// 指向不存在的包。连接器与技能卸载共用本入口：入参可为连接器 id / 技能 id / 包 id，
+/// 统一归一为包 id。
+pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
+    let package_id = to_package_id(raw_id);
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let mut changed = false;
+    for ids in file.scopes.values_mut() {
+        let before = ids.len();
+        ids.retain(|id| id != &package_id);
+        changed |= ids.len() != before;
+    }
+    // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
+    for ids in file.hidden_scopes.values_mut() {
+        let before = ids.len();
+        ids.retain(|id| id != &package_id);
+        changed |= ids.len() != before;
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
+    }
+}
+
+/// 项目级 skills 开关（默认关）。
+pub fn project_skills_enabled() -> bool {
+    load_disabled_bundles_file().project_skills_enabled
+}
+
+/// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
+pub fn set_project_skills_enabled(enabled: bool) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    if file.project_skills_enabled == enabled {
+        return;
+    }
+    file.project_skills_enabled = enabled;
+    save_disabled_bundles_file(&file);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包，借 ENV_LOCK 与其它 mutate 测试串行。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("pinvou3-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f();
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundles_roundtrip_per_scope() {
+        with_temp_home(|| {
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]);
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["feishu".to_string()]
+            );
+        });
+    }
+
+    /// 开关（disabled）与可见性（hidden）两套集合正交，互不污染。
+    #[test]
+    fn hidden_bundles_are_orthogonal_to_disabled() {
+        with_temp_home(|| {
+            assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
+            save_hidden_bundles_for(ConnectorScope::Plain, &["combo-demo".to_string()]);
+            // hidden 不影响 disabled
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["combo-demo".to_string()]
+            );
+            // 并集：不可用集包含 hidden
+            assert!(
+                unavailable_bundles_for(ConnectorScope::Plain).contains(&"combo-demo".to_string())
+            );
+        });
+    }
+
+    /// 并集 = 开关关 + 不可见，去重。
+    #[test]
+    fn unavailable_is_union_deduped() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_hidden_bundles_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            );
+            let mut u = unavailable_bundles_for(ConnectorScope::Plain);
+            u.sort();
+            assert_eq!(u, vec!["pptx".to_string(), "weather".to_string()]);
+        });
+    }
+
+    /// 卸载/断开后清理残留：同时清 disabled 与 hidden 两套集合。
+    #[test]
+    fn remove_bundle_clears_both_sets() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            remove_bundle_from_disabled_scopes("weather");
+            assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
+            assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
+        });
+    }
+
+    /// 保存路径统一归一为包 id：剥 `skill:` 前缀 + companion 映射到所属包。
+    #[test]
+    fn save_normalizes_to_package_id() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &[
+                    "skill:visualizer".to_string(),
+                    "government-writing".to_string(),
+                ],
+            );
+            // government-writing 是内嵌 gongwen manifest 的 companion 技能 → gongwen 包。
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["visualizer".to_string(), "gongwen".to_string()]
+            );
+        });
+    }
+
+    /// 项目级 skills 开关往返。
+    #[test]
+    fn project_skills_roundtrip() {
+        with_temp_home(|| {
+            assert!(!project_skills_enabled(), "项目技能默认关");
+            set_project_skills_enabled(true);
+            assert!(project_skills_enabled());
+            set_project_skills_enabled(false);
+            assert!(!project_skills_enabled());
+        });
+    }
+
+    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
+    /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
+    #[test]
+    fn read_path_migration_serializes_with_file_lock() {
+        with_temp_home(|| {
+            let legacy = r#"["weather"]"#;
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(&conn, legacy).unwrap();
+            let guard = DISABLED_BUNDLES_FILE_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // 持锁期间 bundles 文件尚未写入（迁移被串行化）。
+            assert!(
+                !disabled_bundles_path().exists(),
+                "持锁期间读路径不得先行迁移落盘"
+            );
+            drop(guard);
+            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"scopes\""),
+                "释放锁后迁移完成: {content}"
+            );
+        });
+    }
+
+    fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
+        load_disabled_bundles_for(ConnectorScope::Plain)
+    }
+}

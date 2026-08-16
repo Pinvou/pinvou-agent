@@ -1,13 +1,22 @@
 //! 技能市场管理器 — 管理 skill(SKILL.md 目录)的安装/卸载/上传导入。
 //!
 //! 与 MCP 工具市场([`super::marketplace`])刻意分开:MCP 工具是 server 进程(改
-//! mcp.json),技能是磁盘上的 SKILL.md 目录(落 `bundle/skills/`,进 system prompt)。
+//! mcp.json),技能是磁盘上的 SKILL.md 目录。Phase 2 第十刀起按包聚合落盘:
+//! 市场技能住 `~/.pinvou3/bundles/<pkg-id>/skills/<name>/`（§4 一个包 = 一个
+//! 目录 = 一个属主，包 id 推导复用 `bundle::skill_owner_package`）；内置释放
+//! 技能（visual-design 等，非市场包）仍住 `~/.pinvou3/bundle/skills/`。
+//! `.installed-from` 标记已退役——来源与内容指纹进 BundleStore（bundles.json）。
 //!
-//! 预置技能(government-writing)随 app 编译进二进制(`include_dir`),从嵌入资源复制到
-//! `~/.pinvou3/bundle/skills/<name>/`——这是底座聊天**唯一加载**的 pinvou3 私有
+//! 预置技能(government-writing/pptx/visualizer/ima-skills)随 app 编译进二进制(`include_dir`),从嵌入资源复制到包目录——这是底座聊天**唯一加载**的 pinvou3 私有
 //! skill 目录(fork patch #41 砍掉了其余扫描路径)。安装入口为 MCP 工具的配套技能
 //! 联动(见 `marketplace::companion_skills`:装「公文写作」gongwen MCP 时一并装
-//! government-writing),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
+//! government-writing、装「PPT 生成」pptx MCP 时一并装 pptx),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
+//!
+//! 更新机制:无版本号。install/update 时把目录树内容指纹写入 BundleStore 记录
+//! (`content_fingerprint`)；列出技能（打开工具商店）时按「记录指纹 vs 当前嵌入
+//! 资源指纹（上游更新）∪ 磁盘指纹 vs 记录指纹（本地改动）」判定
+//! `update_available`，前端显示"更新"按钮,用户确认后走 `install` 的原子覆盖重装(保留启用状态)。
+//! 上传技能无嵌入对应物,不参与检测。
 //!
 //! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
 //! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
@@ -18,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::platform::paths;
 
@@ -71,6 +81,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             color: "bg-gradient-to-b from-red-500 to-rose-700",
         },
         SkillManifest {
+            id: "pptx",
+            skill_name: "pptx",
+            source_dir: "pptx",
+            title: "PPT 生成",
+            subtitle: "本地直出可编辑 PowerPoint，套主题模板、真图表、带封面",
+            description: "本地直出可编辑 PowerPoint（.pptx）：先列大纲确认，再按内容自动选主题（9 套）产结构化 deck，渲染器套主题模板生成真·可编辑图表、自带封面缩略图的演示文稿，数据不出机。配合工具商店的「PPT 生成」工具即可直出 .pptx。",
+            icon: "Presentation",
+            color: "bg-gradient-to-b from-orange-400 to-rose-500",
+        },
+        SkillManifest {
             id: "visualizer",
             skill_name: "visualizer",
             source_dir: "visualizer",
@@ -79,6 +99,26 @@ fn preset_manifests() -> &'static [SkillManifest] {
             description: "将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。",
             icon: "LineChart",
             color: "bg-gradient-to-b from-blue-500 to-cyan-600",
+        },
+        SkillManifest {
+            id: "package-author",
+            skill_name: "package-author",
+            source_dir: "package-author",
+            title: "插件包标准化",
+            subtitle: "把技能/MCP/函数整理成可上传的标准插件包",
+            description: "把散乱的技能（SKILL.md）、MCP 服务、扳手插件（spanner）或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
+            icon: "Package",
+            color: "bg-gradient-to-b from-emerald-500 to-teal-700",
+        },
+        SkillManifest {
+            id: "skill-author",
+            skill_name: "skill-author",
+            source_dir: "skill-author",
+            title: "技能创建",
+            subtitle: "用户描述一句话，生成规范的 SKILL.md 技能",
+            description: "把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。",
+            icon: "Package",
+            color: "bg-gradient-to-b from-violet-500 to-purple-700",
         },
         SkillManifest {
             id: "ima-skills",
@@ -106,6 +146,11 @@ pub struct MarketplaceSkillInfo {
     pub installed: bool,
     /// true = 用户上传的(非预置),前端用默认图标渲染。
     pub user_uploaded: bool,
+    /// true = 已安装预置技能的磁盘内容与当前嵌入资源不一致(App 升级带来新版,
+    /// 或本地被改过),前端据此显示"更新"按钮;更新=覆盖重装,用户确认后执行。
+    /// 无版本号概念:打开商店列表时做无状态目录树比对(见
+    /// [`SkillMarketplaceManager::preset_update_available`])。未安装/上传技能恒 false。
+    pub update_available: bool,
 }
 
 // 停用开关(按模式 scope 持久化)------------------------------------------------
@@ -123,8 +168,14 @@ pub struct MarketplaceSkillInfo {
 // Manager ---------------------------------------------------------------------
 
 pub struct SkillMarketplaceManager {
-    /// 安装目标:bundle/skills/(底座聊天唯一加载的 pinvou3 私有 skill 目录)
-    skills_dir: PathBuf,
+    /// 包目录根：市场技能落 `bundles/<pkg-id>/skills/<skill-name>/`（§4）
+    packages_root: PathBuf,
+    /// 旧扁平布局 `bundle/skills/`（内置释放技能仍住这里；迁移前市场技能残留
+    /// 由读路径回退兼容，见 `find_skill_dir`）。
+    legacy_skills_dir: PathBuf,
+    /// bundles.json 写入口（Phase 2 起为安装态/来源/指纹的登记处；写失败不翻盘
+    /// 主操作，fail loud 到日志）
+    bundle_store: super::store::BundleStore,
 }
 
 impl Default for SkillMarketplaceManager {
@@ -136,17 +187,44 @@ impl Default for SkillMarketplaceManager {
 impl SkillMarketplaceManager {
     pub fn new() -> Self {
         Self {
-            skills_dir: paths::bundle_skills_dir(),
+            packages_root: paths::bundles_root(),
+            legacy_skills_dir: paths::bundle_skills_dir(),
+            bundle_store: super::store::BundleStore::new(),
         }
     }
 
+    /// 测试用：三套根都指到同一临时目录下，不碰真实 ~/.pinvou3。
     #[cfg(test)]
-    fn with_skills_dir(dir: PathBuf) -> Self {
-        Self { skills_dir: dir }
+    fn with_roots(dir: PathBuf) -> Self {
+        Self {
+            packages_root: dir.join("bundles"),
+            legacy_skills_dir: dir.join("bundle/skills"),
+            bundle_store: super::store::BundleStore::with_file(dir.join("bundles.json")),
+        }
     }
 
-    /// 前端列表:预置技能(带 installed 状态) + 用户上传的技能(扫 bundle/skills/ 里
-    /// 带 `.installed-from=upload:` 标记、不在预置清单的目录)。
+    /// 技能所属包目录：`bundles/<owner>/skills/<skill-name>`（属主推导复用
+    /// `bundle::skill_owner_package`，与注册表同口径）。
+    fn package_skill_dir(&self, skill_name: &str) -> PathBuf {
+        self.packages_root
+            .join(super::bundle::skill_owner_package(skill_name))
+            .join("skills")
+            .join(skill_name)
+    }
+
+    /// 已装技能目录定位：仅新布局（按包聚合 `bundles/<pkg>/skills/<name>`）。
+    /// 旧扁平布局 `bundle/skills/` 已退役，不再回退读取（强制迁移后删除）。
+    pub(crate) fn find_skill_dir(&self, skill_name: &str) -> Option<PathBuf> {
+        let new_path = self.package_skill_dir(skill_name);
+        if new_path.is_dir() {
+            Some(new_path)
+        } else {
+            None
+        }
+    }
+
+    /// 前端列表:预置技能(带 installed 状态) + 用户上传的技能（BundleStore 里
+    /// `source=Upload` 的记录——`.installed-from` 标记已退役，登记即来源）。
     pub fn list_skills(&self) -> Vec<MarketplaceSkillInfo> {
         let presets = preset_manifests();
         let mut out: Vec<MarketplaceSkillInfo> = presets
@@ -160,46 +238,80 @@ impl SkillMarketplaceManager {
                 color: m.color.to_string(),
                 installed: self.is_installed(m.skill_name),
                 user_uploaded: false,
+                update_available: self.preset_update_available(m),
             })
             .collect();
 
-        // 扫上传的(带 upload: 标记、非预置目录名)
-        let preset_names: Vec<&str> = presets.iter().map(|m| m.skill_name).collect();
-        if let Ok(rd) = std::fs::read_dir(&self.skills_dir) {
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
+        // 上传技能：store 记录驱动（读失败回退为空列表 + warn，与 installed
+        // 反转的回退纪律一致）
+        match self.bundle_store.records() {
+            Ok(records) => {
+                for record in records {
+                    if !matches!(record.source, super::store::BundleSource::Upload(_)) {
+                        continue;
+                    }
+                    let Some(dir) = self.find_skill_dir(&record.id) else {
+                        continue; // 登记在、目录不在（已卸载/迁移异常）→ 不列
+                    };
+                    if !dir.join("SKILL.md").is_file() {
+                        continue;
+                    }
+                    out.push(MarketplaceSkillInfo {
+                        id: record.id.clone(),
+                        title: record.id.clone(),
+                        // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
+                        subtitle: String::new(),
+                        // 解析 SKILL.md frontmatter description 展示;缺失则空
+                        description: read_skill_description(&dir.join("SKILL.md"))
+                            .unwrap_or_default(),
+                        icon: "Package".to_string(),
+                        color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
+                        installed: true,
+                        user_uploaded: true,
+                        // 上传技能无嵌入对应物,不参与更新检测
+                        update_available: false,
+                    });
                 }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if preset_names.contains(&name.as_str()) {
-                    continue;
-                }
-                let Ok(marker) = std::fs::read_to_string(path.join(INSTALLED_FROM_MARKER)) else {
-                    continue;
-                };
-                if !marker.starts_with("upload:") {
-                    continue;
-                }
-                out.push(MarketplaceSkillInfo {
-                    id: name.clone(),
-                    title: name.clone(),
-                    // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
-                    subtitle: String::new(),
-                    // 解析 SKILL.md frontmatter description 展示;缺失则空
-                    description: read_skill_description(&path.join("SKILL.md")).unwrap_or_default(),
-                    icon: "Package".to_string(),
-                    color: "bg-gradient-to-b from-slate-400 to-slate-600".to_string(),
-                    installed: true,
-                    user_uploaded: true,
-                });
             }
+            Err(e) => log::warn!("[skill-marketplace] BundleStore 读取失败，上传技能列表为空: {e}"),
         }
         out
     }
 
     fn is_installed(&self, skill_name: &str) -> bool {
-        self.skills_dir.join(skill_name).join("SKILL.md").is_file()
+        self.find_skill_dir(skill_name)
+            .is_some_and(|d| d.join("SKILL.md").is_file())
+    }
+
+    /// 预置技能"可更新"检测（刀十起基于内容指纹）：
+    /// - 记录指纹 ≠ 当前嵌入资源指纹 → 上游更新（App 升级带入新版）；
+    /// - 磁盘指纹 ≠ 记录指纹 → 本地被改过（完整性视角，重装即复原）；
+    /// - 无指纹记录（旧版安装/异常态）回退「磁盘 vs 嵌入」直比（与指纹同一豁免口径）。
+    /// 未安装恒 false；磁盘遍历失败按 true 处理（提示可更新,重装即自愈）。
+    fn preset_update_available(&self, m: &SkillManifest) -> bool {
+        let Some(dir) = self.find_skill_dir(m.skill_name) else {
+            return false;
+        };
+        if !dir.join("SKILL.md").is_file() {
+            return false;
+        }
+        let Ok(disk_fp) = dir_fingerprint(&dir) else {
+            return true;
+        };
+        let embedded_fp = embedded_skill_fingerprint(m);
+        let record_fp = self
+            .bundle_store
+            .get(m.id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.content_fingerprint);
+        match (record_fp, embedded_fp) {
+            (Some(record_fp), Some(embedded_fp)) => {
+                record_fp != embedded_fp || disk_fp != record_fp
+            }
+            (None, Some(embedded_fp)) => disk_fp != embedded_fp,
+            _ => false,
+        }
     }
 
     /// 已安装技能的市场 id（含预置与用户上传）。code scope 未初始化「默认全禁
@@ -228,7 +340,9 @@ impl SkillMarketplaceManager {
             .collect()
     }
 
-    /// 安装预置技能:从嵌入资源复制到 `bundle/skills/<name>/`(原子:.tmp → rename)。
+    /// 安装预置技能:从嵌入资源复制到 `bundles/<owner>/skills/<name>/`
+    /// （原子:.tmp → rename；owner 由 `bundle::skill_owner_package` 推导）。
+    /// `.installed-from` 标记已退役——来源与内容指纹写入 BundleStore 记录。
     pub fn install(&self, skill_id: &str) -> Result<(), String> {
         let m = self
             .preset(skill_id)
@@ -240,12 +354,14 @@ impl SkillMarketplaceManager {
             .get_dir(m.source_dir)
             .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
 
-        std::fs::create_dir_all(&self.skills_dir).map_err(|e| format!("创建 skills 目录: {e}"))?;
-        let staged = self.skills_dir.join(format!("{}.tmp", m.skill_name));
+        let dest = self.package_skill_dir(m.skill_name);
+        let parent = dest.parent().expect("包目录必有父级");
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
+        let staged = parent.join(format!("{}.tmp", m.skill_name));
         let _ = std::fs::remove_dir_all(&staged);
         std::fs::create_dir_all(&staged).map_err(|e| format!("创建暂存目录: {e}"))?;
 
-        let result = (|| -> Result<(), String> {
+        let result = (|| -> Result<String, String> {
             extract_embedded_subdir(src, m.source_dir, &staged)
                 .map_err(|e| format!("解包嵌入资源: {e}"))?;
             // 校验 SKILL.md 存在 + name 与预期一致
@@ -257,28 +373,37 @@ impl SkillMarketplaceManager {
                     m.skill_name
                 ));
             }
-            std::fs::write(
-                staged.join(INSTALLED_FROM_MARKER),
-                format!("pinvou3-marketplace:{}", m.id),
-            )
-            .map_err(|e| format!("写标记: {e}"))?;
-            Ok(())
+            dir_fingerprint(&staged).map_err(|e| format!("计算内容指纹: {e}"))
         })();
-        if let Err(e) = result {
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(e);
-        }
+        let fingerprint = match result {
+            Ok(fp) => fp,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staged);
+                return Err(e);
+            }
+        };
 
-        let dest = self.skills_dir.join(m.skill_name);
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::rename(&staged, &dest).map_err(|e| {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
+        // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
+        // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
+        let mut record =
+            super::store::BundleRecord::installed_now(m.id, super::store::BundleSource::Preset);
+        record.content_fingerprint = Some(fingerprint);
+        if let Err(e) = self.bundle_store.upsert_preserving(record) {
+            log::warn!(
+                "[skill-marketplace] bundles.json 镜像写入失败（install {}）: {e}",
+                m.id
+            );
+        }
         Ok(())
     }
 
-    /// 卸载:校验 `.installed-from` 标记后删目录(保护内置/手放的 skill 不被误删)。
+    /// 卸载:删包目录内的技能目录（包目录 = 市场属主证明，无需再验标记）；
+    /// 旧扁平布局残留要求带 `.installed-from` 标记才删（保护内置/手放目录）。
     pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
         // 预置 id(pua/nuwa) → skill_name;上传技能 id 即目录名本身。
         let dir_name = self
@@ -288,11 +413,34 @@ impl SkillMarketplaceManager {
         if !is_safe_skill_name(&dir_name) {
             return Err(format!("非法技能名 '{dir_name}'"));
         }
-        let dir = self.skills_dir.join(&dir_name);
-        if !dir.join(INSTALLED_FROM_MARKER).is_file() {
-            return Err(format!("技能 '{dir_name}' 非市场安装(无标记),拒绝删除"));
+        let dir = self.package_skill_dir(&dir_name);
+        if !dir.is_dir() {
+            // 旧布局残留（迁移未跑/失败）：沿用标记保护语义删除
+            let legacy = self.legacy_skills_dir.join(&dir_name);
+            if legacy.is_dir() && legacy.join(INSTALLED_FROM_MARKER).is_file() {
+                std::fs::remove_dir_all(&legacy).map_err(|e| format!("删除失败: {e}"))?;
+                if let Err(e) = self.bundle_store.remove(skill_id) {
+                    log::warn!("[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}");
+                }
+                return Ok(());
+            }
+            return Err(format!("技能 '{dir_name}' 非市场安装(不在包目录),拒绝删除"));
         }
         std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败: {e}"))?;
+        // 清理腾空的父目录（skills/ 空 → 删；独立包的 bundles/<id>/ 空 → 删；
+        // companion 的包目录还装着 MCP 资源，非空自然保留）
+        if let Some(skills_parent) = dir.parent() {
+            let _ = std::fs::remove_dir(skills_parent); // 仅空目录能删掉
+            if let Some(pkg_dir) = skills_parent.parent() {
+                let _ = std::fs::remove_dir(pkg_dir);
+            }
+        }
+        // 镜像删除（预置 id 即记录 id；上传技能 id = 目录名，与 install 的登记口径一致）。
+        if let Err(e) = self.bundle_store.remove(skill_id) {
+            log::warn!(
+                "[skill-marketplace] bundles.json 镜像删除失败（uninstall {skill_id}）: {e}"
+            );
+        }
         Ok(())
     }
 
@@ -377,9 +525,11 @@ impl SkillMarketplaceManager {
             return Err(format!("技能名 '{name}' 与已下线内置冲突,拒绝"));
         }
 
-        // pass2:写出 skill_root 子树到 staged
-        std::fs::create_dir_all(&self.skills_dir).map_err(|e| format!("创建 skills 目录: {e}"))?;
-        let staged = self.skills_dir.join(format!("{name}.tmp"));
+        // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
+        let dest = self.packages_root.join(&name).join("skills").join(&name);
+        let parent = dest.parent().expect("包目录必有父级");
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
+        let staged = parent.join(format!("{name}.tmp"));
         let _ = std::fs::remove_dir_all(&staged);
         std::fs::create_dir_all(&staged).map_err(|e| format!("暂存目录: {e}"))?;
         let prefix = if skill_root.is_empty() {
@@ -388,7 +538,7 @@ impl SkillMarketplaceManager {
             format!("{skill_root}/")
         };
 
-        let result = (|| -> Result<(), String> {
+        let result = (|| -> Result<String, String> {
             for i in 0..archive.len() {
                 let mut entry = archive
                     .by_index(i)
@@ -429,29 +579,194 @@ impl SkillMarketplaceManager {
                     .map_err(|e| format!("读条目: {e}"))?;
                 std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
             }
-            std::fs::write(
-                staged.join(INSTALLED_FROM_MARKER),
-                format!("upload:{display_name}"),
-            )
-            .map_err(|e| format!("写标记: {e}"))?;
-            Ok(())
+            dir_fingerprint(&staged).map_err(|e| format!("计算内容指纹: {e}"))
         })();
-        if let Err(e) = result {
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(e);
-        }
+        let fingerprint = match result {
+            Ok(fp) => fp,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staged);
+                return Err(e);
+            }
+        };
 
-        let dest = self.skills_dir.join(&name);
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::rename(&staged, &dest).map_err(|e| {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
+        // 登记（上传 source=Upload(zip 展示名) + 内容指纹，记录 id = 落盘技能名，
+        // 与 import_legacy 的反推口径一致；`.installed-from` 标记已退役）。失败只记日志。
+        let mut record = super::store::BundleRecord::installed_now(
+            name.clone(),
+            super::store::BundleSource::Upload(display_name.to_string()),
+        );
+        record.content_fingerprint = Some(fingerprint);
+        if let Err(e) = self.bundle_store.upsert_preserving(record) {
+            log::warn!("[skill-marketplace] bundles.json 镜像写入失败（import {name}）: {e}");
+        }
         Ok(name)
+    }
+
+    /// 扁平技能布局（`bundle/skills/<name>/`）→ 按包聚合（`bundles/<pkg>/skills/
+    /// <name>/`）的一次性迁移（§9.1），由启动路径（runtime_bundle ensure_extracted，
+    /// import_legacy 之后）调用。幂等：旧位置不在即 no-op。
+    ///
+    /// - 市场技能（带 `.installed-from` 标记）→ 移动到所属包目录；预置技能迁移后
+    ///   把目录指纹补写进既有 BundleStore 记录（update_available 的比对基准）；
+    /// - CLI companion（无标记，内置清单目录名）：连接器当前可见才移动；不可见 =
+    ///   断开后的残留，按门控语义删除（immutable 资源，重连重解包，无用户数据）；
+    /// - 无标记的其它目录（内置释放技能 visual-design、手放目录）→ 不动；
+    /// - 目标已存在或 rename 失败 → 保留旧位置并 warn（读路径 `find_skill_dir`
+    ///   对旧位置有回退，迁移下个启动周期自愈）。
+    pub fn migrate_flat_skills_layout(&self) -> SkillsMigrationReport {
+        let mut report = SkillsMigrationReport::default();
+        let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
+            return report;
+        };
+        for entry in rd.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !is_safe_skill_name(&name) {
+                continue;
+            }
+            let marker = std::fs::read_to_string(dir.join(INSTALLED_FROM_MARKER))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if marker.is_empty() {
+                if let Some(cli) = super::bundle::cli_bundle_of_skill(&name) {
+                    if crate::platform::connector_state::skills_visible_for(cli) {
+                        self.move_skill_dir(&dir, &name, &mut report);
+                    } else {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        report.removed_stale.push(name);
+                    }
+                } else {
+                    report.kept.push(name);
+                }
+                continue;
+            }
+            let is_preset = marker.starts_with("pinvou3-marketplace:");
+            if self.move_skill_dir(&dir, &name, &mut report) && is_preset {
+                // 补写指纹到既有记录（import_legacy 先跑，记录应已存在；
+                // 不存在则不擅自新建——异常态留给下一周期）
+                if let Ok(fp) = dir_fingerprint(&self.package_skill_dir(&name)) {
+                    match self.bundle_store.get(&name) {
+                        Ok(Some(mut record)) => {
+                            record.content_fingerprint = Some(fp);
+                            if let Err(e) = self.bundle_store.upsert_preserving(record) {
+                                log::warn!("[skill-marketplace] 迁移补写指纹失败（{name}）: {e}");
+                            }
+                        }
+                        Ok(None) => {
+                            log::warn!("[skill-marketplace] 迁移补写指纹跳过：{name} 无 store 记录")
+                        }
+                        Err(e) => {
+                            log::warn!("[skill-marketplace] 迁移补写指纹读取失败（{name}）: {e}")
+                        }
+                    }
+                }
+            }
+        }
+        report
+    }
+
+    /// 移动单个技能目录到所属包目录。返回是否完成移动。
+    fn move_skill_dir(&self, dir: &Path, name: &str, report: &mut SkillsMigrationReport) -> bool {
+        let target = self.package_skill_dir(name);
+        if target.exists() {
+            log::warn!(
+                "[skill-marketplace] 迁移跳过 {name}：目标已存在（{}），保留旧位置 {}",
+                target.display(),
+                dir.display()
+            );
+            report.kept.push(name.to_string());
+            return false;
+        }
+        let parent = target.parent().expect("包目录必有父级");
+        let result = std::fs::create_dir_all(parent).and_then(|()| std::fs::rename(dir, &target));
+        match result {
+            Ok(()) => {
+                report.moved.push(name.to_string());
+                true
+            }
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 迁移 {name} 失败（{} → {}）: {e}，保留旧位置",
+                    dir.display(),
+                    target.display()
+                );
+                report.kept.push(name.to_string());
+                false
+            }
+        }
     }
 }
 
+/// 技能布局迁移报告（启动标记/日志观测用）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillsMigrationReport {
+    /// 成功移动到包目录的技能名
+    pub moved: Vec<String>,
+    /// 连接器不可见而按门控语义删除的 CLI companion 残留
+    pub removed_stale: Vec<String>,
+    /// 未动：内置释放技能 / 手放目录 / 迁移失败保留旧位置
+    pub kept: Vec<String>,
+}
+
 // 辅助 ------------------------------------------------------------------------
+
+/// 收集嵌入资源子树的 `(相对路径, 内容)` 列表,供更新检测比对。
+/// 口径与 [`extract_embedded_subdir`] 一致:strip `source_dir` 前缀、跳过 SOURCE.md。
+fn collect_embedded_files(dir: &Dir<'_>, source_dir: &str, out: &mut Vec<(String, Vec<u8>)>) {
+    let prefix = format!("{source_dir}/");
+    for file in dir.files() {
+        let p = file.path().to_string_lossy();
+        let rel = p.strip_prefix(&prefix).unwrap_or(&p);
+        if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
+            continue;
+        }
+        out.push((rel.to_string(), file.contents().to_vec()));
+    }
+    for sub in dir.dirs() {
+        collect_embedded_files(sub, source_dir, out);
+    }
+}
+
+/// 递归收集磁盘技能目录的 `(相对路径, 内容)` 列表,供更新检测比对。
+/// 跳过 `.installed-from` 安装标记(非技能内容);相对路径统一用 `/` 分隔,
+/// 与嵌入侧口径一致。遍历失败返回 Err(调用方按"可更新"处理,重装自愈)。
+fn collect_disk_files(dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> std::io::Result<()> {
+    collect_disk_files_under(dir, dir, out)
+}
+
+fn collect_disk_files_under(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_disk_files_under(root, &path, out)?;
+            continue;
+        }
+        if entry.file_name().to_string_lossy() == INSTALLED_FROM_MARKER {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((rel, std::fs::read(&path)?));
+    }
+    Ok(())
+}
 
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
@@ -476,12 +791,43 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
     Ok(())
 }
 
+/// 目录树内容指纹：SHA-256（排序后的 相对路径+字节 流），路径统一 '/' 分隔。
+/// 豁免口径与既有比对一致：磁盘侧跳过 `.installed-from`（旧布局标记），
+/// 嵌入侧跳过 SOURCE.md（见 collect_* 两个收集器）。
+/// `pub(crate)`：MCP 包目录指纹（mcp_catalog 释放/校验）复用同一实现。
+pub(crate) fn dir_fingerprint(dir: &Path) -> Result<String, String> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_disk_files(dir, &mut files).map_err(|e| format!("遍历 {} 失败: {e}", dir.display()))?;
+    Ok(fingerprint_of(&mut files))
+}
+
+/// 嵌入资源（预置技能当前版本）的内容指纹；嵌入目录缺失 → None。
+fn embedded_skill_fingerprint(m: &SkillManifest) -> Option<String> {
+    let dir = MARKETPLACE_DIR.get_dir(m.source_dir)?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_embedded_files(dir, m.source_dir, &mut files);
+    Some(fingerprint_of(&mut files))
+}
+
+fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
+    files.sort();
+    let mut digest = Sha256::new();
+    for (rel, bytes) in files.iter() {
+        digest.update(rel.as_bytes());
+        digest.update(b"\0");
+        digest.update(bytes);
+        digest.update(b"\0");
+    }
+    crate::platform::encoding::hex_lower(&digest.finalize())
+}
+
 fn read_skill_name(md_path: &Path) -> Option<String> {
     read_skill_name_from_str(&std::fs::read_to_string(md_path).ok()?)
 }
 
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
-fn read_skill_name_from_str(content: &str) -> Option<String> {
+/// `pub(crate)`：统一插件导入（plugin_import）的裸技能回退复用同一解析口径。
+pub(crate) fn read_skill_name_from_str(content: &str) -> Option<String> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -562,7 +908,8 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
 
 /// SKILL.md 布局优先级(越小越优先):根 SKILL.md(0) > `*/skills/<n>/SKILL.md`(1)
 /// > `<n>/SKILL.md`(2) > 更深嵌套(3)。仿底座 scan_tarball 的 rank。
-fn skill_md_rank(path: &str) -> Option<usize> {
+/// `pub(crate)`：统一插件导入的裸技能回退复用同一优先级。
+pub(crate) fn skill_md_rank(path: &str) -> Option<usize> {
     if !path.eq_ignore_ascii_case("SKILL.md") && !path.to_ascii_lowercase().ends_with("/skill.md") {
         return None;
     }
@@ -576,14 +923,17 @@ fn skill_md_rank(path: &str) -> Option<usize> {
 }
 
 /// 含 SKILL.md 的目录(skill_root);根级 SKILL.md → 空串。
-fn skill_root_of(path: &str) -> String {
+/// `pub(crate)`：统一插件导入的裸技能/裸 MCP 回退复用同一父目录推导。
+pub(crate) fn skill_root_of(path: &str) -> String {
     match path.rfind('/') {
         Some(i) => path[..i].to_string(),
         None => String::new(),
     }
 }
 
-fn is_safe_skill_name(name: &str) -> bool {
+/// 技能名安全校验（`[a-zA-Z0-9_-]{1,64}`，禁 `.`/`..`）。`pub(crate)`：
+/// 统一插件导入的裸技能回退复用同一口径。
+pub(crate) fn is_safe_skill_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name != "."
@@ -591,6 +941,29 @@ fn is_safe_skill_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 把任意字符串（文件名 stem 等）净化为合法技能名：非 `[a-zA-Z0-9_-]` 字符 → `-`，
+/// 掐头去尾的 `-` 去掉、截 64；空结果兜底 "skill"。`pub(crate)`：单 .md 导入的
+/// 文件名兜底命名用。
+pub(crate) fn sanitize_skill_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if trimmed.is_empty() {
+        "skill".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -676,16 +1049,21 @@ mod tests {
         dir
     }
 
-    /// 预置 government-writing 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
+    /// 预置 government-writing 从嵌入资源落盘（按包聚合布局）→ list 反映
+    /// installed → 卸载删目录的全链路。技能目录经 `package_skill_dir` 取
+    /// （owner 推导依赖 manifest 环境，测试不硬编码绝对布局）。
     #[test]
     fn install_then_uninstall_preset_roundtrip() {
         let tmp = fresh_dir("roundtrip");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.install("government-writing").unwrap();
-        let skill_dir = tmp.join("government-writing");
+        let skill_dir = mgr.package_skill_dir("government-writing");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
-        assert!(skill_dir.join(".installed-from").is_file(), "应写安装标记");
+        assert!(
+            !skill_dir.join(".installed-from").exists(),
+            "标记已退役，不应再写"
+        );
         assert!(
             skill_dir.join("templates").is_dir(),
             "templates/ 应一并复制"
@@ -694,6 +1072,15 @@ mod tests {
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
             Some("government-writing")
         );
+        // install 登记内容指纹（update_available 的比对基准）
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        assert!(store
+            .get("government-writing")
+            .unwrap()
+            .expect("install 应登记")
+            .content_fingerprint
+            .is_some());
         assert!(mgr
             .list_skills()
             .iter()
@@ -708,14 +1095,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// 预置 pptx 从嵌入资源落盘 → list 反映 installed → 卸载删目录的全链路。
+    /// pptx 是「PPT 生成」MCP 的同名 companion 技能(manifest `companion_skills`)。
+    #[test]
+    fn install_then_uninstall_pptx_preset_roundtrip() {
+        let tmp = fresh_dir("pptx");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+
+        mgr.install("pptx").unwrap();
+        let skill_dir = mgr.package_skill_dir("pptx");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert!(!skill_dir.join(".installed-from").exists(), "标记已退役");
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("pptx")
+        );
+        let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            skill_md.contains("mcp_pptx_make_pptx"),
+            "应引导调用 pptx MCP 工具"
+        );
+        assert!(
+            skill_md.contains("present_artifact(path, title)"),
+            "应要求产物卡交付"
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "pptx" && s.installed));
+
+        mgr.uninstall("pptx").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "pptx" && !s.installed));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Visualizer 预置技能带 references/ 子树,安装后必须可被 SkillRegistry 读取。
     #[test]
     fn install_visualizer_preset_with_references() {
         let tmp = fresh_dir("visualizer");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.install("visualizer").unwrap();
-        let skill_dir = tmp.join("visualizer");
+        // 独立技能包：owner = 自身 → bundles/visualizer/skills/visualizer
+        let skill_dir = tmp.join("bundles/visualizer/skills/visualizer");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert!(
             skill_dir
@@ -735,12 +1161,12 @@ mod tests {
             read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
             Some("visualizer")
         );
-        assert_eq!(
-            std::fs::read_to_string(skill_dir.join(".installed-from"))
-                .unwrap()
-                .trim(),
-            "pinvou3-marketplace:visualizer"
-        );
+        // install 登记的指纹应与嵌入资源指纹一致（刚装即一致 → 无更新提示）
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        let record = store.get("visualizer").unwrap().expect("install 应登记");
+        let embedded_fp = embedded_skill_fingerprint(mgr.preset("visualizer").unwrap());
+        assert_eq!(record.content_fingerprint, embedded_fp);
         let skill_md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
         assert!(
             skill_md.contains("https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"),
@@ -787,10 +1213,11 @@ mod tests {
     #[test]
     fn install_ima_preset_with_native_tool_instructions() {
         let tmp = fresh_dir("ima");
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
 
         mgr.install("ima-skills").unwrap();
-        let skill_dir = tmp.join("ima-skills");
+        // ima 凭据包认领：bundles/ima/skills/ima-skills
+        let skill_dir = tmp.join("bundles/ima/skills/ima-skills");
         assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
         assert!(
             !skill_dir.join("ima_api.cjs").exists(),
@@ -814,15 +1241,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 没有 `.installed-from` 标记的目录(手放/内置)拒绝卸载,防误删。
+    /// 不在包目录的目录（旧布局内置/手放）拒绝卸载,防误删。
     #[test]
-    fn uninstall_refuses_unmarked_dir() {
+    fn uninstall_refuses_non_market_dir() {
         let tmp = fresh_dir("protect");
-        std::fs::create_dir_all(tmp.join("pua")).unwrap();
-        std::fs::write(tmp.join("pua").join("SKILL.md"), "---\nname: pua\n---").unwrap();
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
-        assert!(mgr.uninstall("pua").is_err(), "无标记应拒删");
-        assert!(tmp.join("pua").exists(), "目录应保留");
+        let legacy = tmp.join("bundle/skills");
+        std::fs::create_dir_all(legacy.join("pua")).unwrap();
+        std::fs::write(legacy.join("pua").join("SKILL.md"), "---\nname: pua\n---").unwrap();
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        assert!(mgr.uninstall("pua").is_err(), "非市场目录应拒删");
+        assert!(legacy.join("pua").exists(), "目录应保留");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -846,15 +1274,22 @@ mod tests {
             zw.write_all(b"[core]").unwrap();
             zw.finish().unwrap();
         }
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
         mgr.import_package(zip_path.to_str().unwrap()).unwrap();
 
-        let dest = tmp.join("my-test-skill");
+        // 上传技能独立成包：bundles/<name>/skills/<name>/
+        let dest = tmp.join("bundles/my-test-skill/skills/my-test-skill");
         assert!(dest.join("SKILL.md").is_file(), "按 frontmatter name 落盘");
         assert!(dest.join("ref.md").is_file(), "辅助文件应带过来");
         assert!(!dest.join(".git").exists(), ".git 等隐藏目录应跳过");
-        let marker = std::fs::read_to_string(dest.join(".installed-from")).unwrap();
-        assert!(marker.starts_with("upload:"), "标记应为 upload:");
+        assert!(!dest.join(".installed-from").exists(), "标记已退役");
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        assert_eq!(
+            store.get("my-test-skill").unwrap().unwrap().source,
+            crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string()),
+            "来源应登记进 BundleStore"
+        );
         let listed = mgr
             .list_skills()
             .into_iter()
@@ -867,10 +1302,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// `import_package_named` 用调用方给的 display_name 写 upload: 标记
-    /// (拖放字节通道的 zip 名经命令层净化后传入)。
+    /// `import_package_named` 用调用方给的 display_name 登记 Upload 来源
+    /// (拖放字节通道的 zip 名经命令层净化后传入；标记文件已退役)。
     #[test]
-    fn import_package_named_writes_upload_marker() {
+    fn import_package_named_records_upload_source() {
         use std::io::Write;
         let tmp = fresh_dir("named");
         let zip_path = tmp.join("pkg.zip");
@@ -883,12 +1318,312 @@ mod tests {
                 .unwrap();
             zw.finish().unwrap();
         }
-        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
         mgr.import_package_named(zip_path.to_str().unwrap(), "my skill.zip")
             .unwrap();
-        let marker =
-            std::fs::read_to_string(tmp.join("named-skill").join(".installed-from")).unwrap();
-        assert_eq!(marker.trim(), "upload:my skill.zip");
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        assert_eq!(
+            store.get("named-skill").unwrap().unwrap().source,
+            crate::features::marketplace::store::BundleSource::Upload("my skill.zip".to_string())
+        );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 更新检测（指纹口径）：刚安装（记录=嵌入=磁盘）→ false；本地篡改/删除/新增
+    /// 文件（磁盘 ≠ 记录）→ true；模拟上游更新（记录指纹滞后于嵌入资源）→ true；
+    /// 重装后恢复 false。未安装恒 false。
+    #[test]
+    fn update_available_detects_disk_drift() {
+        let tmp = fresh_dir("update");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let flagged = |mgr: &SkillMarketplaceManager| {
+            mgr.list_skills()
+                .into_iter()
+                .find(|s| s.id == "visualizer")
+                .unwrap()
+                .update_available
+        };
+
+        assert!(!flagged(&mgr), "未安装应恒 false");
+
+        mgr.install("visualizer").unwrap();
+        assert!(!flagged(&mgr), "刚安装应与嵌入资源一致");
+
+        // 篡改文件内容（磁盘 ≠ 记录）→ true
+        let skill_dir = mgr.package_skill_dir("visualizer");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: visualizer\n---\n本地改过",
+        )
+        .unwrap();
+        assert!(flagged(&mgr), "内容被改应检出");
+
+        // 重装(=更新)后复原 → false
+        mgr.install("visualizer").unwrap();
+        assert!(!flagged(&mgr), "重装后应恢复一致");
+
+        // 删除文件 → true
+        std::fs::remove_file(
+            skill_dir
+                .join("references")
+                .join("visualizer-design-system.md"),
+        )
+        .unwrap();
+        assert!(flagged(&mgr), "缺文件应检出");
+
+        // 复原后新增多余文件 → true
+        mgr.install("visualizer").unwrap();
+        std::fs::write(skill_dir.join("local-notes.md"), "my notes").unwrap();
+        assert!(flagged(&mgr), "多文件应检出");
+
+        // 模拟上游更新：磁盘与记录同步、但记录指纹滞后于嵌入资源 → true
+        mgr.install("visualizer").unwrap();
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        let mut record = store.get("visualizer").unwrap().unwrap();
+        record.content_fingerprint = Some("stale-upstream-fingerprint".to_string());
+        store.upsert(record).unwrap();
+        assert!(flagged(&mgr), "上游更新（记录 ≠ 嵌入）应检出");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 上传技能无嵌入对应物,不参与更新检测(改内容也恒 false)。
+    #[test]
+    fn uploaded_skill_never_update_available() {
+        use std::io::Write;
+        let tmp = fresh_dir("upload_no_update");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("up-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: up-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        mgr.import_package(zip_path.to_str().unwrap()).unwrap();
+        std::fs::write(
+            tmp.join("bundles/up-skill/skills/up-skill")
+                .join("SKILL.md"),
+            "---\nname: up-skill\n---\n改过",
+        )
+        .unwrap();
+        let listed = mgr
+            .list_skills()
+            .into_iter()
+            .find(|s| s.id == "up-skill")
+            .unwrap();
+        assert!(listed.user_uploaded && !listed.update_available);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Phase 2 镜像：预置 install → bundles.json 登记 Preset 记录；uninstall → 删除。
+    /// 镜像文件随 `with_roots` 落在同一临时目录，不碰真实家目录。
+    #[test]
+    fn install_and_uninstall_mirror_bundle_store_record() {
+        let tmp = fresh_dir("mirror_preset");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+
+        mgr.install("visualizer").unwrap();
+        let record = store
+            .get("visualizer")
+            .unwrap()
+            .expect("install 应镜像登记 bundles.json");
+        assert_eq!(
+            record.source,
+            crate::features::marketplace::store::BundleSource::Preset
+        );
+        assert!(record.installed);
+
+        mgr.uninstall("visualizer").unwrap();
+        assert!(
+            store.get("visualizer").unwrap().is_none(),
+            "uninstall 应镜像删除记录"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Phase 2 镜像：上传导入登记 Upload(zip 名) 记录，id = 落盘技能名。
+    #[test]
+    fn import_package_mirrors_upload_record() {
+        use std::io::Write;
+        let tmp = fresh_dir("mirror_upload");
+        let zip_path = tmp.join("pkg.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("up-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: up-skill\ndescription: d\n---\n# hi")
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        mgr.import_package(zip_path.to_str().unwrap()).unwrap();
+
+        let store =
+            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
+        let record = store
+            .get("up-skill")
+            .unwrap()
+            .expect("上传导入应镜像登记 bundles.json");
+        assert_eq!(
+            record.source,
+            crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 把 PINVOU3_HOME 指到干净临时目录跑闭包（迁移涉及 connector_state /
+    /// manifest 扫描等 env 路径，必须 env 隔离 + ENV_LOCK 串行）。
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-skillmigrate-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+        f();
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 旧扁平布局 → 按包聚合迁移：四个分支（纯技能 / MCP companion / CLI companion /
+    /// 上传）+ 内置技能不动 + 预置指纹补写 + 幂等。
+    #[test]
+    fn migrate_flat_skills_layout_covers_all_branches() {
+        with_temp_home(|| {
+            let home = paths::pinvou3_home();
+            let legacy = paths::bundle_skills_dir();
+            let seed = |rel: &str, content: &str| {
+                let p = home.join(rel);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, content).unwrap();
+            };
+            // gongwen manifest 声明 companion（companion 分支的归属依据）
+            seed(
+                "bundle/mcp-servers/gongwen/manifest.json",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"","args":[],"companion_skills":["government-writing"]}"#,
+            );
+            // 纯技能（无包认领）
+            seed(
+                "bundle/skills/visualizer/SKILL.md",
+                "---\nname: visualizer\n---\n",
+            );
+            seed(
+                "bundle/skills/visualizer/.installed-from",
+                "pinvou3-marketplace:visualizer",
+            );
+            // MCP companion
+            seed(
+                "bundle/skills/government-writing/SKILL.md",
+                "---\nname: government-writing\n---\n",
+            );
+            seed(
+                "bundle/skills/government-writing/.installed-from",
+                "pinvou3-marketplace:government-writing",
+            );
+            // 上传技能
+            seed(
+                "bundle/skills/my-upload/SKILL.md",
+                "---\nname: my-upload\n---\n",
+            );
+            seed("bundle/skills/my-upload/.installed-from", "upload:pkg.zip");
+            // CLI companion（无标记；连接器可见 = 无 feishu_disabled 文件）
+            seed(
+                "bundle/skills/lark-shared/SKILL.md",
+                "---\nname: lark-shared\n---\n",
+            );
+            // 内置释放技能（无标记、非 CLI 清单）→ 不动
+            seed(
+                "bundle/skills/visual-design/SKILL.md",
+                "---\nname: visual-design\n---\n",
+            );
+
+            // 先跑 import（生产顺序：import 登记 → 迁移搬目录）
+            let store = crate::features::marketplace::store::BundleStore::new();
+            store.import_legacy().unwrap();
+
+            let mgr = SkillMarketplaceManager::new();
+            let report = mgr.migrate_flat_skills_layout();
+
+            assert!(
+                home.join("bundles/visualizer/skills/visualizer/SKILL.md")
+                    .is_file(),
+                "纯技能 → 独立包目录"
+            );
+            assert!(
+                home.join("bundles/gongwen/skills/government-writing/SKILL.md")
+                    .is_file(),
+                "companion → 所属 MCP 包目录"
+            );
+            assert!(
+                home.join("bundles/feishu/skills/lark-shared/SKILL.md")
+                    .is_file(),
+                "CLI companion → 连接器包目录"
+            );
+            assert!(
+                home.join("bundles/my-upload/skills/my-upload/SKILL.md")
+                    .is_file(),
+                "上传技能 → 独立包目录"
+            );
+            assert!(
+                legacy.join("visual-design/SKILL.md").is_file(),
+                "内置技能不动"
+            );
+            assert!(!legacy.join("visualizer").exists(), "旧位置已搬空");
+            assert!(report.moved.len() == 4, "应移动 4 个: {report:?}");
+            assert!(report.kept.contains(&"visual-design".to_string()));
+
+            // 预置指纹补写（update_available 比对基准）
+            let fp = store
+                .get("visualizer")
+                .unwrap()
+                .expect("visualizer 记录应在")
+                .content_fingerprint;
+            assert!(fp.is_some(), "迁移应补写预置技能指纹");
+
+            // 幂等：二次迁移零移动
+            let report2 = mgr.migrate_flat_skills_layout();
+            assert!(report2.moved.is_empty(), "二次迁移应无移动");
+            assert!(report2.removed_stale.is_empty());
+        });
+    }
+
+    /// CLI companion 在连接器不可见（停用标记在）时是断开残留：按门控语义删除，
+    /// 不迁移（immutable 资源，重连重解包）。
+    #[test]
+    fn migrate_removes_stale_cli_skills_when_connector_hidden() {
+        with_temp_home(|| {
+            let home = paths::pinvou3_home();
+            let legacy = paths::bundle_skills_dir();
+            let dir = legacy.join("lark-shared");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "---\nname: lark-shared\n---\n").unwrap();
+            std::fs::write(home.join("feishu_disabled"), "1").unwrap();
+
+            let report = SkillMarketplaceManager::new().migrate_flat_skills_layout();
+            assert!(!dir.exists(), "不可见连接器的残留应删除");
+            assert!(
+                !home.join("bundles/feishu").exists(),
+                "不应迁移出连接器包目录"
+            );
+            assert_eq!(report.removed_stale, vec!["lark-shared".to_string()]);
+        });
     }
 }

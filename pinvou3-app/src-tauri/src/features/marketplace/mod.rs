@@ -4,9 +4,14 @@
 //! 安装状态持久化在 `~/.pinvou3/marketplace/installed.json`。
 //! 安装/卸载时同步修改 `~/.pinvou3/bundle/mcp.json`。
 
+pub mod actions;
 pub mod bundle;
+pub mod mcp_catalog;
+pub mod plugin_import;
+pub mod scope;
 pub mod skill_marketplace;
 pub mod skill_scope;
+pub mod store;
 
 use std::path::PathBuf;
 
@@ -74,6 +79,10 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
+    /// spanner 扳手插件入口（相对 `bundles/<id>/spanner/`）。Some 时走 spanner_runner 包装
+    /// （plugin-protocol §15），mcp.json 的 args 指向内置 spanner_runner + plugin.json。
+    #[serde(default)]
+    pub spanner_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,8 +209,125 @@ fn set_remote_secret_header(
 }
 
 fn write_json_pretty(path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+    }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+/// 存量 mcp.json 条目的路径迁移：指向旧布局（`bundle/mcp-servers/<id>/`）的
+/// command/args 重写为新包目录（`bundles/<id>/mcp/`）。幂等；只改本 app 写的
+/// 文件（mcp.json）。按 mcp.json 的 server 键（= 工具 id）逐条重写，覆盖内嵌预设
+/// 与自定义/手放 MCP（不再只遍历内嵌清单）。返回是否有改动（供启动标记观测）。
+pub fn migrate_mcp_json_paths() -> Result<bool, String> {
+    let mcp_path = paths::mcp_config_path();
+    if !mcp_path.is_file() {
+        return Ok(false);
+    }
+    let content =
+        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+    let mut mcp: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
+    let mut changed = false;
+    let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) else {
+        return Ok(false);
+    };
+    let ids: Vec<String> = servers.keys().cloned().collect();
+    for id in ids {
+        let old_dir = paths::bundle_mcp_servers_dir().join(&id);
+        let new_dir = mcp_catalog::package_mcp_dir(&id);
+        // 兼容两种分隔符的历史写法（Windows 原生 `\` 与 `/`）
+        let old_spellings = [
+            old_dir.to_string_lossy().replace('\\', "/"),
+            old_dir.to_string_lossy().replace('/', "\\"),
+        ];
+        let new_text = new_dir.to_string_lossy().to_string();
+        let Some(entry) = servers.get_mut(&id) else {
+            continue;
+        };
+        for key in ["command", "args"] {
+            if let Some(value) = entry.get_mut(key) {
+                if rewrite_path_strings(value, &old_spellings, &new_text) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        write_json_pretty(&mcp_path, &mcp)?;
+    }
+    Ok(changed)
+}
+
+/// 强制迁移自定义 MCP（不在内嵌 `mcp_catalog` 里的）到新布局：把
+/// `bundle/mcp-servers/<id>/` 整个搬到 `bundles/<id>/mcp/`。幂等（目标已存在则
+/// 跳过）；内嵌预置由 `ensure_package_released` 从快照重释放，不在此搬。返回
+/// (moved, kept)。
+pub fn migrate_custom_mcp_layout() -> std::io::Result<(usize, usize)> {
+    let old_root = paths::bundle_mcp_servers_dir();
+    let Ok(rd) = std::fs::read_dir(&old_root) else {
+        return Ok((0, 0));
+    };
+    let mut moved = 0;
+    let mut kept = 0;
+    for entry in rd.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue; // 跳过文件（如 present_artifact_server.py）
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if mcp_catalog::spec_for(&id).is_some() {
+            continue; // 内嵌预置由快照重释放
+        }
+        let dst = mcp_catalog::package_mcp_dir(&id);
+        if dst.is_dir() {
+            kept += 1;
+            continue; // 目标已存在，幂等跳过
+        }
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::rename(entry.path(), &dst) {
+            Ok(_) => {
+                log::info!("[marketplace] 迁移自定义 MCP {id} → {}", dst.display());
+                moved += 1;
+            }
+            Err(e) => {
+                log::warn!("[marketplace] 迁移自定义 MCP {id} 失败，保留旧位置: {e}");
+                kept += 1;
+            }
+        }
+    }
+    Ok((moved, kept))
+}
+
+/// 递归重写字符串/字符串数组里的旧路径前缀。返回是否有改动。
+fn rewrite_path_strings(value: &mut serde_json::Value, old: &[String], new: &str) -> bool {
+    match value {
+        serde_json::Value::String(s) => {
+            let mut out = s.clone();
+            for spelling in old {
+                out = out.replace(spelling.as_str(), new);
+            }
+            if out != *s {
+                *s = out;
+                true
+            } else {
+                false
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items.iter_mut() {
+                if rewrite_path_strings(item, old, new) {
+                    changed = true;
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
 }
 
 fn mcp_secret_reference(tool_id: &str, target: &str, key: &str) -> CredentialReference {
@@ -380,214 +506,37 @@ pub struct MarketplaceToolValidation {
 }
 
 // ---------------------------------------------------------------------------
-// 会话工具开关:按会话模式 scope 各自持久化的 "被禁用连接器"列表。用户在某类
-// 会话里关一次,该类型所有新对话/窗口都继承,直到手动开回 —— 见「工具开关」
-// 方案,持久语义。落盘到 ~/.pinvou3/disabled_connectors.json。
+// 会话工具开关:按会话模式 scope 各自持久化的 "被禁用包"列表（scope 收敛后）。
+// 用户在某类会话里关一次,该类型所有新对话/窗口都继承,直到手动开回 —— 见「工具
+// 开关」方案,持久语义。落盘到 ~/.pinvou3/disabled_bundles.json（包 id × 模式）。
 //
-// 落盘格式:`{"scopes": {"<mode>": [...]}, "initialized": ["<mode>"]}`,scope
-// 键即 `SessionMode` 的 kebab-case 名。旧格式(裸数组 → plain scope;双 scope
-// 对象 `{plain, code, code_initialized}`)读时迁移并落盘;未知键保留(前向兼容)。
+// 落盘格式:`{"scopes": {"<mode>": [...]}, "initialized": ["<mode>"],
+// "project_skills_enabled"}`；持久化实现与旧双文件迁移见 `scope.rs`。
 // ---------------------------------------------------------------------------
 
-use crate::core::session_mode::{PackDefaultPolicy, SessionMode};
+use crate::core::session_mode::SessionMode;
 
 /// 连接器禁用集 scope：按会话模式键控的命名空间（键即模式 kebab-case 名）。
 /// 历史上是独立的二元枚举；泛化后降为 `SessionMode` 的别名——serde 同为
 /// kebab-case，落盘键与前端协议（`"plain"/"code"`）不变，下游引用零改动。
 pub type ConnectorScope = SessionMode;
 
-/// 按模式 scope 键控的禁用连接器列表。
-///
-/// 某 scope 遵循其模式的包默认策略（`SessionMode::pack_default_policy`）：
-/// `initialized` 不含该 scope 时(用户从未改过这类会话的开关),DenyAll 模式
-/// 默认禁用**所有已安装连接器**(外部能力显式开启的安全姿态),AllowAll 模式
-/// 默认全开;一旦用户改过该 scope 的开关(进入 `initialized`),就以落盘列表为准。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct DisabledConnectorsFile {
-    /// scope(模式 kebab-case 名) → 该 scope 被禁用的连接器 id 列表。
-    #[serde(default)]
-    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
-    /// 已被用户显式初始化(改过开关)的 scope 集合。
-    #[serde(default)]
-    pub initialized: std::collections::BTreeSet<String>,
-    /// 未知键原样保留(前向兼容:新版写入的字段经旧版读写后不丢失)。
-    #[serde(flatten)]
-    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-fn disabled_connectors_path() -> std::path::PathBuf {
-    paths::pinvou3_home().join("disabled_connectors.json")
-}
-
-/// `disabled_connectors.json` 读-改-写的进程内串行化:开关命令、安装/卸载同步、
-/// bundle 同步都可能并发触发同一份文件的读-改-写,串行化避免交错丢更新
-/// (单写者内的落盘本身由原子写保证不撕裂,见 `save_disabled_connectors_file`)。
-static DISABLED_CONNECTORS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// 读完整文件（取文件锁）。可能触发「读到即迁移落盘」的读路径都必须走本入口与
-/// 持锁写方串行：否则无锁读者把迁移前的旧快照写回，会覆盖并发写方刚保存的开关。
-fn load_disabled_connectors_file() -> DisabledConnectorsFile {
-    let _guard = DISABLED_CONNECTORS_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    load_disabled_connectors_file_locked()
-}
-
-/// 已持锁读实现（调用方必须已持有 `DISABLED_CONNECTORS_FILE_LOCK`）。兼容两种
-/// 旧格式,首次读到即迁移并落盘新格式:
-///  1. 裸数组 `["a","b"]`(旧版 plain 语义)→ plain scope;
-///  2. 双 scope 对象 `{plain, code, code_initialized}` → scopes map +
-///     initialized 集合(顶层带 `scopes` 键的即新格式,直接解析)。
-/// 迁移失败/内容损坏按默认值兜底(全部落空 → 各模式按包默认策略,与现行一致)。
-fn load_disabled_connectors_file_locked() -> DisabledConnectorsFile {
-    let content = match std::fs::read_to_string(disabled_connectors_path()) {
-        Ok(c) => c,
-        Err(_) => return DisabledConnectorsFile::default(),
-    };
-    // 旧格式一:裸数组 `["a","b"]` → 视为 plain scope。
-    if let Ok(legacy) = serde_json::from_str::<Vec<String>>(&content) {
-        let mut file = DisabledConnectorsFile::default();
-        file.scopes
-            .insert(SessionMode::Plain.as_str().to_string(), legacy);
-        save_disabled_connectors_file(&file);
-        return file;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return DisabledConnectorsFile::default();
-    };
-    if value.is_object() && value.get("scopes").is_none() {
-        // 旧格式二:双 scope 对象 `{plain, code, code_initialized}` → 新 map。
-        let mut file = DisabledConnectorsFile::default();
-        if let Some(obj) = value.as_object() {
-            for mode in SessionMode::ALL {
-                if let Some(ids) = obj
-                    .get(mode.as_str())
-                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-                {
-                    file.scopes.insert(mode.as_str().to_string(), ids);
-                }
-            }
-            if obj
-                .get("code_initialized")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                file.initialized
-                    .insert(SessionMode::Code.as_str().to_string());
-            }
-            // 未知键保留(前向兼容);已消费的旧键不带入。
-            for (key, v) in obj {
-                if !matches!(key.as_str(), "plain" | "code" | "code_initialized") {
-                    file.extra.insert(key.clone(), v.clone());
-                }
-            }
-        }
-        save_disabled_connectors_file(&file);
-        return file;
-    }
-    serde_json::from_value(value).unwrap_or_default()
-}
-
-/// 写完整文件(总是对象格式)。临时文件 + rename 原子替换,并发读者不会看到
-/// 半写文件;与 sessions/scheduled 等模块一致走底座 `write_atomic`(含 Windows
-/// 替换重试)。
-fn save_disabled_connectors_file(file: &DisabledConnectorsFile) {
-    if let Ok(json) = serde_json::to_string(file) {
-        if let Err(error) =
-            deepseek_tui::utils::write_atomic(&disabled_connectors_path(), json.as_bytes())
-        {
-            eprintln!("[marketplace] write disabled_connectors.json failed: {error}");
-        }
-    }
-}
-
-/// 读某 scope 被禁用的连接器 id 列表(读不到/空 → 空)。
-///
-/// 已初始化的 scope 以落盘列表为准;未初始化的 scope 按其模式的包默认策略
-/// 兜底:DenyAll(如 code)返回全部已安装连接器 id ——「默认全关,外部能力
-/// 显式开启」的安全默认;AllowAll(如 plain)返回落盘列表(缺省空 = 全开)。
-pub fn load_disabled_connectors_for(scope: ConnectorScope) -> Vec<String> {
-    let file = load_disabled_connectors_file();
-    let key = scope.as_str();
-    if file.initialized.contains(key) {
-        return file.scopes.get(key).cloned().unwrap_or_default();
-    }
-    match scope.pack_default_policy() {
-        // AllowAll 无「默认全禁」兜底:落盘列表即真相(旧格式迁移来的 plain
-        // 列表即使未标记 initialized 也必须生效)。
-        PackDefaultPolicy::AllowAll => file.scopes.get(key).cloned().unwrap_or_default(),
-        PackDefaultPolicy::DenyAll => MarketplaceManager::new().installed_ids(),
-    }
-}
-
-/// 写某 scope 被禁用的连接器 id 列表(写入即标记该 scope 已初始化)。
-pub fn save_disabled_connectors_for(scope: ConnectorScope, ids: &[String]) {
-    let _guard = DISABLED_CONNECTORS_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file_locked();
-    let key = scope.as_str().to_string();
-    file.scopes.insert(key.clone(), ids.to_vec());
-    file.initialized.insert(key);
-    save_disabled_connectors_file(&file);
-}
-
-/// 读全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
-pub fn load_disabled_connectors() -> Vec<String> {
-    load_disabled_connectors_for(ConnectorScope::Plain)
-}
-
-/// 写全局(plain)被禁用的连接器 id 列表。兼容既有调用方。
-pub fn save_disabled_connectors(ids: &[String]) {
-    save_disabled_connectors_for(ConnectorScope::Plain, ids);
-}
-
-/// 连接器安装后同步所有 DenyAll 且已初始化的 scope:用户已改过这类会话开关时,
-/// 新装的连接器默认仍保持关闭(加入该 scope 禁用集);未初始化时无需处理
-/// (load 会按「默认全禁已装连接器」兜底)。AllowAll 模式无需同步(默认全开)。
-pub fn sync_deny_all_scopes_after_install(tool_id: &str) {
-    let _guard = DISABLED_CONNECTORS_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
-        }
-        let key = mode.as_str();
-        if !file.initialized.contains(key) {
-            continue;
-        }
-        let ids = file.scopes.entry(key.to_string()).or_default();
-        if !ids.iter().any(|id| id == tool_id) {
-            ids.push(tool_id.to_string());
-            changed = true;
-        }
-    }
-    if changed {
-        save_disabled_connectors_file(&file);
-    }
-}
-
-/// 连接器卸载后同步所有 scope:已卸载的连接器从各 scope 禁用集移除,避免
-/// 残留 id 指向不存在的工具。
-pub fn remove_connector_from_disabled_scopes(tool_id: &str) {
-    let _guard = DISABLED_CONNECTORS_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_connectors_file_locked();
-    let mut changed = false;
-    for ids in file.scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != tool_id);
-        changed |= ids.len() != before;
-    }
-    if changed {
-        save_disabled_connectors_file(&file);
-    }
-}
-
+// 包 id × SessionMode 的单一禁用集已收敛到 `scope` 模块（`disabled_bundles.json`，
+// 取代 `disabled_connectors.json` / `disabled_skills.json` 双文件）。这里 re-export
+// 保留调用路径；连接器/技能/CLI 开关统一按包 id 落盘，`skill:` 前缀跨文件借道清除。
+pub use crate::features::marketplace::scope::{
+    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
+    remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
+};
+// 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
+pub use crate::features::marketplace::scope::{
+    load_disabled_bundles as load_disabled_connectors,
+    load_disabled_bundles_for as load_disabled_connectors_for,
+    remove_bundle_from_disabled_scopes as remove_connector_from_disabled_scopes,
+    save_disabled_bundles as save_disabled_connectors,
+    save_disabled_bundles_for as save_disabled_connectors_for,
+};
 /// 从 manifest 提取所有 secret 的 (keyring target, key):
 /// `secret_env`→("env",key)、`secret_headers`→("header",source_key)、
 /// `config_fields`(secret=true)→(env 或 header, key)。同一 (target,key) 去重一次。
@@ -635,8 +584,9 @@ pub fn disabled_tool_names() -> Vec<String> {
 }
 
 /// 按会话类型 scope:被禁用连接器 → 模型可见工具全名(喂给引擎 disallowed_tools 的)。
+/// 不可用集 = 开关关(disabled) + 不可见(hidden)。
 pub fn disabled_tool_names_for(scope: ConnectorScope) -> Vec<String> {
-    MarketplaceManager::new().model_tool_names(&load_disabled_connectors_for(scope))
+    MarketplaceManager::new().model_tool_names(&unavailable_bundles_for(scope))
 }
 
 // ---------------------------------------------------------------------------
@@ -695,23 +645,32 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(())
     }
 
-    /// 扫描 bundle mcp-servers/ 下所有含 manifest.json 的子目录
+    /// 全部可用 MCP 工具的 manifest。来源并集（后者覆盖前者同 id 条目）：
+    /// 1. 内嵌目录（`mcp_catalog`，未安装包清单的唯一来源——刀十一起启动不再
+    ///    全量释放到磁盘）；
+    /// 2. 新布局 `bundles/<id>/mcp/`（已装包的磁盘副本优先，内容可能带迁移清理）。
+    /// 旧布局 `bundle/mcp-servers/` 已退役，不再回退读取（强制迁移后删除）。
     pub fn available_tools(&self) -> Vec<ToolManifest> {
-        let mut tools = Vec::new();
-        let dir = match std::fs::read_dir(&self.servers_dir) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[marketplace] read_dir error: {e}");
-                return tools;
+        let mut by_id: std::collections::HashMap<String, ToolManifest> =
+            std::collections::HashMap::new();
+        for spec in mcp_catalog::MCP_PACKAGES {
+            match serde_json::from_str::<ToolManifest>(spec.manifest_json) {
+                Ok(manifest) => {
+                    by_id.insert(spec.id.to_string(), manifest);
+                }
+                Err(e) => eprintln!("[marketplace] 内嵌 manifest 解析失败（{}）: {e}", spec.id),
             }
-        };
-        for entry in dir.flatten() {
-            let manifest_path = entry.path().join("manifest.json");
-            if manifest_path.is_file() {
+        }
+        if let Ok(rd) = std::fs::read_dir(paths::bundles_root()) {
+            for entry in rd.flatten() {
+                let manifest_path = entry.path().join("mcp").join("manifest.json");
+                if !manifest_path.is_file() {
+                    continue;
+                }
                 match std::fs::read_to_string(&manifest_path) {
                     Ok(content) => match serde_json::from_str::<ToolManifest>(&content) {
                         Ok(manifest) => {
-                            tools.push(manifest);
+                            by_id.insert(manifest.id.clone(), manifest);
                         }
                         Err(e) => eprintln!("[marketplace] parse error: {e}"),
                     },
@@ -719,6 +678,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
             }
         }
+        // HashMap 迭代顺序不确定 → 按 id 排序返回，保证前端列表/开关菜单每次刷新顺序稳定
+        // （否则每次 toggle 触发刷新时工具行会随机换位）。
+        let mut tools: Vec<ToolManifest> = by_id.into_values().collect();
+        tools.sort_by(|a, b| a.id.cmp(&b.id));
         tools
     }
 
@@ -777,15 +740,33 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
         self.pip_install_deps(&manifest)?;
 
+        // 按需释放包资源到 bundles/<id>/mcp/（§4：安装时释放，非启动全量）。
+        // 自定义工具（无内嵌 spec）已由强制迁移 `migrate_custom_mcp_layout` 搬到
+        // 新布局；这里统一按新包目录写 mcp.json，不再回退旧布局。
+        let fingerprint = mcp_catalog::release_package(tool_id)?;
+        let server_dir = mcp_catalog::package_mcp_dir(tool_id);
+
         // 先写 mcp.json(含 resolve_secret_placeholder,缺密钥会失败);成功后才落
         // installed.json —— 避免「installed 已写、mcp 没注册」的半安装状态。
-        self.add_to_mcp_json(&manifest, user_config)?;
+        self.add_to_mcp_json(&manifest, user_config, &server_dir)?;
 
         let mut installed = self.installed_ids();
         if !installed.contains(&tool_id.to_string()) {
             installed.push(tool_id.to_string());
         }
         self.save_installed(&installed)?;
+
+        // 镜像写入统一真相源 bundles.json（Phase 2 过渡期：installed.json / mcp.json
+        // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
+        let mut record = store::BundleRecord::installed_now(tool_id, store::BundleSource::Preset);
+        record.credential_keys = bundle::tool_credentials(&manifest)
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+        record.content_fingerprint = fingerprint;
+        if let Err(e) = store::BundleStore::new().upsert_preserving(record) {
+            log::warn!("[marketplace] bundles.json 镜像写入失败（install {tool_id}）: {e}");
+        }
 
         Ok(())
     }
@@ -1170,12 +1151,35 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 更新 mcp.json
         self.remove_from_mcp_json(tool_id)?;
 
+        // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
+        // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
+        if let Err(e) = store::BundleStore::new().remove(tool_id) {
+            log::warn!("[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}");
+        }
+
+        // 包目录资源清理（§4：卸载 = 删登记 + 删目录）。companion 技能由命令层
+        // 联动删除（其 uninstall 会清理腾空的 skills/ 与包目录）；manifest 卸载后
+        // 仍可读——load_manifest 回退内嵌目录。
+        let pkg_dir = paths::bundles_root().join(tool_id);
+        if pkg_dir.exists() {
+            let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
+            let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
+            let _ = std::fs::remove_dir(&pkg_dir);
+        }
+
         Ok(())
     }
 
     /// manifest 声明的配套技能 id(装该 MCP 时一并装、卸时一并删)。
     /// uninstall 不删 manifest 文件,故卸载后仍可读到。
+    /// CLI 连接器（feishu/wecom/dingtalk/tmeet）无 manifest，配套技能目录查
+    /// 能力包注册表的内置常量表（`bundle::cli_bundle_skill_dirs`）——companion
+    /// 联动排除（`skill_materialization::disabled_skill_names_for`）由此覆盖 CLI 包。
     pub fn companion_skills(&self, tool_id: &str) -> Vec<String> {
+        let cli_dirs = bundle::cli_bundle_skill_dirs(tool_id);
+        if !cli_dirs.is_empty() {
+            return cli_dirs.iter().map(|s| (*s).to_string()).collect();
+        }
         self.load_manifest(tool_id)
             .map(|m| m.companion_skills)
             .unwrap_or_default()
@@ -1243,10 +1247,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     // --- internal ---
 
+    /// manifest 读取链：新布局（bundles/<id>/mcp/，已装包磁盘副本）→ 内嵌目录
+    /// （未安装包；卸载后 manifest 仍可读——companion 联动卸载与 secret 清理
+    /// 依赖这一点）。旧布局 bundle/mcp-servers/ 已退役，不再回退读取。
     fn load_manifest(&self, tool_id: &str) -> Option<ToolManifest> {
-        let path = self.servers_dir.join(tool_id).join("manifest.json");
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
+        let new_path = mcp_catalog::package_mcp_dir(tool_id).join("manifest.json");
+        if let Ok(content) = std::fs::read_to_string(&new_path) {
+            if let Ok(manifest) = serde_json::from_str(&content) {
+                return Some(manifest);
+            }
+        }
+        let spec = mcp_catalog::spec_for(tool_id)?;
+        serde_json::from_str(spec.manifest_json).ok()
     }
 
     /// pinvou3 工具开关:把"连接器 id 列表"映射成"模型可见工具全名"
@@ -1330,6 +1342,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         manifest: &ToolManifest,
         user_config: &std::collections::HashMap<String, String>,
+        server_dir: &std::path::Path,
     ) -> Result<(), String> {
         let mcp_path = paths::mcp_config_path();
         let mut mcp: serde_json::Value = if mcp_path.is_file() {
@@ -1443,19 +1456,30 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 servers.insert(server.name.clone(), entry);
             }
         } else {
-            // ── 本地工具：command/args/env ──
-            let server_dir = self.servers_dir.join(&manifest.id);
-            let args: Vec<String> = manifest
-                .args
-                .iter()
-                .map(|a| {
-                    if a == "server.py" || a.ends_with("/server.py") {
-                        server_dir.join("server.py").to_string_lossy().to_string()
-                    } else {
-                        a.clone()
-                    }
-                })
-                .collect();
+            // ── 本地工具：command/args/env（脚本路径指向释放后的包目录）──
+            let args: Vec<String> = if manifest.spanner_entry.is_some() {
+                // spanner 扳手插件（plugin-protocol §15）：args = [spanner_runner, plugin.json]。
+                vec![
+                    paths::bundle_spanner_runner().to_string_lossy().to_string(),
+                    crate::platform::paths::bundles_root()
+                        .join(&manifest.id)
+                        .join("plugin.json")
+                        .to_string_lossy()
+                        .to_string(),
+                ]
+            } else {
+                manifest
+                    .args
+                    .iter()
+                    .map(|a| {
+                        if a == "server.py" || a.ends_with("/server.py") {
+                            server_dir.join("server.py").to_string_lossy().to_string()
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect()
+            };
 
             let mut env = manifest
                 .env
@@ -1901,7 +1925,7 @@ mod tests {
     }
 
     fn write_tool_manifest(tool_id: &str, manifest: &str) {
-        let dir = crate::platform::paths::bundle_mcp_servers_dir().join(tool_id);
+        let dir = crate::features::marketplace::mcp_catalog::package_mcp_dir(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
@@ -1973,7 +1997,7 @@ mod tests {
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
-            let dir = crate::platform::paths::bundle_mcp_servers_dir().join("demo");
+            let dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("demo");
             std::fs::create_dir_all(&dir).unwrap();
             let manifest = r#"{
                 "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
@@ -2219,11 +2243,18 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁已装连接器;plain 仍按空处理。
+            // 未初始化:code 默认全禁已装连接器 ∪ 内置 CLI 连接器;plain 仍按空处理。
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
             save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
@@ -2247,25 +2278,65 @@ mod tests {
         });
     }
 
-    /// 旧版裸数组格式 `["a","b"]` 迁移到 plain scope,code 保持未初始化默认。
+    /// companion_skills：CLI 连接器（无 manifest）查能力包注册表静态表返回配套
+    /// 技能目录；MCP 连接器仍走 manifest 声明；未知 id 返回空。
     #[test]
-    fn disabled_connectors_legacy_array_migrates_to_plain() {
+    fn companion_skills_covers_cli_bundles_and_manifests() {
+        with_temp_home(|| {
+            let market = MarketplaceManager::new();
+            // CLI 连接器：静态表（feishu 9 个 lark-* 目录）。
+            assert_eq!(
+                market.companion_skills("feishu"),
+                bundle::LARK_SKILL_DIRS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(market.companion_skills("dingtalk"), vec!["dws".to_string()]);
+            // MCP 连接器：manifest 声明。
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+            assert_eq!(
+                market.companion_skills("gongwen"),
+                vec!["government-writing".to_string()]
+            );
+            // 未知 id → 空。
+            assert!(market.companion_skills("nonexistent").is_empty());
+        });
+    }
+
+    /// 旧版裸数组格式 `["a","b"]` 迁移到 bundles 文件 plain scope，code 保持未初始化
+    /// 默认（DenyAll → 全部已装包 + 内置 CLI 包）。
+    #[test]
+    fn bundles_legacy_connector_array_migrates_to_bundles_file() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, r#"["weather","pptx"]"#).unwrap();
+            let conn = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(&conn, r#"["weather","pptx"]"#).unwrap();
             assert_eq!(
-                load_disabled_connectors(),
+                load_disabled_bundles(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            // 旧格式不初始化 code scope → 仍默认全禁。
+            // 旧格式不初始化 code scope → 仍默认全禁（含内置 CLI 包）。
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
             );
-            // 读到即迁移:落盘已是新 map 格式。
-            let content = std::fs::read_to_string(&path).unwrap();
+            // 读到即迁移：落盘已是 bundles 新 map 格式。
+            let content = std::fs::read_to_string(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+            )
+            .unwrap();
             assert!(
                 content.contains("\"scopes\""),
                 "迁移后应为新格式: {content}"
@@ -2273,206 +2344,196 @@ mod tests {
         });
     }
 
-    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_CONNECTORS_FILE_LOCK` 与持锁
-    /// 写方串行：本测试持锁期间并发 load（磁盘为旧格式、必然触发迁移落盘）不得
-    /// 先行落盘。若读路径被改回无锁直读（丢更新竞态回归），本测试即红。
+    /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 bundles scopes map。
     #[test]
-    fn read_path_migration_serializes_with_file_lock() {
-        with_temp_home(|| {
-            let legacy = r#"["weather"]"#;
-            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, legacy).unwrap();
-            let guard = DISABLED_CONNECTORS_FILE_LOCK
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let reader = std::thread::spawn(load_disabled_connectors_for_lock_test);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap(),
-                legacy,
-                "持锁期间读路径不得先行迁移落盘"
-            );
-            drop(guard);
-            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
-            let content = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                content.contains("\"scopes\""),
-                "释放锁后迁移完成: {content}"
-            );
-        });
-    }
-
-    /// 仅供上测试的线程入口（`ConnectorScope` 为 `Send`，抽名函数避免行内闭包
-    /// 遮断言意图）。
-    fn load_disabled_connectors_for_lock_test() -> Vec<String> {
-        load_disabled_connectors()
-    }
-
-    /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:
-    /// 迁移前后行为一致(code_initialized=true → 以落盘为准;false → 默认全禁)。
-    #[test]
-    fn disabled_connectors_legacy_object_migrates_to_scopes_map() {
+    fn bundles_legacy_connector_object_migrates_to_scopes_map() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let conn = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
             std::fs::write(
-                &path,
+                &conn,
                 r#"{"plain":["weather"],"code":["pptx"],"code_initialized":true}"#,
             )
             .unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
-            let file = load_disabled_connectors_file();
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.initialized.contains("code"));
-            // 落盘已是新格式,且不再带旧键
-            let content = std::fs::read_to_string(&path).unwrap();
+            let content = std::fs::read_to_string(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+            )
+            .unwrap();
             assert!(
                 content.contains("\"scopes\""),
                 "迁移后应为新格式: {content}"
             );
-            assert!(
-                !content.contains("code_initialized"),
-                "旧键不应残留: {content}"
-            );
         });
     }
 
-    /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
-    /// (与迁移前逐字节一致);plain 列表即使无 initialized 标记也必须生效
-    /// (AllowAll 无兜底,落盘即真相)。
+    /// 旧对象 `code_initialized=false` 时，code 数组被忽略、按 DenyAll 默认全禁
+    /// （含内置 CLI 包）；plain 列表即使无 initialized 标记也必须生效。
     #[test]
-    fn legacy_object_uninitialized_code_keeps_deny_all_default() {
+    fn bundles_legacy_object_uninitialized_code_keeps_deny_all_default() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let conn = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
             std::fs::write(
-                &path,
+                &conn,
                 r#"{"plain":["weather"],"code":[],"code_initialized":false}"#,
             )
             .unwrap();
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()],
-                "code 未初始化应按 DenyAll 默认全禁已装连接器"
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "code 未初始化应按 DenyAll 默认全禁已装包 + 内置 CLI 包"
             );
         });
     }
 
-    /// 新格式文件里的未知键经读-改-写后保留(前向兼容:新版字段不被旧版丢弃)。
+    /// 旧技能文件 `skill:` 前缀条目迁移为包 id：剥前缀 + companion 映射到所属包。
     #[test]
-    fn unknown_keys_survive_roundtrip() {
+    fn bundles_legacy_skill_prefix_maps_to_owner_package() {
         with_temp_home(|| {
-            let path = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            // government-writing 是 gongwen MCP 的 companion 技能 → 映射到 gongwen 包。
+            write_tool_manifest(
+                "gongwen",
+                r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
+            );
+            let skills = crate::platform::paths::pinvou3_home().join("disabled_skills.json");
+            std::fs::create_dir_all(skills.parent().unwrap()).unwrap();
+            std::fs::write(
+                &skills,
+                r#"{"scopes":{"plain":["skill:visualizer","government-writing"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            let mut got = load_disabled_bundles();
+            got.sort();
+            assert_eq!(
+                got,
+                vec!["gongwen".to_string(), "visualizer".to_string()],
+                "skill: 前缀剥除 + companion 技能映射到其 MCP 包"
+            );
+        });
+    }
+
+    /// 新格式未知键经读-改-写后保留（前向兼容）。
+    #[test]
+    fn bundles_unknown_keys_survive_roundtrip() {
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(
                 &path,
                 r#"{"scopes":{"plain":["weather"]},"initialized":["plain"],"future_field":{"v":1}}"#,
             )
             .unwrap();
-            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            save_disabled_bundles_for(ConnectorScope::Plain, &["pptx".to_string()]);
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("future_field"),
                 "未知键应在读写后保留: {content}"
             );
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
             );
         });
     }
 
-    /// 新装连接器:code 未初始化时无需落盘(load 已默认全禁);已初始化时自动加入禁用集(默认仍关)。
+    /// 新装包：code 未初始化时无需落盘；已初始化时自动加入禁用集（默认仍关）。
     #[test]
-    fn sync_deny_all_scopes_after_install_keeps_new_connector_disabled_by_default() {
+    fn bundles_sync_deny_all_after_install_keeps_new_bundle_disabled() {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
-            // 未初始化 → 不落盘,文件保持无/空。
             sync_deny_all_scopes_after_install("weather");
-            assert!(load_disabled_connectors_file()
-                .scopes
-                .get("code")
-                .map(|ids| ids.is_empty())
-                .unwrap_or(true));
-            // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
-            save_disabled_connectors_for(ConnectorScope::Code, &[]);
+            assert!(
+                crate::features::marketplace::scope::load_disabled_bundles_file()
+                    .scopes
+                    .get("code")
+                    .map(|ids| ids.is_empty())
+                    .unwrap_or(true)
+            );
+            save_disabled_bundles_for(ConnectorScope::Code, &[]);
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
-            // 已存在不重复。
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
         });
     }
 
-    /// 卸载连接器:从 plain/code 两个 scope 禁用集移除,避免残留 id。
+    /// 卸载包：从 plain/code 两个 scope 禁用集移除。
     #[test]
-    fn remove_connector_cleans_both_scopes() {
+    fn bundles_remove_bundle_cleans_both_scopes() {
         with_temp_home(|| {
-            save_disabled_connectors_for(
+            save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
             );
-            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
-            remove_connector_from_disabled_scopes("weather");
+            save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]);
+            remove_bundle_from_disabled_scopes("weather");
             assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
+                load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
             );
-            assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+            assert!(load_disabled_bundles_for(ConnectorScope::Code).is_empty());
         });
     }
 
-    /// 两个 scope 并发写同一文件:进程内串行化 + 原子写保证不丢更新、不撕裂——
-    /// 结束后两边最后一次写入都必须还在,且文件始终是合法 JSON。
+    /// 两个 scope 并发写同一文件：进程内串行化 + 原子写保证不丢更新。
     #[test]
-    fn concurrent_scope_writes_do_not_lose_updates() {
+    fn bundles_concurrent_scope_writes_do_not_lose_updates() {
         with_temp_home(|| {
             let plain_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+                    save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
                 }
             });
             let code_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+                    save_disabled_bundles_for(ConnectorScope::Code, &["pptx".to_string()]);
                 }
             });
             plain_writer.join().unwrap();
             code_writer.join().unwrap();
 
-            let file = load_disabled_connectors_file();
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert_eq!(file.scopes.get("plain"), Some(&vec!["weather".to_string()]));
             assert!(file.initialized.contains("code"));
             assert_eq!(file.scopes.get("code"), Some(&vec!["pptx".to_string()]));
         });
     }
-
-    /// 连接器禁用联动技能、独立 skill 开关、同名不误伤三个场景的组合目录断言
+    /// 连接器禁用联动技能、独立 skill 开关、同名统一三个场景的组合目录断言
     /// 已随 `enabled_skills_for` 移入 `assistant::skill_materialization` 的测试
     /// （marketplace → assistant 会构成 feature 依赖环，架构守卫拒绝）。
     /// 覆盖位置：`skill_materialization.rs` tests 中
     /// `companion_skill_excluded_when_connector_disabled` /
     /// `enabled_skills_respect_first_wins_and_scope_disabled` /
-    /// `disabling_connector_id_does_not_hide_same_named_user_skill`。
+    /// `disabling_package_hides_same_named_skill_unified`。
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
@@ -2900,16 +2961,18 @@ mod tests {
     fn migrate_legacy_manifest_env_moves_secret_to_store_and_removes_plaintext() {
         with_temp_home(|| {
             let secret = secret_value("legacy-amap");
-            write_tool_manifest(
-                "weather",
-                &format!(
-                    r#"{{
-                        "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                        "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                        "env":{{"AMAP_KEY":"{secret}","SAFE_VALUE":"kept"}}
-                    }}"#
-                ),
+            // 明文密钥迁移针对旧布局存量 manifest（`bundle/mcp-servers/<id>/`），
+            // 直接铺旧路径模拟历史数据，不走新布局 helper。
+            let manifest = format!(
+                r#"{{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "env":{{"AMAP_KEY":"{secret}","SAFE_VALUE":"kept"}}
+                }}"#
             );
+            let legacy_dir = crate::platform::paths::bundle_mcp_servers_dir().join("weather");
+            std::fs::create_dir_all(&legacy_dir).unwrap();
+            std::fs::write(legacy_dir.join("manifest.json"), &manifest).unwrap();
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
@@ -3034,6 +3097,115 @@ mod tests {
 
             assert!(err.contains("IWENCAI_TEST_KEY"));
             assert!(!err.contains("test-secret"));
+        });
+    }
+
+    /// Phase 2 镜像：install 成功后 bundles.json 出现 Preset 记录（凭据 key 从
+    /// manifest 收敛），uninstall 成功后记录删除；两条路径的失败都不翻盘主操作。
+    #[test]
+    fn install_and_uninstall_mirror_bundle_store_record() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "weather",
+                r#"{
+                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            store
+                .set(
+                    &mcp_secret_reference("weather", "env", "AMAP_KEY"),
+                    &secret_value("amap"),
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            mgr.install("weather", &std::collections::HashMap::new())
+                .unwrap();
+            let bundle_store = store::BundleStore::new();
+            let record = bundle_store
+                .get("weather")
+                .unwrap()
+                .expect("install 应镜像登记 bundles.json");
+            assert_eq!(record.source, store::BundleSource::Preset);
+            assert!(record.installed);
+            assert_eq!(
+                record.credential_keys,
+                vec!["AMAP_KEY".to_string()],
+                "凭据 key 应从 manifest 收敛"
+            );
+
+            mgr.uninstall("weather").unwrap();
+            assert!(
+                bundle_store.get("weather").unwrap().is_none(),
+                "uninstall 应镜像删除记录"
+            );
+        });
+    }
+
+    /// 刀十一：install 按需释放包资源到 bundles/<id>/mcp/（内嵌目录供清单，
+    /// 无需种 manifest），mcp.json 指向新布局；uninstall 清理包目录。
+    #[test]
+    fn install_releases_package_to_new_layout_and_uninstall_cleans() {
+        with_temp_home(|| {
+            // 生产环境 bundle/ 由启动释放流程创建；测试不跑释放，需先建
+            std::fs::create_dir_all(paths::bundle_root()).unwrap();
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("AMAP_KEY".to_string(), "amap-test".to_string());
+            mgr.install("weather", &config).unwrap();
+
+            let mcp_dir = paths::bundles_root().join("weather").join("mcp");
+            assert!(mcp_dir.join("server.py").is_file(), "脚本应释放到包目录");
+            assert!(mcp_dir.join("manifest.json").is_file());
+            assert!(
+                !paths::bundle_mcp_servers_dir().join("weather").exists(),
+                "不应再落旧布局"
+            );
+            let mcp = read_mcp_json();
+            let arg0 = mcp["servers"]["weather"]["args"][0].as_str().unwrap();
+            assert!(arg0.contains("bundles"), "mcp.json 应指向新布局: {arg0}");
+            assert!(!arg0.contains("mcp-servers"), "不应指向旧布局: {arg0}");
+            let record = store::BundleStore::new().get("weather").unwrap().unwrap();
+            assert!(record.content_fingerprint.is_some(), "应登记包内容指纹");
+
+            mgr.uninstall("weather").unwrap();
+            assert!(
+                !paths::bundles_root().join("weather").exists(),
+                "卸载应清包目录"
+            );
+        });
+    }
+
+    /// 刀十一：存量 mcp.json 条目的旧布局路径迁移（重写为新包目录，幂等）。
+    #[test]
+    fn migrate_mcp_json_paths_rewrites_legacy_entries() {
+        with_temp_home(|| {
+            let legacy_script = paths::bundle_mcp_servers_dir()
+                .join("weather")
+                .join("server.py");
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &mcp_path,
+                serde_json::json!({
+                    "servers": {"weather": {"command": "python3", "args": [legacy_script.to_string_lossy()]}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            assert!(migrate_mcp_json_paths().unwrap(), "首次迁移应有改动");
+            let mcp = read_mcp_json();
+            let arg0 = mcp["servers"]["weather"]["args"][0].as_str().unwrap();
+            let expected = mcp_catalog::package_mcp_dir("weather").join("server.py");
+            assert_eq!(arg0, expected.to_string_lossy().as_ref());
+            assert!(
+                !migrate_mcp_json_paths().unwrap(),
+                "二次迁移应幂等（无改动）"
+            );
         });
     }
 }
