@@ -40,7 +40,7 @@ function injectSource() {
       'patsnap-search':['智慧芽专利&文献融合检索',[]],
       'canva-mcp':['Canva 可画',[]],
       'yuandian-mcp':['华宇元典法律数据',[]],
-      obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
+      obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',['pptx']],gongwen:['公文写作',['government-writing']]
     };
     const OAUTH_SERVERS={'yuandian-mcp':'yuandian_mcp','canva-mcp':'canva_mcp',qcc:'qcc-company'};
     const BLOCKING_INSTALL_OAUTH_TOOLS=new Set(['yuandian-mcp','canva-mcp']);
@@ -51,7 +51,12 @@ function injectSource() {
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
     const tools=()=>Object.entries(TOOL_META).map(([id,[name,companions]])=>({id,name,description:'test',version:'1.0.0',icon:'',category:'test',installed:!!state.installed[id],companion_skills:companions}));
-    const skills=()=>[{id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false}];
+    const skills=()=>[
+      {id:'government-writing',title:'党政机关公文写作',installed:!!state.installed.gongwen,user_uploaded:false},
+      {id:'visualizer',title:'数据分析可视化',installed:!!state.skills.visualizer,user_uploaded:false},
+      // pptx:真实预置技能(组合包化),卡片由后端数据合成,安装态跟随同名 MCP
+      {id:'pptx',title:'PPT 生成',subtitle:'本地直出可编辑 PowerPoint',description:'本地直出可编辑 .pptx',icon:'Presentation',color:'bg-gradient-to-b from-orange-400 to-rose-500',installed:!!state.installed.pptx,user_uploaded:false},
+    ];
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     function invoke(cmd,args){
       record(cmd,args);
@@ -107,6 +112,44 @@ function injectSource() {
         case 'ima_status': return Promise.resolve({connected:state.connected.ima,credentials_present:state.connected.ima,skill_installed:state.connected.ima});
         case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
         case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
+        // 统一 readiness（Phase 2 第八刀）：前端不再调逐连接器 status，改走
+        // bundle_readiness；actions 按后端 actions.rs 同款规则 mock。
+        case 'bundle_readiness': {
+          const id=args.bundleId;
+          // 刀9：bundle 功能事实随响应下发；version 用与 tsToolsData 不同的值,
+          // 便于断言前端确实切到了后端源。
+          const bnd=(over)=>({id,name:id,kind:'skill',mcp_servers:[],skills:[],cli:[],credentials:[],description:'后端简介',version:'',category:'collab',auth_required:true,config_fields:[],installed:false,user_uploaded:false,...over});
+          const mk=(installed,ready,reason,actions,bundle)=>({bundle_id:id,installed,ready,reason,detail:null,actions,bundle:bundle||null});
+          const act=(actionId,flow)=>({id:actionId,enabled:true,...(flow?{flow}:{})});
+          if(['feishu','wecom','dingtalk','tmeet'].includes(id)){
+            const c=!!state.connected[id];
+            return Promise.resolve(mk(c,c,c?null:'not_connected',c?[act('disconnect')]:[act('connect',{kind:'cli_connect'})],
+              bnd({kind:'cli',version:'9.9.9-lock'})));
+          }
+          if(id==='ima'){
+            const c=!!state.connected.ima;
+            return Promise.resolve(mk(c,c,c?null:'missing_credentials',c?[act('disconnect')]:[act('configure')],
+              bnd({version:'',category:'docs',config_fields:[
+                {key:'IMA_CLIENT_ID',required:true,target:'credential',secret:true},
+                {key:'IMA_API_KEY',required:true,target:'credential',secret:true},
+              ]})));
+          }
+          if(id==='visualizer'){
+            const c=!!state.skills.visualizer;
+            return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
+          }
+          if(id==='government-writing'){
+            const c=!!state.installed.gongwen;
+            return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
+          }
+          if(TOOL_META[id]){
+            const inst=!!state.installed[id];
+            const oauth=!!OAUTH_SERVERS[id];
+            const withConfig=['weather','iwencai','patsnap-search'].includes(id);
+            return Promise.resolve(mk(inst,true,null,inst?[act('uninstall')]:(oauth?[act('connect',{kind:'oauth'})]:(withConfig?[act('configure')]:[act('install')]))));
+          }
+          return Promise.reject(new Error('未知能力包 '+id));
+        }
         case 'feishu_ensure_cli': case 'wecom_ensure_cli': case 'dingtalk_ensure_cli': case 'tmeet_ensure_cli': case 'feishu_connect_begin': case 'wecom_connect_begin': case 'dingtalk_connect_begin': case 'tmeet_connect_begin': return Promise.resolve(null);
         case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': case 'open_external_url': return Promise.resolve(null);
         default: return Promise.resolve(null);
@@ -352,6 +395,11 @@ async function closeDetail(page, title) {
   ];
   for(const [query,id,event,commands] of connectors){
     await action(page,query,'连接',id);
+    if(id==='feishu'){
+      // 刀9：版本号切后端源（mock 的 9.9.9-lock 与 tsToolsData 任何版本都不同,
+      // 命中即证明渲染来自 bundle_readiness 的 bundle.version）
+      rec('飞书详情版本号以后端 lock 表为准',await page.evaluate(()=>document.body.innerText.includes('v9.9.9-lock')));
+    }
     if(id==='tmeet'){
       await page.evaluate(() => window.__emitTauri('tmeet:qr', {
         phase: 'authorize',

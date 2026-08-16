@@ -27,7 +27,7 @@ if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2)
 
 function injectSource() {
   return `(function(){
-    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',[]],['gongwen',['government-writing']]];
+    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']]];
     window.__TAURI_EVENT_HANDLERS__={};
     function invoke(cmd){
       switch(cmd){
@@ -42,7 +42,7 @@ function injectSource() {
         case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
         case 'list_marketplace_tools': return Promise.resolve(TOOLS.map(([id,cs])=>({id,name:id,description:'',version:'1.0.0',icon:'',category:'test',installed:false,companion_skills:cs})));
         case 'get_marketplace_tool_auth_status': return Promise.resolve({status:'not_installed'});
-        case 'list_marketplace_skills': return Promise.resolve([{id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:false,user_uploaded:false}]);
+        case 'list_marketplace_skills': return Promise.resolve([{id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},{id:'pptx',title:'PPT 生成',installed:false,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:false,user_uploaded:false},{id:'ima-skills',title:'腾讯 ima',installed:false,user_uploaded:false}]);
         default:
           if(/^list_|^get_/.test(cmd)) return Promise.resolve(Array.isArray([])&&cmd.startsWith('list_')?[]:null);
           return Promise.resolve(null);
@@ -63,6 +63,14 @@ async function clickExact(page, text) {
     el.scrollIntoView({ block: 'center' }); el.click(); return true;
   }, text);
 }
+// chips 是 button;卡片徽标是同文案的 span,须只点 button 避免误点徽标
+async function clickChip(page, text) {
+  return page.evaluate((t) => {
+    const el = [...document.querySelectorAll('button')].filter(b => (b.textContent || '').trim() === t).pop();
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center' }); el.click(); return true;
+  }, text);
+}
 
 (async () => {
   const { url } = await startUiTestServer();
@@ -76,10 +84,27 @@ async function clickExact(page, text) {
     await page.waitForFunction(() => document.body.innerText.includes('工具商店'), { timeout: 10000 });
 
     const chipText = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
-    for (const label of ['按类型', '按业务', '全部', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['按类型', '按业务', '全部', '工具包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`类型维度 chip/segment「${label}」渲染`, chipText.includes(label));
     }
 
+    // 组合包(PPT/公文)归「工具包」组:chip 存在;筛选后只显示组合包
+    rec('点击「工具包」chip', await clickChip(page, '工具包'));
+    await sleep(300);
+    rec('工具包筛选只显示组合包(PPT/公文)', await page.evaluate(() => {
+      const text = document.body.innerText;
+      return text.includes('PPT 生成') && text.includes('党政机关公文写作') && !text.includes('高德天气') && !text.includes('飞书（Lark）');
+    }));
+    rec('组合包无重复连接器卡(gongwen 不单独出现)', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-action"][data-tool-id="gongwen"]')));
+    rec('ima-skills 不单独成卡(归 ima 连接器包)', await page.evaluate(() =>
+      !document.querySelector('[data-testid="tool-store-action"][data-tool-id="ima-skills"]')));
+    rec('组合包卡业务分区为「文档知识」而非「技能」', await page.evaluate(() => {
+      const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
+      return h3s.includes('文档知识') && !h3s.includes('技能');
+    }));
+    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    await sleep(300);
     // 主维度=类型 → 下方按业务分区
     const sectionsByType = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
     for (const label of ['沟通协作', '文档知识', '金融数据', '生活实用', '技能']) {
@@ -120,7 +145,7 @@ async function clickExact(page, text) {
     }
     rec('业务维度 chip 不含「技能」', !bizChips.includes('技能'));
     const sectionsByBiz = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
-    for (const label of ['MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['工具包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`按业务时类型分区「${label}」渲染`, sectionsByBiz.includes(label));
     }
 

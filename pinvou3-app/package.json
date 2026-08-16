@@ -102,6 +102,7 @@
     "test:kb-smoke": "node tests/kb_smoke.js",
     "test:composer-tools-smoke": "node tests/composer_tools_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
+    "test:tool-store-grouping": "node tests/tool_store_grouping_smoke.js",
     "test:tool-store-import": "node --test tests/skill_zip_import_logic.test.js && node tests/tool_store_skill_import_smoke.js",
     "test:tool-store-drop-contract": "node tests/tool_store_skill_drop_contract.test.mjs",
     "test:tool-store-grouping": "node tests/tool_store_grouping_smoke.js",

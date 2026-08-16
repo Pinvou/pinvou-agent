@@ -376,7 +376,7 @@ const dict = {
       zh: {
         langTag: 'zh',
         acpAgent: 'ACP Agent',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '工具商店', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
         previewTaskDailyBrief: '每日早报', previewTaskFollowUp: '事项督办', previewTaskSalesWeekly: '销售线索周报',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
@@ -522,7 +522,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 转交修订`, draftingScheduled:'⏰ 正在整理定时任务草稿…' },
         expertPoolIndividualTab:'个人专家', expertPoolTeamTab:'专家团队',
         uiWorkflow: { pick:'选择一个工作流模板开始', empty:'没有可用的工作流（请检查工作流资源）', workflow:'工作流', stopFailed:e=>`停止工作流失败：${e}`, completed:'🎉 工作流完成' },
-        uiToolStore: { title:'工具商店', search:'搜索连接器、技能、插件等', myTools:'我的工具', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部工具', internalCount:n=>`${n} 个工具 · 需内网`, view:'查看' },
+        uiToolStore: { title:'插件中心', search:'搜索连接器、技能、插件等', myTools:'我的插件', installedOnly:'仅显示已安装', results:'检索结果', back:'返回商店', internal:'集团内部 · 员工专属', internalTitle:'H3C 办公生态\n一键接入', internalDesc:'以你本人 SSO 身份直连集团内部系统，全程不填 key', internalTools:'H3C 集团内部插件', internalCount:n=>`${n} 个插件 · 需内网`, view:'查看', modePlain:'普通会话', modeCode:'代码会话', modeVisibilityHint:'按会话模式配置插件可见性', manageVisibility:'管理可见性', doneManagingVisibility:'完成', guide:{ title:'插件指南', close:'关闭', dragTitle:'拖入即装', dragDesc:'把标准 Skill、单个 .md、MCP 服务或 Pinvou 插件包 .zip 直接拖进本窗口即可导入；也可点右上角「上传」选择文件。', typesTitle:'支持的形式', types:['标准 Skill（SKILL.md 目录）','单个 .md 技能文件','MCP 服务','扳手插件','Pinvou 插件包（推荐）'], formatsNote:'标准 Skill、.md、MCP 和 Pinvou 插件包都可导入；Pinvou 插件包只是推荐的一种标准形态，其余形式会被自动规范化。', dragHintShort:'拖入插件包可上传自定义插件', introTitle:'什么是 Pinvou 插件包', introDesc:'一个插件包 = 一张卡 = 一个开关。把技能、MCP 服务、扳手插件（或它们的组合）打成一个 zip，导入后按内容自动识别类型、安全校验、落盘注册，并在商店与运行时统一开关、卸载。', specTitle:'插件包规范', specDesc:'完整规范见《插件包设计规范》：zip 布局、plugin.json（schema v1）、mcp manifest.json、SKILL.md、spanner、图标与命名安全。', downloadSpec:'下载规范文档（Markdown）', downloadHint:'下载后可直接分发给第三方包作者；桌面端会打开保存对话框。' } },
         uiToolDetails: { tools:{
           ima:{ title:'腾讯 ima', subtitle:'用 OpenAPI 操作 ima 笔记与知识库', latency:'云端', desc:'接入腾讯 ima OpenAPI Skill，可搜索、读取、创建和追加笔记，也可搜索、浏览知识库并导入网页或内容。凭据只保存在本机。', configTitle:'连接腾讯 ima', configDescription:'凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocLabel:'获取 Client ID / API Key', welcomeQueries:['搜索我的 ima 知识库','列出我有哪些 ima 笔记','把这段内容新建为 ima 笔记','在 ima 知识库里查产品方案'] },
           tmeet:{ title:'腾讯会议', subtitle:'以本人身份管理会议、录制、纪要和参会报告', type:'CLI + 官方技能', latency:'云端', desc:'接入腾讯会议官方 CLI 和技能，可创建、查询、修改和取消会议，查询参会报告、录制、转写与智能纪要。连接时会打开授权页扫码登录。', welcomeQueries:['帮我创建一个腾讯会议','查一下我的腾讯会议录制','看看最近会议的智能纪要','查询这场腾讯会议的参会人'] },
@@ -664,7 +664,7 @@ const dict = {
         voiceCompleted: '语音已写入输入框', voiceClose: '关闭语音提示', voiceGotoDeps: '去依赖体检',
         composerTools: '工具', composerModelLabel: name => `模型：${name}`, composerConnectedServices: '已连接服务', composerConnected: '已连接', composerInstalledTools: '已接入工具', composerInstalledSkills: '技能', composerNoTools: '暂无已装工具', composerToolOn: '已启用', composerManageTools: '管理工具',
         composerMode: '技能', composerModeTitle: '技能', composerModeNone: '暂无可用技能',
-        composerSkillAuto: '内置·自动', composerBuiltinAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线', composerSkillAllDisabled: '该会话类型的所有技能已关闭，可在上方打开',
+        composerSkillAuto: '内置·自动', composerBuiltinAuto: '内置·自动', composerSkillInUse: '使用中', composerSkillSoon: '待上线', composerSkillAllDisabled: '该会话类型的所有技能已关闭，可在上方打开', composerModeControlled: '受模式控制', composerReadonlySwitch: '受模式控制，不可手动切换',
         composerProjectSkills: '项目技能', composerProjectSkillsDesc: '扫描项目内置skills', composerProjectSkillsWarning: '项目内技能文本可能包含恶意指令（提示注入），仅对可信项目开启', composerProjectSkillsHelpTitle: '项目技能说明', composerProjectSkillsHelpBody: '开启后，绑定项目的代码会话会扫描项目内约定目录中的技能文件，模型即可加载并使用这些技能。', composerProjectSkillsHelpDirsLabel: '扫描目录（优先级从高到低）', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: '重新发送', editResend: '编辑并重发', messageSending: '发送中…', messageAccepted: '已发送', messageFailed: '发送失败', messageOutcomeUnknown: '发送状态待确认，请检查会话列表', selectAllMsg: '全选', copyMsg: '复制', pasteMsg: '粘贴', copied: '已复制', backToBottom: '回到底部',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `调用 ${tool}... ${s}s`,
@@ -727,7 +727,7 @@ const dict = {
       en: {
         langTag: 'en',
         acpAgent: 'ACP Agent',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', multiAgent: 'Multi-agent', multiAgentDesktopOnly: 'This multi-agent conversation is currently available only in the desktop app.', toolStore: 'Tool Store', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Runtime', workflow: 'Workflow', multiAgent: 'Multi-agent', multiAgentDesktopOnly: 'This multi-agent conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History', pinnedTasks: 'Pinned tasks', regularTasks: 'Tasks', sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Code', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', settings: 'Settings', localEnv: 'Local Env', megacubeSite: 'Open MegaCube site', tearoffTitle: 'Detached', tearoffHint: 'Pop out to its own window', mobileMore: 'More',
         previewTaskDailyBrief: 'Daily Brief', previewTaskFollowUp: 'Follow-ups', previewTaskSalesWeekly: 'Sales Leads Weekly',
         archiveSession: 'Hide', archiveConfirmTitle: 'Hide this task?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored on the chat manager page.', archiveConfirmAction: 'Hide',
         archiveSuccess: 'Hidden', archiveSuccessView: 'View',
@@ -873,7 +873,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · Revision handoff`, draftingScheduled:'⏰ Preparing scheduled task draft…' },
         expertPoolIndividualTab:'Individual Experts', expertPoolTeamTab:'Expert Teams',
         uiWorkflow: { pick:'Choose a workflow template to begin', empty:'No workflows are available. Check the bundled workflow resources.', workflow:'Workflow', stopFailed:e=>`Failed to stop workflow: ${e}`, completed:'🎉 Workflow complete' },
-        uiToolStore: { title:'Tool Store', search:'Search connectors, skills, and plugins', myTools:'My Tools', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Tools', internalCount:n=>`${n} tools · Intranet required`, view:'View' },
+        uiToolStore: { title:'Plugin Center', search:'Search connectors, skills, and plugins', myTools:'My Plugins', installedOnly:'Installed only', results:'Search Results', back:'Back to Store', internal:'Internal · Employees only', internalTitle:'H3C Workplace\nOne-click Access', internalDesc:'Connect to internal systems with your SSO identity—no key required', internalTools:'H3C Internal Plugins', internalCount:n=>`${n} plugins · Intranet required`, view:'View', modePlain:'Plain', modeCode:'Code', modeVisibilityHint:'Configure plugin visibility per session mode', manageVisibility:'Manage Visibility', doneManagingVisibility:'Done', guide:{ title:'Plugin Guide', close:'Close', dragTitle:'Drag to install', dragDesc:'Drag a standard skill, a single .md, an MCP server, or a Pinvou plugin .zip directly into this window to import it, or click "Upload" in the top-right to choose a file.', typesTitle:'Supported forms', types:['Standard skill (SKILL.md folder)','Single .md skill file','MCP server','Spanner','Pinvou plugin package (recommended)'], formatsNote:'Standard skills, .md, MCP, and Pinvou plugin packages are all importable; the Pinvou plugin package is just the recommended standard form, and the rest are auto-normalized.', dragHintShort:'Drag in a package to add a custom plugin', introTitle:'What is a Pinvou plugin package', introDesc:'One package = one card = one switch. Pack skills, MCP servers, spanner plugins (or their combinations) into a zip; on import the type is auto-detected from content, validated, and registered, then toggled and uninstalled uniformly in the store and at runtime.', specTitle:'Plugin package spec', specDesc:'See the "Plugin Package Spec" for the full rules: zip layout, plugin.json (schema v1), mcp manifest.json, SKILL.md, spanner, icons, and naming safety.', downloadSpec:'Download spec (Markdown)', downloadHint:'Download and share with third-party package authors; the desktop app opens a save dialog.' } },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'Manage ima notes and knowledge bases through OpenAPI', latency:'Cloud', desc:'Connect the Tencent ima OpenAPI Skill to search, read, create, and append notes, or search and browse knowledge bases and import web pages or content. Credentials stay on this device.', configTitle:'Connect Tencent ima', configDescription:'Credentials stay on this device and are used only to enable the IMA OpenAPI Skill.', configDocLabel:'Get Client ID / API Key', welcomeQueries:['Search my ima knowledge bases','List my ima notes','Create an ima note from this content','Find the product plan in my ima knowledge base'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'Manage meetings, recordings, minutes, and attendance reports as yourself', type:'CLI + Official Skill', latency:'Cloud', desc:'Connect the official Tencent Meeting CLI and skill to create, query, update, and cancel meetings, and access attendance reports, recordings, transcripts, and AI minutes. Connecting opens the authorization page for QR-code sign-in.', welcomeQueries:['Create a Tencent Meeting for me','Show my Tencent Meeting recordings','Show the latest meeting minutes','List the attendees of this Tencent Meeting'] },
@@ -1015,7 +1015,7 @@ const dict = {
         voiceCompleted: 'Voice text added', voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
         composerTools: 'Tools', composerModelLabel: name => `Model: ${name}`, composerConnectedServices: 'Connected services', composerConnected: 'Connected', composerInstalledTools: 'Connected tools', composerInstalledSkills: 'Skills', composerNoTools: 'No tools installed', composerToolOn: 'On', composerManageTools: 'Manage tools',
         composerMode: 'Skill', composerModeTitle: 'Skills', composerModeNone: 'No skills available',
-        composerSkillAuto: 'Built-in', composerBuiltinAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon', composerSkillAllDisabled: 'All skills for this session type are off — enable them above',
+        composerSkillAuto: 'Built-in', composerBuiltinAuto: 'Built-in', composerSkillInUse: 'In use', composerSkillSoon: 'Soon', composerSkillAllDisabled: 'All skills for this session type are off — enable them above', composerModeControlled: 'Controlled by mode', composerReadonlySwitch: 'Controlled by mode, cannot be toggled manually',
         composerProjectSkills: 'Project skills', composerProjectSkillsDesc: 'Scan built-in project skills', composerProjectSkillsWarning: 'Project skill files may contain malicious instructions (prompt injection) — enable only for trusted projects', composerProjectSkillsHelpTitle: 'About project skills', composerProjectSkillsHelpBody: 'When enabled, code sessions bound to a project scan the project\'s convention skill directories, and the model can load and use those skills.', composerProjectSkillsHelpDirsLabel: 'Scanned directories (highest priority first)', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: 'Resend', editResend: 'Edit & resend', messageSending: 'Sending…', messageAccepted: 'Sent', messageFailed: 'Send failed', messageOutcomeUnknown: 'Send status is unknown. Check the conversation list.', selectAllMsg: 'Select all', copyMsg: 'Copy', pasteMsg: 'Paste', copied: 'Copied', backToBottom: 'Back to bottom',
         thinkingLabel: 'Thinking', thinkingCall: (tool, s) => `Calling ${tool}... ${s}s`,
@@ -1078,7 +1078,7 @@ const dict = {
       ja: {
         langTag: 'ja',
         acpAgent: 'ACP Agent',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'ツールストア', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定時タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterScheduled: '定時タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         previewTaskDailyBrief: 'デイリー速報', previewTaskFollowUp: 'フォローアップ管理', previewTaskSalesWeekly: '営業リード週報',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
@@ -1223,7 +1223,7 @@ const dict = {
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 修正を引き継ぎ`, draftingScheduled:'⏰ 定期タスクの下書きを準備中…' },
         expertPoolIndividualTab:'個人エキスパート', expertPoolTeamTab:'エキスパートチーム',
         uiWorkflow: { pick:'ワークフローテンプレートを選択してください', empty:'利用可能なワークフローがありません。リソースを確認してください。', workflow:'ワークフロー', stopFailed:e=>`ワークフローの停止に失敗: ${e}`, completed:'🎉 ワークフロー完了' },
-        uiToolStore: { title:'ツールストア', search:'コネクター、スキル、プラグインを検索', myTools:'マイツール', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内ツール', internalCount:n=>`${n} 個のツール · 社内ネットワーク必須`, view:'表示' },
+        uiToolStore: { title:'プラグインセンター', search:'コネクター、スキル、プラグインを検索', myTools:'マイプラグイン', installedOnly:'インストール済みのみ', results:'検索結果', back:'ストアに戻る', internal:'社内限定 · 従業員向け', internalTitle:'H3C オフィス連携\nワンクリック接続', internalDesc:'本人の SSO ID で社内システムに接続。キー入力は不要です', internalTools:'H3C 社内プラグイン', internalCount:n=>`${n} 個のプラグイン · 社内ネットワーク必須`, view:'表示', modePlain:'通常セッション', modeCode:'コードセッション', modeVisibilityHint:'セッションモードごとにプラグインの表示を設定', manageVisibility:'表示を管理', doneManagingVisibility:'完了', guide:{ title:'プラグインガイド', close:'閉じる', dragTitle:'ドラッグでインストール', dragDesc:'標準スキル、単一の .md、MCP サービス、または Pinvou プラグインの .zip をこのウィンドウに直接ドラッグするとインポートできます。右上の「アップロード」でファイルを選ぶこともできます。', typesTitle:'対応形式', types:['標準スキル（SKILL.md フォルダ）','単一の .md スキルファイル','MCP サービス','スパナープラグイン','Pinvou プラグインパッケージ（推奨）'], formatsNote:'標準スキル、.md、MCP、Pinvou プラグインパッケージはすべてインポート可能です。Pinvou プラグインパッケージは推奨の標準形式であり、それ以外は自動で正規化されます。', dragHintShort:'パッケージをドラッグしてカスタムプラグインを追加', introTitle:'Pinvou プラグインパッケージとは', introDesc:'1 パッケージ = 1 カード = 1 スイッチ。スキル、MCP サービス、スパナープラグイン（またはその組み合わせ）を zip にまとめ、インポート時に内容から型を自動判定・検証して登録し、ストアとランタイムで統一してオン/オフ・アンインストールします。', specTitle:'プラグインパッケージ仕様', specDesc:'完全な仕様は「プラグインパッケージ仕様」を参照：zip レイアウト、plugin.json（schema v1）、mcp manifest.json、SKILL.md、spanner、アイコン、命名の安全性。', downloadSpec:'仕様書をダウンロード（Markdown）', downloadHint:'ダウンロードしてサードパーティの作者に配布できます。デスクトップ版では保存ダイアログが開きます。' } },
         uiToolDetails: { tools:{
           ima:{ title:'Tencent ima', subtitle:'OpenAPI で ima のノートとナレッジベースを操作', latency:'クラウド', desc:'Tencent ima OpenAPI Skill に接続し、ノートの検索、閲覧、作成、追記や、ナレッジベースの検索、閲覧、Web ページとコンテンツの追加ができます。認証情報はこの端末だけに保存されます。', configTitle:'Tencent ima に接続', configDescription:'認証情報はこの端末だけに保存され、IMA OpenAPI Skill の有効化にのみ使用されます。', configDocLabel:'Client ID / API Key を取得', welcomeQueries:['ima のナレッジベースを検索','ima のノート一覧を表示','この内容から ima ノートを作成','ima のナレッジベースで製品案を検索'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続時は認証ページで QR コードによりログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
@@ -1365,7 +1365,7 @@ const dict = {
         voiceCompleted: '音声テキストを追加しました', voiceClose: '音声通知を閉じる', voiceGotoDeps: '依存関係チェックへ',
         composerTools: 'ツール', composerModelLabel: name => `モデル：${name}`, composerConnectedServices: '接続済みサービス', composerConnected: '接続済み', composerInstalledTools: '接続済みツール', composerInstalledSkills: 'スキル', composerNoTools: 'ツールなし', composerToolOn: '有効', composerManageTools: 'ツール管理',
         composerMode: 'スキル', composerModeTitle: 'スキル', composerModeNone: '利用可能なスキルなし',
-        composerSkillAuto: '内蔵', composerBuiltinAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日', composerSkillAllDisabled: 'このセッション種別の全スキルがオフです。上で有効にできます',
+        composerSkillAuto: '内蔵', composerBuiltinAuto: '内蔵', composerSkillInUse: '使用中', composerSkillSoon: '近日', composerSkillAllDisabled: 'このセッション種別の全スキルがオフです。上で有効にできます', composerModeControlled: 'モードで制御', composerReadonlySwitch: 'モードで制御され、手動で切り替え不可',
         composerProjectSkills: 'プロジェクトスキル', composerProjectSkillsDesc: 'プロジェクト内蔵スキルをスキャン', composerProjectSkillsWarning: 'プロジェクト内のスキルには悪意のある指示（プロンプトインジェクション）が含まれる可能性があります。信頼できるプロジェクトでのみ有効にしてください', composerProjectSkillsHelpTitle: 'プロジェクトスキルについて', composerProjectSkillsHelpBody: '有効にすると、プロジェクトに紐づくコードセッションがプロジェクト内の規約ディレクトリにあるスキルをスキャンし、モデルがそれらを読み込んで利用できるようになります。', composerProjectSkillsHelpDirsLabel: 'スキャン対象ディレクトリ（優先度の高い順）', composerProjectSkillsHelpDirs: '.agents/skills\n.pinvou/skills\nskills\n.opencode/skills\n.claude/skills\n.cursor/skills\n.codewhale/skills',
         resend: '再送信', editResend: '編集して再送信', messageSending: '送信中…', messageAccepted: '送信済み', messageFailed: '送信に失敗しました', messageOutcomeUnknown: '送信状態を確認できません。会話一覧を確認してください。', selectAllMsg: 'すべて選択', copyMsg: 'コピー', pasteMsg: '貼り付け', copied: 'コピー済み', backToBottom: '一番下へ',
         thinkingLabel: '思考中', thinkingCall: (tool, s) => `${tool} を実行中... ${s}s`,
@@ -1608,9 +1608,10 @@ const dict = {
       humidity: '湿度', wind: '风向', windLevel: w => `${w}级`,
       tempHigh: '最高', tempLow: '最低',
       stockOpen: '今开', stockHigh: '最高', stockLow: '最低',
-      builtinEnabled: '内置 · 已启用', comingSoon: '即将上线',
+      builtinEnabled: '内置 · 受模式控制', comingSoon: '即将上线',
       disconnect: '断开', uninstall: '卸载', reauthorize: '重新授权',
-      connect: '连接', configure: '配置', install: '安装',
+      connect: '连接', configure: '配置', install: '安装', update: '更新',
+      repair: '修复',
     };
     dict.en.uiToolCommon = {
       open: 'Open', coverAlt: 'Cover',
@@ -1622,9 +1623,10 @@ const dict = {
       humidity: 'Humidity', wind: 'Wind', windLevel: w => `Level ${w}`,
       tempHigh: 'High', tempLow: 'Low',
       stockOpen: 'Open', stockHigh: 'High', stockLow: 'Low',
-      builtinEnabled: 'Built-in · Enabled', comingSoon: 'Coming soon',
+      builtinEnabled: 'Built-in · Mode-controlled', comingSoon: 'Coming soon',
       disconnect: 'Disconnect', uninstall: 'Uninstall', reauthorize: 'Reauthorize',
-      connect: 'Connect', configure: 'Configure', install: 'Install',
+      connect: 'Connect', configure: 'Configure', install: 'Install', update: 'Update',
+      repair: 'Repair',
     };
     dict.ja.uiToolCommon = {
       open: '開く', coverAlt: 'カバー',
@@ -1636,9 +1638,10 @@ const dict = {
       humidity: '湿度', wind: '風向', windLevel: w => `${w}級`,
       tempHigh: '最高', tempLow: '最低',
       stockOpen: '始値', stockHigh: '高値', stockLow: '安値',
-      builtinEnabled: '内蔵 · 有効', comingSoon: '近日公開',
+      builtinEnabled: '内蔵 · モード制御', comingSoon: '近日公開',
       disconnect: '切断', uninstall: 'アンインストール', reauthorize: '再認証',
-      connect: '接続', configure: '設定', install: 'インストール',
+      connect: '接続', configure: '設定', install: 'インストール', update: '更新',
+      repair: '修復',
     };
 
 dict.zh.uiChatScenes = {
@@ -2330,8 +2333,10 @@ Object.assign(dict.zh.uiToolStore, {
   writingMcpConfig:'正在写入 MCP 配置…', validatingApiKey:'正在校验 API Key 与远程工具…', downloadingDeps:'首次安装需下载依赖，请耐心等待…',
   waitingBrowserAuth:'正在等待浏览器授权完成。', browserOpenedWaiting:'已打开浏览器，正在等待授权…',
   operationFailedWith:e=>`操作失败：${e}`,
-  importingSkill:'正在导入技能包…', validatingSkillPackage:'校验并解压中', skillImported:'技能包已导入', importFailedWith:e=>`导入失败：${e}`,
-  uploadSkillPackage:'上传技能包', dropSkillZipHere:'松开以导入技能包 (zip)', invalidSkillZipDrop:'仅支持 .zip 技能包',
+  importingSkill:'正在导入插件包…', validatingSkillPackage:'校验并解压中', skillImported:'插件包已导入', importFailedWith:e=>`导入失败：${e}`,
+  uploadSkillPackage:'上传插件包', dropSkillZipHere:'松开以导入插件包 (zip)', invalidSkillZipDrop:'仅支持 .zip 插件包',
+  updatedQuoted:name=>`已更新「${name}」`, updateSkillTitle:name=>`更新「${name}」`,
+  updateSkillOverwriteHint:'将覆盖为商店最新版本，你对该技能做的本地修改会丢失。',
   notConnectedYet:name=>`尚未连接「${name}」。`,
   loginFrameTitle:name=>`${name}登录`, loginPageLoadFailed:'登录页加载失败，请用下方浏览器授权', waitingAuth:'等待授权中…', openInBrowser:'在浏览器打开',
   mini:{ scan:'待扫码', install:pct=>`装 ${pct}%`, extract:pct=>`解压 ${pct}%`, connecting:'接入中', title:'点开查看进度' },
@@ -2388,8 +2393,10 @@ Object.assign(dict.en.uiToolStore, {
   writingMcpConfig:'Writing MCP configuration…', validatingApiKey:'Validating the API key and remote tools…', downloadingDeps:'The first install downloads dependencies—please wait…',
   waitingBrowserAuth:'Waiting for browser authorization to complete.', browserOpenedWaiting:'Browser opened; waiting for authorization…',
   operationFailedWith:e=>`Operation failed: ${e}`,
-  importingSkill:'Importing skill package…', validatingSkillPackage:'Validating and extracting', skillImported:'Skill package imported', importFailedWith:e=>`Import failed: ${e}`,
-  uploadSkillPackage:'Upload Skill Package', dropSkillZipHere:'Drop to import a skill package (zip)', invalidSkillZipDrop:'Only .zip skill packages are supported',
+  importingSkill:'Importing plugin package…', validatingSkillPackage:'Validating and extracting', skillImported:'Plugin package imported', importFailedWith:e=>`Import failed: ${e}`,
+  uploadSkillPackage:'Upload Plugin Package', dropSkillZipHere:'Drop to import a plugin package (zip)', invalidSkillZipDrop:'Only .zip plugin packages are supported',
+  updatedQuoted:name=>`"${name}" updated`, updateSkillTitle:name=>`Update "${name}"`,
+  updateSkillOverwriteHint:'This overwrites the skill with the latest store version. Your local changes to it will be lost.',
   notConnectedYet:name=>`"${name}" is not connected yet.`,
   loginFrameTitle:name=>`${name} sign-in`, loginPageLoadFailed:'Failed to load the sign-in page—use browser authorization below', waitingAuth:'Waiting for authorization…', openInBrowser:'Open in browser',
   mini:{ scan:'Scan pending', install:pct=>`Installing ${pct}%`, extract:pct=>`Extracting ${pct}%`, connecting:'Connecting', title:'Tap to view progress' },
@@ -2446,8 +2453,10 @@ Object.assign(dict.ja.uiToolStore, {
   writingMcpConfig:'MCP 設定を書き込んでいます…', validatingApiKey:'API キーとリモートツールを確認しています…', downloadingDeps:'初回インストールでは依存関係をダウンロードします。しばらくお待ちください…',
   waitingBrowserAuth:'ブラウザーでの認証完了を待機しています。', browserOpenedWaiting:'ブラウザーを開きました。認証を待機しています…',
   operationFailedWith:e=>`操作に失敗しました：${e}`,
-  importingSkill:'スキルパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'スキルパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
-  uploadSkillPackage:'スキルパッケージをアップロード', dropSkillZipHere:'離してスキルパッケージ (zip) をインポート', invalidSkillZipDrop:'対応するのは .zip スキルパッケージのみです',
+  importingSkill:'プラグインパッケージをインポート中…', validatingSkillPackage:'検証・展開中', skillImported:'プラグインパッケージをインポートしました', importFailedWith:e=>`インポートに失敗しました：${e}`,
+  uploadSkillPackage:'プラグインパッケージをアップロード', dropSkillZipHere:'離してプラグインパッケージ (zip) をインポート', invalidSkillZipDrop:'対応するのは .zip プラグインパッケージのみです',
+  updatedQuoted:name=>`「${name}」を更新しました`, updateSkillTitle:name=>`「${name}」を更新`,
+  updateSkillOverwriteHint:'ストアの最新バージョンで上書きします。このスキルへのローカルの変更は失われます。',
   notConnectedYet:name=>`「${name}」はまだ接続されていません。`,
   loginFrameTitle:name=>`${name} ログイン`, loginPageLoadFailed:'ログインページを読み込めませんでした。下のブラウザー認証をご利用ください', waitingAuth:'認証を待機中…', openInBrowser:'ブラウザーで開く',
   mini:{ scan:'スキャン待ち', install:pct=>`インストール ${pct}%`, extract:pct=>`展開 ${pct}%`, connecting:'接続中', title:'タップして進捗を表示' },
@@ -2489,27 +2498,33 @@ Object.assign(dict.ja.uiChatView, { memStatusRemembered:'記憶しました', me
 // ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
 Object.assign(dict.zh.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合工具商店的「公文写作」工具即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
+    'government-writing': { title:'党政机关公文写作', subtitle:'通知/意见等法定文种，套话术、层级序号、自检', desc:'撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合插件中心的「公文写作」插件即可直出 GB/T 9704 合规 .docx。', latency:'本地' },
     pptx: { title:'PPT 生成', subtitle:'本地直出可编辑 PowerPoint，套主题模板、真图表、带封面', desc:'本地直出可编辑 PowerPoint:套主题模板、真图表、带封面,输入主题即可快速生成结构化演示文稿。', latency:'本地' },
     visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图表分析 / HTML 可视化', desc:'将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。', latency:'本地' },
+    'package-author': { title:'插件包标准化', subtitle:'把技能/MCP/函数整理成可上传的标准插件包', desc:'把散乱的技能（SKILL.md）、MCP 服务、扳手插件（spanner）或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。', latency:'本地' },
+    'skill-author': { title:'技能创建', subtitle:'用户描述一句话，生成规范的 SKILL.md 技能', desc:'把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。', latency:'本地' },
     s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
   },
   categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', skill:'技能' },
 } });
 Object.assign(dict.en.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" tool in the Tool Store to export GB/T 9704-compliant .docx directly.', latency:'Local' },
+    'government-writing': { title:'Official Document Writing', subtitle:'Statutory document types like notices and opinions, with phrasing templates, hierarchical numbering, and self-checks', desc:'Draft standardized party and government official documents (notices, opinions, …): built-in document-type skeletons, a fixed phrasing library, hierarchical numbering, and ledger-style self-checks produce structured official content. Pair with the "Official Document Writing" plugin in the Plugin Center to export GB/T 9704-compliant .docx directly.', latency:'Local' },
     pptx: { title:'PPT Generation', subtitle:'Generate editable PowerPoint locally, with theme templates, real charts, and covers', desc:'Generate editable PowerPoint locally: theme templates, real charts, and covers included—enter a topic to quickly produce a structured presentation.', latency:'Local' },
     visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart analysis / HTML visualization', desc:'Turn structured data, table summaries, and business metrics into HTML visualization dashboards that match the Pinvou host experience. Chart.js, accessible canvas, custom legends, and flat colors by default, delivered as .html artifact cards.', latency:'Local' },
+    'package-author': { title:'Plugin Package Standardization', subtitle:'Standardize skills/MCP/functions into an uploadable plugin package', desc:'Turn scattered skills (SKILL.md), MCP servers, spanner plugins (spanner), or their combinations into a standard plugin package the Pinvou store can import: add plugin.json, mcp/manifest.json, SKILL.md frontmatter, generate an icon, validate naming and layout, then output a directory or zip.', latency:'Local' },
+    'skill-author': { title:'Skill Creation', subtitle:'Turn a one-line description into a proper SKILL.md skill', desc:'Turn a user\'s one-line description into a usable skill (SKILL.md directory): generate the name/description/instructions, and validate naming and structure. When a deliverable uploadable package is wanted, it can continue with the "Plugin Package Standardization" rules to add plugin.json and an icon, export a standard package, then ask the user whether to install.', latency:'Local' },
     s5: { title:'Visual Design', subtitle:'Design-system-grade webpages / banners / posters / resumes', desc:'Built-in automatic skill: the model loads it on demand to produce webpages, banners, posters, resumes, and more with design-system-grade aesthetics. No installation needed—always available.', version:'Built-in', latency:'Local' },
   },
   categories: { all:'All', collab:'Collaboration', docs:'Docs & Knowledge', dev:'Development', finance:'Financial Data', life:'Daily Life', skill:'Skills' },
 } });
 Object.assign(dict.ja.uiToolStore, { storeData: {
   skills: {
-    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。ツールストアの「公文作成」ツールと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', latency:'ローカル' },
+    'government-writing': { title:'党政機関の公文作成', subtitle:'通知・意見などの法定文種。定型表現・階層番号・セルフチェック付き', desc:'規範的な党政機関の公文（通知、意見…）を作成：文種別の構造テンプレート、定型表現ライブラリ、階層番号体系、帳票照合のセルフチェックを内蔵し、構造化された公文内容を生成します。プラグインセンターの「公文作成」プラグインと併用すれば、GB/T 9704 準拠の .docx を直接出力できます。', latency:'ローカル' },
     pptx: { title:'PPT 生成', subtitle:'編集可能な PowerPoint をローカルで直接生成。テーマテンプレート・本物のグラフ・表紙付き', desc:'編集可能な PowerPoint をローカルで直接生成：テーマテンプレート・本物のグラフ・表紙付き。テーマを入力するだけで構造化されたプレゼン資料をすばやく作成できます。', latency:'ローカル' },
     visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシュボード / グラフ分析 / HTML 可視化', desc:'構造化データ・表の集計・ビジネス指標を、Pinvou のホスト体験に合った HTML 可視化ダッシュボードに変換します。デフォルトで Chart.js、アクセシブルな canvas、カスタム凡例、フラット配色を使用し、.html アーティファクトカードとして提供します。', latency:'ローカル' },
+    'package-author': { title:'プラグインパッケージ標準化', subtitle:'スキル/MCP/関数をアップロード可能な標準プラグインに整理', desc:'散在するスキル（SKILL.md）、MCP サービス、スパナープラグイン（spanner）、またはそれらの組み合わせを、Pinvou ストアがインポートできる標準プラグインに整理します：plugin.json、mcp/manifest.json、SKILL.md の frontmatter を補い、アイコンを生成し、命名とレイアウトを検証して、ディレクトリまたは zip を出力します。', latency:'ローカル' },
+    'skill-author': { title:'スキル作成', subtitle:'一言の説明から、きちんとした SKILL.md スキルを生成', desc:'ユーザーの一言の説明を、使えるスキル（SKILL.md ディレクトリ）に変えます：name / description / 本文の指示を生成し、命名と構造を検証します。アップロード可能なパッケージとして納品したい場合は、続けて「プラグインパッケージ標準化」のルールで plugin.json とアイコンを補い、標準パッケージを書き出して、最後にユーザーへインストールするか尋ねます。', latency:'ローカル' },
     s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', skill:'スキル' },
@@ -2518,15 +2533,15 @@ Object.assign(dict.ja.uiToolStore, { storeData: {
 // 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
 Object.assign(dict.zh.uiToolStore, {
   groupByType:'按类型', groupByBusiness:'按业务',
-  typeGroups:{ bundle:'工具包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+  typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
 });
 Object.assign(dict.en.uiToolStore, {
   groupByType:'By Type', groupByBusiness:'By Domain',
-  typeGroups:{ bundle:'Tool Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+  typeGroups:{ bundle:'Plugin Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
 });
 Object.assign(dict.ja.uiToolStore, {
   groupByType:'タイプ別', groupByBusiness:'業務別',
-  typeGroups:{ bundle:'ツールパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
+  typeGroups:{ bundle:'プラグインパック', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
 });
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
