@@ -11,6 +11,7 @@ use crate::features::sessions::{
 };
 use crate::platform::paths;
 use crate::platform::paths::tests::ENV_LOCK;
+use crate::platform::prefs::UserPrefs;
 use anyhow::Result;
 use chrono::Utc;
 use deepseek_tui::models::{ContentBlock, Message, SystemPrompt};
@@ -85,6 +86,7 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_session_models();
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
+    reopened.load_session_mode_states();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -2086,4 +2088,449 @@ fn deleting_collection_removes_mount_from_every_affected_session() {
         unaffected_revision,
         "unaffected sessions must not receive a spurious revision"
     );
+}
+
+// ============================================================================
+// 回迁的回归测试：wave2 拆分时从 god-module `mod tests` 丢失的 17 个用例。
+// 覆盖 #162（multi-agent 标志持久化/幽灵清理/写盘收敛）、#190（code 会话
+// 双层持久化/默认值解析）、#263（三分 lane 默认与 plan-claim 语义）。
+// 逐字节取自拆分前基线，未做语义改动。
+// ============================================================================
+
+/// 开关持久化的真实行为回归：落盘 → 新 store 恢复 → 删除/清理同步。
+/// （复核指出旧测试只 grep 源码有没有调用，不覆盖真实重启与清理路径。）
+#[test]
+fn multi_agent_flags_survive_restart_and_follow_deletion() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+
+    store.set_multi_agent(&id, true).expect("persist flag");
+    let file = paths::sessions_root().join("_multi_agent.json");
+    assert!(file.is_file(), "开关必须落盘");
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains(&id),
+        "落盘清单必须包含该会话"
+    );
+
+    // "重启"：同一磁盘上重建 store → 开关恢复
+    let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+        .expect("reboot store");
+    assert!(
+        reloaded.mode_state(&id).multi_agent,
+        "重启后开关必须恢复（Web 门禁与每轮注入都依据它）"
+    );
+
+    // 关闭 → 清单收敛为空 → 文件删除（不留空壳）
+    store.set_multi_agent(&id, false).expect("persist off");
+    assert!(!file.exists(), "空清单必须删除 sidecar 文件");
+
+    // 再开 → 删除会话 → 清单同步移除
+    store
+        .set_multi_agent(&id, true)
+        .expect("persist flag again");
+    store.delete(&id).expect("delete session");
+    assert!(
+        !file.exists(),
+        "删除会话必须同步清掉 _multi_agent.json 条目"
+    );
+}
+
+/// 删除路径侧车更新失败留下的幽灵 id，必须在下次启动被对账剔除，
+/// 且清单当场重写（不再传染后续启动）。
+#[test]
+fn ghost_ids_are_reconciled_away_on_load() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let real = chat.metadata.id.clone();
+    store.set_multi_agent(&real, true).expect("persist flag");
+
+    // 伪造一条幽灵记录（会话 JSON 不存在）
+    let file = paths::sessions_root().join("_multi_agent.json");
+    let mut ids: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    ids.push("ghost-session".into());
+    std::fs::write(&file, serde_json::to_string_pretty(&ids).unwrap()).unwrap();
+
+    let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+        .expect("reboot store");
+    assert!(reloaded.mode_state(&real).multi_agent, "真实会话恢复");
+    assert!(
+        !reloaded.mode_state("ghost-session").multi_agent,
+        "幽灵 id 不得恢复开关"
+    );
+    let rewritten = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        !rewritten.contains("ghost-session"),
+        "清单必须当场重写剔除幽灵 id: {rewritten}"
+    );
+}
+
+/// 并发「开启/关闭」交错后，落盘结果必须收敛到最终内存状态——保存的
+/// 快照与写盘在同一临界区内，旧快照不可能覆盖新快照。
+#[test]
+fn concurrent_flag_saves_converge_to_final_memory_state() {
+    let (store, _guard) = isolated_store();
+    let a = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create a")
+        .metadata
+        .id
+        .clone();
+    let b = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create b")
+        .metadata
+        .id
+        .clone();
+
+    let threads: Vec<_> = [(a.clone(), true), (b.clone(), true)]
+        .into_iter()
+        .map(|(id, on)| {
+            let store = store.clone();
+            std::thread::spawn(move || store.set_multi_agent(&id, on).expect("persist"))
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("join");
+    }
+
+    let file = paths::sessions_root().join("_multi_agent.json");
+    let listed: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(
+        listed.contains(&a) && listed.contains(&b),
+        "并发保存不得互相丢会话: {listed:?}"
+    );
+}
+
+/// 保留策略的自动清理同样要移出开关清单：残留幽灵 id 会在重启后复活
+/// 开关状态，专家池变更联动还会给它重建工作区。
+#[test]
+fn retention_purge_also_updates_multi_agent_flags() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+    store.set_multi_agent(&id, true).expect("persist flag");
+    let file = paths::sessions_root().join("_multi_agent.json");
+    assert!(file.is_file());
+
+    store.purge_session_side_maps(&[id.clone()]);
+
+    assert!(!store.mode_state(&id).multi_agent, "内存状态已清");
+    assert!(
+        !file.exists(),
+        "自动清理后 _multi_agent.json 不得残留幽灵 id"
+    );
+}
+
+// ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================
+
+/// 注入一个简易 code 会话判定：列表内的 id 视为品悟原生 code 会话。
+fn with_code_sessions(store: &SessionStore, ids: &[&str]) {
+    let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+    store.set_code_session_predicate(Arc::new(move |id: &str| {
+        owned.iter().any(|candidate| candidate == id)
+    }));
+}
+
+#[test]
+fn code_session_first_use_defaults_to_plan() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1"]);
+    // 从未用过 code 模式（无 per-session 记录、全局 last_mode=None）→ Plan 只读。
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+    // plain 会话维持 Yolo 现状。
+    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
+}
+
+/// 谓词未注入时（启动早期/测试）全部按 plain 语义，不误判。拆成独立测试：
+/// `isolated_store` 持有进程级 `ENV_LOCK` 直到 guard drop，同一线程内二次调用
+/// 会自死锁（`std::sync::Mutex` 不可重入）。每测试只调一次 `isolated_store`。
+#[test]
+fn code_session_without_predicate_defaults_to_yolo() {
+    let (no_predicate, _g) = isolated_store();
+    assert_eq!(
+        no_predicate.mode_state("code-1").mode,
+        SerializableMode::Yolo
+    );
+}
+
+#[test]
+fn code_session_default_follows_code_lane_default() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1", "code-2"]);
+    // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
+    // （三分 lane 语义）→ 新 code 会话默认不跟随。
+    store
+        .set_mode("code-1", SerializableMode::Yolo)
+        .expect("switch yolo");
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+    assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+    assert!(store.code_permission_prefs().last_mode.is_none());
+    // 草稿态写 code lane 全局默认 → 新 code 会话默认跟随；已有会话不受影响。
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+#[test]
+fn code_mode_persists_per_session_across_restart() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1", "code-2", "code-3"]);
+    store
+        .set_mode("code-1", SerializableMode::Yolo)
+        .expect("code-1 yolo");
+    store
+        .set_mode("code-2", SerializableMode::Plan)
+        .expect("code-2 plan");
+    // sidecar 只存 code 会话的显式 mode。
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    let on_disk: HashMap<String, SerializableMode> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
+            .expect("parse sidecar");
+    assert_eq!(on_disk.len(), 2);
+    assert_eq!(on_disk.get("code-1"), Some(&SerializableMode::Yolo));
+    assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
+
+    // 重启：per-session 恢复各自上次的 mode（code-1 的 yolo 不被全局
+    // last_mode=plan 盖掉），新 code 会话回落全局默认。
+    let reopened = reopen_store(&store).expect("reboot");
+    with_code_sessions(&reopened, &["code-1", "code-2", "code-3"]);
+    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
+    assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
+    assert_eq!(reopened.mode_state("code-3").mode, SerializableMode::Plan);
+
+    // 删除会话清理 per-session 持久化条目。
+    reopened.delete("code-1").expect("delete code-1");
+    let on_disk: HashMap<String, SerializableMode> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
+            .expect("parse sidecar");
+    assert!(!on_disk.contains_key("code-1"));
+    assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
+}
+
+/// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
+/// 不碰任何全局 lane 默认（三分 lane 语义）；提交失败回滚（rollback）不落盘，
+/// 内存回 Plan 与磁盘保持一致。
+#[test]
+fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1", "code-2"]);
+    // 从未显式切过 → 首次默认 Plan。
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+    store
+        .register_pending_plan("code-1", "plan-1".to_string())
+        .expect("register plan");
+
+    // 回滚（未 commit 就 drop）：内存回 Plan，磁盘不写（last_mode 仍 None）。
+    let claim = store
+        .claim_pending_plan("code-1", "plan-1")
+        .expect("claim plan-1");
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+    drop(claim);
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
+    assert!(store.code_permission_prefs().last_mode.is_none());
+
+    // 提交：重新 claim + commit → per-session 持久化；全局 lane 默认不动。
+    store
+        .register_pending_plan("code-1", "plan-2".to_string())
+        .expect("register plan-2");
+    store
+        .claim_pending_plan("code-1", "plan-2")
+        .expect("claim plan-2")
+        .commit();
+    assert!(store.code_permission_prefs().last_mode.is_none());
+
+    // 重启：per-session 恢复 Yolo；新 code 会话回落全局默认（未动 → Plan）。
+    let reopened = reopen_store(&store).expect("reboot");
+    with_code_sessions(&reopened, &["code-1", "code-2"]);
+    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
+    assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+#[test]
+fn plain_session_mode_persists_across_restart() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1"]);
+    store
+        .set_mode("plain-1", SerializableMode::Plan)
+        .expect("plain plan");
+    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Plan);
+    // 三分 lane 语义：plain 会话也写 sidecar；但不动任何全局 lane 默认。
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    let on_disk: HashMap<String, SerializableMode> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
+            .expect("parse sidecar");
+    assert_eq!(on_disk.get("plain-1"), Some(&SerializableMode::Plan));
+    assert!(store.code_permission_prefs().last_mode.is_none());
+    assert_eq!(store.mode_defaults().work, None);
+    assert_eq!(store.mode_defaults().design, None);
+    // 重启后 plain 会话恢复自己的 Plan（语义 3：每个对话保存自己的 mode）。
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
+}
+
+/// work/design lane 全局默认的读写与持久化；非法 lane 字符串必须报错。
+#[test]
+fn mode_lane_defaults_round_trip_and_validate() {
+    let (store, _g) = isolated_store();
+    assert_eq!(store.mode_defaults().work, None);
+    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+    store.set_mode_default(ModeLane::Design, SerializableMode::Yolo);
+    assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
+    assert_eq!(store.mode_defaults().design, Some(SerializableMode::Yolo));
+    assert_eq!(store.mode_defaults().code, None);
+    // 落盘 settings.json + 重启后镜像恢复。
+    assert_eq!(
+        UserPrefs::load().mode_defaults.work,
+        Some(SerializableMode::Plan)
+    );
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
+    assert_eq!(
+        reopened.mode_defaults().design,
+        Some(SerializableMode::Yolo)
+    );
+    // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
+    assert!(ModeLane::parse("work").is_ok());
+    assert!(ModeLane::parse("design").is_ok());
+    assert!(ModeLane::parse("code").is_ok());
+    assert!(ModeLane::parse(" CodE ").is_err());
+    assert!(ModeLane::parse("").is_err());
+}
+
+/// 旧版 `_code_mode_states.json`（只含 code 会话的时代产物）在新文件缺失时
+/// 回退加载，老用户的 per-session 记录不丢。
+#[test]
+fn legacy_code_mode_states_file_is_loaded_as_fallback() {
+    let (store, _g) = isolated_store();
+    let legacy = paths::sessions_root().join("_code_mode_states.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&HashMap::from([(
+            "code-legacy".to_string(),
+            SerializableMode::Yolo,
+        )]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy sidecar");
+    store.load_session_mode_states();
+    assert_eq!(store.mode_state("code-legacy").mode, SerializableMode::Yolo);
+    let _ = std::fs::remove_file(&legacy);
+}
+
+#[test]
+fn confirm_code_yolo_persists_globally() {
+    let (store, _g) = isolated_store();
+    assert!(!store.code_permission_prefs().yolo_confirmed);
+    let prefs = store.confirm_code_yolo().expect("confirm yolo");
+    assert!(prefs.yolo_confirmed);
+    assert!(store.code_permission_prefs().yolo_confirmed);
+    // 落盘 settings.json；重启后内存镜像仍记得。
+    assert!(UserPrefs::load().code_permission.yolo_confirmed);
+    let reopened = reopen_store(&store).expect("reboot");
+    assert!(reopened.code_permission_prefs().yolo_confirmed);
+}
+
+/// 重启回归：绑过 skill 但从未显式切 mode 的 code 会话，重启后必须回到 Plan
+/// 首启默认，不能被 `load_skill_bindings` 启动期物化的 `or_default()`(=Yolo)
+/// 条目盖掉。谓词在启动后才注入，`load_skill_bindings` 当时无法判 code 会话，
+/// 故在 `set_code_session_predicate` 注入后做一次 reconcile 修正这类残留。
+#[test]
+fn code_session_with_skill_binding_defaults_to_plan_after_reboot() {
+    // 绑 skill 的 code 会话重启后回 Plan，不被 Yolo 残留盖掉。
+    let (store, _g) = isolated_store();
+    // code-1 绑定 skill（谓词未注入 → 等同 `load_skill_bindings` 启动期物化
+    // 出 mode=Yolo 的条目），落盘后从不显式切 mode（无 per-session 记录）。
+    store.bind_skill(
+        "code-1",
+        ActiveSkillBinding {
+            name: "demo".into(),
+            pending_instruction: None,
+            phases: vec![],
+            project_dir: None,
+        },
+    );
+    store.save_skill_bindings();
+    assert!(store.mode_state("code-1").active_skill.is_some());
+
+    // 重启：load_skill_bindings 恢复出 mode=Yolo + active_skill，
+    // load_session_mode_states 因无 code-1 条目不覆盖。
+    let reopened = reopen_store(&store).expect("reboot");
+    // 谓词注入触发 reconcile：无持久化记录的 code 会话 mode 修正为 Plan。
+    with_code_sessions(&reopened, &["code-1"]);
+    assert_eq!(
+        reopened.mode_state("code-1").mode,
+        SerializableMode::Plan,
+        "绑 skill 的 code 会话重启后应回 Plan 首启默认，而非 Yolo 残留"
+    );
+    // active_skill 必须保留（reconcile 只修 mode，不动其他字段）。
+    assert!(reopened.mode_state("code-1").active_skill.is_some());
+}
+
+/// reconcile 只修正无持久化记录的 code 会话；显式切过的 mode 必须原样保留。
+/// 拆成独立测试：`isolated_store` 持有进程级 ENV_LOCK 直到 guard drop，同一线程
+/// 内二次调用会自死锁（`std::sync::Mutex` 不可重入），每测试只调一次。
+#[test]
+fn reconcile_does_not_overwrite_explicitly_persisted_mode() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-2"]);
+    store
+        .set_mode("code-2", SerializableMode::Yolo)
+        .expect("code-2 explicit yolo");
+    let reopened = reopen_store(&store).expect("reboot");
+    with_code_sessions(&reopened, &["code-2"]);
+    assert_eq!(
+        reopened.mode_state("code-2").mode,
+        SerializableMode::Yolo,
+        "显式切过的 mode 不应被 reconcile 改写"
+    );
+}
+
+#[test]
+fn fresh_code_session_default_plan_registers_pending_plan() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["code-1"]);
+    // 首次使用（默认值经解析得到 Plan、尚无内存条目）时出方案必须能登记，
+    // 不能被 entry or_default 物化成 Yolo 而静默丢失 Plan 语义。
+    let registered = store
+        .register_pending_plan("code-1", "plan-1".to_string())
+        .expect("register plan on fresh code session");
+    assert_eq!(registered.mode, SerializableMode::Plan);
+    assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
+
+    /// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+
+    #[test]
+    fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
+        let (store, _guard) = isolated_store();
+        store
+            .set_session_model_id("wf-model-test", Some("old-model".to_string()))
+            .expect("persist initial model");
+        let sidecar = paths::sessions_root().join("_session_models.json");
+        std::fs::remove_file(&sidecar).expect("remove initial sidecar");
+        std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
+
+        let error = store
+            .set_session_model_id("wf-model-test", Some("new-model".to_string()))
+            .expect_err("an unwritable sidecar must fail the model transaction");
+
+        assert!(error
+            .to_string()
+            .contains("persist per-session model bindings"));
+        assert_eq!(
+            store.session_model_override("wf-model-test").as_deref(),
+            Some("old-model"),
+            "failed persistence must not leave a memory-only model choice"
+        );
+    }
 }
