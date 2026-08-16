@@ -1032,6 +1032,7 @@ pub(crate) fn spawn_event_forwarder(
                         "session_id": session_id,
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
+                        "context_window": bridge.usage_context_window(),
                     });
                     let _ = app.emit("chat:usage", payload.clone());
                     crate::features::remote_control::forward_app_event(&app, "chat:usage", payload);
