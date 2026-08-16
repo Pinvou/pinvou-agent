@@ -6,7 +6,7 @@
 ## 专用规则（#8 非 lite 步骤必守）
 
 - **角色类查人优先 label**：用户说"角色为XX的员工/XX角色的员工/XX角色的人员""所有主管/主管理员/财务/HR/总经理"等角色类型人员时，**优先** `contact label list` 获取全部角色 → 匹配目标角色 → `contact label list-members --id <labelId>`；若用户明确指定了角色名称（如"角色为总经理"），则先用 `contact label get --names <XX>` 精确匹配，**若精确匹配无结果，降级 `label list` 模糊匹配**（如用户说"管理员"可匹配到"主管理员"和"子管理员"）。
-- **脚本优先**：按部门拉成员**优先** `python scripts/contact_dept_members.py --query "<部门名>"`（`--dry-run` / `--format json`）；失败再 `dept search` → `dept list-members --depts`。
+- **脚本优先**：按部门拉成员**优先** `python3 scripts/contact_dept_members.py --query "<部门名>"`（`--dry-run` / `--format json`）；失败再 `dept search` → `dept list-members --depts`。
 - **详情链路**：用户要子部门、职位、联系方式、汇报关系等，在 `user search` 之后**必须**再 `contact user get --ids <userId>`；禁止仅用 search 的浅表字段交差。
 - **`user get` 后部门仍空**：不得过早结束或只建议用户去 App；须在 CLI 能力内尝试 **用户点名的部门** `dept search` + `dept list-members` 等与 `userId` 交叉核对，再结构化汇总「返回中有哪些字段 / 哪些为空及可能原因」。
 - **多命中**：`user search` 或 `dept search` 多条时须列候选（姓名、title、部门线索）请用户确认，禁止默认猜一人。具体消歧流程：
@@ -40,7 +40,7 @@
 | `search-user-by-mobile` | 1. `contact user search-mobile --mobile "<手机号>"` → 按需 `contact user get --ids <userId>` |
 | `lookup-dept-id` | 1. `contact dept search --query "<部门关键词>"` → 回显 `deptId`（多命中须消歧） |
 | `list-subdepts` | 1. 已有父 `deptId` → `contact dept list-children --dept <父deptId>` 直接取直属子部门列表<br>2. 只有部门名 → 先 `lookup-dept-id` 取 `deptId`，再 `list-children` |
-| `list-dept-members` | 1. **优先** `python scripts/contact_dept_members.py --query "<部门名>"`<br>2. 备选：`lookup-dept-id` → `contact dept list-members --depts <deptId>`<br>3. 若要每人档案字段：对 `userId` 批量 `contact user get --ids …` |
+| `list-dept-members` | 1. **优先** `python3 scripts/contact_dept_members.py --query "<部门名>"`<br>2. 备选：`lookup-dept-id` → `contact dept list-members --depts <deptId>`<br>3. 若要每人档案字段：对 `userId` 批量 `contact user get --ids …` |
 | `list-multi-dept-members` | 1. 对每个部门名 `contact dept search --query "<名>"` → 各 `deptId`<br>2. `contact dept list-members --depts <id1>,<id2>,...`（多部门并行/批量见 conventions）<br>3. 需要档案再 `contact user get --ids …` |
 | `verify-user-dept` | 1. `contact dept search --query "<部门名>"` → `deptId`<br>2. `contact dept list-members --depts <deptId>` 中匹配姓名；或先 `search-user` lite 再 `user get` 核对部门字段 |
 

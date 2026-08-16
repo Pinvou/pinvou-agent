@@ -4,7 +4,7 @@
 
 - **二级子命令（必选其一）**：`event`（日程）、`attendee`（参会人）、`room`（会议室）、`busy`（闲忙）、`attachment`（日程附件）、`book`（我能看哪些日历本）、`acl`（我的日历共享给了谁）。`dws calendar` 后**必须**紧跟上述之一；**禁止**只执行 `dws calendar`（无子命令）。
 - **个人日程 / 给自己留时间块 / 专注时段**：统一走 **`dws calendar event create`**。当前**没有**单独的 `personal schedule create` / `calendar create` 命令。
-- **查日程列表**：`dws calendar event list --start "<ISO-8601>" --end "<ISO-8601>" --format json`，或优先使用脚本 `python scripts/calendar_today_agenda.py [today|tomorrow|week]`（见文末「自动化脚本」）。
+- **查日程列表**：`dws calendar event list --start "<ISO-8601>" --end "<ISO-8601>" --format json`，或优先使用脚本 `python3 scripts/calendar_today_agenda.py [today|tomorrow|week]`（见文末「自动化脚本」）。
 - **查循环日程实例**：`dws calendar event instances --id <EVENT_ID> --start "<ISO-8601>" --end "<ISO-8601>" --format json`，用于按时间范围展开重复日程的每一个实例。**注意：此接口只能查询重复性日程；普通非循环日程将查不到任何实例信息。**
 - **查用户日历本列表**：`dws calendar book list`（返回主日历 `id == "primary"` 等）。**重要**可以查询他人共享给自己的日历本，根据日历本id可以进一步查询对方的日程信息。
 - **CLI 不存在**独立的 `dws calendar list`；若误跑无子命令的 `dws calendar`，会打印整段 Usage，**切勿**将该段 help 当作工具结果再次塞进对话（会急剧增加 token 与首字延迟）。
@@ -725,9 +725,9 @@ dws calendar event list --start "2026-03-10T14:00:00+08:00" --end "2026-03-10T15
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [calendar_today_agenda.py](../../scripts/calendar_today_agenda.py) | 查看今天/明天/本周日程安排 | `python calendar_today_agenda.py today` |
-| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；搜房失败时输出明确原因并返回非零退出码 | `python calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
-| [calendar_free_slot_finder.py](../../scripts/calendar_free_slot_finder.py) | 查询多人共同空闲时段 | `python calendar_free_slot_finder.py --users userId1,userId2 --date 2026-03-15` |
+| [calendar_today_agenda.py](../../scripts/calendar_today_agenda.py) | 查看今天/明天/本周日程安排 | `python3 calendar_today_agenda.py today` |
+| [calendar_schedule_meeting.py](../../scripts/calendar_schedule_meeting.py) | 一键创建日程+添加参会人+预定会议室；搜房失败时输出明确原因并返回非零退出码 | `python3 calendar_schedule_meeting.py --title "复盘会" --start "2026-03-15T14:00" --end "2026-03-15T15:00" --users userId1 --book-room` |
+| [calendar_free_slot_finder.py](../../scripts/calendar_free_slot_finder.py) | 查询多人共同空闲时段 | `python3 calendar_free_slot_finder.py --users userId1,userId2 --date 2026-03-15` |
 
 ## 相关产品
 

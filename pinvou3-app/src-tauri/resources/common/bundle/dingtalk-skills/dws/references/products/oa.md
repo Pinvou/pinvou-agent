@@ -805,5 +805,5 @@ dws oa approval create-instance --request '{"processCode":"PROC-xxx","deptId":-1
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [oa_pending_review.py](../../scripts/oa_pending_review.py) | 查看待审批列表+逐条显示详情 | `python oa_pending_review.py --days 7` |
-| [oa_batch_approve.py](../../scripts/oa_batch_approve.py) | 批量同意/拒绝审批项 | `python oa_batch_approve.py --action approve --days 7` |
+| [oa_pending_review.py](../../scripts/oa_pending_review.py) | 查看待审批列表+逐条显示详情 | `python3 oa_pending_review.py --days 7` |
+| [oa_batch_approve.py](../../scripts/oa_batch_approve.py) | 批量同意/拒绝审批项 | `python3 oa_batch_approve.py --action approve --days 7` |

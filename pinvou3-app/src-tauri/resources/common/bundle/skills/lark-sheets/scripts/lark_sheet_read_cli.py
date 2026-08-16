@@ -68,7 +68,7 @@ def run_sheets(
         completed = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, errors='replace',
             timeout=timeout,
             check=False,
         )

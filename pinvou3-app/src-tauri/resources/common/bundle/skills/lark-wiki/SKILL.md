@@ -116,3 +116,15 @@ lark-cli wiki <resource> <method> [flags]  # 调用 API
 - 编辑文档正文内容 → [`lark-doc`](../lark-doc/SKILL.md)
 - 表格 / 多维表格数据操作 → [`lark-sheets`](../lark-sheets/SKILL.md) / [`lark-base`](../lark-base/SKILL.md)
 - 按名称搜索文档 / Wiki / 表格文件、评论与权限管理 → [`lark-drive`](../lark-drive/SKILL.md)
+
+### 交接到底层文档/表格 Skill（obj_type 分流）
+
+用户给 Wiki URL 且实际要操作**底层内容**（而非 Wiki 节点本身）时，用 `wiki +node-get --node-token '<wiki_url>' --as user` 解析出 `obj_type` + `obj_token` 后分流：
+
+| `obj_type` | 去向 | 交接方式 |
+|---|---|---|
+| `docx` / `doc` | [`lark-doc`](../lark-doc/SKILL.md) | `obj_token` 即文档 token，可直接传给 `docs +fetch --doc` 等 |
+| `bitable` | [`lark-base`](../lark-base/SKILL.md) | `obj_token` 即 `base_token`；也可不解析、把 Wiki URL 直接传给 `base +url-resolve --url` |
+| `sheet` | [`lark-sheets`](../lark-sheets/SKILL.md) | `obj_token` 即 spreadsheet token；`lark-sheets` 的 `--url` 也直接接受 `/wiki/` 链接 |
+
+不要把 Wiki 的 `node_token` 当作文档 token / `base_token` / spreadsheet token 传给下游命令。

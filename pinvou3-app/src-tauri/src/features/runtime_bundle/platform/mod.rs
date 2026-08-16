@@ -759,6 +759,42 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// include_dir! 内嵌树中的 `__pycache__/` 与 `*.pyc` 不得物化到用户 bundle
+    /// (在仓库里直接运行技能脚本会产生这些编译缓存,详见 extract_dir 文档注释)。
+    /// 覆盖实际走 extract_dir 的两棵树(lark skills 与 dws);构建机存在 pycache 时
+    /// 验证排除逻辑生效,不存在时断言"零物化 pyc"作为回归基线。
+    #[test]
+    fn extract_dir_skips_python_compilation_caches() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.apply_feishu_skills(true).unwrap();
+        bundle.apply_dingtalk_skills(true).unwrap();
+
+        let mut caches: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        if p.file_name().is_some_and(|n| n == "__pycache__") {
+                            out.push(p);
+                        } else {
+                            walk(&p, out);
+                        }
+                    } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pyc")) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        walk(&bundle.skills_dir, &mut caches);
+        assert!(caches.is_empty(), "物化出了 Python 编译缓存: {caches:?}");
+        cleanup(&tmp);
+    }
+
     /// 已下架预置 MCP 工具的清理:目录、installed.json、mcp.json、禁用列表都不应残留。
     #[test]
     fn cleanup_removed_marketplace_tools_removes_data_analysis() {

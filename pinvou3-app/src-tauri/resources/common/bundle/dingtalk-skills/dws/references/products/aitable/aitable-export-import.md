@@ -124,9 +124,9 @@ dws aitable import data --import-id <importId> --table-id <TABLE_ID> --format js
 
 | 用户原话 | 链路 | 命令 / 脚本 | 行为 |
 |---------|------|------------|------|
-| "把这个 Excel 导入到 AI 表格"（无指定目标表） | **文件导入任务** | `python scripts/aitable_import_via_task.py <baseId> <file>`（推荐）或手动三步 `import upload --file-name x.xlsx --file-size <字节>` → curl PUT → `import data --import-id <ID>` | 服务端解析文件，**新建数据表**，自动识别表头 |
+| "把这个 Excel 导入到 AI 表格"（无指定目标表） | **文件导入任务** | `python3 scripts/aitable_import_via_task.py <baseId> <file>`（推荐）或手动三步 `import upload --file-name x.xlsx --file-size <字节>` → curl PUT → `import data --import-id <ID>` | 服务端解析文件，**新建数据表**，自动识别表头 |
 | "把这个 Excel 导入新表 / 自动建表" | 同上 | 同上 | 同上 |
-| "把这批记录追加到已有的『成员表』里" | **记录批量写入** | `python scripts/import_records.py <baseId> <tableId> <file>` | 走 `record create`，**写入已有 tableId**，需要字段名匹配 |
+| "把这批记录追加到已有的『成员表』里" | **记录批量写入** | `python3 scripts/import_records.py <baseId> <tableId> <file>` | 走 `record create`，**写入已有 tableId**，需要字段名匹配 |
 | "Excel 列名和表字段对不上但要追加" | 文件导入 + 追加 + 字段映射 | 三步导入后 `import data --import-id <ID> --table-id <TBL> --field-mapping '{"目标":"源"}'` | 服务端按映射追加 |
 
 ## 大表 / 长任务超时续等

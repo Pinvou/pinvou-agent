@@ -48,6 +48,16 @@ def resolve_safe_path(
         target_path.relative_to(allowed_root)
         return target_path
     except ValueError:
+        # 相对路径落入白名单根但物理路径被符号链接引到根外时同样拒绝，
+        # 防止「先在根内建链接、再以链接相对路径读取根外文件」的绕过。
+        if (not Path(path).is_absolute()
+                and target_path.is_symlink()):
+            raise ValueError(
+                f"路径解析到白名单外：{path}\n"
+                f"目标路径：{target_path}\n"
+                f"允许根目录：{allowed_root}\n"
+                f"提示：设置 OPENCLAW_WORKSPACE 环境变量或确保文件在工作目录内"
+            )
         raise ValueError(
             f"路径超出允许范围：{path}\n"
             f"目标路径：{target_path}\n"
@@ -150,7 +160,7 @@ def run_dws(args: List[str]) -> Optional[Dict[str, Any]]:
     cmd = ['dws'] + args
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120
+            cmd, capture_output=True, text=True, errors='replace', timeout=120
         )
         if result.returncode != 0:
             print(f"错误：{result.stderr.strip()}")

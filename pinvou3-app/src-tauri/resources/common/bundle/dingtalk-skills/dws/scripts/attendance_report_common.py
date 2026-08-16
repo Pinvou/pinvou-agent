@@ -108,7 +108,7 @@ def run_dws(args: list[str]) -> Any:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, errors='replace',
             timeout=DWS_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:

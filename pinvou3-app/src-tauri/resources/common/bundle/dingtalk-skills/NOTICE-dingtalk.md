@@ -114,3 +114,16 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 5. `references/products/attendance.md` 命令可用性提示：禁止性理由「不要以"开源版不支持"为由拒答」改为「不要以"命令不存在/不支持"为由拒答」（保留禁拒答语义，去除上游"开源版"形态措辞，为真实性审查补录第 6/7 条「开源版未引入」清理的漏网变体）。
 
 其余命中均为已登记豁免或合理保留：`OPENCLAW_WORKSPACE` 环境变量（scripts/import_records.py、bulk_add_fields.py 路径安全护栏，未设时回退 `os.getcwd()`，品悟内不依赖该变量亦可用，上游原样保留）；dws/tmeet 域裸 `auth login`（各自 CLI 真实教学）；`alidocs.dingtalk.com`（钉钉文档公网 URL 域名，非内部地址）。
+
+## 第七轮脚本代码安全审计（2026-08-16）
+
+对 `dws/scripts/` 全部 34 个 Python 脚本做逐脚本安全审计（路径安全 / 注入面 / 危险操作 / 数据外泄面 / 异常与退出码 / 资源占用 / 跨平台编码）。审计结论：无 shell=True、无 os.system/eval/exec/pickle、无递归删除；subprocess 全部列表形式；文件读入均有大小上限；`OPENCLAW_WORKSPACE` 白名单无 cwd 覆盖绕过。修复以下 5 类，下次 sync 需重放：
+
+1. **subprocess 解码容错（26 处，全部含 `text=True` 的调用）**：`subprocess.run(..., text=True)` 均补 `errors='replace'`。此前 Windows GBK 控制台下 dws 输出含 GBK 外字符（emoji、✓✗ 等 BMP 符号）会抛未捕获 `UnicodeDecodeError`，脚本以 traceback 崩溃且退出码不可控；`errors='replace'` 保证 stderr 信息完整、失败路径仍走受控 return-None/sys.exit。涉及 scripts/ 下 25 个脚本 + `aitable_export_via_task.py`/`aitable_import_via_task.py` 的 run_dws（全覆盖，逐调用核对无一遗漏）。
+2. **白名单符号链接绕过防护（2 处）**：`import_records.py` 与 `bulk_add_fields.py` 的 `resolve_safe_path` 此前对「相对路径 → 根内符号链接 → 根外物理文件」场景放行（`Path.cwd()/path` 的 `.resolve()` 跟随链接后本应越界，但 macOS `/tmp→/private/tmp` 类前缀巧合、或 allowed_root 自身含链接时会误放行/误拦截）。补：relative_to 失败且目标本身是符号链接时按「路径解析到白名单外」拒绝（保留原错误信息格式）。已实测根内链接指向 /etc/hosts 的用例被正确拒绝、正常相对路径不受影响。
+3. **导出文件名净化（aitable_export_via_task.py）**：服务端返回的 `fileName` 未校验直接 `Path.cwd() / file_name` 落盘，含 `../` 可越目录写、含 Windows 保留字符（`:*?"<>|`）创建失败、设备名（CON/NUL）被劫持。新增 `safe_file_name()`：截 basename、非法字符替换 `_`、设备名加 `_` 前缀；默认下载路径与轮询更新 fileName 两处接入（`--output` 显式指定时尊重用户路径）。
+4. **翻页死循环防护（report_inbox_today.py、report_received_today.py）**：`fetch_inbox` 的 cursor 翻页循环无重复游标检测，服务端异常恒定返回同一 `nextCursor` 时无限重拉 dws。补 `seen_cursors` 集合，重复游标 stderr 报错后 break。已 monkeypatch 实测恒定游标在第 2 次调用即终止。
+5. **维持原样的安全判定（登记豁免，勿在上游 sync 时"修复"回去）**：`aitable_import_via_task.py`/`upload_attachment.py`/`aitable_export_via_task.py` 的 urlopen 仅用于 CLI 返回的 OSS uploadUrl/downloadUrl 直传/直下（CLI 未封装该原语，属合理例外）；`attendance_report_common.py` 图片下载为 requests.get + sha256 缓存键、`tempfile.gettempdir()` 固定子目录但文件名为 URL sha256（不可抢注）；`OPENCLAW_WORKSPACE` 回退 `os.getcwd()` 属白名单根退化、非绕过（绝对路径语义按设计放行）。
+
+验证：全量 `python3 -m py_compile` 通过；usage-error 路径 exit code 非 0；`--help` 冒烟通过；新增防护均有针对性单测/monkeypatch 测试记录于上。
+

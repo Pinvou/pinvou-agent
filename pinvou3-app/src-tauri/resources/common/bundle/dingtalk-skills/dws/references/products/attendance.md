@@ -1065,7 +1065,7 @@ Flags:
 用户说"考勤数据/查询考勤报表数据" → `report query-data`（单次查询场景，非导出）
   **导出考勤/导出报表/生成考勤报表/出勤汇总导出/考勤明细导出/迟到早退统计导出/全员考勤数据导出/月度考勤报表/考勤表格/考勤 Excel** → **必须先用 `File(action="read")` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行**。
   - **排除**：如果用户说的是"导出**排班**表"/"导出**排班**"/"**排班**导出"，这属于**排班查询导出**，应路由到 [attendance-schedule.md](./attendance-schedule.md)，而非本条。判断标准：句中含"排班"二字 → 走排班；不含"排班"或明确说"考勤报表/考勤数据/出勤统计" → 走报表。
-  - **严禁**绕过 `attendance-report.md` 直接调用 `python scripts/attendance_report_*.py` 任何脚本
+  - **严禁**绕过 `attendance-report.md` 直接调用 `python3 scripts/attendance_report_*.py` 任何脚本
   - **严禁**仅凭脚本 `--help` 或本文件"自动化脚本"表格里的脚本路径就推断参数自行组装命令
   - 该文档定义了：报表类型默认值、列选择策略（`--column-keywords`）、阶段 1 人员获取流程、错误处理、输出摘要规范，缺一不可
   - 违反约束的后果：报表数据不全、列错位、人员遗漏、用户得到错误结果
@@ -1088,7 +1088,7 @@ dws attendance schedule import --group-id 123456 \
   --yes --format json
 
 #  获取排班记录 — 禁止直接调用，必须走 attendance-schedule.md 排班查询导出工作流
-# python scripts/attendance_schedule_export.py --users user001,user002 --start 2026-04-01 --end 2026-04-30
+# python3 scripts/attendance_schedule_export.py --users user001,user002 --start 2026-04-01 --end 2026-04-30
 
 # 查询可管理的班次列表
 dws attendance class search --format json
@@ -1338,8 +1338,8 @@ dws attendance boss-check --plan-id 948964045503 --time "2026-05-13 18:00" --res
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [attendance_my_record.py](../../scripts/attendance_my_record.py) | 查看我今天/指定日期的考勤记录 | `python attendance_my_record.py today` |
-| [attendance_team_shift.py](../../scripts/attendance_team_shift.py) | 查询团队成员本周排班 | `python attendance_team_shift.py --users userId1,userId2` |
+| [attendance_my_record.py](../../scripts/attendance_my_record.py) | 查看我今天/指定日期的考勤记录 | `python3 attendance_my_record.py today` |
+| [attendance_team_shift.py](../../scripts/attendance_team_shift.py) | 查询团队成员本周排班 | `python3 attendance_team_shift.py --users userId1,userId2` |
 | [attendance_report_common.py](../../scripts/attendance_report_common.py) | 考勤报表导出公共模块（不可单独执行） | — |
 | [attendance_vacation_balance.py](../../scripts/attendance_vacation_balance.py) | 假期余额列表 Excel 导出 | **禁止直接调用**，必须先读 [attendance-vacation.md](./attendance-vacation.md) 按工作流执行 |
 | attendance_report_detail.py | 考勤报表 — **明细粒度** |  **禁止直接调用**，必须先读 [attendance-report.md](./attendance-report.md) 按工作流执行 |

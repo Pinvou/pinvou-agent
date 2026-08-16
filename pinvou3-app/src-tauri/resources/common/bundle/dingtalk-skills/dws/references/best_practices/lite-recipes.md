@@ -25,7 +25,7 @@
 
 ### list-today-meetings
 
-**优先**：`python scripts/calendar_today_agenda.py [today|tomorrow|week]`
+**优先**：`python3 scripts/calendar_today_agenda.py [today|tomorrow|week]`
 备选：`dws calendar event list --start "<今日起始ISO>" --end "<今日结束ISO>"`（须加 `--format json`）
 
 ### check-users-busy

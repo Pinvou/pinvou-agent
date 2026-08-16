@@ -37,7 +37,7 @@ def validate_resource_id(resource_id: str) -> bool:
 def run_dws(dws_bin: str, args: list[str], timeout_sec: int = 120) -> Tuple[int, str, str]:
     cmd = [dws_bin] + args
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=timeout_sec)
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except subprocess.TimeoutExpired:
         return 124, "", f"dws command timeout after {timeout_sec}s"
@@ -57,6 +57,28 @@ def normalize_download_url(url: str) -> str:
     if url.startswith("http://") or url.startswith("https://"):
         return url
     return f"https://{url}"
+
+
+def safe_file_name(name: str) -> str:
+    """把服务端返回的 fileName 规整为安全的本地文件名。
+
+    fileName 来自 dws/服务端返回，可能含路径分隔符（../ 穿越）、Windows
+    保留字符（: * ? " < > |）或设备名（CON/NUL 等）。只保留 basename，
+    再把非法字符替换为 _，避免越目录写入或 Windows 上的创建失败/设备名劫持。
+    """
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)
+    if not cleaned or cleaned in {".", ".."}:
+        cleaned = "export_result.bin"
+    # Windows 保留设备名（CON、CON.txt、NUL.xlsx 等）加前缀规避
+    stem = re.match(r"^[^.]+", cleaned)
+    if stem and stem.group(0).upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        cleaned = f"_{cleaned}"
+    return cleaned
 
 
 def download_file(url: str, output_path: Path) -> Tuple[bool, str]:
@@ -138,7 +160,7 @@ def main() -> None:
 
     download_url = data.get("downloadUrl")
     task_id = data.get("taskId")
-    file_name = data.get("fileName") or "export_result.bin"
+    file_name = safe_file_name(data.get("fileName") or "export_result.bin")
 
     polls = 0
     while not download_url and task_id and polls < args.max_polls:
@@ -168,7 +190,7 @@ def main() -> None:
             fail(f"export_data 轮询返回失败: {json.dumps(obj2, ensure_ascii=False)}")
         d2 = obj2.get("data", {}) or {}
         download_url = d2.get("downloadUrl") or download_url
-        file_name = d2.get("fileName") or file_name
+        file_name = safe_file_name(d2.get("fileName") or file_name)
         task_id = d2.get("taskId") or task_id
         if not download_url:
             time.sleep(0.2)
@@ -196,6 +218,7 @@ def main() -> None:
         return
 
     norm_url = normalize_download_url(download_url)
+    # --output 显式指定时尊重用户路径；默认落当前目录时用净化后的 fileName
     output_path = Path(args.output).expanduser().resolve() if args.output else Path.cwd() / file_name
     ok, dl_err = download_file(norm_url, output_path)
     if not ok:

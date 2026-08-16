@@ -26,6 +26,7 @@ metadata:
 - 单次批量操作不超过 30 条记录
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
 - **脚本只用于明确覆盖的复合任务**：[scripts/](./scripts/) 下的脚本可封装 AI 表格批量导入导出、钉盘目录树等流程；当公开 `+` Shortcut 已提供目标唯一解析、分页/部分失败 ledger 和确认语义时，优先 Shortcut。Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本
+- **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）；文档中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径，实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**
 - **实时个人事件例外**：普通 IM 消息、reaction、已读和撤回默认走 `dws event +listen-im ...`；OA 审批、群生命周期、明确的原始 EventKey、Filter DSL、subscribe_id 或原始 envelope 使用 `dws event consume ... --flatten`。不要写脚本轮询消息历史或审批列表
 
 ## Shortcut 与原子命令的使用原则

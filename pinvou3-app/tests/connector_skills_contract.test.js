@@ -30,8 +30,8 @@ for (const f of docs) {
   const text = read(f);
   assert.ok(!/--api-version/.test(text), `${rel(f)}: 残留 --api-version`);
   for (const gone of [
-    "sheets +read",
-    "sheets +find",
+    // 注意：sheets +read/+find 是 lark-cli 1.0.87 的隐藏别名（→ +cells-get/+cells-search），
+    // 真实存在，不得列入黑名单；whiteboard +query 才是已删除命令。
     "whiteboard +query",
     "skills/multi/",
     "unsupported-scripts",
@@ -66,6 +66,8 @@ for (const f of docs) {
   const text = read(f);
   assert.ok(!/npm install -g/.test(text), `${rel(f)}: 残留 npm install -g 教学`);
   assert.ok(!/\bnpx skills\b/.test(text), `${rel(f)}: 残留 npx skills 教学`);
+  // dws 脚本示例统一 python3：宿主环境无裸 `python` 命令（macOS/Homebrew/Win embeddable 均只装 python3）
+  assert.ok(!/\bpython\s+(?!3)\S*\.py/.test(text), `${rel(f)}: 脚本调用用裸 python（应为 python3）`);
 }
 
 // 4) 上游宿主断言（Hermes/OpenClaw）必须以品悟为锚

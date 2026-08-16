@@ -51,7 +51,7 @@ metadata:
 
 进入任何需要目标 Base 的 shortcut 前，必须先拿到可用的 `base_token`，以及当前任务需要的 `table_id` / `view_id` / `record_id` / `form_id` / `dashboard_id` / `workflow_id` 等真实 ID；不要把完整 URL、wiki token、workspace token 或孤立 raw token 直接当作 `--base-token`。
 
-- 用户输入 URL 或分享链接：先运行 `lark-cli base +url-resolve --url "<url>" --as user`。Base URL 返回 `base_token` 和相关 ID；BaseApp `/app/` URL 返回 `app_token`，并在原链接携带时返回 `workspace_token` 和 `page_id`。
+- 用户输入 URL 或分享链接：先运行 `lark-cli base +url-resolve --url "<url>" --as user`。Base URL 返回 `base_token` 和相关 ID；BaseApp `/app/` URL 返回 `app_token`，并在原链接携带时返回 `workspace_token` 和 `page_id`。**Wiki URL（`.../wiki/<token>`）也可直接传给 `+url-resolve`**（命令会先解析 Wiki 节点再返回底层 Base 的 `base_token`），无需先在 lark-wiki 侧手工解析 `obj_token`；从 `wiki +node-get` 拿到 `obj_type=bitable` 的 `obj_token` 时，该 `obj_token` 即 `base_token`，同样不要把 wiki `node_token` 当 `--base-token`。
 - 用户要查询既有 BaseApp，但当前输入和当前会话可信命令返回中都没有真实 `/app/` 链接或 `app_token`，也没有可供 `+workspace-entity-list --type baseapp` 定位的 `workspace_token`，且用户未明确要求读取含这些标识的当前文件：无需调用任何工具；先明确说明当前任务没有提供应用链接或 Workspace 信息、无法可靠定位目标 BaseApp，再请用户补充并停止。不要在此前后调用 `lark-apps`、`+title-resolve`、Drive 搜索、浏览器或其他全局名称发现，不要默认选择同名候选，也不要把 `base_token` 当作 `app_token`。
 - Base/Wiki URL 的 `table=` query 参数实际表示当前选中的顶层 block，可能是数据表、仪表盘或 workflow；不要按参数名自行当成 `table_id`。以 `+url-resolve` 返回的 `block_type` 以及 `table_id` / `dashboard_id` / `workflow_id` 为准；`selection_source=url_query` 只说明 URL 当前选中了该 block，不代表它覆盖用户明确点名的目标。若用户点名的 dashboard 与 `block_name` 不一致，先用 `+dashboard-list` 按名称匹配；若只返回中性 `block_id`，按 hint 用 `+base-block-list` 确认类型。
 - 用户输入 Base 标题、关键词或不确定名称：先运行 `lark-cli base +title-resolve --title "<keyword>" --as user`；`--title` 传入标题中的短关键词，不超过 30 个字符；过长标题先取最有区分度的短关键词；多候选时先让用户消歧，不要猜。

@@ -30,7 +30,7 @@ def run_dws(
         return None
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
+            cmd, capture_output=True, text=True, errors='replace', timeout=60
         )
         if result.returncode != 0:
             print(f"错误：{result.stderr.strip()}", file=sys.stderr)
@@ -65,6 +65,7 @@ def fetch_inbox(
     """按 cursor 翻页拉全 inbox；返回 (result_item, reportId) 列表。"""
     pairs: List[Tuple[dict, str]] = []
     cursor = 0
+    seen_cursors = {cursor}
     while True:
         data = run_dws([
             'report', 'inbox', 'list',
@@ -87,6 +88,12 @@ def fetch_inbox(
             pairs.append((item, rid))
         if data.get('hasMore') and data.get('nextCursor') is not None:
             cursor = data['nextCursor']
+            # 服务端异常返回重复游标时终止，避免同页无限重拉
+            if cursor in seen_cursors:
+                print('错误：inbox 翻页游标异常（nextCursor 重复），已提前停止',
+                      file=sys.stderr)
+                break
+            seen_cursors.add(cursor)
         else:
             break
     return pairs

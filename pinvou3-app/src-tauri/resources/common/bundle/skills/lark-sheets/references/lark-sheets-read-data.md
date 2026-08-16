@@ -56,10 +56,10 @@
 推荐链路（大表先定窗口，脚本不接受截断结果）：
 
 ```bash
-python scripts/lark_inspect_workbook.py --url "<表格URL>"
+python3 scripts/lark_inspect_workbook.py --url "<表格URL>"
 # 先用 +workbook-info 和小窗口 +csv-get 确认真实 sheet、列边界和起始区域；大表按行窗口推进。
-python scripts/lark_detect_subtables.py --url "<表格URL>" --sheet-name "<子表名>" --range "A1:H200"
-python scripts/lark_profile_table.py --url "<表格URL>" --sheet-name "<子表名>" --range "A1:H200"
+python3 scripts/lark_detect_subtables.py --url "<表格URL>" --sheet-name "<子表名>" --range "A1:H200"
+python3 scripts/lark_profile_table.py --url "<表格URL>" --sheet-name "<子表名>" --range "A1:H200"
 ```
 
 `lark_detect_subtables.py` / `lark_profile_table.py` 的 `+csv-get` 命中 `has_more` 会以错误退出并报告已读取的 `actual_range`，绝不基于半截数据给出候选范围或画像。遇到此错误，以 `actual_range` 为已完成窗口，缩小列数或从其末行之后继续读；跨窗口的候选范围、汇总行和写入落点必须再用 CLI 核对，不能把单个窗口结果当整表结论。

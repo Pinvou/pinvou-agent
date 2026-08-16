@@ -81,7 +81,7 @@ def _get_operator_context() -> tuple[str, str]:
         result = subprocess.run(
             ["dws", "auth", "status", "--format", "json"],
             capture_output=True,
-            text=True,
+            text=True, errors='replace',
             timeout=30,
         )
     except FileNotFoundError:

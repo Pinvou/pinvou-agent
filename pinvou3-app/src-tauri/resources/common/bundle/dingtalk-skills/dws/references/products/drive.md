@@ -573,7 +573,7 @@ dws drive copy --node <源文件dentryUuid> --folder <目标文件夹fileId> --f
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [drive_tree_list.py](../../scripts/drive_tree_list.py) | 递归列出钉盘目录树结构 | `python drive_tree_list.py --depth 2` |
+| [drive_tree_list.py](../../scripts/drive_tree_list.py) | 递归列出钉盘目录树结构 | `python3 drive_tree_list.py --depth 2` |
 
 ## 相关产品
 

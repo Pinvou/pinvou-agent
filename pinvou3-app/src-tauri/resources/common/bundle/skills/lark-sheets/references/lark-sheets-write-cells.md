@@ -533,7 +533,7 @@ lark-cli sheets +csv-put --spreadsheet-token shtXXX --sheet-id "$SID" \
 
 ```bash
 # sheet 按 name 匹配、缺则新建；多 DataFrame 经 stdin 一次写多 sheet
-python export.py | lark-cli sheets +table-put --url "<表URL>" --sheets -
+python3 export.py | lark-cli sheets +table-put --url "<表URL>" --sheets -
 # 某 sheet 带 "mode":"append" 追加到已有数据末尾、默认不重复表头
 lark-cli sheets +table-put --spreadsheet-token "<token>" --sheets @payload.json
 # --sheets 与 --styles 都是大 JSON 时：stdin 每次调用只能给一个 flag，一个走 -、另一个走 @cwd 相对路径

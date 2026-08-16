@@ -574,4 +574,4 @@ dws contact account update --user-id user001 --nick "新昵称" --yes --format j
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [contact_dept_members.py](../../scripts/contact_dept_members.py) | 按部门名称搜索并列出所有成员 | `python contact_dept_members.py --query "技术部"` |
+| [contact_dept_members.py](../../scripts/contact_dept_members.py) | 按部门名称搜索并列出所有成员 | `python3 contact_dept_members.py --query "技术部"` |

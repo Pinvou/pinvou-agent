@@ -164,7 +164,7 @@ Agent 上下文曾下载过当前表的 NDJSON 时，按以下规则判断是否
 
 两份示例使用相同的五类场景：加载与日期解析、集合谓词、单数组展开、Link JOIN、多数组共现。场景语义和粒度规则以本 SOP 为准，示例只提供对应实现的最短代码。
 
-标准库足以清晰表达任务时直接使用；DataFrame 能明显简化计算时再选 pandas。已选择 pandas 但环境未安装时，网络可用且存在 `uv` 或 `pip` 才按需安装，优先使用 `uv run --no-project --with pandas python analyze.py`。
+标准库足以清晰表达任务时直接使用；DataFrame 能明显简化计算时再选 pandas。已选择 pandas 但环境未安装时，网络可用且存在 `uv` 或 `pip` 才按需安装，优先使用 `uv run --no-project --with pandas python3 analyze.py`。
 
 将 Base 反范式宽表映射为关系模型时，可将标量列视为 record attributes，将多值列视为以 `record_id` 为关联键的 nested relation，将 Link 视为跨表 adjacency list。多值列通过 lateral `explode` / `UNNEST` 切换粒度；Link 规范化为 bridge relation 后再 `merge` / `join` / `JOIN`；同类来源表先投影到 conformed fact schema，再用 `concat` / `UNION ALL` 纵向合并。
 

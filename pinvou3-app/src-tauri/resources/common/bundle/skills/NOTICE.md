@@ -165,12 +165,16 @@ v1.0.87 diff 实测,均需在下次 sync 重放):
   (重放结果 2026-08-16 实测:lark-drive 四篇各 1 处命中,search.md 的
   `--mine` 提示现为「请改用显式 `--creator-ids`」口径且未再含裸 auth login
   字样——上游重写已消化该子项,重放时先 grep 再补。)
-- **假命令修正(3 处,上游同款 bug 建议回馈)**:lark-drive 三个 workflow 文档
-  的 `sheets +read`/`+find`(1.0.87 实测不存在)改为 `sheets +cells-get`/
-  `+cells-search`——`lark-drive-comment-location.md` 单元格读取示例、
+- **别名命令改写为正式名(3 处)**:lark-drive 三个 workflow 文档的
+  `sheets +read`/`+find` 改为 `sheets +cells-get`/`+cells-search`——
+  `lark-drive-comment-location.md` 单元格读取示例、
   `lark-drive-workflow-topic-move-collector.md` 与
   `lark-drive-workflow-topic-move-collector-resolve-verify.md` 的 CONTENT_VERIFY 命令
   族两表;resolve-verify 同步去除 `docs +fetch --api-version v2` 残留参数。
+  (第七轮复核勘误:`+read`/`+find` 在 1.0.87 是**隐藏别名**,`--help` 实测存在且
+  分别转发 `+cells-get`/`+cells-search`——最初判「假命令」系探测方式误报,无上游
+  bug 需回馈;改写为正式名仍值得保留(别名不在 `sheets --help` 快捷方式清单中,
+  可见性差),故不回滚,后续 sync 若上游原文用回别名也无需再改。)
 - **正文断言矛盾修正(2 处)**:lark-drive-files-list.md 的「不要使用不存在的
   `--folder-token` flag」改为「typed flag `--folder-token` 实际存在(--help 可
   见),本 workflow 统一用 `--params` 传参避免与 shortcut 语义混淆」,并合并
@@ -205,3 +209,17 @@ v0.9.5 升级(PR #231)再次统一为 `File(action="read")`,当前 9 域文件�
 `read_file`——它已是引擎退役名。同理,lark-doc-fetch.md 等文件中的读取指引以
 `File(action="read")` 为准。)
 - **lark-doc**:description 补回压缩时丢失的 doubao 路由句(doubao.com 的 /docx/ 或 /wiki/ URL 也走本 skill),与 lark-sheets / lark-wiki / lark-drive 压缩版口径一致,description 仍控制在引擎 280 字符上限内。
+
+## 第七轮脚本代码安全审计补录(2026-08-16)
+
+对 lark-sheets/scripts/ 全部 6 个 Python 脚本做逐脚本安全审计(路径安全/注入面/
+危险操作/数据外泄/异常退出码/资源/跨平台)。审计结论:全部只读封装,无文件写入、
+无 shell=True、无 eval/exec/pickle、无网络直连(网络仅经 lark-cli)、错误统一
+emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
+
+- **lark-sheets/scripts/lark_sheet_read_cli.py**:`run_sheets()` 的
+  `subprocess.run(..., text=True)` 补 `errors='replace'`——Windows GBK 控制台下
+  lark-cli 输出含 emoji 时会抛未捕获 `UnicodeDecodeError`,导致调用方(3 个 CLI
+  脚本)以 traceback 崩溃而非 emit_error 受控失败。其余 5 个脚本(lark_detect_subtables/
+  lark_inspect_workbook/lark_profile_table/lark_sheet_range/sheets_df)无 subprocess
+  文本解码或文件 I/O,无同类问题。
