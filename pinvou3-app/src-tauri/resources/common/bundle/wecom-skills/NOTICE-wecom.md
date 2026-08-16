@@ -69,3 +69,13 @@ SOFTWARE.
 - **命令真实性核实**:用 0.1.9 二进制实测(向 `~/.config/wecom/cache/service_<域>.json` 注入上游 `registry.rs` 认可的工具清单后跑 `<域> <工具> --help`)全量验证 7 个 skill 引用的 45 条命令,全部存在;`get_doc_content`/`smartpage_*`/smartsheet 新建/todo 必填 `follower_id`/`search_todo_userid` 均与 0.1.9 相符,无需改动。
 - **frontmatter 防误用语义补齐(pinvou3 适配)**:7 个 skill 的 description 原为上游直译,缺「何时用 + 泛指默认本地」防误用前缀(对照 lark/dws/tmeet 收录口径),逐个改写为 `何时用:仅当用户明确指向企业微信…时使用;泛指…默认走本地工具` 开头,全部 ≤280 字符。
 - 未发现上游通用话术残留(文件读取工具名均为品悟口径、无全局安装类指引)、悬空相对链接(22 个引用全部存在)。
+
+> 对账注(2026-08-16,NOTICE 对账实测):以 0.1.9 发布点 `72e14f7` 为真值逐 skill
+> diff,实际差异全集 = 上文「结构性修改」「提示词去重与精简」「上游同步」「结构
+> 下沉」各条 +「frontmatter 防误用语义补齐」,无未登记分叉;`metadata.requires.bins`
+> 与 `cliHelp` 为上游原生(0.1.9 各 skill frontmatter 自带,勿当本地修改重放)。
+> 各 skill 重放基线:wecomcli-contact/doc/meeting/msg/schedule = `72e14f7`,
+> wecomcli-smartsheet = `bae1cc3`,wecomcli-todo = `9d2aeaf`(`9eb7898` 仅改
+> README,与 skills/ 无关);上游合并 wecomcli-sheet/smartpage 进 doc 或发新 tag
+> 时,按 lark NOTICE 同款「同名 tag/lock 钉扎」口径重新对账。复核方式:
+> `git worktree add <dir> 72e14f7 && diff -rq <dir>/skills/<域> ./<域>`。

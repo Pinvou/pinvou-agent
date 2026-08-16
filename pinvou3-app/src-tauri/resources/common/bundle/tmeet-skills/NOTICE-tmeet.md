@@ -45,23 +45,27 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   释放到运行时技能目录。
 - `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs` 的 npm 钉扎
-  (`TMEET_NPM_SPEC`,当前 `@tencentcloud/tmeet@1.0.15`)在线安装;SKILL.md 中的
-  `npm install -g @tencentcloud/tmeet@latest` 表述保持上游原样,实际版本以 Rust
-  层钉扎为准。
+  (`TMEET_NPM_SPEC`,当前 `@tencentcloud/tmeet@1.0.15`)在线安装;SKILL.md 的
+  「安装与初始化」节已按下方登记第 4 条改写为品悟代管口径,上游的
+  `npm install -g @tencentcloud/tmeet@latest` 教学不再出现在技能正文,实际版本
+  以 Rust 层钉扎为准。
 
 ## Pinvou3 本地修改登记
 
 技能文档命令树与参数均已对照 tmeet 1.0.15 实测 help 核验（含 1.0.15 新增的
 `meeting search`、`control waiting-room`），无发现不符。为适配品悟运行形态，在
-上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4 仅限
-`SKILL.md`，第 5 条另涉一处 references 措辞修正，其余 references/ 与上游
-逐字节一致）：
+上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4、6 的 SKILL.md
+部分仅限 `SKILL.md`；第 5 条与第 6 条另涉 `references/tmeet-record.md` /
+`references/tmeet-auth.md` 各一处措辞修正，其余 references/ 与上游逐字节一致，
+已经上游 tag diff 逐文件复核）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
    「何时用：」开头、附「泛指需求默认走本地工具」防误用语义。
-2. **读取工具名适配**：正文中指示模型先读参考文档的上游通用读取工具写法，
-   改为 `File(action="read")`（CodeWhale canonical 工具族命名）。
+2. **读取工具名适配**：SKILL.md「录制查询」节 CRITICAL 前置块中的上游写法
+   「MUST 先用 Read 工具读取 `references/tmeet-record.md`」改为「MUST 先用
+   `File(action="read")` 工具读取」（CodeWhale canonical 工具族命名；全包实测
+   仅此 1 处，tmeet-auth.md 等其余文件无读取工具指引）。
 3. **悬空占位链接修复**：命令总览说明行中的占位示例
    `[references/xxx.md](references/xxx.md)` 改为纯代码格式 `references/xxx.md`
    （原写法是指向不存在文件的悬空 markdown 链接，仅去链接化，语义不变）。

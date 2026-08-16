@@ -50,7 +50,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 8. MUST DO 参数格式括号注压缩 — 已重放（沿用「参数与参数值之间用空格隔开」）。
 9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
 
-另重放 git 历史登记的两处修改：`read_file` → `File(action="read")`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文。
+另重放 git 历史登记的两处修改：`read_file` → `File(action="read")`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
 
 ## 真实性审查补录（2026-08-16，同轮次复审）
 
@@ -81,3 +81,15 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 4. `references/products/aitable/aitable-view-config.md`：Kanban 封面 `for` 循环 `| jq .status` 改逐视图命令 + `--jq .status`。
 5. `references/products/doc/style/doc-update-workflow.md`：读取策略表 `grep -B2 -A2`/`grep -n` 定位改为模型直接读 JSON/markdown（并给 `--jq '.. | .text? // empty'` 备选）。
 6. `references/products/event.md`：Subprocess contract 的 stdin 常驻技巧 `< <(tail -f /dev/null)`（POSIX-only）改为「Agent 会话跑批用 `--max-events`/`--duration`，或 `< /dev/null`，进程替换仅 POSIX 可用」；订阅清理条补「Agent 会话优先有界退出而非外部 kill」。`--max-events`/`--duration` 经 `dws event consume --help` 实测存在。
+
+## 第三轮盲区审查补录（2026-08-16，此前漏登记，NOTICE 对账补录）
+
+第三轮（c9c6afb3）对 `dws/` 深层 references 的以下修改此前未登记，依据 v1.0.58 mono 上游 diff 实测补录，下次 sync 需重放（均经 dws 1.0.58 `--help` 实测核对）：
+
+1. `references/capability-limits.md`：「文档权限管理 ⚠️ transitional helper 部分支持」改写为「✅ 已支持：节点级协作者管理走 `dws drive permission add/update/list/remove`（仅文档空间节点，不适用于钉盘文件）；按姓名批量授权走 `dws doc +access-grant` / `+access-change` / `+access-revoke`」（实测口径）。
+2. `references/field-rules.md`：field 子命令计数「4 个」改「5 个」——补 `field search-options`（搜索单选/多选字段选项）行，并注明 `list` 仅是 `field get` 的别名。
+3. `references/url-patterns.md` 三处：axls 条补「导出用 `dws sheet export`（单命令一站式提交→轮询→可选下载）」；「在线表格导出上游未暴露」改为「用 `dws sheet export`（axls→xlsx），单工作表纯 CSV 用 `dws sheet export-csv`」；「分享」路由表两条的 `doc permission add --user` 改为 `dws drive permission add --users`（按姓名授权用 `doc +access-grant`），区分依据同步改为 drive permission。
+4. `references/products/markdown.md`：命令表补 `markdown diff` 行，并新增「比较差异」节（`--node`/`--version`/`--version2`/`--file`/`--context` 用法与 4 种组合示例，经 `dws markdown diff --help` 实测）。
+5. `references/products/doc/doc-permission.md` 9 处：`--user` → `--users`（flag 实名）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
+6. `references/products/doc/doc-export.md`：标题与 `--export-format` 说明由「仅 docx」改「docx（默认）/ markdown（或 md）/ pdf」，补 markdown 导出示例与「`--output` 传目录时按格式自动追加扩展名」。
+7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。

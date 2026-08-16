@@ -136,12 +136,12 @@ Agent 上下文曾下载过当前表的 NDJSON 时，按以下规则判断是否
 | `field_type` | `physical_type` | 示例与语义 |
 | --- | --- | --- |
 | 系统 `record_id` | `string` | `"rec_xxx"`；系统主键 |
-| `text`、`formula`、`lookup`、`auto_number`、`not_support` | `string|null` | `"进行中"`；formula、lookup 不保留结果的原始类型 |
-| `datetime`、`created_at`、`updated_at` | `string|null` | `"2026-08-05T10:30:00.000+08:00"`；RFC3339，固定三位毫秒 |
-| `number` | `number|null` | `12.5`；JSON 整数和小数均为 number |
+| `text`、`formula`、`lookup`、`auto_number`、`not_support` | `string\|null` | `"进行中"`；formula、lookup 不保留结果的原始类型 |
+| `datetime`、`created_at`、`updated_at` | `string\|null` | `"2026-08-05T10:30:00.000+08:00"`；RFC3339，固定三位毫秒 |
+| `number` | `number\|null` | `12.5`；JSON 整数和小数均为 number |
 | `checkbox` | `boolean` | `true`；上游空值已规范化为 `false` |
 | `select` | `array<string>` | `["进行中", "高优"]`；单选、多选读取均为名称数组 |
-| `location` | `struct<lng number, lat number, full_address string>|null` | `{"lng":116.39,"lat":39.90,"full_address":"北京市"}`；非空 Location 的三个成员均非空 |
+| `location` | `struct<lng number, lat number, full_address string>\|null` | `{"lng":116.39,"lat":39.90,"full_address":"北京市"}`；非空 Location 的三个成员均非空 |
 | `user`、`group_chat`、`created_by`、`updated_by` | `array<struct<id string, name string>>` | `[{"id":"ou_xxx","name":"张三"}]` |
 | `link` | `array<struct<id string>>` | `[{"id":"rec_xxx"}]`；schema 的 `table_id` 指定目标表，`id` 是目标 `record_id` |
 | `attachment` | `array<struct<file_token string, size number, name string>>` | `[{"file_token":"box_xxx","size":1024,"name":"report.pdf"}]` |
