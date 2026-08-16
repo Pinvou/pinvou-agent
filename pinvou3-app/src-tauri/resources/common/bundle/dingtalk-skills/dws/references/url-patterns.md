@@ -96,9 +96,9 @@ Step 3 → 按下方路由规则映射到对应产品
 | 以上均不匹配 | — | 告知用户当前暂不支持该类型 |
 
 > axls vs xlsx 关键区分：
-> - `axls`（钉钉在线电子表格，`contentType=ALIDOC`）→ 走 `sheet` 产品线（读/写/筛选/导出等服务端原子操作）
+> - `axls`（钉钉在线电子表格，`contentType=ALIDOC`）→ 走 `sheet` 产品线（读/写/筛选/导出等服务端原子操作；导出用 `dws sheet export`，单命令一站式提交→轮询→可选下载）
 > - `xlsx` / `xls` / `xlsm` / `csv`（上传到文档空间的本地表格文件，`contentType=DOCUMENT`）→ 必须走 `dws drive download` 下载到本地后再解析处理，严禁错误路由到 `sheet` 产品线（sheet 命令只支持在线表格，调用 xlsx 节点会直接报错）
-> - 用户想把在线表格导出为 xlsx 文件 → 开源 dws CLI 暂未暴露在线表格导出能力（旧动态 schema 曾包含 `submit_export_job` / `query_export_job`，但当前 cobra 未注册），需要在钉钉客户端手动导出 xlsx
+> - 用户想把在线表格导出为 xlsx 文件 → 用 `dws sheet export`（axls → xlsx 的格式转换）；单工作表导出纯 CSV 用 `dws sheet export-csv`
 
 ### 示例
 
@@ -157,7 +157,7 @@ Agent 流程：
 
 | 用户说 | 路由 | 不要混淆 |
 |--------|------|---------|
-| "把这个文档/表格/多维表分享给张三" | **节点级**：`doc permission add --node <URL> --user <UID> --role EDITOR` | 不是 `wiki member add` |
-| "把张三加到这个知识库" | **容器级**：`wiki member add --workspace <WS> --user <UID> --role <ROLE>` | 不是 `doc permission add` |
+| "把这个文档/表格/多维表分享给张三" | **节点级**：`dws drive permission add --node <URL> --users <UID> --role EDITOR`（按姓名授权用 `doc +access-grant`） | 不是 `wiki member add` |
+| "把张三加到这个知识库" | **容器级**：`wiki member add --workspace <WS> --users <UID> --role <ROLE>` | 不是 `drive permission add` |
 
-> 区分依据：**doc permission 作用于单个 node（document / file / folder）；wiki member 作用于整个 workspace 容器**。同一用户在 workspace 是 EDITOR、在某个 node 上仍可被单独提升为 MANAGER（节点级覆盖容器级）。
+> 区分依据：**drive permission 作用于单个 node（document / file / folder，仅文档空间节点，不适用于钉盘文件）；wiki member 作用于整个 workspace 容器**。同一用户在 workspace 是 EDITOR、在某个 node 上仍可被单独提升为 MANAGER（节点级覆盖容器级）。

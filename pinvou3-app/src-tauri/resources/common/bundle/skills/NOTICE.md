@@ -6,7 +6,7 @@
 ```
 MIT License
 
-Copyright (c) larksuite/cli contributors
+Copyright (c) 2026 Lark Technologies Pte. Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

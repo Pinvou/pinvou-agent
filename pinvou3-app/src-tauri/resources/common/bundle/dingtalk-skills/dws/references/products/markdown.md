@@ -10,6 +10,7 @@
 | `markdown create` | 创建原生 `.md` 文件 |
 | `markdown overwrite` | 全量覆盖已有 `.md` 文件 |
 | `markdown patch` | 按字面量或 RE2 正则局部替换 |
+| `markdown diff` | 比较历史版本之间 / 远程与本地文件的差异 |
 
 ## 读取 Markdown
 
@@ -110,12 +111,33 @@ Flags:
 - 0 命中时不写入；替换结果为空时中止，防止误清空文件。
 - 命令级 `--dry-run` 显示 before/after 差异；全局 dry-run 不访问网络。
 
+## 比较差异
+
+```text
+Usage:
+  dws markdown diff [flags]
+Example:
+  dws markdown diff --node <dentryUuid> --version 3 --version2 5   # 两个历史版本
+  dws markdown diff --node <dentryUuid> --version 3                # 历史版本 vs 最新版本
+  dws markdown diff --node <dentryUuid> --file ./draft.md          # 最新版本 vs 本地文件
+  dws markdown diff --node <dentryUuid> --version 3 --file ./draft.md  # 历史版本 vs 本地文件
+Flags:
+      --node string      文件 ID (dentryUuid) 或 URL (必填)
+      --version int      左侧历史版本号 (可选，不传=最新版本)
+      --version2 int     右侧历史版本号 (可选，不传=最新版本；不能与 --file 同时使用)
+      --file string      本地 .md 文件路径 (可选，指定后进入 remote_vs_local 模式)
+      --context int      diff 上下文行数 (默认 3)
+```
+
+比较是只读操作，不需要 `--dry-run` / `--yes`。
+
 ## 意图判断
 
 用户说“读取/下载 Markdown 原文” → `markdown fetch`
 用户说“创建一个 .md 文件” → `markdown create`
 用户说“整体替换/覆盖远程 Markdown” → `markdown overwrite`
 用户说“只改 Markdown 中几处文字/正则替换” → `markdown patch`
+用户说“对比两个版本 / 看看本地草稿和线上差在哪” → `markdown diff`
 
 关键区分：
 

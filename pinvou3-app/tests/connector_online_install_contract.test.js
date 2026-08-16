@@ -8,6 +8,7 @@ const installer = read("src-tauri", "src", "features", "connectors", "native_ins
 const paths = read("src-tauri", "src", "platform", "paths.rs");
 const build = read("scripts", "tauri", "build.js");
 const tmeet = read("src-tauri", "src", "features", "connectors", "tmeet.rs");
+const toolCommon = read("src", "features", "tools", "tool-common.jsx");
 const linux = read("src-tauri", "src", "platform", "os", "linux", "linux_path.rs");
 const macos = read("src-tauri", "src", "platform", "os", "macos", "macos_path.rs");
 
@@ -39,5 +40,31 @@ for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /cli_bin == "tmeet"/);
   assert.match(platformSource, /bundled_connector_node/);
 }
+
+// 版本联动：工具卡展示版本必须与 lock 钉扎（及 tmeet.rs npm 钉扎）一致，
+// 防止再次出现卡片版本与实际安装版本脱节（如历史上的 v1.0.56 vs lock 1.0.65）。
+const lock = JSON.parse(
+  read(
+    "src-tauri",
+    "resources",
+    "platforms",
+    "macos",
+    "aarch64",
+    "bundle",
+    "connectors",
+    "connectors.lock.json",
+  ),
+);
+const lockVersions = Object.fromEntries(lock.artifacts.map((a) => [a.name, a.version]));
+const cardVersion = (marker) => {
+  const line = toolCommon.split("\n").find((l) => l.includes(marker));
+  const match = line && line.match(/version: 'v([\d.]+)'/);
+  return match && match[1];
+};
+assert.equal(cardVersion("backendId: 'feishu', feishuCli: true"), lockVersions["lark-cli"]);
+assert.equal(cardVersion("backendId: 'dingtalk', dingtalkCli: true"), lockVersions["dws"]);
+assert.equal(cardVersion("backendId: 'wecom', wecomCli: true"), lockVersions["wecom-cli"]);
+const tmeetPin = tmeet.match(/@tencentcloud\/tmeet@([\d.]+)/)[1];
+assert.equal(cardVersion("backendId: 'tmeet', tmeetCli: true"), tmeetPin);
 
 console.log("✓ connector first-use online install contract passed");

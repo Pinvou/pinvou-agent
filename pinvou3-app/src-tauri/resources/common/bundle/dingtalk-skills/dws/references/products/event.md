@@ -262,6 +262,5 @@ dws event stop --all --yes
 
 ## Full reference
 
-- multi skill: `skills/multi/dingtalk-event/SKILL.md`
-- IM task index: `skills/multi/dingtalk-event/references/event-im.md`
-- OA reference: `skills/multi/dingtalk-event/references/event-oa.md`
+- IM 与 OA 事件的完整命令、flag、输出字段均以本文档为准；命令级入参可用 `dws event consume --help`、`dws event +listen-im --help` 查看
+- 事件目录：`dws event list`（可加 `--category oa`）；单事件字段：`dws event schema <event_key> --flatten`

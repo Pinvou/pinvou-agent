@@ -45,7 +45,8 @@ static WECOM_SKILLS_DIR: Dir<'_> =
 static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/dingtalk-skills");
 
-/// 腾讯会议官方 CLI skill(tmeet-skill,来自 WorkBuddy 腾讯会议 CLI 连接器)。
+/// 腾讯会议官方 CLI skill(tmeet-skill,MIT,同步自 github.com/TencentCloud/
+/// tencentmeeting-cli 对应 tag 的 `skills/tmeet-skill/`,见 NOTICE-tmeet.md)。
 /// 独立放 `tmeet-skills/`，按腾讯会议连接 / 停用状态单独门控。
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
