@@ -635,9 +635,7 @@ mod tests {
         assert!(!is_python_cache_path(std::path::Path::new(
             "visualizer/scripts/validate_visualizer_html.py"
         )));
-        assert!(!is_python_cache_path(std::path::Path::new(
-            "pua/SKILL.md"
-        )));
+        assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
     }
 
     #[test]
