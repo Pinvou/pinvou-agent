@@ -268,3 +268,60 @@ test('postCardCreatorIntro 默认定向最近 equip 的会话，切走后不串�
   assert.equal(rt.state.chatItems.length, 0, 'B 的对话流不得被插入 A 的引导卡');
   assert.equal(rt.state.personaEvents.length, 0, 'B 不得被记 persona 事件');
 });
+
+// ── 二审补充：失败分支归属与同会话重入的陈旧值 ───────────────────────
+
+test('equipPersona 失败且切走后：失败气泡不落别的会话，lastEquippedSid 作废', async () => {
+  const rt = loadPersonasFeature();
+  // 前置：A 会话历史成功加持(旧代码失败后 intro 会回退定向到该会话)
+  const prior = rt.defer('equip_persona');
+  const priorP = rt.api.equipPersona('persona-a');
+  prior.resolve({ id: 'persona-a', name: 'A专家' });
+  await priorP;
+  assert.ok(rt.state.activePersona, '前置：A 已挂卡');
+  // 再次发起 equip，后端失败；invoke 往返期间切走
+  const equip = rt.defer('equip_persona');
+  const p = rt.api.equipPersona('pinvou-card-creator');
+  rt.state.activeSessionId = 'chat-b';
+  equip.reject(new Error('boom'));
+  const card = await p;
+  assert.equal(card, null, '失败必须返回 null(调用方据此跳过引导卡)');
+  assert.ok(!rt.state.chatItems.some(i => (i.text || '').startsWith('equipFailed')),
+    '失败气泡不得插进 await 窗口内切到的会话(随消息流持久化)');
+  rt.api.postCardCreatorIntro(); // 即便被误调，也不得回退定向到历史成功 equip 的 A
+  assert.equal(rt.routedCalls[0].sid, 'chat-b',
+    'lastEquippedSid 已作废：不得把引导卡定向到与本次造卡无关的历史会话 A');
+});
+
+test('同会话连续换卡：第二次换卡播报实际被换下的新卡，而非入口捕获的陈旧旧卡', async () => {
+  const rt = loadPersonasFeature();
+  rt.state.activePersona = { id: 'persona-a', name: 'A专家' }; // A 会话已挂旧卡
+  const equip1 = rt.defer('equip_persona');
+  const p1 = rt.api.equipPersona('persona-c1');      // 第一次换卡发起,挂起
+  const equip2 = rt.defer('equip_persona');
+  const p2 = rt.api.equipPersona('persona-c2');      // 第一次完成前又发起第二次(重入)
+  equip1.resolve({ id: 'persona-c1', name: 'C1' });
+  await p1;
+  equip2.resolve({ id: 'persona-c2', name: 'C2' });
+  await p2;
+  const unequips = rt.state.personaEvents.filter(e => e.kind === 'unequip');
+  assert.equal(unequips.length, 2, '两次换卡各播报一次卸下');
+  assert.equal(unequips[0].name, 'A专家', '第一次换卡播报换下原卡');
+  assert.equal(unequips[1].name, 'C1', '第二次换卡必须播报写点复核到的 C1(陈旧入口值会重复播报 A)');
+  assert.equal(rt.state.activePersona.id, 'persona-c2', '终态挂件为最后 equip 的卡');
+});
+
+test('equip 挂起期间 unequip 先完成：不重复播报入口捕获的旧卡', async () => {
+  const rt = loadPersonasFeature();
+  rt.state.activePersona = { id: 'persona-a', name: 'A专家' };
+  const equip = rt.defer('equip_persona');
+  const p1 = rt.api.equipPersona('persona-x');       // equip 挂起(入口时刻 activePersona=A)
+  const p2 = rt.api.unequipPersona();                // equip 完成前先摘下(播报卸下 A)
+  await p2;
+  equip.resolve({ id: 'persona-x', name: '专家X' }); // equip 后到
+  await p1;
+  const unequips = rt.state.personaEvents.filter(e => e.kind === 'unequip');
+  assert.equal(unequips.length, 1, '只播报一次卸下(陈旧入口 prev 会重复播报)');
+  assert.equal(unequips[0].name, 'A专家');
+  assert.equal(rt.state.activePersona.id, 'persona-x', '最后完成的 equip 为终态');
+});

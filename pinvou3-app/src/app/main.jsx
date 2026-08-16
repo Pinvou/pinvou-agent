@@ -1032,8 +1032,8 @@ function workspaceDisplayName(path) {
       async function startAICard() {
         handleNewChat();
         if (!bridge.available) return;
-        await bridge.personas.equipPersona('pinvou-card-creator');           // 先加持(落新 session + 加持气泡)
-        bridge.personas.postCardCreatorIntro();                              // 再排在加持气泡之后(持久化,切会话/重启不丢);内部定向最近 equip 的会话,切走不串台
+        var card = await bridge.personas.equipPersona('pinvou-card-creator'); // 先加持(落新 session + 加持气泡)
+        if (card) bridge.personas.postCardCreatorIntro();                     // 加持成功才追加引导卡(持久化,切会话/重启不丢);失败则放弃后续,避免错投(二审补充)
       }
 
       async function handleSwitchSession(id) {

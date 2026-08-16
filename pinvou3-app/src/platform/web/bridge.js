@@ -2550,6 +2550,11 @@
     // syncModeState 读取互不感知（各自独立校验），不 bump 则两条读取链可
     // 互相覆盖（评审 P1）。
     modeSyncSeq += 1;
+    // persona/memory 写回同理 bump 各自序号：本通道与会话切换并发在途的
+    // syncActivePersona / loadMemoryOverview 读取互不感知（各自独立校验
+    // sid+seq），不 bump 则 A→B→A 快速切回时可被旧 sync 响应覆盖(二审补充)。
+    personaSyncSeq += 1;
+    memoryOverviewSeq += 1;
     var mode = results[0];
     var persona = results[1];
     var snapshot = results[2];
@@ -7706,7 +7711,6 @@
     // 定向；切走后放弃前端播报，挂件靠 syncActivePersona 恢复（与 tauri
     // personas.js 对齐，审计）。
     var sid = state.activeSessionId;
-    var prev = state.activePersona; // 换卡前的旧专家(同 session 切换时先播报卸下)
     try {
       var card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId: personaId });
       lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(与 tauri 对齐，审计补充)
@@ -7726,6 +7730,9 @@
         }
       }
       // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
+      // 旧专家在写点复核而非入口捕获：同会话快速连续换卡时,入口值可能已被
+      // 上一次 equip 的权威写覆盖,陈旧值会播报错误的"已卸下"(与 tauri 对齐,二审补充)。
+      var prev = state.activePersona;
       if (prev && prev.id !== card.id) {
         addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
         recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
@@ -7736,17 +7743,26 @@
       recordPersonaEvent({ kind: "equip", card: card });
       notify();
       return card;
-    } catch (e) { addSystemItem(bt("equipFailed") + e); return null; }
+    } catch (e) {
+      // 失败也守住归属：失败气泡只落发起会话,不得插进 await 窗口内切到的
+      // 会话(addSystemItem 随消息流持久化);同时作废 lastEquippedSid——失败
+      // equip 后紧随的引导卡不得回退定向到历史成功 equip 的无关会话(与 tauri 对齐,二审补充)。
+      lastEquippedSid = null;
+      if (sid === state.activeSessionId) addSystemItem(bt("equipFailed") + e);
+      return null;
+    }
   }
   // 摘下当前 session 的专家面具。
   async function unequipPersona() {
     if (!state.activeSessionId) return;
     // 入口捕获触发会话：await 期间切走，卸下播报不得写进别的会话（与 tauri 对齐，审计）。
     var sid = state.activeSessionId;
-    var prev = state.activePersona;
     try { await invoke("unequip_persona", { sessionId: state.activeSessionId }); } catch (e) { /* 忽略,前端照样摘 */ }
     if (sid !== state.activeSessionId) return; // 已切走：不写当前显示
     personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(与 tauri 对齐，审计补充)
+    // 旧专家同样在写点复核：await 窗口内若已被 equip 换成新卡,播报新卡,
+    // 入口捕获的陈旧值会重复播报早已卸下的旧卡(与 tauri 对齐,二审补充)。
+    var prev = state.activePersona;
     state.activePersona = null;
     if (prev) { addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() }); recordPersonaEvent({ kind: "unequip", name: personaName(prev) }); }
     notify();
