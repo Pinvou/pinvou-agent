@@ -204,6 +204,9 @@ jobs:
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
+              # bundle 技能树变更须跑 connector 契约测试(版本联动/口径 lint 经
+              # node --test 自动发现),否则 bundle-only 同步 PR 会静默跳过该门禁。
+              - 'pinvou3-app/src-tauri/resources/**'
               - 'remote-control-relay/**'
               - 'scripts/run-user-journey-tests.sh'
               - 'scripts/run-frontend-smokes.mjs'

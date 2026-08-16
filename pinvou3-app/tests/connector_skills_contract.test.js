@@ -64,16 +64,22 @@ for (const f of docs) {
 // 3) 安装/升级一律由品悟宿主代管
 for (const f of docs) {
   const text = read(f);
-  assert.ok(!/npm install -g/.test(text), `${rel(f)}: 残留 npm install -g 教学`);
-  assert.ok(!/\bnpx skills\b/.test(text), `${rel(f)}: 残留 npx skills 教学`);
+  assert.ok(
+    !/\bnpm\s+(?:install|i)\s+(?:-g|--global)\b/.test(text),
+    `${rel(f)}: 残留 npm 全局安装教学（npm install -g / npm i -g / --global 均禁止）`,
+  );
+  assert.ok(!/\bnpx\s+\S*skills\b/.test(text), `${rel(f)}: 残留 npx skills 教学（含 scoped 形态）`);
   // dws 脚本示例统一 python3：宿主环境无裸 `python` 命令（macOS/Homebrew/Win embeddable 均只装 python3）
   assert.ok(!/\bpython\s+(?!3)\S*\.py/.test(text), `${rel(f)}: 脚本调用用裸 python（应为 python3）`);
 }
 
-// 4) 上游宿主断言（Hermes/OpenClaw）必须以品悟为锚
+// 4) 上游宿主断言（Hermes/OpenClaw，含小写形态）必须以品悟为锚
 for (const f of docs) {
   for (const line of read(f).split("\n")) {
-    if (/Hermes|OpenClaw|OPENCLAW(?!_WORKSPACE)/.test(line)) {
+    if (/(hermes|openclaw(?!_workspace))/i.test(line)) {
+      // dws dev 渠道枚举（opencode/claudecode/.../hermes/openclaw/custom）是真实
+      // CLI 渠道值而非宿主断言，豁免含「渠道」的行。
+      if (line.includes("渠道")) continue;
       assert.ok(
         line.includes("品悟"),
         `${rel(f)}: 上游宿主断言未锚定品悟语境: ${line.trim()}`,
@@ -82,10 +88,11 @@ for (const f of docs) {
   }
 }
 
-// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；描述性表格行豁免）
+// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；行首 `|` 的表格行为描述性语境，豁免）
 for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith("lark-"))) {
   for (const line of read(f).split("\n")) {
-    if (/auth login/.test(line) && !/logout|--scope|--domain|--device-code|--no-wait|--recommend|status|不要|无需|不必|禁止|按需|规则|授权，|等\s|\|/.test(line)) {
+    if (/^\s*\|/.test(line)) continue;
+    if (/auth login/.test(line) && !/logout|--scope|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则|授权，|等\s/.test(line)) {
       assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
     }
   }

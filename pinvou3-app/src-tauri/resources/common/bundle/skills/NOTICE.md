@@ -37,7 +37,7 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
    (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.87)。
 2. 拉上游源:上游 tag 带 `v` 前缀,即
    `https://github.com/larksuite/cli/archive/refs/tags/v<version>.tar.gz`
-   (当前 v1.0.87),解压后取其 `skills/<域>`(上游仓库共 28 个 lark-* 域,
+   (当前 v1.0.87),解压后取其 `skills/<域>`(上游仓库共 27 个 lark-* 域,
    品悟只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
@@ -223,3 +223,27 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   脚本)以 traceback 崩溃而非 emit_error 受控失败。其余 5 个脚本(lark_detect_subtables/
   lark_inspect_workbook/lark_profile_table/lark_sheet_range/sheets_df)无 subprocess
   文本解码或文件 I/O,无同类问题。
+
+### 独立复审补登记(2026-08-16,PR 评审)
+
+对照上游 v1.0.87 tag tarball 全量 diff 复审,以下既有本地分叉此前未登记,
+下次 sync 需逐条重放:
+
+- **`python` → `python3` 改写(7 处/3 文件,上游 v1.0.87 原文均为裸 `python`;
+  品悟宿主环境无裸 `python`,实测 command not found)**:
+  `lark-base/references/lark-base-data-analysis-sop.md`(uv run 示例 1 处)、
+  `lark-sheets/references/lark-sheets-read-data.md`(3 处)、
+  `lark-sheets/references/lark-sheets-write-cells.md`(1 处管道示例)。
+- **lark-calendar/references/lark-calendar-create.md**:补闭合代码围栏
+  ` ``` `(上游该文件仅 3 个围栏行,尾部代码块未闭合,会把后续正文吞进代码块;
+  本地补成 4 个)。
+- **lark-doc/SKILL.md**:复制文档路由由 `drive files copy` 改为
+  `drive +copy`(并补「复制到知识库用 `wiki +node-copy`」分流)——上游命令
+  实为 `+copy` 快捷方式(对照上游 Go 源 shortcuts/drive/drive_copy.go),
+  `files copy` 是回退形态。同步重放本条时保留 `File(action="read")` 口径注。
+- **lark-base/SKILL.md**:url-resolve 段补「Wiki URL(`.../wiki/<token>`)也可
+  直接传给 `+url-resolve`(先解析 Wiki 节点再返回底层 base_token)」整句。
+- **lark-wiki/SKILL.md**:新增「交接到底层文档/表格 Skill(obj_type 分流)」
+  整节(obj_type + obj_token 解析后按 doc/sheet/bitable 分流的交接表)。
+- **lark-shared/SKILL.md**:新增「临时文件一律写 `tmp/` 子目录」安全规则
+  (过程文件不污染工作目录根的产出物列表)。

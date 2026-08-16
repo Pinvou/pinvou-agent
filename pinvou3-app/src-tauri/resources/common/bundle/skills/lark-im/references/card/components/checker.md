@@ -23,7 +23,7 @@
 | `checked` | 否 | Boolean | false | 初始勾选状态 |
 | `text` | 否 | Object | / | `{tag:"plain_text"\|"lark_md", content, text_size?, text_color?, text_align?}`（text_color 见 `../resource/colors.md`） |
 | `overall_checkable` | 否 | Boolean | true | 悬浮时整体是否有阴影效果 |
-| `button_area` | 否 | Object | / | `{pc_display_rule:"always"|"on_hover", buttons:[<=3 个 button]}` |
+| `button_area` | 否 | Object | / | `{pc_display_rule:"always"\|"on_hover", buttons:[<=3 个 button]}` |
 | `checked_style` | 否 | Object | / | `{show_strikethrough, opacity}`，勾选后的内容样式 |
 | `disabled` / `disabled_tips` | 否 | Boolean/Object | false / 空 | 禁用及禁用提示 |
 | `hover_tips` | 否 | Object | 空 | 悬浮提示；与 `disabled_tips` 同配时后者生效 |
