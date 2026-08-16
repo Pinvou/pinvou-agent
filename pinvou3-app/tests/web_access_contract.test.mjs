@@ -91,6 +91,39 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
+// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
+// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
+// Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
+// 连接器开关/装卸（set_disabled_connectors、*_connect_begin、ima_connect 等）仍保持桌面专用。
+for (const command of [
+  'feishu_status',
+  'feishu_skills_state',
+  'wecom_status',
+  'wecom_skills_state',
+  'dingtalk_status',
+  'dingtalk_skills_state',
+  'tmeet_status',
+  'tmeet_skills_state',
+  'ima_status',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
+}
+for (const command of [
+  'feishu_connect_begin',
+  'feishu_logout',
+  'wecom_connect_begin',
+  'wecom_logout',
+  'dingtalk_connect_begin',
+  'dingtalk_logout',
+  'tmeet_connect_begin',
+  'tmeet_logout',
+  'ima_connect',
+  'ima_logout',
+  'set_disabled_connectors',
+]) {
+  assert.equal(allowed.has(command), false, `${command} must remain desktop-only (connector mutations)`);
+}
+
 for (const command of [
   'web_access_chat',
   'web_access_create_session_and_chat',

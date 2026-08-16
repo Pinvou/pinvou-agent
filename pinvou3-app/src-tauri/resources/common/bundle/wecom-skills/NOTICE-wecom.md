@@ -55,7 +55,7 @@ SOFTWARE.
 
 ### 上游同步(2026-07-25)
 
-- **wecomcli-todo**:全量同步至上游 `9d2aeaf3`(2026-07-02 todo API 重写:`remind_time` 删除、`get_todo_list` 必填 `follower_id`、新增 `search_todo_userid`);删除基于旧 API 的 `examples/` 目录;末尾追加「pinvou3 增补行为要求」三条(列表后必须查详情、分页必须提醒、删除/拒绝前必须确认)。
+- **wecomcli-todo**:全量同步至上游 `9d2aeaf3`(2026-07-02 todo API 重写:`remind_time` 删除、`get_todo_list` 必填 `follower_id`、新增 `search_todo_userid`);删除基于旧 API 的 `examples/` 目录(已删,无需重放);末尾追加「pinvou3 增补行为要求」三条(列表后必须查详情、分页必须提醒、删除/拒绝前必须确认)。
 - **wecomcli-smartsheet**:全量同步至上游 `bae1cc3e`(新增新建智能表格、851002 错误码表、接口路由表);description 替换为 pinvou3 适配版(上游引用的 wecomcli-sheet/wecomcli-smartpage 在本包并入 wecomcli-doc)。
 
 ### 结构下沉(2026-07-25)
@@ -77,5 +77,19 @@ SOFTWARE.
 > 各 skill 重放基线:wecomcli-contact/doc/meeting/msg/schedule = `72e14f7`,
 > wecomcli-smartsheet = `bae1cc3`,wecomcli-todo = `9d2aeaf`(`9eb7898` 仅改
 > README,与 skills/ 无关);上游合并 wecomcli-sheet/smartpage 进 doc 或发新 tag
-> 时,按 lark NOTICE 同款「同名 tag/lock 钉扎」口径重新对账。复核方式:
-> `git worktree add <dir> 72e14f7 && diff -rq <dir>/skills/<域> ./<域>`。
+> 时,按 lark NOTICE 同款「同名 tag/lock 钉扎」口径重新对账。
+>
+> 上游源获取与复核命令(2026-08-16 第六轮核验实测可复现,在仓库根执行):
+> ```
+> git clone https://github.com/WecomTeam/wecom-cli.git
+> cd wecom-cli
+> git worktree add /tmp/wecom-verify 72e14f7
+> diff -rq /tmp/wecom-verify/skills/wecomcli-msg \
+>   pinvou3-app/src-tauri/resources/common/bundle/wecom-skills/wecomcli-msg
+> # smartsheet/todo 分别用 bae1cc3 / 9d2aeaf 建 worktree 复核
+> ```
+> 实测输出特征(用于自检):diff 只报各 SKILL.md differ、
+> wecomcli-meeting 下多出 `references/workflows.md`、wecomcli-todo 下多出
+> `examples/`(已删)、以及本 NOTICE 文件本身——这四类之外的「Only in/differ」
+> 即为新的未登记分叉。注意 `72e14f7` 等是 commit hash(非 tag),wecom-cli
+> 仓库以 changeset 发版,`git log --oneline` 可按上文 MR 编号(!35/!36/!37)定位。

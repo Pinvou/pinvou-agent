@@ -2,9 +2,17 @@
 
 - npm package: dingtalk-workspace-cli
 - skill/CLI version: 1.0.58
-- 各平台 dws 二进制 SHA-256 见 `resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
+- 各平台 dws 二进制 SHA-256 见 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`（仓库相对路径；`<os>/<arch>` 取 macos/aarch64、macos/x86_64、linux/aarch64、linux/x86_64、windows/x86_64 五份，版本一致）
 - Linux ARM64 dws SHA-256: de6f8a51de83a18cbd2691c1bc03ddc8809d4e33b51fab407c5313fa9d8140ea
 - license: Apache-2.0
+
+来源与更新方式（新手操作手册）：
+
+1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.58）。
+2. 拉技能源：GitHub Releases 资产，URL 模式
+   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.58；版本号带 `v` 前缀）。
+3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 14 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
+4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
 
 Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
 
@@ -34,8 +42,8 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 上游结构变化（1.0.51 → 1.0.58 mono）：
 
 - references 新增：`products/event.md`、`products/hrbrain.md`、`products/markdown.md`、`products/pat.md`、`products/whiteboard.md`、`products/whiteboard/`（open-nodes-v1 全套 + recipes）、`products/oa/`（表单组件/流程节点）。上游另有 `channel-login.md`，品悟不随包分发（见下方补录第 9 条）。
-- references 删除：`recovery-guide.md`（SKILL.md「错误处理」同步移除 RECOVERY_EVENT_ID 闭环说明）。
-- scripts 删除：`bot_broadcast.py`、`chat_export_messages.py`、`chat_history_with_user.py`、`doc_create_and_write.py`、`extract_media_id.py`（Chat 历史导出与机器人广播下沉 Runtime）。
+- references 删除：`recovery-guide.md`（SKILL.md「错误处理」同步移除 RECOVERY_EVENT_ID 闭环说明）。（状态注：已删，无需重放。）
+- scripts 删除：`bot_broadcast.py`、`chat_export_messages.py`、`chat_history_with_user.py`、`doc_create_and_write.py`、`extract_media_id.py`（Chat 历史导出与机器人广播下沉 Runtime）。（状态注：已删，无需重放。）
 - SKILL.md 大改：新增 Shortcut 使用原则/总览、多组织多账号（profile）、确认门禁协议、Schema 渐进查询；产品域新增 hrbrain/markdown/pat/whiteboard/event，`aiapp` 移除（标注无稳定产品参考），`agoal` 保留（mono 意图树仍路由，CLI 1.0.58 `--help` 服务列表仍含 agoal）。
 
 9 条登记重放结果（逐条）：
@@ -51,6 +59,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
 
 另重放 git 历史登记的两处修改：`read_file` → `File(action="read")`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
+  （第六轮核验注 2026-08-16，基线 HEAD `4a42fdb9`、工作区 clean：该批尾随空白清理已不在工作区——上述 4 文件当前与上游的尾随空白行数一致（07/08/oa/minutes 分别 1/1/3/5 行，与上游同），oa.md 与上游逐字节一致，07/08/minutes 的差异均为正文行（08-directory 为 File(action="read") + aisearch 链接化；07-minutes 为「开源版未引入」标注删除；minutes.md 为 read_file → File(action="read")）。本对账注的「未提交清理」悬念已消除，下次 sync 直接跟随上游原文重放各登记条目即可。）
 
 ## 真实性审查补录（2026-08-16，同轮次复审）
 
@@ -59,7 +68,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 1. `File(action="read")` 工具名漏网修复 12 处：`doc/` 下 10 个子文档与 `doc/style/doc-create-workflow.md`、`sheet/sheet-comment.md` 的「必须先用 Read 工具读取」前置块（上轮仅重放了 attendance.md/minutes.md，doc/sheet 子文档漏改）。
 2. `SKILL.md` Shortcut 总览表删除「multi skill」列（`dingtalk-aitable`/`dingtalk-misc` 等 16 处 multi 形态子 skill 名，mono 收录形态不存在这些入口）；shortcut 计数经 `dws shortcut list --service <svc>` 逐一实测与 1.0.58 一致，保留。
 3. `SKILL.md` 意图决策树 aiapp 行删除「multi 布局见 `dingtalk-misc` 的 `unsupported-scripts.md`」尾注（mono 包内无该文件）。
-4. `references/products/calendar.md`：3 个脚本链接 `../scripts/` → `../../scripts/`（路径错误导致悬空）；「相关产品」中 `../../dingtalk-contact/references/contact.md` 悬空链接改为 `./contact.md`（mono 包内实际路径）。
+4. `references/products/calendar.md`：3 个脚本链接 `../scripts/` → `../../scripts/`（路径错误导致悬空）；「相关产品」中 `../../dingtalk-contact/references/contact.md` 悬空链接改为 `./contact.md`（mono 包内实际路径 `references/products/contact.md`）。
 5. `references/products/sheet.md`：删除标题「原 dingtalk-sheet/SKILL.md 正文」multi 话术；「跨产品协作」两处 `dingtalk-aitable`/`dingtalk-doc` 子 skill 引用改为指向包内 `./aitable.md`/`./doc.md`。
 6. `references/best_practices/07-minutes.md`：删除 2 处「（开源版未引入）」不实标注（`minutes_extract_todos.py`/`minutes_recent_summary.py` 均随包存在）；browse-minutes 中脚本参数 `--limit` 修正为脚本实际定义的 `--max`。
 7. `references/best_practices/`（08-directory.md、10-minutes-speaker-match.md、lite-recipes.md）：3 处「`aisearch`（开源版未引入，悟空内部产品）」改为链接 `../products/aisearch.md`（该产品参考随包存在，服务在 1.0.58 服务列表内）。
@@ -84,12 +93,24 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 ## 第三轮盲区审查补录（2026-08-16，此前漏登记，NOTICE 对账补录）
 
-第三轮（c9c6afb3）对 `dws/` 深层 references 的以下修改此前未登记，依据 v1.0.58 mono 上游 diff 实测补录，下次 sync 需重放（均经 dws 1.0.58 `--help` 实测核对）：
+第三轮（c9c6afb3）对 `dws/` 深层 references 的以下修改此前未登记，依据 v1.0.58 mono 上游 diff 实测补录，下次 sync 需重放（均经 dws 1.0.58 `--help` 实测核对；下列裸写文件均位于 `dws/references/` 下，全称即 `references/<文件>`）：
 
-1. `references/capability-limits.md`：「文档权限管理 ⚠️ transitional helper 部分支持」改写为「✅ 已支持：节点级协作者管理走 `dws drive permission add/update/list/remove`（仅文档空间节点，不适用于钉盘文件）；按姓名批量授权走 `dws doc +access-grant` / `+access-change` / `+access-revoke`」（实测口径）。
-2. `references/field-rules.md`：field 子命令计数「4 个」改「5 个」——补 `field search-options`（搜索单选/多选字段选项）行，并注明 `list` 仅是 `field get` 的别名。
-3. `references/url-patterns.md` 三处：axls 条补「导出用 `dws sheet export`（单命令一站式提交→轮询→可选下载）」；「在线表格导出上游未暴露」改为「用 `dws sheet export`（axls→xlsx），单工作表纯 CSV 用 `dws sheet export-csv`」；「分享」路由表两条的 `doc permission add --user` 改为 `dws drive permission add --users`（按姓名授权用 `doc +access-grant`），区分依据同步改为 drive permission。
+1. `capability-limits.md`：「文档权限管理 ⚠️ transitional helper 部分支持」改写为「✅ 已支持：节点级协作者管理走 `dws drive permission add/update/list/remove`（仅文档空间节点，不适用于钉盘文件）；按姓名批量授权走 `dws doc +access-grant` / `+access-change` / `+access-revoke`」（实测口径）。
+2. `field-rules.md`：field 子命令计数「4 个」改「5 个」——补 `field search-options`（搜索单选/多选字段选项）行，并注明 `list` 仅是 `field get` 的别名。
+3. `url-patterns.md` 三处：axls 条补「导出用 `dws sheet export`（单命令一站式提交→轮询→可选下载）」；「在线表格导出上游未暴露」改为「用 `dws sheet export`（axls→xlsx），单工作表纯 CSV 用 `dws sheet export-csv`」；「分享」路由表两条的 `doc permission add --user` 改为 `dws drive permission add --users`（按姓名授权用 `doc +access-grant`），区分依据同步改为 drive permission。
 4. `references/products/markdown.md`：命令表补 `markdown diff` 行，并新增「比较差异」节（`--node`/`--version`/`--version2`/`--file`/`--context` 用法与 4 种组合示例，经 `dws markdown diff --help` 实测）。
 5. `references/products/doc/doc-permission.md` 9 处：`--user` → `--users`（flag 实名）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
 6. `references/products/doc/doc-export.md`：标题与 `--export-format` 说明由「仅 docx」改「docx（默认）/ markdown（或 md）/ pdf」，补 markdown 导出示例与「`--output` 传目录时按格式自动追加扩展名」。
 7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。
+
+## 第六轮收官语义扫描补录（2026-08-16）
+
+按统一模式清单（上游宿主名/不存在形态措辞/npm 残留/skills 管理命令/裸 auth login/Read 工具名/api-version/假命令/multi 形态/已删文件引用/自更新指令/内部 URL 密钥）对四个技能包全量复扫，`dws/` 内修复以下残留，下次 sync 需重放：
+
+1. `scripts/` 8 个考勤脚本 docstring 的强制门禁阅读路径 `dingtalk-workspace/references/products/attendance-*.md` 改为包内相对路径 `../references/products/attendance-*.md`（上游仓库名形态在品悟包内不存在，实际文件位于 `dws/references/products/`）：attendance_report_checkin.py、attendance_report_common.py、attendance_report_daily.py、attendance_report_detail.py、attendance_report_monthly.py、attendance_schedule_export.py、attendance_schedule_import.py、attendance_vacation_balance.py。
+2. `references/products/minutes.md` 跨平台兼容性条：「悟空运行环境可能是 Windows cmd / PowerShell / macOS bash」宿主断言改为「品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境」（同文档其余「悟空」均为听记热词/替换示例词，非宿主口径，保留）。
+3. `references/best_practices/06-data-analytics.md` export-aitable-to-xlsx 条：「与悟空脚本路径并存」改为「与脚本路径并存」（指包内 `scripts/aitable_export_via_task.py`，非悟空平台）。
+4. `references/products/sheet/sheet-filter.md`：删除「（参照飞书 core-operations）」括注（lark 域 `lark-sheets-core-operations.md` 未随包收录，为悬空跨域参照；规范正文本身完整，删除后语义不变）。
+5. `references/products/attendance.md` 命令可用性提示：禁止性理由「不要以"开源版不支持"为由拒答」改为「不要以"命令不存在/不支持"为由拒答」（保留禁拒答语义，去除上游"开源版"形态措辞，为真实性审查补录第 6/7 条「开源版未引入」清理的漏网变体）。
+
+其余命中均为已登记豁免或合理保留：`OPENCLAW_WORKSPACE` 环境变量（scripts/import_records.py、bulk_add_fields.py 路径安全护栏，未设时回退 `os.getcwd()`，品悟内不依赖该变量亦可用，上游原样保留）；dws/tmeet 域裸 `auth login`（各自 CLI 真实教学）；`alidocs.dingtalk.com`（钉钉文档公网 URL 域名，非内部地址）。

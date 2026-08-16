@@ -1,6 +1,6 @@
 # 考勤 (attendance) 命令参考
 
-> **【命令可用性提示】** 当前 dws 已注册全部考勤子命令组（`record` / `check` / `approve` / `shift` / `schedule` / `class` / `adjustment` / `overtime` / `group` / `summary` / `rules` / `selfsetting` / `globalsetting` / `vacation` / `checkin` / `report` / `boss-check`）。查询与写操作大多可直接调用后端，不会再返回 `unknown command`，不要以"开源版不支持"为由拒答。个别命令返回受账号权限和组织数据影响：`report` 系列仅管理员可用；非管理员或数据为空时可能返回空列表或权限错误。执行前可用 `dws <cmd> --help` 或 `--dry-run` 验证参数。
+> **【命令可用性提示】** 当前 dws 已注册全部考勤子命令组（`record` / `check` / `approve` / `shift` / `schedule` / `class` / `adjustment` / `overtime` / `group` / `summary` / `rules` / `selfsetting` / `globalsetting` / `vacation` / `checkin` / `report` / `boss-check`）。查询与写操作大多可直接调用后端，不会再返回 `unknown command`，不要以"命令不存在/不支持"为由拒答。个别命令返回受账号权限和组织数据影响：`report` 系列仅管理员可用；非管理员或数据为空时可能返回空列表或权限错误。执行前可用 `dws <cmd> --help` 或 `--dry-run` 验证参数。
 
 > **【必读】日期范围严格计算规则 — 所有含 --start/--end 或 --from/--to 的命令均适用**
 >

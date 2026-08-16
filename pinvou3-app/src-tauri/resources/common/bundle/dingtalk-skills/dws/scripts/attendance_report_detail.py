@@ -8,7 +8,7 @@
 
 
 [AI Agent 强制门禁] 调用本脚本前必须先阅读：
-   dingtalk-workspace/references/products/attendance-report.md
+   ../references/products/attendance-report.md
 
   本脚本仅是"考勤报表导出工作流"的执行末端，工作流完整定义在 attendance-report.md，
   包含但不限于：

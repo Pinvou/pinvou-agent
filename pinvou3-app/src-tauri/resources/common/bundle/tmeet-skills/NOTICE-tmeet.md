@@ -39,8 +39,14 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 说明:
 
-- 技能本体不随 npm 包分发(`@tencentcloud/tmeet` 包内不含 skills),更新方式为按
-  上游对应 tag 同步 `skills/tmeet-skill/` 到本目录,保留本声明。
+- 技能本体不随 npm 包分发(`@tencentcloud/tmeet` 包内不含 skills,这是常见踩坑:
+  不要从 npm tgz 里找 skills),更新方式为按上游对应 tag 同步
+  `skills/tmeet-skill/` 到本目录,保留本声明。具体操作:上游仓库
+  TencentCloud/tencentmeeting-cli 的 tag 带 `v` 前缀,与品悟钉扎版本对应
+  (当前 v1.0.15),取
+  `https://github.com/TencentCloud/tencentmeeting-cli/archive/refs/tags/v1.0.15.tar.gz`
+  或 `git clone && git checkout v1.0.15` 后,以其中 `skills/tmeet-skill/`
+  整目录为三方合并基线,再按下文登记逐条重放。
 - 品悟按用户连接状态门控该 skill:仅在用户已连接 `tmeet` 且未禁用腾讯会议技能时
   释放到运行时技能目录。
 - `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
@@ -57,7 +63,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4、6 的 SKILL.md
 部分仅限 `SKILL.md`；第 5 条与第 6 条另涉 `references/tmeet-record.md` /
 `references/tmeet-auth.md` 各一处措辞修正，其余 references/ 与上游逐字节一致，
-已经上游 tag diff 逐文件复核）：
+已经上游 tag diff 逐文件复核。第六轮核验注 2026-08-16：上述「其余 references
+逐字节一致」经 /tmp 上游 v1.0.15 快照重验仍成立——tmeet-meeting/contact/
+tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即第 5、6 条
+所述内容）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为

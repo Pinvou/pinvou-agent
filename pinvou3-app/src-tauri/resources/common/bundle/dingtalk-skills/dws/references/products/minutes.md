@@ -1959,7 +1959,7 @@ loop:
 - 当用户提供关键词或时间范围时，必须使用 --query / --start / --end 在服务端筛选，严禁全量拉取后本地过滤。**严禁在 dws 命令后拼接 shell 管道做本地过滤**（如 `| grep "关键词"` / `| head -50` / `python -c "import json;..."` / `> /tmp/xxx.txt && grep ...`），这些写法在 Windows 沙箱里 100% 失败（`head`/`grep`/`wait` 不是 Windows 内置命令），即使在 macOS 上也会因 list 本身失败导致整个管道链路断掉。正确做法是始终使用 `--query` / `--start` / `--end` / `--max` 等 cli 内置参数在服务端完成筛选
 - `dws minutes list` 后面**必须跟 `mine` / `shared` / `all` 子命令**，不能直接 `dws minutes list --start ... --end ...`（会报 `unknown flag: --start`）。正确写法：`dws minutes list mine --start ... --end ...` 或 `dws minutes list all --query "关键词" --start ... --end ...`
 - get transcription 翻页时，同一个 next-token 连续返回空 2 次即终止翻页，不再重试
-- **跨平台兼容性**：悟空运行环境可能是 Windows cmd / PowerShell / macOS bash，**严禁在 dws 命令中使用任何依赖特定 shell 的工具或管道**，包括但不限于：`| head`、`| grep`、`| tail`、`| wc`、`& wait`、`> %TEMP%\xxx`、`timeout /t 5`、`Start-Sleep`、`python -c "..."` 等。所有数据筛选、截断、过滤都必须通过 dws cli 自身的参数完成（`--query`/`--start`/`--end`/`--max`/`--next-token`）
+- **跨平台兼容性**：品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境，**严禁在 dws 命令中使用任何依赖特定 shell 的工具或管道**，包括但不限于：`| head`、`| grep`、`| tail`、`| wc`、`& wait`、`> %TEMP%\xxx`、`timeout /t 5`、`Start-Sleep`、`python -c "..."` 等。所有数据筛选、截断、过滤都必须通过 dws cli 自身的参数完成（`--query`/`--start`/`--end`/`--max`/`--next-token`）
 
 ### 错误恢复策略（AI 遇到以下错误时必须自动执行对应恢复动作）
 

@@ -3,7 +3,7 @@
 考勤排班导入脚本
 
 [AI Agent 强制门禁] 本脚本执行前必须先阅读：
-   dingtalk-workspace/references/products/attendance-schedule.md
+   ../references/products/attendance-schedule.md
 
    排班工作流、参数校验、班次校验、回显确认等约束全部在
    attendance-schedule.md，禁止凭本脚本源码或 --help 自行组装命令。
