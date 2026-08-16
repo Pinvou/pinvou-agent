@@ -5,8 +5,9 @@ use parking_lot::Mutex;
 
 use super::super::CpuSnapshot;
 
-/// `/proc` 中 CPU 时间的基本频率。内核 USER_HZ 在所有主线发行版上都是 100，
-/// 且用户态无法直接 sysconf（Rust std 无该接口）；按 100 换算与 procps/top 一致。
+/// `/proc` 中 CPU 时间的基本频率。内核 USER_HZ 在 Tauri 支持的架构
+/// （x86_64/aarch64/riscv64 等）上都恒为 100，唯一例外是已废弃的 alpha
+/// （1024，非 Tauri 目标）；Rust std 无 sysconf 接口，按 100 换算与 procps/top 一致。
 const USER_HZ: f64 = 100.0;
 
 /// CPU 名称与逻辑核数在进程生命周期内不变，采样每秒一次也不必重复读 /proc。
@@ -22,6 +23,9 @@ struct CpuSampleState {
 
 /// `/proc/stat` 首行的聚合节拍数。busy 含 user/nice/system/irq/softirq/steal
 /// （steal 时间本机不可用，计入占用而非空闲）；idle 含 iowait（等 IO 视为空闲）。
+/// 注意内核文档明言 iowait 本身口径不可靠（无任务可执行且有未完成 IO 才计入，
+/// 等待中退出的任务会回退为 idle）；异常时本采样最多导致 total_delta 为 0 返回
+/// None，不会产生失真数值。
 #[derive(Debug, Clone, Copy)]
 struct SystemTicks {
     busy: u64,
@@ -194,8 +198,10 @@ mod tests {
 
     #[test]
     fn parse_proc_stat_aggregates_busy_and_idle() {
-        // user nice system idle iowait irq softirq steal
-        let ticks = parse_proc_stat_total("cpu  100 10 200 500 50 5 35 20 0 0").unwrap();
+        // user nice system idle iowait irq softirq steal guest guest_nice
+        // guest/guest_nice 填非零值：内核已把 guest 计入 user，这里锁死"busy
+        // 不得重复累加 guest"的语义（回归成 += guest 会算出 380）。
+        let ticks = parse_proc_stat_total("cpu  100 10 200 500 50 5 35 20 7 3").unwrap();
         // busy = 100+10+200+5+35+20 = 370；idle = 500+50 = 550
         assert_eq!(ticks.busy, 370);
         assert_eq!(ticks.idle, 550);
@@ -234,6 +240,14 @@ mod tests {
         // ')' 之后字段不足 utime（12 个）时返回 None 而非 panic。
         let text = "1 (sh) S 0 1 1 0 -1 4194560";
         assert!(parse_proc_self_stat_cpu_ticks(text).is_none());
+    }
+
+    #[test]
+    fn clamp_usage_pct_clamps_range() {
+        assert_eq!(clamp_pct(-1.0), 0.0);
+        assert_eq!(clamp_pct(42.5), 42.5);
+        assert_eq!(clamp_pct(120.0), 100.0);
+        assert_eq!(clamp_pct(f64::NAN), 0.0);
     }
 
     #[test]
