@@ -210,8 +210,8 @@ dws event stop --all --yes
 
 - 就绪：单事件等待 `[event] ready event_key=<key> bus_pid=<pid> subscribe_id=<id>`；多事件等待 `[event] ready event_count=<n> bus_pid=<pid>`，并保存此前每条 `[event] subscription ...` 的 subscribe ID。不要 `--quiet`。
 - 退出：末行 `[event] exited — received N event(s) in Xs (reason: limit|timeout|signal|bus_shutdown)`；受控退出码 0，失败非 0 且无 exited 行、有 Error 行。
-- stdin 关闭 = 停机：仅当 stdin 是管道且未设 `--max-events/--duration` 时生效；交互终端和 `< /dev/null` 不触发。用管道 stdin 又要常驻就喂 `< <(tail -f /dev/null)`。
-- 订阅清理：本次新建的订阅任意退出即自动退订；`--subscribe-id` 复用的保留；`--ephemeral` 强制退订。优雅停用 SIGTERM、关 stdin，或外部先预览 `dws event stop <subscribe_id> --dry-run`、确认后加 `--yes`。不要 `kill -9`（跳过退订、泄漏服务端订阅）。
+- stdin 关闭 = 停机：仅当 stdin 是管道且未设 `--max-events/--duration` 时生效；交互终端和 `< /dev/null` 不触发。Agent 会话里每条命令独立，stdin 通常不是长驻管道：跑批用 `--max-events`/`--duration` 限定退出，或加 `< /dev/null` 明确不停机（bash 进程替换 `< <(tail -f /dev/null)` 仅适用于 POSIX shell，Windows 不可用）。
+- 订阅清理：本次新建的订阅任意退出即自动退订；`--subscribe-id` 复用的保留；`--ephemeral` 强制退订。优雅停用 SIGTERM、关 stdin，或外部先预览 `dws event stop <subscribe_id> --dry-run`、确认后加 `--yes`。不要 `kill -9`（跳过退订、泄漏服务端订阅）；Agent 会话优先用 `--max-events`/`--duration` 让进程自然退出，而不是从外部 kill。
 - 一个 consume 可监听多个兼容 event key，每个事件仍有独立订阅和 consumer，共用一个 bus、远程连接及输出。`event stop <subscribe_id>` 只移除目标事件，最后一个被移除后进程退出。
 
 ## 订阅创建失败与重试预算

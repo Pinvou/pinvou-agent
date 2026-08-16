@@ -65,3 +65,19 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 7. `references/best_practices/`（08-directory.md、10-minutes-speaker-match.md、lite-recipes.md）：3 处「`aisearch`（开源版未引入，悟空内部产品）」改为链接 `../products/aisearch.md`（该产品参考随包存在，服务在 1.0.58 服务列表内）。
 8. `references/products/report.md` 示例表格中占位链接 `[在钉钉中查看日志](...)` 目标改为 `(<dingtalkOpenUrl>)`（与同文档操作列规则用语一致，避免悬空 `...` 目标）。
 9. 删除 `references/channel-login.md`：该文件是上游面向阿里内部受控渠道场景的配置参考，含内部评测渠道的具体 `DWS_CHANNEL` 哈希、内部 profile 名与「EI智能体评测」渠道归因，对品悟社区版用户无意义且违反「不依赖企业专属数据」的社区版公约；文件未被包内任何其他文档引用。后续 sync 若上游仍带此文件，继续不随包分发。
+
+## 第四轮结构终检补录（2026-08-16）
+
+1. `dws/SKILL.md` frontmatter 补 `metadata.requires.bins: ["dws"]` 与 `metadata.cliHelp: "dws --help"`，与 lark/wecom/tmeet 各域对齐（`dws --help` 实测存在）。下次 sync 需重放。
+2. description 加【何时用:…】防误用前缀（240 字符，≤280 上限）。下次 sync 需重放。
+
+## 第四轮本地工具依赖审查补录（2026-08-16，跨平台与 Agent 会话口径）
+
+品悟为三端应用（macOS/Linux/Windows），Windows 不保证本地 `jq`/`grep` 可用；dws 全局 `--jq` 对产品命令已生效（global-reference.md 明示）。以下修改均改为 CLI 内置能力或模型直接读取，下次 sync 需重放：
+
+1. `references/products/aitable/aitable-workflow.md`：创建确认流删除 `| tee` + 本地 `jq` 链（3 命令）改为 `--jq` 直出；list 汇总/状态过滤 3 处 `| jq` 改 `--jq`；`for ... | jq -r` 批量禁用循环改为「list --jq 列 flowId + 逐条 disable」两步，消除 shell 循环依赖。
+2. `references/products/aitable/aitable-record-history.md`：3 处 `| jq` 改 `--jq`。
+3. `references/products/aitable/aitable-record-share.md`：批量示例 `| jq` 改 `--jq`。
+4. `references/products/aitable/aitable-view-config.md`：Kanban 封面 `for` 循环 `| jq .status` 改逐视图命令 + `--jq .status`。
+5. `references/products/doc/style/doc-update-workflow.md`：读取策略表 `grep -B2 -A2`/`grep -n` 定位改为模型直接读 JSON/markdown（并给 `--jq '.. | .text? // empty'` 备选）。
+6. `references/products/event.md`：Subprocess contract 的 stdin 常驻技巧 `< <(tail -f /dev/null)`（POSIX-only）改为「Agent 会话跑批用 `--max-events`/`--duration`，或 `< /dev/null`，进程替换仅 POSIX 可用」；订阅清理条补「Agent 会话优先有界退出而非外部 kill」。`--max-events`/`--duration` 经 `dws event consume --help` 实测存在。

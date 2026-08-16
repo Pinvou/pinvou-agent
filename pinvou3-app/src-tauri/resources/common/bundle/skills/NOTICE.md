@@ -93,6 +93,25 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 - **references 级修正**:lark-doc-whiteboard.md / lark-doc-update.md / lark-doc-xml.md / style/lark-doc-create-workflow.md / lark-drive-comment-location.md 中对未收录 lark-whiteboard 的引用全部改为「未随包收录 + CLI 命令直给」口径。
 - **references 级修正(2026-07-25 复审补漏)**:lark-doc-create.md / lark-doc-update.md 的 `block_token` 说明、style/lark-doc-style.md 的已有画板编辑指引,lark-whiteboard 引用补「未随包收录 + CLI 直给」;lark-wiki-token-routing.md 的 slides 行改为「lark-slides 未收录,暂不支持」声明;lark-base-cell-value.md / lark-base-view-set-filter.md / lark-drive-search.md 的 lark-contact 提及补「未随包收录」声明并统一为 `lark-cli contact +search-user` 直给。
 
+- **评审修复补漏(2026-07-26)** 详目:`Read 工具` 同类残留修正见下;lark-doc description 补回 doubao 路由句等。以下为该轮明细,保留备查。
+
+### 本地工具依赖审查补录(2026-08-16,第四轮)
+
+品悟为三端应用(macOS/Linux/Windows),Windows 不保证本地 `jq` 可用;lark-cli 全局
+`--jq` 实测对 API/shortcut 命令可用(管理命令如 `auth status` 不支持)。以下修改
+改为 CLI 内置 `--jq` 或模型直接读取,下次上游 sync 需重放:
+
+- **lark-im/references/lark-im-chat-create.md / lark-im-chat-search.md**:示例中
+  `--format json | jq -r '.data...'` 命令替换链 3 处改为 `--jq` 直出 + 从输出
+  读取 ID 的两步流(消除本地 jq 与 shell `$( )` 依赖)。
+- **lark-im/references/lark-im-chat-list.md**:Scenario 3 的 `while`/`echo|jq -r`
+  分页循环改为 `--jq '{chat_ids,has_more,page_token}'` 单次投影 + 逐页传
+  `--page-token` 的说明。
+- 其余命中判定不动:`lark-im-card-action-reply.md` 的 `--jq`(本就是 CLI 内置
+  flag);lark-base data-analysis-sop 的本地 `jq -s`(已自带「本地 jq 不可用时改
+  `--jq-records`」逃生口,分析工作流属可选重工具路径);lark-drive-status 的
+  `--jq`;visual-design/lark-doc-md 的 base64 为数据编码语义非 shell 工具依赖。
+
 ### 评审修复补漏(2026-07-26)
 
 - **`Read 工具` 同类残留修正**:lark-task / lark-wiki / lark-drive / lark-sheets 的 SKILL.md 与 lark-doc 的 SKILL.md、references/lark-doc-create.md、references/lark-doc-update.md 中残留的 `Read 工具` 统一改为实际工具名 `read_file`(此前仅修了 lark-im)。

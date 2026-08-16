@@ -148,15 +148,15 @@ lark-cli im +chat-list --sort active_time --exclude-muted
 
 ### Scenario 3: Iterate all my chats programmatically
 
+Use the CLI's built-in `--jq` to project the pagination fields in one call (no local `jq` or shell text parsing needed, works on all platforms). Read `has_more` / `page_token` from each page's output and issue the next call with `--page-token` until `has_more` is `false`:
+
 ```bash
-TOKEN=""
-while :; do
-  RESP=$(lark-cli im +chat-list --page-size 100 --page-token "$TOKEN" --format json)
-  echo "$RESP" | jq -r '.data.chats[].chat_id'
-  HAS_MORE=$(echo "$RESP" | jq -r '.data.has_more')
-  [ "$HAS_MORE" = "true" ] || break
-  TOKEN=$(echo "$RESP" | jq -r '.data.page_token')
-done
+lark-cli im +chat-list --page-size 100 \
+  --jq '{chat_ids: [.data.chats[].chat_id], has_more: .data.has_more, page_token: .data.page_token}'
+
+# next page: pass the previous page_token
+lark-cli im +chat-list --page-size 100 --page-token "<page_token>" \
+  --jq '{chat_ids: [.data.chats[].chat_id], has_more: .data.has_more, page_token: .data.page_token}'
 ```
 
 ## Common Errors and Troubleshooting

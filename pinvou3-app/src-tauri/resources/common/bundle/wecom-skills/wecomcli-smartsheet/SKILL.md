@@ -42,7 +42,7 @@ wecom-cli doc <tool_name> '<json_params>'
 
 ## 接口路由表
 
-> **硬规则**：第二列是 `references/xxx.md` 链接的，命中这一行后**先 `read` 对应 references 文件，再构造命令**。写入/读取记录前，先用 `smartsheet_get_sheet` 拿到目标子表的 `sheet_id`，并用 `smartsheet_get_fields` 了解字段类型。
+> **硬规则**：第二列是 `references/xxx.md` 链接的，命中这一行后**先用 `File(action="read")` 读取对应 references 文件，再构造命令**。写入/读取记录前，先用 `smartsheet_get_sheet` 拿到目标子表的 `sheet_id`，并用 `smartsheet_get_fields` 了解字段类型。
 
 | 用户意图 | 参考位置 |
 |---|---|

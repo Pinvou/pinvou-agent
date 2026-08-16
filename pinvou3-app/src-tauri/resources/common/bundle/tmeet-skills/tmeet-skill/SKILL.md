@@ -14,16 +14,7 @@ metadata:
 
 ## 安装与初始化
 
-在使用本技能前，必须检测是否已安装 `tmeet` 命令行工具：
-
-- 如果检测到 `tmeet` 命令已存在，直接使用即可
-- 如果未检测到 `tmeet` 命令，会自动执行以下安装命令：
-  ```bash
-  npm install -g @tencentcloud/tmeet@latest
-  ```
-  安装最新版本的腾讯会议 CLI 工具包
-
-> **注意**：自动安装需要网络连接和 npm 环境支持。如果安装失败，请手动执行上述命令或检查网络环境。
+在品悟中，`tmeet` CLI 由应用代为安装与管理（首次使用时自动执行 npm 安装并校验版本），模型**不需要也不要自行执行安装命令**。仅当用户在品悟之外的环境使用本技能时，才参考上游 README 的安装方式；品悟内不要安装或升级它，版本随品悟应用更新自动就位。
 
 ## 认证
 
@@ -40,13 +31,13 @@ tmeet auth logout
 tmeet auth status
 ```
 
-> **注意**：除 `auth login`,`auth status` 外，所有命令都需要先完成登录。未登录时命令会提示 `user config is empty`。
+> **注意**：除 `auth login`、`auth status`、`tshoot log`（不带 `--upload`）外，所有命令都需要先完成登录。未登录时命令会提示 `user config is empty`。
 
 > **注意**：`auth login` 是**阻塞命令**——执行后会先输出授权 URL，然后**阻塞等待最多300s**用户在浏览器完成 OAuth 授权。**必须前台运行**：前台运行保持进程与终端连接，OAuth 回调能正常将凭证写入本地。**不要**用后台方式（`&`）运行——后台进程脱离控制终端会导致凭证写入失败。
  
-> **注意**：如果当前 Agent 是 **Hermes** 且系统**没有默认浏览器**，请**不要**尝试执行 `tmeet auth login` 命令，而是直接告知用户：「请在终端中手动执行 `tmeet auth login` 完成登录授权，获取授权 URL 后在浏览器中打开完成授权。」
+> **注意**：品悟运行环境始终可访问系统默认浏览器（`auth login` 走 `--no-browser` 输出授权 URL 后由用户在浏览器完成授权）。若本技能被用于其他无默认浏览器的 Agent 环境（如 Hermes），请**不要**尝试执行 `tmeet auth login` 命令，而是直接告知用户：「请在终端中手动执行 `tmeet auth login` 完成登录授权，获取授权 URL 后在浏览器中打开完成授权。」
 
-> **注意**：第一次调用`auth login`命令或者切换了模型，必须将当前使用的agent类型(如Cursor/Claude Desktop/Cline/CodeBuddy)和模型名称(如Claude 3.5 Sonnet/GPT-4o/DeepSeek)分别写入`TMEET_AGENT`和`TMEET_MODEL`环境变量，**不需要向用户询问**。
+> **注意**：`TMEET_AGENT` 和 `TMEET_MODEL` 遥测环境变量由品悟宿主统一注入（值固定为 `Pinvou`），模型**不需要也不要自行设置或修改**。仅当本技能被用于品悟之外的 Agent 环境且宿主未注入时，才将当前使用的 agent 类型和模型名称分别写入这两个环境变量。
 
 ## 命令总览与详情索引
 

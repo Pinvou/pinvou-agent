@@ -176,13 +176,7 @@ lark-cli 命令执行后，如果检测到新版本，JSON 输出中会包含 `_
 LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 <lark-cli command>
 ```
 
-当你在输出中看到 `_notice.update` 时，先完成用户当前请求；如仍相关，再简短告知可运行：
-
-```bash
-lark-cli update
-```
-
-**重要**：始终使用 `lark-cli update` 更新，它会同时更新 CLI 和 AI Skills。
+当你在输出中看到 `_notice.update` 时，先完成用户当前请求；如仍相关，再简短告知用户：品悟内 lark-cli 由应用按锁文件钉扎分发与升级，**不要执行 `lark-cli update` 自行更新**（自行更新会脱离品悟校验，导致下次使用时被重装回钉扎版本）；新版本会随品悟应用更新自动就位。
 
 ## JSON 输出契约
 

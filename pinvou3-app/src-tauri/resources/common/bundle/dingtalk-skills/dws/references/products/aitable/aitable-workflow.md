@@ -260,19 +260,20 @@ dws aitable workflow disable --base-id BASE_ID --workflow-id WORKFLOW_ID --yes -
 ### 创建并确认一个工作流
 
 ```bash
-dws aitable workflow create --base-id BASE_ID --dsl @/tmp/workflow.json --locale zh-CN --format json \
-  | tee /tmp/workflow-result.json
+# dws 内置 --jq 过滤输出，无需本地 jq（Windows 等环境不保证 jq 可用）
+dws aitable workflow create --base-id BASE_ID --dsl @/tmp/workflow.json --locale zh-CN \
+  --jq '{valid: .data.valid, flowId: .data.flowId, issues: .data.issues}'
 
-jq '{valid: .data.valid, flowId: .data.flowId, issues: .data.issues}' /tmp/workflow-result.json
-FLOW_ID=$(jq -r '.data.flowId' /tmp/workflow-result.json)
+# 确认时把拿到的 flowId 直接写进 --jq 表达式（dws --jq 只接一个表达式，不支持 jq 的 --arg 等 CLI 选项）
 dws aitable workflow list --base-id BASE_ID --format json \
-  | jq --arg id "$FLOW_ID" '.data.list[] | select(.flowId == $id) | {flowId, name, status}'
+  --jq '.data.list[] | select(.flowId == "<flowId>") | {flowId, name, status}'
 ```
 
 ### 看看 Base 里有哪些自动化在跑
 
 ```bash
-dws aitable workflow list --base-id BASE_ID --format json | jq '.data | {total: .recordCount, running: .runningCount, items: .list | map({name, status, flowId})}'
+dws aitable workflow list --base-id BASE_ID --format json \
+  --jq '.data | {total: .recordCount, running: .runningCount, items: .list | map({name, status, flowId})}'
 ```
 
 ### 临时停掉某个流程做调试
@@ -288,15 +289,21 @@ dws aitable workflow disable --base-id BASE_ID --workflow-id WORKFLOW_ID --yes -
 dws aitable workflow enable --base-id BASE_ID --workflow-id WORKFLOW_ID --format json
 
 # 4. 确认 status=RUNNING
-dws aitable workflow list --base-id BASE_ID --format json | jq '.data.list[] | select(.flowId == "WORKFLOW_ID") | .status'
+dws aitable workflow list --base-id BASE_ID --format json \
+  --jq '.data.list[] | select(.flowId == "WORKFLOW_ID") | .status'
 ```
 
-### 批量关掉某个 Base 下所有 workflow（调试 / 迁移前清场）
+### 逐个停掉某个 Base 下的 workflow（调试 / 迁移前清场）
+
+每个 workflow 单独执行；不需要 shell 循环或本地 jq，直接按 flowId 逐条 disable：
 
 ```bash
-for WF in $(dws aitable workflow list --base-id BASE_ID --limit 100 --format json | jq -r '.data.list[] | select(.status == "RUNNING") | .flowId'); do
-  dws aitable workflow disable --base-id BASE_ID --workflow-id "$WF" --yes --format json | jq .status
-done
+# 1. 先列出 RUNNING 的 flowId（从输出逐条读取）
+dws aitable workflow list --base-id BASE_ID --limit 100 --format json \
+  --jq '[.data.list[] | select(.status == "RUNNING") | .flowId]'
+
+# 2. 对每个 flowId 执行（逐条替换 <flowId>）
+dws aitable workflow disable --base-id BASE_ID --workflow-id <flowId> --yes --jq '.status'
 ```
 
 ## 注意事项

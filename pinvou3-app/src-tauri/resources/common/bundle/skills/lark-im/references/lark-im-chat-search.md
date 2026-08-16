@@ -111,15 +111,17 @@ lark-cli im +chat-search --query "design review"
 ### Scenario 2: Search a chat and list recent messages
 
 ```bash
-CHAT_ID=$(lark-cli im +chat-search --query "project" --format json | jq -r '.data.chats[0].chat_id')
-lark-cli im +chat-messages-list --chat-id "$CHAT_ID"
+# --jq is built into the CLI (no local jq needed); read chat_id from the projected output
+lark-cli im +chat-search --query "project" --jq '.data.chats[0].chat_id'
+lark-cli im +chat-messages-list --chat-id "<chat_id>"
 ```
 
 ### Scenario 3: Search a chat and send a message
 
 ```bash
-CHAT_ID=$(lark-cli im +chat-search --query "daily report" --format json | jq -r '.data.chats[0].chat_id')
-lark-cli im +messages-send --chat-id "$CHAT_ID" --text "Today's progress update"
+# --jq is built into the CLI (no local jq needed); read chat_id from the projected output
+lark-cli im +chat-search --query "daily report" --jq '.data.chats[0].chat_id'
+lark-cli im +messages-send --chat-id "<chat_id>" --text "Today's progress update"
 ```
 
 ## Common Errors and Troubleshooting

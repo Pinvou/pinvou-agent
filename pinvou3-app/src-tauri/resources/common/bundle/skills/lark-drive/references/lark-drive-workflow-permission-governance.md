@@ -76,7 +76,7 @@ Risk / Structure: `R2` / `S2`
 | State | Protocol Step | Agent MUST Do | User-Facing Output | wait_for_user | Next State |
 |-------|---------------|---------------|--------------------|---------------|------------|
 | `PARSE_INTENT` | `route` / `scope` | 解析 intent、target scope、desired policy，以及只读审计、单目标公开性判断、权限申请、owner 转移还是修复模式；单目标公开性判断设置 `intent=public_exposure_check`、`target_scope=single_resource` | 范围确认；如果缺少目标、新 owner 或期望动作，只问一个澄清问题 | 缺少 target / new owner / action，或容器范围需要用户确认时为 `true` | `TARGET_INSPECT` |
-| `TARGET_INSPECT` | `scope` | 解析单资源、明确列表、Wiki space / node、Drive folder；Drive folder 直接从 URL 路径或显式 `type=folder` 解析，不调用 `drive +inspect`；保留原始 URL、scope type、canonical token/type | 目标范围表，包含 scope、title/type/token status | 除非解析失败，否则为 `false` | `DISCOVER_TARGETS` or `FACT_READ` |
+| `TARGET_INSPECT` | `scope` | 解析单资源、明确列表、Wiki space / node、Drive folder；Drive folder 可用 `drive +inspect` 解析（支持 `/drive/folder/<token>` URL），也可直接从 URL 路径或显式 `type=folder` 解析；保留原始 URL、scope type、canonical token/type | 目标范围表，包含 scope、title/type/token status | 除非解析失败，否则为 `false` | `DISCOVER_TARGETS` or `FACT_READ` |
 | `DISCOVER_TARGETS` | `scope` / `read` | 对 Wiki space / node 或 Drive folder 递归只读枚举，归一化为 `discovered_targets`；记录 `discovery_blockers` | 发现进度和覆盖摘要；不展示内部 cursor/token，除非用户要求 | 除非发现范围无法确认或全部被阻断，否则为 `false` | `FACT_READ` |
 | `FACT_READ` | `read` | 对直接目标或 `discovered_targets` 执行 `drive metas batch_query`；对支持的文件、文件夹或云文档目标执行 `drive +permission-get-setting` 读取自身权限设置；当 `intent=public_exposure_check` 且 `target_scope=single_resource` 时，可复用 `drive +inspect` 返回的 title / URL / type，只补读目标公共访问和协作权限设置；在用户要求活跃度 / 访问复核 / 生命周期判断时读取访问统计和访问记录 | 权限事实摘要、coverage summary、activity facts 和 unsupported checks | 除非所有目标都被 auth 阻断，否则为 `false` | `RISK_ASSESS` |
 | `RISK_ASSESS` | `assess/plan` | 对每个可审计目标生成 `per_target_permission_assessment` 并分类证据；如用户提供 policy，则对照 policy；`public_exposure_check + single_resource` 只渲染单目标结论，不生成 `risk_id`；owner 转移路径生成 `owner_transfer_candidates` / `owner_transfer_plan`；治理路径构建可定位风险清单、访问复核清单、dry-run 整改计划或候选修复计划，完整清单必须生成稳定 `risk_id` | 带 priority、URL、risk_id、owner、sec_label 的 findings、confidence、review items、建议动作和下一步 CTA；单目标公开性判断只输出结论和关键字段 | 治理路径为 `true`，单目标公开性判断为 `false` | `EXEC_CONFIRM` or `DONE` |
@@ -91,7 +91,7 @@ Risk / Structure: `R2` / `S2`
 
 | State | Allowed Command Families | Purpose |
 |-------|--------------------------|---------|
-| `TARGET_INSPECT` | `drive +inspect` | 解析非 folder URL、type、canonical token、title 和 wiki unwrap data；Drive folder 不支持 `+inspect`，必须从 URL 路径或显式 `type=folder` 直接解析 |
+| `TARGET_INSPECT` | `drive +inspect` | 解析 URL、type、canonical token、title 和 wiki unwrap data（支持 folder URL / `--type folder`，如 `/drive/folder/<token>`）；也可直接从 URL 路径或显式 `type=folder` 解析 |
 | `DISCOVER_TARGETS` | `wiki +node-list` | 递归发现 Wiki space / node 下当前身份可见的节点 |
 | `DISCOVER_TARGETS` | `drive files list` | 递归发现 Drive folder 下当前身份可见的文件和子文件夹 |
 | `FACT_READ` | `drive metas batch_query` | 读取 title、URL、owner 和 secure-label metadata |

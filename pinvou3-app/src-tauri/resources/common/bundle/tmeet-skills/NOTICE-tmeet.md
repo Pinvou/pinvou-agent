@@ -53,8 +53,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 技能文档命令树与参数均已对照 tmeet 1.0.15 实测 help 核验（含 1.0.15 新增的
 `meeting search`、`control waiting-room`），无发现不符。为适配品悟运行形态，在
-上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下三处修改（均仅限
-`SKILL.md`，references/ 与上游逐字节一致）：
+上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4 仅限
+`SKILL.md`，第 5 条另涉一处 references 措辞修正，其余 references/ 与上游
+逐字节一致）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
@@ -64,9 +65,27 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 3. **悬空占位链接修复**：命令总览说明行中的占位示例
    `[references/xxx.md](references/xxx.md)` 改为纯代码格式 `references/xxx.md`
    （原写法是指向不存在文件的悬空 markdown 链接，仅去链接化，语义不变）。
+4. **「安装与初始化」节改写为品悟代管口径**：上游的 `npm install -g
+   @tencentcloud/tmeet@latest` 自动安装指引改为「由品悟应用代为安装与管理，
+   模型不要自行执行安装命令」，并移除文档内的具体安装命令，避免模型在品悟
+   内自行安装/升级。
+5. **登录前置例外清单修正**（references 同步一处措辞修正）：按 1.0.15 源码
+   `cmd/root.go` preCheck 与 `cmd/tshoot/log.go` 的 `skipPreCheckFlag("upload")`
+   实测，免登录命令除 `auth login` / `auth status` 外还包括不带 `--upload` 的
+   `tshoot log`，SKILL.md 认证节例外清单已补齐；`references/tmeet-record.md`
+   中「唯一能按录制内容检索的命令」补「跨会议」限定，消除与
+   `transcript-search` 的表述矛盾。
+6. **宿主环境断言改为品悟口径**（2026-08-16 第四轮审查，SKILL.md 与
+   `references/tmeet-auth.md` 各两处）：上游「如果当前 Agent 是 Hermes 且系统
+   没有默认浏览器」改为「品悟运行环境始终可访问默认浏览器（登录走
+   `--no-browser`），仅品悟之外的 Agent 环境保留原 Hermes 提示」；上游「第一次
+   调用 auth login 必须将 agent 类型/模型名写入 `TMEET_AGENT`/`TMEET_MODEL`」
+   改为「两变量由品悟宿主统一注入（`tmeet.rs` 固定 `Pinvou`），模型不要自行
+   设置，仅品悟之外环境才自行写入」。两变量经 strings 实测存在于 1.0.15
+   二进制、品悟注入值见
+   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs`。
 
-上游其余内容（含 `npm install -g @tencentcloud/tmeet@latest` 安装指引、
-`auth login` 交互式登录教学等）保持上游原样；品悟实际安装版本由 `tmeet.rs` 的
-`TMEET_NPM_SPEC` 钉扎（`@tencentcloud/tmeet@1.0.15`），实际登录由
-`auth login --no-browser` 完成（该 flag 在 1.0.15 help 中真实存在），文档描述
-与品悟用法不矛盾。
+上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
+版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（`@tencentcloud/tmeet@1.0.15`），
+实际登录由 `auth login --no-browser` 完成（该 flag 在 1.0.15 help 中真实存在），
+文档描述与品悟用法不矛盾。

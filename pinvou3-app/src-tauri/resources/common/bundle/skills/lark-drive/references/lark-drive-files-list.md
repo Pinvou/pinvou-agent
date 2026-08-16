@@ -65,7 +65,7 @@ lark-cli drive files list \
 
 ## 参数规则
 
-1. `folder_token` 必须放在 `--params` JSON 里；不要使用不存在的 `--folder-token` flag。
+1. `folder_token` 优先放在 `--params` JSON 里；typed flag `--folder-token` 也存在（见 `--help`），两者等价，本 workflow 统一用 `--params` 传参，避免和 shortcut 的 `--folder-token` 语义混淆。
 2. `page_token` 必须放在 `--params` JSON 里；不要依赖 shell 变量拼接不完整的 JSON。
 3. 默认不要传 `order_by` / `direction`；只有用户明确要求按创建时间 / 编辑时间排序时才使用服务端排序参数。
 4. 排序参数映射：创建时间 -> `order_by:"CreatedTime"`；编辑时间 / 修改时间 -> `order_by:"EditedTime"`；升序 -> `direction:"ASC"`；降序 -> `direction:"DESC"`。不要省略排序参数后再用 Python / shell 客户端排序替代。
@@ -177,7 +177,6 @@ while queue not empty:
 
 | 错误用法 | 问题 | 正确做法 |
 |----------|------|----------|
-| `lark-cli drive files list --folder-token <token>` | `files.list` 不提供 `--folder-token` flag | 使用 `--params '{"folder_token":"<token>"}'` |
+| `lark-cli drive files list --page-all \| python json.loads(...)` | 自动翻页输出不适合作为单个 JSON 对象解析 | 手动使用 `page_token` 翻页并逐页解析 |
 | 根目录返回 N 项就认为云空间只有 N 项 | 根目录只返回直接子项，不是递归结果 | 对返回的子文件夹继续递归 |
-| `--page-all \| python json.loads(...)` | 自动翻页输出不适合作为单个 JSON 对象解析 | 手动使用 `page_token` 翻页并逐页解析 |
 | `cmd 2>&1` 后解析 JSON | stderr 提示污染 JSON 输入 | 只解析 stdout，stderr 作为日志处理 |
