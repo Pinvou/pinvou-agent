@@ -1,6 +1,6 @@
 # doc comment（文档评论：list / create / reply / update / delete / create-inline）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 >
 > **同任务常配合**：`dws contact user search`（查 `--mention` 用 userId）/ `dws chat search`（查群用 openConversationId）/ [`doc-block.md`](./doc-block.md)（划词评论必须先取 blockId 与 paragraph 文本）

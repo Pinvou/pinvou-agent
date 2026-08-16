@@ -1,7 +1,7 @@
 ---
 name: lark-calendar
 version: 1.0.0
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书日历:管理日程和会议室。查看/搜索日程、创建/更新日程、管理参会人、查询忙闲和推荐时段、预定会议室。不负责:查询过去的视频会议记录(本环境无 lark-vc 能力,只能查到日程本身)、待办任务(走 lark-task)。"
+description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书日历:管理日程和会议室。查看/搜索日程、创建/更新日程、管理参会人、查询忙闲和推荐时段、预定会议室。不负责:查询视频会议记录(本 skill 只覆盖日程;lark-vc 技能未随包收录,可 CLI 直连,见意图路由)、待办任务(走 lark-task)。"
 metadata:
   requires:
     bins: ["lark-cli"]
@@ -56,7 +56,7 @@ lark-cli calendar +get --calendar-id <calendar_id> --event-id <event_id>
 # start/end 按时间范围（ISO 8601 或 YYYY-MM-DD）可选
 # attendee-ids 按参会人（自动识别 ou_ 用户 / oc_ 群聊 / omm_ 会议室前缀）可选
 # page-token 分页游标，用于继续翻页 可选
-# page-size 每页数量，默认 30 可选
+# page-size 每页数量，默认 20 可选
 lark-cli calendar +search-event --query "周会" --start 2026-04-20 --end 2026-04-27 --attendee-ids "ou_user1,oc_chat1,omm_room1" --page-token <page_token> --page-size 30
 ```
 
@@ -120,7 +120,7 @@ lark-cli calendar +freebusy --start 2026-03-11 --end 2026-03-12 --user-id ou_xxx
 
 | 用户意图 | 路由到 |
 |----------|--------|
-| 查询过去的会议（"昨天的会议""上周的会"） | 本 skill 只能查到日程本身；会议记录/纪要能力本环境未提供，如实告知用户 |
+| 查询过去的会议（"昨天的会议""上周的会"） | 本 skill 只能查到日程本身；要查会议记录/纪要用 CLI 直连（lark-vc 技能未随包收录，命令可直调）：`lark-cli vc +search --start <开始日期> --end <结束日期> --query <关键词>`（支持 --participant-ids / --organizer-ids / --room-ids，至少一个筛选条件），从日程纪要取产物的链路见下行动作 |
 | 查询日历/日程或未来时间的会议 | 本 skill |
 | 按关键词搜索日程 | 本 skill（`+search-event`） |
 | 从日程获取关联的视频会议 ID 或用户绑定的会议纪要文档 | 本 skill（`+meeting`） |
@@ -189,7 +189,7 @@ lark-cli im +chat-search --query <query> --as user
 
 ## 不在本 skill 范围
 
-- 查询过去的视频会议记录 → 本环境未提供该能力（无 lark-vc 技能），不要承诺可查
+- 查询过去的视频会议记录 → lark-vc 技能未随包收录，但 CLI 可直连：`lark-cli vc +search` 按时间/关键词/参会人查会议记录（用法见上方「意图路由」）；从日程拿纪要链路见 [`+meeting`](references/lark-calendar-meeting.md)，不要误答"查不到"
 - 待办任务管理 → [lark-task](../lark-task/SKILL.md)
 - 通讯录 → lark-contact skill 未随包收录，用 `lark-cli contact +search-user` 直连（见上方「常用其他域命令」）
 - 即时通讯 → [lark-im](../lark-im/SKILL.md)

@@ -41,24 +41,24 @@ cli_version: ">=1.0.15"
 
 下面只统计当前公开 catalog 中的 shortcut，不展开完整明细。已知意图应先按产品 Skill、意图表或任务 reference 选择唯一命令；命令已选中时直接执行，只在参数或安全语义不确定时读取 leaf Schema，在当前 Cobra flags 不确定时读取 leaf Help。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service <service> --format json` 做最后回退；不要为已知高频意图加载完整产品 Catalog。
 
-| 服务 | shortcut 数 | multi skill |
-|---|---:|---|
-| `aitable` | 92 | `dingtalk-aitable` |
-| `attendance` | 19 | `dingtalk-misc` |
-| `calendar` | 20 | `dingtalk-calendar` |
-| `chat` | 98 | `dingtalk-chat` |
-| `contact` | 14 | `dingtalk-contact` |
-| `devapp` | 19 | `dingtalk-misc` |
-| `ding` | 4 | `dingtalk-misc` |
-| `doc` | 45 | `dingtalk-doc` |
-| `drive` | 28 | `dingtalk-drive` |
-| `mail` | 10 | `dingtalk-mail` |
-| `minutes` | 27 | `dingtalk-minutes` |
-| `oa` | 7 | `dingtalk-misc` |
-| `report` | 2 | `dingtalk-misc` |
-| `sheet` | 2 | `dingtalk-misc` |
-| `todo` | 11 | `dingtalk-todo` |
-| `wiki` | 1 | `dingtalk-wiki` |
+| 服务 | shortcut 数 |
+|---|---:|
+| `aitable` | 92 |
+| `attendance` | 19 |
+| `calendar` | 20 |
+| `chat` | 98 |
+| `contact` | 14 |
+| `devapp` | 19 |
+| `ding` | 4 |
+| `doc` | 45 |
+| `drive` | 28 |
+| `mail` | 10 |
+| `minutes` | 27 |
+| `oa` | 7 |
+| `report` | 2 |
+| `sheet` | 2 |
+| `todo` | 11 |
+| `wiki` | 1 |
 <!-- VISIBLE_SHORTCUTS_OVERVIEW_END -->
 
 ## 多组织 / 多账号
@@ -99,7 +99,7 @@ cli_version: ">=1.0.15"
 
 ## 意图判断决策树
 
-用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → **当前无稳定产品参考**（勿猜 `aiapp` 命令）；向用户说明能力未以产品文档发布，multi 布局见 `dingtalk-misc` 的 `unsupported-scripts.md`
+用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → **当前无稳定产品参考**（勿猜 `aiapp` 命令）；向用户说明该能力未以产品文档发布
 用户提到"目标管理/Agoal/战略解码/经营合约/计分卡/目标模板/周月报提交统计" → `agoal`
 用户提到"找人/搜人/谁负责 XX/某事项的负责人/某项目的人/团队成员/上级/下级/按工号找人/按手机号找人" → `aisearch`（通用语义找人；若明确涉及人才池/绩效/职业历程/结构化高级条件，去 `hrbrain`）
 用户提到"表格/多维表/AI表格/记录/数据/视图/图表/仪表盘" → `aitable`

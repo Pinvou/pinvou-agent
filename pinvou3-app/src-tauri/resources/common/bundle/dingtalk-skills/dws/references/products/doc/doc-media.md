@@ -1,6 +1,6 @@
 # doc media（附件 / 图片：download / insert）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 
 > ⚠️ **图片插入硬规则**：

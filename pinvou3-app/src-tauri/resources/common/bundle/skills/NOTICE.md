@@ -57,6 +57,28 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
   (1.0.87 实测仍无该命令,维持删除)。lark-im/references/lark-im-scopes.md 为
   本地新增文件,保留并按 1.0.87 口径(`missing_scopes`、`files.create`)更新。
 
+### 真实性审查补录(2026-08-16,同轮次复审)
+
+同步后对照 lark-cli 1.0.87 二进制逐命令实测复审,除上述重放外修正:
+
+- **lark-shared**:SKILL.md 补 frontmatter 三件套(description 防误用前缀 +
+  `metadata.requires.bins` + `cliHelp`),与其余 8 域对齐;
+  `references/lark-wiki-token-routing.md` 的 slides 行由「暂不支持」改为
+  「技能未随包收录 + `lark-cli slides` 直给」(1.0.87 slides 域有完整编辑
+  命令,mindnote 行同口径补直给)。
+- **lark-calendar**:SKILL.md 4 处 lark-vc 口径由「本环境未提供/如实告知不
+  支持」统一为「技能未随包收录 + `vc +search` 等直连」(实测 1.0.87 vc 域
+  命令完整,原文会让模型拒绝实际可完成的请求);`+search-event` 默认页大小
+  修正为 20(实测)。
+- **lark-doc**:fetch.md 自指小节名与错位标题修正;4 个 media/resource 文档
+  的 `../lark-shared` 链接显示文本与目标对齐。
+- **lark-sheets**:SKILL.md 与 read-data.md 的 scripts 分发口径由上游的
+  「只随仓库版/二进制内嵌版不含」修正为「随品悟应用内置分发」(品悟 bundle
+  实际携带 scripts/ 且物化时整目录释放)。
+- frontmatter 的 `requires.skills`(lark-doc)与 `siblings`(lark-sheets)键名
+  不一致:引擎(CodeWhale)只消费 name/description,两者均无实际作用,保持
+  上游原样,下次 sync 顺其自然。
+
 ### 提示词事实修正与去重(2026-07-25)
 
 - **lark-shared**:description 改为中文统一风格;删除两处逐字重复(device-code 展示规则、更新提示规则);split-flow 步骤内的二维码展示规则去重;修正语病。

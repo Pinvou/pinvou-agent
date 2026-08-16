@@ -1,6 +1,6 @@
 ---
 name: wecomcli-doc
-description: 企业微信文档/表格/智能表格/智能文档管理。文档的创建、Markdown 读取与覆写,智能表格创建,智能文档创建与导出。支持 docid 或 URL 定位。用户提及 `https://doc.weixin.qq.com/` 链接时触发;智能表格结构管理见 wecomcli-smartsheet。
+description: 何时用:仅当用户明确指向企业微信文档(写个企微文档、读 `https://doc.weixin.qq.com/` 链接)时使用;泛指做个文档默认走本地工具,不要误用。企微文档/表格/智能表格/智能文档管理:文档创建、Markdown 读取与覆写,智能表格创建,智能文档创建与导出,支持 docid 或 URL 定位;智能表格结构管理见 wecomcli-smartsheet。
 metadata:
   requires:
     bins: ["wecom-cli"]

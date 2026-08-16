@@ -205,7 +205,7 @@ Flags:
 
 ---
 
-## SKILL 摘要（原 dingtalk-sheet/SKILL.md 正文）
+## Shortcut 与原子命令
 
 <!-- VISIBLE_SHORTCUTS_START -->
 ## Shortcuts（无专用脚本/recipe 时优先）
@@ -256,8 +256,8 @@ Flags:
 
 ## 跨产品协作
 
-- 多维表 / 字段类型 → 切到 `dingtalk-aitable`
-- 把表数据写进文档 → 切到 `dingtalk-doc`
+- 多维表 / 字段类型 → 切到 [aitable.md](./aitable.md)
+- 把表数据写进文档 → 切到 [doc.md](./doc.md)
 
 ## 局部意图与 Recipe
 

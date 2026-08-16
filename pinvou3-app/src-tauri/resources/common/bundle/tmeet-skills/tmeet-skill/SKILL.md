@@ -1,7 +1,7 @@
 ---
 name: tmeet-skill
 version: 1.0.15
-description: "腾讯会议 CLI（tmeet）：OAuth 授权登录/登出/状态查询、会议管理（创建/更新/取消/查询/受邀者）、录制管理（列表/播放地址/智能纪要/转写/录制权限申请）、会议报告（参会人/等候室/导出参会成员明细/异步任务结果）、通讯录（严格限定：仅存在\"会议邀请/呼叫入会\"动作的前置步骤通过用户名/手机号/邮箱搜索成员；严禁单独用于查询任何人的姓名/部门/职位/联系方式/是否存在，无下游会议动作时一律拒绝）、会中控制（呼叫成员入会/踢出会议成员）、问题排查（导出本地日志，反馈工具缺失/失败/能力不足等问题给平台）。当用户需要通过命令行操作腾讯会议，或 Agent 在使用过程中遇到工具缺失、调用失败、能力不足等情况想反馈给平台时使用本技能。"
+description: "何时用：用户明确要通过命令行操作腾讯会议（tmeet），或 Agent 遇到工具缺失/调用失败/能力不足想反馈平台时。OAuth 登录/登出/状态、会议管理（创建/更新/取消/查询/搜索/受邀者）、录制管理（列表/下载地址/智能纪要/转写/权限申请）、会议报告（参会人/等候室/导出明细/异步任务）、通讯录（仅限会议邀请/呼叫入会前置解析，严禁单独查人）、会中控制（呼叫/踢出/等候室）、问题排查。泛指需求默认走本地工具。"
 metadata:
   requires:
     bins: ["tmeet"]
@@ -52,7 +52,7 @@ tmeet auth status
 
 > **调用前置**：下方「查询命令选择准则」与「安全规则」是调用命令前必读的规则章节。
 
-每个模块行末标注了对应详情文档路径（`→ [references/xxx.md](references/xxx.md)`），可直接跳转查看。
+每个模块行末标注了对应详情文档路径（`→ references/xxx.md`），可直接跳转查看。
 
 ```
 tmeet
@@ -116,7 +116,7 @@ tmeet
 
 ### 录制查询
 
-> **CRITICAL — 涉及录制/回放/转写查询前，MUST 先用 Read 工具读取 [`references/tmeet-record.md`](references/tmeet-record.md)**，其「录制查询路由总则」定义了 `meeting get` / `meeting search` / `meeting list-ended` / `record list` / `record search` / `record transcript-search` 的分流规则与 `permission_status` 权限判断。录制查询涉及会议级/录制级两套入口、无权限录制、内容级搜索、单文件内定位等多层级，路由复杂，**不读将导致命令选择、录制产物定位、权限边界判断错误，不得仅凭本节直接决策。**
+> **CRITICAL — 涉及录制/回放/转写查询前，MUST 先用 `File(action="read")` 工具读取 [`references/tmeet-record.md`](references/tmeet-record.md)**，其「录制查询路由总则」定义了 `meeting get` / `meeting search` / `meeting list-ended` / `record list` / `record search` / `record transcript-search` 的分流规则与 `permission_status` 权限判断。录制查询涉及会议级/录制级两套入口、无权限录制、内容级搜索、单文件内定位等多层级，路由复杂，**不读将导致命令选择、录制产物定位、权限边界判断错误，不得仅凭本节直接决策。**
 
 ### 使用准则
 

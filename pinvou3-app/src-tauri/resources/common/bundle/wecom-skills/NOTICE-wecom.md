@@ -61,3 +61,11 @@ SOFTWARE.
 ### 结构下沉(2026-07-25)
 
 - **wecomcli-meeting**:工作流 3-7(查列表/详情/关键词/取消/成员更新,155 行)下沉至 `references/workflows.md`,本体留索引表;「注意事项」去重合并为 5 条。本体 475 → 323 行。
+
+### 真实性审查(2026-08-16,wecom-cli 0.1.9 未升级)
+
+对照上游 `WecomTeam/wecom-cli`(main = 0.1.9 发布提交 `72e14f7` + 后续 3 个 skill 提交,其中 `bae1cc3`/`9d2aeaf` 已同步、`9eb7898` 仅 README)与本机 0.1.9 二进制实测:
+
+- **命令真实性核实**:用 0.1.9 二进制实测(向 `~/.config/wecom/cache/service_<域>.json` 注入上游 `registry.rs` 认可的工具清单后跑 `<域> <工具> --help`)全量验证 7 个 skill 引用的 45 条命令,全部存在;`get_doc_content`/`smartpage_*`/smartsheet 新建/todo 必填 `follower_id`/`search_todo_userid` 均与 0.1.9 相符,无需改动。
+- **frontmatter 防误用语义补齐(pinvou3 适配)**:7 个 skill 的 description 原为上游直译,缺「何时用 + 泛指默认本地」防误用前缀(对照 lark/dws/tmeet 收录口径),逐个改写为 `何时用:仅当用户明确指向企业微信…时使用;泛指…默认走本地工具` 开头,全部 ≤280 字符。
+- 未发现上游通用话术残留(文件读取工具名均为品悟口径、无全局安装类指引)、悬空相对链接(22 个引用全部存在)。

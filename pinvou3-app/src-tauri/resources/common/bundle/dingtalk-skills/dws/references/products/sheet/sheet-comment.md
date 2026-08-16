@@ -1,6 +1,6 @@
 # sheet comment（表格单元格评论：list / create / reply / update / delete）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../sheet.md`](../sheet.md) — 命令路由 + 场景索引 + 意图判断 + 全局约束
 >
 > **同任务常配合**：`dws aisearch person`（查 `--mention` 用 userId）/ [`sheet-workbook.md`](sheet-workbook.md)（未知工作表名称时先 `list` 确认真实名称）

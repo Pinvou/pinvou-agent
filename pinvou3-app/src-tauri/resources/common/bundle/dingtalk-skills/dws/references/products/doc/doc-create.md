@@ -1,6 +1,6 @@
 # doc create（创建文档）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 > 2. [`./style/doc-create-workflow.md`](./style/doc-create-workflow.md) — 创建工作流（标题、位置、骨架、回读校验）
 > 3. [`./style/doc-style-guideline.md`](./style/doc-style-guideline.md) — 排版规范（草稿元素清单、骨架样板）

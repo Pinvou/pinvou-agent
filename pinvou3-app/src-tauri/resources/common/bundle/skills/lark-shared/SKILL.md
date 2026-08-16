@@ -1,7 +1,11 @@
 ---
 name: lark-shared
 version: 1.0.0
-description: "飞书 lark-cli 共享规则:首次配置(config init)、认证登录(auth login --domain/--scope,split-flow)、登录态查询与撤销(auth status/logout/whoami)、--as user/bot 身份切换、权限不足与 missing_scope 处理、JSON 输出契约与 _notice、lark-cli update 更新、高风险操作审批(exit 10)。任何 lark-* 技能操作前的认证/权限问题,以及首次使用 lark-cli 时阅读。"
+description: "【何时用:仅在其他 lark-* 技能遇到认证/授权/身份/配置问题时,或首次使用 lark-cli 时;泛指需求默认走本地工具】lark-cli 共享规则:首次配置(config init)、认证登录(auth login --domain/--scope,split-flow)、登录态查询与撤销(auth status/logout/whoami)、--as user/bot 身份切换、权限不足与 missing_scope 处理、JSON 输出契约与 _notice、update 更新、高风险操作审批(exit 10)。"
+metadata:
+  requires:
+    bins: ["lark-cli"]
+  cliHelp: "lark-cli auth --help;lark-cli config --help"
 ---
 
 # lark-cli 共享规则
