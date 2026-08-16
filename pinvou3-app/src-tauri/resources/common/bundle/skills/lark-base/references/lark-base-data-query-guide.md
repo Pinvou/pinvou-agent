@@ -1,8 +1,6 @@
 # Base data-query guide
 
-This guide is the entry point for `+data-query`. Use it for common aggregation fewshots and command selection. For the complete DSL fields, operators, limits, and response details, use [lark-base-data-query.md](lark-base-data-query.md) as the DSL SSOT.
-
-Before using `+data-query`, also follow [lark-base-data-analysis-sop.md](lark-base-data-analysis-sop.md) to confirm that the task really needs aggregation instead of record listing or a temporary view.
+Read this guide after the [data analysis SOP](lark-base-data-analysis-sop.md) enters the Cloud path and selects `+data-query`, or directly when the user explicitly asks about the `+data-query` command or DSL. It provides common aggregation fewshots; use [lark-base-data-query.md](lark-base-data-query.md) only for complete DSL fields, operators, limits, response details, or error recovery.
 
 ## When to use
 
@@ -41,6 +39,14 @@ lark-cli base +data-query \
   --base-token <base_token> \
   --dsl '{"datasource":{"type":"table","table":{"tableId":"<table_id>"}},"dimensions":[{"field_name":"Owner","alias":"owner"}],"measures":[{"field_name":"Amount","aggregation":"sum","alias":"total_amount"}],"filters":{"type":1,"conjunction":"and","conditions":[{"field_name":"Status","operator":"is","value":["Done"]}]},"shaper":{"format":"flat"}}'
 ```
+
+## Common filter values
+
+Common `Condition.value` shapes: select `is` / `isNot` uses exactly one option
+name; datetime `is` / `isGreater` / `isLess` uses `["Today"]` or
+`["ExactDate","<epoch_ms>"]`; `isEmpty` / `isNotEmpty` uses `[]`.
+Use relative date keywords only for relative requests; see
+[lark-base-data-query.md](lark-base-data-query.md) for other field types and operators.
 
 Use `tableName` when the table ID is unavailable but the table name is known:
 

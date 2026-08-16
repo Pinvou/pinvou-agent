@@ -33,7 +33,7 @@ assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
-assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.13/);
+assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.15/);
 for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /bundled_connector_npm_cli/);
   assert.match(platformSource, /cli_bin == "tmeet"/);

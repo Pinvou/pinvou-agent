@@ -1,9 +1,9 @@
 钉钉内置技能来自钉钉官方 dingtalk-workspace-cli 的 dws-skills.zip mono 形态。
 
 - npm package: dingtalk-workspace-cli
-- skill/CLI version: 1.0.51
+- skill/CLI version: 1.0.58
 - 各平台 dws 二进制 SHA-256 见 `resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
-- Linux ARM64 dws SHA-256: db012e54393ae0d1b78d74d0606e084823ab8e5540991deb6d31e68abd01883b
+- Linux ARM64 dws SHA-256: de6f8a51de83a18cbd2691c1bc03ddc8809d4e33b51fab407c5313fa9d8140ea
 - license: Apache-2.0
 
 Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
@@ -21,3 +21,33 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 7. 「核心流程」删除元话术，压缩为 0-3 步（URL 预检/意图分类/歧义追问/选定产品读参考后执行）。
 8. MUST DO 参数格式括号注压缩。
 9. 「详细参考」中 best_practices 逐文件枚举压缩为单行汇总，aitable 两行合并为一行。
+
+除上述 9 条外，仓库对 `dws/` 另有两处已登记于 git 历史的本地修改，同步时同样重放：
+
+- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `File(action="read")`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。
+- `scripts/attendance_report_common.py`：图片缓存文件名的 URL 哈希由 MD5 改为 SHA-256（CodeQL py/weak-sensitive-data-hashing，PR #54）。
+
+## 同步记录（2026-08-16 → 1.0.58）
+
+本次同步自 v1.0.58 dws-skills.zip 的 mono 形态（zip 顶层与 mono/ 内容经 diff 确认一致）。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。
+
+上游结构变化（1.0.51 → 1.0.58 mono）：
+
+- references 新增：`channel-login.md`、`products/event.md`、`products/hrbrain.md`、`products/markdown.md`、`products/pat.md`、`products/whiteboard.md`、`products/whiteboard/`（open-nodes-v1 全套 + recipes）、`products/oa/`（表单组件/流程节点）。
+- references 删除：`recovery-guide.md`（SKILL.md「错误处理」同步移除 RECOVERY_EVENT_ID 闭环说明）。
+- scripts 删除：`bot_broadcast.py`、`chat_export_messages.py`、`chat_history_with_user.py`、`doc_create_and_write.py`、`extract_media_id.py`（Chat 历史导出与机器人广播下沉 Runtime）。
+- SKILL.md 大改：新增 Shortcut 使用原则/总览、多组织多账号（profile）、确认门禁协议、Schema 渐进查询；产品域新增 hrbrain/markdown/pat/whiteboard/event，`aiapp` 移除（标注无稳定产品参考），`agoal` 保留（mono 意图树仍路由，CLI 1.0.58 `--help` 服务列表仍含 agoal）。
+
+9 条登记重放结果（逐条）：
+
+1. description 重写 — 已重放（保持一句话触发式，压缩至 280 字符截断上限内，并纳入 1.0.58 新产品域组织大脑/Markdown/白板/事件订阅；上游新 description 未含 Agoal，本地继续补入）。
+2. 脚本能力描述修正 — 已重放（1.0.58 删除了 5 个脚本但 MUST DO 新文本仍提及「AI 应用创建轮询、文档创建后写内容」两个已不存在脚本的场景，且「详细参考」scripts 行仍列「文档创建并写入」，两处均删除该说法）。
+3. `--dry-run`/`--format json` 不实表述 — 上游已等价解决（上游删除「脚本均支持」句式，改为按脚本说明参数，无需重放）。
+4. 产品总览表补 `agoal` 行 — 已重放（1.0.58 mono 产品表仍缺 agoal 行而意图决策树仍路由 `agoal`，实测 CLI 1.0.58 仍提供 `agoal` 服务，继续对齐补入）。
+5. 压缩顶部警告块为一行 — 已重放（1.0.58 警告块引入 Schema 事实源语义，压缩为一行时保留该要点）。
+6. `--yes` 确认规则去重 — 已重放（删除「确认流程」三步代码块，确认方式并入「危险操作确认」开头一句；上游新增的「确认门禁的识别与重试协议」小节为新增语义，保留）。
+7. 「核心流程」压缩为 0-3 步 — 已重放（删除元话术；上游新增第 4 步「按任务最小化读取」的语义并入第 3 步）。
+8. MUST DO 参数格式括号注压缩 — 已重放（沿用「参数与参数值之间用空格隔开」）。
+9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
+
+另重放 git 历史登记的两处修改：`read_file` → `File(action="read")`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文。

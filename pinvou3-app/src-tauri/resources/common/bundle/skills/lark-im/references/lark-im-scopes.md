@@ -6,10 +6,10 @@
 | `chats.get` | `im:chat:read` |
 | `chats.link` | `im:chat:read` |
 | `chats.update` | `im:chat:update` |
-| `chat.members.bots` | `im:chat.members:read` |
 | `chat.members.create` | `im:chat.members:write_only` |
 | `chat.members.delete` | `im:chat.members:write_only` |
 | `chat.members.get` | `im:chat.members:read` |
+| `+chat-members-list` | `im:chat.members:read` |
 | `chat.user_setting.batch_query` | `im:chat.user_setting:read` |
 | `chat.user_setting.batch_update` | `im:chat.user_setting:write` |
 | `chat.managers.add_managers` | `im:chat.managers:write_only` |
@@ -29,6 +29,7 @@
 | `reactions.list` | `im:message.reactions:read` |
 | `threads.forward` | `im:message` |
 | `images.create` | `im:resource` |
+| `files.create` | `im:resource` |
 | `pins.create` | `im:message.pins:write_only` |
 | `pins.delete` | `im:message.pins:write_only` |
 | `pins.list` | `im:message.pins:read` |

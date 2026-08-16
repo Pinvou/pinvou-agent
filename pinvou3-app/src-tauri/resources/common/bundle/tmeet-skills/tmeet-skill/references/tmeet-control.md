@@ -2,15 +2,21 @@
 
 > **前置条件：** 先执行 `tmeet auth login` 完成登录授权，且会议必须处于进行中状态。
 
-会中控制命令用于在会议进行过程中对参会成员进行管理，包括呼叫成员入会、将成员踢出会议。成员通过用户 `open_id` 指定，可通过 `contact search` 命令查询获得。
+## 目录
+
+- [call — 呼叫成员入会](#call--呼叫成员入会)
+- [kick — 踢出会议成员](#kick--踢出会议成员)
+- [waiting-room — 等候室管理](#waiting-room--等候室管理)
+- [常见错误](#常见错误)
+- [参考](#参考)
 
 ---
 
 ## call — 呼叫成员入会
 
-> ⚠️ **写操作，执行前请确认用户意图。被呼叫成员的腾讯会议客户端会收到入会呼叫通知。**
+> ⚠️ **高风险写操作，执行前请确认用户意图。被呼叫成员的腾讯会议客户端会收到入会呼叫通知。**
 
-会中邀请呼叫：向指定成员发起入会呼叫，邀请其加入当前正在进行的会议。
+> ⚠️ **适用场景**：会中邀请呼叫，向指定成员发起入会呼叫，邀请其加入当前正在进行的会议，成员通过用户 `open_id` 指定，可通过 `contact search` 命令查询获得。本命令仅会议创建者/主持人/联席主持人在会议进行中可调用，若收到相关提示，无需重试直接告知用户。
 
 ```bash
 # 通过英文逗号分隔传入多个 open_id
@@ -38,11 +44,13 @@ tmeet control call \
 
 > ⚠️ **高风险写操作：被踢出的成员会立即离开会议。默认允许被踢成员重新入会（`--allow-rejoin` 默认 `true`）；如需不允许重新入会，可显式传 `--allow-rejoin=false`。执行前必须向用户明确列出将被踢出的成员。**
 
+> ⚠️ **适用场景**：会中踢人，将指定成员从当前正在进行的会议中移除。本命令仅会议创建者/主持人/联席主持人在会议进行中可调用，若收到相关提示，无需重试直接告知用户。
+
 > 🔒 **成员来源约束：`kick` 的目标必须是当前会议中的实际参会人，其 `open_id` / `ms_open_id` 必须从 [`tmeet report participants`](tmeet-report.md#participants--获取参会人列表) 的返回结果中获取，严禁使用 `tmeet contact search` 通讯录查询的结果作为来源。**
 
 > 原因：通讯录查询返回的是组织成员名录，并不代表他们已加入当前会议；而踢人操作仅对会中成员有效，且需要区分普通成员、Sip、Pstn 三类设备身份，这些信息只有 `report participants` 才能准确提供。
 
-会中踢人：将指定成员从当前正在进行的会议中移除。支持踢出三类对象（身份类型以 `report participants` 返回的字段为准）：
+支持踢出三类对象（身份类型以 `report participants` 返回的字段为准）：
 - **普通成员**：通过 `--users` 传入参会人 `open_id`（不包含 Sip/Pstn 设备）
 - **Sip 设备**：通过 `--sip-users` 传入设备 `ms_open_id`
 - **Pstn 设备**：通过 `--pstn-users` 传入设备 `ms_open_id`
@@ -87,17 +95,94 @@ tmeet control kick \
 
 ---
 
+## waiting-room — 等候室管理
+
+> ⚠️ **高风险写操作，执行前请确认用户意图。**
+
+> ⚠️ **适用场景**：将等候室成员移入移出会议、将会中成员移出至等候室。本命令仅会议创建者/主持人/联席主持人可调用（等候室成员移入/移出会议仅会议开始前、进行中可调用；会中成员移至等候室仅进行中可调用），若收到相关提示，无需重试直接告知用户。
+
+> 🔒 **成员来源约束：`waiting-room` 操作的目标成员必须是当前会议等候室或会中的成员，其 `open_id` / `ms_open_id` 必须从 [`tmeet report participants`](tmeet-report.md#participants--获取参会人列表) 或 [`tmeet report waiting-room-log`](tmeet-report.md#waiting-room-log--获取等候室成员列表) 的返回结果中获取，严禁使用 `tmeet contact search` 通讯录查询的结果作为来源。**
+
+管理会议中等候室成员，支持三种操作类型：
+
+- **enter-meeting**：主持人将等候室成员移入会议
+- **back-to-waiting**：主持人将会中成员移回等候室
+- **expel**：主持人将等候室成员移出（踢出会议）
+
+```bash
+# 将等候室成员移入会议
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type enter-meeting \
+  --users "open_id1,open_id2"
+
+# 将会中成员移回等候室
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type back-to-waiting \
+  --users "open_id1,open_id2"
+
+# 将等候室成员移出（踢出会议），不允许再次加入
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type expel \
+  --users "open_id1,open_id2"
+
+# 将等候室成员移出，允许再次加入会议
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type expel \
+  --allow-rejoin \
+  --users "open_id1,open_id2"
+
+# 将等候室成员移出，显式不允许再次加入会议
+# 注意：bool 类型显式设为 false 时必须使用等号语法 --allow-rejoin=false，不能写成 --allow-rejoin false
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type expel \
+  --allow-rejoin=false \
+  --users "open_id1,open_id2"
+
+# 同时操作 sip 设备和 pstn 设备
+tmeet control waiting-room \
+  --meeting-id "100000000" \
+  --operate-type expel \
+  --sip-users "ms_open_id_sip1" \
+  --pstn-users "ms_open_id_pstn1"
+```
+
+### 参数
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--meeting-id <id>` | ✅ | — | 会议 ID |
+| `--operate-type <type>` | ✅ | — | 操作类型：`enter-meeting`（主持人将等候室成员移入会议）、`back-to-waiting`（主持人将会中成员移入等候室）、`expel`（主持人将等候室成员移出） |
+| `--users <list>` | 三选一 | — | 待操作的普通成员 `open_id` 列表（不含 Sip/Pstn 设备），支持英文逗号分隔或重复传入该参数 |
+| `--sip-users <list>` | 三选一 | — | 待操作的 Sip 设备 `ms_open_id` 列表，支持英文逗号分隔或重复传入该参数 |
+| `--pstn-users <list>` | 三选一 | — | 待操作的 Pstn 设备 `ms_open_id` 列表，支持英文逗号分隔或重复传入该参数 |
+| `--allow-rejoin` | ❌ | — | 移出后是否允许再次加入会议（仅 `--operate-type=expel` 时生效）； |
+
+> `--users` / `--sip-users` / `--pstn-users` **至少必填一种**，且**三者总数合计最多 20 个**。
+
+---
+
 ## 常见错误
 
 | 错误现象 | 原因 | 解决方案 |
 |---------|------|---------|
 | `--meeting-id is required` | 缺少必填参数 | 补充 `--meeting-id` |
+| `--operate-type is required` | 缺少必填参数（`waiting-room`） | 补充 `--operate-type` |
 | `--users/--sip-users/--pstn-users, at least one of them is required` | 三个参数一个都未传 | 至少传入其中一个 |
 | `the total number of --users/--sip-users/--pstn-users is too long, max is 20` | 三者合计超过 20 | 减少传入的 `open_id` / `ms_open_id` 数量，使三者合计不超过 20 |
+| `9042 没有权限` / `9042 无权限进行该操作` | 操作者需为创建者/主持人/联席主持人，并具备 MANAGE_MEETING | 确认操作者身份与权限 |
+| `15004 操作失败，会议人数已达上限` | `waiting-room` 且 `operate_type=enter-meeting` 时常见 | 需先释放名额 |
+| `190004 参数非法` | 请检查参数 | 检查参数格式与取值 |
+
+---
 
 ## 参考
 
 - [tmeet](../SKILL.md) — 全部命令概览
-- [tmeet-report](tmeet-report.md) — 会议报告（**`kick` 的成员 `open_id` / `ms_open_id` 必须来自 `report participants`**）
-- [tmeet-contact](tmeet-contact.md) — 通讯录搜索（仅用于 `call` 邀请会外成员入会获取 `open_id`，不用于 `kick`）
+- [tmeet-report](tmeet-report.md) — 会议报告（**`kick` 及`waiting-room` 操作的成员 `open_id` / `ms_open_id` 必须来自 `report participants` 或 `report waiting-room-log`**）
+- [tmeet-contact](tmeet-contact.md) — 通讯录搜索（仅用于 `control call` 邀请会外成员入会获取 `open_id`，不用于 `waiting-room` 和 `kick`）
 - [tmeet-meeting](tmeet-meeting.md) — 会议管理（受邀者管理）

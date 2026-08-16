@@ -15,8 +15,8 @@ use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorCo
 use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "tmeet";
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.13";
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 13);
+const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
+const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",
@@ -136,7 +136,7 @@ fn install_tmeet_cli() -> Result<bool, String> {
     cc::run_with_timeout(c, 180)
 }
 
-/// 引导:确保 tmeet 装好且版本不低于 1.0.13。
+/// 引导:确保 tmeet 装好且版本不低于 1.0.15。
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_present() {
@@ -499,8 +499,8 @@ mod tests {
     #[test]
     fn parses_tmeet_versions() {
         assert_eq!(
-            parse_tmeet_version("tmeet version v1.0.13"),
-            Some((1, 0, 13))
+            parse_tmeet_version("tmeet version v1.0.15"),
+            Some((1, 0, 15))
         );
         assert_eq!(parse_tmeet_version("v2.3.4"), Some((2, 3, 4)));
         assert_eq!(parse_tmeet_version("tmeet version 1.2"), Some((1, 2, 0)));
@@ -509,9 +509,9 @@ mod tests {
 
     #[test]
     fn version_comparison_uses_semver_order() {
-        assert!(version_at_least((1, 0, 13), TMEET_MIN_VERSION));
+        assert!(version_at_least((1, 0, 15), TMEET_MIN_VERSION));
         assert!(version_at_least((1, 1, 0), TMEET_MIN_VERSION));
-        assert!(!version_at_least((1, 0, 12), TMEET_MIN_VERSION));
+        assert!(!version_at_least((1, 0, 14), TMEET_MIN_VERSION));
         assert!(!version_at_least((0, 9, 99), TMEET_MIN_VERSION));
     }
 

@@ -8,9 +8,10 @@ Their original licenses remain in effect.
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
 | CodeWhale | `pinvou-v0.9.0-r4` | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
-| DingTalk Workspace CLI (`dws`) and skills | 1.0.51 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
-| Lark CLI and skills | 1.0.65 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
+| DingTalk Workspace CLI (`dws`) and skills | 1.0.58 | Apache-2.0 skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
+| Lark CLI and skills | 1.0.87 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
 | WeCom CLI and skills | 0.1.9 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
+| Tencent Meeting CLI (`tmeet`) and skills | 1.0.15 | MIT skill sources bundled from the upstream `skills/tmeet-skill/`; official CLI installed from npm (`@tencentcloud/tmeet`, version pinned in `tmeet.rs`) | MIT | https://github.com/TencentCloud/tencentmeeting-cli |
 | agency-agents-zh | bundle schema `agency-1.0`, 201-role snapshot imported 2026-06-03 | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |

@@ -30,11 +30,32 @@ SOFTWARE.
 收录的域:lark-shared(鉴权总则,必备)、lark-calendar、lark-doc、lark-drive、
 lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 
-更新方式:`npx skills add larksuite/cli -s <域> -y` 后同步本目录,保留本声明。
+更新方式:按与 `connectors.lock.json` 钉扎一致的 lark-cli tag 同步上游
+`skills/<域>`(v1.0.87 起上游 tag 均含完整 skills/),保留本声明。
 
 ## Pinvou3 本地修改登记
 
 以下修改为 pinvou3 在上游 skill 基础上的本地分叉。**下次上游 sync 时需逐条重放。**
+
+### 同步记录(2026-08-16 → v1.0.87)
+
+- CLI 钉扎 1.0.65 → 1.0.87;上次导入基线实为上游 main `ba51d487`(2026-06-26,
+  早于 v1.0.65 tag),本次以 v1.0.87 tag 为新基线。后续 sync 以「与 lock 钉扎同名
+  tag」为基线三方合并。
+- **`--api-version v2` 已在 lark-cli 1.0.87 移除**(v2 成为唯一 API,flag 仅静默
+  兼容):全部文件的命令示例、参数表、CRITICAL 提示与 frontmatter cliHelp 均已
+  去除该参数。
+- 跟随上游结构变化删除:lark-doc/references/style/(上游并入 genres/ 体系与新
+  create-workflow)、lark-calendar-agenda/freebusy.md(并入 SKILL.md)、
+  lark-drive-comments-guide.md(拆分为 comment-* 七篇)、
+  lark-sheets-core-operations.md(上游 2026-07-13 重构)。
+- 上游新增域文件(genres/ 28 篇、doc-script/xml-extended-blocks、base 的
+  data-analysis/app 系列、calendar 的 meeting/recurring/schedule-* 等)已带入,
+  并对其中引用未收录域处统一应用「未随包收录 + CLI 命令直给」口径。
+- `--api-version v2` 之外,2026-07-25/07-26 两批登记全部在 v1.0.87 文本上重放;
+  上游已等价解决的:lark-sheets 的 `set +H` 修正、lark-task 的 `+subscribe-event`
+  (1.0.87 实测仍无该命令,维持删除)。lark-im/references/lark-im-scopes.md 为
+  本地新增文件,保留并按 1.0.87 口径(`missing_scopes`、`files.create`)更新。
 
 ### 提示词事实修正与去重(2026-07-25)
 

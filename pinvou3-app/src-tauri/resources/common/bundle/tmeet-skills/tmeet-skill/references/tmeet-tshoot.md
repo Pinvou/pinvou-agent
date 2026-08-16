@@ -1,5 +1,10 @@
 # tshoot — 问题排查
 
+## 目录
+
+- [`tshoot log` — 导出本地日志](#tshoot-log--导出本地日志)
+- [`tshoot feedback` — 上报问题排查反馈](#tshoot-feedback--上报问题排查反馈)
+
 ## `tshoot log` — 导出本地日志
 
 将本地日志打包为 zip 文件，输出到 `~/tmeet_ts_{datetime}.zip`，可用于问题排查。支持按时间范围过滤，不传时间参数则导出全部日志。
@@ -52,7 +57,7 @@ output log saved to: ~/tmeet_ts_20260410_153000.zip
 
 将 Agent 在使用 tmeet CLI 过程中遇到的问题或建议上报至平台。
 
-> 何时调用 / 调用准则请参阅 [SKILL.md](../SKILL.md) «自动反馈规则»一节；本文仅提供命令语法、参数与示例。
+> 何时调用 / 调用准则请参阅 [SKILL.md 「自动反馈规则」](../SKILL.md#自动反馈规则)一节；本文仅提供命令语法、参数与示例。
 
 ```bash
 tmeet tshoot feedback --category <分类> --intent <原始意图> [选项]
@@ -71,13 +76,13 @@ tmeet tshoot feedback --category <分类> --intent <原始意图> [选项]
 
 ### `--category` 枚举值
 
-| 取值 | 含义 | 适用场景 |
+| 取值 | 含义 | 触发场景（完整判定标准） |
 |------|------|---------|
-| `tool_not_found` | 找不到匹配的工具 | 想做某事，但 tmeet 没有对应命令 |
-| `tool_error` | 工具调用返回错误 | 命令执行失败，返回错误码或错误信息 |
-| `tool_inadequate` | 工具能力/参数不足 | 命令存在但无法满足当前诉求 |
-| `unexpected_result` | 结果未达预期 | 命令成功但返回结果不符合期望 |
-| `suggestion` | 一般性建议 | 对 tmeet 的改进建议、新增能力提议 |
+| `tool_not_found` | 找不到匹配的工具 | 用户想做某事，但 tmeet 当前**没有匹配的命令/子命令**可完成 |
+| `tool_error` | 工具调用返回错误 | 调用某个 tmeet 命令**返回了错误**（业务错误码 / 参数错误 / 执行异常） |
+| `tool_inadequate` | 工具能力/参数不足 | 命令存在，但其**参数或能力无法满足**用户当前诉求 |
+| `unexpected_result` | 结果未达预期 | 命令调用成功，但**返回结果与用户/Agent 期望明显不一致** |
+| `suggestion` | 一般性建议 | 在交互中识别到**通用性改进建议或新增能力提议** |
 
 ### 示例
 
@@ -122,3 +127,10 @@ tmeet tshoot feedback \
 
 - 字符长度超限（`intent>200` / `actions-tried>500` / `result>500`）会在客户端直接报错，不会发起请求；
 - 反馈成功后输出 `feedback_id`。
+
+---
+
+## 参考
+
+- [tmeet](../SKILL.md) — 全部命令概览
+- [SKILL.md 「自动反馈规则」](../SKILL.md#自动反馈规则) — `tshoot feedback` 的触发条件与调用准则

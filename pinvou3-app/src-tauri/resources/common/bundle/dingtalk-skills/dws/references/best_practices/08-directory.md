@@ -1,6 +1,6 @@
 # 通讯录（组织架构）
 
-> **SKILL.md** 中 #8 仅内联 2 条 **lite**：`get-contact-self`、`search-user`。下列 recipe、专用规则与消歧请在命中 #8 且**超出**上述 lite 时阅读本文。
+> **SKILL.md** 中 #8 仅内联 2 条 **lite**：`get-contact-self`、`search-user`。下列 recipe、专用规则与消歧请在命中 #8 且**超出**上述 lite 时阅读本文。  
 > 产品命令见 [contact.md](../products/contact.md)。通用批量/并行见 [conventions.md](_common/conventions.md)。
 
 ## 专用规则（#8 非 lite 步骤必守）
@@ -20,6 +20,11 @@
 
 ## 与其他场景消歧
 
+> **CRITICAL — "创建企业" vs "创建企业账号"必须优先匹配长模式**：先检查 query 是否含"账号"关键词；含则必须路由 `account create`，**禁止**路由 `org create`。
+
+- **创建企业账号 / 新建企业账号 / 开通企业账号 / 专属账号**（含"账号"）→ `contact account create --org-user-name "<姓名>" --login-id "<登录号>" --format json`（手机号可选）
+- **创建企业 / 新建企业 / 开通企业 / 初始化企业**（不含"账号"）→ `contact org create --org-name "<企业名>" --creator-username "<创建者名称>" --format json`
+- **邀请员工 / 添加员工 / 新员工入职 / 拉人进企业** → `contact user invite --org-user-name "<姓名>" --org-user-mobile "<手机号>" --depts '[{"deptId":...}]' --format json`
 - **按角色/职位类型查人（主管/管理员/财务等）** → 优先 `contact label list` + `label list-members`；label 精确命中角色维度，返回完整名单；aisearch 是语义模糊搜索不保证完整性。
 - **搜人/找人/找同事/查工号/查手机号** → 首选 **`aisearch person`**（AI 语义搜索，支持姓名/部门/职责/上下级/手机号/工号维度），见 `aisearch`（开源版未引入，悟空内部产品）。
 - **需要 userId 做后续操作 / 按手机号查 / 按 userId 查详情** → `contact`（精确查询）。
