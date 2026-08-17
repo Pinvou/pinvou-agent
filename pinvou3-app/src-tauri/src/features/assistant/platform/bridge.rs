@@ -3670,6 +3670,37 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
         );
+
+        // code 会话同链路生效(原 build_send_message_op_restrict_tools_also_
+        // applies_to_code_sessions 的断言):op 链路不感知会话类型,S-1 分化若
+        // 往这里加会话类型分支,下面两条必须报警。
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
+            session_id == "sess-code-project"
+        }));
+        let allowed_code = |restrict| match bridge
+            .build_send_message_op(
+                "sess-code-project",
+                "hi".to_string(),
+                AppMode::Yolo,
+                None,
+                restrict,
+            )
+            .expect("resolve test route")
+        {
+            Op::SendMessage { allowed_tools, .. } => allowed_tools,
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        };
+        assert_eq!(
+            allowed_code(true),
+            Some(Vec::new()),
+            "code 会话逐轮白名单入口必须生效(R-2)"
+        );
+        assert_eq!(
+            allowed_code(false),
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "code 会话未限制时必须恢复 Pinvou 基础白名单"
+        );
     }
 
     /// 主 agent 步数预算:未显式配置时必须复用底座 `EngineConfig::default()` 的

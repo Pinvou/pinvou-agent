@@ -86,7 +86,7 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
     /APP_BRIDGE_STATE_DOMAINS\s*=\s*\[[\s\S]{0,400}['"]multiAgent['"]/,
     '多智能体投影由命令与 DOM 事件提供，不得订阅已退役的空运行态',
   );
-  assert.doesNotMatch(detached, /useBridgeState\(\[\s\S]{0,300}['"]multiAgent['"]/);
+  assert.doesNotMatch(detached, /useBridgeState\(\[[\s\S]{0,300}['"]multiAgent['"]/);
   assert.doesNotMatch(tauriBridge, /activeRunId/, '旧 Workflow 运行台账状态不得残留');
   assert.match(
     chatViewSource,
@@ -159,6 +159,16 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   assert.match(
     toolRenderersSource,
     /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
+    '子智能体面板轮询必须有宿主与 agentId 双守卫',
+  );
+  assert.match(
+    toolRenderersSource,
+    /listSubagentTranscripts\(sid\)/,
+    'tools 侧 transcript 拉取入口不得绕过底座投影',
   );
 });
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
