@@ -158,9 +158,47 @@ for (let index = 1; index <= 24; index += 1) {
 const cachedAfterEviction = highlightCode(cachedSource, 'javascript');
 assert.notStrictEqual(cachedAfterEviction, cachedFirst, 'highlight cache must evict its least-recently-used entry');
 
+// ---- 危险标签抹平边界(原 render_markdown.test.js 的独有价值,迁移自该测试) ----
+// 修法见 markdown-renderer.js 的 neutralizeRawDangerousTags:marked.parse 之后把
+// script/style/iframe/object/embed/link/meta escape 成 &lt;...&gt;,防止裸标签吃掉
+// 表格后续列或被浏览器当真 HTML 执行。
+
+// 表格 cell 含裸 <script> 不能吃掉后续列(原始回归截图场景)。
+const tableScriptCell = renderMarkdownMarkup([
+  '| Finding | Severity | Status | User Decision |',
+  '|---|---|---|---|',
+  '| 两步写入的 JS 代码在同一个 <script> 标签内 | CRITICAL | RAISED | 待用户拍 |',
+].join('\n'));
+assert.match(tableScriptCell, /CRITICAL/u);
+assert.match(tableScriptCell, /RAISED/u);
+assert.match(tableScriptCell, /&lt;script/u);
+assert.doesNotMatch(tableScriptCell, /<script>/iu);
+
+// 反引号包的 `<script>` 不被双重转义(代码块内是字面量)。
+const inlineCodeScript = renderMarkdownMarkup('`<script>` 标签');
+assert.doesNotMatch(inlineCodeScript, /&amp;lt;/u);
+assert.match(inlineCodeScript, /&lt;script&gt;/u);
+
+// 裸 <iframe> 同样抹平。
+const rawIframe = renderMarkdownMarkup('before <iframe src="evil"></iframe> after');
+assert.match(rawIframe, /&lt;iframe/u);
+assert.match(rawIframe, /&lt;\/iframe/u);
+assert.doesNotMatch(rawIframe, /<iframe/iu);
+
+// 合法的 <br> 与 marked 自己产出的结构标签(<h1>/<table>/<td>)不能被误伤。
+assert.match(renderMarkdownMarkup('line1<br>line2'), /<br>/u);
+const structured = renderMarkdownMarkup('# Title\n\n- bullet\n\n| a | b |\n|---|---|\n| 1 | 2 |');
+assert.match(structured, /<h1[^>]*>/u);
+assert.match(structured, /<table/u);
+assert.match(structured, /<td>/u);
+
 const dangerousRawHtml = renderMarkdownMarkup('before <script>alert("x")</script> after');
 assert.match(dangerousRawHtml, /&lt;script&gt;/u);
 assert.doesNotMatch(dangerousRawHtml, /<script>/iu);
+// 大写变体同样必须抹平(生产 DANGEROUS_TAGS_RE 带 giu 标志)。
+const uppercaseScript = renderMarkdownMarkup('before <SCRIPT>alert("x")</SCRIPT> after');
+assert.match(uppercaseScript, /&lt;SCRIPT&gt;/u);
+assert.doesNotMatch(uppercaseScript, /<SCRIPT>/iu);
 
 const css = readApp('src', 'styles', 'base.css');
 assert.match(css, /\.dark-code \.msg-md :not\(pre\) > code/u);

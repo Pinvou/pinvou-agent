@@ -3968,8 +3968,16 @@ mod tests {
     }
 
     #[test]
-    fn event_session_id_reads_each_event_family_field_name() {
-        // chat:* / artifact:disk 用 session_id，session:* 用 id，
+    fn code_session_event_filter_is_inert_without_predicate() {
+        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
+        let payload = json!({ "session_id": "code-sess-1" });
+        assert!(!should_filter_code_session_event(None, &payload));
+    }
+
+    #[test]
+    fn code_session_events_are_filtered_for_each_field_name_variant() {
+        // 字段名契约(原 event_session_id_reads_each_event_family_field_name):
+        // chat:* / artifact:disk 用 session_id,session:* 用 id,
         // scheduled_task:run_updated 用 sessionId。
         assert_eq!(
             event_session_id(&json!({ "session_id": "s-chat" })),
@@ -3983,26 +3991,7 @@ mod tests {
             event_session_id(&json!({ "sessionId": "s-task" })),
             Some("s-task")
         );
-    }
 
-    #[test]
-    fn event_session_id_ignores_missing_or_non_string_fields() {
-        assert_eq!(
-            event_session_id(&json!({ "kind": "session:list_changed" })),
-            None
-        );
-        assert_eq!(event_session_id(&json!({ "session_id": 42 })), None);
-    }
-
-    #[test]
-    fn code_session_event_filter_is_inert_without_predicate() {
-        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
-        let payload = json!({ "session_id": "code-sess-1" });
-        assert!(!should_filter_code_session_event(None, &payload));
-    }
-
-    #[test]
-    fn code_session_events_are_filtered_for_each_field_name_variant() {
         let predicate: CodeSessionPredicate =
             Arc::new(|session_id: &str| session_id.starts_with("code-"));
         for payload in [
@@ -4015,6 +4004,25 @@ mod tests {
                 "code session event must be filtered: {payload}"
             );
         }
+
+        // 恒真 predicate 下过滤器等价于 event_session_id 的存在性判定
+        // (原 event_session_id_ignores_missing_or_non_string_fields 与
+        // code_session_filter_only_fires_on_a_session_id_field):不带会话 id
+        // 或 id 非字符串的全局事件不得被误伤。
+        let always: CodeSessionPredicate = Arc::new(|_: &str| true);
+        assert_eq!(
+            event_session_id(&json!({ "kind": "session:list_changed" })),
+            None
+        );
+        assert_eq!(event_session_id(&json!({ "session_id": 42 })), None);
+        assert!(!should_filter_code_session_event(
+            Some(&always),
+            &json!({ "kind": "session:list_changed" })
+        ));
+        assert!(!should_filter_code_session_event(
+            Some(&always),
+            &json!({ "id": 42 })
+        ));
     }
 
     #[test]
@@ -4032,20 +4040,5 @@ mod tests {
                 "plain session event must not be filtered: {payload}"
             );
         }
-    }
-
-    #[test]
-    fn code_session_filter_only_fires_on_a_session_id_field() {
-        // 过滤器按 payload 中的会话 id 触发；即使 predicate 恒真，不带会话 id
-        // （或 id 非字符串）的事件也不过滤，避免误伤无会话维度的全局事件。
-        let predicate: CodeSessionPredicate = Arc::new(|_: &str| true);
-        assert!(!should_filter_code_session_event(
-            Some(&predicate),
-            &json!({ "kind": "session:list_changed" })
-        ));
-        assert!(!should_filter_code_session_event(
-            Some(&predicate),
-            &json!({ "id": 42 })
-        ));
     }
 }

@@ -200,9 +200,10 @@ route 未声明 O 时才使用静态模型目录/未知模型 4K fallback。
 
 ## 6. 实证结果（2026-07-02，已完成）
 
-harness：`pinvou3-app/src-tauri/tests/compaction_probe.rs`（`#[ignore]`，不进 CI）。
+harness：一次性对拍程序（已于 2026-08 随测试清理删除；结论已定稿进
+`CompactionConfig`，本节即为存档）。
 程序化对拍两把尺，不依赖真机/vLLM——一期正确性只取决于两条**估算尺的相对关系**，
-与估算准不准无关（真实 token 校准是上游线的事）。跑法见文件头注释。
+与估算准不准无关（真实 token 校准是上游线的事）。
 
 **结论**：
 1. **k=1.5 精确**：三档（262K/131K/65K）k_eff 全 =1.500。pinvou 关 thinking，两把尺

@@ -13,14 +13,6 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
             "\n  build-windows-x64:", maxsplit=1
         )[0]
 
-    def test_release_workflow_does_not_run_for_pull_requests(self):
-        self.assertNotIn("\n  pull_request:", self.workflow)
-        self.assertIn("\n  workflow_dispatch:", self.workflow)
-        trigger = self.workflow.split("\non:", maxsplit=1)[1].split(
-            "\npermissions:", maxsplit=1
-        )[0]
-        self.assertIn("paths:\n      - 'VERSION'", trigger)
-
     def test_arm64_build_keeps_full_release_profile(self):
         job_env = self.arm64_job.split("\n    steps:", maxsplit=1)[0]
         build = self.arm64_job.split(

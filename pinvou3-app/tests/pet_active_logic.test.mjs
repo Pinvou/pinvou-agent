@@ -78,7 +78,7 @@ function harness({ activePet = null, loadAtlas, decodeImage = async () => {} } =
       return 'asset://lingling.webp';
     },
   });
-  const result = await loadActivePet('langlang', { ...h.options, startup: true });
+  const result = await loadActivePet('langlang', { ...h.options });
   assert.equal(result.id, 'lingling');
   assert.deepEqual(attempts, ['langlang', 'lingling']);
   assert.deepEqual(h.commits.map((pet) => pet.id), ['lingling']);
@@ -88,7 +88,7 @@ function harness({ activePet = null, loadAtlas, decodeImage = async () => {} } =
   const h = harness({
     loadAtlas: async () => { throw new Error('all atlases unavailable'); },
   });
-  const result = await loadActivePet('langlang', { ...h.options, startup: true });
+  const result = await loadActivePet('langlang', { ...h.options });
   assert.equal(result, null);
   assert.equal(h.state.activePet, null);
   assert.equal(h.commits.length, 0);

@@ -56,7 +56,121 @@ const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_poo
 const modeStateSource = read('src-tauri', 'src', 'features', 'sessions', 'mode_state.rs');
 const rosterSource = read('src-tauri', 'src', 'features', 'assistant', 'expert_roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
+test('多智能体第一阶段只在桌面宿主开放', () => {
+  const platform = read('src', 'shared', 'platform.js');
+  const bootstrap = read('src', 'platform', 'web', 'bootstrap.js');
+  const webBridge = read('src', 'platform', 'web', 'bridge.js');
+  const policy = JSON.parse(read('src', 'platform', 'web', 'access-policy.json'));
 
+  assert.match(platform, /\bmultiAgent:\s*true\b/, '桌面默认能力必须显式开放');
+  assert.doesNotMatch(bootstrap, /\bmultiAgent\s*:\s*true\b/, 'Web capability 不得提前开放');
+
+  for (const command of [
+    'set_multi_agent_mode',
+    'list_subagent_transcripts',
+    'read_subagent_transcript',
+  ]) {
+    assert.equal(policy.allowed_commands.includes(command), false, `${command} 必须保持桌面专属`);
+    assert.equal(webBridge.includes(command), false, `Web bridge 不得代理 ${command}`);
+  }
+});
+
+test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会话', () => {
+  const main = read('src', 'app', 'main.jsx');
+  const detached = read('src', 'app', 'DetachedShell.jsx');
+  const tauriBridge = read('src', 'platform', 'tauri', 'bridge.js');
+  const remoteCommands = read('src-tauri', 'src', 'app', 'commands', 'remote_control.rs');
+
+  assert.doesNotMatch(
+    main,
+    /APP_BRIDGE_STATE_DOMAINS\s*=\s*\[[\s\S]{0,400}['"]multiAgent['"]/,
+    '多智能体投影由命令与 DOM 事件提供，不得订阅已退役的空运行态',
+  );
+  assert.doesNotMatch(detached, /useBridgeState\(\[[\s\S]{0,300}['"]multiAgent['"]/);
+  assert.doesNotMatch(tauriBridge, /activeRunId/, '旧 Workflow 运行台账状态不得残留');
+  assert.match(
+    chatViewSource,
+    /const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED\s*&& !!\(bs && bs\.modeState && bs\.modeState\.multiAgent\)/,
+    'Web 只读判定看会话级开关（modeState.multiAgent 双端同步）',
+  );
+  assert.match(chatViewSource, /data-testid="multiagent-desktop-only"/);
+  assert.match(settingsSource, /const canMultiAgent = can\('multiAgent'\)/, '开关行必须按 capability 门禁');
+  assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/);
+  assert.match(
+    remoteCommands,
+    /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
+    'Web 续写必须校验多智能体开关（桌面专属）',
+  );
+  assert.equal((i18nSource.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
+});
+
+test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope 独有断言回迁）', () => {
+  const codex = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+  const settings = read('src', 'features', 'settings', 'SettingsView.jsx');
+  const appRoot = read('src-tauri', 'src', 'lib.rs');
+  const policy = read('src-tauri', 'src', 'features', 'assistant', 'session_policy.rs');
+  const bridge = read('src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs');
+  const engine = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
+  const builderStart = bridge.indexOf('pub(crate) fn build_engine_config_for_multi_agent');
+  const builderEnd = bridge.indexOf('pub fn ', builderStart + 10);
+  const multiAgentBuilder = bridge.slice(builderStart, builderEnd);
+
+  // 产品开关不得改写普通 Engine 的 subagents_enabled（#162 复审 P1：整体关闭会
+  // 误伤原生 Code 会话的底座 agent/agents/*/workflow 能力）。
+  assert.doesNotMatch(
+    bridge,
+    /subagents_enabled\s*&=\s*self\.session_policy/,
+    '不得把产品入口收缩当成禁用底座委派能力的开关',
+  );
+  assert.match(
+    policy,
+    /pub fn supports_multi_agent_mode\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
+    'Work/Plain 与原生 Code 都开放 Pinvou 多智能体产品能力',
+  );
+  assert.match(
+    bridge,
+    /pub fn multi_agent_mode_available[\s\S]{0,500}!external_acp && self\.session_policy\(session_id\)\.supports_multi_agent_mode\(\)/,
+    '最终能力必须同时检查产品模式与原生/外部 ACP 运行时轴',
+  );
+  assert.match(
+    appRoot,
+    /set_external_acp_session_predicate[\s\S]{0,300}acp_pool\.is_acp\(session_id\)/,
+    '外部 ACP 判定必须由进程内同一份 AcpPool 注入，不能靠前端隐藏入口',
+  );
+  assert.match(
+    bridge,
+    /cfg\.workspace = roots\.execution;[\s\S]{0,120}cfg\.subagent_state_root = Some\(roots\.ledger\);/,
+    '引擎执行根与 delegated-agent 状态根必须显式分离',
+  );
+  assert.ok(builderStart >= 0 && builderEnd > builderStart, '必须保留多智能体专用配置入口');
+  assert.doesNotMatch(
+    multiAgentBuilder,
+    /enroll_expert_roles|roots\.ledger/,
+    '多智能体配置不得再向会话 ledger 写入或从中加载专家 TOML',
+  );
+  assert.match(engine, /bridge\.multi_agent_mode_available\(session_id\)/);
+  assert.match(
+    codex,
+    /nativeMultiAgentEnabled\s*=\s*nativeMultiAgentAvailable\s*&&\s*nativeMultiAgentSelected/,
+    '旧状态不得绕过会话策略重新启用多智能体展示',
+  );
+  assert.match(settings, /multiAgentEnabled:\s*multiAgentEnabledProp/);
+  assert.match(settings, /if \(onToggleMultiAgent\) await onToggleMultiAgent\(!multiAgentOn\)/);
+  assert.match(
+    toolRenderersSource,
+    /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
+    '子智能体面板轮询必须有宿主与 agentId 双守卫',
+  );
+  assert.match(
+    toolRenderersSource,
+    /listSubagentTranscripts\(sid\)/,
+    'tools 侧 transcript 拉取入口不得绕过底座投影',
+  );
+});
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
   vm.runInNewContext(interactionBridgeSource, { window: root, globalThis: root });

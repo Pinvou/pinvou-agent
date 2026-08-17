@@ -25,12 +25,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty() {
-        assert_eq!(hex_lower(&[]), "");
-    }
-
-    #[test]
     fn known_vectors() {
+        // 空输入 → 空串(原 empty 测试)。
+        assert_eq!(hex_lower(&[]), "");
         assert_eq!(hex_lower(&[0x00]), "00");
         assert_eq!(hex_lower(&[0x0f, 0x10, 0xff]), "0f10ff");
         // SHA-256("") = e3b0c442...(前 16 字节)
@@ -53,15 +50,11 @@ mod tests {
     }
 
     #[test]
-    fn output_length_is_two_chars_per_byte() {
-        // 每个字节固定编码为两个十六进制字符。
-        // String 只保证容量不小于预分配值，不能把“容量恰好相等”当成跨平台契约。
-        let s = hex_lower(&[0xab; 32]);
-        assert_eq!(s.len(), 64);
-    }
-
-    #[test]
-    fn lowercase_only() {
+    fn output_length_and_lowercase() {
+        // 每字节恰好两个十六进制字符(原 output_length_is_two_chars_per_byte;
+        // String 只保证容量不小于预分配值,不能把"容量恰好相等"当跨平台契约)。
+        assert_eq!(hex_lower(&[0xab; 32]).len(), 64);
+        // 输出只含小写 hex 字符(原 lowercase_only)。
         let s = hex_lower(&[0xfa, 0xbc]);
         assert_eq!(s, "fabc");
         assert!(s

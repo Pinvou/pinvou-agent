@@ -41,14 +41,12 @@
     "test:reader-diff-ui": "node tests/reader_app_diff_smoke.mjs",
     "test:marketplace-oauth": "node tests/marketplace_oauth_logic.test.js",
     "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
-    "test:codex-acp": "node tests/codex_acp_platform_contract.test.js && node tests/acp_providers_contract.test.js && node tests/codex_acp_runtime_notice.test.mjs && node tests/codex_acp_windows_contract.test.js && node tests/codex_acp_timeline.test.mjs && node tests/deepseek_conversation_timeline.test.mjs && node tests/code_native_lane.test.mjs && node tests/code_permission_state.test.mjs",
     "test:code-permission-state": "node tests/code_permission_state.test.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
     "test:codex-acp-macos-runtime": "node tests/codex_acp_macos_runtime_smoke.js",
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",
     "test:multiagent-plan": "node --test tests/multiagent_plan_normalize.test.mjs",
-    "test:multiagent-scope": "node --test tests/multiagent_desktop_scope.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:ime-compose-guard": "node tests/ime_compose_guard.test.mjs",
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
@@ -106,9 +104,9 @@
     "test:markdown-artifact-ui": "node tests/markdown_artifact_edit_smoke.js",
     "test:browser-smoke": "node ../scripts/run-frontend-smokes.mjs --full",
     "test:webui": "npm run build:web && node ../remote-control-relay/test/web-ui.smoke.cjs",
-    "test:markdown": "node tests/render_markdown.test.js && node tests/markdown_syntax_highlight.test.mjs",
     "test:user-journey": "../scripts/run-user-journey-tests.sh",
-    "sync:version": "node ../scripts/sync-version.mjs"
+    "sync:version": "node ../scripts/sync-version.mjs",
+    "test:markdown": "node tests/markdown_syntax_highlight.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

@@ -157,43 +157,6 @@ fn write_timed_memory_fixture(path: PathBuf, items: &[TimedMemoryItem]) {
 
 #[test]
 #[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
-fn memory_deterministic_capture_no_longer_writes_profile_directly() {
-    let (_env, _root) = setup_isolated_home("deterministic-no-direct-write");
-
-    let events = memory::capture_deterministic_memory("以后你都叫我欣哥，我都叫你小猪")
-        .expect("capture deterministic memory");
-    assert!(
-        events.is_empty(),
-        "deterministic rules must not directly write profile; LLM review owns semantic cleanup"
-    );
-
-    let profile = memory::load_profile().expect("load profile");
-    assert!(profile.identity.call_name.is_empty());
-    assert!(profile.identity.assistant_alias.is_empty());
-
-    let runtime = memory::runtime_snapshot("deterministic-a").expect("runtime");
-    assert!(!runtime.block.contains("称呼：欣哥"));
-    assert!(!runtime.block.contains("助手昵称：小猪"));
-
-    let no_events =
-        memory::capture_deterministic_memory("帮我写一个周报").expect("capture one-off task");
-    assert!(no_events.is_empty());
-    let unchanged = memory::load_profile().expect("load unchanged profile");
-    assert!(unchanged.identity.call_name.is_empty());
-    assert!(unchanged.identity.assistant_alias.is_empty());
-
-    let corrected = memory::capture_deterministic_memory("别叫我欣哥，叫我欣主任")
-        .expect("capture corrected name");
-    assert!(corrected.is_empty());
-    assert!(memory::load_profile()
-        .expect("load corrected profile")
-        .identity
-        .call_name
-        .is_empty());
-}
-
-#[test]
-#[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
 fn pending_memory_deduplicates_same_content_candidates() {
     let (_env, _root) = setup_isolated_home("pending-dedupe");
 

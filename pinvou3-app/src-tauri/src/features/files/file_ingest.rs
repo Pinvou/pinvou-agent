@@ -1163,8 +1163,8 @@ mod multi_type_dispatch_e2e {
     // pdf 的 markdown、docx 的 pandoc markdown、xlsx 的 calamine 表格、png 的
     // image data-URI kind)。工具缺失时跳过(不 FAIL),与 visual_preview_smoke 同策略。
     // 这是评审要求的「真实文件类型不被丢失」等价证据 —— 不经过浏览器,直接证明
-    // ingest 分派层对真实扩展名生效(浏览器层经 real_browser_upload_full_stack 已覆盖
-    // small.txt 全链路 → "已就绪")。
+    // ingest 分派层对真实扩展名生效(small.txt 全链路经 pinvou3-app 的 WebUI v2
+    // smoke 上传场景覆盖 → "已就绪")。
     #[test]
     #[ignore = "需要 pandoc + pdftotext + libreoffice + tesseract(本机齐全时跑)"]
     fn ingest_dispatches_each_real_type_by_extension_not_binary() {

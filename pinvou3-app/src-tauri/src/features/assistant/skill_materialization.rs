@@ -524,19 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn materialize_uses_session_private_dir() {
-        with_temp_home(|| {
-            seed_sources();
-            let sid = "session-test-3";
-            materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
-            assert_eq!(
-                paths::session_skills_dir(sid),
-                paths::sessions_root().join(sid).join("skills")
-            );
-        });
-    }
-
-    #[test]
     fn project_skills_follow_gate_and_priority() {
         with_temp_home(|| {
             // bundle 基线：市场装 visualizer
@@ -626,6 +613,7 @@ mod tests {
 
     #[test]
     fn session_skills_dir_uses_session_private_root() {
+        // 会话技能物化(materialize_session_skills)落点即本目录(两个原测试断言同一等式)。
         let dir = paths::session_skills_dir("abc-123");
         assert_eq!(dir, paths::sessions_root().join("abc-123").join("skills"));
     }

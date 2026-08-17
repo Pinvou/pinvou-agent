@@ -131,7 +131,10 @@ mod tests {
     fn returns_none_when_no_gpu_name() {
         // 没有真实 GPU 时绝不能退回 CPU 名：前端因 snap.gpu 非空置 gpuAvailable=true，
         // 会把 CPU 型号继续显示在 GPU 卡片上。应返回 None，让已有 snap.cpu fallback 接管。
+        // CPU 名缺失同样返回 None(原 returns_none_when_both_names_missing 的场景):
+        // 名字与 CPU 名双缺时没有可展示的标识。
         assert!(parse_gpu_json(&sample("AMD Ryzen 9 7950X", "")).is_none());
+        assert!(parse_gpu_json(&sample("", "")).is_none());
     }
 
     #[test]
@@ -139,10 +142,5 @@ mod tests {
         let snapshot = parse_gpu_json(&sample("", "Intel(R) UHD Graphics 770"))
             .expect("snapshot should parse with gpu name");
         assert_eq!(snapshot.name, "Intel(R) UHD Graphics 770");
-    }
-
-    #[test]
-    fn returns_none_when_both_names_missing() {
-        assert!(parse_gpu_json(&sample("", "")).is_none());
     }
 }
