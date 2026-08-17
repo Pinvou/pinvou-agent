@@ -287,6 +287,10 @@ const GONGWEN_MANIFEST_JSON: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/manifest.json");
 const GONGWEN_STYLES_PY: &str =
     include_str!("../../../../../resources/mcp-servers/gongwen/gbt9704_styles.py");
+const WECOM_BOT_SERVER_PY: &str =
+    include_str!("../../../../../resources/mcp-servers/wecom-bot/server.py");
+const WECOM_BOT_MANIFEST_JSON: &str =
+    include_str!("../../../../../resources/mcp-servers/wecom-bot/manifest.json");
 
 /// 内嵌的敏感目录拦截 shell 脚本——配合 bridge 注入的 hook 在 ToolCallBefore
 /// 时阻止 LLM 触碰 ~/.ssh/ ~/.gnupg/ 等。

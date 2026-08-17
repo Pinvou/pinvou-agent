@@ -49,6 +49,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   iwencai: 'assets/tool-icons/iwencai-user-v3.png',
   feishu: 'assets/tool-icons/wb-feishu.svg',
   wecom: 'assets/tool-icons/wecom-user.png',
+  'wecom-bot': 'assets/tool-icons/wecom-user.png',
   dingtalk: 'assets/tool-icons/dingtalk-user-v2.png',
   tmeet: 'assets/tool-icons/wb-tencent-meeting.png',
   qcc: 'assets/tool-icons/qcc-user.png',

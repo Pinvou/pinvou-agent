@@ -553,6 +553,12 @@ impl Pinvou3Bundle {
         std::fs::write(gongwen_dir.join("server.py"), GONGWEN_SERVER_PY)?;
         std::fs::write(gongwen_dir.join("manifest.json"), GONGWEN_MANIFEST_JSON)?;
         std::fs::write(gongwen_dir.join("gbt9704_styles.py"), GONGWEN_STYLES_PY)?;
+        // 工具市场：企微群机器人 MCP server（本地 stdio，包装企业微信官方群机器人
+        // webhook 消息推送 API；key 走凭据库 + ${ENV} 占位符，不落明文）
+        let wecom_bot_dir = dir.join("wecom-bot");
+        std::fs::create_dir_all(&wecom_bot_dir)?;
+        std::fs::write(wecom_bot_dir.join("server.py"), WECOM_BOT_SERVER_PY)?;
+        std::fs::write(wecom_bot_dir.join("manifest.json"), WECOM_BOT_MANIFEST_JSON)?;
         Ok(())
     }
 }
