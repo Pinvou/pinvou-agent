@@ -67,7 +67,7 @@ printf '%s\n' "$INFO_JSON" "$DESIGN_JSON" ${PAGE_JSONS[@]} \
 
 1. 读取 `sidebar-pptx-generator/references/design-principle.md`。
 2. 结合用户需求、当前 PPT 状态、已有内容、材料摘要和搜索事实，在上下文中构思 DESIGN 内容（视觉与落地契约，不含大段叙事）。
-3. **禁止写本地 .md 文件**。直接调用 MCP 工具 `slide_set_design`，将完整内容通过 `design_md` 参数传入即可持久化；只有当内容过长可能导致 MCP 截断时，才使用脚本方式（见 `slide_set_design` 工具描述中的 set_design.py）。
+3. **禁止写本地 .md 文件**。直接调用 MCP 工具 `slide_set_design`，将完整内容通过 `design_md` 参数传入即可持久化。
 4. DESIGN 已在当前会话中拿到或刚写入后，不要重复调用 `slide_get_design`。
 
 DESIGN.md 的结构、字段和质量门禁以 `sidebar-pptx-generator/references/design-principle.md` 为准；本文件不重复展开。

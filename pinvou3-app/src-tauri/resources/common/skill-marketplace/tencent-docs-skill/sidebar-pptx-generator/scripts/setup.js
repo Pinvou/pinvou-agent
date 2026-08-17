@@ -4,7 +4,6 @@
 // 用法: node setup.js
 //
 // 环境变量:
-//   WORKBUDDY_ROOT  - workbuddy binaries 根目录，默认自动检测
 //   NODE_PATH       - 强制指定 node 路径
 //   PYTHON_PATH     - 强制指定 python 路径
 
@@ -67,40 +66,6 @@ function existsAndExecutable(filePath) {
   }
 }
 
-function getHomeDir() {
-  return process.env.HOME || process.env.USERPROFILE || '';
-}
-
-// 获取 WorkBuddy 根目录
-function getWorkbuddyRoot() {
-  // 1. 环境变量优先级最高
-  if (process.env.WORKBUDDY_ROOT) {
-    const dir = process.env.WORKBUDDY_ROOT;
-    try {
-      if (fs.statSync(path.join(dir, 'binaries')).isDirectory()) {
-        return dir;
-      }
-    } catch { /* ignore */ }
-  }
-
-  // 2. 尝试自动检测常见位置
-  const candidates = [
-    path.join(getHomeDir(), '.workbuddy'),
-    path.join(getHomeDir(), 'WorkBuddy', '.workbuddy'),
-    process.platform === 'win32' ? 'C:\\workbuddy' : '/opt/workbuddy',
-  ];
-
-  for (const dir of candidates) {
-    try {
-      if (fs.statSync(path.join(dir, 'binaries')).isDirectory()) {
-        return dir;
-      }
-    } catch { /* ignore */ }
-  }
-
-  return null;
-}
-
 // 语义化版本排序（支持预发布标识）
 function semverCompare(a, b) {
   const parse = (v) => {
@@ -122,62 +87,15 @@ function semverCompare(a, b) {
   return 0;
 }
 
-// 在目录中找最新版本文件夹
-function findLatestVersionDir(baseDir) {
-  try {
-    const entries = fs.readdirSync(baseDir);
-    const versions = entries
-      .filter((e) => /^\d+\.\d+\.\d+/.test(e))
-      .sort(semverCompare);
-    return versions.length > 0 ? versions[versions.length - 1] : null;
-  } catch {
-    return null;
-  }
-}
-
-// 查找 managed node 路径
-function findManagedNode() {
-  const wbRoot = getWorkbuddyRoot();
-  if (!wbRoot) return null;
-  const baseDir = path.join(wbRoot, 'binaries', 'node', 'versions');
-  const latest = findLatestVersionDir(baseDir);
-  if (latest) {
-    const nodePath = path.join(baseDir, latest, 'bin', process.platform === 'win32' ? 'node.exe' : 'node');
-    if (existsAndExecutable(nodePath)) return nodePath;
-  }
-  return null;
-}
-
-// 查找 managed python 路径
-function findManagedPython() {
-  const wbRoot = getWorkbuddyRoot();
-  if (!wbRoot) return null;
-  const baseDir = path.join(wbRoot, 'binaries', 'python', 'versions');
-  const latest = findLatestVersionDir(baseDir);
-  if (latest) {
-    const names = process.platform === 'win32'
-      ? ['python.exe', 'python3.exe']
-      : ['python3', 'python'];
-    for (const name of names) {
-      const pyPath = path.join(baseDir, latest, 'bin', name);
-      if (existsAndExecutable(pyPath)) return pyPath;
-    }
-  }
-  return null;
-}
-
 // 检查 node
 function checkNode() {
   let nodePath = null;
 
-  // 优先级: 环境变量 > managed > PATH
+  // 优先级: 环境变量 > PATH
   if (process.env.NODE_PATH && existsAndExecutable(process.env.NODE_PATH)) {
     nodePath = process.env.NODE_PATH;
   } else {
-    nodePath = findManagedNode();
-    if (!nodePath) {
-      nodePath = which('node');
-    }
+    nodePath = which('node');
   }
 
   if (!nodePath) {
@@ -202,14 +120,11 @@ function checkNode() {
 function checkPython() {
   let pyPath = null;
 
-  // 优先级: 环境变量 > managed > PATH
+  // 优先级: 环境变量 > PATH
   if (process.env.PYTHON_PATH && existsAndExecutable(process.env.PYTHON_PATH)) {
     pyPath = process.env.PYTHON_PATH;
   } else {
-    pyPath = findManagedPython();
-    if (!pyPath) {
-      pyPath = which('python3') || which('python');
-    }
+    pyPath = which('python3') || which('python');
   }
 
   if (!pyPath) {
@@ -248,7 +163,7 @@ function getSlidepBin() {
   if (process.env.NODE_PATH && existsAndExecutable(process.env.NODE_PATH)) {
     nodePath = process.env.NODE_PATH;
   } else {
-    nodePath = findManagedNode();
+    nodePath = which('node');
   }
 
   if (nodePath) {
@@ -348,7 +263,7 @@ async function installSlidep() {
   if (process.env.NODE_PATH && existsAndExecutable(process.env.NODE_PATH)) {
     nodePath = process.env.NODE_PATH;
   } else {
-    nodePath = findManagedNode() || which('node');
+    nodePath = which('node');
   }
 
   if (!nodePath) {

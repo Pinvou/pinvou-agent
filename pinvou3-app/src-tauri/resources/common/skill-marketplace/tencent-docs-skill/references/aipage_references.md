@@ -38,10 +38,9 @@ node scripts_path/aipage_pack.js --html "<html_path>" [--title "<title>"]
 node scripts_path/aipage_pack.js --dir  "<html_dir>"  [--title "<title>"]
 ```
 
-> `scripts_path` 为本 SKILL 文件所在目录，例如：
-> `backend/application/open/mcpserver/tencent-docs/aipage_pack.js`
+> `scripts_path` 为本 SKILL 文件所在目录，即包内相对路径 `aipage_pack.js`。
 >
-> 运行环境要求：Node.js >= 14（同 `ocr.js`）。Windows 上可直接 `node aipage_pack.js ...`。
+> 运行环境要求：Node.js >= 14。Windows 上可直接 `node aipage_pack.js ...`。
 
 脚本以稳定格式输出，可直接 `grep` / 正则解析：
 
@@ -63,9 +62,8 @@ AIPAGE_TITLE=立项方案
 
 返回字段中需要：`upload_url`、`file_key`、`task_id`。
 
-> 也可以直接复用 `import_file.sh`（位于本 skill 同目录），它已封装 Step 1 之后的
-> 「pre_import + PUT 上传 COS」两步，输出 `IMPORT_READY` + 关键字段。
-> 推荐写法：先用 `node aipage_pack.js` 打出 `.aipage`，再 `bash import_file.sh <AIPAGE_PATH>`。
+> Step 2 的 `manage.pre_import` 与 Step 3 的 `curl -X PUT` 上传 COS 均由模型直接
+> 调用 MCP 工具与 shell 基础命令完成，无需额外脚本。
 
 ### Step 3：PUT 上传到 COS
 
@@ -103,15 +101,16 @@ AIPAGE_PATH=$(echo "$PACK_OUT" | awk -F= '/^AIPAGE_PATH=/{print $2}')
 AIPAGE_SIZE=$(echo "$PACK_OUT" | awk -F= '/^AIPAGE_SIZE=/{print $2}')
 AIPAGE_MD5=$( echo "$PACK_OUT" | awk -F= '/^AIPAGE_MD5=/{print $2}')
 
-# ② + ③ pre_import + PUT（直接复用 import_file.sh）
-IMPORT_OUT=$(bash <skill_dir>/import_file.sh "$AIPAGE_PATH")
-TASK_ID=$( echo "$IMPORT_OUT" | awk -F: '/^TASK_ID:/{print $2}')
-FILE_KEY=$(echo "$IMPORT_OUT" | awk -F: '/^FILE_KEY:/{print $2}')
-FILE_NAME=$(echo "$IMPORT_OUT" | awk -F: '/^FILE_NAME:/{print $2}')
+# ② 调用 mcp_tencent-docs_manage.pre_import 获取 upload_url / file_key / task_id
+#    参数：{"file_name": "<basename(AIPAGE_PATH)>", "file_size": <AIPAGE_SIZE>, "file_md5": "<AIPAGE_MD5>"}
 
-# ④ async_import + 轮询
+# ③ PUT 上传到 COS
+curl -sS -X PUT -H "Content-Type: application/octet-stream" \
+  --data-binary "@$AIPAGE_PATH" "<upload_url>"
+
+# ④ async_import + 轮询（task_id / file_key / file_name 取自 ② pre_import 的返回）
 `mcp_tencent-docs_manage.async_import` 调用参数：\
-  "{\"task_id\":\"$TASK_ID\",\"file_key\":\"$FILE_KEY\",\"file_name\":\"$FILE_NAME\",\"file_md5\":\"$AIPAGE_MD5\",\"file_size\":$AIPAGE_SIZE}"
+  '{"task_id":"<task_id>","file_key":"<file_key>","file_name":"<file_name>","file_md5":"<AIPAGE_MD5>","file_size":<AIPAGE_SIZE>}'
 # 然后轮询 manage.import_progress 至 progress=100
 ```
 

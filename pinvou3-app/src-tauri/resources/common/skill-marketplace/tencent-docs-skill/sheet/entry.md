@@ -16,7 +16,7 @@
 | 所属服务 | `tdoc-sheet`                                                                      |
 | 服务地址 | `https://docs.qq.com/api/v6/sheet/mcp`                                           |
 | 工具前缀 | `sheet.*`（如 `sheet.get_cell_data`、`sheet.set_cell_value`）                    |
-| 调用方式 | 通过 MCP 协议调用 tdoc-sheet 服务（``mcp_tdoc-sheet_sheet.`<工具名>"`） |
+| 调用方式 | 通过 MCP 协议调用 tdoc-sheet 服务（`mcp_tdoc-sheet_sheet.<工具名>`） |
 | Token    | 与 tencent-docs / tdoc-slide / tdoc-doc 共用同一 Token，完成授权后自动配置         |
 | 文档类型 | 仅支持 Sheet 文档类型                                                            |
 

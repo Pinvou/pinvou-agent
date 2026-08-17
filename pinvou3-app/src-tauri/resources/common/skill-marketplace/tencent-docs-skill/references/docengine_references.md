@@ -17,7 +17,7 @@
 | Token    | 与 tencent-docs / tdoc-slide / tdoc-sheet 共用同一 Token，完成授权（`references/auth.md`）后自动配置 |
 | 文档类型 | 仅支持 Word 文档类型（`doc_type: word`）                                      |
 
-> ⚠️ **所有 `doc.*` 工具均通过 `tdoc-doc` 独立 MCP 服务调用**（``mcp_tdoc-doc_doc.`<工具名>"`），与 `tencent-docs` 主服务平级。Token 共用，但工具调用走独立 endpoint。
+> ⚠️ **所有 `doc.*` 工具均通过 `tdoc-doc` 独立 MCP 服务调用**（`mcp_tdoc-doc_doc.<工具名>`），与 `tencent-docs` 主服务平级。Token 共用，但工具调用走独立 endpoint。
 
 > ⚠️ **所有 `doc.*` 工具均支持 `file_id` / `file_url` 二选一**。若用户提供的是文档链接（形如 `https://docs.qq.com/doc/<file_id>`），可直接传 `file_url`，或先从链接末尾解析出 `file_id` 再调用。
 >
@@ -472,22 +472,9 @@
 
 #### 图片来源选择优先级（按推荐顺序）
 
-**方式一（⭐首选）：本地脚本（`insert_image.py`）通过 HTTP 直接调用 MCP endpoint 插入图片。**
-无需把图片 base64 通过 MCP 通道透传，可避免大图触发上下文/传输限制，速度也更快。脚本不允许硬编码任何凭证：`--auth` 必须由调用方从用户的 `~/.codebuddy/mcp.json` 中 `tdoc-doc.headers.Authorization` 字段读取后透传，`--image-path` 为本地图片绝对路径，`--tool-args` 为本工具其它入参的 JSON（`content` 字段由脚本自动 base64 注入，无需传）。
+**方式一（⭐首选）：经 MCP 工具通道传 `content`（图片 base64 字符串，不含 data URI 前缀）** —— 本地图片先用 shell 的 `base64` 命令读取编码，再作为 `content` 参数直接调用 `mcp_tdoc-doc_doc.insert_image`。仅适合图片体积较小的场景；若 base64 超出 MCP 单次传输限制会失败，此时请改用方式二。
 
-调用示例：
-```bash
-python3 insert_image.py \
-    --auth "$MCP_TOKEN" \
-    --image-path /tmp/chart.png \
-    --tool-args '{"file_url":"https://docs.qq.com/doc/XXX","idx":283,"width":580,"height":360}'
-```
-
-完整脚本代码可向 `doc.insert_image` MCP 工具的 description 索取（已内嵌在工具描述中），落盘为 `insert_image.py` 后即可直接执行。
-
-**方式二（备选）：传 `image_id`** —— 当无法在本地执行脚本，但可以先通过 `upload_image` MCP 工具或腾讯文档开放平台 OpenAPI 把图片上传后获取 `image_id` 时使用。
-
-**方式三（兜底）：传 `content`（图片 base64 字符串）** —— 仅适合图片体积较小的场景；若 base64 超出 MCP 单次传输限制会失败，此时请回退到方式一脚本调用。
+**方式二（备选）：传 `image_id`** —— 先通过 `upload_image` MCP 工具或腾讯文档开放平台 OpenAPI 把图片上传后获取 `image_id`，再传入本工具。
 
 #### 调用示例
 ```json
@@ -503,7 +490,7 @@ python3 insert_image.py \
 #### 参数说明
 - `file_id` (string, 可选): 文档唯一标识符，与 `file_url` 二选一
 - `file_url` (string, 可选): 腾讯文档的文档链接，与 `file_id` 二选一
-- `content` (string, 可选): 图片的 base64 内容（兜底方式三，仅适合小图），与 `image_id` 二选一。**大图请优先使用方式一的本地脚本，或方式二先上传得到 `image_id` 后再传入**
+- `content` (string, 可选): 图片的 base64 内容（方式一，本地图片先用 shell `base64` 命令编码，仅适合小图），与 `image_id` 二选一。**大图请改用方式二先上传得到 `image_id` 后再传入**
 - `image_id` (string, 可选): 图片的 `image_id`（方式二备选），与 `content` 二选一。获取方式有两种：
   1. 通过 `upload_image` MCP 接口上传图片后获取；
   2. 通过[腾讯文档开放平台 OpenAPI](https://docs.qq.com/open/developers/?nlc=1#/login) 图片上传接口获取（适合图片体积较大的场景；需先完成 OAuth 授权流程获取 `Access-Token`、`Client-Id`、`Open-Id`），示例命令：
@@ -697,24 +684,9 @@ python3 insert_image.py \
 
 #### 新图片来源选择优先级（按推荐顺序）
 
-**方式一（⭐首选）：本地脚本（`replace_image.py`）通过 HTTP 直接调用 MCP endpoint 完成替换。**
-无需把图片 base64 通过 MCP 通道透传，可避免大图触发上下文/传输限制，速度也更快。脚本不允许硬编码任何凭证：`--auth` 必须由调用方从用户的 `~/.codebuddy/mcp.json` 中 `tdoc-doc.headers.Authorization` 字段读取后透传。脚本把替换语义专属参数（`idx` / `old_image_url` / `old_attachment_id` / `file_id` / `file_url`）显式作为 CLI 参数暴露，避免在 JSON 里拼装出错；新图 `content` 由 `--image-path` 自动 base64 注入，无需传。
+**方式一（⭐首选）：经 MCP 工具通道传 `content`（图片 base64 字符串，不含 data URI 前缀）** —— 本地图片先用 shell 的 `base64` 命令读取编码，再连同 `idx` / `old_image_url` / `old_attachment_id` / `file_id` / `file_url` 等参数直接调用 `mcp_tdoc-doc_doc.replace_image`。仅适合图片体积较小的场景；若 base64 超出 MCP 单次传输限制会失败，此时请改用方式二。
 
-调用示例：
-```bash
-python3 replace_image.py \
-    --auth "$MCP_TOKEN" \
-    --image-path /tmp/new_chart.png \
-    --file-url "https://docs.qq.com/doc/XXX" \
-    --idx 283 \
-    --old-image-url "https://docs.qq.com/.../xxx.png"
-```
-
-完整脚本代码可向 `doc.replace_image` MCP 工具的 description 索取（已内嵌在工具描述中），落盘为 `replace_image.py` 后即可直接执行。
-
-**方式二（备选）：传 `image_id`** —— 当无法在本地执行脚本，但可以先通过 `upload_image` MCP 工具或腾讯文档开放平台 OpenAPI 把图片上传后获取 `image_id` 时使用。
-
-**方式三（兜底）：传 `content`（图片 base64 字符串）** —— 仅适合图片体积较小的场景；若 base64 超出 MCP 单次传输限制会失败，此时请回退到方式一脚本调用。
+**方式二（备选）：传 `image_id`** —— 先通过 `upload_image` MCP 工具或腾讯文档开放平台 OpenAPI 把图片上传后获取 `image_id`，再传入本工具。
 
 ### 调用示例
 ```json
@@ -743,7 +715,7 @@ python3 replace_image.py \
     --form 'image=@"/path/to/your/image.png"'
   ```
   上传成功后，取返回结果中的 `imageID` 字段值传入此参数
-- `content` (string, 可选): 新图片的 base64 内容（兜底方式三），与 `image_id` 二选一。**仅适合图片体积较小的场景；若图片过大导致 base64 超出 MCP 单次传输限制，请优先使用方式一脚本，或方式二先上传得到 `image_id` 后再传入**
+- `content` (string, 可选): 新图片的 base64 内容（方式一，本地图片先用 shell `base64` 命令编码），与 `image_id` 二选一。**仅适合图片体积较小的场景；若图片过大导致 base64 超出 MCP 单次传输限制，请改用方式二先上传得到 `image_id` 后再传入**
 - `version_info` (object, 可选): 版本参数，详见《通用说明 > 版本参数》
 
 ### 返回值说明
@@ -1684,287 +1656,16 @@ python3 replace_image.py \
 ### 功能说明
 用 Markdown 创建文档。用 Markdown 内容直接创建一篇新的 Word 文档，无需先调用 `manage.create_file` 再 `insert_markdown`，一步完成文档创建和内容写入。
 
-### Markdown 来源选择优先级（按推荐顺序）
+### Markdown 内容传入方式
 
-**方式一（⭐首选）：本地脚本（`create_with_markdown.py`）通过 HTTP 直接调用 MCP endpoint 创建文档。**
-无需把 Markdown base64 通过 MCP 通道透传，避免长 Markdown 触发上下文/传输限制，速度也更快。
-
-脚本不允许硬编码任何凭证，支持三种认证模式：
-1. **手动模式（`--auth`）**：手动传入 Authorization token（与调用方当前连接 MCP server 使用的同一 token）
-2. **环境变量模式**：从环境变量 `MCP_AUTH` 或 `AUTHORIZATION` 中自动读取（适用于沙箱环境）
-3. **直连模式（默认）**：自动从 WorkBuddy 连接器配置读取认证 headers，零配置直连
-
-`--mcp-url` 由调用方（agent）根据实际使用的端点传入：
-- SaaS 端: `https://saas.docs.qq.com/api/v6/open/agent/mcp`
-- C 端: `https://docs.qq.com/api/v6/doc/mcp`
+直接调用 `mcp_tdoc-doc_doc.create_with_markdown`，将 Markdown 内容 base64 编码后传入 `base64_markdown` 字段。长 Markdown 建议先落盘为本地文件，再用 shell 的 `base64` 命令编码后读取传入，避免手工拼接超长字符串出错。
 
 推荐使用流程：
 1. 准备好 Markdown 格式的文档内容，将其保存为 `<workspace>/.tmp/tencent_docs/<标题>.md` 文件；
-2. 调用本脚本，从返回值中提取 `file_url` 即可访问文档；
+2. 用 shell 的 `base64` 命令编码后作为 `base64_markdown` 传入本工具，从返回值中提取 `file_url` 即可访问文档；
 3. 如需继续编辑，使用 `file_id`/`file_url` 和 `last_index` 调用其他 docengine 工具。
 
-调用示例：
-```bash
-# 手动 auth (兼容 C 端原始方式)
-python3 create_with_markdown.py \
-    --mcp-url "https://docs.qq.com/api/v6/doc/mcp" \
-    --auth "<your_mcp_authorization_token>" \
-    --markdown-path <workspace>/.tmp/tencent_docs/demo.md \
-    --title "演示文档"
-
-# 默认直连 (零配置，自动从 WorkBuddy 读取 token)
-python3 create_with_markdown.py \
-    --mcp-url "https://saas.docs.qq.com/api/v6/open/agent/mcp" \
-    --markdown-path <workspace>/.tmp/tencent_docs/demo.md \
-    --title "演示文档"
-
-# 沙箱环境 (authorization 在环境变量中，脚本自动读取)
-export MCP_AUTH="Bearer xxx"
-python3 create_with_markdown.py \
-    --mcp-url "https://docs.qq.com/api/v6/doc/mcp" \
-    --markdown-path <workspace>/.tmp/tencent_docs/demo.md \
-    --title "演示文档"
-```
-
-脚本完整代码（可直接落盘为 `create_with_markdown.py` 后执行）：
-```python
-#!/usr/bin/env python3
-"""通过 MCP HTTP 接口用 Markdown 创建腾讯文档（兜底方案）。
-
-支持三种认证模式:
-  1. 直连模式 (默认): 自动从 WorkBuddy 连接器配置读取 token，直连腾讯文档 API
-  2. 手动模式 (--auth): 手动传入 Authorization 头 (原始 C 端方式)
-  3. 环境变量模式: 从环境变量 MCP_AUTH / AUTHORIZATION 中读取 token (沙箱环境)
-
---mcp-url 由调用方根据实际端点传入:
-  SaaS 端: https://saas.docs.qq.com/api/v6/open/agent/mcp
-  C 端:    https://docs.qq.com/api/v6/doc/mcp
-
-用法:
-  # 默认直连 (零配置，自动从 WorkBuddy 读取 token)
-  python3 create_with_markdown.py --mcp-url "https://saas.docs.qq.com/..." \
-      --markdown-path /tmp/demo.md --title "演示文档"
-
-  # 手动 auth (兼容 C 端原始方式)
-  python3 create_with_markdown.py --mcp-url "https://docs.qq.com/..." \
-      --auth "Bearer xxx" --markdown-path /tmp/demo.md --title "演示文档"
-
-  # 沙箱环境 (authorization 在环境变量中，脚本自动读取)
-  export MCP_AUTH="Bearer xxx"
-  python3 create_with_markdown.py --mcp-url "https://docs.qq.com/..." \
-      --markdown-path /tmp/demo.md --title "演示文档"
-"""
-
-import argparse
-import base64
-import glob
-import json
-import os
-import sys
-import urllib.request
-
-
-# ─── 默认路径常量 ───
-WORKBUDDY_HOME = os.path.expanduser("~/.workbuddy")
-CONNECTORS_DIR = os.path.join(WORKBUDDY_HOME, "connectors")
-
-# SaaS 端点特征 (用于判断工具名是否需要 doc. 前缀)
-SAAS_HOST = "saas.docs.qq.com"
-
-
-# ─── 配置自动发现 ───
-
-def discover_tdocs_auth():
-    """从 WorkBuddy 连接器配置自动读取腾讯文档的认证 headers。
-
-    只负责读取连接器配置中的 headers (credentials)，不负责 MCP URL。
-    URL 由调用方通过 --mcp-url 传入。
-
-    返回 headers_dict 或 None。
-    """
-    if not os.path.isdir(CONNECTORS_DIR):
-        return None
-
-    # 遍历连接器实例目录
-    for instance_dir in glob.glob(os.path.join(CONNECTORS_DIR, "*")):
-        if not os.path.isdir(instance_dir):
-            continue
-
-        states_file = os.path.join(instance_dir, "connector-states.json")
-        mcp_file = os.path.join(instance_dir, "mcp.json")
-
-        if not os.path.isfile(states_file) or not os.path.isfile(mcp_file):
-            continue
-
-        try:
-            with open(states_file, "r") as f:
-                states = json.load(f)
-            # 检查是否启用了 tencent-docs
-            if "tencent-docs" not in states.get("enabled", []):
-                continue
-
-            with open(mcp_file, "r") as f:
-                mcp_cfg = json.load(f)
-
-            tdocs = mcp_cfg.get("mcpServers", {}).get("connector:tencent-docs", {})
-
-            # 从 connector-states.json 读取最新的 header overrides
-            header_overrides = states.get("headerOverrides", {}).get("tencent-docs", {})
-
-            # 合并：静态 headers + 运行时 header overrides (overrides 优先)
-            static_headers = tdocs.get("headers", {})
-            headers = {**static_headers, **header_overrides}
-
-            return headers
-
-        except Exception:
-            continue
-
-    return None
-
-
-def discover_env_auth():
-    """从环境变量中读取 Authorization token (适用于沙箱环境)。
-
-    依次尝试：MCP_AUTH → AUTHORIZATION
-    返回 token 字符串或 None。
-    """
-    for env_key in ("MCP_AUTH", "AUTHORIZATION"):
-        val = os.environ.get(env_key, "").strip()
-        if val:
-            return val
-    return None
-
-
-# ─── MCP 调用 ───
-
-def call_tool_direct(mcp_url, headers, tool_name, tool_args):
-    """直连腾讯文档 MCP (使用从配置读取的认证头)。"""
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": tool_args},
-        "id": 1,
-    }
-    req_headers = {"Content-Type": "application/json", **headers}
-    req = urllib.request.Request(
-        mcp_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=req_headers,
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        body = resp.read().decode("utf-8")
-        print(body)
-        try:
-            if json.loads(body).get("error"):
-                sys.exit(1)
-        except Exception:
-            pass
-
-
-def call_tool_manual(mcp_url, auth, tool_name, tool_args):
-    """手动传入 Authorization 头调用 (C 端原始方式 / 环境变量模式)。"""
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": tool_args},
-        "id": 1,
-    }
-    req = urllib.request.Request(
-        mcp_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": auth,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        body = resp.read().decode("utf-8")
-        print(body)
-        try:
-            if json.loads(body).get("error"):
-                sys.exit(1)
-        except Exception:
-            pass
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="通过 MCP HTTP 接口用 Markdown 创建腾讯文档",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("--mcp-url", default="",
-                        help="MCP endpoint URL (必填，如 https://docs.qq.com/api/v6/doc/mcp)")
-    parser.add_argument("--auth", default="",
-                        help="手动传入 Authorization 头 (如 'Bearer xxx')，跳过自动发现")
-    parser.add_argument("--markdown-path", required=True,
-                        help="本地 Markdown 文件绝对路径")
-    parser.add_argument("--title", default="", help="文档标题（可选）")
-    parser.add_argument("--extra-args", default="{}",
-                        help="其它可选参数 JSON（预留）")
-    args = parser.parse_args()
-
-    # ── 确定 MCP URL ──
-    if not args.mcp_url:
-        print("Error: --mcp-url is required", file=sys.stderr)
-        sys.exit(1)
-    mcp_url = args.mcp_url
-
-    # 根据 URL 判断端点类型：SaaS 端点 (saas.docs.qq.com) 工具名需要 "doc." 前缀
-    is_saas = SAAS_HOST in mcp_url
-    tool_name = "doc.create_with_markdown" if is_saas else "create_with_markdown"
-
-    # ── 确定认证模式 ──
-    auth_token = args.auth
-
-    if auth_token:
-        # 模式 1: 手动传入 --auth
-        print(f"[*] Mode: manual auth -> {mcp_url}", file=sys.stderr)
-    else:
-        # 模式 2: 尝试从环境变量读取 (沙箱环境)
-        auth_token = discover_env_auth()
-        if auth_token:
-            print(f"[*] Mode: env auth (from environment variable) -> {mcp_url}",
-                  file=sys.stderr)
-
-    if auth_token:
-        # 使用手动/环境变量模式
-        call_fn = call_tool_manual
-        call_kwargs = {"mcp_url": mcp_url, "auth": auth_token}
-    else:
-        # 模式 3: 直连模式 (从 WorkBuddy 连接器配置自动发现)
-        headers = discover_tdocs_auth()
-        if not headers:
-            print("Error: 无法自动发现认证信息。请使用以下任一方式提供认证：\n"
-                  "  1. --auth 手动传入 Authorization token\n"
-                  "  2. 设置环境变量 MCP_AUTH 或 AUTHORIZATION\n"
-                  "  3. 在 WorkBuddy 中连接腾讯文档连接器",
-                  file=sys.stderr)
-            sys.exit(1)
-        call_fn = call_tool_direct
-        call_kwargs = {"mcp_url": mcp_url, "headers": headers}
-        print(f"[*] Mode: direct (auto-auth from WorkBuddy) -> {mcp_url}",
-              file=sys.stderr)
-
-    # ── 读取 Markdown 并编码 ──
-    with open(args.markdown_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    tool_args = json.loads(args.extra_args)
-    tool_args["base64_markdown"] = b64
-    if args.title:
-        tool_args["title"] = args.title
-
-    # ── 调用 MCP ──
-    call_fn(tool_name=tool_name, tool_args=tool_args, **call_kwargs)
-
-
-if __name__ == "__main__":
-    main()
-```
-
-**方式二（兜底）：直接传 `base64_markdown`** —— 仅适合 Markdown 体积较小的场景；若 base64 超出 MCP 单次传输限制会失败，此时请回退到方式一脚本调用。手动 base64 编码方法：
+手动 base64 编码方法：
 ```bash
 mkdir -p <workspace>/.tmp/tencent_docs
 base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent_docs/encoded_<标题>.txt
@@ -1972,7 +1673,7 @@ base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent
 ```
 再用 `read_file` 读取 `encoded_<标题>.txt` 获取 base64 内容传入 `base64_markdown`。
 
-### 调用示例（方式二直接传参）
+### 调用示例
 ```json
 {
   "base64_markdown": "IyDmoIfpopgKCui/meaYr+S4gOautSoq5Yqg57KXKirmlofmnKzjgII=",
@@ -1981,7 +1682,7 @@ base64 -w 0 <workspace>/.tmp/tencent_docs/<标题>.md > <workspace>/.tmp/tencent
 ```
 
 ### 参数说明
-- `base64_markdown` (string, 必填): base64 编码的 Markdown 内容（兜底方式二，仅适合短 Markdown）。长 Markdown 请优先使用方式一的本地脚本
+- `base64_markdown` (string, 必填): base64 编码的 Markdown 内容。长 Markdown 请先落盘为本地文件，再用 shell `base64` 命令编码后传入
 - `title` (string, 可选): 文档标题
 
 ### 返回值说明

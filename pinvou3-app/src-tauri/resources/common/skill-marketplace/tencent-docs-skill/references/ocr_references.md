@@ -14,16 +14,15 @@
 
 ```
 ├─ 有公网 URL → 直接调 ocr.* 工具，填 image_url（首选）
-├─ 本地文件   → node ocr.js（禁止手动传 base64）
-└─ data URI   → 先存本地文件，再走 ocr.js
+├─ 本地文件   → shell `base64` 读取编码后，调 ocr.* 工具传 image_base64
+└─ data URI   → 先存本地文件，再走 base64 编码
 ```
 
-**本地图片禁止将 base64 作为工具参数传入**，LLM 无法处理超长字符串。使用 `ocr.js` 脚本（自动编码+调用）：
+**本地图片先用 shell 的 `base64` 命令编码**，再把 base64 字符串作为 `image_base64` / `images[].image_base64` 参数调用 `mcp_tencent-docs_ocr.*` 工具：
 
 ```bash
-node ocr.js extract /path/to/image.png [--accurate|--efficient] [--positions]
-node ocr.js toword  /path/to/p1.png /path/to/p2.png [--title "标题"]
-node ocr.js toexcel /path/to/table.png [--title "标题"]
+# 编码本地图片（macOS 无需 -w 0）
+base64 -w 0 /path/to/image.png > /tmp/image_b64.txt
 ```
 
 ## 图片输入字段规则
@@ -69,11 +68,11 @@ node ocr.js toexcel /path/to/table.png [--title "标题"]
 ## 典型工作流
 
 ### 提取图片文字
-1. URL → `ocr.extract`；本地 → `node ocr.js extract <path>`
+1. URL → `ocr.extract`；本地 → shell `base64` 编码后调 `ocr.extract` 传 `image_base64`
 2. 从 `texts` 拼接结果反馈用户
 
 ### 图片转文档/表格
-1. URL → `ocr.toword`/`ocr.toexcel`；本地 → `node ocr.js toword|toexcel <paths>`
+1. URL → `ocr.toword`/`ocr.toexcel`；本地 → shell `base64` 编码后调 `ocr.toword`/`ocr.toexcel` 传 `images[].image_base64`
 2. 返回 `file_url` 给用户
 
 ### OCR 回填到现有文档

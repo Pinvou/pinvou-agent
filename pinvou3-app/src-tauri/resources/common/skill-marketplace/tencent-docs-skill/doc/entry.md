@@ -27,4 +27,4 @@
 
 ## 相关工具
 
-使用 `tencent-docs` MCP Server 中的 `doc.*` 系列工具执行读写、美化等操作。
+使用 `tdoc-doc` MCP Server 中的 `doc.*` 系列工具执行读写、美化等操作。
