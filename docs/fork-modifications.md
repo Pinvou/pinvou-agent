@@ -20,7 +20,7 @@
 
 ### r7 逐轮评测工具安全扩展（PR 候选）
 
-> CodeWhale PR #15 候选提交 `1eca6103a`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖和最终执行前精确白名单门禁。快速 guard 仅额外接受这个直接位于 r7 head 之上的单提交拓扑；公开标签校验仍固定为 `pinvou-v0.9.5-r7`。
+> CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁，并封闭排队控制操作、Hook 与日志旁路。快速 guard 仅额外接受这条登记的 PR 候选链；公开标签校验仍固定为 `pinvou-v0.9.5-r7`。
 
 - 部分 OpenAI 兼容后端会返回结构上合法、但把 schema 声明的嵌套 object/array 再编码成 JSON 字符串的工具参数；这会让 `request_user_input` 等强类型工具在进入业务校验前失败。
 - T2 只在 schema 明确声明 object/array、字符串为不超过 64 KiB 的严格 JSON 且解码类型一致时修复该容器；普通文本和数字/布尔字符串不做宽松转换，修复后仍执行原工具校验。
@@ -74,9 +74,10 @@ r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files ch
   - schema 明确要求 object/array 时，窄修复模型输出的严格 JSON 字符串容器；不做 primitive coercion，业务工具仍执行自身校验。
   - `stuck_guard` 与连续工具错误 degradation 提示折叠进对应 `tool_result`，保持这两条续轮路径的 provider 角色序列合法；应用 bridge 只从工具卡展示值剥离这两种已知内部 suffix。
   - 当前工具面不恢复已退役的独立追加文件工具，也不放宽 `request_user_input` 的问题数量、字段和选项校验。
-  - 本地未发布的逐轮安全策略在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次清空 trusted roots 时不再追加持久信任目录或剪贴板目录，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。`None` 保持现有 GUI 行为。
+  - 本地未发布的逐轮安全策略在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次清空 trusted roots 时不再追加持久信任目录或剪贴板目录，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，排队操作不能借轮次结束扩权；Hook 默认关闭，受限日志与审计固定脱敏。`None` 保持现有 GUI 行为。
+- **上游计划**：逐轮权限、可信根覆盖和最终 dispatch 门禁是通用嵌入能力，将在本 PR 安全回归稳定后整理为独立上游贡献；Pinvou profile 名称与 GAIA 工具名单继续留在 app。上游接收后删除 fork 对应实现和本地指纹，不维护两套长期语义。
 - **边界**：不包含 Skill 来源、Automation 或三省六部角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`、`forkguard_tool_error_degradation_preserves_provider_role_sequence`、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`，以及 Tauri/Web 工具卡展示回归。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`、`forkguard_tool_error_degradation_preserves_provider_role_sequence`、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_queued_control_op_keeps_restricted_turn_authority`，以及受限 Hook/日志脱敏和 Tauri/Web 工具卡展示回归。
 
 ### T3：嵌入上下文与技能来源
 
