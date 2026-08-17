@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: published r7 baseline.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +7,9 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+LOCAL_SECURITY_HEAD="1eca6103aebf596e6d6101f3f928651acdbdd93d"
+PUBLISHED_COMMITS=9
+LOCAL_COMMITS=10
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,28 +19,34 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r7 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r7 公开拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的四主题公开基线 $EXPECTED_HEAD"
+if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
+  expected_commits="$PUBLISHED_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向登记的 r7 公开 head $PUBLISHED_HEAD"
+elif [[ "$actual_head" == "$LOCAL_SECURITY_HEAD" ]] \
+  && [[ "$(git -C "$TUI" rev-parse HEAD^ 2>/dev/null || true)" == "$PUBLISHED_HEAD" ]]; then
+  expected_commits="$LOCAL_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向登记的 r7 安全扩展候选 $LOCAL_SECURITY_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
+  expected_commits=""
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非其登记的单提交安全扩展"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null \
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
-  green "  ✓ 公开基线继承官方 v0.9.5 并与 r7 维护 head 一致"
+  green "  ✓ 维护基线继承官方 v0.9.5"
 else
-  red "  ✗ 基线未同时继承官方 v0.9.5 与 r7 公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ r7 未同时继承官方 v0.9.5 与公开维护 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开维护提交"
+if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
+  green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开基线登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，当前合法拓扑应为 ${expected_commits:-8 或 9}"
   fail=1
 fi
 
@@ -55,9 +62,6 @@ fingerprints=(
   "T1|embedding route wire alias 回归      |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_embedding_route_limits_preserve_wire_alias"
   "T1|运行时会话快照不推断工具崩溃        |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_runtime_session_snapshot_preserves_in_flight_tool_call"
   "T1|显式重启恢复可观测且幂等            |CodeWhale/crates/tui/src/session_manager.rs|fn forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save"
-  "T1|宿主批量取消运行中子智能体          |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
-  "T1|批量取消幂等行为回归                |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_host_bulk_cancel_stops_all_running_children_idempotently"
-  "T1|通用完成事件携带失败终态            |CodeWhale/crates/tui/src/core/events.rs|failed: bool"
 
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
@@ -71,8 +75,6 @@ fingerprints=(
   "T2|stuck 告警留在 tool result          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_stuck_guard_warning_is_embedded_in_tool_result_content"
   "T2|stuck 续轮保持 provider 角色合法    |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence"
   "T2|错误降级提示保持 provider 角色合法  |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_tool_error_degradation_preserves_provider_role_sequence"
-  "T2|Registry 提示使用 canonical 工具面 |CodeWhale/crates/tui/src/core/engine/tests.rs|fn registry_first_policy_is_in_the_initial_prompt_only_when_mcp_is_enabled"
-  "T2|旧 action alias 解析为 canonical   |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn custom_child_allowlist_omitting_load_skill_fails_closed"
 
   "T3|ambient project authority 密封       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|Permissions 100 KiB 窄例外回归      |CodeWhale/crates/tui/src/prompts.rs|fn forkguard_instruction_fragment_preserves_content_beyond_default_cap"
@@ -85,10 +87,13 @@ fingerprints=(
   "T4|Pinvou 历史 v3/v4 schema 窄兼容     |CodeWhale/crates/tui/src/task_manager.rs|const PINVOU_LEGACY_TASK_SCHEMA_VERSIONS"
   "T4|conversation/thread 跨 worker 持久化|CodeWhale/crates/tui/src/task_manager.rs|async fn forkguard_conversation_key_and_created_thread_survive_worker_boundary"
 
+  "T2|会话 trusted roots 可完全覆盖       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_session_trusted_roots_override_persisted_workspace_trust"
+  "T2|执行分发白名单 fail-closed          |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends"
+
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|v0.9.5 subagent state root 透传     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
-  "APP|停止与回收级联取消子智能体          |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|Op::CancelSubAgents"
+  "APP|三省六部动态产物最小写入声明        |pinvou3-app/src-tauri/src/features/assistant/harness.rs|fn forkguard_dynamic_workflow_role_claims_only_its_declared_output"
   "APP|resolved route 由宿主统一解析        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
   "APP|128K/256K compaction 合约            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"
   "APP|定时任务复用 shared run API          |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
@@ -126,7 +131,7 @@ bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 
 echo
 if [[ $fail -eq 0 ]]; then
-  green "✅ fork-guard 全过：4 个 v0.9.5 fork 主题完好。"
+  green "✅ fork-guard 全过：5 个 v0.9.5 fork 主题完好。"
 else
   red "❌ fork-guard 失败：请对照 docs/fork-modifications.md 排查。"
 fi

@@ -12,6 +12,62 @@ use crate::platform::path_policy::validate_user_path;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn generic_file_staging_preserves_the_gui_image_wrapper_contract() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.png");
+    std::fs::write(&source, b"image bytes").unwrap();
+    let generic = stage_file_in_workspace(
+        source.to_str().unwrap(),
+        "generic.png",
+        workspace.path(),
+        "attachments",
+    )
+    .unwrap();
+    let image = stage_image_in_workspace(
+        source.to_str().unwrap(),
+        "wrapper.png",
+        workspace.path(),
+        "attachments",
+    )
+    .unwrap();
+    assert_eq!(generic, "attachments/generic.png");
+    assert_eq!(image, "attachments/wrapper.png");
+    assert_eq!(
+        std::fs::read(workspace.path().join(generic)).unwrap(),
+        b"image bytes"
+    );
+    assert_eq!(
+        std::fs::read(workspace.path().join(image)).unwrap(),
+        b"image bytes"
+    );
+}
+
+#[test]
+fn failed_generic_file_copy_removes_the_reserved_partial() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("source.txt");
+    std::fs::write(&source, b"private bytes").unwrap();
+
+    let staged = stage_file_in_workspace_with_copier(
+        source.to_str().unwrap(),
+        "partial.txt",
+        workspace.path(),
+        "attachments",
+        |_source, destination| {
+            use std::io::Write;
+
+            destination.write_all(b"partial")?;
+            Err(std::io::Error::other("injected copy failure"))
+        },
+    );
+
+    assert_eq!(staged, None);
+    assert!(!workspace.path().join("attachments/partial.txt").exists());
+}
+
+#[test]
 fn marketplace_auth_status_only_oauth_is_connected_for_oauth_tools() {
     use deepseek_tui::mcp::oauth::McpAuthStatus;
 

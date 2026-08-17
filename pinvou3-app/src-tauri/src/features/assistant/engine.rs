@@ -424,6 +424,7 @@ fn emit_turn_started(app: &AppHandle, session_id: &str) {
     let started_payload = json!({ "session_id": session_id });
     let _ = app.emit("chat:turn_started", started_payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:turn_started", started_payload);
+    crate::features::assistant::timing::record_milestone(session_id, "turn_started");
 }
 
 fn emit_turn_admission(app: &AppHandle, session_id: &str, admission: TurnAdmission) {
@@ -1188,8 +1189,14 @@ impl AppEngine {
         // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
         // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
         let scheduled_profile = store.scheduled_profile(session_id);
+        let persisted_total_tokens = store.load(session_id)?.metadata.total_tokens;
         let scheduled_base_total_tokens = if scheduled_profile.is_some() {
-            Some(store.load(session_id)?.metadata.total_tokens)
+            Some(persisted_total_tokens)
+        } else {
+            None
+        };
+        let chat_base_total_tokens = if scheduled_profile.is_none() {
+            Some(persisted_total_tokens)
         } else {
             None
         };
@@ -1299,6 +1306,7 @@ impl AppEngine {
             turn_events.clone(),
             scheduled_profile,
             scheduled_base_total_tokens,
+            chat_base_total_tokens,
             scheduled_unattended.clone(),
             turn_lifecycle.clone(),
             shell_manager,
@@ -1392,6 +1400,18 @@ impl AppEngine {
             restrict_tools,
             expert_snapshot,
         )?;
+        self.send_reserved_turn_op(op, reservation).await
+    }
+
+    pub(crate) async fn send_reserved_eval_message(
+        &self,
+        content: String,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+        reservation: TurnReservation,
+    ) -> Result<()> {
+        let op = self
+            .bridge
+            .build_eval_send_message_op(&self.session_id, content, policy)?;
         self.send_reserved_turn_op(op, reservation).await
     }
 

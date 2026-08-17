@@ -33,7 +33,11 @@ pub(super) fn maybe_notify_task_completed(
     if app
         .try_state::<crate::platform::notifications::NotificationState>()
         .map(|state| state.should_notify(notify_key))
-        .unwrap_or(true)
+        // Windowless composition roots (for example eval_smoke) deliberately
+        // omit the desktop notification plugin and its state. Treat that as
+        // notifications unavailable instead of calling NotificationExt, which
+        // panics when the plugin has not been managed.
+        .unwrap_or(false)
     {
         crate::platform::notifications::notify_task_completed(app);
     }

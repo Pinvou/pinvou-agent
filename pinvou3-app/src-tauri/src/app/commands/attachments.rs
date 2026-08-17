@@ -119,12 +119,16 @@ fn staged_target_is_safe(
             .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
 }
 
-pub(super) fn stage_image_in_workspace(
+pub(super) fn stage_file_in_workspace_with_copier<F>(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,
     attachment_dir: &str,
-) -> Option<String> {
+    copier: F,
+) -> Option<String>
+where
+    F: FnOnce(&mut std::fs::File, &mut std::fs::File) -> std::io::Result<u64>,
+{
     validate_staged_attachment_basename(basename).ok()?;
     let (attachment_dir, canonical_workspace, directory) =
         prepare_staging_directory(workspace, attachment_dir)?;
@@ -138,13 +142,33 @@ pub(super) fn stage_image_in_workspace(
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
         return None;
     }
-    if std::io::copy(&mut source, &mut destination).is_err() {
+    if copier(&mut source, &mut destination).is_err() {
+        drop(destination);
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))
+}
+
+pub(crate) fn stage_file_in_workspace(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+) -> Option<String> {
+    stage_file_in_workspace_with_copier(src, basename, workspace, attachment_dir, std::io::copy)
+}
+
+pub(super) fn stage_image_in_workspace(
+    src: &str,
+    basename: &str,
+    workspace: &std::path::Path,
+    attachment_dir: &str,
+) -> Option<String> {
+    stage_file_in_workspace(src, basename, workspace, attachment_dir)
 }
 
 /// Reuse a session-owned attachment that is already inside the execution

@@ -2,10 +2,18 @@
 
 mod app;
 mod core;
+#[cfg(feature = "dev-tools")]
+mod eval_cli;
 pub mod features;
+#[cfg(feature = "benchmark-hooks")]
+pub mod headless_bridge;
 pub mod platform;
 
 pub use app::commands::attachments::build_message_with_attachments;
+#[cfg(feature = "dev-tools")]
+pub use eval_cli::{
+    judge_status_label, run_product_eval_smoke, EvalSmokeOptions, EvalSmokeOutcome,
+};
 
 use tauri::Manager;
 
@@ -929,6 +937,7 @@ pub fn run() {
             commands::marketplace::bundle_readiness,
             commands::marketplace::export_plugin_spec,
             commands::files::verify_upload,
+            commands::eval::run_eval_smoke,
         ]);
 
     startup::mark("tauri:builder_configured");
