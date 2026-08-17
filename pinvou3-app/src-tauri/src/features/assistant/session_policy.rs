@@ -142,6 +142,13 @@ impl SessionPolicy {
         matches!(self.mode, SessionMode::Code)
     }
 
+    /// 该模式向模型暴露 browser MCP 工具（`mcp_browser_*`，工作模式有头浏览器）。
+    /// 消费点：bridge 的 mcp 配置路径选择与系统提示词「浏览器能力不可用」注入
+    /// 须同口径（工具注册与能力声明一致），此处是唯一分支点。
+    pub fn exposes_browser_mcp(&self) -> bool {
+        matches!(self.mode, SessionMode::Plain)
+    }
+
     /// Plan 模式 per-turn reminder。两模式同文：R-1 已为 code 页接上方案审批卡，
     /// reminder 描述的卡片交互对两模式都成立，无需分化。
     pub fn plan_reminder(&self) -> Option<&'static str> {

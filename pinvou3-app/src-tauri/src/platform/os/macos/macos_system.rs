@@ -152,6 +152,23 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
+/// 专用有头 Chrome 的可执行候选（macOS 以应用内可执行文件绝对路径为主）。
+/// 与 `browser-wrapper.mjs` 的 darwin 候选保持一致（漂移时两侧同步）。
+pub fn chrome_candidates() -> Vec<String> {
+    vec![
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium".to_string(),
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser".to_string(),
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge".to_string(),
+    ]
+}
+
+/// 随安装包捆绑的 node：macOS 复用 codex-bridge 运行时 node（无捆绑时 None，
+/// 消费方回退系统 PATH 探测）。
+pub fn bundled_node() -> Option<PathBuf> {
+    crate::platform::paths::bundled_connector_node()
+}
+
 pub fn libreoffice_tool_path() -> PathBuf {
     if command_exists("soffice") {
         PathBuf::from("soffice")

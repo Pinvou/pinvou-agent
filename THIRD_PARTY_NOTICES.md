@@ -16,6 +16,7 @@ Their original licenses remain in effect.
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 13.0.3 | Vendored browser script | MIT | https://github.com/markedjs/marked |
 | DOMPurify | 3.4.2 | Vendored browser script (`pinvou3-app/src/vendor/purify.min.js`, `remote-control-relay/web/purify.min.js`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
+| chrome-devtools-mcp | 1.7.0 | Self-contained build vendored at build time into `pinvou3-app/src-tauri/resources/platforms/*/chrome-devtools-mcp/` (shipped under `runtime/chrome-devtools-mcp`); npm tarball SHA-512-verified; package-internal `build/src/third_party/THIRD_PARTY_NOTICES` preserved | Apache-2.0 | https://github.com/ChromeDevTools/chrome-devtools-mcp |
 | Tailwind CSS Play CDN runtime | 3.4.17 | Vendored browser script | MIT | https://github.com/tailwindlabs/tailwindcss |
 | Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 | Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |

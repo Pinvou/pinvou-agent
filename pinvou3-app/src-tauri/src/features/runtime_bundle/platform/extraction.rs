@@ -436,8 +436,176 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
+        // 浏览器 MCP（工作模式 Agent 操作有头 Chrome）**不注册到全局 mcp.json**：
+        // 门控语义是「只有工作模式会话暴露 browser 工具」。仅清理本应用历史残留
+        // 的 browser 条目（command 指向 browser-wrapper.mjs）；用户自配的同名 MCP
+        // server（如 playwright-mcp）不属于本应用，必须保留——无条件删除会在每次
+        // 启动时静默摧毁用户配置。browser 条目由 `work_mode_mcp_config_path` 在
+        // assistant 引擎会话启动时注入会话专用 mcp 文件
+        // （`~/.pinvou3/browser/mcp.work.json`）。
+        let remove_browser_residue = servers
+            .get("browser")
+            .map(is_browser_wrapper_residue)
+            .unwrap_or(false);
+        if remove_browser_residue {
+            servers.remove("browser");
+        }
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
         std::fs::write(&self.mcp_json, json)
+    }
+
+    /// 生成 `browser` MCP server 条目（不写盘，由 [`Self::work_mode_mcp_config_path`]
+    /// 注入工作模式会话专用 mcp.json）。前置条件：
+    /// 1. vendor 的 chrome-devtools-mcp 入口存在（打包资源，或 `PINVOU3_CDMCP_BIN` 覆盖）；
+    /// 2. node 运行时可用（随包捆绑 node 优先，回退系统 PATH node）；
+    /// 3. wrapper 脚本已释放到 `~/.pinvou3/bundle/mcp-servers/`。
+    /// 任一不满足 → None（工作模式会话回退全局配置，模型拿不到浏览器工具）。
+    pub fn browser_mcp_entry(&self) -> Option<serde_json::Value> {
+        let mcp_bin = std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(paths::bundled_chrome_devtools_mcp_bin)?;
+        let node = crate::platform::os::bundled_node().or_else(find_system_node)?;
+        let wrapper = paths::bundle_browser_wrapper();
+        if !wrapper.is_file() {
+            return None;
+        }
+        Some(serde_json::json!({
+            "command": node,
+            "args": [
+                wrapper.to_string_lossy(),
+                mcp_bin.to_string_lossy(),
+                paths::browser_cdp_port_json().to_string_lossy(),
+                paths::browser_profile_dir().to_string_lossy(),
+            ],
+            "env": {
+                // 离线双保险（wrapper 也自带这些参数/env）
+                "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+                "CI": "1"
+            }
+        }))
+    }
+
+    /// 浏览器能力不可用的静态原因（模型可见）。None = 前置条件齐备，不注入。
+    /// 只做静态判定：vendor chrome-devtools-mcp / node / wrapper / Chrome 候选
+    /// 存在性，以及 wrapper 记录的最近一次动态启动失败（`last-error.json`，
+    /// 24h 内新鲜）。动态失败（Chrome 启动/CDP 未就绪）发生在会话建立之后，
+    /// 当次会话读不到，由 instructions §浏览器能力 的通用兜底指引覆盖；重开会话
+    /// 时此处能读到上次原因，模型可据此精确引导用户。
+    pub fn browser_unavailability_reason(&self) -> Option<String> {
+        let mut missing: Vec<&str> = Vec::new();
+        if std::env::var_os("PINVOU3_CDMCP_BIN")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .is_none()
+            && paths::bundled_chrome_devtools_mcp_bin().is_none()
+        {
+            missing.push(
+                "内置的 chrome-devtools-mcp 运行时未就绪(安装包自带,开发环境需先执行 vendor 构建)",
+            );
+        }
+        if crate::platform::os::bundled_node().is_none() && find_system_node().is_none() {
+            missing.push("node 运行时不可用");
+        }
+        if !paths::bundle_browser_wrapper().is_file() {
+            missing.push("浏览器 wrapper 脚本未释放");
+        }
+        if crate::platform::os::find_chrome().is_none() {
+            missing.push("未检测到 Chrome/Chromium/Edge");
+        }
+        if !missing.is_empty() {
+            return Some(format!(
+                "浏览器工具(`mcp_browser_*`)当前不可用:{}。需要浏览器时,请引导用户按原因修复(常见:安装 Google Chrome/Chromium/Edge)后重开会话。",
+                missing.join("; ")
+            ));
+        }
+        // 最近一次动态启动失败(Chrome 启动失败/CDP 未就绪等),24h 内新鲜才提示。
+        let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
+            return None;
+        };
+        let Ok(state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return None;
+        };
+        let reason = state.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        let at = state.get("at").and_then(|t| t.as_i64()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if reason.is_empty() || now.saturating_sub(at) > 24 * 3600 {
+            return None;
+        }
+        Some(format!(
+            "浏览器工具(`mcp_browser_*`)上次启动失败:{reason}。若用户需要浏览器,请引导其重开会话重试。"
+        ))
+    }
+
+    /// 工作模式（assistant 引擎）会话的 mcp 配置路径：
+    /// 全局 mcp.json + browser 条目（条件满足时），原子写到
+    /// `~/.pinvou3/browser/mcp.work.json` 后返回该路径；条件不满足时直接返回
+    /// 全局 mcp.json（无 browser 工具）。多工作模式会话并发重建同一文件，
+    /// 内容确定、tmp+rename 幂等。
+    pub fn work_mode_mcp_config_path(&self) -> PathBuf {
+        let base = self.mcp_json.clone();
+        let Some(browser_entry) = self.browser_mcp_entry() else {
+            return base;
+        };
+        let work_path = paths::browser_work_mcp_json();
+        // 解析失败（用户手改坏 / 并发读到半截 JSON）回落全局配置而不是捏造空
+        // 配置继续：空配置会让本会话丢失全部 marketplace 工具、只剩 browser，
+        // 且完全静默。回落只是少了 browser 工具，全局侧口径不受影响。
+        let mcp: serde_json::Value = match std::fs::read_to_string(&base)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+        {
+            Some(v) => v,
+            None => return base,
+        };
+        let mut obj = mcp;
+        if obj.get("servers").and_then(|s| s.as_object()).is_none() {
+            obj.as_object_mut()
+                .unwrap()
+                .insert("servers".into(), serde_json::json!({}));
+        }
+        // 用户自配的同名 browser server（如 playwright-mcp）在工作模式会话中
+        // 优先保留，不被内嵌 wrapper 静默覆盖（全局侧同款保留语义的会话侧镜像）；
+        // 本应用历史残留（command 指向 browser-wrapper.mjs）则覆盖为新鲜条目。
+        let servers = obj["servers"].as_object_mut().unwrap();
+        if let Some(existing) = servers.get("browser") {
+            if !is_browser_wrapper_residue(existing) {
+                return base;
+            }
+        }
+        servers.insert("browser".to_string(), browser_entry);
+        if let Some(parent) = work_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // tmp 名带 pid + 进程内计数器：并发重建同一文件时互不覆盖（同进程多会话
+        // 的 pid 相同，仅 pid 不够；rename 原子落位，败者回落全局配置）。
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = work_path.with_extension(format!(
+            "json.rust-tmp-{}-{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        match serde_json::to_string_pretty(&obj) {
+            Ok(json) => {
+                if std::fs::write(&tmp, json).is_ok() {
+                    // 内容含全局 mcp.json 完整副本（可能带用户自配 server 的密钥
+                    // env）：与 cdp-port.json 同卫生标准收紧为 0600。
+                    crate::platform::os::make_private_file(&tmp);
+                    if std::fs::rename(&tmp, &work_path).is_ok() {
+                        return work_path;
+                    }
+                }
+                // 写失败降级：仍返回专用路径会让引擎拉到旧文件或缺文件，
+                // 不如直接退回全局配置（无 browser 工具，功能侧降级而非报错）。
+                let _ = std::fs::remove_file(&tmp);
+                base
+            }
+            // 序列化失败（obj 为 Value 实际不会失败）按写失败同口径回落。
+            Err(_) => base,
+        }
     }
 
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
@@ -563,6 +731,18 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&wecom_bot_dir)?;
         std::fs::write(wecom_bot_dir.join("server.py"), WECOM_BOT_SERVER_PY)?;
         std::fs::write(wecom_bot_dir.join("manifest.json"), WECOM_BOT_MANIFEST_JSON)?;
+
+        // 浏览器 MCP wrapper(零依赖 node,stdin/stdout 是 MCP 协议;wrapper 由 node 直接执行,
+        // 不依赖可执行位,chmod 无害)
+        let wrapper = paths::bundle_browser_wrapper();
+        std::fs::write(&wrapper, BROWSER_WRAPPER_MJS)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&wrapper)?.permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&wrapper, perm)?;
+        }
         Ok(())
     }
 }

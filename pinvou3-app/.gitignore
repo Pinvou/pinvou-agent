@@ -14,6 +14,14 @@ src-tauri/resources/platforms/macos/codex-bridge/acp/
 src-tauri/resources/platforms/macos/codex-bridge/manifest.json
 src-tauri/resources/platforms/macos/.codex-bridge-build.*/
 
+# chrome-devtools-mcp 由 scripts/tauri/chrome-devtools-mcp.js 构建期 vendor
+# （npm registry 官方包，Apache-2.0，sha512 硬编码校验，~13MB 自包含构建）。
+# 目录内容全部忽略（含 npm 包自带 README/LICENSE 等），仅保留占位 .gitkeep
+# 被 git 跟踪，使 tauri 资源布局测试（tauri_platform_layout / tauri_effective_config）
+# 在 CI checkout 上能通过资源存在性断言（对齐 codex-bridge 的 README.md 先例）。
+src-tauri/resources/platforms/*/chrome-devtools-mcp/*
+!src-tauri/resources/platforms/*/chrome-devtools-mcp/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

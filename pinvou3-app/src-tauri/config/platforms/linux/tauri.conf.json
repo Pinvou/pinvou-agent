@@ -5,7 +5,8 @@
     "resources": {
       "resources/platforms/linux/asr/": "runtime/asr",
       "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge",
-      "resources/platforms/linux/knowledge-host/": "runtime/knowledge-host"
+      "resources/platforms/linux/knowledge-host/": "runtime/knowledge-host",
+      "resources/platforms/linux/chrome-devtools-mcp/": "runtime/chrome-devtools-mcp"
     },
     "linux": {
       "deb": {
