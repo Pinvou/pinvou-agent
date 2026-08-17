@@ -723,18 +723,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           return;
         }
         let cancelled = false;
-        setProbePending(true);
-        setProbedKind(null);
-        if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
-          bridge.models.probeLocalServerKind(baseUrl.trim())
-            .then((kind) => { if (!cancelled) setProbedKind(kind || 'generic'); })
-            .catch(() => { if (!cancelled) setProbedKind('generic'); })
-            .finally(() => { if (!cancelled) setProbePending(false); });
-        } else {
-          // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
-          if (!cancelled) setProbePending(false);
-        }
-        return () => { cancelled = true; };
+        // debounce：base_url 是原始输入 state，不 debounce 时逐键触发探测
+        // （Rust 侧缓存 key 含端口/路径，每个中间态都是新 key、各自串行
+        // 探测最坏 ~12s）。停键 400ms 后才发起一次。
+        const timer = setTimeout(() => {
+          setProbePending(true);
+          setProbedKind(null);
+          if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
+            bridge.models.probeLocalServerKind(baseUrl.trim())
+              .then((kind) => { if (!cancelled) setProbedKind(kind || 'generic'); })
+              // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
+              // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+              .catch(() => { if (!cancelled) setProbedKind(null); })
+              .finally(() => { if (!cancelled) setProbePending(false); });
+          } else {
+            // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+            if (!cancelled) setProbedKind(null);
+            if (!cancelled) setProbePending(false);
+          }
+        }, 400);
+        return () => { cancelled = true; clearTimeout(timer); };
       }, [isLocalCompatible, baseUrl]);
       const reasoningEffortTiers = isLocalCompatible
         ? (probePending ? [] : (localProbeTiersForKind(probedKind) || []))

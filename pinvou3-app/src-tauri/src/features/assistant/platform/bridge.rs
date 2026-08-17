@@ -143,14 +143,10 @@ pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
             if address.is_loopback() {
                 return true;
             }
-            // RFC1918 私网段：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16。
+            // RFC1918 私网段（10/8、172.16/12、192.168/16）：std 的
+            // `Ipv4Addr::is_private` 语义完全等价，直接复用。
             match address {
-                std::net::IpAddr::V4(v4) => {
-                    let octets = v4.octets();
-                    octets[0] == 10
-                        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-                        || (octets[0] == 192 && octets[1] == 168)
-                }
+                std::net::IpAddr::V4(v4) => v4.is_private(),
                 std::net::IpAddr::V6(_) => false,
             }
         })
@@ -942,7 +938,10 @@ impl Pinvou3Bridge {
     /// 是否要求用户配置 API Key。local_vllm 和明确指向本机 loopback 的
     /// OpenAI-compatible 服务允许无鉴权；云端/局域网地址默认仍要求 Key。
     pub fn api_key_required(&self) -> bool {
-        self.provider() != "vllm" && !base_url_uses_loopback(&self.base_url())
+        // vLLM 与 Ollama（含探测出的 LAN Ollama）默认无鉴权，底座也允许空 key
+        //（Ollama 官方即开即用）；loopback 端点同样豁免。
+        !matches!(self.provider().as_str(), "vllm" | "ollama")
+            && !base_url_uses_loopback(&self.base_url())
     }
 
     /// 各厂商默认 API base URL（表在 prefs `ModelPreset::default_base_url`）。
@@ -6385,6 +6384,76 @@ mod tests {
             assert_eq!(bridge.request_reasoning_effort(), None, "{kind:?}");
             assert_eq!(bridge.build_dt_config().reasoning_effort, None, "{kind:?}");
         }
+    }
+
+    /// 显式保存的档位优先于「本地 generic 端点不注入」默认：用户在 LM Studio/
+    /// 通用端点存过档位（如 web 预览静态四档时代的 off）时，stored 值直接透传
+    /// ——「显式选择优先」是既定设计；openai wire route 对非 gpt-5.x reasoning
+    /// 家族模型的注入是空操作，实际 wire 无感。本测试锁定该优先级，防止后续
+    /// 误改为「本地端点一律丢弃 stored 档位」。
+    #[test]
+    fn local_openai_compatible_stored_effort_wins_over_none_default() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "local-model",
+            "http://127.0.0.1:1234/v1",
+            "",
+        );
+        bridge
+            .prefs
+            .advanced
+            .saved_models
+            .last_mut()
+            .map(|m| m.reasoning_effort = Some("off".to_string()));
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "stored 档位优先于本地 openai 端点的 None 默认"
+        );
+    }
+
+    /// LAN（RFC1918 私网）端点探测出 Ollama：同样豁免 API key——Ollama 默认
+    /// 无鉴权、底座允许空 key，强制要求 key 是纯 UI 摩擦（vLLM 已豁免）。
+    #[test]
+    fn lan_ollama_probe_does_not_require_api_key() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3:8b",
+            "http://192.168.1.10:11434/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        assert_eq!(bridge.provider(), "ollama");
+        assert!(
+            !bridge.api_key_required(),
+            "LAN Ollama 同样默认无鉴权，不应强制 key"
+        );
+        // 对照：LAN 上的通用 OpenAI 兼容端点（未探测出免鉴权服务）仍要求 key。
+        let mut generic = fixture_bridge();
+        set_active_model(
+            &mut generic,
+            ModelPreset::OpenaiCompatible,
+            "custom-lan-model",
+            "http://192.168.1.10:8000/v1",
+            "",
+        );
+        assert!(generic.api_key_required());
     }
 
     /// 本地 Ollama 上用户显式设置的思考档位优先于默认 off。

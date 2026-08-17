@@ -126,9 +126,13 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
           bridge.models.probeLocalServerKind(current.base_url)
             .then((kind) => { if (!cancelled) setCurrentProbedKind(kind || 'generic'); })
-            .catch(() => { if (!cancelled) setCurrentProbedKind('generic'); })
+            // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
+            // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
+            .catch(() => { if (!cancelled) setCurrentProbedKind(null); })
             .finally(() => { if (!cancelled) setCurrentProbePending(false); });
         } else {
+          // web 预览无探测能力：保持默认四档（与旧行为一致），不误报不支持。
+          if (!cancelled) setCurrentProbedKind(null);
           if (!cancelled) setCurrentProbePending(false);
         }
         return () => { cancelled = true; };

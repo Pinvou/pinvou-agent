@@ -872,23 +872,23 @@ function baseUrlUsesLoopback(baseUrl) {
 // 这些端点通常跑在用户自己的机器/内网，探测成本低且值得默认关思考；公网
 // OpenAI 兼容端点不在此列（保持默认 high）。与 `baseUrlUsesLoopback` 的区别：
 // 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
+// 回环部分复用 `baseUrlUsesLoopback`，本函数只补 Docker 别名与 RFC1918，
+// 避免两份回环规则漂移。
 function baseUrlUsesLocalOrPrivate(baseUrl) {
+  if (baseUrlUsesLoopback(baseUrl)) return true;
   if (!baseUrl) return false;
   try {
     const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '');
     const lower = host.toLowerCase();
-    if (lower === 'localhost') return true;
     if (lower === 'host.docker.internal'
       || lower === 'host.lima.internal'
       || lower === 'host.orbstack.internal'
       || lower.endsWith('.docker.internal')) return true;
-    if (host.includes(':')) return isIpv6Loopback(host);
     const octets = host.split('.').map(Number);
     if (octets.length !== 4 || !octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
       return false;
     }
-    return octets[0] === 127
-      || octets[0] === 10
+    return octets[0] === 10
       || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
       || (octets[0] === 192 && octets[1] === 168);
   } catch {
