@@ -2495,30 +2495,29 @@ fn fresh_code_session_default_plan_registers_pending_plan() {
         .expect("register plan on fresh code session");
     assert_eq!(registered.mode, SerializableMode::Plan);
     assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
+}
 
-    /// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+/// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+#[test]
+fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
+    let (store, _guard) = isolated_store();
+    store
+        .set_session_model_id("wf-model-test", Some("old-model".to_string()))
+        .expect("persist initial model");
+    let sidecar = paths::sessions_root().join("_session_models.json");
+    std::fs::remove_file(&sidecar).expect("remove initial sidecar");
+    std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
 
-    #[test]
-    fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
-        let (store, _guard) = isolated_store();
-        store
-            .set_session_model_id("wf-model-test", Some("old-model".to_string()))
-            .expect("persist initial model");
-        let sidecar = paths::sessions_root().join("_session_models.json");
-        std::fs::remove_file(&sidecar).expect("remove initial sidecar");
-        std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
+    let error = store
+        .set_session_model_id("wf-model-test", Some("new-model".to_string()))
+        .expect_err("an unwritable sidecar must fail the model transaction");
 
-        let error = store
-            .set_session_model_id("wf-model-test", Some("new-model".to_string()))
-            .expect_err("an unwritable sidecar must fail the model transaction");
-
-        assert!(error
-            .to_string()
-            .contains("persist per-session model bindings"));
-        assert_eq!(
-            store.session_model_override("wf-model-test").as_deref(),
-            Some("old-model"),
-            "failed persistence must not leave a memory-only model choice"
-        );
-    }
+    assert!(error
+        .to_string()
+        .contains("persist per-session model bindings"));
+    assert_eq!(
+        store.session_model_override("wf-model-test").as_deref(),
+        Some("old-model"),
+        "failed persistence must not leave a memory-only model choice"
+    );
 }
