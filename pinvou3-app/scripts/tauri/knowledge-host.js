@@ -1,6 +1,7 @@
 const {
   chmodSync,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -15,6 +16,54 @@ const DEVELOPMENT_RESOURCE_ROOT = path.join(
   APP_ROOT,
   'src-tauri', 'target', 'knowledge-host-dev',
 );
+const DEVELOPMENT_RUNTIME_ROOT = path.join(
+  APP_ROOT,
+  'src-tauri', 'target', 'debug', 'runtime', 'knowledge-host',
+);
+
+function hardenDevelopmentPathChain(
+  directory,
+  {
+    currentUid = process.getuid?.(),
+    inspect = lstatSync,
+    chmod = chmodSync,
+    pathApi = path,
+  } = {},
+) {
+  if (!Number.isInteger(currentUid)) {
+    throw new Error('无法识别 Linux 开发用户，不能安全准备共享知识库资源');
+  }
+  let current = pathApi.resolve(directory);
+  while (true) {
+    const info = inspect(current);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`共享知识库开发资源目录链包含非目录或符号链接: ${current}`);
+    }
+    if (info.uid !== 0 && info.uid !== currentUid) {
+      throw new Error(`共享知识库开发资源目录链不属于当前用户: ${current}`);
+    }
+    if ((info.mode & 0o022) !== 0) {
+      if (info.uid !== currentUid) {
+        throw new Error(`共享知识库开发资源目录链权限不安全: ${current}`);
+      }
+      chmod(current, (info.mode & 0o7777) & ~0o022);
+    }
+    const parent = pathApi.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
+function prepareDevelopmentResourceDirectories() {
+  // helper 将以 root 身份复制这里的服务程序。开发机常见 umask 0002 会
+  // 产生 775 目录，因此在构建前收紧已有路径，并让新建的 Tauri 目录
+  // 默认不可被同组或其他用户篡改；正式安装包不走这条开发路径。
+  process.umask(0o022);
+  for (const directory of [DEVELOPMENT_RESOURCE_ROOT, DEVELOPMENT_RUNTIME_ROOT]) {
+    mkdirSync(directory, { recursive: true });
+    hardenDevelopmentPathChain(directory);
+  }
+}
 
 function developmentHelperSource(source) {
   const occurrences = source.split(DEVELOPMENT_MARKER).length - 1;
@@ -49,7 +98,7 @@ function prepareKnowledgeHost({
   const helperSource = path.join(packagedResourceRoot, 'pinvou-knowledge-host-helper');
   const helper = path.join(resourceRoot, 'pinvou-knowledge-host-helper');
   if (development) {
-    mkdirSync(resourceRoot, { recursive: true });
+    prepareDevelopmentResourceDirectories();
     writeFileSync(
       helper,
       developmentHelperSource(readFileSync(helperSource, 'utf8')),
@@ -93,6 +142,7 @@ function prepareKnowledgeHost({
 module.exports = {
   DEVELOPMENT_RESOURCE_SOURCE,
   developmentHelperSource,
+  hardenDevelopmentPathChain,
   knowledgeHostDevelopmentConfigSpec,
   prepareKnowledgeHost,
 };

@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const {
   DEVELOPMENT_RESOURCE_SOURCE,
   developmentHelperSource,
+  hardenDevelopmentPathChain,
   knowledgeHostDevelopmentConfigSpec,
 } = require('../scripts/tauri/knowledge-host.js');
 const helperPath = path.join(
@@ -39,6 +40,7 @@ const remoteKnowledgeView = readFileSync(
   path.join(appRoot, 'src/features/remote-knowledge/RemoteKnowledgeView.jsx'),
   'utf8',
 );
+const runDev = readFileSync(path.join(appRoot, 'run-dev.sh'), 'utf8');
 
 test('Linux package embeds the host helper and standalone server build', () => {
   assert.match(platformConfig, /resources\/platforms\/linux\/knowledge-host\//u);
@@ -83,6 +85,63 @@ test('Linux dev stages an explicit user-owned host resource without weakening pa
   assert.match(helper, /\[ "\$directory_owner" -eq 0 \] \|\| \[ "\$directory_owner" -eq "\$service_uid" \]/u);
   assert.match(helper, /开发资源目录链权限不安全/u);
   assert.match(helper, /开发资源目录权限不安全/u);
+});
+
+test('Linux dev hardens existing resource ancestors created by a cooperative umask', () => {
+  const entries = new Map([
+    ['/', { uid: 0, mode: 0o40755 }],
+    ['/home', { uid: 0, mode: 0o40755 }],
+    ['/home/test', { uid: 1000, mode: 0o40750 }],
+    ['/home/test/repo', { uid: 1000, mode: 0o40775 }],
+    ['/home/test/repo/target', { uid: 1000, mode: 0o40775 }],
+  ]);
+  const changed = [];
+  hardenDevelopmentPathChain('/home/test/repo/target', {
+    currentUid: 1000,
+    pathApi: path.posix,
+    inspect(directory) {
+      const entry = entries.get(directory);
+      assert.ok(entry, directory);
+      return {
+        ...entry,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+      };
+    },
+    chmod: (directory, mode) => changed.push([directory, mode]),
+  });
+  assert.deepEqual(changed, [
+    ['/home/test/repo/target', 0o755],
+    ['/home/test/repo', 0o755],
+  ]);
+  assert.match(knowledgeHostBuildScript, /process\.umask\(0o022\)/u);
+  assert.match(knowledgeHostBuildScript, /DEVELOPMENT_RUNTIME_ROOT/u);
+});
+
+test('Linux dev rejects an unsafe root-owned ancestor instead of weakening it', () => {
+  assert.throws(() => hardenDevelopmentPathChain('/tmp/pinvou', {
+    currentUid: 1000,
+    pathApi: path.posix,
+    inspect(directory) {
+      const entry = directory === '/tmp'
+        ? { uid: 0, mode: 0o41777 }
+        : directory === '/'
+          ? { uid: 0, mode: 0o40755 }
+          : { uid: 1000, mode: 0o40755 };
+      return {
+        ...entry,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+      };
+    },
+    chmod: () => assert.fail('must not chmod a root-owned unsafe ancestor'),
+  }), /目录链权限不安全/u);
+});
+
+test('dev uses the managed knowledge model unless an external directory is explicit', () => {
+  assert.match(runDev, /~\/.pinvou3\/knowledge\/models\/bge-m3/u);
+  assert.doesNotMatch(runDev, /export PINVOU3_KB_EMBED_MODEL_DIR=/u);
+  assert.doesNotMatch(runDev, /\$HOME\/models\/bge-m3/u);
 });
 
 test('host helper keeps lifecycle operations explicit and persistent', () => {
