@@ -1,26 +1,36 @@
 use super::prelude::*;
+use crate::features::assistant::engine_pool::CancelOutcome;
 
 // ===================== 阶段 C: 取消生成 + 编辑/重发 =====================
 
-/// 取消当前生成（生成中按⏹️停止按钮）。
+/// 取消当前生成（生成中按⏹️停止按钮；打断插队也走这里）。
 /// engine 立即 cancel_token.cancel()，turn loop 跳出后会发 TurnComplete 事件，
 /// 前端通过 chat:done 解锁 busy 状态；若 engine 已不存在但池仍记录活动 turn，
 /// EnginePool 会补发 Interrupted 终态。空闲会话取消保持 no-op。
+///
+/// 返回 [`CancelOutcome`]：`generation` = 被取消轮 epoch，`terminal` = 目标轮
+/// 终态是否已确认。前端 interruptAndSend 依据它决定是否等待 chat:done——
+/// 解决「claim 路径的终态事件发在 cancel 命令返回之前、前端监听器必然错过」
+/// 的确定性竞态，以及「turn 刚自然结束时 cancel no-op、不再有事件」的窗口。
 #[tauri::command]
 pub async fn cancel_generation(
     session_id: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
-) -> Result<(), String> {
+) -> Result<CancelOutcome, String> {
     // 多 session:取消指定 session(前端传 session_id);兼容旧前端回退 active。
     if let Some(sid) = session_id.or_else(|| store.active_id()) {
         log::info!("[pinvou3][chat] cancel requested sid={}", sid);
-        pool.cancel(&sid).await;
+        let outcome = pool.cancel(&sid).await;
         log::info!("[pinvou3][chat] cancel command completed sid={}", sid);
+        Ok(outcome)
     } else {
         log::warn!("[pinvou3][chat] cancel requested but no session id is available");
+        Ok(CancelOutcome {
+            generation: None,
+            terminal: true,
+        })
     }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
