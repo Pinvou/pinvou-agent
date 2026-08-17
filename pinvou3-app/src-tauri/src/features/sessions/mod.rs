@@ -60,8 +60,7 @@ use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
 /// reverse dependency. Consumers should import from
 /// `crate::features::sessions::{...}`.
 pub use self::mode_state::{
-    ActiveSkillBinding, MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection,
-    SessionModeState,
+    MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection, SessionModeState,
 };
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
