@@ -36,15 +36,14 @@ my-plugin.zip
 ├── skills/<name>/              ← SKILL.md 目录（可多个）
 │   ├── SKILL.md
 │   └── references/…            ← 可选，渐进披露用的参考文档
-├── spanner/                       ← 扳手插件入口（见 §7）
+├── skills/<name>/   ← 可执行技能：SKILL.md frontmatter `tools[]` + `runtime` 段（替代旧 spanner，见 §8）
 │   └── main.py
-├── runtime/                    ← 可选：spanner 自带运行时（见 §7）
 └── icon.svg | icon.png         ← 可选图标（缺省自动生成默认图标）
 ```
 
 要点：
 
-1. 组件按目录约定分域（`mcp/`、`skills/`、`spanner/`、`runtime/`），与落盘后的
+1. 组件按目录约定分域（`mcp/`、`skills/`），与落盘后的
    `bundles/<id>/` 布局同构，导入时映射直搬。
 2. **一个包一个 MCP server**：MCP 组件的权威布局是**扁平 `mcp/`**（`mcp/manifest.json`
    + 脚本），`plugin.json` 里 `components.mcp_servers[].dir` 写 `"mcp"`。运行层
@@ -111,11 +110,10 @@ my-plugin.zip
 
 | 组件向量 | `kind` |
 |---|---|
-| mcp 非空 && (skills 或 spanner 非空) | `Bundle`（组合包） |
-| skills 非空 && spanner 非空 | `Bundle`（组合包） |
+| mcp 非空 && skills 非空 | `Bundle`（组合包） |
 | 仅 mcp 非空 | `Mcp`（纯 MCP） |
 | 仅 skills 非空 | `Skill`（纯技能） |
-| 仅 spanner 非空 | `Spanner`（扳手插件） |
+（旧 `Spanner` 变体已移除：可执行能力并入 skill 包，经 SKILL.md frontmatter `tools[]` + `runtime` 段声明，由 skill_marketplace::install 后置 hook 注册 skill-run wrapper）
 | 全空 | 拒收（空包） |
 
 （内置 `Cli` 连接器不走插件包上传，v1 不开放。）
@@ -178,7 +176,12 @@ MCP server 的启动真相源。本地 stdio server 的必填与常用字段：
 
 ---
 
-## 7. spanner 组件（扳手插件）
+## 7. ~~spanner 组件（扳手插件）~~（已移除）
+
+> 2026-08：spanner 独立组件模型已移除。脚本可执行能力并入 skill 包：
+> SKILL.md frontmatter `tools[]` + `runtime` 段声明可执行入口，安装后置 hook 注册
+> `skill-run` wrapper（`resources/common/bin/skill-run`）。旧包中的 `spanner` 字段
+> 经 plugin.json `extra` 保留、deser 不炸，但不再合成 mcp/manifest.json。
 
 介于「脚本 skill」与「MCP」之间：声明式 schema + 无状态单次进程 + 自带运行时。
 

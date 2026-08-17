@@ -446,7 +446,11 @@ workflows 非空                              → Workflow
 
 ---
 
-## 15. 扳手插件 `spanner`（one-shot）
+## 15. ~~扳手插件 `spanner`（one-shot）~~（已移除）
+
+> 2026-08：spanner 独立组件模型已移除（向 skill-with-runtime 协议迁移）：
+> 可执行能力经 SKILL.md frontmatter `tools[]` + `runtime` 段声明，由
+> `skill_marketplace::install` 后置 hook 注册 skill-run wrapper。本节历史内容仅存档。
 
 **定位**：介于「脚本 skill（太自由）」和「MCP（太重）」之间。声明式 schema +
 无状态单次进程 + 自带运行时，语言不限。作者只写「读 stdin JSON → 写 stdout
