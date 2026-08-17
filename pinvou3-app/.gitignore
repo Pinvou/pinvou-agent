@@ -1,5 +1,7 @@
 # Tauri 后端构建产物
 src-tauri/target/
+# vendor 脚本的临时 staging 目录（正常 finally 清理，SIGKILL/断电会残留）
+target/
 # Note: src-tauri/Cargo.lock 是 binary crate 应该 commit 的（锁依赖版本）
 
 # 前端依赖（@tauri-apps/cli native binary 等）

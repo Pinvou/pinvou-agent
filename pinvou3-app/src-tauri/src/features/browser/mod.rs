@@ -117,7 +117,10 @@ impl BrowserManager {
     /// 另承担崩溃恢复：已接入但 CDP 失联（Chrome 崩溃/被杀）时重置状态并 emit
     /// `browser:stopped`，让前端隐藏 Tab、下次调用自动重新拉起。
     pub fn spawn_watch(app: AppHandle) {
-        tokio::spawn(async move {
+        // 必须走 tauri::async_runtime：setup 闭包在 wry 事件循环主线程同步调用，
+        // 无 tokio runtime 上下文，裸 tokio::spawn 会 panic（there is no reactor
+        // running）导致应用启动即崩。
+        tauri::async_runtime::spawn(async move {
             let mut fail_count = 0u32;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -359,6 +362,16 @@ impl BrowserManager {
             }
 
             let mut inner = self.inner.lock().await;
+            // 锁内再核对一次代际与退出标记：上方 gen 检查到拿到 inner 锁之间存在
+            // 窗口，期间 stop()/shutdown_on_exit（也 bump 代际）可能已完成；等锁
+            // 期间被停止/退出时若照样提交 child/session，退出后这只 Chrome 无人
+            // 回收（孤儿进程）。丢弃走统一失败清理（boot_session/boot_reader 关闭
+            // 中止 + spawned_child kill）。
+            if self.stop_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start
+                || self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("浏览器启动期间已被停止或应用正在退出".to_string());
+            }
             inner.port = Some(port);
             inner.child = spawned_child.take();
             inner.session = Some(session);
@@ -602,6 +615,12 @@ impl BrowserManager {
         // 进行中的 watch 探测不得再拉起 Chrome（无主的孤儿进程）。
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // 同时 bump stop 代际：进行中的启动序列（网络 await 阶段不持 inner 锁，
+        // 下方 try_lock 会成功空转）在提交点前核对该代际，不等则丢弃结果并走
+        // 失败清理——否则退出瞬间在飞的启动会把 Chrome 提交进已被清空的 inner，
+        // 主进程退出后无人回收。
+        self.stop_gen
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let Ok(mut inner) = self.inner.try_lock() else {
             eprintln!("[browser] 退出时 inner 锁被占用，跳过同步清理");
             return;

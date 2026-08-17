@@ -285,6 +285,11 @@ function startChrome(port) {
     // 否则会变成未捕获异常使 wrapper 崩溃、MCP 子进程孤儿化。
     chromeChild.on('error', (err) => {
       log('Chrome 进程错误:', err.message);
+      // spawn 的 ENOENT/EACCES 走这里：Chrome 二进制存在但不可执行时 Rust 静态
+      // 探测仍判"可用"，必须把原因落盘，否则 last-error 注入机制在该场景失效
+      // （随后 CDP 探测空转超时，退出路径的 writeLastError 守卫因 chromeChild
+      // 已被置 null 而跳过）。
+      writeLastError(`Chrome 进程启动失败: ${err.message}`);
       chromeChild = null;
     });
     chromeChild.on('exit', (code) => {
@@ -449,6 +454,30 @@ async function main() {
     cleanup();
     process.exit(1);
   });
+
+  // 复用他人（品悟 BrowserManager / 其他会话 wrapper）启动的 Chrome 时
+  // chromeChild 为 null，没有 exit 事件可监听；而该 Chrome 可能被 UI 停止、或被
+  // 启动方会话退出时回收。本会话的 --browser-url 端口随之永久失效（兜底重启
+  // 会用新随机端口），继续存活只会让所有 mcp_browser_* 工具持续报错——周期
+  // 探测，连续失败即退出，让引擎下次拉起 wrapper 时重新协调端口，自愈恢复。
+  // 自启路径由 chromeChild 的 exit 事件覆盖，不走这里。
+  if (!startedByUs) {
+    let misses = 0;
+    const timer = setInterval(() => {
+      if (probeCdp(port, 1000)) {
+        misses = 0;
+        return;
+      }
+      misses += 1;
+      if (misses >= 2) {
+        clearInterval(timer);
+        log('复用的 Chrome 已失联（可能被停止或启动方会话退出），退出以待重新协调');
+        cleanup();
+        process.exit(1);
+      }
+    }, 10000);
+    timer.unref();
+  }
 }
 
 // 托管的 chrome-devtools-mcp 子进程：wrapper 是其父进程，任何退出路径都必须

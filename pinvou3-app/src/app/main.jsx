@@ -155,12 +155,9 @@ function workspaceDisplayName(path) {
       useEffect(() => {
         let disposed = false;
         const unlisteners = [];
-        // webview 重载（HMR/崩溃恢复/手动刷新）后 Rust 不会重发 browser:activated
-        // （activated 标记阻止重发）：挂载时查一次状态兜底，浏览器仍在运行则
-        // 恢复浏览器 Tab 入口。
-        invokeTauri('browser_status').then((st) => {
-          if (!disposed && st && st.running) setBrowserActive(true);
-        }).catch(() => {});
+        // 先注册监听、再查状态兜底：顺序反了会在「状态查询返回」与「监听生效」
+        // 之间的窗口错过 browser:activated（Rust 端 activated 标记阻止重发），
+        // 浏览器 Tab 会一直不出现，直到下次 webview 重载。
         tauriEvents.listen('browser:activated', () => {
           if (disposed) return;
           setBrowserActive(true);
@@ -174,6 +171,12 @@ function workspaceDisplayName(path) {
         }).then(unlisten => {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
+        }).catch(() => {});
+        // webview 重载（HMR/崩溃恢复/手动刷新）后 Rust 不会重发 browser:activated
+        // （activated 标记阻止重发）：挂载时查一次状态兜底，浏览器仍在运行则
+        // 恢复浏览器 Tab 入口。
+        invokeTauri('browser_status').then((st) => {
+          if (!disposed && st && st.running) setBrowserActive(true);
         }).catch(() => {});
         return () => {
           disposed = true;
@@ -1896,7 +1899,6 @@ function workspaceDisplayName(path) {
                 onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
-              {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {browserActive && (
                 <NavItem
                   icon={<Globe size={18} />} label={t.browser}
@@ -1906,6 +1908,7 @@ function workspaceDisplayName(path) {
                   onClick={() => navigateFromScheduledRun('browser')}
                 />
               )}
+              {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
                   icon={<MessageSquare size={18} />} label={t.currentChat}

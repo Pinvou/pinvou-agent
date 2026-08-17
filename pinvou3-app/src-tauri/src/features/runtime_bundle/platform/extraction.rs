@@ -551,15 +551,17 @@ impl Pinvou3Bundle {
             return base;
         };
         let work_path = paths::browser_work_mcp_json();
-        // 解析失败（用户手改坏 / 并发读到半截 JSON）回落全局配置而不是捏造空
-        // 配置继续：空配置会让本会话丢失全部 marketplace 工具、只剩 browser，
-        // 且完全静默。回落只是少了 browser 工具，全局侧口径不受影响。
+        // 解析失败（用户手改坏 / 并发读到半截 JSON）或合法但非 object（如 `[]`）
+        // 都回落全局配置而不是捏造空配置继续：空配置会让本会话丢失全部
+        // marketplace 工具、只剩 browser，且完全静默；非 object 往下走
+        // `as_object_mut().unwrap()` 会直接 panic。回落只是少了 browser 工具，
+        // 全局侧口径不受影响。
         let mcp: serde_json::Value = match std::fs::read_to_string(&base)
             .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         {
-            Some(v) => v,
-            None => return base,
+            Some(v) if v.is_object() => v,
+            _ => return base,
         };
         let mut obj = mcp;
         if obj.get("servers").and_then(|s| s.as_object()).is_none() {
@@ -579,6 +581,10 @@ impl Pinvou3Bundle {
         servers.insert("browser".to_string(), browser_entry);
         if let Some(parent) = work_path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            // 工作模式会话建立先于 Chrome 启动（后者才收紧 0700）：常见路径下
+            // browser/ 会长期保持 umask 默认权限，创建后立刻收紧，与
+            // acquire_or_start_chrome 同口径（文件本身均 0600，这里是目录列表级卫生）。
+            crate::platform::os::make_private_dir(parent);
         }
         // tmp 名带 pid + 进程内计数器：并发重建同一文件时互不覆盖（同进程多会话
         // 的 pid 相同，仅 pid 不够；rename 原子落位，败者回落全局配置）。

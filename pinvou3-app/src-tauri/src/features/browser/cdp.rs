@@ -276,6 +276,22 @@ async fn handle_cdp_message(
         // try_send：有界通道满时丢弃新事件而非阻塞读循环（阻塞会连带卡死
         // 命令响应与 screencast 握手）。切勿用 `send(ev)` 无 .await 的写法——
         // 那会直接 drop 未 poll 的 future，导致所有域事件静默丢失。
-        let _ = events_tx.try_send(ev);
+        //
+        // 但通道被截图帧填满时无差别丢弃会吞掉 Target.targetCreated /
+        // targetDestroyed 等生命周期事件：激活页销毁后的自愈切换失效、截图流
+        // 冻结在最后一帧。帧可丢（只损失帧率），控制事件不可静默丢——通道满时
+        // 对非帧事件退回带限时的异步 send（spawn 投递，不阻塞读循环），并打
+        // 日志便于现场诊断。
+        if let Err(err) = events_tx.try_send(ev) {
+            // 帧直接丢：只损失画面帧率，ack 已在读循环侧先行完成，握手不断。
+            if method != "Page.screencastFrame" {
+                let ev = err.into_inner();
+                eprintln!("[browser] 事件通道已满，控制事件 {method} 转入限时异步投递");
+                let tx = events_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), tx.send(ev)).await;
+                });
+            }
+        }
     }
 }
