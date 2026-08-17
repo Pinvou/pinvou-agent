@@ -2234,16 +2234,26 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     unread: false,
   }, { id: "automation-followup", name: "Follow-up task" }), true);
   harness.emit("chat:delta", { session_id: "sched-followup", text: "initial scheduled output" });
+  // 模拟引擎在 steer 投递后磁盘 transcript:load_session 返回含 steer 的 messages。
+  var steerMessages = [
+    { role: "user", content: [{ type: "text", text: "原问题" }] },
+    { role: "assistant", content: [{ type: "text", text: "initial scheduled output" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: "sched-followup", title: "Follow-up task", message_count: steerMessages.length },
+      messages: steerMessages,
+      artifacts: [],
+    };
+  };
   var initialAssistantCount = bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems.filter(function (item) {
     return item.type === "assistant";
   }).length;
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
-  await tick();  // 等待 steer invoke resolve + chip 移除 + bubble 添加
   var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  // mid-turn inject: 走底座 steer channel,turn loop 在下次 step 边界消化。
-  // 前端:click → push chip → invoke → chip 移除 + bubble 添加
-  assert.strictEqual(queued.queued.length, 0, "follow-up chip consumed by steer and removed from queue");
+  // click 后 chip 立即显示,引擎 invoke 完成后 chip 仍滞留(等 transcript commit)
+  assert.strictEqual(queued.queued.length, 1, "follow-up chip should linger above input after click");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     1,
@@ -2254,16 +2264,20 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     0,
     "a mid-turn follow-up must not overlap the scheduled engine turn via chat command"
   );
-  // steer 完成后,前端应已渲染用户气泡(chip 路径 → bubble 路径切换)
-  var userItemsAfterSteer = queued.chatItems.filter(function (item) {
-    return item.type === "user";
+  // 模拟引擎真正投递:触发 chat:transcript_committed
+  // 模拟磁盘已包含 steered message
+  steerMessages.push({
+    role: "user",
+    content: [
+      { type: "text", text: "follow up after the scheduled run" },
+      { type: "text", text: "<turn_meta>\nCurrent local date: 2026-08-17\n</turn_meta>" },
+    ],
   });
-  assert.ok(
-    userItemsAfterSteer.some(function (item) {
-      return String(item.text || "").indexOf("follow up after the scheduled run") >= 0;
-    }),
-    "follow-up user bubble should appear in chatItems after steer resolves"
-  );
+  harness.emit("chat:transcript_committed", { session_id: "sched-followup", transcript_revision: "rev-after-steer" });
+  await tick();
+  await tick();
+  queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
+  assert.strictEqual(queued.queued.length, 0, "follow-up chip consumed by transcript commit");
 
   harness.emit("chat:done", { session_id: "sched-followup" });
   await tick();
@@ -3853,15 +3867,38 @@ async function scheduledBufferLruNeverEvictsLive() {
     session_id: "sched-lru-live",
     text: "live buffer must survive",
   });
+  // 模拟磁盘 transcript(steer 投递前的状态)
+  var lruLiveMessages = [
+    { role: "user", content: [{ type: "text", text: "原问题" }] },
+    { role: "assistant", content: [{ type: "text", text: "live buffer must survive" }] },
+  ];
+  harness.handlers.load_session = function () {
+    return {
+      metadata: { id: "sched-lru-live", title: "LRU live task", message_count: lruLiveMessages.length },
+      messages: lruLiveMessages,
+      artifacts: [],
+    };
+  };
   await bridge.chat.sendMessage("queued live follow-up");
-  await tick();  // 等 steer invoke resolve + chip 移除
-  // mid-turn inject: 走底座 steer channel,chip 在 invoke 后被消费移除
-  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
+  // mid-turn inject: click 后 chip 立即显示,引擎接受后 chip 滞留等待 transcript commit
+  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     1,
     "live follow-up during scheduled turn goes through engine steer"
   );
+  // 模拟引擎真正投递:触发 chat:transcript_committed
+  lruLiveMessages.push({
+    role: "user",
+    content: [
+      { type: "text", text: "queued live follow-up" },
+      { type: "text", text: "<turn_meta>\nCurrent local date: 2026-08-17\n</turn_meta>" },
+    ],
+  });
+  harness.emit("chat:transcript_committed", { session_id: "sched-lru-live", transcript_revision: "rev-lru-steer" });
+  await tick();
+  await tick();
+  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
 
   for (var i = 0; i < 70; i++) {

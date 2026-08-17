@@ -551,6 +551,7 @@
         attachments: [],
         meta: null,
         restrictTools: false,
+        queuedAt: Date.now(),
       };
       state.queued.push(queuedItem);
       notify();
@@ -756,38 +757,45 @@
   // tool result 处理完后自动追加到 session.messages,模型下次思考时看到。
   // engine 不在场(没起 / 已 evict)时后端静默 Ok,前端无需处理。
   //
-  // **前端同步渲染策略**:invoke steer_chat 成功后,直接构造 user bubble +
-  // push 到 state.messages(对应 addRemoteUserMessageEvent 的核心效果)。
-  // 不依赖 emit chat:user_message 事件循环 —— 那个事件由后端 emit_turn_admission
-  // 在新 turn 起始时发,steer 路径不走那条通道。
-  //
-  // state.queued chip 同步移除(由调用方在 invoke 前 push,这里取走)。
+  // **chip 滞留 → 自然嵌入**:
+  // invoke steer_chat 成功后仅记录"引擎已接受",chip 保留在 state.queued,
+  // 不立即渲染 bubble。chat-events.js 在 chat:transcript_committed 收到时
+  // 通过 load_session 重载 session.messages 检测新增 user message,把对应
+  // chip 转 bubble。**不人为设置延时** —— 等当前 AI 步自然结束即可。
   async function steer(sid, content, queuedItem) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid: sid, len: (content || "").length });
     await invoke("steer_chat", { sessionId: sid, content: String(content || "") });
-    safeConsoleInfo("[pinvou3][chat-ui] steer ok", { sid: sid });
-    var cleanText = String(content || "");
-    runSyncOnSession(sid, function () {
-      // 清掉 turn error notice(对齐 applyRemoteUserMessageEvent)
-      state.chatItems = state.chatItems.filter(function (item) {
-        return !item.turnErrorNotice;
-      });
-      // 添加用户气泡
-      var uitem = {
-        type: "user",
-        text: cleanText,
-        time: timeStr(),
-      };
-      addChatItem(uitem);
-      // 同步推一份到 state.messages,保留与 chat:user_message 路径一致
-      // (engine 后续 SessionUpdated 会再次推,但前端不会自动重写本地副本)
-      state.messages.push({ role: "user", content: [{ type: "text", text: cleanText }] });
-    });
-    // 移除 state.queued 里的对应 chip
-    if (queuedItem && queuedItem.id != null) {
-      state.queued = state.queued.filter(function (q) { return q.id !== queuedItem.id; });
+    safeConsoleInfo("[pinvou3][chat-ui] steer accepted, awaiting transcript commit", { sid: sid });
+  }
+
+  // Mid-turn INTERRUPT: 打断当前 AI 步骤,立刻起新 turn 发送。
+  // 与 steer 区别:steer 等下次 step 边界自然嵌入(不打断 tool 调用),
+  // interrupt 立刻 cancel 当前 turn,起新 turn,消息进 chat 命令路径。
+  // 注意:cancel 与 chat 之间需要等 chat:done 把 busy=false 后再 reserve,
+  // 否则 chat 仍可能被 session_turn_in_progress 拒绝。
+  async function interruptAndSend(sid, text, displayText, attachments, meta, restrictTools) {
+    safeConsoleInfo("[pinvou3][chat-ui] interrupt-and-send start", { sid: sid });
+    // 1) cancel 当前 turn
+    if (state.busy) {
+      try {
+        await invoke("cancel_generation", { sessionId: sid });
+      } catch (e) {
+        console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
+      }
+      // 2) 等 busy 翻转(chat:done handler 同步置 busy=false);最多 3s
+      var deadline = Date.now() + 3000;
+      while (isBusyFor(sid) && Date.now() < deadline) {
+        await new Promise(function (resolve) { setTimeout(resolve, 50); });
+      }
     }
-    notify();
+    // 3) 移除残留 chip(若有),按正常 chat 路径起新 turn
+    runSyncOnSession(sid, function () {
+      if (state.queued && state.queued.length > 0) {
+        state.queued = [];
+      }
+    });
+    // 4) 真正发新消息
+    return doSendFor(sid, text, displayText, attachments, meta, restrictTools, true);
   }
 
   async function cancelGeneration() {

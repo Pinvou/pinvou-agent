@@ -1408,6 +1408,32 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }
 
+      // 插队发送:立刻取消当前 turn,起新 turn 发当前文字。
+      // 与 handleSend 的区别:handleSend 走 steer/queue 模式(等当前 AI 步
+      // 自然结束),handleInterruptSend 走 cancel+chat 路径(放弃当前 AI 进度)。
+      async function handleInterruptSend() {
+        if (isMultiAgentReadOnly || !canSend || !busy) return;
+        const constrained = constrainChatInput(inputText);
+        if (constrained.truncated) {
+          setInputText(constrained.text);
+          return;
+        }
+        // 清空输入框再发(对齐 handleSend 成功路径)
+        setInputText('');
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
+        if (bridge.chat && typeof bridge.chat.interruptAndSend === "function") {
+          await bridge.chat.interruptAndSend(
+            activeSessionId,
+            constrained.text,
+            constrained.text,
+            [],
+            null,
+            false,
+          );
+        }
+      }
+
       function handleKeyDown(e) {
         // 输入法合成期间(例如中文输入法敲回车确认候选词上屏)不要触发发送,
         // 否则一次回车会既上屏又发送消息。与 PetWindow 处理保持一致。
@@ -2095,19 +2121,31 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
-                  // busy 时输入了文字 → Stop 按钮 morph 为 Send(队列)按钮:
-                  // 点击或 Enter 会把消息入队,本轮 chat:done 后自动接力发送。
-                  // handleSend 与 bridge.chat.sendMessage 已正确处理 busy→queue 语义,
-                  // 这里只换按钮形态不动逻辑。文字清空后 Stop 按钮会自动回来。
+                  // busy 时输入了文字 → 显示 **两个按钮**:
+                  // 1. Send 按钮 = 默认模式(steer/queue):消息等当前 AI 步自然嵌入。
+                  //    点 Enter 或这个按钮 → mid-turn inject,chip → bubble 自然转换。
+                  // 2. 橙色 Interrupt 按钮 = 打断模式:立刻 cancel 当前 turn,起新 turn 发送。
+                  //    点这个按钮 → 放弃 AI 当前进度,立刻用新指令。
+                  // 文字清空后 Stop 按钮会自动回来(因为 hasDraftText=false)。
                   const ready = canSend && !sceneCapabilityPreparing;
                   const isQueue = busy && ready;
                   return (
-                    <button onClick={handleSend} disabled={!ready}
-                      aria-label={isQueue ? t.queueMsg : t.sendMsg}
-                      title={isQueue ? t.queueMsgTip : t.sendMsg}
-                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
-                      <Send size={17} className="translate-x-[1px]" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      {busy && (
+                        <button onClick={handleInterruptSend} disabled={!ready}
+                          aria-label={t.interruptMsg || "插队发送"}
+                          title={t.interruptMsgTip || "立刻打断 AI 当前任务并发送"}
+                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#FF8A4C] to-[#FF5722] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                          <Zap size={17} className="translate-x-[1px]" />
+                        </button>
+                      )}
+                      <button onClick={handleSend} disabled={!ready}
+                        aria-label={isQueue ? t.queueMsg : t.sendMsg}
+                        title={isQueue ? t.queueMsgTip : t.sendMsg}
+                        className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                        <Send size={17} className="translate-x-[1px]" />
+                      </button>
+                    </div>
                   );
                 })()}
               </div>
