@@ -2041,6 +2041,21 @@ impl EnginePool {
         Ok(())
     }
 
+    /// Mid-turn inject: 把用户消息投递到当前 turn 的下个 step 边界。
+    /// 底座 `EngineHandle::steer` 已有完整实现 —— turn loop 在每次 tool result
+    /// 处理完、下次 model call 之前 drain `rx_steer` channel 并自动追加到
+    /// session.messages（见底座 turn_loop.rs:493-510）。模型下一次思考时
+    /// 会看到这条消息,与 Claude Code 的"主 agent 空闲时插入"语义对齐。
+    ///
+    /// engine 不在场（session 没在跑）→ 静默返回 Ok:调用方一般已用 `chat()`
+    /// 走了正常 send 路径,这里不应报错。语义上等价于 frontend queue 的退化。
+    pub async fn steer(&self, session_id: &str, content: String) -> Result<()> {
+        if let Some(engine) = self.handle_for(session_id).await {
+            engine.handle.steer(content).await?;
+        }
+        Ok(())
+    }
+
     /// super permission 改动后调用。**无需热刷静态 prompt**——sudo 的开/关状态
     /// 已改由 `build_send_message_op` 每 turn 注入 `<system-reminder>`
     /// (见 `super_permission::turn_reminder`),`is_enabled()` 每次实时读 disk,
