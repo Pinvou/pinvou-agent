@@ -403,6 +403,15 @@ assert.ok(
   'scheduled model selection should display the wire model instead of stale display names'
 );
 assert.ok(
+  /footerAction, alwaysCommit = false,/.test(indexHtml) &&
+    /if \(alwaysCommit \|\| !active\) onChange\(option\.value\);/.test(indexHtml) &&
+    /onChange=\{value => editModel\(value\)\} alwaysCommit/.test(indexHtml) &&
+    (indexHtml.match(/alwaysCommit/g) || []).length === 3,
+  're-selecting the already-active model option must re-commit the binding: ' +
+    'an in-place edited model config keeps its id while its wire name changes, ' +
+    'and the engine rejects the stale binding snapshot until the task is re-saved'
+);
+assert.ok(
   !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
     !/data-testid="scheduled-task-actions"/.test(indexHtml) &&
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
