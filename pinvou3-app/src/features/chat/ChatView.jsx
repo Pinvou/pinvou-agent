@@ -1316,12 +1316,20 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
           setInputText(constrained.text);
           return;
         }
-        const accepted = await sendChatMessage(constrained.text);
-        if (accepted) {
-          setInputText('');
-          personalWorkbenchTemplateIdRef.current = null;
-          setPersonalWorkbenchTemplateId(null);
+        const text = constrained.text;
+        // 点击瞬间即清空输入框（不等 await 返回）：否则 busy 置位到输入框清空
+        // 之间有 ~50ms 窗口，⚡ 按钮（busy && hasDraftText）会闪一下。
+        // 失败（reserve 冲突等）时恢复文字，消息绝不静默丢失。
+        setInputText('');
+        try {
+          const accepted = await sendChatMessage(text);
+          if (!accepted) setInputText(text);
+        } catch (error) {
+          setInputText(text);
+          throw error;
         }
+        personalWorkbenchTemplateIdRef.current = null;
+        setPersonalWorkbenchTemplateId(null);
       }
 
       // 插队发送:立刻取消当前 turn,起新 turn 发当前文字。
@@ -1339,16 +1347,18 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
         setInterruptSending(true);
         try {
-          if (bridge.chat && typeof bridge.chat.interruptAndSend === "function") {
-            await bridge.chat.interruptAndSend(
-              activeSessionId,
-              constrained.text,
-              constrained.text,
-              [],
-              null,
-              false,
-            );
+          if (!bridge.chat || typeof bridge.chat.interruptAndSend !== "function") {
+            // 桥缺失（旧后端/未加载）：绝不能静默清空输入框——那是用户消息。
+            return;
           }
+          await bridge.chat.interruptAndSend(
+            activeSessionId,
+            constrained.text,
+            constrained.text,
+            [],
+            null,
+            false,
+          );
           // 打断消息已成功投递才清空输入框;失败(槽位被抢占等)时保留文本,
           // 消息绝不静默丢失(对齐 handleSend 按 accepted 清空的语义)。
           setInputText('');
@@ -2035,22 +2045,19 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
-                  // busy 时输入了文字 → 显示 **两个按钮**:
-                  // 1. Send 按钮 = 默认模式(steer/queue):消息等当前 AI 步自然嵌入。
-                  //    点 Enter 或这个按钮 → mid-turn inject,chip → bubble 自然转换。
-                  // 2. 橙色 Interrupt 按钮 = 打断模式:立刻 cancel 当前 turn,起新 turn 发送。
-                  //    点这个按钮 → 放弃 AI 当前进度,立刻用新指令。
-                  // 文字清空后 Stop 按钮会自动回来(因为 hasDraftText=false)。
+                  // busy 时输入了文字 → ⚡ 插队（透明图标，打断当前轮、立即发送）
+                  // 与发送按钮（默认排队/steer）并排，无容器底色。
+                  // 文字清空后 Stop 按钮自动回来（hasDraftText=false）。
                   const ready = canSend && !sceneCapabilityPreparing;
                   const isQueue = busy && ready;
                   return (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
                       {busy && (
                         <button onClick={handleInterruptSend} disabled={!ready || interruptSending}
                           aria-label={t.interruptMsg || "插队发送"}
                           title={t.interruptMsgTip || "立刻打断 AI 当前任务并发送"}
-                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready && !interruptSending ? 'bg-gradient-to-b from-[#FF8A4C] to-[#FF5722] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
-                          <Zap size={17} className="translate-x-[1px]" />
+                          className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${ready && !interruptSending ? 'text-orange-500 dark:text-orange-400 hover:bg-orange-500/10 active:bg-orange-500/15' : 'text-gray-400 cursor-not-allowed opacity-60'}`}>
+                          <Zap size={18} />
                         </button>
                       )}
                       <button onClick={handleSend} disabled={!ready}

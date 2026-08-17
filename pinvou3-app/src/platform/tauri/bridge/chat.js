@@ -756,10 +756,14 @@
       // Tauri 2 的 listen 返回 Promise<UnlistenFn>,on 收到事件即回调。
       if (TAURI && TAURI.event && typeof TAURI.event.listen === "function") {
         var p = TAURI.event.listen("chat:done", function (e) {
-          if (!e || !e.payload || e.payload.session_id !== sid) return;
+          if (!e || !e.payload || e.payload.session_id !== sid) {
+            return;
+          }
           var payloadGeneration = e.payload.generation;
           if (generation != null && payloadGeneration != null &&
-              Number(payloadGeneration) !== Number(generation)) return;
+              Number(payloadGeneration) !== Number(generation)) {
+            return;
+          }
           done();
         });
         if (p && typeof p.then === "function") {
@@ -776,7 +780,9 @@
         };
         poll();
       }
-      timer = setTimeout(done, timeoutMs);
+      timer = setTimeout(function () {
+        done();
+      }, timeoutMs);
     });
   }
 
@@ -793,7 +799,10 @@
       if (state.busy) {
         var outcome = null;
         try {
-          outcome = await invoke("cancel_generation", { sessionId: sid });
+          // keepInbox=true（打断语义）：未注入的 steer 保留给下一轮，排队
+          // chip 不被静默取消；停止按钮（cancelGeneration）不传此参数，
+          // 后端按 false 清空未注入 steer 并发 chat:steer_dropped。
+          outcome = await invoke("cancel_generation", { sessionId: sid, keepInbox: true });
         } catch (e) {
           console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
         }
@@ -804,6 +813,7 @@
           // 不再需要固定 sleep 补窗口。超时仅作最后兜底，走下方失败恢复路径。
           await waitForChatDone(sid, generation, 5000);
         }
+      } else {
       }
       // 2) 不整体清空 queue：打断只放弃当前轮进度，保留用户排队中的其他消息
       //    （P0-A 后引擎侧丢弃残留 steer 会发 SteerDropped 事件，前端据此提示）。
@@ -813,7 +823,10 @@
       });
       var attachmentPayload = readyAttachments.map(function (a) { return a.result; });
       // 4) 真正发新消息；失败时由调用方（handleInterruptSend）恢复输入框。
-      return await doSendFor(sid, text, displayText, attachmentPayload, meta, restrictTools, true);
+      var result = await doSendFor(sid, text, displayText, attachmentPayload, meta, restrictTools, true);
+      return result;
+    } catch (e) {
+      throw e;
     } finally {
       interruptInFlight[sid] = false;
     }
@@ -902,6 +915,7 @@
       dismissPinvouReview: dismissPinvouReview,
       persistPinvouReviews: persistPinvouReviews,
       cancelGeneration: cancelGeneration,
+      interruptAndSend: interruptAndSend,
       persistMessages: persistMessages,
       steer: steer,
     };

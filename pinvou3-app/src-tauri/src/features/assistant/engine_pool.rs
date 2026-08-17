@@ -1308,7 +1308,16 @@ impl EnginePool {
     ///
     /// 「停止」按钮是子智能体唯一的确定性停止入口（卡片上没有取消按钮，
     /// 自然语言指令只是建议）；只取消宿主轮会留下继续烧钱的后台子智能体。
-    pub async fn cancel(&self, session_id: &str) -> CancelOutcome {
+    ///
+    /// `keep_inbox`（P0-A）：打断（true）时未注入的 steer 保留给下一轮；
+    /// 停止（false）时清空并发 SteerDropped，前端移除 chip 并提示——
+    /// 防止「UI 里消息消失、引擎里还活着」的悬挂。
+    pub async fn cancel(&self, session_id: &str, keep_inbox: bool) -> CancelOutcome {
+        // keepInbox 开关必须先于 cancel_current 生效：turn loop 在取消检查点
+        // 读它决定 steer 处置（Release/Acquire 保证可见性）。
+        if let Some(engine) = self.handle_for(session_id).await {
+            engine.handle.set_steer_keep_inbox(keep_inbox);
+        }
         // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
@@ -1358,17 +1367,27 @@ impl EnginePool {
             },
         )
         .await;
-        // 组装轮次结果：claim 路径由 cancel 自身完成终态（terminal=true，前端
-        // 无需等事件——事件发在 cancel 返回前、前端监听器注册前，必然错过）；
-        // 其余路径按「目标轮是否仍在」判定：已切轮/已终态 → terminal=true，
-        // 目标轮仍在取消中 → terminal=false（前端等该 generation 的 chat:done）。
-        let current = self
+        // 组装轮次结果。`terminal=true` 只允许三种情况：
+        //   1) claim 路径——终态由 cancel 自身完成（其 chat:done 发在 cancel
+        //      返回前、前端监听器注册前，必然错过，必须由命令返回值确认）；
+        //   2) 空闲（target=None）——没有事件可等；
+        //   3) 目标轮已认领终态（terminal_emitted=true）——claim 已完成、
+        //      闸门已重开（emit 后置契约），事件可能已发出（miss），直接
+        //      proceed 必然成功。
+        // 其余一律 terminal=false（前端等携带 target generation 的 chat:done）：
+        // **引擎 turn loop 退出 ≠ lifecycle 已释放**——forwarder 处理
+        // TurnComplete 并 claim 之前，lifecycle 仍 active，此时 chat 的
+        // reserve_turn 会撞 session_turn_in_progress。前端唯一可靠的
+        // 「槽位已释放」信号是 chat:done（claim 之后才 emit）。
+        // （此前按 generation 是否匹配判 terminal=true，把「引擎已退出」误当
+        // 「已释放」，打断消息在竞态窗口内直接丢失。）
+        let terminal_emitted = self
             .turn_lifecycles
             .get(session_id)
-            .and_then(|lc| lc.current_turn_generation());
+            .is_some_and(|lc| lc.is_terminal_emitted());
         CancelOutcome {
             generation: target,
-            terminal: claimed_unsubmitted || !generation_matches(target, current),
+            terminal: claimed_unsubmitted || target.is_none() || terminal_emitted,
         }
     }
 
