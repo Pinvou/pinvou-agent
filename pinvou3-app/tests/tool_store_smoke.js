@@ -250,7 +250,7 @@ async function closeDetail(page, title) {
     !!document.querySelector(selector)
     || [...document.querySelectorAll('input')].some(el => (el.getAttribute('placeholder') || '').includes('搜索'))
   ), { timeout: 10000 }, TOOL_STORE_SEARCH_SELECTOR).catch(() => {});
-  const toolStoreLoaded = await page.evaluate((navClicked, selector)=>navClicked&&document.body.innerText.includes('工具商店')&&(
+  const toolStoreLoaded = await page.evaluate((navClicked, selector)=>navClicked&&document.body.innerText.includes('插件中心')&&(
     !!document.querySelector(selector)
     || [...document.querySelectorAll('input')].some(el => (el.getAttribute('placeholder') || '').includes('搜索'))
   ), navClicked, TOOL_STORE_SEARCH_SELECTOR);

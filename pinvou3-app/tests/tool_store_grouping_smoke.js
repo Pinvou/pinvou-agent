@@ -81,17 +81,17 @@ async function clickChip(page, text) {
     await page.goto(url, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => document.querySelector('[data-nav="toolstore"]'), { timeout: 20000 });
     await page.evaluate(() => { document.querySelector('[data-nav="toolstore"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); });
-    await page.waitForFunction(() => document.body.innerText.includes('工具商店'), { timeout: 10000 });
+    await page.waitForFunction(() => document.body.innerText.includes('插件中心'), { timeout: 10000 });
 
     const chipText = await page.evaluate(() => [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()));
-    for (const label of ['按类型', '按业务', '全部', '工具包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['按类型', '按业务', '全部', '插件包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`类型维度 chip/segment「${label}」渲染`, chipText.includes(label));
     }
 
-    // 组合包(PPT/公文)归「工具包」组:chip 存在;筛选后只显示组合包
-    rec('点击「工具包」chip', await clickChip(page, '工具包'));
+    // 组合包(PPT/公文)归「插件包」组:chip 存在;筛选后只显示组合包
+    rec('点击「插件包」chip', await clickChip(page, '插件包'));
     await sleep(300);
-    rec('工具包筛选只显示组合包(PPT/公文)', await page.evaluate(() => {
+    rec('插件包筛选只显示组合包(PPT/公文)', await page.evaluate(() => {
       const text = document.body.innerText;
       return text.includes('PPT 生成') && text.includes('党政机关公文写作') && !text.includes('高德天气') && !text.includes('飞书（Lark）');
     }));
@@ -145,7 +145,7 @@ async function clickChip(page, text) {
     }
     rec('业务维度 chip 不含「技能」', !bizChips.includes('技能'));
     const sectionsByBiz = await page.evaluate(() => [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim()));
-    for (const label of ['工具包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
+    for (const label of ['插件包', 'MCP', 'Skill', 'CLI 集成', 'API & Webhook', '即将上线']) {
       rec(`按业务时类型分区「${label}」渲染`, sectionsByBiz.includes(label));
     }
 
@@ -171,14 +171,17 @@ async function clickChip(page, text) {
     });
     rec('搜索时平铺、无分区标题', searching);
 
-    // 「我的工具」:恒为平铺,不按维度分区
-    rec('点击「我的工具」', await clickExact(page, '我的工具'));
+    // 「仅显示已安装」(取代旧「我的工具」页签):保留分区、过滤到已装条目;
+    // 本 mock 全部未安装 → 命中空态。先清空上一步的搜索词。
+    await page.evaluate(() => { const s = document.querySelector('[data-testid="tool-store-search"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(s, ''); s.dispatchEvent(new Event('input', { bubbles: true })); });
     await sleep(300);
-    const myToolsFlat = await page.evaluate(() => {
-      const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
-      return document.body.innerText.includes('我的工具') && !h3s.includes('MCP') && !h3s.includes('金融数据') && !h3s.includes('CLI 集成');
+    rec('点击「仅显示已安装」', await page.evaluate(() => { const b = document.querySelector('[data-testid="tool-store-installed-only"]'); if (!b) return false; b.scrollIntoView({block:'center'}); b.click(); return true; }));
+    await sleep(300);
+    const installedOnlyEmpty = await page.evaluate(() => {
+      const text = document.body.innerText;
+      return text.includes('还没有已安装的工具') && !text.includes('高德天气') && !text.includes('企查查');
     });
-    rec('我的工具平铺、无分区标题', myToolsFlat);
+    rec('仅显示已安装过滤到空态(本 mock 全未安装)', installedOnlyEmpty);
   } finally {
     await browser.close();
   }

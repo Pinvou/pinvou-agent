@@ -25,8 +25,8 @@ test('pickSkillZip: 缺 name 的文件跳过', () => {
   assert.equal(pickSkillZip([{ name: undefined }]), null);
 });
 
-test('MAX_SKILL_ZIP_BYTES 对齐后端 5MiB 软限', () => {
-  assert.equal(MAX_SKILL_ZIP_BYTES, 5 * 1024 * 1024);
+test('MAX_SKILL_ZIP_BYTES 拖放通道前端软限 50MiB', () => {
+  assert.equal(MAX_SKILL_ZIP_BYTES, 50 * 1024 * 1024);
 });
 
 test('fileToBase64: 小文件与 Buffer 基准一致', async () => {

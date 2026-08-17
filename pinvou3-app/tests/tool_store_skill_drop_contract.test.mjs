@@ -57,7 +57,7 @@ assert.match(toolStoreSource, /ctrl\.install\(/, 'tool store must install the dr
 assert.match(toolStoreSource, /capture: true/, 'tool store must take over in capture phase');
 assert.match(
   toolStoreSource,
-  /import_skill_package_bytes/,
+  /import_spanner_package_bytes/,
   'dropped zips must go through the base64 byte channel command',
 );
 assert.match(
@@ -81,7 +81,7 @@ assert.equal(
   'dragDropEnabled must stay false (WebView2 drag feedback + no path access)',
 );
 
-// 4. 纯逻辑:大小软限对齐后端 5MiB
-assert.match(importLogicSource, /5 \* 1024 \* 1024/);
+// 4. 纯逻辑:拖放通道前端软限 50MiB(后端另以 200MiB 强校验)
+assert.match(importLogicSource, /50 \* 1024 \* 1024/);
 
 console.log('tool store skill drop contract tests passed');
