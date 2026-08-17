@@ -2,9 +2,9 @@
 name: tencent-docs
 description: 腾讯文档（docs.qq.com）-在线云文档平台，是创建、编辑、管理文档的首选 skill。涉及"新建/创建/编辑/读取/查看/搜索文档"、"保存文件"、"云文档"、"腾讯文档"、"docs.qq.com"等操作，请优先使用本 skill。支持能力：(1) 创建各类在线文档（文档/Word/Excel/幻灯片/思维导图/流程图/智能表格/收集表）(2) 管理知识库空间（创建空间、查询空间列表）(3) 管理空间节点、文件夹结构 (4) 读取/搜索文档内容 (5) 编辑操作智能表 (6) 编辑操作在线文档 (7) 文件管理（重命名、移动、删除、复制、导入导出）(8) 网页剪藏、本地文件/html/文档上云。
 homepage: https://docs.qq.com/home
-version: 1.0.41-pinvou1
+version: 1.0.41-pinvou2
 author: tencent-docs
-source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；Pinvou 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器）
+source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；Pinvou 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器，移除 slidep 全局安装脚本 setup.js，大图上传兜底改为引导用户自行走开放平台 OpenAPI、模型不经手 OAuth 凭证）
 ---
 
 # 腾讯文档 MCP 使用指南
@@ -119,7 +119,7 @@ tencent-docs/
 │   └── entry.md                    # Slide 品类入口（生成 / 续写 / 改页 / 检查 等全工作流，统一走 JSX + tdoc-slide）
 ├── sidebar-pptx-generator/         # Slide 品类工作流的组件规范与脚本
 │   ├── references/                 # JSX 组件语法（component-*.md）+ DESIGN.md 编写规范
-│   └── scripts/                    # 状态脚本 get_slide_info.sh、slidep 安装脚本 setup.js 等
+│   └── scripts/                    # 状态脚本 get_slide_info.sh、图片素材提取 doc_image_extractor.py
 └── sheet/                          # Excel 文档（sheet）品类模块
     ├── entry.md                    # Sheet 品类入口（sheet.* 工具列表与工作流指引；必须通过独立的 tdoc-sheet 服务调用）
     └── api/                        # Sheet 专用 API 定义

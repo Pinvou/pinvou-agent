@@ -312,7 +312,6 @@ JSX 基本约束：
 |---|---|
 | `sidebar-pptx-generator/references/design-principle.md` | DESIGN.md 编写规范（结构、字段、自检门禁） |
 | `sidebar-pptx-generator/references/component-*.md` | JSX 组件语法规范（box / chart / codeblock / diagram / faicon / image / math / qrcode / slide / svg / table / text 等） |
-| `sidebar-pptx-generator/scripts/get_slide_info.sh` | 状态脚本，工作流入口 |
-| `sidebar-pptx-generator/scripts/setup.js` | slidep 工具链安装 / 升级（按需） |
+| `sidebar-pptx-generator/scripts/get_slide_info.sh` | 状态脚本，工作流入口（需本机有 bash + jq） |
 | `sidebar-pptx-generator/scripts/doc_image_extractor.py` | 文档图片素材提取（按需） |
 | `references/slideengine_references.md` | `slide_*` 系列工具完整 API Schema（精细编辑工具，含 `slide_export_pages_to_image_urls` 的字段说明） |

@@ -868,6 +868,8 @@ mod tests {
     /// 腾讯文档官方 skill(vendored):安装落盘到 frontmatter name(tencent-docs),
     /// 品类参考与 smartcanvas 模板随包;mcporter 依赖脚本(setup.sh/import_file.sh/
     /// ocr.js)不应存在,适配版 get_slide_info.sh 应在。
+    /// setup.js(slidep 全局安装脚本)已移除:工作流不调用 slidep CLI,保留一条可被
+    /// 诱导执行的无校验和全局安装路径没有收益。
     #[test]
     fn install_tencent_docs_preset_with_official_references() {
         let tmp = fresh_dir("tdoc");
@@ -901,6 +903,12 @@ mod tests {
                 "{dropped} 依赖 mcporter,不应保留"
             );
         }
+        assert!(
+            !skill_dir
+                .join("sidebar-pptx-generator/scripts/setup.js")
+                .exists(),
+            "setup.js 是无校验和的全局安装脚本,工作流不使用 slidep CLI,不应保留"
+        );
         assert!(
             skill_dir
                 .join("sidebar-pptx-generator/scripts/get_slide_info.sh")

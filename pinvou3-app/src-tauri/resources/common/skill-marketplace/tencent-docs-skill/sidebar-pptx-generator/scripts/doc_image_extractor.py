@@ -6,14 +6,14 @@ doc_image_extractor.py
 支持格式：PPTX、DOCX、XLSX
 
 依赖安装：
-    pip install PyMuPDF python-pptx python-docx openpyxl
+    pip install python-pptx python-docx openpyxl
 
 用法：
     # 单个文件
     python doc_image_extractor.py <文档路径> [输出目录]
 
     # 多个文件
-    python doc_image_extractor.py file1.pdf file2.pptx file3.docx [输出目录]
+    python doc_image_extractor.py file1.pptx file2.docx file3.xlsx [输出目录]
 
     # 批量扫描目录
     python doc_image_extractor.py --dir <目录路径> [输出目录]

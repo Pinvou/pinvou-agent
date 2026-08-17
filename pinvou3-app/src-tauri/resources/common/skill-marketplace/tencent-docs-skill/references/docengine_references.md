@@ -493,15 +493,7 @@
 - `content` (string, 可选): 图片的 base64 内容（方式一，本地图片先用 shell `base64` 命令编码，仅适合小图），与 `image_id` 二选一。**大图请改用方式二先上传得到 `image_id` 后再传入**
 - `image_id` (string, 可选): 图片的 `image_id`（方式二备选），与 `content` 二选一。获取方式有两种：
   1. 通过 `upload_image` MCP 接口上传图片后获取；
-  2. 通过[腾讯文档开放平台 OpenAPI](https://docs.qq.com/open/developers/?nlc=1#/login) 图片上传接口获取（适合图片体积较大的场景；需先完成 OAuth 授权流程获取 `Access-Token`、`Client-Id`、`Open-Id`），示例命令：
-  ```bash
-  curl --location --request POST 'https://docs.qq.com/openapi/resources/v2/images' \
-    --header 'Access-Token: ACCESS_TOKEN' \
-    --header 'Client-Id: CLIENT_ID' \
-    --header 'Open-Id: OPEN_ID' \
-    --form 'image=@"/path/to/your/image.png"'
-  ```
-  上传成功后，取返回结果中的 `imageID` 字段值传入此参数
+  2. 通过[腾讯文档开放平台 OpenAPI](https://docs.qq.com/open/developers/?nlc=1#/login) 图片上传接口获取（适合图片体积较大的场景）：引导用户自行登录开放平台后台，完成 OAuth 授权并调用图片上传接口（`POST https://docs.qq.com/openapi/resources/v2/images`，multipart/form-data 直传图片文件）。`Access-Token`、`Client-Id`、`Open-Id` 等凭证由用户本人持有，不要代用户索取或经手。用户上传成功后，请其提供返回结果中的 `imageID` 字段值传入此参数
 - `idx` (integer, 必填): 插入位置的索引，从 0 开始
 - `width` (integer, 可选): 图片宽度，单位为像素（px），例如 400 表示 400px；不传时使用图床上传返回的宽度
 - `height` (integer, 可选): 图片高度，单位为像素（px），例如 300 表示 300px；不传时使用图床上传返回的高度
@@ -706,15 +698,7 @@
 - `old_attachment_id` (string, 条件必填): 旧图片的附件 ID，与 `old_image_url` 二选一（**必须提供其一**），对应 `get_images` 返回的 `attachment_id` 字段
 - `image_id` (string, 条件必填): 新图片的 `image_id`（方式二备选），与 `content` 二选一（**必须提供其一**）。获取方式有两种：
   1. 通过 `upload_image` MCP 接口上传图片后获取；
-  2. 通过[腾讯文档开放平台 OpenAPI](https://docs.qq.com/open/developers/?nlc=1#/login) 图片上传接口获取（适合图片体积较大、base64 内容超出传输限制的场景；需先完成 OAuth 授权流程获取 `Access-Token`、`Client-Id`、`Open-Id`），示例命令：
-  ```bash
-  curl --location --request POST 'https://docs.qq.com/openapi/resources/v2/images' \
-    --header 'Access-Token: ACCESS_TOKEN' \
-    --header 'Client-Id: CLIENT_ID' \
-    --header 'Open-Id: OPEN_ID' \
-    --form 'image=@"/path/to/your/image.png"'
-  ```
-  上传成功后，取返回结果中的 `imageID` 字段值传入此参数
+  2. 通过[腾讯文档开放平台 OpenAPI](https://docs.qq.com/open/developers/?nlc=1#/login) 图片上传接口获取（适合图片体积较大、base64 内容超出传输限制的场景）：引导用户自行登录开放平台后台，完成 OAuth 授权并调用图片上传接口（`POST https://docs.qq.com/openapi/resources/v2/images`，multipart/form-data 直传图片文件）。`Access-Token`、`Client-Id`、`Open-Id` 等凭证由用户本人持有，不要代用户索取或经手。用户上传成功后，请其提供返回结果中的 `imageID` 字段值传入此参数
 - `content` (string, 可选): 新图片的 base64 内容（方式一，本地图片先用 shell `base64` 命令编码），与 `image_id` 二选一。**仅适合图片体积较小的场景；若图片过大导致 base64 超出 MCP 单次传输限制，请改用方式二先上传得到 `image_id` 后再传入**
 - `version_info` (object, 可选): 版本参数，详见《通用说明 > 版本参数》
 
