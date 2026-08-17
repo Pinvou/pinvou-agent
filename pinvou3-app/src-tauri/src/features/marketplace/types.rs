@@ -40,9 +40,6 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
-    /// 扳手插件入口 (plugin.json.spanner.entry),合成 mcp/manifest.json 时填入。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spanner_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
