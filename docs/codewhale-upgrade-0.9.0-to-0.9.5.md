@@ -1,18 +1,18 @@
 # CodeWhale 0.9.0 → 0.9.5 底座升级报告
 
 > 日期：2026-08-17
-> 状态：公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r6` 保持不变；专用编排退役候选已推送到 `Pinvou/CodeWhale#13`，但尚未合并或创建新固定标签。
+> 状态：专用编排退役已通过 `Pinvou/CodeWhale#13` 合并；公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
 
 ## 1. 结论
 
-本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。PR #13 候选 `e69fc8908` 退役专用编排协议并修复通用工具兼容回归后，仍需留在底座生命周期的 Pinvou 差异收敛为 4 个长期主题：
+本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。r7 公开基线 `a36e6cd53` 退役专用编排协议并保留通用工具兼容后，仍需留在底座生命周期的 Pinvou 差异收敛为 4 个长期主题：
 
 1. 宿主嵌入与路由边界
 2. 工具兼容与命令执行安全
 3. 嵌入上下文与技能来源
 4. 定时任务与运行生命周期
 
-相对官方 v0.9.5，退役后的 PR #13 候选 fork 为 46 文件、`+1852/-269`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
+相对官方 v0.9.5，退役后的 r7 fork 为 46 文件、`+1852/-269`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
 
 ## 2. 版本基线
 
@@ -95,8 +95,8 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 | 主题 | commit | 主要职责 |
 |---|---|---|
-| T1 宿主嵌入与路由边界 | `331cb1594` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
-| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e`、`e69fc8908` | extra tools、动态禁用、File 上限、命令安全、schema 容器兼容、canonical registry 提示与 action alias 解析 |
+| T1 宿主嵌入与路由边界 | `331cb1594`、`2eceab4e1`、`a36e6cd53` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
+| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e`、`a36e6cd53` | extra tools、动态禁用、File 上限、命令安全、schema 容器兼容、canonical registry 提示与 action alias 解析 |
 | T3 嵌入上下文与技能来源 | `5a9f52941` | static composer 密封、Skill 单根/disabled、Permissions 100 KiB 窄例外、Working Set 隔离 |
 | T4 定时任务与运行生命周期 | `fc84f7d3e` | model/conversation、历史 schema、thread/turn、misfire/no-overlap、终态清理 |
 
@@ -104,7 +104,7 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 ## 5. Pinvou 父仓兼容迁移
 
-- submodule 以公开 v0.9.5 r6 为起点，并对齐已推送的 PR #13 head `e69fc890844c9ddb0d45539ed509849d860af704`。
+- submodule 对齐公开 v0.9.5 r7 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
 - `Cargo.lock` 对齐 v0.9.5 workspace crate 和依赖图。
 - `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，显式透传新增 `subagent_state_root`。
 - 会话工具隐藏继续走 `shape_disallowed_tools`，产品语义不变。
@@ -147,8 +147,8 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 ## 9. 当前交付状态
 
-- CodeWhale 候选分支：`Pinvou/CodeWhale:refactor/remove-sansheng-liubu`（PR #13）
-- CodeWhale 候选 HEAD：`e69fc890844c9ddb0d45539ed509849d860af704`
+- CodeWhale 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`
+- CodeWhale 公开 HEAD：`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`pinvou-v0.9.5-r7`）
 - 父仓分支：`refactor/remove-sansheng-liubu`（PR #285）
-- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r6` 仍是公开发布基线；PR #13 候选分支已更新，未合并、未 tag
-- 下一步：等待 PR #13 合并并在明确授权下创建新固定标签；随后公开 gitlink 验证才能通过，PR #285 才具备合并条件。
+- 远端状态：`Pinvou/CodeWhale#13` 已合并；`pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 指向同一公开提交。
+- 下一步：完成父仓 PR #285 的 current-head 门禁并通过 Merge Queue 合并。

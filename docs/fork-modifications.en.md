@@ -7,11 +7,11 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `3bbf8421e` (`pinvou-v0.9.5-r6`) |
-| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, and `#12` are merged |
-| Candidate status | `Pinvou/CodeWhale#13` head `e69fc890844c9ddb0d45539ed509849d860af704` is pushed but not merged or tagged; `r1` through `r6` remain immutable historical tags |
+| Public maintenance branch | `Pinvou/CodeWhale:pinvou3-clean` at `a36e6cd53` (`pinvou-v0.9.5-r7`) |
+| Merged fixes | `Pinvou/CodeWhale#9`, `#11`, `#12`, and `#13` are merged |
+| Published status | `pinvou3-clean`, `pinvou-v0.9.5-r7`, and the parent gitlink resolve to `a36e6cd533024cfe5724bae21875aea42b2ed87a`; `r1` through `r7` remain immutable historical tags |
 | Previous baseline backup | Tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`, both at `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| Drift | PR #13 candidate: 46 files, `+1852/-269` |
+| Drift | Published r7 baseline: 46 files, `+1852/-269` |
 | Organization | Four current long-lived topics; PR #13 removes the product-specific orchestration topic |
 
 ### Published session fix
@@ -25,10 +25,10 @@
 
 ## Topics
 
-PR #13 candidate commits: `3c4b885f6609f4d6cd0d4ad7d6af680bf0fa404f` and `e69fc890844c9ddb0d45539ed509849d860af704` (pushed, not merged or tagged). The second commit restores canonical registry prompt text and alias-aware Custom SubAgent allowlist resolution without restoring product-specific orchestration.
+PR #13 was squash-merged as `a36e6cd533024cfe5724bae21875aea42b2ed87a` and published as immutable tag `pinvou-v0.9.5-r7`. It removes product-specific orchestration while preserving canonical registry prompt text and alias-aware Custom SubAgent allowlist resolution.
 
-1. **Host embedding and routing boundary** — `331cb1594688c723d98499d9ca11f05af291b599`, `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` (`Pinvou/CodeWhale#11`), and candidate `3c4b885f6609f4d6cd0d4ad7d6af680bf0fa404f`. Exposes only the library modules, narrow root-level Fleet roster API, read-only live-worker projection, opaque resolved-route interfaces, distinct runtime-snapshot versus process-resume session APIs, generic host bulk cancellation, and terminal failure facts required by the host; the full `fleet` module remains private.
-2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`, `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02` (`Pinvou/CodeWhale#12`), and candidate `e69fc890844c9ddb0d45539ed509849d860af704`. Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, fail-closed multiline command safety, schema-bound JSON-container repair, provider-role-safe continuations, canonical registry instructions, and alias-aware Custom SubAgent allowlists while reusing upstream `allowed_tools`.
+1. **Host embedding and routing boundary** — `331cb1594688c723d98499d9ca11f05af291b599`, `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd` (`Pinvou/CodeWhale#11`), and `a36e6cd533024cfe5724bae21875aea42b2ed87a` (`Pinvou/CodeWhale#13`). Exposes only the library modules, narrow root-level Fleet roster API, read-only live-worker projection, opaque resolved-route interfaces, distinct runtime-snapshot versus process-resume session APIs, generic host bulk cancellation, and terminal failure facts required by the host; the full `fleet` module remains private.
+2. **Tool compatibility and command-execution safety** — `595adce47e2d1bcf895d7bfd6426c074eb969324`, `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02` (`Pinvou/CodeWhale#12`), and `a36e6cd533024cfe5724bae21875aea42b2ed87a` (`Pinvou/CodeWhale#13`). Adds host `extra_tools`, dynamic `SetDisallowedTools`, file-size enforcement, fail-closed multiline command safety, schema-bound JSON-container repair, provider-role-safe continuations, canonical registry instructions, and alias-aware Custom SubAgent allowlists while reusing upstream `allowed_tools`.
 3. **Embedded context and Skill sources** — `5a9f52941b83452c1e8b76c2d679bac315edcf70`. Seals ambient project authority, scans only the explicit Skill root, filters disabled Skills, preserves up to 100 KiB only for the Permissions fragment, and excludes internal reminders from Working Set extraction.
 4. **Automation and runtime lifecycle** — `fc84f7d3e5dca0e3db404d43e218597764129f9b`. Preserves stable conversation/thread identity, v4 task compatibility, anchored schedules, no-backfill/no-overlap behavior, and terminal-only cleanup.
 
@@ -44,7 +44,7 @@ Pinvou's product tool allowlist, connector state, UI, workspace selection, bundl
 ## Verification
 
 - CodeWhale format and locked library check pass.
-- All 23 CodeWhale `forkguard_*` tests pass for the retirement candidate.
+- All 23 CodeWhale `forkguard_*` tests pass for the published r7 baseline.
 - Parent locked Rust check and desktop binary link pass.
 - Parent library tests pass: 1220 passed, 0 failed, and 12 environment-dependent tests ignored.
 - Parent fork guard, architecture guard, npm tests, UI lint, desktop UI build, and web UI build pass.
