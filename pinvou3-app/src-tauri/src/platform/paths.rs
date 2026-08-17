@@ -8,6 +8,8 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use serde_json;
+
 static RUNTIME_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// 用户家目录 `$HOME`，是 pinvou3-app 的 engine workspace 根。
@@ -62,6 +64,62 @@ pub fn bundle_mcp_json() -> PathBuf {
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
+
+// ----------------------------------------------------------------------
+// Super-skill priority_paths：skill 包的 SKILL.md frontmatter `runtime`/`tools`
+// 段声明的可执行入口，绝对路径登记。execpolicy 用它把 skill-run wrapper 与
+// runtime binaries 加进 YOLO 模式下的白名单，让模型读到 SKILL.md 后能合法 spawn。
+// 注：当前 commit 仅提供 priority_paths 持久化 API 与 pub 入口；execpolicy
+// 实际对接（M-6 refresh_permission_rulesets 单 skill 重热刷新）在后续 commit。
+// ----------------------------------------------------------------------
+
+/// Super-skill 的 priority_paths 持久化文件（`~/.pinvou3/skill_priority_paths.json`）。
+fn skill_priority_paths_path() -> Option<PathBuf> {
+    Some(pinvou3_home().join("skill_priority_paths.json"))
+}
+
+/// skill 包的 entry / runtime dir 加入 priority_paths。
+/// 多次注册同名路径为幂等（去重）。
+pub fn add_skill_priority_paths(paths: &[std::path::PathBuf]) {
+    let Some(file) = skill_priority_paths_path() else {
+        return;
+    };
+    let mut list: Vec<String> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    for p in paths {
+        if let Some(s) = p.to_str() {
+            let already = list.iter().any(|x| x == s);
+            if !already {
+                list.push(s.to_string());
+            }
+        }
+    }
+    list.sort();
+    list.dedup();
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(&file, s);
+    }
+}
+
+/// 读出所有 priority_paths（execpolicy 路径白名单）。
+pub fn skill_priority_paths() -> Vec<std::path::PathBuf> {
+    let Some(file) = skill_priority_paths_path() else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect()
+}
+
 pub fn managed_connectors_dir() -> PathBuf {
     pinvou3_home().join("connectors")
 }
