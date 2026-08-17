@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -352,14 +353,76 @@ fn verify_snapshot(root: &Path) -> Result<BackupManifest, String> {
         return Err("备份源文档清单校验失败".to_string());
     }
     for expected in &expected_documents {
-        let relative = safe_relative_path(&expected.path)?;
+        let relative = crate::managed_relative_path(&expected.path)
+            .ok_or_else(|| "备份清单包含不安全路径".to_string())?;
         let path = documents.join(relative);
         let metadata = fs::metadata(&path).map_err(|_| "备份源文档不完整".to_string())?;
         if metadata.len() != expected.size || hash_file(&path)? != expected.sha256 {
             return Err("备份源文档校验失败".to_string());
         }
     }
+    verify_database_snapshot(&database, &expected_documents)?;
     Ok(manifest)
+}
+
+fn verify_database_snapshot(database: &Path, documents: &[BackupFile]) -> Result<(), String> {
+    let connection = Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("无法打开备份数据库：{error}"))?;
+    crate::store::configure_connection(&connection)
+        .map_err(|error| format!("无法配置备份数据库：{error}"))?;
+    let quick_check = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法校验备份数据库：{error}"))?;
+    if quick_check != "ok" {
+        return Err("备份数据库完整性校验失败".to_string());
+    }
+
+    let manifest_documents = documents
+        .iter()
+        .map(|document| (document.path.as_str(), document))
+        .collect::<HashMap<_, _>>();
+    let mut statement = connection
+        .prepare("SELECT storage_path,size,sha256 FROM documents ORDER BY id")
+        .map_err(|error| format!("无法读取备份文档记录：{error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("无法读取备份文档记录：{error}"))?;
+    for row in rows {
+        let (storage_path, size, sha256) =
+            row.map_err(|error| format!("无法读取备份文档记录：{error}"))?;
+        crate::managed_relative_path(&storage_path)
+            .ok_or_else(|| "备份数据库包含不安全的受管源文件路径".to_string())?;
+        let expected = manifest_documents
+            .get(storage_path.as_str())
+            .ok_or_else(|| "备份数据库引用了清单外的受管源文件".to_string())?;
+        if size < 0
+            || size as u64 != expected.size
+            || !sha256.eq_ignore_ascii_case(&expected.sha256)
+        {
+            return Err("备份数据库中的受管源文件记录与清单不一致".to_string());
+        }
+    }
+
+    let has_invalid_vector = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM chunks WHERE typeof(vec)!='blob' OR length(vec)=0 OR length(vec)>?1 OR length(vec)%4!=0)",
+            [crate::MAX_VECTOR_BLOB_BYTES as i64],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法校验备份向量索引：{error}"))?;
+    if has_invalid_vector {
+        return Err("备份数据库包含无效或过大的向量索引".to_string());
+    }
+    Ok(())
 }
 
 fn preserve_current_host_state(data_dir: &Path, staged_database: &Path) -> Result<(), String> {
@@ -492,14 +555,15 @@ fn copy_snapshot_documents(
     for row in rows {
         let (storage_path, expected_size, expected_sha256) =
             row.map_err(|error| format!("无法读取备份文档：{error}"))?;
-        let relative = safe_relative_path(&storage_path)?;
-        let source = source_root.join(&relative);
+        let relative = crate::managed_relative_path(&storage_path)
+            .ok_or_else(|| "备份清单包含不安全路径".to_string())?;
+        let source = source_root.join(relative);
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("备份源文档不存在({}): {error}", source.display()))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(format!("备份源文档不是普通文件({})", source.display()));
         }
-        let destination = snapshot_root.join(&relative);
+        let destination = snapshot_root.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("无法创建文档快照目录：{error}"))?;
         }
@@ -521,19 +585,6 @@ fn copy_snapshot_documents(
         }
     }
     Ok(())
-}
-
-fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
-    let path = Path::new(value);
-    if value.is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err("备份清单包含不安全路径".to_string());
-    }
-    Ok(path.to_path_buf())
 }
 
 fn ensure_path_outside_data_dir(
@@ -652,6 +703,28 @@ mod tests {
                 [hash_file(&root.join(DOCUMENTS_NAME).join("sample.txt")).unwrap()],
             )
             .unwrap();
+    }
+
+    fn write_snapshot_manifest(root: &Path, server_id: &str) {
+        let document = root.join(DOCUMENTS_NAME).join("sample.txt");
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT,
+            created_at: 1,
+            server_id: server_id.to_string(),
+            database_sha256: hash_file(&root.join(DATABASE_NAME)).unwrap(),
+            document_count: 1,
+            document_bytes: document.metadata().unwrap().len(),
+            documents: vec![BackupFile {
+                path: "sample.txt".to_string(),
+                size: document.metadata().unwrap().len(),
+                sha256: hash_file(&document).unwrap(),
+            }],
+        };
+        fs::write(
+            root.join(MANIFEST_NAME),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -863,6 +936,46 @@ mod tests {
             tar::EntryType::Regular,
             crate::MAX_UPLOAD_BYTES as u64 + 1,
         ));
+    }
+
+    #[test]
+    fn snapshot_rejects_self_consistent_manifest_with_unsafe_database_path() {
+        let snapshot = tempfile::tempdir().unwrap();
+        seed_data(snapshot.path(), "source-server", "source-owner");
+        let connection = Connection::open(snapshot.path().join(DATABASE_NAME)).unwrap();
+        connection
+            .execute(
+                "UPDATE documents SET storage_path='../../../../etc/passwd' WHERE id=1",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        write_snapshot_manifest(snapshot.path(), "source-server");
+
+        let error = verify_snapshot(snapshot.path()).unwrap_err();
+
+        assert!(error.contains("不安全的受管源文件路径"));
+    }
+
+    #[test]
+    fn snapshot_rejects_oversized_or_malformed_vector_blobs() {
+        for vector_size in [crate::MAX_VECTOR_BLOB_BYTES + 4, 3] {
+            let snapshot = tempfile::tempdir().unwrap();
+            seed_data(snapshot.path(), "source-server", "source-owner");
+            let connection = Connection::open(snapshot.path().join(DATABASE_NAME)).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO chunks(document_id,collection_id,ord,text,vec) VALUES(1,1,0,'chunk',zeroblob(?1))",
+                    [vector_size as i64],
+                )
+                .unwrap();
+            drop(connection);
+            write_snapshot_manifest(snapshot.path(), "source-server");
+
+            let error = verify_snapshot(snapshot.path()).unwrap_err();
+
+            assert!(error.contains("无效或过大的向量索引"));
+        }
     }
 
     #[test]

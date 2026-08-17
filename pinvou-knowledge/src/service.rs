@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::parser::parse_document;
 use crate::store::{DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, Store};
 use crate::tls::TlsIdentity;
-use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES};
+use crate::{chunk_text, Embedder, MAX_UPLOAD_BYTES, MAX_VECTOR_DIMENSIONS};
 
 pub const MODEL_NAME: &str = "bge-m3";
 const CHUNK_CHARS: usize = 600;
@@ -28,7 +28,6 @@ const EMBED_BATCH: usize = 32;
 // hundred-MiB peak for a single document.
 const MAX_INDEX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_CHUNKS: usize = 16_000;
-const MAX_VECTOR_DIMENSIONS: usize = 4096;
 const MAX_TOTAL_VECTOR_FLOATS: usize = 16 * 1024 * 1024;
 const TRASH_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 const TRASH_CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -1196,10 +1195,7 @@ impl KnowledgeService {
             .document(document_id, false)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "文档不存在或已删除".to_string())?;
-        let path = self.documents_dir.join(&stored.storage_path);
-        if !path.is_file() {
-            return Err("受管源文件丢失".to_string());
-        }
+        let path = managed_source_file(&self.documents_dir, &stored.storage_path)?;
         Ok((stored.document, path))
     }
 
@@ -1410,6 +1406,32 @@ fn validate_vectors(vectors: &[Vec<f32>]) -> Result<(), String> {
     Ok(())
 }
 
+fn managed_source_file(documents_dir: &Path, storage_path: &str) -> Result<PathBuf, String> {
+    let relative = crate::managed_relative_path(storage_path)
+        .ok_or_else(|| "受管源文件路径无效".to_string())?;
+    let root_metadata =
+        std::fs::symlink_metadata(documents_dir).map_err(|_| "受管源文件目录丢失".to_string())?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("受管源文件目录无效".to_string());
+    }
+    let mut path = documents_dir.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("受管源文件路径无效".to_string());
+        };
+        path.push(name);
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|_| "受管源文件丢失".to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("受管源文件路径包含符号链接".to_string());
+        }
+    }
+    if !path.is_file() {
+        return Err("受管源文件丢失".to_string());
+    }
+    Ok(path)
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -1596,6 +1618,42 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(&service.documents_dir).unwrap().count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn source_file_rejects_database_paths_outside_managed_documents() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "shared".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(collection.id, "source.md", b"managed source".to_vec())
+            .await
+            .unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), b"private outside bytes").unwrap();
+        let connection = rusqlite::Connection::open(root.path().join("knowledge.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE documents SET storage_path=?1 WHERE id=?2",
+                rusqlite::params![outside.path().to_string_lossy().as_ref(), document.id],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = service.source_file(document.id).unwrap_err();
+
+        assert!(error.contains("路径无效"));
+        assert_eq!(
+            std::fs::read(outside.path()).unwrap(),
+            b"private outside bytes"
         );
     }
 

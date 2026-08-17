@@ -8,14 +8,13 @@ use pinvou_knowledge::model::{
 };
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::mode_state::MountedRemoteCollection;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::knowledge::{model_download as local_model, KnowledgeService};
 use crate::features::remote_knowledge::{
     discover_folder_files, JoinOutcome, PendingJoin, RemoteConnectionStatus, RemoteFolderDiscovery,
     RemoteKnowledgeIdentity, RemoteKnowledgeService,
 };
-use crate::features::sessions::SessionStore;
+use crate::features::sessions::{MountedRemoteCollection, SessionStore};
 
 type RemoteMountMutationMap = HashMap<(String, i64), Weak<tokio::sync::Mutex<()>>>;
 static REMOTE_MOUNT_MUTATIONS: OnceLock<Mutex<RemoteMountMutationMap>> = OnceLock::new();
@@ -555,7 +554,7 @@ pub async fn remote_kb_search(
 pub fn session_mounted_remote_collections(
     store: State<'_, SessionStore>,
     session_id: String,
-) -> Vec<crate::core::mode_state::MountedRemoteCollection> {
+) -> Vec<MountedRemoteCollection> {
     store.mounted_remote_collections(&session_id)
 }
 
@@ -566,7 +565,7 @@ pub async fn session_add_mounted_remote_collection(
     session_id: String,
     server_id: String,
     collection_id: i64,
-) -> Result<Vec<crate::core::mode_state::MountedRemoteCollection>, String> {
+) -> Result<Vec<MountedRemoteCollection>, String> {
     let coordinator = remote_mount_mutation_coordinator(&server_id, collection_id);
     let _mutation = coordinator.lock().await;
     ensure_remote_collection_mountable(&remote, &server_id, collection_id).await?;
@@ -587,7 +586,7 @@ pub async fn session_set_mounted_remote_collection_enabled(
     server_id: String,
     collection_id: i64,
     enabled: bool,
-) -> Result<Vec<crate::core::mode_state::MountedRemoteCollection>, String> {
+) -> Result<Vec<MountedRemoteCollection>, String> {
     let coordinator = remote_mount_mutation_coordinator(&server_id, collection_id);
     let _mutation = coordinator.lock().await;
     if enabled {
@@ -613,7 +612,7 @@ pub fn session_remove_mounted_remote_collection(
     session_id: String,
     server_id: String,
     collection_id: i64,
-) -> Vec<crate::core::mode_state::MountedRemoteCollection> {
+) -> Vec<MountedRemoteCollection> {
     store.remove_mounted_remote_collection(&session_id, &server_id, collection_id)
 }
 

@@ -147,8 +147,17 @@ test('dev uses the managed knowledge model unless an external directory is expli
 test('host helper keeps lifecycle operations explicit and persistent', () => {
   assert.match(hostCommands, /static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<\(\)>/u);
   assert.match(hostCommands, /HOST_LIFECYCLE_LOCK\.lock\(\)\.await/u);
-  assert.match(helper, /exec 9>\/run\/lock\/pinvou-knowledge-host\.lock/u);
+  assert.match(helper, /^LOCK_DIR=\/run\/pinvou$/mu);
+  assert.match(helper, /install -d -m 0700 -o root -g root "\$LOCK_DIR"/u);
+  assert.match(helper, /\[ "\$lock_dir_owner" -eq 0 \] && \[ "\$lock_dir_mode" = 700 \]/u);
+  assert.match(helper, /\[ ! -L "\$LOCK_FILE" \]/u);
+  assert.match(helper, /exec 9>"\$LOCK_FILE"/u);
+  assert.match(helper, /chmod 0600 "\$LOCK_FILE"/u);
+  assert.doesNotMatch(helper, /\/run\/lock\/pinvou-knowledge-host\.lock/u);
   assert.match(helper, /flock -n 9 \|\| fail/u);
+  assert.match(helper, /^DATA_LOCK=\/var\/lib\/\.pinvou-knowledge\.data\.lock$/mu);
+  assert.match(helper, /prepare_data_lock "\$service_uid" "\$service_gid"/u);
+  assert.match(helper, /ReadWritePaths=\/var\/lib\/pinvou-knowledge \$DATA_LOCK \$MODEL_MOUNT/u);
   assert.match(helper, /install\|upgrade/u);
   assert.match(helper, /set-owner/u);
   assert.match(helper, /recover-owner/u);
@@ -277,6 +286,12 @@ test('owner claim survives until the native client persists it and health uses T
   assert.match(helper, /recover-owner\)[\s\S]*recover_owner/u);
   assert.match(helper, /--recover-host-owner-claim/u);
   assert.match(helper, /--health-check https:\/\/127\.0\.0\.1:3210/u);
+  assert.match(helper, /read_owner_claim\(\)[\s\S]*\[ ! -L "\$claim" \][\s\S]*\[ "\$claim_owner_uid" -eq "\$service_uid" \]/u);
+  assert.match(helper, /setpriv --reuid "\$service_uid" --regid "\$service_gid" --clear-groups -- \\\s*\n\s*cat -- "\$claim"/u);
+  const readerStart = helper.indexOf('read_owner_claim() {');
+  const readerEnd = helper.indexOf('\n}', readerStart);
+  assert.ok(readerStart >= 0 && readerEnd > readerStart);
+  assert.equal(helper.match(/cat -- "\$claim"/gu)?.length, 1);
 });
 
 test('host helper reuses the exact local model directory with systemd hardening', () => {

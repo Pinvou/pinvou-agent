@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use futures_util::StreamExt;
 use rand::RngCore;
 use reqwest::{multipart, Method, StatusCode};
 use serde::de::DeserializeOwned;
@@ -15,6 +16,9 @@ use crate::model::*;
 use crate::MAX_UPLOAD_BYTES;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_IDENTITY_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_JSON_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 // Replacement remains atomic and waits for parsing plus embedding before the
@@ -166,7 +170,7 @@ impl KnowledgeClient {
             .send()
             .await
             .map_err(|error| error.to_string())?;
-        decode(response).await
+        decode_bounded(response, MAX_IDENTITY_RESPONSE_BYTES).await
     }
 
     pub async fn bootstrap_identity(endpoint: &str) -> Result<ServerInfo, String> {
@@ -216,7 +220,7 @@ impl KnowledgeClient {
             .send()
             .await
             .map_err(|error| error.to_string())?;
-        let info: ServerInfo = decode(response).await?;
+        let info: ServerInfo = decode_bounded(response, MAX_IDENTITY_RESPONSE_BYTES).await?;
         validate_probed_server_info(&info)?;
         let ca_fingerprint = ca_fingerprint(&info.tls_ca)?;
         let verified = Self::new_pinned(&endpoint, "", &info.tls_ca, &info.server_id)?
@@ -250,7 +254,7 @@ impl KnowledgeClient {
             .send()
             .await
             .map_err(|error| error.to_string())?;
-        decode(response).await
+        decode_bounded(response, MAX_IDENTITY_RESPONSE_BYTES).await
     }
 
     /// 返回当前设备在服务器上的实时授权。旧版服务器没有该接口时返回 `None`，
@@ -1054,19 +1058,58 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
-    if response.status().is_success() {
-        response.json().await.map_err(|error| error.to_string())
+    decode_bounded(response, MAX_JSON_RESPONSE_BYTES).await
+}
+
+async fn decode_bounded<T: DeserializeOwned>(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<T, String> {
+    let status = response.status();
+    let body_limit = if status.is_success() {
+        limit
     } else {
-        Err(decode_error(response).await)
+        limit.min(MAX_ERROR_RESPONSE_BYTES)
+    };
+    let body = read_bounded_body(response, body_limit).await?;
+    if status.is_success() {
+        serde_json::from_slice(&body).map_err(|error| error.to_string())
+    } else {
+        Err(decode_error_body(status, &body))
     }
+}
+
+async fn read_bounded_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(format!("知识库服务器响应超过 {} KiB 上限", limit / 1024));
+    }
+    let mut body = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(format!("知识库服务器响应超过 {} KiB 上限", limit / 1024));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 async fn decode_error(response: reqwest::Response) -> String {
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    serde_json::from_str::<ApiMessage>(&body)
+    match read_bounded_body(response, MAX_ERROR_RESPONSE_BYTES).await {
+        Ok(body) => decode_error_body(status, &body),
+        Err(error) => error,
+    }
+}
+
+fn decode_error_body(status: StatusCode, body: &[u8]) -> String {
+    serde_json::from_slice::<ApiMessage>(body)
         .map(|message| message.message)
-        .unwrap_or_else(|_| default_status_message(status, &body))
+        .unwrap_or_else(|_| default_status_message(status, &String::from_utf8_lossy(body)))
 }
 
 fn default_status_message(status: StatusCode, body: &str) -> String {
@@ -1081,6 +1124,7 @@ fn default_status_message(status: StatusCode, body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn plain_http_is_limited_to_loopback() {
@@ -1237,6 +1281,36 @@ mod tests {
     fn atomic_replacement_timeout_exceeds_external_parser_budget() {
         assert!(REPLACE_TIMEOUT > Duration::from_secs(120));
         assert!(UPLOAD_TIMEOUT > Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn identity_probe_rejects_oversized_success_and_error_bodies() {
+        for status in ["200 OK", "500 Internal Server Error"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let body = vec![b'x'; MAX_IDENTITY_RESPONSE_BYTES + 1];
+            let status = status.to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await;
+                let header = format!("HTTP/1.1 {status}\r\nConnection: close\r\n\r\n");
+                stream.write_all(header.as_bytes()).await.unwrap();
+                let _ = stream.write_all(&body).await;
+            });
+            let response = reqwest::Client::new()
+                .get(format!("http://{address}/api/v1/info"))
+                .send()
+                .await
+                .unwrap();
+
+            let error = decode_bounded::<ServerInfo>(response, MAX_IDENTITY_RESPONSE_BYTES)
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("64 KiB"));
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

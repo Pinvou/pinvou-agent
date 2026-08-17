@@ -8,6 +8,9 @@ INSTALL_DIR=/usr/lib/pinvou
 INSTALL_BIN=$INSTALL_DIR/pinvou-knowledge-server
 UNIT_FILE=/etc/systemd/system/$SERVICE
 UNIT_BACKUP=$UNIT_FILE.previous
+DATA_LOCK=/var/lib/.pinvou-knowledge.data.lock
+LOCK_DIR=/run/pinvou
+LOCK_FILE=$LOCK_DIR/knowledge-host.lock
 # 正式包中的值必须保持 0。npm run dev 只在 target 下生成值为 1 的副本，
 # 让开发客户端可以验收一键创建，同时不放宽已安装资源的 root 所有权边界。
 DEVELOPMENT_RESOURCE=0
@@ -34,7 +37,23 @@ esac
 PKEXEC_CALLER_UID=$PKEXEC_UID
 getent passwd "$PKEXEC_CALLER_UID" >/dev/null || fail "发起操作的 PINVOU 用户不存在"
 command -v flock >/dev/null 2>&1 || fail "系统缺少 flock，无法安全管理共享知识库"
-exec 9>/run/lock/pinvou-knowledge-host.lock
+if [ -e "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
+  [ -d "$LOCK_DIR" ] || fail "共享知识库锁目录不是目录"
+  [ ! -L "$LOCK_DIR" ] || fail "拒绝使用符号链接锁目录"
+fi
+install -d -m 0700 -o root -g root "$LOCK_DIR"
+lock_dir_owner=$(stat -c %u "$LOCK_DIR" 2>/dev/null) || fail "无法检查共享知识库锁目录"
+lock_dir_mode=$(stat -c %a "$LOCK_DIR" 2>/dev/null) || fail "无法检查共享知识库锁目录权限"
+[ "$lock_dir_owner" -eq 0 ] && [ "$lock_dir_mode" = 700 ] || fail "共享知识库锁目录权限不安全"
+if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+  [ -f "$LOCK_FILE" ] || fail "共享知识库锁文件不是普通文件"
+  [ ! -L "$LOCK_FILE" ] || fail "拒绝使用符号链接锁文件"
+  lock_owner=$(stat -c %u "$LOCK_FILE" 2>/dev/null) || fail "无法检查共享知识库锁文件"
+  [ "$lock_owner" -eq 0 ] || fail "共享知识库锁文件所有者不安全"
+fi
+umask 077
+exec 9>"$LOCK_FILE"
+chmod 0600 "$LOCK_FILE"
 flock -n 9 || fail "另一项共享知识库管理操作正在进行，请稍后再试"
 
 validate_development_path_chain() {
@@ -352,7 +371,7 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=tmpfs
 BindPaths=$model_parent:$MODEL_MOUNT
-ReadWritePaths=/var/lib/pinvou-knowledge $MODEL_MOUNT
+ReadWritePaths=/var/lib/pinvou-knowledge $DATA_LOCK $MODEL_MOUNT
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -377,6 +396,20 @@ validate_data_dir() {
   [ ! -L "$DATA_DIR" ] || fail "拒绝使用符号链接数据目录"
   resolved=$(readlink -f "$DATA_DIR" 2>/dev/null || true)
   [ "$resolved" = "$DATA_DIR" ] || fail "共享知识库数据目录异常"
+}
+
+prepare_data_lock() {
+  service_uid=$1
+  service_gid=$2
+  if [ -e "$DATA_LOCK" ] || [ -L "$DATA_LOCK" ]; then
+    [ -f "$DATA_LOCK" ] || fail "共享知识库数据锁不是普通文件"
+    [ ! -L "$DATA_LOCK" ] || fail "拒绝使用符号链接数据锁"
+    data_lock_owner=$(stat -c %u "$DATA_LOCK" 2>/dev/null) || fail "无法检查共享知识库数据锁"
+    [ "$data_lock_owner" -eq "$service_uid" ] || fail "共享知识库数据锁所有者不安全"
+  else
+    install -m 0600 -o "$service_uid" -g "$service_gid" /dev/null "$DATA_LOCK"
+  fi
+  chmod 0600 "$DATA_LOCK"
 }
 
 model_complete() {
@@ -505,6 +538,7 @@ install_or_upgrade() {
 
   install -d -m 0755 -o root -g root "$INSTALL_DIR"
   install -d -m 0700 -o "$service_uid" -g "$service_gid" "$DATA_DIR"
+  prepare_data_lock "$service_uid" "$service_gid"
   model_parent=$(dirname "$model_dir")
   install -d -m 0700 -o "$service_uid" -g "$service_gid" "$model_parent"
   install -d -m 0700 -o "$service_uid" -g "$service_gid" "$model_dir"
@@ -535,18 +569,33 @@ install_or_upgrade() {
   fail "共享知识库服务健康检查失败，正在恢复旧版本"
 }
 
-claim_owner() {
-  validate_existing_host_owner
+read_owner_claim() {
+  service_uid=$1
+  service_gid=$2
   claim=$DATA_DIR/host-owner.claim
-  [ -s "$claim" ] || fail "没有可领取的本机所有者凭据"
-  cat "$claim"
-  rm -f "$claim"
+  [ -f "$claim" ] && [ -s "$claim" ] || fail "没有可领取的本机所有者凭据"
+  [ ! -L "$claim" ] || fail "拒绝读取符号链接所有者凭据"
+  claim_owner_uid=$(stat -c %u "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据"
+  claim_mode=$(stat -c %a "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据权限"
+  [ "$claim_owner_uid" -eq "$service_uid" ] || fail "本机所有者凭据不属于当前 PINVOU 用户"
+  case "$claim_mode" in *[1-7][0-9]|*[0-9][1-7]) fail "本机所有者凭据权限不安全" ;; esac
+  command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全读取所有者凭据"
+  setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+    cat -- "$claim" || fail "无法读取本机所有者凭据"
 }
 
 show_owner_claim() {
-  claim=$DATA_DIR/host-owner.claim
-  [ -s "$claim" ] || fail "没有可领取的本机所有者凭据"
-  cat "$claim"
+  read_owner_claim "$1" "$2"
+}
+
+claim_owner() {
+  validate_existing_host_owner
+  service_uid=$data_owner
+  service_gid=$(getent passwd "$service_uid" | cut -d: -f4)
+  validate_service_account "$service_uid" "$service_gid"
+  read_owner_claim "$service_uid" "$service_gid"
+  setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
+    rm -f -- "$claim" || fail "无法移除已领取的本机所有者凭据"
 }
 
 set_owner_device() {
@@ -652,8 +701,8 @@ restore_host() {
   fi
   finish_service_maintenance "数据已恢复，但共享知识库服务未能重新启动"
   printf '%s\n' "$result"
-  if [ "$mode" = content-only ] && [ -s "$DATA_DIR/host-owner.claim" ]; then
-    show_owner_claim
+  if [ "$mode" = content-only ] && { [ -e "$DATA_DIR/host-owner.claim" ] || [ -L "$DATA_DIR/host-owner.claim" ]; }; then
+    show_owner_claim "$service_uid" "$service_gid"
   fi
 }
 
@@ -670,6 +719,7 @@ remove_host() {
     resolved=$(readlink -f "$DATA_DIR" 2>/dev/null || true)
     [ "$resolved" = "$DATA_DIR" ] || fail "拒绝删除异常的数据目录"
     rm -rf -- "$DATA_DIR"
+    rm -f -- "$DATA_LOCK"
   fi
 }
 
@@ -678,7 +728,9 @@ case "$action" in
   install|upgrade)
     [ "$#" -eq 5 ] || fail "安装参数无效"
     install_or_upgrade "$2" "$3" "$4" "$5"
-    [ -s "$DATA_DIR/host-owner.claim" ] && show_owner_claim || true
+    if [ -e "$DATA_DIR/host-owner.claim" ] || [ -L "$DATA_DIR/host-owner.claim" ]; then
+      show_owner_claim "$4" "$5"
+    fi
     ;;
   claim-owner)
     [ "$#" -eq 1 ] || fail "领取参数无效"

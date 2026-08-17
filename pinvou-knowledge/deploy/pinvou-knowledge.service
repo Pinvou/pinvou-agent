@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/pinvou-knowledge
+ReadWritePaths=/var/lib/pinvou-knowledge /var/lib/.pinvou-knowledge.data.lock
 UMask=0077
 
 [Install]

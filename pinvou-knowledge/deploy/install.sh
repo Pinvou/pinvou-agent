@@ -6,6 +6,7 @@ SERVICE_NAME="pinvou-knowledge.service"
 SERVICE_USER="pinvou-knowledge"
 SERVICE_GROUP="pinvou-knowledge"
 DATA_DIR="/var/lib/pinvou-knowledge"
+DATA_LOCK="/var/lib/.pinvou-knowledge.data.lock"
 INSTALL_BIN="/usr/local/bin/pinvou-knowledge-server"
 INSTALL_UNIT="/etc/systemd/system/${SERVICE_NAME}"
 BUILD_JOBS="${PINVOU_KNOWLEDGE_BUILD_JOBS:-2}"
@@ -94,6 +95,14 @@ run_root install -d \
   -o "${SERVICE_USER}" \
   -g "${SERVICE_GROUP}" \
   "${DATA_DIR}"
+if [[ -e "${DATA_LOCK}" || -L "${DATA_LOCK}" ]]; then
+  [[ -f "${DATA_LOCK}" && ! -L "${DATA_LOCK}" ]] || fail "共享知识库数据锁不是安全的普通文件"
+  data_lock_uid="$(stat -c %u "${DATA_LOCK}")"
+  [[ "${data_lock_uid}" == "$(id -u "${SERVICE_USER}")" ]] || fail "共享知识库数据锁所有者不安全"
+  run_root chmod 0600 "${DATA_LOCK}"
+else
+  run_root install -m 0600 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" /dev/null "${DATA_LOCK}"
+fi
 run_root install -m 0755 "${BINARY}" "${INSTALL_BIN}.new"
 run_root mv -f "${INSTALL_BIN}.new" "${INSTALL_BIN}"
 run_root install -m 0644 "${UNIT_FILE}" "${INSTALL_UNIT}.new"

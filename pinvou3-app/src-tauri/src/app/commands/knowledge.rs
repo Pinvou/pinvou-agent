@@ -310,7 +310,7 @@ pub async fn kb_model_status(
     app: AppHandle,
     service: State<'_, KnowledgeService>,
     pool: State<'_, EnginePool>,
-) -> KbModelStatus {
+) -> Result<KbModelStatus, String> {
     // The bundled host may finish installing the shared model after desktop
     // startup and while its owner panel is closed. A normal local status query
     // must therefore adopt the complete on-disk model instead of merely
@@ -324,7 +324,7 @@ pub async fn kb_model_status(
     }
     let status = model_domain::kb_model_status(service);
     let _ = app.emit("kb_model:status", &status);
-    status
+    Ok(status)
 }
 sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);

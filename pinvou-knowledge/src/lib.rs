@@ -36,6 +36,21 @@ pub use service::{KnowledgeService, ServiceBoot};
 /// 客户端和服务端共同执行的单文件上传上限。
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 pub const EXPECTED_SERVER_ID_HEADER: &str = "x-pinvou-expected-server-id";
+#[cfg(feature = "server")]
+pub(crate) const MAX_VECTOR_DIMENSIONS: usize = 4096;
+#[cfg(feature = "server")]
+pub(crate) const MAX_VECTOR_BLOB_BYTES: usize = MAX_VECTOR_DIMENSIONS * std::mem::size_of::<f32>();
+
+#[cfg(feature = "server")]
+pub(crate) fn managed_relative_path(value: &str) -> Option<&Path> {
+    let path = Path::new(value);
+    (!value.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))))
+    .then_some(path)
+}
 
 /// 本地知识库与共享知识库共用模型目录时使用的跨进程安装锁。
 ///
