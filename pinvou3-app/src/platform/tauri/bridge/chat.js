@@ -712,24 +712,65 @@
   // Mid-turn INTERRUPT: 打断当前 AI 步骤,立刻起新 turn 发送。
   // 与 steer 区别:steer 等下次 step 边界自然嵌入(不打断 tool 调用),
   // interrupt 立刻 cancel 当前 turn,起新 turn,消息进 chat 命令路径。
-  // 注意:cancel 与 chat 之间需要等 chat:done 把 busy=false 后再 reserve,
-  // 否则 chat 仍可能被 session_turn_in_progress 拒绝。
+  //
+  // 事件驱动同步:不轮询 state.busy,而是 await chat:done 事件本身。
+  // state.busy 在 chat:done handler 内同步置 false,事件触发即代表
+  // turn lifecycle 已完成 cancel + cleanup,可以安全 reserve 新 turn。
+  // 长 tool chain 场景下 5s 兜底超时(避免 cancel 永久挂起)。
+  function waitForChatDone(sid, timeoutMs) {
+    return new Promise(function (resolve) {
+      var timer = null;
+      var resolved = false;
+      var unlisten = null;
+      function done() {
+        if (resolved) return;
+        resolved = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (unlisten && typeof unlisten === "function") {
+          try { unlisten(); } catch (_) {}
+          unlisten = null;
+        }
+        resolve();
+      }
+      // 通过 TAURI.event.listen 直接订阅 webview 事件,匹配 sid 后 resolve。
+      // Tauri 2 的 listen 返回 Promise<UnlistenFn>,on 收到事件即回调。
+      if (TAURI && TAURI.event && typeof TAURI.event.listen === "function") {
+        var p = TAURI.event.listen("chat:done", function (e) {
+          if (!e || !e.payload || e.payload.session_id === sid) done();
+        });
+        if (p && typeof p.then === "function") {
+          p.then(function (un) { unlisten = un; }).catch(function () {});
+        }
+      } else {
+        // 兜底:轮询 busy(for 测试环境或 web 模式)
+        var deadline = Date.now() + timeoutMs;
+        var poll = function () {
+          if (resolved) return;
+          if (!isBusyFor(sid)) { done(); return; }
+          if (Date.now() >= deadline) { done(); return; }
+          setTimeout(poll, 50);
+        };
+        poll();
+      }
+      timer = setTimeout(done, timeoutMs);
+    });
+  }
+
   async function interruptAndSend(sid, text, displayText, attachments, meta, restrictTools) {
     safeConsoleInfo("[pinvou3][chat-ui] interrupt-and-send start", { sid: sid });
-    // 1) cancel 当前 turn
+    // 1) cancel 当前 turn 并 await chat:done 事件(非轮询)
     if (state.busy) {
       try {
         await invoke("cancel_generation", { sessionId: sid });
       } catch (e) {
         console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
       }
-      // 2) 等 busy 翻转(chat:done handler 同步置 busy=false);最多 3s
-      var deadline = Date.now() + 3000;
-      while (isBusyFor(sid) && Date.now() < deadline) {
-        await new Promise(function (resolve) { setTimeout(resolve, 50); });
-      }
+      // 等 chat:done 事件到达,turn lifecycle 释放完成。
+      await waitForChatDone(sid, 5000);
+      // 给 Engine turn_lifecycle 一个 tick 完全释放 turn_lock(防 race)
+      await new Promise(function (resolve) { setTimeout(resolve, 100); });
     }
-    // 3) 移除残留 chip(若有),按正常 chat 路径起新 turn
+    // 2) 移除残留 chip(若有),按正常 chat 路径起新 turn
     runSyncOnSession(sid, function () {
       if (state.queued && state.queued.length > 0) {
         state.queued = [];
