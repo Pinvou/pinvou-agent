@@ -1443,10 +1443,11 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
   }).length;
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
+  await tick();  // 等待 steer invoke resolve + chip 移除 + bubble 添加
   var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  // mid-turn inject: 走底座 steer channel,turn loop 在下次 step 边界消化,
-  // 不再依赖前端 state.queued + flushQueued 的"等 turn done"路径。
-  assert.strictEqual(queued.queued.length, 0, "follow-up input goes through engine steer, not frontend queue");
+  // mid-turn inject: 走底座 steer channel,turn loop 在下次 step 边界消化。
+  // 前端:click → push chip → invoke → chip 移除 + bubble 添加
+  assert.strictEqual(queued.queued.length, 0, "follow-up chip consumed by steer and removed from queue");
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
     1,
@@ -1457,10 +1458,15 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
     0,
     "a mid-turn follow-up must not overlap the scheduled engine turn via chat command"
   );
-  assert.strictEqual(
-    queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
-    initialAssistantCount,
-    "injecting a follow-up must not create an overlapping assistant placeholder"
+  // steer 完成后,前端应已渲染用户气泡(chip 路径 → bubble 路径切换)
+  var userItemsAfterSteer = queued.chatItems.filter(function (item) {
+    return item.type === "user";
+  });
+  assert.ok(
+    userItemsAfterSteer.some(function (item) {
+      return String(item.text || "").indexOf("follow up after the scheduled run") >= 0;
+    }),
+    "follow-up user bubble should appear in chatItems after steer resolves"
   );
 
   harness.emit("chat:done", { session_id: "sched-followup" });
@@ -2920,7 +2926,8 @@ async function scheduledBufferLruNeverEvictsLive() {
     text: "live buffer must survive",
   });
   await bridge.chat.sendMessage("queued live follow-up");
-  // mid-turn inject: 走底座 steer channel,不再入前端 state.queued
+  await tick();  // 等 steer invoke resolve + chip 移除
+  // mid-turn inject: 走底座 steer channel,chip 在 invoke 后被消费移除
   assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
