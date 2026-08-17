@@ -10,18 +10,6 @@
 /// `EngineConfig.skills_dir` 注入。当前用 skiplist 软隔离，工作量小、效果一致。
 const WORKFLOW_HIDDEN_SKILLS: &[&str] = &["pinvou-review-plan", "pinvou-review-final"];
 
-/// 既有 Python 调度器与新的 CodeWhale 多智能体运行必须保持数据隔离。
-///
-fn resolve_legacy_scheduler_session(
-    session_id: Option<String>,
-    store: &SessionStore,
-) -> Result<String, String> {
-    let session_id = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
-    Ok(session_id)
-}
-
 /// 工作流视图卡片渲染需要的 skill 摘要 — 跟 CodeWhale runtime_api 的
 /// `SkillEntry` 不同,这里额外把 phases / demo 元数据序列化给前端 (底座
 /// 没把这俩字段暴露到 REST,所以 pinvou3-app 自己读 SkillRegistry 拼)。
@@ -134,7 +122,7 @@ pub async fn start_skill_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<StartSkillSessionResult, String> {
-    use crate::core::mode_state::ActiveSkillBinding;
+    use crate::features::sessions::ActiveSkillBinding;
     use crate::platform::paths;
     use deepseek_tui::skills::SkillRegistry;
 
@@ -168,7 +156,7 @@ pub async fn start_skill_session(
         }
         let session_data = store
             .load(&sid)
-            .map_err(|e| format!("load existing session: {e:?}"))?;
+            .map_err(|e| format!("load existing session: {e:#}"))?;
 
         return Ok(StartSkillSessionResult {
             session: session_data.metadata,
@@ -185,7 +173,7 @@ pub async fn start_skill_session(
     let workspace = pool.bridge.workspace.clone();
     let session = store
         .create_new(model, model_id, workspace)
-        .map_err(|e| format!("create_session: {e:?}"))?;
+        .map_err(|e| format!("create_session: {e:#}"))?;
     let sid = session.metadata.id.clone();
     if set_active.unwrap_or(true) {
         store.set_active(Some(sid.clone()));
@@ -247,7 +235,7 @@ pub async fn start_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<StartWorkflowResult, String> {
-    use crate::core::mode_state::ActiveSkillBinding;
+    use crate::features::sessions::ActiveSkillBinding;
 
     // 0. 按 scenario 解析所属工作流(WorkflowRegistry 扫 bundle/workflow/*/workflow.json)。
     //    enabled=false 只挡新建,历史项目不受影响(resolver 侧不过滤)。
@@ -293,7 +281,7 @@ pub async fn start_workflow(
         let (model, model_id) = pool.default_model_for_new_session();
         let session = store
             .create_new(model, model_id, pool.bridge.workspace.clone())
-            .map_err(|e| format!("create_session: {e:?}"))?;
+            .map_err(|e| format!("create_session: {e:#}"))?;
         let sid = session.metadata.id.clone();
         // 人话 title，工作流页/调试时一眼看出是哪个 PPT 项目
         store.set_title(&sid, session_title.clone()).ok();
@@ -377,7 +365,7 @@ pub async fn kick_workflow(
 ) -> Result<String, String> {
     // 取本次工作流对应的 session(前端显式传;回退 active)。每个工作流 = 一个 session,
     // 绝不能匹配错——harness_phase / 项目目录全都按这个 sid 走。
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -405,7 +393,7 @@ pub async fn kick_workflow(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -429,7 +417,7 @@ pub async fn kick_workflow(
                 .handle
                 .send(op)
                 .await
-                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+                .map_err(|e| format!("spawn subagent: {e:#}"))?;
             Ok(format!("spawning {role_name}"))
         }
         // [per_page] 纵向 fan-out：并发派 N 个 per-page SubAgent。
@@ -441,7 +429,7 @@ pub async fn kick_workflow(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -469,7 +457,7 @@ pub async fn kick_workflow(
                     .handle
                     .send(op)
                     .await
-                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                    .map_err(|e| format!("fan-out spawn: {e:#}"))?;
             }
             crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!("spawning {role_name} ({n} pages, 在飞={k})"))
@@ -516,7 +504,7 @@ pub async fn retry_workflow_role(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let ws = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -542,7 +530,7 @@ pub async fn retry_workflow_role(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -566,7 +554,7 @@ pub async fn retry_workflow_role(
                 .handle
                 .send(op)
                 .await
-                .map_err(|e| format!("spawn subagent: {e:?}"))?;
+                .map_err(|e| format!("spawn subagent: {e:#}"))?;
             Ok(format!("retry → spawning {role_name}"))
         }
         // [per_page] retry 重派整批（fan-out）。
@@ -578,7 +566,7 @@ pub async fn retry_workflow_role(
             let engine = pool
                 .get_or_spawn(&sid)
                 .await
-                .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+                .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
             let _ = app.emit(
                 "workflow:agent_state_changed",
                 serde_json::json!({
@@ -606,7 +594,7 @@ pub async fn retry_workflow_role(
                     .handle
                     .send(op)
                     .await
-                    .map_err(|e| format!("fan-out spawn: {e:?}"))?;
+                    .map_err(|e| format!("fan-out spawn: {e:#}"))?;
             }
             crate::features::assistant::engine::emit_fanout(&app, &sid, &base_role); // 初始 fan-out 状态 → 前端
             Ok(format!(
@@ -1109,7 +1097,7 @@ pub async fn cancel_workflow_role(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1170,7 +1158,7 @@ pub async fn stop_workflow(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1195,7 +1183,7 @@ pub async fn stop_workflow(
         {
             // stop marker 已成功落盘，是不可回滚的调度真相；engine 恰好退出只表示
             // 没有存活 worker 可取消，不应把 UI 留在“停止失败”。
-            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:?}");
+            eprintln!("[workflow] stop marker persisted but cancel op failed: {e:#}");
         }
     }
 
@@ -1220,14 +1208,14 @@ pub async fn approve_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
-        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+        .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
     let rid = role_id.clone();
     let action = tokio::task::spawn_blocking(move || {
         crate::features::assistant::harness::approve_gate(&workspace, &rid)
@@ -1264,14 +1252,14 @@ pub async fn reject_workflow_gate(
     pool: State<'_, EnginePool>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
     let engine = pool
         .get_or_spawn(&sid)
         .await
-        .map_err(|e| format!("get engine for {sid}: {e:?}"))?;
+        .map_err(|e| format!("get engine for {sid}: {e:#}"))?;
     let rid = role_id.clone();
     let r = reason.clone();
     let action = tokio::task::spawn_blocking(move || {
@@ -1304,7 +1292,7 @@ pub async fn get_workflow_state(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let sid = resolve_legacy_scheduler_session(session_id, &store)?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -1324,7 +1312,7 @@ pub async fn get_workflow_state(
 pub async fn find_resumable_run(
     store: State<'_, SessionStore>,
 ) -> Result<serde_json::Value, String> {
-    let metas = store.list().map_err(|e| format!("list: {e:?}"))?;
+    let metas = store.list().map_err(|e| format!("list: {e:#}"))?;
     let mut best: Option<(std::time::SystemTime, String, String, String)> = None;
     for m in metas {
         let Some(binding) = store.active_skill(&m.id) else {
@@ -1445,7 +1433,7 @@ pub async fn get_session_active_skill(
 pub async fn list_session_skill_bindings(
     store: State<'_, SessionStore>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let metas = store.list().map_err(|e| format!("list_sessions: {e:?}"))?;
+    let metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     let mut out = std::collections::HashMap::new();
     for m in metas {
         if let Some(b) = store.active_skill(&m.id) {

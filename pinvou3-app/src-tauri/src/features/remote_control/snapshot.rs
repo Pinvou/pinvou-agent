@@ -5,7 +5,7 @@ use crate::features::sessions::SessionStore;
 pub fn build_session_snapshot(store: &SessionStore, session_id: &str) -> Result<Value, String> {
     let saved = store
         .load(session_id)
-        .map_err(|e| format!("load session snapshot({session_id}): {e:?}"))?;
+        .map_err(|e| format!("load session snapshot({session_id}): {e:#}"))?;
     let mode = store.mode_state(session_id).mode;
     let messages = saved
         .messages
@@ -98,7 +98,7 @@ fn tail_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::mode_state::SerializableMode;
+    use crate::features::sessions::SerializableMode;
     use crate::platform::paths;
     use crate::platform::paths::tests::ENV_LOCK;
     use deepseek_tui::models::{ContentBlock, Message};

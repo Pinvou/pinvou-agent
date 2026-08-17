@@ -117,7 +117,17 @@ pub fn write_default_icon(pkg_dir: &Path) -> Result<String, String> {
 }
 
 /// 把图标字节落盘到包目录（`icon.<ext>`，ext 取自原文件名）。返回相对路径。
+///
+/// file_name 必须是无路径分隔符的纯文件名（不接受 `a/icon.png` / `../icon.svg` 等
+/// 路径形式），扩展名限定为 `svg`/`png`。
 pub fn write_icon_bytes(pkg_dir: &Path, file_name: &str, bytes: &[u8]) -> Result<String, String> {
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+    {
+        return Err(format!("非法图标文件名 '{file_name}'"));
+    }
     let ext = Path::new(file_name)
         .extension()
         .and_then(|e| e.to_str())
@@ -524,7 +534,11 @@ pub fn import_plugin_package(
     let mut icon_entry: Option<(String, Vec<u8>)> = None;
     let mut best_skill_md: Option<(String, Vec<u8>)> = None;
     let mut other_manifests: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total: u64 = 0;
+    // 两口径预算：（头部声明）避免一开始就放大异常大的条目；实际字节用于兜底
+    // zip bomb ——攻击者可伪造 entry.size() 让头部累计通过，但 read_to_end 后真实
+    // 解压字节仍超限。两个计数器都触发上限拒绝。
+    let mut declared_total: u64 = 0;
+    let mut actual_total: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -537,8 +551,8 @@ pub fn import_plugin_package(
                 return Err("zip 含 symlink,拒绝".to_string());
             }
         }
-        total = total.saturating_add(entry.size());
-        if total > MAX_PLUGIN_SIZE_BYTES {
+        declared_total = declared_total.saturating_add(entry.size());
+        if declared_total > MAX_PLUGIN_SIZE_BYTES {
             return Err(format!(
                 "插件包解压超过 {} MiB 上限",
                 MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
@@ -549,23 +563,45 @@ pub fn import_plugin_package(
         }
         let path_str = enclosed.to_string_lossy().replace('\\', "/");
         all_paths.push(path_str.clone());
+        // 任一`read_to_end` 后同步累计 actual_total（zip 头声明可能与真实大小不符）
         if path_str == "plugin.json" {
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("读 plugin.json: {e}"))?;
+            actual_total = actual_total.saturating_add(buf.len() as u64);
+            if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                return Err(format!(
+                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+                ));
+            }
             manifest_bytes = Some(buf);
         } else if path_str == "mcp/manifest.json" {
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("读 mcp/manifest.json: {e}"))?;
+            actual_total = actual_total.saturating_add(buf.len() as u64);
+            if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                return Err(format!(
+                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+                ));
+            }
             mcp_manifest_bytes = Some(buf);
         } else if (path_str == "icon.svg" || path_str == "icon.png") && icon_entry.is_none() {
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("读图标: {e}"))?;
+            actual_total = actual_total.saturating_add(buf.len() as u64);
+            if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                return Err(format!(
+                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+                ));
+            }
             icon_entry = Some((path_str.clone(), buf));
         }
 
@@ -582,6 +618,13 @@ pub fn import_plugin_package(
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| format!("读 SKILL.md: {e}"))?;
+                actual_total = actual_total.saturating_add(buf.len() as u64);
+                if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                    return Err(format!(
+                        "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                        MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+                    ));
+                }
                 best_skill_md = Some((path_str.clone(), buf));
             }
         }
@@ -594,6 +637,13 @@ pub fn import_plugin_package(
             entry
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("读 manifest.json: {e}"))?;
+            actual_total = actual_total.saturating_add(buf.len() as u64);
+            if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                return Err(format!(
+                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+                ));
+            }
             other_manifests.push((path_str, buf));
         }
     }
@@ -633,6 +683,18 @@ pub fn import_plugin_package(
         &spanners,
     )
     .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
+
+    // 拒绝与预置/内置包 id 冲突：用户上传包顶替市场预置会让 UI/默认值/资源池
+    // 全部错位，且无法回滚（预置版本指纹与上传不同）。内置 CLI 连接器另由
+    // `mcp_catalog` 索引覆盖（结构 Rust 函数式 API）。
+    if !crate::features::marketplace::mcp_catalog::spec_for(&id).is_none() {
+        return Err(format!(
+            "包 id '{id}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
+        ));
+    }
+    if !crate::features::marketplace::bundle::cli_bundle_skill_dirs(&id).is_empty() {
+        return Err(format!("包 id '{id}' 与内置 CLI 连接器冲突，请改用其它 id"));
+    }
 
     // 落盘到 staged：mcp/ + skills/ + spanner/ + runtime/ 子树 → bundles/<id>/ 原子 rename。
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
@@ -772,11 +834,28 @@ pub fn import_plugin_package(
         }
     }
 
-    let _ = std::fs::remove_dir_all(&pkg_dir);
-    std::fs::rename(&staged, &pkg_dir).map_err(|e| {
+    // 原子落盘：先把旧目录挪到 .old 备份，rename 成功后再删 .old；rename 失败则
+    // 把 .old 复原回去，保证「旧包不丢、新包不入」——避免既往版本 `remove+rename`
+    // 任一环节失败导致新旧双丢的窗期。
+    let backup = pkg_dir.with_extension("old");
+    let mut moved_old = false;
+    if pkg_dir.exists() {
+        let _ = std::fs::remove_dir_all(&backup);
+        if std::fs::rename(&pkg_dir, &backup).is_ok() {
+            moved_old = true;
+        }
+    }
+    if let Err(e) = std::fs::rename(&staged, &pkg_dir) {
+        // rename 失败：尝试把旧目录复原，让已安装版本继续可用
+        if moved_old {
+            let _ = std::fs::rename(&backup, &pkg_dir);
+        }
         let _ = std::fs::remove_dir_all(&staged);
-        format!("落盘: {e}")
-    })?;
+        return Err(format!("落盘: {e}"));
+    }
+    if moved_old {
+        let _ = std::fs::remove_dir_all(&backup);
+    }
 
     // 供给：MCP/spanner 组件走 install 管线写 mcp.json + installed.json（底座据此拉起
     // server，工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。

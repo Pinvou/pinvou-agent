@@ -49,13 +49,13 @@ fn run_pkexec(args: &[&str]) -> Result<(), String> {
 
 fn validate_username(user: &str) -> Result<(), String> {
     if user.is_empty() || user.len() > 32 {
-        return Err(format!("USER 值非法: {user:?}"));
+        return Err(format!("USER 值非法: {user:#}"));
     }
     if !user
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        return Err(format!("USER 含非法字符: {user:?}"));
+        return Err(format!("USER 含非法字符: {user:#}"));
     }
     Ok(())
 }

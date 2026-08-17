@@ -7,6 +7,7 @@ use super::{
     artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
     personas::*, sessions::*, voice::*, workflows::*,
 };
+use crate::features::deliverables::infer_product_bu;
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
 use std::path::{Path, PathBuf};

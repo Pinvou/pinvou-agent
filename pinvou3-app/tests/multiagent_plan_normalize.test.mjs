@@ -51,7 +51,9 @@ const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'inte
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
 const i18nSource = read('src', 'shared', 'i18n.js');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
-const modeStateSource = read('src-tauri', 'src', 'core', 'mode_state.rs');
+// wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
+// （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。
+const modeStateSource = read('src-tauri', 'src', 'features', 'sessions', 'mode_state.rs');
 const rosterSource = read('src-tauri', 'src', 'features', 'assistant', 'expert_roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
 
@@ -336,7 +338,16 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
     /build_engine_config_for_multi_agent[\s\S]{0,2200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
-  const sessionsSource = read('src-tauri', 'src', 'features', 'sessions', 'mod.rs');
+  // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
+  // 子模块。契约检查的是「sessions 模块整体」的行为不变式,故拼接整个目录;
+  // 未拆分时(仅 mod.rs)行为不变。
+  const sessionsDir = path.join(here, '..', 'src-tauri', 'src', 'features', 'sessions');
+  const sessionsSource = fs
+    .readdirSync(sessionsDir)
+    .filter((f) => f.endsWith('.rs'))
+    .sort()
+    .map((f) => fs.readFileSync(path.join(sessionsDir, f), 'utf8'))
+    .join('\n');
   assert.match(
     sessionsSource,
     /fn save_multi_agent_flags/,
@@ -597,7 +608,15 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /transition\.newly_active[\s\S]{0,400}emit_turn_started\(app, session_id\)/,
     '无 admission 的续跑轮（子智能体完成后的父汇总轮）必须发 turn_started——否则界面空闲、停止缺席、再发消息撞"已有运行中轮次"（复核 P1）',
   );
-  const managerSource = read('src-tauri', 'src', 'features', 'remote_control', 'manager.rs');
+  // Wave-2 拆分后 remote_control manager 拆成 manager/ 子目录(persistence/rpc/
+  // transfer 等),统一校验点与封禁表可能分布在子模块,故拼接整个目录。
+  const managerDir = path.join(here, '..', 'src-tauri', 'src', 'features', 'remote_control', 'manager');
+  const managerSource = fs
+    .readdirSync(managerDir)
+    .filter((f) => f.endsWith('.rs'))
+    .sort()
+    .map((f) => fs.readFileSync(path.join(managerDir, f), 'utf8'))
+    .join('\n');
   assert.match(
     managerSource,
     /MULTI_AGENT_WEB_EXECUTION_DENYLIST/,

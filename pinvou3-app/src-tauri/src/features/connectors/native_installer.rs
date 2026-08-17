@@ -249,7 +249,8 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), Stri
         let _ = fs::remove_file(&partial);
         return Err("连接器归档超过 128 MiB 安全上限".to_string());
     }
-    let actual = sha256_file(&partial).map_err(|e| format!("读取下载文件失败: {e}"))?;
+    let actual = crate::platform::hashing::sha256_file(&partial)
+        .map_err(|e| format!("读取下载文件失败: {e}"))?;
     if actual != artifact.archive_sha256 {
         let _ = fs::remove_file(&partial);
         return Err(format!(
@@ -327,21 +328,7 @@ fn read_limited(reader: &mut impl Read, max: u64) -> io::Result<Vec<u8>> {
 }
 
 fn file_sha256_matches(path: &Path, expected: &str) -> bool {
-    sha256_file(path).is_ok_and(|actual| actual == expected)
-}
-
-fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(crate::platform::encoding::hex_lower(&digest.finalize()))
+    crate::platform::hashing::sha256_file(path).is_ok_and(|actual| actual == expected)
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {

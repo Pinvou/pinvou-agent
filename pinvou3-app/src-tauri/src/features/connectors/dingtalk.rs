@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "dingtalk";
 const DINGTALK_CTX: CliCtx = CliCtx {
@@ -403,22 +404,33 @@ pub async fn dingtalk_logout() -> Result<Value, String> {
 
 // ─────────────────────── 钉钉 skill 门控(对齐飞书 / 企微)───────────────────────
 
-fn dingtalk_disabled_path() -> std::path::PathBuf {
-    crate::platform::paths::pinvou3_home().join("dingtalk_disabled")
+/// 钉钉技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
+/// `apply_skills` 指向 `apply_dingtalk_skills`。
+struct DingtalkGate;
+impl ConnectorSkillGate for DingtalkGate {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn display_name(&self) -> &'static str {
+        "钉钉"
+    }
+    fn disabled_filename(&self) -> &'static str {
+        "dingtalk_disabled"
+    }
+    fn apply_skills(&self, visible: bool) -> Result<(), String> {
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_dingtalk_skills(visible)
+            .map_err(|e| format!("更新钉钉技能失败: {e}"))
+    }
 }
+const GATE: DingtalkGate = DingtalkGate;
 
 pub fn is_dingtalk_disabled() -> bool {
-    dingtalk_disabled_path().exists()
+    GATE.is_disabled()
 }
 
 fn set_dingtalk_disabled_flag(disabled: bool) -> Result<(), String> {
-    let p = dingtalk_disabled_path();
-    if disabled {
-        std::fs::write(&p, b"1").map_err(|e| format!("保存钉钉技能停用状态失败: {e}"))?;
-    } else if p.exists() {
-        std::fs::remove_file(&p).map_err(|e| format!("清除钉钉技能停用状态失败: {e}"))?;
-    }
-    Ok(())
+    GATE.set_disabled_flag(disabled)
 }
 
 pub fn dingtalk_skills_should_show() -> bool {
@@ -427,9 +439,7 @@ pub fn dingtalk_skills_should_show() -> bool {
 pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = dingtalk_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_dingtalk_skills(show)
-            .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
@@ -444,9 +454,7 @@ pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
         let show = dingtalk_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_dingtalk_skills(show)
-            .map_err(|e| format!("更新钉钉技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await

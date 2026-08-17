@@ -11,12 +11,10 @@ pub async fn compact_now(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.compact_now(&sid)
         .await
-        .map_err(|e| format!("compact_now: {e:?}"))
+        .map_err(|e| format!("compact_now: {e:#}"))
 }
 
 // ===================== 阶段 D: Plan / YOLO 双模式 =====================
@@ -203,9 +201,9 @@ pub async fn accept_plan(
     {
         let rollback = plan_claim.rollback();
         return Err(match rollback {
-            Ok(()) => format!("accept_plan send_user_message: {error:?}"),
+            Ok(()) => format!("accept_plan send_user_message: {error:#}"),
             Err(rollback_error) => format!(
-                "accept_plan send_user_message: {error:?}; restore plan claim failed: {rollback_error:#}"
+                "accept_plan send_user_message: {error:#}; restore plan claim failed: {rollback_error:#}"
             ),
         });
     }
@@ -326,13 +324,11 @@ pub async fn submit_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let response = UserInputResponse { answers };
     pool.submit_user_input(&sid, tool_call_id, response)
         .await
-        .map_err(|e| format!("submit_user_input: {e:?}"))
+        .map_err(|e| format!("submit_user_input: {e:#}"))
 }
 
 /// [2026-06-06] 工作流素材上传：把用户选的文件拷进当前 run 的 配套材料/ 目录。
@@ -344,9 +340,7 @@ pub async fn add_run_materials(
     paths: Vec<String>,
     store: State<'_, SessionStore>,
 ) -> Result<Vec<String>, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let workspace = store
         .ledger_root(&sid)
         .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
@@ -388,12 +382,10 @@ pub async fn cancel_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.cancel_user_input(&sid, tool_call_id)
         .await
-        .map_err(|e| format!("cancel_user_input: {e:?}"))
+        .map_err(|e| format!("cancel_user_input: {e:#}"))
 }
 
 /// 会话当前的挂起输入请求与 turn 状态。
@@ -447,12 +439,10 @@ pub async fn summon_pinvou(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<crate::features::review::PinvouReview, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let session = store
         .load(&sid)
-        .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
+        .map_err(|e| format!("summon_pinvou load({sid}): {e:#}"))?;
     let bridge = pool
         .fresh_bridge_for(&sid)
         .await
@@ -469,5 +459,5 @@ pub async fn summon_pinvou(
         mode.as_deref(),
     )
     .await
-    .map_err(|e| format!("summon_pinvou: {e:?}"))
+    .map_err(|e| format!("summon_pinvou: {e:#}"))
 }
