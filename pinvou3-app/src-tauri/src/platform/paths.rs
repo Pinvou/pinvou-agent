@@ -218,6 +218,14 @@ pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
 }
 
+/// `~/.pinvou3/pinvou-os/events.v1.jsonl` —— PinvouOS 唯一的连续运行事实账本。
+///
+/// 旧 `sessions/` 在迁移期仍服务 CodeWhale 执行适配，但不再是 PinvouOS 的
+/// 身份、记忆、Mission 或并发真相源。
+pub fn pinvou_os_event_ledger() -> PathBuf {
+    pinvou3_home().join("pinvou-os").join("events.v1.jsonl")
+}
+
 /// Scheduled-run data is separated from ordinary chat history.
 pub fn scheduled_runs_root() -> PathBuf {
     pinvou3_home().join("scheduled-runs")

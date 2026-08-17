@@ -31,6 +31,7 @@ pub(crate) mod monitor;
 pub(crate) mod multiagent;
 pub(crate) mod personas;
 pub(crate) mod pet;
+pub(crate) mod pinvou_os;
 mod prelude;
 pub(crate) mod remote_control;
 pub(crate) mod runtime;

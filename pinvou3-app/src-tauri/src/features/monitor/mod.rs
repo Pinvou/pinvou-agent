@@ -1,9 +1,9 @@
 //! GB10 设备 + vLLM 后端 + pinvou3-app 自身的健康/性能采样。
 //!
-//! 数据流：**按需采样**——前端在监控页面 mount 时启 1s interval 调
-//! `get_monitor_snapshot`，离开页面就停。后端每次 command 直接跑一次
-//! `sample_all`。设计目的：用户不在监控页面时**完全不跑 GPU 探测**
-//! (nvidia-smi / Windows 性能计数器 / macOS ioreg)。
+//! 数据流分两条：监控 UI 在页面 mount 时以 1s interval 按需调用完整
+//! `sample_all`，离开页面即停止；PinvouOS 的常驻 Resource Agent 只调用
+//! `sample_local_resources`，不探测模型 HTTP 健康或推理指标。两条路径复用
+//! GPU/CPU/RAM 探针及缓存（nvidia-smi / Windows 性能计数器 / macOS ioreg）。
 //! GPU util 峰值靠前端 5 个值滑窗 max（A+B）补足瞬时采样易错过推理峰的问题。
 //!
 //! 设计原则：**任何采样失败都 graceful degrade**——返回 None / OFFLINE，
@@ -50,6 +50,19 @@ pub struct MonitorSnapshot {
     pub self_perf: SelfPerfSnapshot,
     pub self_perf_debug: SelfMetricsDebugSnapshot,
     pub app: AppSnapshot,
+}
+
+/// PinvouOS 常驻 Resource Agent 使用的本机轻量快照。
+///
+/// 与 MonitorSnapshot 分开：资源治理不需要探测模型 HTTP 健康，也不携带 UI 专用
+/// 的推理累计指标。采样实现仍复用本 feature 的平台探针和缓存，由 lib.rs 组合根
+/// 转换为 pinvou_os 的领域 observation，两个 feature 不互相依赖。
+#[derive(Debug, Clone)]
+pub struct LocalResourceSnapshot {
+    pub generated_at_ms: i64,
+    pub gpu: Option<GpuSnapshot>,
+    pub cpu: Option<CpuSnapshot>,
+    pub ram: Option<RamSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +125,15 @@ impl MonitorState {
     /// forwarder 拿这个 Arc 往里写自测指标（`app.state::<MonitorState>().self_metrics()`）。
     pub fn self_metrics(&self) -> Arc<SelfMetrics> {
         self.self_metrics.clone()
+    }
+}
+
+pub fn sample_local_resources() -> LocalResourceSnapshot {
+    LocalResourceSnapshot {
+        generated_at_ms: chrono::Utc::now().timestamp_millis(),
+        gpu: gpu_snapshot(),
+        cpu: platform::cpu_snapshot(),
+        ram: platform::ram_snapshot(),
     }
 }
 

@@ -7,7 +7,7 @@ pub mod platform;
 
 pub use app::commands::attachments::build_message_with_attachments;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::app::commands;
 use crate::features::{
@@ -17,6 +17,7 @@ use crate::features::{
     knowledge,
     monitor::MonitorState,
     pet::{pet_window, selected_pet},
+    pinvou_os::{PinvouOsRuntime, ResourceObservation},
     remote_control::RemoteControlManager,
     scheduled::tasks as scheduled_tasks,
     sessions::SessionStore,
@@ -313,6 +314,28 @@ pub fn run() {
                 move |event, payload| remote_event_transport.forward_local_event(event, payload),
             ));
             app.handle().manage(remote_control_manager.clone());
+
+            // PinvouOS 连续运行时：唯一 Identity + Mission/Run/Agent/Event 真相账本。
+            // 旧 SessionStore 在迁移期只作为 CodeWhale 执行兼容层，不能进入本领域协议。
+            startup::mark("pinvou_os:start");
+            let pinvou_os_runtime = PinvouOsRuntime::boot(
+                crate::platform::paths::pinvou_os_event_ledger(),
+            )
+            .map_err(|error| format!("PinvouOS runtime boot failed: {error:#}"))?;
+            pinvou_os_runtime.set_event_sink({
+                let app = app.handle().clone();
+                move |event| {
+                    let payload = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                    let _ = app.emit("pinvou-os:event", event);
+                    crate::platform::app_events::forward_app_event(
+                        &app,
+                        "pinvou-os:event",
+                        payload,
+                    );
+                }
+            });
+            app.handle().manage(pinvou_os_runtime.clone());
+            startup::mark("pinvou_os:done");
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -448,10 +471,49 @@ pub fn run() {
             deepseek_tui::skills::set_disabled_skills(Vec::new());
             startup::mark("disabled_skills:done");
 
-            // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
-            // get_monitor_snapshot 时触发（监控页面 1s interval，离开页面停）。
+            // Monitor 的完整 UI 快照仍按需采样：state 只持有 uptime 与推理指标，
+            // get_monitor_snapshot 由监控页面 1s interval 触发；下面的 Resource Agent
+            // 只复用本机资源探针，不调用模型健康探测。
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
+
+            // Resource Agent 常驻采样，但只把等级变化或 30 秒心跳写入统一账本。
+            // 采样复用 monitor 的平台探针；Governor 阈值与控制决策留在 pinvou_os。
+            let resource_sampler: crate::features::pinvou_os::ResourceSampler =
+                std::sync::Arc::new(|| {
+                    let snapshot = crate::features::monitor::sample_local_resources();
+                    let memory_used_pct = snapshot.ram.as_ref().and_then(|ram| {
+                        (ram.total_kib > 0)
+                            .then(|| ram.used_kib as f64 * 100.0 / ram.total_kib as f64)
+                    });
+                    ResourceObservation {
+                        sampled_at_ms: snapshot.generated_at_ms,
+                        cpu_usage_pct: snapshot
+                            .cpu
+                            .as_ref()
+                            .and_then(|cpu| cpu.total_usage_pct),
+                        memory_used_pct,
+                        gpu_usage_pct: snapshot
+                            .gpu
+                            .as_ref()
+                            .map(|gpu| gpu.utilization_pct as f64),
+                        temperature_c: snapshot
+                            .gpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.temperature_c)
+                            .map(|value| value as f64),
+                        power_w: snapshot
+                            .gpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.power_w)
+                            .map(|value| value as f64),
+                    }
+                });
+            crate::features::pinvou_os::spawn_resource_agent(
+                pinvou_os_runtime,
+                resource_sampler,
+                std::time::Duration::from_secs(5),
+            );
             app.handle()
                 .manage(notifications::NotificationState::default());
             app.handle()
@@ -565,6 +627,13 @@ pub fn run() {
             commands::monitor::get_monitor_snapshot,
             commands::monitor::get_backend_status,
             commands::monitor::discover_local_vllm,
+            commands::pinvou_os::get_pinvou_os_snapshot,
+            commands::pinvou_os::open_pinvou_os_mission,
+            commands::pinvou_os::register_pinvou_os_mission_agent,
+            commands::pinvou_os::explain_pinvou_os_capability,
+            commands::pinvou_os::report_pinvou_os_resources,
+            commands::pinvou_os::acknowledge_pinvou_os_directive,
+            commands::pinvou_os::list_pinvou_os_events,
             commands::local_llm::detect_local_vllm_setup,
             commands::local_llm::bootstrap_local_vllm,
             commands::local_llm::decline_local_vllm_setup,

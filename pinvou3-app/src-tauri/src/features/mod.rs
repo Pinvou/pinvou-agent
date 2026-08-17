@@ -13,6 +13,7 @@ pub(crate) mod monitor;
 pub mod multiagent;
 pub mod personas;
 pub(crate) mod pet;
+pub mod pinvou_os;
 pub(crate) mod remote_control;
 pub(crate) mod retirement;
 pub(crate) mod review;
