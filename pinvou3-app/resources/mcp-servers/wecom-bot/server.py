@@ -17,6 +17,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -85,7 +86,8 @@ MARKDOWN_DEF = {
     "description": (
         "向企业微信群机器人绑定的群发送 Markdown 消息（标题、加粗、链接、"
         "行内代码、引用、字体颜色等），content 最长约 4096 字节。"
-        "不支持 @ 成员；需要 @ 请改用 send_text。"
+        "无 mentioned_list 字段；@ 成员可在 content 中用 <@userid> 语法"
+        "（官方 text/markdown 均支持），按手机号 @ 请改用 send_text。"
     ),
     "inputSchema": {
         "type": "object",
@@ -159,8 +161,9 @@ FILE_DEF = {
 TOOL_DEFS = [TEXT_DEF, MARKDOWN_DEF, NEWS_DEF, IMAGE_DEF, FILE_DEF]
 
 
-# 企业微信 API 是国内域名：强制直连、绕过代理（同 weather，避免代理掐断
-# TLS），并对瞬时网络抖动做 3 次重试。
+# 企业微信 API 是国内域名：强制直连、绕过代理（同 weather，避免代理掐断 TLS）。
+# 与 weather 不同：本 server 发的是消息推送 POST，有副作用——超时后自动重试会
+# 重复发消息，因此 send 路径单次请求不重试，失败如实返回交给模型决定。
 _DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -169,21 +172,18 @@ def _http_post_json(url, payload):
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}
     )
-    last_err = None
-    for _ in range(3):
+    try:
+        with _DIRECT_OPENER.open(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # HTTP 层错误读 body 里的 errcode/errmsg
+        detail = e.read().decode("utf-8", "replace")
         try:
-            with _DIRECT_OPENER.open(req, timeout=15) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            # HTTP 层错误读 body 里的 errcode/errmsg，不重试非 5xx
-            detail = e.read().decode("utf-8", "replace")
-            try:
-                return json.loads(detail)
-            except Exception:
-                return {"errcode": e.code, "errmsg": "HTTP %s: %s" % (e.code, detail[:200])}
-        except Exception as e:
-            last_err = e
-    return {"errcode": -1, "errmsg": "网络请求失败: %s" % last_err}
+            return json.loads(detail)
+        except Exception:
+            return {"errcode": e.code, "errmsg": "HTTP %s: %s" % (e.code, detail[:200])}
+    except Exception as e:
+        return {"errcode": -1, "errmsg": "网络请求失败: %s" % e}
 
 
 def _check_reply(reply):
@@ -297,9 +297,15 @@ def send_image(image_path):
     })
 
 
+def _sanitize_filename(name):
+    """清洗 multipart filename：引号/反斜杠/换行会破坏 Content-Disposition（同 gongwen）。"""
+    name = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (name or "").strip()) or "file"
+    return name[:80]
+
+
 def _upload_media(path):
     """官方 upload_media：multipart/form-data 上传，返回 (media_id, error)。"""
-    filename = os.path.basename(path)
+    filename = _sanitize_filename(os.path.basename(path))
     boundary = "pinvou3-%s" % uuid.uuid4().hex
     with open(path, "rb") as f:
         file_body = f.read()
@@ -317,6 +323,8 @@ def _upload_media(path):
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
     })
     last_err = None
+    # 上传临时素材无用户可见副作用（重复上传只是多占一份素材），可对瞬时
+    # 网络抖动重试；HTTP 层错误读 body，不重试（同 _http_post_json）。
     for _ in range(3):
         try:
             with _DIRECT_OPENER.open(req, timeout=60) as resp:
@@ -328,6 +336,14 @@ def _upload_media(path):
                 if not media_id:
                     return None, "上传成功但未返回 media_id"
                 return media_id, None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            try:
+                reply = json.loads(detail)
+            except Exception:
+                reply = {"errcode": e.code, "errmsg": "HTTP %s: %s" % (e.code, detail[:200])}
+            return None, "上传临时素材失败 %s: %s" % (
+                reply.get("errcode"), reply.get("errmsg", ""))
         except Exception as e:
             last_err = e
     return None, "上传临时素材网络失败: %s" % last_err
