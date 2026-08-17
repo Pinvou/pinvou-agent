@@ -4,6 +4,7 @@
 //! 记忆回顾（features/memory）选 Anthropic preset 时走 Messages 原生协议，
 //! 鉴权与地址口径与上述探测一致。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -252,15 +253,75 @@ pub enum LocalServerKind {
 /// 探测失败改变行为。
 ///
 /// 结果按 base_url 缓存 `PROBE_CACHE_TTL`：探测最坏 ~12-15s 串行（挂起端点），
-/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。
+/// 多会话/多入口重复探测会放大开销；TTL 内命中直接返回缓存值。并发未命中
+/// 经 in-flight 注册表共享同一次探测（首个调用执行、其余等待广播），不再
+/// 各自串行重付。失败结果（`Generic`）不写入长缓存：服务可能只是未启动，
+/// 下次调用应立即重探，避免 60s 内起服务仍被钉死在 Generic 错路由。
 pub async fn probe_local_server_kind(base_url: &str) -> LocalServerKind {
     let key = base_url.trim_end_matches('/').to_string();
     if let Some(kind) = probe_kind_cache_get(&key) {
         return kind;
     }
-    let kind = probe_local_server_kind_uncached(&key).await;
-    probe_kind_cache_put(&key, kind);
+    let kind = probe_kind_inflight(&key).await;
+    if kind != LocalServerKind::Generic {
+        probe_kind_cache_put(&key, kind);
+    }
     kind
+}
+
+/// 并发去重注册表：key → 完成信号。首个调用方执行探测、完成后发送结果并
+/// 注销；并发调用方订阅等待，探测只跑一次。发送方异常丢弃时等待方降级
+/// 为自行直探（watch 关闭 `changed()` 返回 Err），总能得到结果。
+static PROBE_KIND_INFLIGHT: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, Arc<tokio::sync::watch::Sender<Option<LocalServerKind>>>>,
+    >,
+> = std::sync::OnceLock::new();
+
+async fn probe_kind_inflight(base_url: &str) -> LocalServerKind {
+    /// 注册结果：要么成为首个执行者，要么订阅在途探测的完成信号。
+    enum Inflight {
+        First,
+        Wait(tokio::sync::watch::Receiver<Option<LocalServerKind>>),
+    }
+    let registry = PROBE_KIND_INFLIGHT.get_or_init(Default::default);
+    // 注册/订阅在同步块内完成，guard 不跨 await（Send 约束）。
+    let entry = {
+        let Ok(mut guard) = registry.lock() else {
+            // 注册表锁不可用（中毒）：降级为无合并直探。
+            return probe_local_server_kind_uncached(base_url).await;
+        };
+        if let Some(sender) = guard.get(base_url) {
+            Inflight::Wait(sender.subscribe())
+        } else {
+            let (tx, _rx) = tokio::sync::watch::channel(None);
+            guard.insert(base_url.to_string(), Arc::new(tx));
+            Inflight::First
+        }
+    };
+    match entry {
+        // 首个调用方：执行探测，完成后广播结果并注销注册。
+        Inflight::First => {
+            let kind = probe_local_server_kind_uncached(base_url).await;
+            if let Ok(mut guard) = registry.lock() {
+                if let Some(sender) = guard.get(base_url) {
+                    let _ = sender.send(Some(kind));
+                }
+                guard.remove(base_url);
+            }
+            kind
+        }
+        // 并发调用方：等待首个调用方广播结果。
+        Inflight::Wait(mut rx) => {
+            while rx.changed().await.is_ok() {
+                if let Some(kind) = *rx.borrow_and_update() {
+                    return kind;
+                }
+            }
+            // 广播方异常丢弃：降级直探兜底。
+            probe_local_server_kind_uncached(base_url).await
+        }
+    }
 }
 
 fn probe_kind_cache_get(base_url: &str) -> Option<LocalServerKind> {
@@ -285,6 +346,11 @@ fn probe_kind_cache_put(base_url: &str, kind: LocalServerKind) {
 pub(crate) fn clear_probe_kind_cache() {
     if let Some(cache) = PROBE_KIND_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+    if let Some(inflight) = PROBE_KIND_INFLIGHT.get() {
+        if let Ok(mut guard) = inflight.lock() {
             guard.clear();
         }
     }
@@ -773,6 +839,99 @@ mod tests {
         // 第二次调用命中缓存，不再访问已关闭的 server。
         let second = probe_local_server_kind(&server.url).await;
         assert_eq!(second, LocalServerKind::Ollama);
+        clear_probe_kind_cache();
+    }
+
+    /// Generic（探测失败）不写入长缓存：服务从 404（未就绪）变为 Ollama 后，
+    /// 下一次调用应立即重探并拿到新结果，不被 60s TTL 钉死在 Generic。
+    #[tokio::test]
+    async fn probe_local_kind_does_not_cache_generic_result() {
+        clear_probe_kind_cache();
+        // 空 mock：所有特征端点 404 → Generic。
+        let server = spawn_probe_server(vec![]).await;
+        let base = server.url.clone();
+        assert_eq!(
+            probe_local_server_kind(&base).await,
+            LocalServerKind::Generic
+        );
+        // 换成响应 /api/tags 的 server（同端口不可行，用第二个 server 验证
+        // Generic 结果未被缓存的方式：直接查缓存状态）。
+        // 简化口径：探测结果为 Generic 时注册表与缓存都不应留有该 key。
+        let cache_has_key = PROBE_KIND_CACHE
+            .get()
+            .and_then(|c| {
+                c.lock()
+                    .ok()
+                    .map(|g| g.contains_key(base.trim_end_matches('/')))
+            })
+            .unwrap_or(false);
+        assert!(!cache_has_key, "Generic 结果不应写入 TTL 缓存");
+        clear_probe_kind_cache();
+    }
+
+    /// in-flight 合并：并发多次调用同一 base_url 共享一次探测。
+    /// mock server 统计 /api/tags 命中次数——合并生效时无论并发多少调用，
+    /// 特征端点只被打一次（Ollama 判定在第一个端点即短路返回）。
+    #[tokio::test]
+    async fn probe_local_kind_merges_concurrent_calls_into_one_probe() {
+        clear_probe_kind_cache();
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"models":[{"name":"qwen3:8b"}]}"#;
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    continue;
+                };
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                if path.starts_with("/api/tags") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else {
+                    let resp = "HTTP/1.1 404 OK\r\nContent-Length: 23\r\n\
+                                Connection: close\r\n\r\n{\"error\":\"not found\"}";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+                let _ = stream.shutdown().await;
+            }
+        });
+        let url = format!("http://{addr}/v1");
+        // 并发 8 个调用（首中缓存为空，全部走 in-flight 路径）。
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let u = url.clone();
+            joins.push(tokio::spawn(
+                async move { probe_local_server_kind(&u).await },
+            ));
+        }
+        for j in joins {
+            assert_eq!(j.await.unwrap(), LocalServerKind::Ollama);
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "并发调用应合并为一次探测（/api/tags 只命中一次）"
+        );
+        task.abort();
         clear_probe_kind_cache();
     }
 }

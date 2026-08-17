@@ -268,8 +268,16 @@ pub async fn list_models() -> Result<ModelsView, String> {
 /// - ollama → 显示思考开关（off/on，档位被底座归一为 think 布尔）
 /// - lmstudio / generic → 提示「该端点暂不支持思考档位调节」，避免用户
 ///   调了个寂寞（底座 openai wire route 对 reasoning_effort 是空操作）。
+///
+/// 该命令经 web domain-adapter 暴露给前端，此处必须守住
+/// `probe_local_server_kind` 的文档契约「只对本地/私网端点探测」：
+/// 非本地地址直接返回 generic，不发出任何网络请求——前端的前置校验
+/// （SettingsView 的 `baseUrlUsesLocalOrPrivate`）不是防线，可被绕过。
 #[tauri::command]
 pub async fn probe_local_server_kind(base_url: String) -> Result<String, String> {
+    if !crate::features::assistant::platform::bridge::base_url_uses_local_or_private(&base_url) {
+        return Ok("generic".to_string());
+    }
     let kind = crate::core::model_endpoint::probe_local_server_kind(&base_url).await;
     Ok(match kind {
         crate::core::model_endpoint::LocalServerKind::Vllm => "vllm".to_string(),
