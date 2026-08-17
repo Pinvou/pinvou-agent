@@ -347,6 +347,55 @@
         if (ready) flushQueued(sid);
       }).catch(function () {});
     }
+    // mid-turn inject 投递完成信号:turn_loop.rs:493 把 steer 追加到
+    // session.messages 后,forwarder 持久化完 emit chat:transcript_committed。
+    // 此时 state.queued 里仍在等的 steer chip 应该转 user bubble + 同步
+    // state.messages(让 conversation 视图与磁盘 transcript_revision 对齐)。
+    //
+    // 计数差 = 新增的 message 数,精确消耗 state.queued 队首对应条数。
+    // 只有在增长 > 0 且包含 user-role 新消息时才 drain,避免对其他 commit
+    // (subagent 完成、runtime 续轮等)误触发。
+    if (!sid) return;
+    if (!state.queued || state.queued.length === 0) return;
+    invoke("load_session", { id: sid, setActive: false }).then(function (saved) {
+      if (!saved || !Array.isArray(saved.messages)) return;
+      var preCount = committedBuffer.lastSeenMessageCount || 0;
+      var newMessages = saved.messages;
+      if (newMessages.length <= preCount) return;
+      committedBuffer.lastSeenMessageCount = newMessages.length;
+      runSyncOnSession(sid, function () {
+        state.messages = newMessages;
+        var userAdditions = newMessages
+          .slice(preCount)
+          .filter(function (m) { return m && m.role === "user"; });
+        for (var i = 0; i < userAdditions.length && state.queued.length > 0; i++) {
+          var message = userAdditions[i];
+          var item = state.queued[0];
+          // 提取真实 user 输入,跳过 turn_meta / system-reminder metadata 块
+          var content = Array.isArray(message.content) ? message.content : [];
+          var firstText = content
+            .filter(function (block) { return block && block.type === "text"; })
+            .map(function (block) { return String(block.text || ""); })
+            .filter(function (text) {
+              var t = text.trim();
+              return !(t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) &&
+                !(t.indexOf("<system-reminder>") === 0 && t.endsWith("</system-reminder>"));
+            })
+            .join("");
+          var itemText = String(item.text || "");
+          // 内容匹配(item 是用户输入,message.content[0] 是真实文本 + 元数据)
+          if (firstText && (firstText === itemText ||
+              firstText.indexOf(itemText) >= 0 || itemText.indexOf(firstText) >= 0)) {
+            state.queued.shift();
+            state.chatItems = state.chatItems.filter(function (ci) {
+              return !ci.turnErrorNotice;
+            });
+            addChatItem({ type: "user", text: itemText || firstText, time: timeStr() });
+          }
+        }
+      });
+      notify();
+    }).catch(function () { /* silent:fall back to existing behavior */ });
   });
 
   listen("chat:turn_started", function (e) { onSessionEvent(e, function () {
