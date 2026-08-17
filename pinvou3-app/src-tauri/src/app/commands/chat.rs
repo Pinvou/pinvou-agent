@@ -376,11 +376,29 @@ pub async fn steer_chat(
     content: String,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let sid = require_active_sid(session_id, &store)?;
-    pool.steer(&sid, content)
+    pool.steer(&sid, content.clone())
         .await
-        .map_err(|e| format!("steer_chat: {e:#}"))
+        .map_err(|e| format!("steer_chat: {e:#}"))?;
+    // Engine turn_loop drain (turn_loop.rs:493) 只把消息追加到 session.messages
+    // 并 emit SessionUpdated,**不会** emit chat:user_message —— 那个事件
+    // 只在 emit_turn_admission 里发(新 turn 起始)。
+    //
+    // 这里手动发 chat:user_message 让前端 applyRemoteUserMessageEvent 走标准
+    // 路径渲染用户气泡(见 bridge/chat-events.js:310 addChatItem)。payload 字段
+    // 与 emit_turn_admission 一致(operation=append),让前端去重逻辑
+    // (remoteAdmissionKeys)能正常处理。
+    let payload = serde_json::json!({
+        "session_id": sid,
+        "content": content,
+        "operation": "append",
+        "base_transcript_revision": "",
+    });
+    let _ = app.emit("chat:user_message", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "chat:user_message", payload);
+    Ok(())
 }
 
 fn prepare_conversation_attachment_record(
