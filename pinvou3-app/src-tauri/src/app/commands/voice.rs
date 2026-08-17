@@ -317,8 +317,8 @@ pub async fn transcribe_voice_audio(
         // 平台选择封装在 `features::voice::recognize_native`（platform/ 适配器），
         // 此处只按返回值分发，不出现 cfg(target_os)。
         let result = {
-            // 识别语言跟随 UI 语言偏好（默认 zh-Hans → zh-CN）：系统默认 locale
-            // 可能是 en-US，会把中文音频当英文解析 → 无意义英文字母。
+            // 识别语言跟随 UI 语言偏好（首次启动时由系统 locale 决定）：避免 UI 与
+            // 识别模型语言错配，例如中文 UI 却把中文音频当英文解析。
             let locale_tag = crate::platform::prefs::UserPrefs::load()
                 .language
                 .speech_recognition_locale();

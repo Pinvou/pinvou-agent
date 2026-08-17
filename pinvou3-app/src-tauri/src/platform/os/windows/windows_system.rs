@@ -5,10 +5,42 @@ use std::path::{Path, PathBuf};
 
 use super::windows_path;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER,
     KEY_READ, REG_EXPAND_SZ, REG_SZ,
 };
+
+pub fn current_system_locale() -> Option<String> {
+    let mut language_count = 0;
+    let mut buffer_len = 0;
+    // The sizing call is expected to return false with an insufficient-buffer error.
+    unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            std::ptr::null_mut(),
+            &mut buffer_len,
+        );
+    }
+    if buffer_len <= 1 {
+        return None;
+    }
+    let mut locale_names = vec![0u16; buffer_len as usize];
+    let ok = unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut language_count,
+            locale_names.as_mut_ptr(),
+            &mut buffer_len,
+        )
+    };
+    if ok == 0 || language_count == 0 {
+        return None;
+    }
+    let first_len = locale_names.iter().position(|unit| *unit == 0)?;
+    String::from_utf16(&locale_names[..first_len]).ok()
+}
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")

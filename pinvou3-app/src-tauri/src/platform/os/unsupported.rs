@@ -9,6 +9,9 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub(crate) use super::locale::current_system_locale;
+
 pub fn open_target(_target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Err(format!("当前平台不支持系统打开: {label}"))
 }

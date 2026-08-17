@@ -1559,6 +1559,17 @@ const dict = {
     // 这里 / dict / Rust prefs.rs Language 枚举
     const LANG_TO_TAG = { zh: 'zh-Hans', en: 'en', ja: 'ja' };
     const TAG_TO_LANG = { 'zh-Hans': 'zh', 'en': 'en', 'ja': 'ja' };
+    function languageFromLocaleTags(localeTags, fallback = 'en') {
+      const locales = Array.isArray(localeTags) ? localeTags : [localeTags];
+      const locale = locales.find((value) => typeof value === 'string' && value.trim());
+      if (!locale) return fallback;
+      const primary = locale.trim().split(/[-_.@:]/, 1)[0].toLowerCase();
+      if (primary === 'zh') return 'zh';
+      if (primary === 'ja') return 'ja';
+      if (primary === 'en') return 'en';
+      // 当前只提供中、英、日；系统首选语言不受支持时使用英文。
+      return 'en';
+    }
     const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
@@ -2474,4 +2485,4 @@ dict.ja.uiSettingsDetail.memoryTopicCleanupRequired = 'メモリは更新され�
 
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
-export { dict, LANG_TO_TAG, TAG_TO_LANG, SEARCH_KEY_PROVIDERS };
+export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, SEARCH_KEY_PROVIDERS };
