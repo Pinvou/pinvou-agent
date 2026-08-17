@@ -20,6 +20,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-backend-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "agent-client-protocol"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5568,6 +5577,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pinvou3-tauri"
 version = "0.8.3"
 dependencies = [
+ "agent-backend-api",
  "agent-client-protocol",
  "anyhow",
  "async-trait",
@@ -5609,6 +5619,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

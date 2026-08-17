@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
@@ -38,6 +38,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
+};
+use crate::features::assistant::eval::analysis::{
+    EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity,
 };
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
@@ -88,6 +91,73 @@ impl SessionTurnLocks {
         let gate = Arc::new(Mutex::new(()));
         locks.insert(session_id.to_string(), Arc::downgrade(&gate));
         gate
+    }
+}
+
+#[derive(Clone, Default)]
+struct EvalModelSnapshots {
+    next_token: Arc<AtomicU64>,
+    saved_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+    suite_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+    session_models: Arc<SyncMutex<HashMap<String, SavedModel>>>,
+}
+
+impl EvalModelSnapshots {
+    fn pin(&self, saved_model: SavedModel, identity: ModelIdentity) -> EvalModelSelection {
+        let sequence = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = format!("eval-model-{}-{sequence}", std::process::id());
+        let model_id = Some(saved_model.id.clone());
+        self.saved_models.lock().insert(token.clone(), saved_model);
+        EvalModelSelection::new(token, model_id, identity)
+    }
+
+    fn pin_suite(
+        &self,
+        saved_model: SavedModel,
+        identity: ModelIdentity,
+    ) -> EvalSuiteModelSnapshot {
+        let sequence = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = format!("eval-suite-model-{}-{sequence}", std::process::id());
+        self.suite_models.lock().insert(token.clone(), saved_model);
+        EvalSuiteModelSnapshot::new(token, identity)
+    }
+
+    fn derive_case_selection(&self, suite: &EvalSuiteModelSnapshot) -> Result<EvalModelSelection> {
+        let saved_model = self
+            .suite_models
+            .lock()
+            .get(suite.token())
+            .cloned()
+            .context("evaluation suite model snapshot is missing")?;
+        Ok(self.pin(saved_model, suite.identity().clone()))
+    }
+
+    fn discard_suite(&self, suite: &EvalSuiteModelSnapshot) {
+        self.suite_models.lock().remove(suite.token());
+    }
+
+    fn bind_to_session(&self, session_id: &str, selection: &EvalModelSelection) -> Result<()> {
+        let saved_model = self
+            .saved_models
+            .lock()
+            .remove(selection.token())
+            .with_context(|| "evaluation model selection is missing or already consumed")?;
+        self.session_models
+            .lock()
+            .insert(session_id.to_string(), saved_model);
+        Ok(())
+    }
+
+    fn for_session(&self, session_id: &str) -> Option<SavedModel> {
+        self.session_models.lock().get(session_id).cloned()
+    }
+
+    fn forget_session(&self, session_id: &str) {
+        self.session_models.lock().remove(session_id);
+    }
+
+    fn discard(&self, selection: &EvalModelSelection) {
+        self.saved_models.lock().remove(selection.token());
     }
 }
 
@@ -168,9 +238,17 @@ where
     let turn_lock = turn_locks.for_session(session_id).await;
     let _turn = turn_lock.lock().await;
     evict_locked().await;
-    store.delete(session_id)?;
+    delete_then_forget(|| store.delete(session_id), forget)
+}
+
+fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
+where
+    D: FnOnce() -> Result<()>,
+    G: FnOnce(),
+{
+    let delete_result = delete();
     forget();
-    Ok(())
+    delete_result
 }
 
 async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
@@ -493,6 +571,7 @@ pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
     runtime_model_locks: SessionTurnLocks,
     model_update_revisions: ModelUpdateRevisions,
+    eval_model_snapshots: EvalModelSnapshots,
     turn_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
@@ -546,6 +625,7 @@ impl EnginePool {
             entries: Arc::new(Mutex::new(HashMap::new())),
             runtime_model_locks: SessionTurnLocks::default(),
             model_update_revisions: ModelUpdateRevisions::default(),
+            eval_model_snapshots: EvalModelSnapshots::default(),
             turn_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
@@ -649,6 +729,7 @@ impl EnginePool {
         &self,
         session_id: &str,
         scheduled_unattended: bool,
+        explicit_model_override: Option<SavedModel>,
     ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
@@ -660,12 +741,14 @@ impl EnginePool {
         let interactive_model_override = self.store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
             && (scheduled_unattended || interactive_model_override.is_none());
-        bridge.session_model = resolve_spawn_model(
-            &bridge.prefs.advanced.saved_models,
-            scheduled_profile.as_ref(),
-            interactive_model_override.as_deref(),
-            scheduled_unattended,
-        )?;
+        bridge.session_model = resolve_runtime_model_override(explicit_model_override, || {
+            resolve_spawn_model(
+                &bridge.prefs.advanced.saved_models,
+                scheduled_profile.as_ref(),
+                interactive_model_override.as_deref(),
+                scheduled_unattended,
+            )
+        })?;
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
@@ -720,8 +803,9 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
     ) -> Result<Pinvou3Bridge> {
+        let eval_model = self.eval_model_snapshots.for_session(session_id);
         let (bridge, prepared, pins_scheduled_model) = self
-            .prepare_runtime_model(session_id, scheduled_unattended)
+            .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
         Ok(self
             .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
@@ -732,7 +816,9 @@ impl EnginePool {
     /// 则一次性 `SyncSession` 把历史 messages 注水进新 engine(冷启动 / app 重启后
     /// 打开旧会话再发消息的场景)。
     pub async fn get_or_spawn(&self, session_id: &str) -> Result<AppEngine> {
-        self.get_or_spawn_with_policy(session_id, false).await
+        let eval_model = self.eval_model_snapshots.for_session(session_id);
+        self.get_or_spawn_with_policy(session_id, false, eval_model)
+            .await
     }
 
     /// Spawn policy for an unattended automation turn is deliberately distinct
@@ -742,11 +828,12 @@ impl EnginePool {
         &self,
         session_id: &str,
         scheduled_unattended: bool,
+        explicit_model_override: Option<SavedModel>,
     ) -> Result<AppEngine> {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
         let (bridge, prepared, pins_scheduled_model) = self
-            .prepare_runtime_model(session_id, scheduled_unattended)
+            .prepare_runtime_model(session_id, scheduled_unattended, explicit_model_override)
             .await?;
         let model_update_revision = self.model_update_revisions.current(&prepared.model.id);
         let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
@@ -908,6 +995,28 @@ impl EnginePool {
         Ok(())
     }
 
+    /// Eval-only deletion keeps ordinary delete semantics, but also schedules the existing
+    /// late sweep when the immediate disk deletion fails. The error remains observable to the
+    /// Judge adapter, while the sweep prevents a transient filesystem failure from silently
+    /// retaining the temporary transcript forever.
+    pub(crate) async fn delete_eval_session(&self, session_id: &str) -> Result<()> {
+        let result = self.delete_chat_session(session_id).await;
+        if result.is_err() {
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of failed eval cleanup",
+            );
+        }
+        result
+    }
+
+    pub(crate) fn schedule_eval_cleanup(&self, session_id: &str) {
+        Self::schedule_late_sweep(
+            crate::platform::paths::sessions_root().join(session_id),
+            "background takeover of eval cleanup",
+        );
+    }
+
     /// 删除后的延迟清扫：底座取消子智能体后在后台线程异步写 worker ledger
     /// （write_json_atomic 会重建父目录），刚删的目录可能被复活成孤儿。
     /// 两次延迟重删兜底；目标不存在视为已收敛。
@@ -1016,6 +1125,7 @@ impl EnginePool {
     }
 
     pub(crate) fn forget_session(&self, session_id: &str) {
+        self.eval_model_snapshots.forget_session(session_id);
         self.turn_lifecycles.remove(session_id);
         self.turn_shell_tasks.remove(session_id);
         self.shell_managers.remove(session_id);
@@ -1057,10 +1167,102 @@ impl EnginePool {
     /// (GUI 可能刚改过默认),失败回退 boot 快照。
     pub fn default_model_for_new_session(&self) -> (String, Option<String>) {
         let prefs = UserPrefs::load();
-        match prefs.active_model() {
-            Some(m) => (m.model.clone(), Some(m.id.clone())),
-            None => (self.bridge.model(), None),
+        default_model_for_new_session_from(&prefs, &self.bridge)
+    }
+
+    pub(crate) fn tested_eval_identity(&self) -> ModelIdentity {
+        let prefs = UserPrefs::load();
+        identity_for_active_model(&self.bridge, &prefs)
+    }
+
+    pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
+        let prefs = UserPrefs::load();
+        let saved_model = prefs
+            .active_model()
+            .cloned()
+            .context("active evaluation model is not configured")?;
+        let identity = identity_for_saved_model(&self.bridge, &saved_model);
+        Ok(self.eval_model_snapshots.pin_suite(saved_model, identity))
+    }
+
+    pub(crate) fn derive_eval_suite_case_selection(
+        &self,
+        suite: &EvalSuiteModelSnapshot,
+    ) -> Result<EvalModelSelection> {
+        self.eval_model_snapshots.derive_case_selection(suite)
+    }
+
+    pub(crate) fn discard_eval_suite_model(&self, suite: &EvalSuiteModelSnapshot) {
+        self.eval_model_snapshots.discard_suite(suite);
+    }
+
+    /// Resolve and privately pin the complete SavedModel while returning only a
+    /// non-sensitive opaque selection to the evaluation layer. Callers that do
+    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
+    pub(crate) fn discard_eval_model_selection(&self, selection: &EvalModelSelection) {
+        self.eval_model_snapshots.discard(selection);
+    }
+
+    /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
+    /// 清理精确关联；普通 GUI 会话继续使用 SessionStore 自动生成的 ID。
+    pub(crate) async fn prepare_eval_session(
+        &self,
+        session_id: &str,
+        model_selection: Option<&EvalModelSelection>,
+    ) -> Result<()> {
+        match model_selection {
+            None => {
+                let (model, model_id) = self.default_model_for_new_session();
+                self.store.create_empty_with_id(
+                    session_id.to_string(),
+                    model,
+                    model_id,
+                    self.bridge.workspace.clone(),
+                )?;
+                self.get_or_spawn(session_id).await?;
+            }
+            Some(selection) => {
+                self.eval_model_snapshots
+                    .bind_to_session(session_id, selection)?;
+                let prepare_result = self.store.create_empty_with_id(
+                    session_id.to_string(),
+                    selection.wire_model().to_string(),
+                    selection.model_id().map(str::to_string),
+                    self.bridge.workspace.clone(),
+                );
+                if let Err(error) = prepare_result {
+                    self.eval_model_snapshots.forget_session(session_id);
+                    return Err(error);
+                }
+                if let Err(error) = self.get_or_spawn(session_id).await {
+                    self.eval_model_snapshots.forget_session(session_id);
+                    return Err(error);
+                }
+            }
         }
+        Ok(())
+    }
+
+    pub(crate) fn eval_session_execution_root(
+        &self,
+        session_id: &str,
+    ) -> Result<std::path::PathBuf> {
+        Ok(self.store.session_roots(session_id)?.execution)
+    }
+
+    /// 读取评测临时会话的 transcript 快照，不暴露可变存储句柄。
+    pub(crate) fn load_eval_transcript(&self, session_id: &str) -> Result<Vec<Message>> {
+        Ok(self.store.load(session_id)?.messages)
     }
 
     /// 切某 session 的模型(聊天 chip 热切):写 per-session 绑定 + evict 该 session
@@ -1165,6 +1367,53 @@ impl EnginePool {
         .await
     }
 
+    pub(crate) async fn send_eval_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        self.send_reserved_eval_user_message(
+            session_id,
+            content,
+            display_message,
+            policy,
+            reservation,
+        )
+        .await
+    }
+
+    async fn send_reserved_eval_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        display_message: Message,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+        mut reservation: TurnReservation,
+    ) -> Result<()> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(
+            TranscriptOperation::Append,
+            display_message,
+            baseline_revision,
+        )?;
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        self.store.load(session_id).with_context(|| {
+            format!("Session '{session_id}' was deleted before the eval turn could start")
+        })?;
+        reservation.ensure_active()?;
+        self.get_or_spawn(session_id)
+            .await?
+            .send_reserved_eval_message(content, policy, reservation)
+            .await
+    }
+
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
     pub(crate) async fn send_reserved_user_message(
@@ -1254,7 +1503,10 @@ impl EnginePool {
             // Scheduled execution must rebuild from the latest task profile and
             // global model/provider settings instead of reusing that old client.
             self.evict_locked(session_id).await;
-            let engine = match self.get_or_spawn_with_policy(session_id, true).await {
+            let engine = match self
+                .get_or_spawn_with_policy(session_id, true, None)
+                .await
+            {
                 Ok(engine) => engine,
                 Err(engine_error) => {
                     if let Err(seed_error) = persist_scheduled_prompt(
@@ -1491,6 +1743,41 @@ impl EnginePool {
     }
 }
 
+fn identity_for_saved_model(bridge: &Pinvou3Bridge, saved: &SavedModel) -> ModelIdentity {
+    let effective = bridge.with_session_model(Some(saved.clone()));
+    ModelIdentity::new(effective.provider(), effective.model())
+}
+
+fn identity_for_active_model(bridge: &Pinvou3Bridge, prefs: &UserPrefs) -> ModelIdentity {
+    match prefs.active_model() {
+        Some(saved) => identity_for_saved_model(bridge, saved),
+        None => ModelIdentity::new(bridge.provider(), bridge.model()),
+    }
+}
+
+fn default_model_for_new_session_from(
+    prefs: &UserPrefs,
+    bridge: &Pinvou3Bridge,
+) -> (String, Option<String>) {
+    match prefs.active_model() {
+        Some(model) => (model.model.clone(), Some(model.id.clone())),
+        None => (bridge.model(), None),
+    }
+}
+
+fn resolve_eval_model_selection_from(
+    bridge: &Pinvou3Bridge,
+    models: &[SavedModel],
+    model_id: &str,
+) -> Result<(SavedModel, ModelIdentity)> {
+    let saved = models
+        .iter()
+        .find(|model| model.id == model_id)
+        .with_context(|| format!("evaluation model ID '{model_id}' was not found"))?;
+    let identity = identity_for_saved_model(bridge, saved);
+    Ok((saved.clone(), identity))
+}
+
 pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
     Message {
         role: "user".to_string(),
@@ -1657,15 +1944,31 @@ fn resolve_spawn_model(
         .transpose()
 }
 
+fn resolve_runtime_model_override<F>(
+    explicit_model_override: Option<SavedModel>,
+    resolve_normal: F,
+) -> Result<Option<SavedModel>>
+where
+    F: FnOnce() -> Result<Option<SavedModel>>,
+{
+    match explicit_model_override {
+        Some(model) => Ok(Some(model)),
+        None => resolve_normal(),
+    }
+}
+
 #[cfg(test)]
 // 测试借 platform::paths::tests::ENV_LOCK(std Mutex)串行化全局 env;单线程测试内跨 await 持有无竞争者,不会死锁。
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
     use super::{
-        cancel_turn_with_gates, delete_chat_session_with_gate, delete_scheduled_run_with_gate,
-        generation_matches, quiesce_engine_before_reclaim, resolve_scheduled_model,
+        cancel_turn_with_gates, default_model_for_new_session_from, delete_chat_session_with_gate,
+        delete_scheduled_run_with_gate, delete_then_forget, generation_matches,
+        identity_for_active_model, identity_for_saved_model, quiesce_engine_before_reclaim,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
         resolve_spawn_model, scheduled_profile_after_turn_gate, should_sync_session,
-        ModelUpdateRevisions, PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
+        PreparedRuntimeState, ScheduledUnattendedGuard, SessionShellManagers,
         SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -1673,8 +1976,54 @@ mod scheduled_model_tests {
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    fn isolated_eval_bridge() -> (Pinvou3Bridge, std::path::PathBuf, EnvRestore) {
+        let restore = EnvRestore::capture(&[
+            "PINVOU3_HOME",
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_SESSION_ARTIFACTS",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou-eval-selection-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::env::set_var("PINVOU3_HOME", &home);
+        std::env::remove_var("DEEPSEEK_MODEL");
+        std::env::remove_var("DEEPSEEK_PROVIDER");
+        std::env::remove_var("DEEPSEEK_BASE_URL");
+        let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
+        (bridge, home, restore)
+    }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
     /// 两个 op 同通道 FIFO；颠倒顺序等于没取消（Shutdown 直接跳出事件循环，
@@ -1713,6 +2062,207 @@ mod scheduled_model_tests {
             has_secret: false,
             credential_action: None::<CredentialEditAction>,
         }
+    }
+
+    #[test]
+    fn missing_eval_model_error_names_only_the_requested_id() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        let configured = model("configured", "wire-model");
+        let error = resolve_eval_model_selection_from(&bridge, &[configured], "missing-judge")
+            .expect_err("unknown model ID must fail");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("missing-judge"));
+        assert!(!message.to_ascii_lowercase().contains("api_key"));
+        assert!(!message.to_ascii_lowercase().contains("secret"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn identity_uses_actual_bridge_provider_and_model_overrides() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        std::env::set_var("DEEPSEEK_MODEL", "actual-model");
+        std::env::set_var("DEEPSEEK_PROVIDER", "actual-provider");
+
+        let first = identity_for_saved_model(&bridge, &model("first", "raw-one"));
+        let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
+
+        assert_eq!(first, second);
+        assert!(
+            crate::features::assistant::eval::analysis::validate_judge_identity(&first, &second)
+                .is_err()
+        );
+
+        std::env::remove_var("DEEPSEEK_MODEL");
+        let mut models = vec![model("judge", "snapshot-model")];
+        let (saved, identity) = resolve_eval_model_selection_from(&bridge, &models, "judge")
+            .expect("resolve saved model");
+        let snapshots = EvalModelSnapshots::default();
+        let selection = snapshots.pin(saved, identity);
+        models[0].model = "changed-after-resolution".to_string();
+        assert_eq!(selection.wire_model(), "snapshot-model");
+        assert_eq!(selection.model_id(), Some("judge"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn pinned_eval_snapshot_binds_once_and_survives_later_config_changes() {
+        let snapshots = EvalModelSnapshots::default();
+        let saved = model("judge", "judge-wire");
+        let selection = snapshots.pin(
+            saved.clone(),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+
+        snapshots
+            .bind_to_session("judge-session", &selection)
+            .expect("first bind");
+        assert!(snapshots
+            .bind_to_session("other-session", &selection)
+            .is_err());
+        assert!(snapshots.saved_models.lock().is_empty());
+        let mut latest_models = vec![model("judge", "changed-wire")];
+        latest_models.clear();
+        assert!(latest_models.is_empty());
+        let resolved =
+            resolve_runtime_model_override(snapshots.for_session("judge-session"), || {
+                panic!("deleted prefs model must not be consulted for a pinned eval session");
+                #[allow(unreachable_code)]
+                Ok(None)
+            })
+            .expect("resolve lifecycle pin");
+        assert_eq!(resolved, Some(saved));
+        let debug = format!("{selection:?}");
+        assert!(!debug.contains("example.invalid"));
+        assert!(!debug.contains("api_key"));
+    }
+
+    #[test]
+    fn discarded_eval_snapshot_releases_private_saved_model() {
+        let snapshots = EvalModelSnapshots::default();
+        let selection = snapshots.pin(
+            model("judge", "judge-wire"),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+        assert_eq!(snapshots.saved_models.lock().len(), 1);
+
+        snapshots.discard(&selection);
+
+        assert!(snapshots.saved_models.lock().is_empty());
+    }
+
+    #[test]
+    fn suite_snapshot_derives_unique_case_selections_from_one_model() {
+        let snapshots = EvalModelSnapshots::default();
+        let suite = snapshots.pin_suite(
+            model("tested-a", "wire-a"),
+            super::ModelIdentity::new("provider-a", "wire-a"),
+        );
+        // Represents preferences switching to B after suite startup. Derivation must not use it.
+        let _latest_active = model("tested-b", "wire-b");
+
+        let first = snapshots
+            .derive_case_selection(&suite)
+            .expect("derive first case");
+        let second = snapshots
+            .derive_case_selection(&suite)
+            .expect("derive second case");
+
+        assert_ne!(first.token(), second.token());
+        assert_eq!(first.model_id(), Some("tested-a"));
+        assert_eq!(second.model_id(), Some("tested-a"));
+        assert_eq!(first.identity(), suite.identity());
+        assert_eq!(second.identity(), suite.identity());
+    }
+
+    #[test]
+    fn discarded_suite_snapshot_cannot_derive_more_case_models() {
+        let snapshots = EvalModelSnapshots::default();
+        let suite = snapshots.pin_suite(
+            model("tested-a", "wire-a"),
+            super::ModelIdentity::new("provider-a", "wire-a"),
+        );
+
+        snapshots.discard_suite(&suite);
+
+        assert!(snapshots.derive_case_selection(&suite).is_err());
+        assert!(snapshots.suite_models.lock().is_empty());
+    }
+
+    #[test]
+    fn forgetting_eval_session_releases_lifecycle_model_pin() {
+        let snapshots = EvalModelSnapshots::default();
+        let saved = model("judge", "judge-wire");
+        let selection = snapshots.pin(
+            saved.clone(),
+            super::ModelIdentity::new("openai", "judge-wire"),
+        );
+        snapshots
+            .bind_to_session("judge-session", &selection)
+            .expect("bind session");
+
+        snapshots.forget_session("judge-session");
+
+        assert_eq!(snapshots.for_session("judge-session"), None);
+        assert!(snapshots.session_models.lock().is_empty());
+    }
+
+    #[test]
+    fn explicit_eval_override_wins_without_consulting_normal_resolution() {
+        let explicit = model("pinned", "pinned-wire");
+        let selected = resolve_runtime_model_override(Some(explicit.clone()), || {
+            panic!("normal model resolution must not run for an explicit eval snapshot");
+            #[allow(unreachable_code)]
+            Ok(None)
+        })
+        .expect("resolve explicit model");
+
+        assert_eq!(selected, Some(explicit));
+    }
+
+    #[test]
+    fn tested_identity_uses_latest_active_model_instead_of_boot_bridge_model() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        let boot_identity = ModelIdentity::new(bridge.provider(), bridge.model());
+        let mut prefs = crate::platform::prefs::UserPrefs::default();
+        let mut active = model("active-b", "active-model-b");
+        active.vendor = Some("kimi".to_string());
+        prefs.advanced.saved_models = vec![active];
+        prefs.advanced.active_model_id = Some("active-b".to_string());
+
+        let identity = identity_for_active_model(&bridge, &prefs);
+
+        assert_eq!(identity.provider, "moonshot");
+        assert_eq!(identity.model, "active-model-b");
+        assert_ne!(identity, boot_identity);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn default_eval_metadata_keeps_raw_saved_model_despite_env_override() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (bridge, home, _env) = isolated_eval_bridge();
+        std::env::set_var("DEEPSEEK_MODEL", "env-wire-override");
+        let mut prefs = crate::platform::prefs::UserPrefs::default();
+        prefs.advanced.saved_models = vec![model("active", "raw-saved-wire")];
+        prefs.advanced.active_model_id = Some("active".to_string());
+
+        assert_eq!(
+            default_model_for_new_session_from(&prefs, &bridge),
+            ("raw-saved-wire".to_string(), Some("active".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     fn profile(model_id: Option<&str>, wire_name: &str) -> ScheduledRunProfile {
@@ -1982,6 +2532,23 @@ mod scheduled_model_tests {
             *order.lock().unwrap(),
             vec!["cancel", "abort", "joined", "persist"]
         );
+    }
+
+    #[test]
+    fn chat_delete_failure_still_forgets_runtime_once_and_preserves_error() {
+        let forget_count = Arc::new(AtomicUsize::new(0));
+        let observed_count = forget_count.clone();
+
+        let error = delete_then_forget(
+            || Err(anyhow::anyhow!("sentinel delete failure")),
+            move || {
+                forget_count.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect_err("injected deletion must fail");
+
+        assert_eq!(observed_count.load(Ordering::SeqCst), 1);
+        assert_eq!(error.to_string(), "sentinel delete failure");
     }
 
     #[tokio::test]

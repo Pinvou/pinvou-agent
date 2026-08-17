@@ -29,6 +29,11 @@ pub fn settings_path() -> PathBuf {
     pinvou3_home().join("settings.json")
 }
 
+/// `~/.pinvou3/eval/` —— 产品模式与官方兼容模式的评测报告目录。
+pub fn eval_reports_dir() -> PathBuf {
+    pinvou3_home().join("eval")
+}
+
 /// `~/.pinvou3/logs/memory-review.log` —— 对话记忆复盘诊断日志。
 /// 只记录阶段、分类和计数，不记录对话原文或记忆正文。
 pub fn memory_review_log() -> PathBuf {
@@ -451,6 +456,20 @@ pub(crate) mod tests {
         );
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+
+    #[test]
+    fn eval_reports_are_scoped_under_pinvou_home() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_HOME");
+        std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-eval-paths");
+
+        assert_eq!(eval_reports_dir(), pinvou3_home().join("eval"));
+
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
             None => std::env::remove_var("PINVOU3_HOME"),
         }
     }

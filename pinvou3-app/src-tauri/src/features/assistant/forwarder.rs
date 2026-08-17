@@ -37,6 +37,7 @@ pub(crate) fn spawn_event_forwarder(
     turn_events: broadcast::Sender<EngineTurnSignal>,
     scheduled_profile: Option<ScheduledRunProfile>,
     scheduled_base_total_tokens: Option<u64>,
+    chat_base_total_tokens: Option<u64>,
     scheduled_unattended: Arc<AtomicBool>,
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
@@ -67,6 +68,7 @@ pub(crate) fn spawn_event_forwarder(
         let mut token_ledger = TokenLedger::default();
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
+        let mut chat_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
         let mut latest_chat_engine_state: Option<ChatEngineState> = None;
         let mut chat_persistence_error: Option<String> = None;
@@ -77,6 +79,8 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        let mut first_delta_done: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -115,8 +119,18 @@ pub(crate) fn spawn_event_forwarder(
                     if let Some(m) = &self_metrics {
                         m.on_turn_started(&session_id);
                     }
+                    crate::features::assistant::timing::record_engine_turn_started(&session_id);
                 }
                 Event::MessageDelta { content, .. } => {
+                    crate::features::assistant::timing::record_first_message_delta(&session_id);
+                    if let Some(turn_id) = &current_turn_id {
+                        if first_delta_done.insert(turn_id.clone()) {
+                            crate::features::assistant::timing::record_milestone(
+                                &session_id,
+                                "first_delta",
+                            );
+                        }
+                    }
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
@@ -156,6 +170,12 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallStarted { id, name, input } => {
+                    crate::features::assistant::timing::record_tool_started(&session_id, &name);
+                    crate::features::assistant::timing::record_milestone_meta(
+                        &session_id,
+                        "tool_call_started",
+                        json!({ "tool_name": &name, "tool_id": &id }),
+                    );
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
@@ -172,8 +192,18 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallComplete { id, name, result } => {
+                    crate::features::assistant::timing::record_milestone_meta(
+                        &session_id,
+                        "tool_call_completed",
+                        json!({ "tool_name": &name, "tool_id": &id }),
+                    );
                     // 携带 metadata 让前端识别 careful hook 拦截 (safety_level=="dangerous")
                     let (output, success, metadata) = tool_call_result_parts(result);
+                    crate::features::assistant::timing::record_tool_completed(
+                        &session_id,
+                        &name,
+                        success,
+                    );
                     let background_task_id =
                         if matches!(name.as_str(), "exec_shell" | "task_shell_start" | "Bash")
                             && metadata
@@ -872,9 +902,17 @@ pub(crate) fn spawn_event_forwarder(
                     usage,
                     status,
                     error,
-                    // v0.8.49 上游新增 tool_catalog / base_url(调试/审计用),pinvou3 不消费
-                    ..
+                    tool_catalog,
+                    base_url: _,
                 } => {
+                    let authorized_tool_catalog = tool_catalog.as_ref().and_then(|catalog| {
+                        serde_json::to_vec(catalog).ok().map(|catalog_json| {
+                            crate::features::assistant::timing::ToolCatalogSummary::from_serialized_catalog(
+                                catalog.len(),
+                                &catalog_json,
+                            )
+                        })
+                    });
                     let shell_turn_id = current_turn_id.clone();
                     let shell_interrupted = status == TurnOutcomeStatus::Interrupted;
                     let mut shell_cleanup_failed = false;
@@ -917,6 +955,9 @@ pub(crate) fn spawn_event_forwarder(
                             });
                         }
                     } else {
+                        chat_engine_total_tokens = chat_engine_total_tokens
+                            .saturating_add(u64::from(usage.input_tokens))
+                            .saturating_add(u64::from(usage.output_tokens));
                         let terminal_save = if active_transcript_seen {
                             latest_chat_engine_state.clone().map(|state| {
                                 let store_for_save = store.clone();
@@ -965,6 +1006,43 @@ pub(crate) fn spawn_event_forwarder(
                                     chat_persistence_error = Some(format!(
                                         "chat transcript persistence task failed: {join_error}"
                                     ));
+                                }
+                            }
+                        }
+                        if let Some(base_total_tokens) = chat_base_total_tokens {
+                            let store_for_save = store.clone();
+                            let session_for_save = session_id.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                store_for_save.persist_chat_token_total(
+                                    &session_for_save,
+                                    base_total_tokens,
+                                    chat_engine_total_tokens,
+                                )
+                            })
+                            .await
+                            {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(save_error)) => {
+                                    let token_error = format!("{save_error:#}");
+                                    chat_persistence_error =
+                                        Some(match chat_persistence_error.take() {
+                                            Some(existing) => format!(
+                                            "{existing}; token persistence failed: {token_error}"
+                                        ),
+                                            None => {
+                                                format!("token persistence failed: {token_error}")
+                                            }
+                                        });
+                                }
+                                Err(join_error) => {
+                                    chat_persistence_error = Some(match chat_persistence_error.take() {
+                                        Some(existing) => format!(
+                                            "{existing}; token persistence task failed: {join_error}"
+                                        ),
+                                        None => format!(
+                                            "token persistence task failed: {join_error}"
+                                        ),
+                                    });
                                 }
                             }
                         }
@@ -1182,6 +1260,25 @@ pub(crate) fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
+                    let status_text = format!("{terminal_status:?}");
+                    crate::features::assistant::timing::finish_turn_with_observation(
+                        &session_id,
+                        &status_text,
+                        terminal_error.as_deref(),
+                        Some(crate::features::assistant::timing::TurnUsage {
+                            input_tokens: u64::from(usage.input_tokens),
+                            output_tokens: u64::from(usage.output_tokens),
+                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+                            cache_miss_tokens: u64::from(
+                                usage.prompt_cache_miss_tokens.unwrap_or(0),
+                            ),
+                            cache_write_tokens: u64::from(
+                                usage.prompt_cache_write_tokens.unwrap_or(0),
+                            ),
+                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+                        }),
+                        authorized_tool_catalog,
+                    );
                     if crate::features::memory::memory_enabled() {
                         if let Some(capture) =
                             crate::features::memory::take_turn_capture(&session_id)

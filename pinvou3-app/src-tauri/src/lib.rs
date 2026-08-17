@@ -10,11 +10,19 @@
 
 mod app;
 mod core;
+#[cfg(feature = "dev-tools")]
+mod eval_cli;
 pub mod features;
+#[cfg(feature = "benchmark-hooks")]
+pub mod headless_bridge;
 pub mod platform;
 // L1 harness 的附件 e2e 要走「真实 ingest → 注入分流 → 真 vLLM」全链路:
 // 暴露注入收口函数 + file_ingest。
 pub use app::commands::attachments::build_message_with_attachments;
+#[cfg(feature = "dev-tools")]
+pub use eval_cli::{
+    judge_status_label, run_product_eval_smoke, EvalSmokeOptions, EvalSmokeOutcome,
+};
 
 use tauri::Manager;
 
@@ -977,6 +985,7 @@ pub fn run() {
             commands::marketplace::uninstall_marketplace_skill,
             commands::marketplace::bundle_readiness,
             commands::files::verify_upload,
+            commands::eval::run_eval_smoke,
         ]);
 
     startup::mark("tauri:builder_configured");

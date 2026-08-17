@@ -529,6 +529,72 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// 以调用方提供的 ID 创建空会话，供需要在启动前确定隔离 ID 的内部运行时使用。
+    ///
+    /// 普通 GUI 会话仍使用 [`Self::create_new`] 的随机 ID；这里不设置 active session。
+    pub(crate) fn create_empty_with_id(
+        &self,
+        id: String,
+        model: String,
+        model_id: Option<String>,
+        workspace: PathBuf,
+    ) -> Result<SavedSession> {
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &model,
+            &workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = "临时评测".to_string();
+        if let Some(model_id) = model_id {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        Ok(session)
+    }
+
+    /// Persist an ordinary chat engine's absolute lifetime token total without
+    /// replacing the authoritative transcript or any other engine-owned state.
+    pub fn persist_chat_token_total(
+        &self,
+        id: &str,
+        base_total_tokens: u64,
+        engine_total_tokens: u64,
+    ) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.scheduled_profiles.read().contains_key(id) {
+            bail!("Session '{id}' is a scheduled-run session");
+        }
+        validate_session_id(id)?;
+
+        let mut session = self
+            .manager
+            .load_session(id)
+            .with_context(|| format!("load chat session {id} for token persistence"))?;
+        session.metadata.updated_at = Utc::now();
+        session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
+
+        self.save_session_atomic(&session)
+            .with_context(|| format!("persist chat token total for {id}"))?;
+        if let Err(error) = self.enforce_session_retention_locked() {
+            eprintln!(
+                "[sessions] chat retention reconciliation failed after token save: {error:#}"
+            );
+        }
+        Ok(session)
+    }
+
     pub(crate) fn persist_admitted_chat_display(
         &self,
         id: &str,

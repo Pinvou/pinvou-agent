@@ -21,6 +21,7 @@ pub(crate) mod chat;
 pub(crate) mod codex;
 pub(crate) mod connectors;
 pub(crate) mod dependencies;
+pub(crate) mod eval;
 pub(crate) mod files;
 pub(crate) mod interaction;
 pub(crate) mod knowledge;

@@ -4,21 +4,23 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-13 · v0.9.5 r6 公开基线）
+## 0. 当前状态（2026-08-17 · v0.9.5 r7 公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`Pinvou/CodeWhale#11`、`Pinvou/CodeWhale#12` 已合并 |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r6` 均指向公开维护分支 head；`r1` 至 `r5` 保留为不可变历史标签 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并 |
+| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均指向公开维护分支 head；旧标签保留为不可变历史 |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 5 个长期主题；公开 8 个线性提交 |
-| drift | r6 公开基线 `52 files changed, +2640/-299` |
-| 守护 | r6 新增 6 条 CodeWhale `forkguard_*` 行为测试 + Tauri/Web 展示回归；完整 guard 结果见第 4 节 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个长期主题；公开 9 个线性提交 |
+| drift | r7 公开基线 `46 files changed, +1852/-269` |
+| 守护 | r7 保留 CodeWhale `forkguard_*` 行为测试 + Tauri/Web 展示回归；完整 guard 结果见第 4 节 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
-### r6 本地模型工具调用兼容修复（已验证并发布）
+### r7 逐轮评测工具安全扩展（PR 候选）
+
+> CodeWhale PR #15 候选提交 `1eca6103a`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖和最终执行前精确白名单门禁。快速 guard 仅额外接受这个直接位于 r7 head 之上的单提交拓扑；公开标签校验仍固定为 `pinvou-v0.9.5-r7`。
 
 - 部分 OpenAI 兼容后端会返回结构上合法、但把 schema 声明的嵌套 object/array 再编码成 JSON 字符串的工具参数；这会让 `request_user_input` 等强类型工具在进入业务校验前失败。
 - T2 只在 schema 明确声明 object/array、字符串为不超过 64 KiB 的严格 JSON 且解码类型一致时修复该容器；普通文本和数字/布尔字符串不做宽松转换，修复后仍执行原工具校验。
@@ -39,13 +41,7 @@
 
 ### 软上限评估
 
-r6 公开基线的总变更行和净增量均超过 1500 行软线。新增超量主要来自 T5 对结构化产出根、精确写入声明和符号链接逃逸的 fail-closed 加固；这些检查必须位于实际落盘和 SubAgent 生命周期内，不能安全下沉到 app。主要保留量：
-
-- T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
-- T5 `+912/-45`：三省六部角色派发、结构化/文件产出验证、显式项目根、路径逃逸阻断、取消和真实终态必须位于 SubAgent 生命周期内。
-- T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
-
-本轮不为压数字复制底座状态机到 app。后续减量顺序：T1 通用 embedding route API、T2 通用命令安全、T4 通用 Automation 生命周期；T3/T5 的 Pinvou 产品语义继续留 fork。
+r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files changed, +1852/-269`。当前保留量集中在宿主嵌入、工具安全、Skill 来源与 Automation 生命周期；逐轮评测权限作为 T2 的单提交候选，不恢复已删除的产品专用协议。
 
 ## 1. 五个长期 fork 主题
 
@@ -78,8 +74,9 @@ r6 公开基线的总变更行和净增量均超过 1500 行软线。新增超�
   - schema 明确要求 object/array 时，窄修复模型输出的严格 JSON 字符串容器；不做 primitive coercion，业务工具仍执行自身校验。
   - `stuck_guard` 与连续工具错误 degradation 提示折叠进对应 `tool_result`，保持这两条续轮路径的 provider 角色序列合法；应用 bridge 只从工具卡展示值剥离这两种已知内部 suffix。
   - 当前工具面不恢复已退役的独立追加文件工具，也不放宽 `request_user_input` 的问题数量、字段和选项校验。
+  - 本地未发布的逐轮安全策略在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次清空 trusted roots 时不再追加持久信任目录或剪贴板目录，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。`None` 保持现有 GUI 行为。
 - **边界**：不包含 Skill 来源、Automation 或三省六部角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`、`forkguard_tool_error_degradation_preserves_provider_role_sequence`，以及 Tauri/Web 工具卡展示回归。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`、`forkguard_tool_error_degradation_preserves_provider_role_sequence`、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`，以及 Tauri/Web 工具卡展示回归。
 
 ### T3：嵌入上下文与技能来源
 
@@ -107,22 +104,6 @@ r6 公开基线的总变更行和净增量均超过 1500 行软线。新增超�
   - 强制审批不能被通用 auto-approve 绕过。
 - **边界**：app 负责展示、通知和业务工作区；底座负责调度与耐久运行事实。
 - **守护**：`forkguard_scheduler_skips_offline_misfires_without_backfill`、`forkguard_scheduler_does_not_overlap_active_automation_run`、`forkguard_conversation_key_and_created_thread_survive_worker_boundary`、`forkguard_accepts_pinvou_v4_tasks_but_rejects_unknown_newer_schema`。
-
-### T5：三省六部编排、完成闸与结构化产出安全
-
-- **commits**：`3782a78d4e11d1fb65042cf9c82231b9d644c20a`、`d1010aa3bbaf76780e29df4434fd1e03a95b2ca6`
-- **规模**：16 文件，`+912/-45`
-- **核心文件**：`core/{engine,events,ops}.rs`、`tools/subagent/{mod,tests}.rs`、`runtime_threads.rs` 及 SubAgent TUI 事件适配。
-- **内容**：
-  - 只为三省六部角色派发补充 role、显式工具范围、最大步数、output schema 和文件产出要求。
-  - 将角色登记的具体产物文件在启动时注册为 v0.9.5 有界 write claim；拒绝工作区外路径，不放宽为整个工作区写权限。
-  - `Custom` 角色的旧 action allowlist 映射到 v0.9.5 canonical action 工具面，不依赖 `load_skill` 才能运行。
-  - 合成结构化提交入口，递归校验有限 JSON schema，只允许声明的安全相对路径落盘。
-  - 结构化产出必须使用宿主显式选择的工作区内项目根，并与精确写入声明逐项匹配；拒绝路径穿越、符号链接组件和信任模式下的链接逃逸。
-  - 文件产出型角色在真实文件未落盘时不能完成；失败信封保留最后工具错误供宿主展示。
-  - 批量取消 live SubAgent，并通过携带 role/failed/result 的 `AgentComplete` 收敛真实终态。
-- **边界**：不包含通用宿主配置、工具注入、路由、Automation、OAuth 或普通 Fleet 产品功能。
-- **守护**：`forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill`、`forkguard_structured_output_validates_nested_required_fields`、`forkguard_structured_output_persists_only_declared_safe_paths`、`forkguard_structured_output_rejects_symlink_components`、`forkguard_structured_output_root_is_explicit_and_claim_bounded`、`forkguard_host_write_claim_rejects_symlink_even_in_trust_mode`、`forkguard_host_write_files_become_bounded_claims`，以及父仓三省六部协议测试。
 
 ## 2. 父仓能力与 fork 的分界
 

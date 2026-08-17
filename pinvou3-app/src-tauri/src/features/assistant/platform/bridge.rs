@@ -1232,6 +1232,7 @@ impl Pinvou3Bridge {
             goal_state,
             mut tools_always_load,
             prefer_bwrap,
+            turn_tool_security: _,
             // pinvou3-fork 自定义:会话初始思考开关(显式构造见下)
             reasoning_effort: _,
             // —— v0.8.49 上游新增字段,透传 default ——
@@ -1427,6 +1428,7 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
+            turn_tool_security: None,
             // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
             // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
             // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
@@ -1894,6 +1896,79 @@ impl Pinvou3Bridge {
         )
     }
 
+    pub(crate) fn build_eval_send_message_op(
+        &self,
+        session_id: &str,
+        content: String,
+        policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
+    ) -> Result<Op> {
+        self.ensure_session_skills_for_send(session_id);
+        let allowed_tools = policy
+            .allowed_tools
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let exact =
+            deepseek_tui::core::ops::ExactToolDispatchPolicy::try_new(allowed_tools.clone())
+                .map_err(anyhow::Error::msg)?;
+        let model = self.model();
+        Ok(Op::SendMessage {
+            content,
+            mode: AppMode::Agent,
+            route: Box::new(self.resolve_runtime_route_for_model(&model)?),
+            compaction: Box::new(self.compaction_config_for_model(&model)),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
+            reasoning_effort: self.request_reasoning_effort(),
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: deepseek_tui::tui::approval::ApprovalMode::Never,
+            translation_enabled: false,
+            allowed_tools: Some(allowed_tools),
+            hook_executor: Some(self.build_eval_hook_executor(policy.allowed_tools)),
+            verbosity: None,
+            dynamic_tools: Vec::new(),
+            provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
+            turn_tool_security: Some(Arc::new(
+                deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact)),
+            )),
+        })
+    }
+
+    fn build_eval_hook_executor(&self, allowed_tools: &[&str]) -> Arc<HookExecutor> {
+        #[cfg(windows)]
+        let command = {
+            let literals = allowed_tools
+                .iter()
+                .map(|name| format!("'{}'", name.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "powershell.exe -NoProfile -Command \"$a=@({literals}); if ($a -notcontains $env:DEEPSEEK_TOOL_NAME) {{ exit 2 }}\""
+            )
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let pattern = allowed_tools.join("|");
+            format!("case \"$DEEPSEEK_TOOL_NAME\" in {pattern}) exit 0 ;; *) exit 2 ;; esac")
+        };
+        let mut config = self.build_hooks_config();
+        config.hooks.push(Hook {
+            event: HookEvent::ToolCallBefore,
+            command,
+            condition: None,
+            timeout_secs: 5,
+            background: false,
+            continue_on_error: false,
+            name: Some("pinvou-eval-exact-tool-guard".into()),
+        });
+        Arc::new(HookExecutor::new(config, self.workspace.clone()))
+    }
+
     /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
     /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
     pub(crate) fn build_multi_agent_send_message_op(
@@ -2030,6 +2105,7 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
+            turn_tool_security: None,
         })
     }
 }
@@ -3734,6 +3810,81 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
         );
+    }
+
+    #[test]
+    fn eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy() {
+        let bridge = fixture_bridge();
+        let policy =
+            crate::features::assistant::product_runtime::eval_tool_policy::resolve_eval_policy(
+                "pinvou-gaia-offline/v1",
+            )
+            .unwrap();
+        let op = bridge
+            .build_eval_send_message_op("eval-session", "question".into(), policy)
+            .unwrap();
+        let Op::SendMessage {
+            mode,
+            allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+            allowed_tools,
+            dynamic_tools,
+            provenance,
+            turn_tool_security,
+            hook_executor,
+            ..
+        } = op
+        else {
+            panic!("expected SendMessage")
+        };
+        assert_eq!(mode, AppMode::Agent);
+        assert!(!allow_shell);
+        assert!(!trust_mode);
+        assert!(!auto_approve);
+        assert_eq!(
+            approval_mode,
+            deepseek_tui::tui::approval::ApprovalMode::Never
+        );
+        assert_eq!(
+            allowed_tools.unwrap(),
+            policy
+                .allowed_tools
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(dynamic_tools.is_empty());
+        assert_eq!(
+            provenance,
+            deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript
+        );
+        let security = turn_tool_security.expect("mandatory turn security");
+        assert_eq!(security.trusted_external_paths_override(), Some(&[][..]));
+        assert!(security.exact_dispatch().is_some());
+        let hooks = hook_executor.expect("mandatory secondary hook");
+        assert!(hooks.has_hooks_for_event(HookEvent::ToolCallBefore));
+        let guard = hooks
+            .config()
+            .hooks
+            .iter()
+            .find(|hook| hook.name.as_deref() == Some("pinvou-eval-exact-tool-guard"))
+            .expect("exact deny hook");
+        assert!(guard.command.contains("DEEPSEEK_TOOL_NAME"));
+        assert!(guard.command.contains("read_file"));
+        assert!(!guard.command.contains("exec_shell"));
+
+        let ordinary = bridge
+            .build_send_message_op("gui-session", "hello".into(), AppMode::Yolo, None, false)
+            .unwrap();
+        assert!(matches!(
+            ordinary,
+            Op::SendMessage {
+                turn_tool_security: None,
+                ..
+            }
+        ));
     }
 
     /// R-2:逐轮工具白名单对 code 会话同样生效——op 链路不感知会话类型,

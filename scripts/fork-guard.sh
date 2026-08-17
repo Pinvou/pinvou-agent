@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published r6 baseline.
+# CodeWhale v0.9.5 clean re-fork guard: published r7 baseline.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02"
-EXPECTED_HEAD="3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02"
-EXPECTED_COMMITS=8
+PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
+LOCAL_SECURITY_HEAD="1eca6103aebf596e6d6101f3f928651acdbdd93d"
+PUBLISHED_COMMITS=9
+LOCAL_COMMITS=10
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,12 +19,18 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r6 公开拓扑 ──"
+bold "── 第 0 层：v0.9.5 r7 公开拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的 r6 公开 head $EXPECTED_HEAD"
+if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
+  expected_commits="$PUBLISHED_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向登记的 r7 公开 head $PUBLISHED_HEAD"
+elif [[ "$actual_head" == "$LOCAL_SECURITY_HEAD" ]] \
+  && [[ "$(git -C "$TUI" rev-parse HEAD^ 2>/dev/null || true)" == "$PUBLISHED_HEAD" ]]; then
+  expected_commits="$LOCAL_COMMITS"
+  green "  ✓ CodeWhale gitlink 指向登记的 r7 安全扩展候选 $LOCAL_SECURITY_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，r6 登记为 $EXPECTED_HEAD"
+  expected_commits=""
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非其登记的单提交安全扩展"
   fail=1
 fi
 
@@ -31,19 +38,19 @@ if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null 
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
   green "  ✓ 维护基线继承官方 v0.9.5"
 else
-  red "  ✗ r6 未同时继承官方 v0.9.5 与公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ r7 未同时继承官方 v0.9.5 与公开维护 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开登记提交"
+if [[ -n "$expected_commits" && "$commit_count" == "$expected_commits" ]]; then
+  green "  ✓ v0.9.5 之上 $expected_commits 个登记提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，r6 登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，当前合法拓扑应为 ${expected_commits:-8 或 9}"
   fail=1
 fi
 
-bold "── 第 1 层：五主题与父仓指纹 ──"
+bold "── 第 1 层：四主题与父仓指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
   "T1|v0.9.5 library 只公开宿主入口       |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
@@ -80,15 +87,8 @@ fingerprints=(
   "T4|Pinvou 历史 v3/v4 schema 窄兼容     |CodeWhale/crates/tui/src/task_manager.rs|const PINVOU_LEGACY_TASK_SCHEMA_VERSIONS"
   "T4|conversation/thread 跨 worker 持久化|CodeWhale/crates/tui/src/task_manager.rs|async fn forkguard_conversation_key_and_created_thread_survive_worker_boundary"
 
-  "T5|三省六部文件产出契约                |CodeWhale/crates/tui/src/core/ops.rs|expects_file_output: bool"
-  "T5|宿主产物注册为有界写入声明          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_write_files_become_bounded_claims"
-  "T5|三省六部批量取消                    |CodeWhale/crates/tui/src/core/ops.rs|CancelSubAgents"
-  "T5|旧 action allowlist 映射 canonical  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_custom_workflow_legacy_action_allowlist_is_available_without_load_skill"
-  "T5|结构化 schema 递归校验              |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_validates_nested_required_fields"
-  "T5|结构化产出只写声明安全路径          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_persists_only_declared_safe_paths"
-  "T5|结构化产出根由宿主显式绑定          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_output_root_is_explicit_and_claim_bounded"
-  "T5|结构化产出拒绝符号链接组件          |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_structured_output_rejects_symlink_components"
-  "T5|信任模式仍拒绝写入链接逃逸          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_write_claim_rejects_symlink_even_in_trust_mode"
+  "T2|会话 trusted roots 可完全覆盖       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_session_trusted_roots_override_persisted_workspace_trust"
+  "T2|执行分发白名单 fail-closed          |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
