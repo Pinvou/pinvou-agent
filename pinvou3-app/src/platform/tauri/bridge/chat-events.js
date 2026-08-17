@@ -332,6 +332,65 @@
     applyRemoteUserMessageEvent(e, false);
   });
 
+  // P0-A：steer 投递确认。引擎把 steer 追加进 transcript 后发 committed
+  // （带 FNV-1a 内容指纹），前端把对应排队 chip 转气泡——不再靠
+  // chat:transcript_committed + load_session 比对消息数来猜。指纹与
+  // CodeWhale turn_loop.rs 的 steer_content_hash 同算法（FNV-1a 64bit hex）。
+  function steerContentHash(content) {
+    var s = String(content || "").trim();
+    var h = 0xcbf29ce484222325n;
+    for (var i = 0; i < s.length; i++) {
+      h ^= BigInt(s.charCodeAt(i));
+      h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+    }
+    return h.toString(16).padStart(16, "0");
+  }
+  function steeredQueueFor(sid) {
+    return sid === state.activeSessionId
+      ? state.queued
+      : (sessionStates[sid] && sessionStates[sid].queued);
+  }
+  function findSteeredChip(sid, contentHash) {
+    var q = steeredQueueFor(sid);
+    if (!q) return -1;
+    for (var i = 0; i < q.length; i++) {
+      if (q[i] && q[i].steered && steerContentHash(q[i].text) === contentHash) return i;
+    }
+    return -1;
+  }
+  listen("chat:steer_committed", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var contentHash = String(p.content_hash || "");
+    if (!sid || !contentHash) return;
+    runSyncOnSession(sid, function () {
+      var q = steeredQueueFor(sid);
+      var index = findSteeredChip(sid, contentHash);
+      if (!q || index < 0) return;
+      var item = q[index];
+      q.splice(index, 1);
+      // 消息已进引擎 transcript；气泡用 chip 文本渲染，transcript_committed
+      // 稍后会把 state.messages 同步为权威版本。
+      state.chatItems = state.chatItems.filter(function (ci) { return !ci.turnErrorNotice; });
+      addChatItem({ type: "user", text: item.text, time: timeStr() });
+    });
+    notify();
+  });
+  listen("chat:steer_dropped", function (e) {
+    var p = e && e.payload || {};
+    var sid = p.session_id || state.activeSessionId;
+    var contentHash = String(p.content_hash || "");
+    if (!sid || !contentHash) return;
+    runSyncOnSession(sid, function () {
+      var q = steeredQueueFor(sid);
+      var index = findSteeredChip(sid, contentHash);
+      if (!q || index < 0) return;
+      q.splice(index, 1);
+      addSystemItem("⚠️ " + bt("steerDropped"));
+    });
+    notify();
+  });
+
   listen("chat:transcript_committed", function (e) {
     var payload = e && e.payload || {};
     var sid = payload.session_id || state.activeSessionId;

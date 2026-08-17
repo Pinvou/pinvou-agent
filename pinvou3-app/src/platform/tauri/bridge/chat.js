@@ -48,6 +48,12 @@
     return text;
   }
 
+  // 打断（interrupt）在途标记（按 session）：打断期间禁止 flushQueued 抢先发
+  // 排队消息——chat:done handler 在打断消息 doSendFor 之前触发 flushQueued，
+  // 若不挡，排队消息会先 reserve 成功、打断消息反而撞 session_turn_in_progress。
+  // 打断消息发出（或其失败路径收尾）后清除，排队消息由打断轮的 chat:done 继续。
+  var interruptInFlight = {};
+
   // ── Chat Items (display format for React) ────────────────────────
   function addChatItem(item) {
     item.id = ++context.itemIdSeq;
@@ -347,6 +353,9 @@
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
   function flushQueued(sid) {
+    // 打断在途：排队消息让路，打断消息优先（否则 flush 先 reserve，
+    // 打断消息反而撞 turn_in_progress 丢失）。
+    if (interruptInFlight[sid]) return;
     var pendingBuffer = sessionStates[sid];
     if (pendingBuffer && pendingBuffer.remoteTurnActive) {
       reconcileRemoteTurn(sid).then(function (ready) {
@@ -357,6 +366,10 @@
     if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
     var q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
+    // P0-A：队首是已投递引擎的 steer chip（等 chat:steer_committed 转气泡）
+    // → 让路不发送。它已在引擎侧排队，重复 doSendFor 会变两条消息；committed
+    // 事件移除 chip 后，后续 turn 的 flushQueued 继续发剩余排队消息。
+    if (q[0].steered) return;
     var item = q.shift();
     var attachments = item.attachments || [];
     var displayText = item.displayText == null
@@ -543,7 +556,9 @@
       state.attachments = [];
       // 清空 composer draft(对齐 sendMessage 成功路径)
       state.composerDraft = "";
-      // 排队 chip 立即显示
+      // 排队 chip 立即显示。steered=true 标记已投递引擎：flushQueued 跳过它
+      // （防重复发送），由 chat:steer_committed / chat:steer_dropped 事件
+      // 决定转气泡或取消（P0-A 投递确认协议）。
       var queuedItem = {
         id: ++context.itemIdSeq,
         text: steerText,
@@ -552,6 +567,7 @@
         meta: null,
         restrictTools: false,
         queuedAt: Date.now(),
+        steered: true,
       };
       state.queued.push(queuedItem);
       notify();
@@ -776,7 +792,11 @@
   // state.busy 在 chat:done handler 内同步置 false,事件触发即代表
   // turn lifecycle 已完成 cancel + cleanup,可以安全 reserve 新 turn。
   // 长 tool chain 场景下 5s 兜底超时(避免 cancel 永久挂起)。
-  function waitForChatDone(sid, timeoutMs) {
+  //
+  // generation 匹配(P0-B):chat:done payload 带后端轮次身份(generation),
+  // 只对目标轮 resolve —— 迟到的旧轮终态、其他轮的终态都不会提前解锁等待。
+  // 旧后端(无 generation 字段)时退化为按 sid 匹配的旧行为。
+  function waitForChatDone(sid, generation, timeoutMs) {
     return new Promise(function (resolve) {
       var timer = null;
       var resolved = false;
@@ -795,7 +815,11 @@
       // Tauri 2 的 listen 返回 Promise<UnlistenFn>,on 收到事件即回调。
       if (TAURI && TAURI.event && typeof TAURI.event.listen === "function") {
         var p = TAURI.event.listen("chat:done", function (e) {
-          if (!e || !e.payload || e.payload.session_id === sid) done();
+          if (!e || !e.payload || e.payload.session_id !== sid) return;
+          var payloadGeneration = e.payload.generation;
+          if (generation != null && payloadGeneration != null &&
+              Number(payloadGeneration) !== Number(generation)) return;
+          done();
         });
         if (p && typeof p.then === "function") {
           p.then(function (un) { unlisten = un; }).catch(function () {});
@@ -817,26 +841,41 @@
 
   async function interruptAndSend(sid, text, displayText, attachments, meta, restrictTools) {
     safeConsoleInfo("[pinvou3][chat-ui] interrupt-and-send start", { sid: sid });
-    // 1) cancel 当前 turn 并 await chat:done 事件(非轮询)
-    if (state.busy) {
-      try {
-        await invoke("cancel_generation", { sessionId: sid });
-      } catch (e) {
-        console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
+    interruptInFlight[sid] = true;
+    try {
+      // 1) cancel 当前 turn。cancel_generation 返回 CancelOutcome { generation, terminal }：
+      //    terminal=true（claim 路径终态已由 cancel 自身确认 / 目标轮已结束 / 空闲）
+      //    → 无需等待事件；false → 等待携带目标 generation 的 chat:done（事件驱动）。
+      //    这消除了两处确定性竞态：claim 路径的 chat:done 发在 cancel 返回之前
+      //    （监听器必然错过）、turn 刚自然结束时 cancel no-op 不再有事件——二者
+      //    前端都无法靠等事件收敛，只能由命令返回值确认终态。
+      if (state.busy) {
+        var outcome = null;
+        try {
+          outcome = await invoke("cancel_generation", { sessionId: sid });
+        } catch (e) {
+          console.warn("[pinvou3][chat-ui] cancel failed before interrupt", e);
+        }
+        var terminal = !!(outcome && outcome.terminal);
+        var generation = outcome && outcome.generation;
+        if (!terminal) {
+          // 事件驱动等待（P0-B）：后端保证 chat:done 到达时 reserve 闸门已重开，
+          // 不再需要固定 sleep 补窗口。超时仅作最后兜底，走下方失败恢复路径。
+          await waitForChatDone(sid, generation, 5000);
+        }
       }
-      // 等 chat:done 事件到达,turn lifecycle 释放完成。
-      await waitForChatDone(sid, 5000);
-      // 给 Engine turn_lifecycle 一个 tick 完全释放 turn_lock(防 race)
-      await new Promise(function (resolve) { setTimeout(resolve, 100); });
+      // 2) 不整体清空 queue：打断只放弃当前轮进度，保留用户排队中的其他消息
+      //    （P0-A 后引擎侧丢弃残留 steer 会发 SteerDropped 事件，前端据此提示）。
+      // 3) 附件对齐 sendMessage：取当前 ready 附件随打断消息发送。
+      var readyAttachments = (state.attachments || []).filter(function (a) {
+        return a.status === "ready" && a.result;
+      });
+      var attachmentPayload = readyAttachments.map(function (a) { return a.result; });
+      // 4) 真正发新消息；失败时由调用方（handleInterruptSend）恢复输入框。
+      return await doSendFor(sid, text, displayText, attachmentPayload, meta, restrictTools, true);
+    } finally {
+      interruptInFlight[sid] = false;
     }
-    // 2) 移除残留 chip(若有),按正常 chat 路径起新 turn
-    runSyncOnSession(sid, function () {
-      if (state.queued && state.queued.length > 0) {
-        state.queued = [];
-      }
-    });
-    // 4) 真正发新消息
-    return doSendFor(sid, text, displayText, attachments, meta, restrictTools, true);
   }
 
   async function cancelGeneration() {

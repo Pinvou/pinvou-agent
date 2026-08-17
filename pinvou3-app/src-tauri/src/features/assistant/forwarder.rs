@@ -519,8 +519,37 @@ pub(crate) fn spawn_event_forwarder(
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
                 }
+                // main 侧清理：CodeWhale 原生 workflow 事件由底座自行管理，
+                // 应用只消费通用子智能体事件（AgentSpawned 不再登记 role）。
                 Event::AgentSpawned { .. } => {}
-                // CodeWhale 原生 workflow 事件由底座自行管理；应用只消费通用子智能体事件。
+                // mid-turn inject 投递确认（P0-A）：引擎把 steer 消息追加进
+                // transcript 后发 SteerCommitted（带回入队时的 steer_id），前端
+                // 据此把对应排队 chip 转气泡；引擎丢弃时才发 SteerDropped。前端
+                // 不再靠 chat:transcript_committed + load_session 比对消息数来猜。
+                Event::SteerCommitted { steer_id } => {
+                    let payload = json!({
+                        "session_id": session_id,
+                        "steer_id": steer_id,
+                    });
+                    let _ = app.emit("chat:steer_committed", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:steer_committed",
+                        payload,
+                    );
+                }
+                Event::SteerDropped { steer_id } => {
+                    let payload = json!({
+                        "session_id": session_id,
+                        "steer_id": steer_id,
+                    });
+                    let _ = app.emit("chat:steer_dropped", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:steer_dropped",
+                        payload,
+                    );
+                }
                 Event::WorkflowUi { .. } => {}
                 Event::AgentProgress { id, status, .. } => {
                     let payload = json!({
@@ -917,15 +946,24 @@ pub(crate) fn spawn_event_forwarder(
                         // abort this forwarder and leave the frontend permanently
                         // busy. Reclaim now observes the lifecycle as terminal and
                         // cannot publish a conflicting Interrupted outcome.
+                        //
+                        // P0-B：finish_terminal_emission 必须先于 emit 执行，使
+                        // chat:done 到达时 reserve 闸门已重开（契约：chat:done ⇒
+                        // 槽位已释放），前端 interruptAndSend 不再需要固定 sleep。
+                        // generation 在 finish 前读取（finish 后回到 None）。
+                        // emit 保持在 harness await 之前：harness 段可能被引擎
+                        // eviction 中断，终态必须先发出去，前端才不会永久 busy。
+                        let generation = turn_lifecycle.current_turn_generation().unwrap_or(0);
+                        turn_lifecycle.finish_terminal_emission();
                         emit_chat_terminal(
                             &app,
                             &session_id,
+                            generation,
                             terminal_status,
                             terminal_error.clone(),
                             shell_cleanup_failed,
                             operation_rejected,
                         );
-                        turn_lifecycle.finish_terminal_emission();
 
                         // ── [回归底座式] M2 自驱 + M3 文本兜底已彻底砍掉 ──
                         // M2:执行不自动续跑,回底座由用户驱动。M3(Plan 写了方案没调

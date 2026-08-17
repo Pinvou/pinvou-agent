@@ -28,6 +28,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
+use serde::Serialize;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
 use deepseek_tui::tools::shell::{ShellJobSnapshot, ShellResult};
@@ -441,6 +442,27 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 /// 是 no-op（简化③）。
 ///
 /// [`should_retry_cascade`]: fn@should_retry_cascade
+/// `cancel_generation` 命令的返回：轮次取消结果，供前端 `interruptAndSend`
+/// 决定「是否需要等待 `chat:done` 事件」。
+///
+/// - `generation`：被取消的目标轮 epoch（空闲会话为 None）。
+/// - `terminal`：**true** = 目标轮终态已确认，前端无需等待事件即可发送新消息
+///   ——三种情形：cancel 经未提交认领路径自行完成终态（claim 路径的 chat:done
+///   在 cancel 命令返回前发出，前端监听器必然错过，必须由命令返回值确认）；
+///   目标轮已自然结束（mismatch）；会话空闲。**false** = 取消已生效、引擎
+///   turn loop 仍在退出，前端应等待携带该 `generation` 的 `chat:done` 事件。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelOutcome {
+    pub generation: Option<u64>,
+    pub terminal: bool,
+}
+
+/// 返回 `(target_generation, claimed_unsubmitted)`：
+/// - `target_generation`：发起取消时快照的目标轮 epoch（空闲为 None）。
+/// - `claimed_unsubmitted`：cancel 是否通过未提交认领路径**自行完成**了终态
+///   （claim 路径的 chat:done 在 cancel 命令返回前已发出，前端监听器必然错过，
+///   因此调用方必须据此把结果标记为 terminal=true，让前端无需等待事件）。
 async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     turn_locks: &SessionTurnLocks,
     turn_lifecycles: &SessionTurnLifecycles,
@@ -450,7 +472,8 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     mut cancel_current: X,
     mut cascade_cancel: F,
     claim_unsubmitted: C,
-) where
+) -> (Option<u64>, bool)
+where
     E: FnMut() -> EFut,
     EFut: Future<Output = Option<G>>,
     X: FnMut(&G),
@@ -515,7 +538,9 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
                 cascade_cancel(&engine).await;
             }
         }
-        return;
+        // 目标轮已结束（终态已由别处发出）：调用方据 target 与 current 的
+        // 比对自行判定 terminal=true（无需前端等待事件）。
+        return (target, false);
     }
 
     // generation 匹配，目标轮仍是发起时刻那一轮：清理它的 shell 任务。
@@ -582,6 +607,7 @@ async fn cancel_turn_with_gates<G, E, EFut, X, F, FFut, C>(
     if let Some(cancellation) = shell_cancellation {
         cancellation.cleanup().await;
     }
+    (target, claimed_unsubmitted)
 }
 
 /// 池里一个 session 的常驻条目:engine + 它专属的 event forwarder task。
@@ -1859,12 +1885,12 @@ impl EnginePool {
     ///
     /// 「停止」按钮是子智能体唯一的确定性停止入口（卡片上没有取消按钮，
     /// 自然语言指令只是建议）；只取消宿主轮会留下继续烧钱的后台子智能体。
-    pub async fn cancel(&self, session_id: &str) {
+    pub async fn cancel(&self, session_id: &str) -> CancelOutcome {
         // 两阶段 generation 守护见 cancel_turn_with_gates：cancel 请求绑定发起
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
         let app = &self.app;
-        cancel_turn_with_gates(
+        let (target, claimed_unsubmitted) = cancel_turn_with_gates(
             &self.turn_locks,
             &self.turn_lifecycles,
             &self.turn_shell_tasks,
@@ -1908,7 +1934,19 @@ impl EnginePool {
                 lifecycle.emit_unsubmitted_interrupted_terminal_for_epoch(app, session_id, target)
             },
         )
-        .await
+        .await;
+        // 组装轮次结果：claim 路径由 cancel 自身完成终态（terminal=true，前端
+        // 无需等事件——事件发在 cancel 返回前、前端监听器注册前，必然错过）；
+        // 其余路径按「目标轮是否仍在」判定：已切轮/已终态 → terminal=true，
+        // 目标轮仍在取消中 → terminal=false（前端等该 generation 的 chat:done）。
+        let current = self
+            .turn_lifecycles
+            .get(session_id)
+            .and_then(|lc| lc.current_turn_generation());
+        CancelOutcome {
+            generation: target,
+            terminal: claimed_unsubmitted || !generation_matches(target, current),
+        }
     }
 
     /// pinvou3 工具开关(全局持久):把"被禁用的工具全名"(模型可见全名,小写)广播给

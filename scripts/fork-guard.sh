@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="07d183e350ce4a1ed4f91bdfa1875c996e710d2b"
-PUBLISHED_COMMITS=13
+PUBLISHED_HEAD="feb8761aeda31749f3d54c6e1f8ef460540567a1"
+PUBLISHED_COMMITS=14
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
