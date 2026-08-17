@@ -98,7 +98,7 @@ fn tail_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::mode_state::SerializableMode;
+    use crate::features::sessions::SerializableMode;
     use crate::platform::paths;
     use crate::platform::paths::tests::ENV_LOCK;
     use deepseek_tui::models::{ContentBlock, Message};

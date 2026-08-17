@@ -48,11 +48,11 @@ pub async fn session_mount_collection(
 #[tauri::command]
 pub async fn session_set_mounted_collections(
     session_id: String,
-    collections: Vec<crate::core::mode_state::MountedCollection>,
+    collections: Vec<crate::features::sessions::MountedCollection>,
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<Vec<crate::core::mode_state::MountedCollection>, String> {
+) -> Result<Vec<crate::features::sessions::MountedCollection>, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let normalized =
@@ -69,10 +69,10 @@ pub async fn session_set_mounted_collections(
 }
 
 fn validate_mount_replacement<F>(
-    collections: Vec<crate::core::mode_state::MountedCollection>,
+    collections: Vec<crate::features::sessions::MountedCollection>,
     semantic_ready: bool,
     mut collection_exists: F,
-) -> Result<Vec<crate::core::mode_state::MountedCollection>, String>
+) -> Result<Vec<crate::features::sessions::MountedCollection>, String>
 where
     F: FnMut(i64) -> Result<bool, String>,
 {
@@ -83,7 +83,7 @@ where
         }
         if normalized
             .iter()
-            .any(|mounted: &crate::core::mode_state::MountedCollection| {
+            .any(|mounted: &crate::features::sessions::MountedCollection| {
                 mounted.collection_id == collection.collection_id
             })
         {
@@ -144,7 +144,7 @@ pub async fn session_add_mounted_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     ensure_collection_mountable(&knowledge, collection_id)?;
@@ -162,7 +162,7 @@ pub async fn session_set_mounted_collection_enabled(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     if enabled {
@@ -181,7 +181,7 @@ pub async fn session_remove_mounted_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let snapshot = store.remove_mounted_collection(&session_id, collection_id);
@@ -196,7 +196,7 @@ pub async fn session_unmount_collection(
     store: State<'_, SessionStore>,
     knowledge: State<'_, KnowledgeService>,
     app: AppHandle,
-) -> Result<crate::core::mode_state::MountedCollectionsSnapshot, String> {
+) -> Result<crate::features::sessions::MountedCollectionsSnapshot, String> {
     let coordinator = knowledge.mount_mutation_coordinator();
     let _mutation = coordinator.lock().await;
     let snapshot = store.set_mounted_collections(&session_id, Vec::new());
@@ -207,7 +207,7 @@ pub async fn session_unmount_collection(
 fn publish_kb_mount_change(
     app: &AppHandle,
     session_id: &str,
-    snapshot: &crate::core::mode_state::MountedCollectionsSnapshot,
+    snapshot: &crate::features::sessions::MountedCollectionsSnapshot,
 ) {
     let collection_id = snapshot
         .collections
@@ -250,7 +250,7 @@ pub fn session_mounted_collection(
 pub fn session_mounted_collections(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> Vec<crate::core::mode_state::MountedCollection> {
+) -> Vec<crate::features::sessions::MountedCollection> {
     store.mounted_collections(&session_id)
 }
 
@@ -259,7 +259,7 @@ pub fn session_mounted_collections(
 pub fn session_mounted_collections_snapshot(
     session_id: String,
     store: State<'_, SessionStore>,
-) -> crate::core::mode_state::MountedCollectionsSnapshot {
+) -> crate::features::sessions::MountedCollectionsSnapshot {
     store.mounted_collections_snapshot(&session_id)
 }
 
@@ -313,8 +313,8 @@ use super::prelude::*;
 #[cfg(test)]
 mod tests {
     use super::{validate_collection_mountable, validate_mount_replacement};
-    use crate::core::mode_state::MountedCollection;
     use crate::features::knowledge::KnowledgeService;
+    use crate::features::sessions::MountedCollection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
