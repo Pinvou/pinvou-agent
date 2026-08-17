@@ -934,7 +934,14 @@ impl TurnLifecycle {
         }
         let generation = self.current_turn_generation().unwrap_or(0);
         self.finish_terminal_emission();
-        emit_chat_terminal(app, session_id, generation, TurnOutcomeStatus::Interrupted, None, false);
+        emit_chat_terminal(
+            app,
+            session_id,
+            generation,
+            TurnOutcomeStatus::Interrupted,
+            None,
+            false,
+        );
         true
     }
 
@@ -955,7 +962,14 @@ impl TurnLifecycle {
             return false;
         }
         self.finish_terminal_emission();
-        emit_chat_terminal(app, session_id, target, TurnOutcomeStatus::Interrupted, None, false);
+        emit_chat_terminal(
+            app,
+            session_id,
+            target,
+            TurnOutcomeStatus::Interrupted,
+            None,
+            false,
+        );
         true
     }
 
