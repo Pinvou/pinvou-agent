@@ -7,9 +7,9 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-LOCAL_SECURITY_HEAD="1eca6103aebf596e6d6101f3f928651acdbdd93d"
+LOCAL_SECURITY_HEAD="169c24cc50223b73c7a7b775e3090c649f74dfa1"
 PUBLISHED_COMMITS=9
-LOCAL_COMMITS=10
+LOCAL_COMMITS=11
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -25,12 +25,12 @@ if [[ "$actual_head" == "$PUBLISHED_HEAD" ]]; then
   expected_commits="$PUBLISHED_COMMITS"
   green "  ✓ CodeWhale gitlink 指向登记的 r7 公开 head $PUBLISHED_HEAD"
 elif [[ "$actual_head" == "$LOCAL_SECURITY_HEAD" ]] \
-  && [[ "$(git -C "$TUI" rev-parse HEAD^ 2>/dev/null || true)" == "$PUBLISHED_HEAD" ]]; then
+  && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" "$LOCAL_SECURITY_HEAD" 2>/dev/null; then
   expected_commits="$LOCAL_COMMITS"
   green "  ✓ CodeWhale gitlink 指向登记的 r7 安全扩展候选 $LOCAL_SECURITY_HEAD"
 else
   expected_commits=""
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非其登记的单提交安全扩展"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，既非 r7 公开 head，也非其登记的安全扩展候选"
   fail=1
 fi
 
@@ -89,6 +89,9 @@ fingerprints=(
 
   "T2|会话 trusted roots 可完全覆盖       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_session_trusted_roots_override_persisted_workspace_trust"
   "T2|执行分发白名单 fail-closed          |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends"
+  "T2|排队控制操作继承受限权限             |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_queued_control_op_keeps_restricted_turn_authority"
+  "T2|受限轮次 Hook 默认关闭              |CodeWhale/crates/tui/src/core/ops.rs|fn restricted_turn_hooks_require_explicit_host_opt_in"
+  "T2|受限工具审计固定脱敏                 |CodeWhale/crates/tui/src/core/engine/tool_execution.rs|fn restricted_tool_audit_redacts_private_sentinel"
 
   "APP|产品白名单复用原生 allowed_tools   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|会话工具开关走动态禁用整形          |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("

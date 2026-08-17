@@ -1929,7 +1929,7 @@ impl Pinvou3Bridge {
             approval_mode: deepseek_tui::tui::approval::ApprovalMode::Never,
             translation_enabled: false,
             allowed_tools: Some(allowed_tools),
-            hook_executor: Some(self.build_eval_hook_executor(policy.allowed_tools)),
+            hook_executor: None,
             verbosity: None,
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
@@ -1937,36 +1937,6 @@ impl Pinvou3Bridge {
                 deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact)),
             )),
         })
-    }
-
-    fn build_eval_hook_executor(&self, allowed_tools: &[&str]) -> Arc<HookExecutor> {
-        #[cfg(windows)]
-        let command = {
-            let literals = allowed_tools
-                .iter()
-                .map(|name| format!("'{}'", name.replace('\'', "''")))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(
-                "powershell.exe -NoProfile -Command \"$a=@({literals}); if ($a -notcontains $env:DEEPSEEK_TOOL_NAME) {{ exit 2 }}\""
-            )
-        };
-        #[cfg(not(windows))]
-        let command = {
-            let pattern = allowed_tools.join("|");
-            format!("case \"$DEEPSEEK_TOOL_NAME\" in {pattern}) exit 0 ;; *) exit 2 ;; esac")
-        };
-        let mut config = self.build_hooks_config();
-        config.hooks.push(Hook {
-            event: HookEvent::ToolCallBefore,
-            command,
-            condition: None,
-            timeout_secs: 5,
-            background: false,
-            continue_on_error: false,
-            name: Some("pinvou-eval-exact-tool-guard".into()),
-        });
-        Arc::new(HookExecutor::new(config, self.workspace.clone()))
     }
 
     /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
@@ -3863,17 +3833,10 @@ mod tests {
         let security = turn_tool_security.expect("mandatory turn security");
         assert_eq!(security.trusted_external_paths_override(), Some(&[][..]));
         assert!(security.exact_dispatch().is_some());
-        let hooks = hook_executor.expect("mandatory secondary hook");
-        assert!(hooks.has_hooks_for_event(HookEvent::ToolCallBefore));
-        let guard = hooks
-            .config()
-            .hooks
-            .iter()
-            .find(|hook| hook.name.as_deref() == Some("pinvou-eval-exact-tool-guard"))
-            .expect("exact deny hook");
-        assert!(guard.command.contains("DEEPSEEK_TOOL_NAME"));
-        assert!(guard.command.contains("read_file"));
-        assert!(!guard.command.contains("exec_shell"));
+        assert!(
+            hook_executor.is_none(),
+            "restricted eval turns must not launch shell-backed hooks"
+        );
 
         let ordinary = bridge
             .build_send_message_op("gui-session", "hello".into(), AppMode::Yolo, None, false)
