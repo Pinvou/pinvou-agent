@@ -12,16 +12,21 @@ use crate::features::assistant::engine_pool::CancelOutcome;
 /// 终态是否已确认。前端 interruptAndSend 依据它决定是否等待 chat:done——
 /// 解决「claim 路径的终态事件发在 cancel 命令返回之前、前端监听器必然错过」
 /// 的确定性竞态，以及「turn 刚自然结束时 cancel no-op、不再有事件」的窗口。
+///
+/// `keep_inbox`（P0-A）：打断（⚡）传 true——未注入的 steer 保留给下一轮；
+/// 停止（⏹）缺省 false——未注入的 steer 清空并发 `chat:steer_dropped`，
+/// 前端移除排队 chip 并提示，消息不会「UI 消失但引擎里还活着」地悬挂。
 #[tauri::command]
 pub async fn cancel_generation(
     session_id: Option<String>,
+    keep_inbox: Option<bool>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<CancelOutcome, String> {
     // 多 session:取消指定 session(前端传 session_id);兼容旧前端回退 active。
     if let Some(sid) = session_id.or_else(|| store.active_id()) {
         log::info!("[pinvou3][chat] cancel requested sid={}", sid);
-        let outcome = pool.cancel(&sid).await;
+        let outcome = pool.cancel(&sid, keep_inbox.unwrap_or(false)).await;
         log::info!("[pinvou3][chat] cancel command completed sid={}", sid);
         Ok(outcome)
     } else {
