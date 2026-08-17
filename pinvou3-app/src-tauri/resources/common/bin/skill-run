@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# skill-run <skill-name> <tool-name> '<json-args>'
+#
+# Super-skill 协议 wrapper：在已装技能目录 ~/.pinvou3/bundles/<pkg>/skills/<skill>/
+# 下，按 SKILL.md frontmatter 的 runtime+tools 段定位 entry，把 <tool-name> 在该 skill
+# 注册的 entry 上调用，结果以 JSON 形式打到 stdout。
+#
+# 调用约定：
+#   $ skill-run <skill-name> <tool-name> '<json-args>'
+#   参数 1：skill 目录名（与 SKILL.md frontmatter `name:` 一致）
+#   参数 2：tools[].name
+#   参数 3：JSON 字符串（喂 entry 的 stdin；可空字符串 `{}` 或省略）
+#
+# stdout 必为合法 JSON；stderr 为人类可读调试信息。
+# 退出码：0 成功；非 0 失败（参数缺/找不到 skill/entry 不可执行/前置路径错等）。
+#
+# 权限面：skill 自身 entry 必须在 priority_paths（已 `add_skill_priority_paths` 注册）。
+# execpolicy 不会拦截 priority_paths 内的可执行调用——本 wrapper 仅作为 spawn
+# entry 的薄壳。
+
+set -euo pipefail
+
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+    echo "用法: skill-run <skill-name> <tool-name> '<json-args>'" >&2
+    exit 64
+fi
+
+SKILL_NAME="$1"
+TOOL_NAME="$2"
+JSON_ARGS="${3:-{\}}"
+
+# 1) 定位 skill 目录（沿用 skill_marketplace::install 落盘路径布局）
+SKILL_DIR="${HOME}/.pinvou3/bundles/${SKILL_NAME}/skills/${SKILL_NAME}"
+if [ ! -d "$SKILL_DIR" ]; then
+    # 回退：旧扁平布局
+    SKILL_DIR="${HOME}/.pinvou3/bundle/skills/${SKILL_NAME}"
+fi
+if [ ! -d "$SKILL_DIR" ]; then
+    # 上传技能（自描述包目录）
+    SKILL_DIR="${HOME}/.pinvou3/bundles/${SKILL_NAME}"
+fi
+if [ ! -d "$SKILL_DIR" ]; then
+    echo "找不到 skill 目录：${SKILL_NAME}" >&2
+    exit 65
+fi
+
+MD="$SKILL_DIR/SKILL.md"
+if [ ! -f "$MD" ]; then
+    echo "SKILL.md 缺失：${MD}" >&2
+    exit 66
+fi
+
+# 2) 从 SKILL.md frontmatter 提取 runtime.kind / runtime.dir / 该工具的 entry
+# 注：极简解析（不引 yq/jq）；本协议 frontmatter 段是 YAML 子集。
+RUNTIME_KIND=""
+RUNTIME_DIR_OVERRIDE=""
+ENTRY=""
+TOOL_TIMEOUT=""
+
+in_frontmatter=0
+in_runtime=0
+in_tools=0
+tool_indent=0
+current_tool_name=""
+
+while IFS= read -r line; do
+    if [ "$in_frontmatter" -eq 0 ]; then
+        [ "$line" = "---" ] && in_frontmatter=1
+        continue
+    fi
+    if [ "$line" = "---" ]; then
+        break
+    fi
+    case "$line" in
+        'runtime:'*)
+            in_runtime=1; in_tools=0
+            ;;
+        'tools:'*)
+            in_runtime=0; in_tools=1; tool_indent=0
+            ;;
+        *)
+            if [ "$in_runtime" -eq 1 ]; then
+                case "$line" in
+                    '  kind:'*) RUNTIME_KIND="${line#  kind: }" ;;
+                    '  dir:'*) RUNTIME_DIR_OVERRIDE="${line#  dir: }" ;;
+                esac
+            fi
+            if [ "$in_tools" -eq 1 ]; then
+                # tools[] 是数组：
+                #   - name: tool_x
+                #     entry: scripts/x.py
+                #     timeout_secs: 20
+                trimmed="${line#"${line%%[![:space:]]*}"}"
+                if [ "$trimmed" = "$line" ]; then
+                    # 行首无空白 → 段结束
+                    continue
+                fi
+                # 项开始
+                if [[ "$trimmed" == "- "* ]]; then
+                    current_tool_name="${trimmed#- }"
+                    current_tool_name="${current_tool_name#name: }"
+                fi
+                if [ "$current_tool_name" = "$TOOL_NAME" ]; then
+                    case "$trimmed" in
+                        'entry:'*) ENTRY="${trimmed#entry: }" ;;
+                        'timeout_secs:'*) TOOL_TIMEOUT="${trimmed#timeout_secs: }" ;;
+                    esac
+                fi
+            fi
+            ;;
+    esac
+done < "$MD"
+
+if [ -z "$RUNTIME_KIND" ]; then
+    echo "SKILL.md 未声明 runtime.kind（或缺失 tools 段）" >&2
+    exit 67
+fi
+if [ -z "$ENTRY" ]; then
+    echo "SKILL.md 未声明 tool '$TOOL_NAME' 的 entry" >&2
+    exit 68
+fi
+
+# 3) 选 runtime 执行 entry
+case "$RUNTIME_KIND" in
+    python|python3)
+        if [ -n "$RUNTIME_DIR_OVERRIDE" ]; then
+            RUNTIME_BIN="${SKILL_DIR}/${RUNTIME_DIR_OVERRIDE}/bin/python"
+            [ -x "$RUNTIME_BIN" ] || RUNTIME_BIN="${SKILL_DIR}/${RUNTIME_DIR_OVERRIDE}/python"
+            [ -x "$RUNTIME_BIN" ] || RUNTIME_BIN="$(command -v python3 || command -v python)"
+        else
+            RUNTIME_BIN="$(command -v python3 || command -v python)"
+        fi
+        ;;
+    node|nodejs)
+        if [ -n "$RUNTIME_DIR_OVERRIDE" ]; then
+            RUNTIME_BIN="${SKILL_DIR}/${RUNTIME_DIR_OVERRIDE}/bin/node"
+            [ -x "$RUNTIME_BIN" ] || RUNTIME_BIN="${SKILL_DIR}/${RUNTIME_DIR_OVERRIDE}/node"
+            [ -x "$RUNTIME_BIN" ] || RUNTIME_BIN="$(command -v node)"
+        else
+            RUNTIME_BIN="$(command -v node)"
+        fi
+        ;;
+    deno)
+        RUNTIME_BIN="$(command -v deno)"
+        ;;
+    *)
+        echo "未支持的 runtime kind: $RUNTIME_KIND" >&2
+        exit 69
+        ;;
+esac
+
+if [ -z "$RUNTIME_BIN" ] || [ ! -x "$RUNTIME_BIN" ]; then
+    echo "runtime '$RUNTIME_KIND' 不可执行" >&2
+    exit 70
+fi
+
+# 4) entry 路径（相对 SKILL_DIR）
+case "$ENTRY" in
+    /*) ENTRY_PATH="$ENTRY" ;;
+    *)  ENTRY_PATH="${SKILL_DIR}/${ENTRY}" ;;
+esac
+if [ ! -f "$ENTRY_PATH" ]; then
+    echo "entry 不存在：${ENTRY_PATH}" >&2
+    exit 71
+fi
+
+# 5) 超时（默认 20s）
+TIMEOUT_ARG=""
+if [ -n "$TOOL_TIMEOUT" ] && [ "$TOOL_TIMEOUT" -gt 0 ] 2>/dev/null; then
+    TIMEOUT_ARG="$TOOL_TIMEOUT"
+fi
+
+# 6) 把 JSON 喂 stdin 并 collect stdout
+echo "$JSON_ARGS" | {
+    if [ -n "$TIMEOUT_ARG" ]; then
+        timeout --foreground "${TIMEOUT_ARG}" "$RUNTIME_BIN" "$ENTRY_PATH"
+    else
+        "$RUNTIME_BIN" "$ENTRY_PATH"
+    fi
+}
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "{\"error\":\"skill-run exit $status\"}" >&2
+    exit "$status"
+fi

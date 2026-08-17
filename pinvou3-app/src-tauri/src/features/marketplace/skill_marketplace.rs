@@ -388,6 +388,17 @@ impl SkillMarketplaceManager {
             let _ = std::fs::remove_dir_all(&staged);
             format!("落盘: {e}")
         })?;
+
+        // Super-skill 协议后置 hook：扫描 SKILL.md frontmatter 的 `runtime` + `tools` 段。
+        // 若完整声明，把 `skills/<name>/scripts/**` 加进 priority_paths（execpolicy 通道
+        // 硬兜底），让 skill-run wrapper 能从沙箱列表外进入。
+        if let Err(e) = self.register_skill_exec_priority_paths(&dest, m.skill_name) {
+            log::warn!(
+                "[skill-marketplace] skill-run 注册失败（install {}）: {e}",
+                m.id
+            );
+        }
+
         // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
         // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
         let mut record =
@@ -399,6 +410,59 @@ impl SkillMarketplaceManager {
                 m.id
             );
         }
+        Ok(())
+    }
+
+    /// 把已装 skill 目录（`dest`）下的 SKILL.md frontmatter 中声明的可执行能力
+    /// 注册到 priority_paths，并刷新 execpolicy 规则集（in-flight 引擎的双向兜底）。
+    /// 内容-only skill（无 runtime + tools 段）→ 静默跳过。
+    fn register_skill_exec_priority_paths(
+        &self,
+        skill_dir: &Path,
+        skill_name: &str,
+    ) -> Result<(), String> {
+        let md = skill_dir.join("SKILL.md");
+        if !md.is_file() {
+            return Ok(()); // 不存在 SKILL.md 一定是裸技能，无 exec 段
+        }
+        let content = std::fs::read_to_string(&md).map_err(|e| format!("读 SKILL.md: {e}"))?;
+        let exec = read_skill_exec_from_str(&content)?;
+        if !exec.is_executable() {
+            return Ok(()); // 内容-only skill
+        }
+        // 收集该 skill 下所有 entry 路径（基于 runtime.dir 与 tools[].entry）
+        let runtime_dir = exec
+            .runtime
+            .as_ref()
+            .and_then(|r| r.dir.as_deref())
+            .map(|d| skill_dir.join(d));
+        let mut paths: Vec<PathBuf> = Vec::new();
+        if let Some(rd) = runtime_dir.as_ref() {
+            if rd.is_dir() {
+                paths.push(rd.clone());
+            }
+        }
+        for tool in &exec.tools {
+            let entry = tool.entry.trim_start_matches("./");
+            let entry_path = skill_dir.join(entry);
+            if entry_path.exists() {
+                if let Some(parent) = entry_path.parent() {
+                    paths.push(parent.to_path_buf());
+                }
+            }
+        }
+        if paths.is_empty() {
+            return Err(format!(
+                "skill '{skill_name}' 声明 runtime+tools 但未找到 entry/runtime 目录"
+            ));
+        }
+        // 把这些路径加进 priority_paths（execpolicy 已知可执行白名单，
+        // 引擎 spawn 时绕过常规 deny 名单——本 skill 自身的能力面）。
+        crate::platform::paths::add_skill_priority_paths(&paths);
+        log::info!(
+            "[skill-marketplace] skill '{skill_name}' 已注册 {} 个 priority path",
+            paths.len()
+        );
         Ok(())
     }
 
@@ -963,6 +1027,336 @@ pub(crate) fn sanitize_skill_name(name: &str) -> String {
         "skill".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+// =====================================================================
+// Super-skill 协议：SKILL.md frontmatter 增加可选 `runtime` + `tools[]` 段，
+// 让 skill 包承载可执行能力（取代老的 spanner 独立组件模型）。模型读完 SKILL.md
+// 后看到「本 skill 有 tools：通过 skill-run <tool-name> '<json-args>' 调用」，
+// stdout 必为合法 JSON。
+//
+// 已下线（保留作旧 plugin.json 反序列化兜底字段）：plugin.json 中的 `spanner` 字段
+// 在 plugin_import.rs 通过 `extra` map 兜住，丢给类型丢弃——旧上传包的 legacy data
+// 不会炸。仅作前向兼容读取，不再有对应的执行通路。
+
+/// Skill 运行时声明（语言不限）。对应 SKILL.md frontmatter `runtime:` 段：
+/// ```yaml
+/// runtime:
+///   kind: python        # python | python3 | node | nodejs | deno | ...
+///   dir: runtime        # 可选，自带运行时目录相对 skill 根
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRuntimeSpec {
+    pub kind: String,
+    #[serde(default)]
+    pub dir: Option<String>,
+}
+
+/// Skill 可执行工具声明。对应 frontmatter `tools:` 数组元素：
+/// ```yaml
+/// tools:
+///   - name: generate_html
+///     entry: scripts/generate.py
+///     input_schema: {type: object, properties: {prompt: {type: string}}, required: [prompt]}
+///     output_schema: {type: object}              # 可选
+///     timeout_secs: 30                         # 可选，默认 20
+///     background: false                        # 可选
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillToolSpec {
+    pub name: String,
+    pub entry: String,
+    #[serde(default)]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub background: Option<bool>,
+}
+
+/// skill 包的「可执行能力」声明集合。对应 frontmatter `runtime` + `tools` 段；
+/// 两个同时存在才算完整（缺 runtime 的 tools 不可调用，缺 tools 的 runtime 无意义）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillExecSpec {
+    #[serde(default)]
+    pub runtime: Option<SkillRuntimeSpec>,
+    #[serde(default)]
+    pub tools: Vec<SkillToolSpec>,
+}
+
+impl SkillExecSpec {
+    /// 是否声明了可执行能力（=runtime + 非空 tools）。
+    pub fn is_executable(&self) -> bool {
+        self.runtime.is_some() && !self.tools.is_empty()
+    }
+}
+
+/// 解析 SKILL.md YAML frontmatter 中 `runtime` 与 `tools` 段。
+///
+/// 这是 YAML 1.2 的最小子集解析器（不引 serde_yaml），理由：避免额外依赖、代码可
+/// 控、格式由本协议定义。前后由 `\n---\n` 标记包裹；frontmatter 不存在或这两段都不存
+/// 在 → 返回 Ok(Default)（"无 exec 段"是合法）。
+pub fn read_skill_exec_from_str(content: &str) -> Result<SkillExecSpec, String> {
+    // 1) 抽取 frontmatter 段
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Ok(SkillExecSpec::default());
+    }
+    let mut yaml_lines: Vec<&str> = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim_start() == "---" {
+            closed = true;
+            break;
+        }
+        yaml_lines.push(line);
+    }
+    if !closed {
+        return Ok(SkillExecSpec::default());
+    }
+    if yaml_lines.is_empty() {
+        return Ok(SkillExecSpec::default());
+    }
+
+    // 2) 极简 YAML：找到 `runtime:` 与 `tools:` 顶层段，裁出原始行（YAML 是缩进敏感
+    //    的，我们只识别顶层无缩进 `key:` 与 `  - entry:` / `  - name:` 等）。
+    let mut runtime: Option<SkillRuntimeSpec> = None;
+    let mut tools: Vec<SkillToolSpec> = Vec::new();
+    let mut i = 0;
+    while i < yaml_lines.len() {
+        let line = yaml_lines[i];
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            i += 1;
+            continue;
+        }
+        // 顶层段 = 行首非空白 + 以 `key:` 结尾
+        if line.starts_with(char::is_whitespace) == false && trimmed.ends_with(':') {
+            let key = trimmed.trim_end_matches(':').trim();
+            i += 1;
+            if key == "runtime" {
+                // 收集后续缩进行直到下一个顶层段或 EOF
+                let mut block: Vec<&str> = Vec::new();
+                while i < yaml_lines.len() {
+                    let cur = yaml_lines[i];
+                    if !cur.starts_with(' ') && !cur.starts_with('\t') && cur.trim().ends_with(':')
+                    {
+                        break;
+                    }
+                    if !cur.trim().is_empty() {
+                        block.push(cur);
+                    }
+                    i += 1;
+                }
+                runtime = parse_runtime_block(&block)?;
+            } else if key == "tools" {
+                // tools 是数组：扫描 `- ` 起始项，每项收集缩进行直到下一个 `- `
+                let mut item: Vec<String> = Vec::new();
+                while i < yaml_lines.len() {
+                    let cur = yaml_lines[i];
+                    if cur.trim_start().starts_with("- ") {
+                        if !item.is_empty() {
+                            let parsed = parse_tool_item(&item)?;
+                            tools.push(parsed);
+                            item.clear();
+                        }
+                        item.push(cur.to_string());
+                    } else if cur.starts_with(' ') || cur.starts_with('\t') {
+                        if !item.is_empty() {
+                            item.push(cur.to_string());
+                        } else {
+                            break;
+                        }
+                    } else if cur.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    } else {
+                        break;
+                    }
+                    i += 1;
+                }
+                if !item.is_empty() {
+                    let parsed = parse_tool_item(&item)?;
+                    tools.push(parsed);
+                }
+            } else {
+                // 未关注的段，跳过其缩进体
+                while i < yaml_lines.len() {
+                    let cur = yaml_lines[i];
+                    if !cur.starts_with(' ') && !cur.starts_with('\t') && cur.trim().ends_with(':')
+                    {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    Ok(SkillExecSpec { runtime, tools })
+}
+
+fn parse_runtime_block(lines: &[&str]) -> Result<Option<SkillRuntimeSpec>, String> {
+    let mut kind: Option<String> = None;
+    let mut dir: Option<String> = None;
+    for line in lines {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("kind:") {
+            kind = Some(unquote_yaml_scalar(rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("dir:") {
+            dir = Some(unquote_yaml_scalar(rest.trim()));
+        }
+    }
+    let kind = match kind {
+        Some(k) if !k.is_empty() => k,
+        _ => return Ok(None), // 无 runtime 段 → Ok(None)，不是错
+    };
+    Ok(Some(SkillRuntimeSpec { kind, dir }))
+}
+
+fn parse_tool_item(lines: &[String]) -> Result<SkillToolSpec, String> {
+    let mut name: Option<String> = None;
+    let mut entry: Option<String> = None;
+    let mut input_schema: Option<serde_json::Value> = None;
+    let mut output_schema: Option<serde_json::Value> = None;
+    let mut timeout_secs: Option<u64> = None;
+    let mut background: Option<bool> = None;
+    for raw in lines {
+        let trimmed = raw.trim();
+        // 去掉 `- ` 列表前缀
+        let body = if let Some(stripped) = trimmed.strip_prefix("- ") {
+            stripped
+        } else {
+            trimmed
+        };
+        if let Some(rest) = body.strip_prefix("name:") {
+            name = Some(unquote_yaml_scalar(rest.trim()));
+        } else if let Some(rest) = body.strip_prefix("entry:") {
+            entry = Some(unquote_yaml_scalar(rest.trim()));
+        } else if let Some(rest) = body.strip_prefix("input_schema:") {
+            input_schema = Some(parse_inline_yaml_value(rest.trim())?);
+        } else if let Some(rest) = body.strip_prefix("output_schema:") {
+            output_schema = Some(parse_inline_yaml_value(rest.trim())?);
+        } else if let Some(rest) = body.strip_prefix("timeout_secs:") {
+            timeout_secs = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = body.strip_prefix("background:") {
+            background = rest.trim().parse::<bool>().ok();
+        }
+    }
+    let name = name.ok_or_else(|| "tools[] 缺 name".to_string())?;
+    let entry = entry.ok_or_else(|| format!("tool '{name}' 缺 entry"))?;
+    Ok(SkillToolSpec {
+        name,
+        entry,
+        input_schema,
+        output_schema,
+        timeout_secs,
+        background,
+    })
+}
+
+fn unquote_yaml_scalar(s: &str) -> String {
+    s.trim().trim_matches('"').trim_matches('\'').to_string()
+}
+
+/// 极简 YAML 标量解析：支持 `null` / `true` / `false` / 整数 / 字符串。
+/// 复杂结构（多行 mapping / 嵌套）不支持——本协议规定 input_schema/output_schema
+/// 写一行 JSON 字面量最简单。
+fn parse_inline_yaml_value(s: &str) -> Result<serde_json::Value, String> {
+    let trimmed = s.trim();
+    if trimmed == "null" || trimmed == "~" || trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    if trimmed == "true" {
+        return Ok(serde_json::Value::Bool(true));
+    }
+    if trimmed == "false" {
+        return Ok(serde_json::Value::Bool(false));
+    }
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return Ok(serde_json::Value::Number(n.into()));
+    }
+    // 否则按裸字符串
+    Ok(serde_json::Value::String(unquote_yaml_scalar(trimmed)))
+}
+
+#[cfg(test)]
+mod super_skill_tests {
+    use super::*;
+
+    fn sample_md(body: &str) -> String {
+        format!("---\nname: pua\n{body}\n---\n# skill body\n")
+    }
+
+    #[test]
+    fn read_skill_exec_no_frontmatter() {
+        // 无 frontmatter → Default
+        let md = "# just body\n";
+        let exec = read_skill_exec_from_str(md).unwrap();
+        assert!(!exec.is_executable());
+    }
+
+    #[test]
+    fn read_skill_exec_runtime_only_no_tools() {
+        let md = sample_md("runtime:\n  kind: python\n");
+        let exec = read_skill_exec_from_str(&md).unwrap();
+        assert!(!exec.is_executable(), "缺 tools 不算可执行");
+        assert_eq!(exec.runtime.as_ref().unwrap().kind, "python");
+    }
+
+    #[test]
+    fn read_skill_exec_full() {
+        let md = sample_md(
+            "runtime:\n  kind: python\n  dir: runtime\ntools:\n  - name: generate_html\n    entry: scripts/generate.py\n    input_schema: {type: object, properties: {prompt: {type: string}}}\n    timeout_secs: 30\n  - name: render\n    entry: scripts/render.py\n",
+        );
+        let exec = read_skill_exec_from_str(&md).unwrap();
+        assert!(exec.is_executable());
+        assert_eq!(exec.runtime.as_ref().unwrap().kind, "python");
+        assert_eq!(exec.runtime.as_ref().unwrap().dir.as_deref(), Some("runtime"));
+        assert_eq!(exec.tools.len(), 2);
+        assert_eq!(exec.tools[0].name, "generate_html");
+        assert_eq!(exec.tools[0].entry, "scripts/generate.py");
+        assert_eq!(exec.tools[0].timeout_secs, Some(30));
+        assert_eq!(exec.tools[1].name, "render");
+    }
+
+    #[test]
+    fn read_skill_exec_malformed_returns_err() {
+        let md = "---\ntools:\n  - entry: x.py\n---\n";  // 缺 name
+        let err = read_skill_exec_from_str(&md).unwrap_err();
+        assert!(err.contains("name"), "err: {err}");
+    }
+
+    #[test]
+    fn priority_paths_roundtrip() {
+        use std::path::PathBuf;
+        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var(
+            "PINVOU3_HOME",
+            std::env::temp_dir().join(format!("pinvou3-skill-paths-{}", std::process::id())),
+        );
+        // 初始为空
+        assert!(paths::skill_priority_paths().is_empty());
+        // 加两个 + 重复一个（去重）
+        paths::add_skill_priority_paths(&[
+            PathBuf::from("/tmp/a"),
+            PathBuf::from("/tmp/b"),
+            PathBuf::from("/tmp/a"),
+        ]);
+        let got = paths::skill_priority_paths();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&PathBuf::from("/tmp/a")));
+        assert!(got.contains(&PathBuf::from("/tmp/b")));
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
     }
 }
 
