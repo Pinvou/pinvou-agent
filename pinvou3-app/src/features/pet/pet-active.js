@@ -16,7 +16,6 @@ function reportLoadError(onError, error, petId, fallback) {
  */
 export async function loadActivePet(requestedId, {
   state,
-  startup = false,
   defaultPetId = 'lingling',
   normalizeId,
   resolvePet,

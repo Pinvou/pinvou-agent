@@ -210,7 +210,6 @@ export default function PetWindow({
   const activateSelectedPet = async (id, startup = false) => {
     const committed = await loadActivePet(id, {
       state: petActivationRef.current,
-      startup,
       defaultPetId: DEFAULT_PET_ID,
       normalizeId: normalizePetId,
       resolvePet,

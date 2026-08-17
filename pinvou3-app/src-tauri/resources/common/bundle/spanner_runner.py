@@ -44,6 +44,11 @@ def _resolve_runtime(spanner, pkg_dir):
     runtime = (spanner or {}).get("runtime") or {}
     rt_dir = runtime.get("dir")
     kind = (runtime.get("kind") or "python").lower()
+    # runtime.dir 与 Rust 侧 resolve_spanner_runtime 同口径：拒绝 `..`/绝对路径
+    # （二轮评审：runtime.dir 未校验）。相对包内路径才允许。
+    if rt_dir and (".." in rt_dir or rt_dir.startswith("/") or rt_dir.startswith("\\")
+                   or os.path.isabs(rt_dir)):
+        rt_dir = None
     if rt_dir:
         rt_path = os.path.join(pkg_dir, rt_dir)
         if os.path.isdir(rt_path):
@@ -54,6 +59,11 @@ def _resolve_runtime(spanner, pkg_dir):
                         return [p]
             elif kind in ("node", "nodejs"):
                 for cand in ("bin/node", "node.exe", "node"):
+                    p = os.path.join(rt_path, cand)
+                    if os.path.isfile(p):
+                        return [p]
+            elif kind in ("deno",):
+                for cand in ("bin/deno", "deno.exe", "deno"):
                     p = os.path.join(rt_path, cand)
                     if os.path.isfile(p):
                         return [p]

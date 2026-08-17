@@ -177,7 +177,6 @@ pinvou3-app/          Tauri 2 + React/Vite desktop application
 CodeWhale/            Agent engine submodule
 pinvou3-app/resources/mcp-servers/
                       Independent local MCP servers
-workflows/            Reusable workflows
 scripts/              Tests, guards, build, and release helpers
 docs/                 Architecture and maintenance documentation
 ```

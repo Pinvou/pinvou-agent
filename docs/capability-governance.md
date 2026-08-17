@@ -88,7 +88,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；

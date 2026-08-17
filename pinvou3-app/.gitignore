@@ -4,9 +4,6 @@ src-tauri/target/
 
 # 前端依赖（@tauri-apps/cli native binary 等）
 node_modules/
-# 三省六部网页模板依赖由统一 Tauri wrapper 按当前平台从 lockfile 生成，
-# 安装包继续携带离线依赖，但源码仓库不跟踪 node_modules。
-src-tauri/resources/**/web-template/node_modules/
 
 # Tauri 生成的快照
 src-tauri/gen/

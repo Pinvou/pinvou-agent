@@ -37,14 +37,6 @@ pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String
     ))
 }
 
-/// 商店「管理可见性」：读某 scope 被「不可见」的包 id 列表（可见性预过滤，非开关）。
-/// 缺省空 = 全可见。`scope` = "plain"(缺省)或 "code"。
-#[tauri::command]
-pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
-    let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
-}
-
 /// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
 /// 底座可用集（union 开关关+不可见）。与开关（set_disabled_connectors）正交。
 #[tauri::command]
@@ -74,12 +66,20 @@ pub async fn set_bundle_visibility(
     Ok(())
 }
 
+/// 商店「管理可见性」：读某 scope 被「不可见」的包 id 列表（可见性预过滤，非开关）。
+/// 缺省空 = 全可见。`scope` = "plain"(缺省)或 "code"。
+#[tauri::command]
+pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+}
+
 // ---------------------------------------------------------------------------
 // 技能开关（按会话类型 scope 独立持久，skill 双 scope 治理）
 // ---------------------------------------------------------------------------
 
 /// pinvou3 技能开关：写某 scope 被禁用的技能 id 列表（市场 id）。落盘
-/// `~/.pinvou3/disabled_skills.json` → 重写该 scope 在线会话的组合目录（下一轮
+/// `~/.pinvou3/disabled_bundles.json`（scope 收敛后与连接器开关同一文件）→ 重写该 scope 在线会话的组合目录（下一轮
 /// prompt 即生效）→ 热刷工具白名单（组合目录空/非空会改变 `load_skill` 的隐藏
 /// 判定）。`scope` = "plain"(缺省)或 "code"。
 #[tauri::command]
@@ -100,6 +100,8 @@ pub async fn set_disabled_skills(
     pool.refresh_live_sessions_skills().await;
     // load_skill 隐藏判定随目录空/非空变化，热刷 disallowed_tools 与 UI 事件。
     pool.refresh_disallowed_tools().await;
+    // 技能开关影响 execpolicy 规则集（skill denied_prefixes 与组合目录派生 deny），需双向热刷
+    pool.refresh_permission_rulesets().await;
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -131,6 +133,8 @@ pub async fn set_project_skills_enabled(
     // 开关影响 code 会话组合目录：重写在线会话 + 热刷 load_skill 隐藏判定。
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
+    // 同步 execpolicy 规则集：项目级 skills 重新纳入 deny/allow 集合。
+    pool.refresh_permission_rulesets().await;
     // 广播工具变更：项目级 skills 开关影响 code 会话组合目录，其它窗口/实例
     // 需借此事件刷新开关状态（与 set_disabled_skills 对齐）。
     let payload = serde_json::json!({});
@@ -170,7 +174,17 @@ use crate::features::connectors::{
 use connector_cli_domain::*;
 use serde_json::Value;
 
-async_command_passthrough!(connector_cli_domain, refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String>);
+/// 连接/断开后的技能门控刷新 + execpolicy 规则集热刷（二轮评审 M-6：connect 路径
+/// 规则集不热刷会让在跑引擎对刚连接连接器的技能脚本/CLI 拦截过期）。
+#[tauri::command]
+pub async fn refresh_connector_auth_gates(
+    pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<ConnectorAuthGateRefresh, String> {
+    let result = connector_cli_domain::refresh_connector_auth_gates().await?;
+    // 技能目录可能已增删 → 技能脚本 deny 规则（code 默认全禁已装技能）要按新目录重算。
+    pool.refresh_permission_rulesets().await;
+    Ok(result)
+}
 
 async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_status() -> Result<Value, String>);

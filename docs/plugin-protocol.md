@@ -25,7 +25,7 @@
 | `spanner` | ✅ | **扳手插件**：声明式 schema + 无状态单次进程 + 自带运行时（语言不限），经内置 `spanner_runner` 包装成 MCP 工具，作者只写 stdin→stdout（§15） |
 | `skills` | ✅ | SKILL.md 目录（挂载给 LLM 的 markdown 指令），复用现有技能落盘与物化 |
 | `workflows` | ❌ v2 | harness loop 多智能体编排；识别/落盘可行，但治理通道需 harness 侧 scenario 过滤缝（§11/§12-B），v1 不做 |
-| `cli_connectors` | ✅ 声明式 | zip 只放「下载声明」（URL + SHA-256 + 版本 + 配套技能），安装时下载二进制到 `assets/cli/`（lock 表）；不内嵌原生二进制，详见 §14.3 |
+| `cli_connectors` | ⏳ 未实现（草案） | zip 只放「下载声明」（URL + SHA-256 + 版本 + 配套技能），安装时下载二进制到 `assets/cli/`（lock 表）；不内嵌原生二进制，详见 §14.3 |
 | `commands` / `hooks` | ⛔ 预留 | 见 §12，需新增执行点禁用通道与信任模型 |
 
 **不变量**（沿用 `capability-governance.md` §5.2 / `marketplace-unification.md` §5.2）：
@@ -274,13 +274,13 @@ workflows 非空                              → Workflow
 1. **路径穿越**：每个 zip entry 用 `enclosed_name()`，`None` 即拒（`..`/绝对路径）；
    写出前 `target.starts_with(staged)` 二次断言。
 2. **symlink / hardlink**：`unix_mode` 高 4 位为 `0o120000` 即拒。
-3. **体积与数量上限**：单包解压累计 ≤ `MAX_PLUGIN_SIZE_BYTES`（v1 沿用 5 MiB，
+3. **体积与数量上限**：单包解压累计 ≤ `MAX_PLUGIN_SIZE_BYTES`（200 MiB，
    可随组件类型放宽为可配置常量）；entry 数量上限防 zip 炸弹；压缩前大小
    （`entry.size()` 累加）与压缩率双重卡。
 4. **名字安全**：`is_safe_skill_name` 泛化为 `is_safe_component_id`
    （`[A-Za-z0-9-_]{1,64}`，禁 `.`/`..`/路径分隔符），组件 id、server id、
    skill name、workflow id 一律套用；与已下线内置名冲突即拒。
-5. **脚本事实现算 `has_executables`**：解包后扫描技能/workflow/MCP 子树中的
+5. **脚本事实现算 `has_executables`**（⏳ 未实现，草案）：解包后扫描技能/workflow/MCP 子树中的
    可执行脚本（`.py`/`.sh`/`.ps1`/`.js`/`.cjs`/`.mjs` 等按解释器表判定）。
    为 true 时，导入/安装前**显式告知用户**「该包含可执行脚本，安装即授权其
    以本机身份运行」（`marketplace-unification.md` §6 预检语义落地）。
@@ -376,13 +376,13 @@ workflows 非空                              → Workflow
 
 | 层级 | 触发 | 通道 | v1 |
 |---|---|---|---|
-| 包级下载 | 商店输入 URL / 远程分发 | `import_plugin_package_from_url` → 下载 → 复用 §10 管线 | ✅ |
+| 包级下载 | 商店输入 URL / 远程分发 | `import_plugin_package_from_url` → 下载 → 复用 §10 管线 | ⏳ 未实现（草案） |
 | 组件级远程资源 | `plugin.json` 声明 `source:"remote"` | 安装时 AssetManager 下载并验 SHA-256 | ✅（CLI 二进制）|
 | 依赖级下载 | `dependencies.pip` / `runtimes` | 现有 pip / runtime 管线（§4，软声明） | ✅ |
 
 ### 14.2 包级下载（商店 URL 导入）
 
-新命令 `import_plugin_package_from_url(url, display_name, sha256?)`，流程：
+拟议命令 `import_plugin_package_from_url(url, display_name, sha256?)`（未实现，草案）：流程：
 
 ```
 1. 获取   —— 下载到 assets/.staging/<hash>.zip（HTTPS only）

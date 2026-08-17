@@ -25,7 +25,6 @@ export const FULL_FRONTEND_SMOKES = Object.freeze([
 ]);
 
 const CORE_SMOKE = command("npm", "test:ui-smoke");
-
 const FEATURE_COMMANDS = new Map([
   ["knowledge", [command("npm", "test:kb-smoke")]],
   ["pet", [command("node", "tests/pet_selector_ui_smoke.js")]],
@@ -34,7 +33,6 @@ const FEATURE_COMMANDS = new Map([
   ["tools", [command("npm", "test:tool-store"), command("npm", "test:tool-store-import"), command("npm", "test:tool-store-grouping")]],
   ["updater", [command("node", "tests/update_notice_ui_smoke.js")]],
   ["web", [command("npm", "test:webui")]],
-  ["workflow", [command("node", "tests/scheduled_tasks_smoke.js")]],
 ]);
 
 const FULL_PREFIXES = [
@@ -52,6 +50,7 @@ const FULL_PREFIXES = [
   "pinvou3-app/src/shared/",
   "pinvou3-app/src-tauri/config/",
   "pinvou3-app/src-tauri/packaging/",
+  "pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/",
   "pinvou3-app/src-tauri/tauri.conf.json",
   "pinvou3-app/tests/",
   "pinvou3-app/vite.config.js",
@@ -70,6 +69,7 @@ function isFrontendRelevant(path) {
     path.startsWith("pinvou3-app/scripts/tauri/") ||
     path.startsWith("pinvou3-app/src-tauri/config/") ||
     path.startsWith("pinvou3-app/src-tauri/packaging/") ||
+    path.startsWith("pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/") ||
     path.startsWith("remote-control-relay/") ||
     path === "pinvou3-app/package.json" ||
     path === "pinvou3-app/package-lock.json" ||

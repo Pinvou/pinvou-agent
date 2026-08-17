@@ -12,7 +12,7 @@ use deepseek_tui::automation_manager::{
     UpdateAutomationRequest,
 };
 use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus};
-use parking_lot::{Mutex as ParkingMutex, RwLock};
+use parking_lot::Mutex as ParkingMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine_pool::EnginePool;
@@ -29,594 +29,9 @@ const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 
-fn scheduled_run_read_state_schema_version() -> u32 {
-    SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ScheduledRunReadRegistry {
-    #[serde(default = "scheduled_run_read_state_schema_version")]
-    schema_version: u32,
-    #[serde(default)]
-    viewed_runs: HashMap<String, HashSet<String>>,
-}
-
-impl Default for ScheduledRunReadRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION,
-            viewed_runs: HashMap::new(),
-        }
-    }
-}
-
-fn scheduled_model_binding_schema_version() -> u32 {
-    SCHEDULED_MODEL_BINDING_SCHEMA_VERSION
-}
-
-fn scheduled_task_ui_metadata_schema_version() -> u32 {
-    SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct ScheduledTaskModelBinding {
-    model_id: String,
-    model: String,
-    updated_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ScheduledTaskModelBindingRegistry {
-    #[serde(default = "scheduled_model_binding_schema_version")]
-    schema_version: u32,
-    #[serde(default)]
-    tasks: HashMap<String, ScheduledTaskModelBinding>,
-}
-
-impl Default for ScheduledTaskModelBindingRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: SCHEDULED_MODEL_BINDING_SCHEMA_VERSION,
-            tasks: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct ScheduledTaskUiMetadata {
-    #[serde(default)]
-    pinned: bool,
-    #[serde(default)]
-    pinned_at: Option<String>,
-    updated_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ScheduledTaskUiMetadataRegistry {
-    #[serde(default = "scheduled_task_ui_metadata_schema_version")]
-    schema_version: u32,
-    #[serde(default)]
-    tasks: HashMap<String, ScheduledTaskUiMetadata>,
-}
-
-impl Default for ScheduledTaskUiMetadataRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
-            tasks: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ScheduledTaskUiMetadataStore {
-    path: Arc<PathBuf>,
-    registry: Arc<RwLock<ScheduledTaskUiMetadataRegistry>>,
-}
-
-impl ScheduledTaskUiMetadataStore {
-    fn open(path: PathBuf) -> Result<Self> {
-        let mut migrated = false;
-        let registry = match std::fs::read_to_string(&path) {
-            Ok(raw) => match serde_json::from_str::<ScheduledTaskUiMetadataRegistry>(&raw) {
-                Ok(registry)
-                    if registry.schema_version == SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION =>
-                {
-                    registry
-                }
-                Ok(registry)
-                    if registry.schema_version < SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION =>
-                {
-                    migrated = true;
-                    ScheduledTaskUiMetadataRegistry {
-                        schema_version: SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION,
-                        tasks: registry.tasks,
-                    }
-                }
-                Ok(registry) => {
-                    log::warn!(
-                        "Ignoring newer scheduled task UI metadata schema v{} at {}",
-                        registry.schema_version,
-                        path.display()
-                    );
-                    ScheduledTaskUiMetadataRegistry::default()
-                }
-                Err(error) => {
-                    log::warn!(
-                        "Ignoring invalid scheduled task UI metadata {}: {error}",
-                        path.display()
-                    );
-                    ScheduledTaskUiMetadataRegistry::default()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                ScheduledTaskUiMetadataRegistry::default()
-            }
-            Err(error) => {
-                log::warn!(
-                    "Unable to read scheduled task UI metadata {}: {error}",
-                    path.display()
-                );
-                ScheduledTaskUiMetadataRegistry::default()
-            }
-        };
-        let store = Self {
-            path: Arc::new(path),
-            registry: Arc::new(RwLock::new(registry)),
-        };
-        if migrated {
-            if let Err(error) = store.persist(&store.registry.read()) {
-                log::warn!(
-                    "Unable to persist migrated scheduled task UI metadata {}: {error:#}",
-                    store.path.display()
-                );
-            }
-        }
-        Ok(store)
-    }
-
-    fn metadata_for(&self, automation_id: &str) -> (bool, Option<String>) {
-        self.registry
-            .read()
-            .tasks
-            .get(automation_id)
-            .filter(|metadata| metadata.pinned)
-            .map(|metadata| (true, metadata.pinned_at.clone()))
-            .unwrap_or((false, None))
-    }
-
-    fn set_pinned(&self, automation_id: &str, pinned: bool) -> Result<()> {
-        if automation_id.trim().is_empty() {
-            bail!("scheduled automation id cannot be empty");
-        }
-        let now = chrono::Utc::now().to_rfc3339();
-        let mut registry = self.registry.write();
-        let previous = registry.tasks.get(automation_id).cloned();
-        if pinned {
-            registry.tasks.insert(
-                automation_id.to_string(),
-                ScheduledTaskUiMetadata {
-                    pinned: true,
-                    pinned_at: Some(now.clone()),
-                    updated_at: now,
-                },
-            );
-        } else {
-            registry.tasks.remove(automation_id);
-        }
-        if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(metadata) => {
-                    registry.tasks.insert(automation_id.to_string(), metadata);
-                }
-                None => {
-                    registry.tasks.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn remove(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let before = registry.tasks.clone();
-        registry.tasks.retain(|id, _| automation_ids.contains(id));
-        if registry.tasks == before {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks = before;
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn persist(&self, registry: &ScheduledTaskUiMetadataRegistry) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("create scheduled task UI metadata dir {}", parent.display())
-            })?;
-        }
-        let payload =
-            serde_json::to_vec_pretty(registry).context("serialize scheduled task UI metadata")?;
-        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
-            .with_context(|| format!("write scheduled task UI metadata {}", self.path.display()))
-    }
-}
-
-#[derive(Clone)]
-struct ScheduledTaskModelBindingStore {
-    path: Arc<PathBuf>,
-    registry: Arc<RwLock<ScheduledTaskModelBindingRegistry>>,
-}
-
-impl ScheduledTaskModelBindingStore {
-    fn open(path: PathBuf) -> Result<Self> {
-        let mut migrated = false;
-        let registry = match std::fs::read_to_string(&path) {
-            Ok(raw) => match serde_json::from_str::<ScheduledTaskModelBindingRegistry>(&raw) {
-                Ok(registry)
-                    if registry.schema_version == SCHEDULED_MODEL_BINDING_SCHEMA_VERSION =>
-                {
-                    registry
-                }
-                Ok(registry)
-                    if registry.schema_version < SCHEDULED_MODEL_BINDING_SCHEMA_VERSION =>
-                {
-                    migrated = true;
-                    ScheduledTaskModelBindingRegistry {
-                        schema_version: SCHEDULED_MODEL_BINDING_SCHEMA_VERSION,
-                        tasks: registry.tasks,
-                    }
-                }
-                Ok(registry) => {
-                    quarantine_invalid_model_binding_state(
-                        &path,
-                        &format!(
-                            "schema v{} is newer than supported v{}",
-                            registry.schema_version, SCHEDULED_MODEL_BINDING_SCHEMA_VERSION
-                        ),
-                    );
-                    ScheduledTaskModelBindingRegistry::default()
-                }
-                Err(error) => {
-                    quarantine_invalid_model_binding_state(
-                        &path,
-                        &format!("invalid JSON: {error}"),
-                    );
-                    ScheduledTaskModelBindingRegistry::default()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                ScheduledTaskModelBindingRegistry::default()
-            }
-            Err(error) => {
-                log::warn!(
-                    "Unable to read scheduled model binding state {}: {error}; scheduled tasks will fall back to wire model names",
-                    path.display()
-                );
-                ScheduledTaskModelBindingRegistry::default()
-            }
-        };
-        let store = Self {
-            path: Arc::new(path),
-            registry: Arc::new(RwLock::new(registry)),
-        };
-        if migrated {
-            if let Err(error) = store.persist(&store.registry.read()) {
-                log::warn!(
-                    "Unable to persist migrated scheduled model binding state {}: {error:#}",
-                    store.path.display()
-                );
-            }
-        }
-        Ok(store)
-    }
-
-    fn model_id_for(&self, automation_id: &str, model: &str) -> Option<String> {
-        self.registry
-            .read()
-            .tasks
-            .get(automation_id)
-            .filter(|binding| binding.model == model)
-            .map(|binding| binding.model_id.clone())
-    }
-
-    fn set(
-        &self,
-        automation_id: &str,
-        model_id: Option<String>,
-        model: Option<String>,
-    ) -> Result<()> {
-        if automation_id.trim().is_empty() {
-            bail!("scheduled automation id cannot be empty");
-        }
-        let model_id = model_id
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let model = model
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let mut registry = self.registry.write();
-        let previous = registry.tasks.get(automation_id).cloned();
-        match (model_id, model) {
-            (Some(model_id), Some(model)) => {
-                registry.tasks.insert(
-                    automation_id.to_string(),
-                    ScheduledTaskModelBinding {
-                        model_id,
-                        model,
-                        updated_at: chrono::Utc::now().to_rfc3339(),
-                    },
-                );
-            }
-            _ => {
-                registry.tasks.remove(automation_id);
-            }
-        }
-        if let Err(error) = self.persist(&registry) {
-            match previous {
-                Some(binding) => {
-                    registry.tasks.insert(automation_id.to_string(), binding);
-                }
-                None => {
-                    registry.tasks.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn remove(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(previous) = registry.tasks.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks.insert(automation_id.to_string(), previous);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn compact(&self, automation_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let before = registry.tasks.clone();
-        registry.tasks.retain(|id, _| automation_ids.contains(id));
-        if registry.tasks == before {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry.tasks = before;
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn persist(&self, registry: &ScheduledTaskModelBindingRegistry) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("create scheduled model binding dir {}", parent.display())
-            })?;
-        }
-        let payload =
-            serde_json::to_vec_pretty(registry).context("serialize scheduled model bindings")?;
-        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
-            .with_context(|| format!("write scheduled model bindings {}", self.path.display()))
-    }
-}
-
-fn quarantine_invalid_model_binding_state(path: &std::path::Path, reason: &str) {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("model-bindings.json");
-    let quarantine_path = path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
-    match std::fs::rename(path, &quarantine_path) {
-        Ok(()) => log::warn!(
-            "Quarantined scheduled model binding state {} to {} ({reason}); scheduled tasks will fall back to wire model names",
-            path.display(),
-            quarantine_path.display()
-        ),
-        Err(error) => log::warn!(
-            "Invalid scheduled model binding state {} ({reason}) could not be quarantined: {error}; scheduled tasks will fall back to wire model names",
-            path.display()
-        ),
-    }
-}
-
-#[derive(Clone)]
-struct ScheduledRunReadStore {
-    path: Arc<PathBuf>,
-    registry: Arc<RwLock<ScheduledRunReadRegistry>>,
-}
-
-impl ScheduledRunReadStore {
-    fn open(path: PathBuf) -> Result<Self> {
-        let mut migrated = false;
-        let registry = match std::fs::read_to_string(&path) {
-            Ok(raw) => match serde_json::from_str::<ScheduledRunReadRegistry>(&raw) {
-                Ok(registry)
-                    if registry.schema_version == SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION =>
-                {
-                    registry
-                }
-                Ok(registry)
-                    if registry.schema_version < SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION =>
-                {
-                    migrated = true;
-                    ScheduledRunReadRegistry::default()
-                }
-                Ok(registry) => {
-                    quarantine_invalid_read_state(
-                        &path,
-                        &format!(
-                            "schema v{} is newer than supported v{}",
-                            registry.schema_version, SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION
-                        ),
-                    );
-                    ScheduledRunReadRegistry::default()
-                }
-                Err(error) => {
-                    quarantine_invalid_read_state(&path, &format!("invalid JSON: {error}"));
-                    ScheduledRunReadRegistry::default()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                ScheduledRunReadRegistry::default()
-            }
-            Err(error) => {
-                log::warn!(
-                    "Unable to read scheduled run state {}: {error}; treating all runs as unread",
-                    path.display()
-                );
-                ScheduledRunReadRegistry::default()
-            }
-        };
-        let store = Self {
-            path: Arc::new(path),
-            registry: Arc::new(RwLock::new(registry)),
-        };
-        if migrated {
-            if let Err(error) = store.persist(&store.registry.read()) {
-                log::warn!(
-                    "Unable to persist migrated scheduled run state {}: {error:#}",
-                    store.path.display()
-                );
-            }
-        }
-        Ok(store)
-    }
-
-    fn is_viewed(&self, automation_id: &str, run_id: &str) -> bool {
-        self.registry
-            .read()
-            .viewed_runs
-            .get(automation_id)
-            .is_some_and(|runs| runs.contains(run_id))
-    }
-
-    fn mark_viewed(&self, automation_id: &str, run_id: &str) -> Result<()> {
-        if automation_id.trim().is_empty() || run_id.trim().is_empty() {
-            bail!("scheduled automation and run ids cannot be empty");
-        }
-        let mut registry = self.registry.write();
-        let inserted = registry
-            .viewed_runs
-            .entry(automation_id.to_string())
-            .or_default()
-            .insert(run_id.to_string());
-        if !inserted {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&registry) {
-            if let Some(runs) = registry.viewed_runs.get_mut(automation_id) {
-                runs.remove(run_id);
-                if runs.is_empty() {
-                    registry.viewed_runs.remove(automation_id);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn remove_automation(&self, automation_id: &str) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(removed) = registry.viewed_runs.remove(automation_id) else {
-            return Ok(());
-        };
-        if let Err(error) = self.persist(&registry) {
-            registry
-                .viewed_runs
-                .insert(automation_id.to_string(), removed);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn compact(&self, automation_id: &str, current_run_ids: &HashSet<String>) -> Result<()> {
-        let mut registry = self.registry.write();
-        let Some(existing) = registry.viewed_runs.get(automation_id).cloned() else {
-            return Ok(());
-        };
-        let retained = existing
-            .iter()
-            .filter(|run_id| current_run_ids.contains(*run_id))
-            .cloned()
-            .collect::<HashSet<_>>();
-        if retained == existing {
-            return Ok(());
-        }
-        if retained.is_empty() {
-            registry.viewed_runs.remove(automation_id);
-        } else {
-            registry
-                .viewed_runs
-                .insert(automation_id.to_string(), retained);
-        }
-        if let Err(error) = self.persist(&registry) {
-            registry
-                .viewed_runs
-                .insert(automation_id.to_string(), existing);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn persist(&self, registry: &ScheduledRunReadRegistry) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("create scheduled run read-state dir {}", parent.display())
-            })?;
-        }
-        let payload =
-            serde_json::to_vec_pretty(registry).context("serialize scheduled run read state")?;
-        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
-            .with_context(|| format!("write scheduled run read state {}", self.path.display()))
-    }
-}
-
-fn quarantine_invalid_read_state(path: &std::path::Path, reason: &str) {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("scheduled-run-read-state.json");
-    let quarantine_path = path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
-    match std::fs::rename(path, &quarantine_path) {
-        Ok(()) => log::warn!(
-            "Quarantined scheduled run state {} to {} ({reason}); treating all runs as unread",
-            path.display(),
-            quarantine_path.display()
-        ),
-        Err(error) => log::warn!(
-            "Invalid scheduled run state {} ({reason}) could not be quarantined: {error}; treating all runs as unread",
-            path.display()
-        ),
-    }
-}
+#[path = "stores.rs"]
+mod stores;
+use stores::*;
 
 /// 删除一次定时运行对话的那一步。抽成 trait 只为可注入：EnginePool 需要活的
 /// WebView AppHandle，无法在单元测试里构造，而删除级联的正确性必须被测到。
@@ -2191,6 +1606,7 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use parking_lot::RwLock;
 
     impl ScheduledTaskState {
         async fn create_for_test(
@@ -2239,6 +1655,161 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create temp home");
         dir
+    }
+
+    // ── VersionedJsonStore<T> 通用核心(合并三 store) ──────────────────
+    // 这组测试覆盖合并前的行为契约:open 空 / 当前版本直读 / 旧版本迁移 /
+    // 损坏 JSON quarantine / 原子 persist;并区分 Rename 与 LogInPlace 两种策略。
+    #[test]
+    fn versioned_json_store_open_empty_uses_default_registry() {
+        let dir = temp_home();
+        let path = dir.join("empty-read-state.json");
+        let store = VersionedJsonStore::<ScheduledRunReadRegistry>::open(path.clone())
+            .expect("open missing file");
+        assert!(store.registry.read().viewed_runs.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn versioned_json_store_open_current_version_passes_through() {
+        let dir = temp_home();
+        let path = dir.join("current.json");
+        let mut registry = ScheduledRunReadRegistry::default();
+        registry.viewed_runs.insert(
+            "automation-1".to_string(),
+            HashSet::from(["run-1".to_string()]),
+        );
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&registry).expect("serialize"),
+        )
+        .expect("write registry");
+
+        let store = VersionedJsonStore::<ScheduledRunReadRegistry>::open(path)
+            .expect("open current-version payload");
+        let guard = store.registry.read();
+        assert_eq!(
+            guard.viewed_runs.get("automation-1"),
+            Some(&HashSet::from(["run-1".to_string()]))
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn versioned_json_store_open_old_version_migrates_and_repersists() {
+        let dir = temp_home();
+        let path = dir.join("old-ui-metadata.json");
+        // 旧版本(0 < 当前 1)且保留 tasks,触发 migrate。
+        let legacy = serde_json::json!({
+            "schema_version": 0,
+            "tasks": {
+                "automation-1": {
+                    "pinned": true,
+                    "pinned_at": "2024-01-01T00:00:00Z",
+                    "updated_at": "2024-01-01T00:00:00Z"
+                }
+            }
+        });
+        std::fs::write(&path, legacy.to_string()).expect("write legacy payload");
+
+        let store = VersionedJsonStore::<ScheduledTaskUiMetadataRegistry>::open(path.clone())
+            .expect("open old-version payload");
+        let guard = store.registry.read();
+        assert_eq!(
+            guard.schema_version,
+            SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
+        );
+        assert!(guard.tasks.contains_key("automation-1"));
+        drop(guard);
+
+        // 迁移后已重新落盘为当前版本。
+        let repersisted: ScheduledTaskUiMetadataRegistry =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read repersisted"))
+                .expect("parse repersisted");
+        assert_eq!(
+            repersisted.schema_version,
+            SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn versioned_json_store_open_corrupt_json_quarantines_rename_store() {
+        let dir = temp_home();
+        let path = dir.join("corrupt-read-state.json");
+        std::fs::write(&path, "{ definitely-not-json").expect("write corrupt payload");
+
+        let store = VersionedJsonStore::<ScheduledRunReadRegistry>::open(path.clone())
+            .expect("corrupt payload must not block startup");
+        assert!(store.registry.read().viewed_runs.is_empty());
+        assert!(
+            !path.exists(),
+            "corrupt rename-store payload must be quarantined"
+        );
+        assert!(
+            std::fs::read_dir(&dir)
+                .expect("read quarantine dir")
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("corrupt-read-state.json.invalid-")),
+            "a quarantine sidecar must exist"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn versioned_json_store_open_corrupt_json_keeps_log_in_place_store() {
+        let dir = temp_home();
+        let path = dir.join("corrupt-ui-metadata.json");
+        std::fs::write(&path, "{ definitely-not-json").expect("write corrupt payload");
+
+        let store = VersionedJsonStore::<ScheduledTaskUiMetadataRegistry>::open(path.clone())
+            .expect("corrupt payload must not block startup");
+        assert!(store.registry.read().tasks.is_empty());
+        // LogInPlace 策略:不搬走原文件。
+        assert!(
+            path.exists(),
+            "log-in-place store must leave the offending file untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn versioned_json_store_persist_writes_atomically_and_roundtrips() {
+        let dir = temp_home();
+        let path = dir.join("persist-model-bindings.json");
+        let store = VersionedJsonStore::<ScheduledTaskModelBindingRegistry>::open(path.clone())
+            .expect("open fresh store");
+
+        let mut registry = store.registry.read().clone();
+        registry.tasks.insert(
+            "automation-1".to_string(),
+            ScheduledTaskModelBinding {
+                model_id: "model-id-1".to_string(),
+                model: "model-1".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+        );
+        store.persist(&registry).expect("persist registry");
+
+        let reloaded: ScheduledTaskModelBindingRegistry =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read persisted"))
+                .expect("parse persisted");
+        assert_eq!(
+            reloaded
+                .tasks
+                .get("automation-1")
+                .map(|binding| binding.model_id.clone()),
+            Some("model-id-1".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

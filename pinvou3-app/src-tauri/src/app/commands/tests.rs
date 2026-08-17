@@ -5,7 +5,7 @@
 use super::prelude::*;
 use super::{
     artifacts::*, attachments::*, files::*, interaction::*, knowledge::*, marketplace::*,
-    personas::*, sessions::*, voice::*, workflows::*,
+    personas::*, sessions::*, voice::*,
 };
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
@@ -118,66 +118,6 @@ fn write_json(path: &Path, value: serde_json::Value) {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
-}
-
-#[test]
-fn role_logs_merge_real_jsonl_files_and_append_authoritative_failure() {
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-role-logs-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let state = root.join("_state");
-    std::fs::create_dir_all(&state).unwrap();
-    std::fs::write(
-            state.join("flow_log.jsonl"),
-            concat!(
-                "{\"timestamp\":\"2026-07-21T10:00:00+08:00\",\"event\":\"dispatch\",\"role_id\":\"taizi\"}\n",
-                "{\"timestamp\":\"2026-07-21T10:01:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"taizi\",\"detail\":\"HTTP 503 upstream unavailable\"}\n",
-                "{\"timestamp\":\"2026-07-21T10:02:00+08:00\",\"event\":\"agent_failed\",\"role_id\":\"zhongshu\"}\n"
-            ),
-        )
-        .unwrap();
-    std::fs::write(
-            state.join("agent_log.jsonl"),
-            "{\"timestamp\":\"2026-07-21T10:00:30+08:00\",\"event\":\"tool_call\",\"role_id\":\"taizi\",\"tool\":\"web_search\"}\n",
-        )
-        .unwrap();
-    write_json(
-        &state.join("workflow_progress.json"),
-        serde_json::json!({
-            "updated_at": "2026-07-21T10:03:00+08:00",
-            "roles": {
-                "taizi": {
-                    "status": "failed",
-                    "error": "subagent 执行失败: HTTP 503 upstream unavailable"
-                }
-            }
-        }),
-    );
-
-    let logs = read_role_logs_from_project(&root, "taizi", 60).unwrap();
-    let events = logs
-        .iter()
-        .filter_map(|record| record.get("event").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        events,
-        vec!["dispatch", "tool_call", "agent_failed", "failure_state"]
-    );
-    assert_eq!(
-        logs.last()
-            .and_then(|record| record.get("reason"))
-            .and_then(serde_json::Value::as_str),
-        Some("subagent 执行失败: HTTP 503 upstream unavailable")
-    );
-    assert!(!logs
-        .iter()
-        .any(|record| record.get("role_id") == Some(&serde_json::json!("zhongshu"))));
-    let _ = std::fs::remove_dir_all(root);
 }
 
 fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json::Value) {
@@ -1011,7 +951,7 @@ fn agentic_guide_mentions_collection_and_kb_search() {
     assert!(g.contains("不要对 XLSX/"));
     assert!(g.contains("绝不凭记忆编造"));
     assert!(g.contains("《团队规范》"));
-    assert!(build_kb_agentic_guide(&[]).contains("《本地知识集》"));
+    assert!(build_kb_agentic_guide(&[]).contains("《知识集》"));
 }
 
 #[test]
@@ -1506,32 +1446,6 @@ fn pick_vault_path_prefers_open_then_latest() {
     assert_eq!(pick_vault_path(r#"{"vaults":{}}"#), None);
     let j = "\u{feff}{\"vaults\":{\"a\":{\"path\":\"/A\",\"ts\":1,\"open\":true}}}";
     assert_eq!(pick_vault_path(j).as_deref(), Some("/A"));
-}
-
-/// 成品归属推断:成品词出现在质检节时必须归被审对象,不归审核者
-/// (天真就近归因实测把成品判给 xingbu——刑部节里"对礼部整合的最终报告
-/// 进行审核"的关键词全在审核者章节内)。
-#[test]
-fn infer_product_bu_attributes_to_audited_not_auditor() {
-    let report = "\
-## 各部成果\n\n\
-### 4. 礼部（libu_1.md）—— 报告撰写与方案整合\n\n\
-核心产出：将各部数据整合为完整的研究报告\n\n\
-### 5. 刑部（xingbu_1.md）—— 方案质量审核验收\n\n\
-核心产出：对礼部整合的最终报告进行全面质量审核\n\n\
-## 结果对账\n\n\
-| 具体方案交付 | ✅ 达成 | 礼部报告提供三套完整方案 |\n";
-    let (bu, score) = infer_product_bu(report).expect("应有推断结果");
-    assert_eq!(bu, "libu", "成品应归被审的礼部,不归审核者刑部");
-    assert!(score >= 8, "多路信号应汇聚到可信阈值,实得 {score}");
-}
-
-/// libu_ 前缀不得误吃 libu_renshi_N.md(后随数字才算点名)。
-#[test]
-fn infer_product_bu_no_prefix_confusion() {
-    let report = "### 吏部（libu_renshi_1.md）—— 流程规范\n\n整合完整的最终成品汇总\n";
-    let (bu, _) = infer_product_bu(report).expect("应有推断结果");
-    assert_eq!(bu, "libu_renshi");
 }
 
 /// L2-1: A 方案放宽 — /tmp 下任意文件可校验通过（不强 $HOME 限制）。

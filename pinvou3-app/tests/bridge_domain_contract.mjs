@@ -4,7 +4,7 @@ export const desktopBridgeApi = {
   platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
   chat: ['cancelGeneration', 'cancelShellTask', 'getComposerDraft', 'prefillComposer', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
   voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'runVoiceInputDebugAssertions', 'startVoiceInput'],
-  knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'removeCollection', 'setCollectionEnabled', 'unmountCollection'],
+  knowledge: ['cancelKbModel', 'downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['clearScheduledTaskDraft', 'clearScheduledTaskSelection', 'confirmScheduledTaskDraft', 'createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTaskRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'pickFolder', 'readScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'toggleScheduledTaskPinned', 'updateScheduledTask'],
   sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'renameSession', 'restoreArchivedSession', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
@@ -16,10 +16,9 @@ export const desktopBridgeApi = {
   interaction: ['acceptPlan', 'cancelUserInput', 'compactNow', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'refreshModeDefaults', 'resolvePinvouReview', 'setDraftMode', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'refreshRemoteControlStatus', 'resetWebRelayAddress', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
-  artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'listDeliverables', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
+  artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openExternalUrl', 'openInSystem', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'clearAttachments', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
   resolutions: ['markResolved'],
-  workflow: ['activateSkill', 'addMaterialsToSession', 'approveWorkflowGate', 'attachRun', 'closeDemo', 'closeWorkflowDrawer', 'deactivateSkill', 'getGateReport', 'getRoleLogs', 'getRoleOutputs', 'getRolePrompt', 'listWorkflows', 'loadSkills', 'openDemo', 'pickAndAddMaterials', 'rejectWorkflowGate', 'resetWorkflowRun', 'resumeWorkflowOnBoot', 'retryWorkflowRole', 'selectWorkflowRole', 'setCurrentPhase', 'startWorkflowTask', 'stopWorkflowTask', 'submitWorkflowUserInput'],
   files: ['pickFeedbackFiles', 'pickFiles', 'pickFolders'],
   personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],
   memory: ['archiveRecentWorkMemory', 'confirmMemoryCandidate', 'deleteMemoryItem', 'deleteMemoryPreference', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'neverMemoryCandidate', 'saveMemoryProfilePatch', 'updateMemoryItem'],
@@ -32,7 +31,7 @@ export const desktopBridgeApi = {
 export const desktopOnlyBridgeApi = {
   platform: ['loadPlatformCapabilities', 'refreshConnectorAuthGates'],
   voice: ['cancelVoiceAsrSetup'],
-  knowledge: ['loadKnowledgeEmbedderAfterFirstFrame'],
+  knowledge: ['loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
   interaction: ['setMultiAgentMode'],
 };

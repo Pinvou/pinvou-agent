@@ -385,6 +385,24 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// 包卸载/断开后同步所有 scope：从各 scope 禁用集与可见性集移除该包 id，避免残留
 /// 指向不存在的包。连接器与技能卸载共用本入口：入参可为连接器 id / 技能 id / 包 id，
 /// 统一归一为包 id。
+/// composer 连接器开关 ↔ 统一禁用集桥接（二轮评审：CLI 三数据源无桥接）。
+/// 连接器停用标志（`<connector>_disabled` 文件）只删技能目录，而 execpolicy CLI
+/// 硬拦截与技能物化排除读 `disabled_bundles.json`——开关关掉连接器时必须同步把
+/// 包 id 写入所有 scope 的禁用集（开回时移除），两条门控才一致。
+pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: bool) {
+    if enabled {
+        remove_bundle_from_disabled_scopes(connector_id);
+        return;
+    }
+    for scope in SessionMode::ALL {
+        let mut ids = load_disabled_bundles_for(*scope);
+        if !ids.iter().any(|id| id == connector_id) {
+            ids.push(connector_id.to_string());
+            save_disabled_bundles_for(*scope, &ids);
+        }
+    }
+}
+
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
@@ -515,6 +533,24 @@ mod tests {
     #[test]
     fn save_normalizes_to_package_id() {
         with_temp_home(|| {
+            // gongwen 未装：companion 技能保留独立纯技能包形态 → 归一为自身 id
+            // （与 list_bundles 的 V5 认领展示一致，开关不回弹）。
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &["skill:government-writing".to_string()],
+            );
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["government-writing".to_string()]
+            );
+
+            // 登记 gongwen 安装态后：companion 技能归属到包 → 归一为 gongwen。
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
+                    "gongwen".to_string(),
+                    crate::features::marketplace::store::BundleSource::Preset,
+                ))
+                .unwrap();
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &[

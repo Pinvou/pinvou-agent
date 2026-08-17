@@ -19,7 +19,7 @@ const indexHtml = [
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 const tauriBridgeFeatureNames = [
   'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction', 'workflow-runtime', 'workflow',
+  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction',
   'multiagent'
 ];
 const bridgeMessages = fs.readFileSync(
@@ -36,6 +36,8 @@ const webBridge = [
   fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'), 'utf8'),
 ].join('\n');
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
+// Wave 2 把版本化存储层拆到 stores.rs；read-state 迁移（migrate→default）落该子模块。
+const scheduledStoresRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'stores.rs'), 'utf8');
 const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
   scheduledTasksRust.indexOf('const SCHEDULED_TASK_CHAT_PROMPT'),
@@ -248,7 +250,7 @@ assert.ok(
 );
 assert.ok(
   /SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION:\s*u32\s*=\s*2/.test(scheduledTasksRust) &&
-    /registry\.schema_version < SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION[\s\S]{0,220}ScheduledRunReadRegistry::default\(\)/.test(scheduledTasksRust),
+    /impl VersionedRegistry for ScheduledRunReadRegistry[\s\S]{0,700}?fn migrate\([\s\S]*?Self::default\(\)/.test(scheduledStoresRust),
   'legacy read receipts must be reset because they may have been written before completion'
 );
 assert.ok(
@@ -399,6 +401,15 @@ assert.ok(
   /label:\s*selectorMainLabel\(model, t\)/.test(indexHtml) &&
     !/label:\s*model\.name && model\.name !== model\.model \?/.test(indexHtml),
   'scheduled model selection should display the wire model instead of stale display names'
+);
+assert.ok(
+  /footerAction, alwaysCommit = false,/.test(indexHtml) &&
+    /if \(alwaysCommit \|\| !active\) onChange\(option\.value\);/.test(indexHtml) &&
+    /onChange=\{value => editModel\(value\)\} alwaysCommit/.test(indexHtml) &&
+    (indexHtml.match(/alwaysCommit/g) || []).length === 3,
+  're-selecting the already-active model option must re-commit the binding: ' +
+    'an in-place edited model config keeps its id while its wire name changes, ' +
+    'and the engine rejects the stale binding snapshot until the task is re-saved'
 );
 assert.ok(
   !/data-testid="scheduled-task-pin"/.test(indexHtml) &&
@@ -4231,6 +4242,7 @@ async function multipleKnowledgeMountBehavior() {
   var bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
   var serverMounted = [];
+  var serverRemoteMounted = [];
   var revision = 0;
   function snapshot() {
     revision += 1;
@@ -4252,6 +4264,20 @@ async function multipleKnowledgeMountBehavior() {
     return snapshot();
   };
   harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
+  harness.handlers.session_add_mounted_remote_collection = function (args) {
+    var existing = serverRemoteMounted.find(function (entry) {
+      return entry.serverId === args.serverId && entry.collectionId === args.collectionId;
+    });
+    if (existing) existing.enabled = true;
+    else serverRemoteMounted.push({ serverId: args.serverId, collectionId: args.collectionId, enabled: true });
+    return serverRemoteMounted;
+  };
+  harness.handlers.session_remove_mounted_remote_collection = function (args) {
+    serverRemoteMounted = serverRemoteMounted.filter(function (entry) {
+      return entry.serverId !== args.serverId || entry.collectionId !== args.collectionId;
+    });
+    return serverRemoteMounted;
+  };
 
   await bridge.knowledge.mountCollection(7);
   await bridge.knowledge.mountCollection(8);
@@ -4278,13 +4304,27 @@ async function multipleKnowledgeMountBehavior() {
   assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
 
   await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountRemoteCollection("cube", 101);
   mounted = bridge.state.get('knowledge');
   assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
   assert.strictEqual(mounted.mountedCollection, 7);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "cube", collectionId: 101, enabled: true }],
+    "remote and local mounts must coexist before clearing all"
+  );
 
   await bridge.knowledge.unmountCollection();
   mounted = bridge.state.get('knowledge');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)), [],
+    "clearing all mounts must also remove remote collections");
+  assert.deepStrictEqual(serverRemoteMounted, [], "the remote mount fact source must be cleared");
+  var remoteRemove = harness.calls.find(function (call) {
+    return call.cmd === "session_remove_mounted_remote_collection";
+  });
+  assert.strictEqual(remoteRemove.args.sessionId, "chat-multi-kb",
+    "remove-all must keep remote cleanup bound to the clicked session");
   assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
 }
 
@@ -4377,6 +4417,65 @@ async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
   assert.strictEqual(mounted.mountedCollectionsRevision, 2);
 }
 
+async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var serverRemoteMounted = [
+    { serverId: "cube", collectionId: 7, enabled: true },
+    { serverId: "cube", collectionId: 8, enabled: true },
+    { serverId: "other", collectionId: 7, enabled: false },
+  ];
+  harness.handlers.session_mounted_remote_collections = function () {
+    return serverRemoteMounted;
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote-delete"), true);
+  var readsBeforePayload = harness.calls.filter(function (call) {
+    return call.cmd === "session_mounted_remote_collections";
+  }).length;
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+    remote_collections: [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+  });
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+    "the post-delete event must immediately remove only the exact server and collection mount"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "session_mounted_remote_collections";
+    }).length,
+    readsBeforePayload,
+    "an authoritative event payload must take priority over an extra IPC read"
+  );
+
+  serverRemoteMounted = [{ serverId: "other", collectionId: 7, enabled: false }];
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+  });
+  await tick();
+  await tick();
+  mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "other", collectionId: 7, enabled: false }],
+    "events from older producers must re-read the remote mount fact source"
+  );
+}
+
 async function draftKnowledgeMountsCreateOneSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4455,6 +4554,7 @@ Promise.resolve()
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
   .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
+  .then(remoteKnowledgeDeletionEventRefreshesRemoteMounts)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)

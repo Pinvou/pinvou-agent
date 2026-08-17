@@ -993,14 +993,19 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
     // 可选触发器变体：triggerVariant='pill' 时触发器渲染为代码页配置组同款 pill
     //（triggerLabel 为可选 10px 前缀文案；triggerTestId 覆盖默认 testid），
     // 下拉内容不变；不传变体时聊天页外观逐字节不变。
-    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope }) => {
+    const ComposerToolMenu = ({ t, onGotoTools, compact, activeSkill, triggerVariant, triggerLabel, triggerTestId, scope, activeSessionId: activeSessionIdProp }) => {
       const [open, setOpen] = useState(false);
       const triggerRef = useRef(null);
       const canMutateToolStore = can('toolStoreMutations');
       // 只增不减：有活动会话时只阻隔「关闭」——已进入上下文的工具撤不回，
       // 关闭只能在会话开始前做；「打开」仍允许（后端热重载保留给「增」即时生效）。
       const sessionsState = useBridgeState(['sessions']);
-      const hasActiveSession = !!(sessionsState && sessionsState.activeSessionId);
+      // scope='code'（原生代码车道）时由调用方传入该车道的活动会话 id——显式会话态
+      // 驱动，绕开 bridge 聊天 active 绑定（二轮评审：code 门控不得读聊天域
+      // activeSessionId）；plain 缺省沿用聊天侧。
+      const hasActiveSession = scope === 'code'
+        ? !!activeSessionIdProp
+        : !!(sessionsState && sessionsState.activeSessionId);
       // 无权限才全局禁用；会话中的「关闭」阻隔是逐行判断（只有已开 = enabled 才禁）。
       const toolSwitchDisabled = !canMutateToolStore;
       // scope: 'code' = 原生代码会话(独立开关,默认全关),缺省 = 普通会话(plain)。

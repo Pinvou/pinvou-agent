@@ -21,6 +21,14 @@ const codexAcp = read(
   "codex_acp",
   "mod.rs",
 );
+// Wave 2 把安装/版本探测逻辑拆到 install.rs；相关断言改读该子模块。
+const codexAcpInstall = read(
+  "src-tauri",
+  "src",
+  "features",
+  "codex_acp",
+  "install.rs",
+);
 const codexAcpPlatform = read(
   "src-tauri",
   "src",
@@ -119,12 +127,12 @@ assert.match(
   "the packaged ACP Bridge must hide the Codex CLI process it starts on Windows",
 );
 assert.match(
-  codexAcp,
+  codexAcpInstall,
   /fn resolve_codex_cli\([\s\S]*?platform::codex_official_install_path\(\)/,
   "Windows must discover the official installer path without relying on a restarted PATH",
 );
-assert.match(codexAcp, /\["claude\.exe", "claude\.cmd"\]/);
-assert.match(codexAcp, /\["kimi\.exe", "kimi\.cmd"\]/);
+assert.match(codexAcpInstall, /\["claude\.exe", "claude\.cmd"\]/);
+assert.match(codexAcpInstall, /\["kimi\.exe", "kimi\.cmd"\]/);
 assert.match(
   codexAcp,
   /AgentBackend::KimiAcp => \{[\s\S]*?external_tokio_command\(&executable\)[\s\S]*?command\.arg\("acp"\)/,

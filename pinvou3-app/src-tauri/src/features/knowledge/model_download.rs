@@ -1,34 +1,26 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! 模型不再随 deb 打包（deb 瘦 ~559MB）；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。下载范式照搬语音 ASR：流式 reqwest +
-//! `.part` 临时文件 + 进度事件；额外做 sha256 校验 + tar.gz 解压。候选目录通过真实
+//! 模型不再随安装包打包；用户在知识库页主动下载到 [`super::model_dir`]
+//! （`~/.pinvou3/knowledge/models/bge-m3`）。固定 revision 的五个文件由
+//! `pinvou-knowledge` 统一流式下载并逐文件校验。候选目录通过真实
 //! embedding 加载后才带回滚地替换托管模型并刷新工具门控，**免重启**即可建库/入库/检索。
 //!
-//! 进度事件 `kb_model:progress`：`{ stage: download|verify|extract|done, downloaded, total, ready }`。
+//! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-
 use super::KnowledgeService;
+use serde::Serialize;
 
-/// Community model asset hosted in the public GitHub release. The
-/// `PINVOU3_KB_MODEL_URL` environment variable can override it for mirrors and tests.
-const MODEL_URL: &str =
-    "https://github.com/Pinvou/pinvou-agent/releases/download/kb-model-v1/bge-m3.tar.gz";
-/// tar.gz 的 sha256（发布模型后回填；空=跳过校验）。
-/// env `PINVOU3_KB_MODEL_SHA256` 覆盖。重发模型务必同步更新此值。
-const MODEL_SHA256: &str = "86438791d1ee7c9989c75878d3623ab28a7e4cd57aa3a7816480043d1de62efe";
-/// tar.gz 字节数（content-length 缺失时的进度兜底；2026-06-30 发布实测值）。
-const MODEL_TARGZ_SIZE: u64 = 407_925_014;
-/// 展示用：下载包(~389MB tar.gz) / 安装占用(~558MB 解压后) 近似大小（前端 chip 显示）。
-const DISPLAY_DOWNLOAD_BYTES: u64 = 407_925_014;
-const DISPLAY_INSTALLED_BYTES: u64 = 585_556_897;
+/// 桌面端可单独指定镜像；未配置时回退到两端统一的镜像变量。
+const DESKTOP_HF_BASE_URL_ENV: &str = "PINVOU3_KB_HF_BASE_URL";
+/// 展示用：固定清单的下载量与实际模型文件占用（不含文件系统簇开销）。
+const DISPLAY_DOWNLOAD_BYTES: u64 =
+    pinvou_knowledge::model_download::KNOWLEDGE_MODEL_DOWNLOAD_BYTES;
+const DISPLAY_INSTALLED_BYTES: u64 =
+    pinvou_knowledge::model_download::KNOWLEDGE_MODEL_DOWNLOAD_BYTES;
 /// 模型版本标识（前端 `.pkg-ver` 显示）。
 pub const MODEL_VERSION: &str = "bge-m3";
 
@@ -89,11 +81,20 @@ fn set_model_load_error(error: Option<String>) {
 }
 
 fn configured_model_dir() -> std::path::PathBuf {
-    std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
-        .ok()
+    configured_model_dir_from(
+        std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").ok(),
+        super::model_dir(),
+    )
+}
+
+fn configured_model_dir_from(
+    configured: Option<String>,
+    managed: std::path::PathBuf,
+) -> std::path::PathBuf {
+    configured
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(super::model_dir)
+        .unwrap_or(managed)
 }
 
 fn uses_external_model_dir() -> bool {
@@ -106,17 +107,7 @@ fn uses_external_model_dir() -> bool {
 }
 
 fn model_directory_is_complete(dir: &Path) -> bool {
-    let onnx = dir.join("model.onnx").is_file()
-        || dir.join("onnx").join("model_int8.onnx").is_file()
-        || dir.join("onnx").join("model.onnx").is_file();
-    onnx && [
-        "tokenizer.json",
-        "config.json",
-        "special_tokens_map.json",
-        "tokenizer_config.json",
-    ]
-    .iter()
-    .all(|file| dir.join(file).is_file())
+    pinvou_knowledge::model_download::model_directory_is_complete(dir)
 }
 
 /// 当前配置模型是否已部署：显式开发覆盖优先，否则检查应用托管目录。
@@ -146,7 +137,7 @@ pub struct KbModelStatus {
     pub version: String,
 }
 
-fn current_status(service: &KnowledgeService) -> KbModelStatus {
+pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
     let installed = model_installed();
     let ready = service.semantic_ready();
     let loading = MODEL_LOAD.is_loading();
@@ -169,7 +160,7 @@ pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelSt
     current_status(&service)
 }
 
-/// 取消进行中的下载（下次 chunk / 解压前生效）。
+/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
@@ -183,9 +174,6 @@ pub async fn kb_model_load_after_first_frame(
 ) -> Result<bool, String> {
     if service.semantic_ready() {
         return Ok(true);
-    }
-    if !model_installed() {
-        return Ok(false);
     }
 
     crate::platform::startup::mark("knowledge_embedder_async:start");
@@ -207,7 +195,7 @@ pub async fn kb_model_load_after_first_frame(
     Ok(ready)
 }
 
-/// 按需下载 + 校验 + 解压部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
+/// 按需下载 + 校验 + 部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
 pub async fn kb_model_download(
     app: tauri::AppHandle,
     service: tauri::State<'_, KnowledgeService>,
@@ -220,17 +208,32 @@ pub async fn kb_model_download(
         return Err("模型正在下载中".into());
     }
     let repair = repair.unwrap_or(false);
-    if uses_external_model_dir() && (repair || !model_installed()) {
+    let external_model_dir = uses_external_model_dir();
+    let configured_dir = configured_model_dir();
+    if external_model_dir && (repair || !model_directory_is_complete(&configured_dir)) {
         return Err(
             "当前使用 PINVOU3_KB_EMBED_MODEL_DIR 指定的外部模型目录；应用不会覆盖该目录，请修复该目录或移除环境变量后重试"
                 .into(),
         );
     }
-    if model_installed() && !repair {
+    let dir = super::model_dir();
+    // 共享服务与桌面端在 Linux 宿主上复用同一个模型目录。必须在第一次
+    // 完整性检查前获取跨进程锁，并持有到候选模型构造和目录替换完成。
+    // 外部只读模型目录不由应用管理，因此不创建锁文件。
+    let _install_lock = (!external_model_dir)
+        .then(|| pinvou_knowledge::try_lock_knowledge_model_install(&dir))
+        .transpose()?;
+    if !external_model_dir {
+        if let Some(warning) = pinvou_knowledge::model_download::recover_model_directory(&dir)? {
+            eprintln!("[knowledge] {warning}");
+            set_model_load_error(Some(warning));
+        }
+    }
+    if model_directory_is_complete(&configured_dir) && !repair {
         if service.semantic_ready() {
             return Ok(current_status(&service));
         }
-        load_installed_embedder(&service, &pool).await?;
+        load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
@@ -240,97 +243,61 @@ pub async fn kb_model_download(
     // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
     let _guard = DownloadGuard;
 
-    let dir = super::model_dir();
     let parent = dir
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| dir.clone());
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建目录失败: {e}"))?;
-    let part = parent.join("bge-m3.tar.gz.part");
-
-    // ── 1. 流式下载 → .part ───────────────────────────────────────
-    let url = std::env::var("PINVOU3_KB_MODEL_URL").unwrap_or_else(|_| MODEL_URL.to_string());
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .user_agent("pinvou3-kb/1.0")
-        .build()
-        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
-    let mut resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("连接模型源失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("模型源响应异常: {e}"))?;
-    let total = resp
-        .content_length()
-        .filter(|n| *n > 0)
-        .unwrap_or(MODEL_TARGZ_SIZE);
-    let mut file = std::fs::File::create(&part).map_err(|e| format!("创建文件失败: {e}"))?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断: {e}"))? {
-        if CANCEL.load(Ordering::Relaxed) {
-            drop(file);
-            let _ = std::fs::remove_file(&part);
-            return Err("已取消".into());
-        }
-        file.write_all(&chunk)
-            .map_err(|e| format!("写盘失败: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_emit >= 2_097_152 || (total > 0 && downloaded >= total) {
-            last_emit = downloaded;
-            let _ = app.emit(
-                "kb_model:progress",
-                serde_json::json!({ "stage": "download", "downloaded": downloaded, "total": total }),
-            );
-        }
-    }
-    drop(file);
-
-    // ── 2. sha256 校验 + 3. 解压部署（CPU/IO 重，挪 spawn_blocking）───
-    let part2 = part.clone();
-    let dir2 = dir.clone();
-    let app2 = app.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        // 校验：const 或 env 给了 sha256 才校验（占位空串=跳过，dev 用本地包时方便）。
-        let expected = std::env::var("PINVOU3_KB_MODEL_SHA256")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| (!MODEL_SHA256.is_empty()).then(|| MODEL_SHA256.to_string()));
-        if let Some(exp) = expected {
-            let _ = app2.emit(
-                "kb_model:progress",
-                serde_json::json!({ "stage": "verify" }),
-            );
-            let got = sha256_file(&part2)?;
-            if !got.eq_ignore_ascii_case(&exp) {
-                let _ = std::fs::remove_file(&part2);
-                return Err(format!(
-                    "模型校验失败(sha256 不匹配): 期望 {exp:.12} 实际 {got:.12}"
-                ));
-            }
-        }
-        // 解压到临时目录再原子换入（避免半包污染落点）。
-        let _ = app2.emit(
-            "kb_model:progress",
-            serde_json::json!({ "stage": "extract" }),
-        );
-        let tmp = dir2.with_extension("tmp");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).map_err(|e| format!("创建解压目录失败: {e}"))?;
-        extract_targz(&part2, &tmp)?;
-        if !model_directory_is_complete(&tmp) {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err("解压结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("解压任务失败: {e}"))??;
-
-    // ── 4. 先验证候选模型，再原子换入并热加载（失败时保留旧模型）──────
+    // ── 1. 固定 revision 五文件清单下载 + 逐文件大小/SHA-256 校验 ──
     let tmp = dir.with_extension("tmp");
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp)
+            .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
+    }
+    let hf_base_url = std::env::var(DESKTOP_HF_BASE_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(pinvou_knowledge::model_download::knowledge_model_hf_base_url);
+    let progress_app = app.clone();
+    pinvou_knowledge::model_download::download_knowledge_model_candidate(
+        &tmp,
+        &hf_base_url,
+        move |progress| {
+            let stage = match progress.stage {
+                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {
+                    "download"
+                }
+                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Verify => "verify",
+            };
+            let _ = progress_app.emit(
+                "kb_model:progress",
+                serde_json::json!({
+                    "stage": stage,
+                    "downloaded": progress.downloaded_bytes,
+                    "total": progress.total_bytes,
+                    "fileIndex": progress.file_index,
+                    "fileCount": progress.file_count,
+                    "file": progress.source_path,
+                }),
+            );
+        },
+        || CANCEL.load(Ordering::Relaxed),
+    )
+    .await?;
+    if !model_directory_is_complete(&tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
+    }
+
+    // ── 2. 真实加载候选模型，再原子换入并热加载（失败时保留旧模型）──
+    let _ = app.emit(
+        "kb_model:progress",
+        serde_json::json!({
+            "stage": "prepare",
+            "downloaded": DISPLAY_DOWNLOAD_BYTES,
+            "total": DISPLAY_DOWNLOAD_BYTES,
+        }),
+    );
     let load_lease = MODEL_LOAD.acquire().await;
     set_model_load_error(None);
     let service_was_ready = service.semantic_ready();
@@ -344,14 +311,12 @@ pub async fn kb_model_download(
         Ok(Err(error)) => {
             set_model_load_error(Some(error.clone()));
             let _ = std::fs::remove_dir_all(&tmp);
-            let _ = std::fs::remove_file(&part);
             return Err(error);
         }
         Err(error) => {
             let error = format!("embedding 后台加载任务失败: {error}");
             set_model_load_error(Some(error.clone()));
             let _ = std::fs::remove_dir_all(&tmp);
-            let _ = std::fs::remove_file(&part);
             return Err(error);
         }
     };
@@ -374,7 +339,6 @@ pub async fn kb_model_download(
         set_model_load_error(None);
     }
     super::refresh_kb_tool_gate(&pool).await;
-    let _ = std::fs::remove_file(&part);
     let _ = app.emit(
         "kb_model:progress",
         serde_json::json!({ "stage": "done", "ready": ready }),
@@ -384,18 +348,42 @@ pub async fn kb_model_download(
     Ok(current_status(&service))
 }
 
-async fn load_installed_embedder(
+pub(crate) async fn load_installed_embedder(
     service: &KnowledgeService,
     pool: &crate::features::assistant::engine_pool::EnginePool,
+) -> Result<bool, String> {
+    let external_model_dir = uses_external_model_dir();
+    let configured_dir = configured_model_dir();
+    let _install_lock = (!external_model_dir)
+        .then(|| pinvou_knowledge::try_lock_knowledge_model_install(&configured_dir))
+        .transpose()?;
+    if !external_model_dir {
+        if let Some(warning) =
+            pinvou_knowledge::model_download::recover_model_directory(&configured_dir)?
+        {
+            eprintln!("[knowledge] {warning}");
+            set_model_load_error(Some(warning));
+        }
+    }
+    if !model_directory_is_complete(&configured_dir) {
+        return Ok(false);
+    }
+    load_installed_embedder_unlocked(service, pool, configured_dir).await
+}
+
+/// 调用方已经持有模型目录安装锁，或使用不由应用管理的外部只读目录。
+async fn load_installed_embedder_unlocked(
+    service: &KnowledgeService,
+    pool: &crate::features::assistant::engine_pool::EnginePool,
+    model_dir: std::path::PathBuf,
 ) -> Result<bool, String> {
     let _lease = MODEL_LOAD.acquire().await;
     if service.semantic_ready() {
         return Ok(true);
     }
     set_model_load_error(None);
-    let dir = super::model_dir();
     let embedder = match tokio::task::spawn_blocking(move || {
-        KnowledgeService::load_embedder(Some(&dir))
+        KnowledgeService::load_embedder(Some(&model_dir))
     })
     .await
     {
@@ -436,46 +424,7 @@ fn deploy_validated_model(
 }
 
 fn replace_model_directory(candidate: &Path, destination: &Path) -> Result<Option<String>, String> {
-    let backup = destination.with_extension("backup");
-    if backup.exists() {
-        if destination.exists() {
-            std::fs::remove_dir_all(&backup)
-                .map_err(|e| format!("清理上次遗留的模型备份失败({}): {e}", backup.display()))?;
-        } else {
-            std::fs::rename(&backup, destination).map_err(|e| {
-                format!(
-                    "恢复上次中断留下的模型备份失败({} -> {}): {e}",
-                    backup.display(),
-                    destination.display()
-                )
-            })?;
-        }
-    }
-    let had_destination = destination.exists();
-    if had_destination {
-        std::fs::rename(destination, &backup).map_err(|e| format!("备份现有模型失败: {e}"))?;
-    }
-    if let Err(error) = std::fs::rename(candidate, destination) {
-        if had_destination {
-            if let Err(rollback_error) = std::fs::rename(&backup, destination) {
-                return Err(format!(
-                    "部署模型失败: {error}; 回滚旧模型也失败: {rollback_error}; 旧模型仍保留在 {}",
-                    backup.display()
-                ));
-            }
-        }
-        return Err(format!("部署模型失败: {error}"));
-    }
-    let cleanup_warning = had_destination
-        .then(|| std::fs::remove_dir_all(&backup))
-        .and_then(Result::err)
-        .map(|error| {
-            format!(
-                "新模型已部署，但清理旧模型备份失败({}): {error}",
-                backup.display()
-            )
-        });
-    Ok(cleanup_warning)
+    pinvou_knowledge::model_download::install_model_candidate(candidate, destination)
 }
 
 /// `DOWNLOADING` 复位守卫（任何提前 return 都复位，含 `?` 早退与取消）。
@@ -484,31 +433,6 @@ impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOADING.store(false, Ordering::SeqCst);
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("打开校验文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| format!("读校验文件失败: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(crate::platform::encoding::hex_lower(&digest))
-}
-
-fn extract_targz(targz: &Path, dest: &Path) -> Result<(), String> {
-    let f = std::fs::File::open(targz).map_err(|e| format!("打开下载包失败: {e}"))?;
-    let dec = flate2::read::GzDecoder::new(f);
-    let mut ar = tar::Archive::new(dec);
-    ar.unpack(dest).map_err(|e| format!("解压失败: {e}"))?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -524,6 +448,24 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn configured_model_directory_prefers_non_empty_external_override() {
+        let managed = std::path::PathBuf::from("managed/bge-m3");
+        let external = std::path::PathBuf::from("external/bge-m3");
+
+        assert_eq!(
+            configured_model_dir_from(
+                Some(external.to_string_lossy().into_owned()),
+                managed.clone()
+            ),
+            external
+        );
+        assert_eq!(
+            configured_model_dir_from(Some("  ".into()), managed.clone()),
+            managed
+        );
     }
 
     #[tokio::test]

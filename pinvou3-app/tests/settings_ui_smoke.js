@@ -244,7 +244,6 @@ function injectSource() {
         case 'list_marketplace_tools': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);
-        case 'list_workflows': return Promise.resolve([]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'list_scheduled_tasks': return Promise.resolve([]);
         case 'list_scheduled_task_recent_runs': return Promise.resolve([]);

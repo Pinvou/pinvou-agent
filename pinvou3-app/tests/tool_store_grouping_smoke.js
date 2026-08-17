@@ -27,7 +27,7 @@ if (!CHROME) { console.error('SKIP: 未找到 chromium/chrome'); process.exit(2)
 
 function injectSource() {
   return `(function(){
-    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']]];
+    const TOOLS=[['weather',[]],['iwencai',[]],['qcc',[]],['patsnap-search',[]],['canva-mcp',[]],['yuandian-mcp',[]],['obsidian',[]],['pptx',['pptx']],['gongwen',['government-writing']],['my-uploaded-mcp',[]]];
     window.__TAURI_EVENT_HANDLERS__={};
     function invoke(cmd){
       switch(cmd){
@@ -135,6 +135,14 @@ async function clickChip(page, text) {
     });
     rec('MCP 筛选只显示 MCP 条目', mcpOnly);
     rec('MCP 筛选后仍有业务分区', await page.evaluate(() => [...document.querySelectorAll('h3')].some(h => (h.textContent || '').trim() === '金融数据')));
+    // 自定义上传的 MCP（后端合成卡带 userUploaded + mcpServer）必须归 MCP 组
+    // （二轮评审：旧判定顺序把 userUploaded 先短路进 Skill 组）。
+    rec('自定义上传 MCP 出现在 MCP 筛选', await page.evaluate(() => document.body.innerText.includes('my-uploaded-mcp')));
+    rec('点击「Skill」chip', await clickExact(page, 'Skill'));
+    await sleep(300);
+    rec('Skill 筛选不含自定义上传 MCP', await page.evaluate(() => !document.body.innerText.includes('my-uploaded-mcp')));
+    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    await sleep(300);
 
     // 切主维度=业务
     rec('点击「按业务」segment', await clickExact(page, '按业务'));

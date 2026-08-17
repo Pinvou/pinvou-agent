@@ -3334,6 +3334,7 @@ export function CodexAcpView({
                         triggerVariant="pill"
                         triggerTestId="native-tools"
                         scope="code"
+                        activeSessionId={activeId}
                       />
                       <ComposerKbSelector
                         t={t}

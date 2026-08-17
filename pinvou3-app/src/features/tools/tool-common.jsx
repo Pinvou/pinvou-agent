@@ -684,18 +684,10 @@ const AcFmtIcon = FileTypeIcon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true, todayImg: 'assets/skill-visual.jpg', todayLabel: '创意探索', todayTitle: '视觉设计\n信手拈来', todayVariant: 'appimg', cardW: 'flex-1' },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'skill', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
     ];
 
     // 后端合成技能卡的补充展示数据(按 backendId 取):
-    // - tsSkillFeaturedAssets:精选位 Today 大卡的图片/版式(非文案,文案走 i18n overlay)
-    // - tsSkillIconByName:Rust SkillManifest.icon(lucide 名)→ 图标组件
-    // 精选位资产(非文案):公文/PPT/可视化统一由后端技能数据合成,文案走 i18n overlay
-    const tsSkillFeaturedAssets = {
-      'government-writing': { todayImg: 'assets/skill-doc.jpg', todayVariant: 'photo', cardW: 'flex-[1.4]' },
-      pptx: { todayImg: 'assets/skill-ppt.jpg', todayVariant: 'drama', cardW: 'flex-1' },
-      visualizer: { todayImg: 'assets/skill-visualizer.jpg', todayVariant: 'appimg', cardW: 'flex-1' },
-    };
     const tsSkillIconByName = { Presentation, FileText, LineChart, BookOpen };
 
     const tsCategories = [
@@ -716,6 +708,9 @@ const AcFmtIcon = FileTypeIcon;
       if (!tool) return 'upcoming';
       // companion 合成卡优先判 bundle:卡面 category 恒为 skill,须先于 skill 规则短路
       if (tool.companionBundle) return 'bundle';
+      // mcpServer/oauthMcp 显式标记位须先于 userUploaded/skill 分支（二轮评审：
+      // 自定义上传的 MCP 卡同时带 userUploaded + mcpServer，旧顺序被错归为 Skill 组）。
+      if (tool.mcpServer || tool.oauthMcp) return 'mcp';
       if (tool.userUploaded || tool.builtin || tool.category === 'skill') return 'skill';
       if (!tool.backendId) return 'upcoming';
       if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';
@@ -863,4 +858,4 @@ const AcFmtIcon = FileTypeIcon;
 
     // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
 
-export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillFeaturedAssets, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };

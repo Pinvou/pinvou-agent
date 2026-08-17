@@ -4,6 +4,13 @@
 //! 取消"逻辑收口在此;各连接器(`feishu.rs` / `wecom.rs`)只持有自己的 [`CliCtx`]
 //! 薄声明 + 一段连接编排函数,调本模块的公共件。
 //!
+//! **drain 多态性说明**:[`drain_for_url`] 只发 URL(`String`),供飞书/企微共享。
+//! tmeet/dingtalk 有各自的私有 drain(`drain_for_auth_url`/`drain_for_auth_event`),
+//! 因为它们在同一管道里额外抓取安全日志行 / user_code,channel 元素类型分别为
+//! `(Option<String>, Option<String>)` 和 `AuthEvent` enum。这是真实业务差异,
+//! 强行泛型化会增加闭包复杂度而收益有限——三者的 `BufReader::lines` 循环骨架
+//! 虽同构,但行处理逻辑不可统一。
+//!
 //! 连接状态(长驻子进程 PID + 取消标志)用一个 [`ConnectorConn`] 按连接器 id 复用,
 //! `lib.rs` 里 `.manage(ConnectorConn::default())` 注册一次,飞书 / 企微共用。
 

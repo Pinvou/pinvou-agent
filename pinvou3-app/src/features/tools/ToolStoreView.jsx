@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Search, Server, Settings, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillFeaturedAssets, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -681,12 +681,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const downloadSpec = () => {
         invokeTauri('export_plugin_spec').catch(() => {});
       };
+      const [visibilityLoaded, setVisibilityLoaded] = useState(false);
       const loadHiddenByMode = () => {
         Promise.all([
-          invokeTauri('get_bundle_visibility', { scope: 'plain' }).catch(() => []),
-          invokeTauri('get_bundle_visibility', { scope: 'code' }).catch(() => []),
+          invokeTauri('get_bundle_visibility', { scope: 'plain' }),
+          invokeTauri('get_bundle_visibility', { scope: 'code' }),
         ]).then(([plain, code]) => {
           setHiddenByMode({ plain: new Set(plain || []), code: new Set(code || []) });
+          setVisibilityLoaded(true);
+        }).catch(() => {
+          // 读失败不静默清空（后端整集覆盖语义下会把用户已配置的可见性规则冲掉）：
+          // 保留现有状态并提示；加载成功前勾选入口不可用（二轮评审）。
+          setVisibilityLoaded(false);
+          setAlert({ visible: true, loading: false, title: storeCopy.visibilityLoadFailed, isInstall: false, isError: true });
         });
       };
       useEffect(() => {
@@ -694,7 +701,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       }, [managingVisibility]);
       // 勾选/取消某工具在某模式的可见性：checked = 可见。
       const toggleModeVisibility = (id, mode, checked) => {
-        if (!canMutateToolStore) return;
+        if (!canMutateToolStore || !visibilityLoaded) return;
         const next = new Set(hiddenByMode[mode] || []);
         if (checked) next.delete(id); else next.add(id);
         setHiddenByMode((prev) => ({ ...prev, [mode]: next }));
@@ -1044,9 +1051,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: stateBs ? stateBs.installed : (mcpId ? !!toolStates[mcpId] : !!x.installed),
             updateAvailable: !!x.update_available,
-            actions: actionsOf(stateBs),
-            ...(tsSkillFeaturedAssets[x.id] || {}),
-          });
+            actions: actionsOf(stateBs),          });
         });
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
@@ -1409,7 +1414,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (!picked) return Promise.resolve();
         const { file, kind } = picked;
         if (file.size > MAX_SKILL_ZIP_BYTES) {
-          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(storeCopy.invalidSkillZipDrop), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(storeCopy.zipTooLarge(MAX_SKILL_ZIP_BYTES / 1024 / 1024)), isInstall: false, isError: true });
           return Promise.resolve();
         }
         // 单 .md 技能文件走 import_skill_md_bytes；zip 插件包走统一导入字节通道。

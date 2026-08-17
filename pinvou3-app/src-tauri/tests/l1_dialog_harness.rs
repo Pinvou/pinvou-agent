@@ -3,7 +3,7 @@
 //! 直接用 bridge + engine 跑端到端对话，断言 LLM 工具调用 / 落盘文件 / 输出关键词,
 //! 防本轮 INSTRUCTIONS_MD / bridge / blocklist 修改后 quality 静默回归。
 //!
-//! 真模型 scenario 标 `#[ignore]`，默认 `cargo test` 不跑；少量纯函数回归仍会执行。跑法:
+//! 全部 scenario 标 `#[ignore]`，默认 `cargo test` 不会执行任何测试。跑法:
 //!
 //! ```text
 //! cargo test --test l1_dialog_harness -- --ignored --test-threads=1

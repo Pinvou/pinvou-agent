@@ -100,7 +100,7 @@ function injectSource() {
           SCENE_EVENTS[args && args.sessionId] = (args && args.events || []).map(function(event){ return Object.assign({}, event); });
           window.__PINVOU_TEST_SCENE_SAVES.push({sessionId:args && args.sessionId,events:SCENE_EVENTS[args && args.sessionId]});
           return Promise.resolve(null);
-        case 'list_workflows': case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
+        case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
         case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});

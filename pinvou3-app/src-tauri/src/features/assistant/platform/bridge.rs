@@ -11,7 +11,6 @@
 //! 用户层面看不到这一层；这层只服务 GUI 与 deepseek-tui engine 之间的
 //! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
 
-pub use crate::core::mode_state;
 pub use crate::features::marketplace;
 pub use crate::features::marketplace::skill_marketplace;
 pub(crate) use crate::features::runtime_bundle::platform as bundle;
@@ -1269,7 +1268,7 @@ impl Pinvou3Bridge {
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
             max_tool_calls,
             // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
@@ -1321,7 +1320,7 @@ impl Pinvou3Bridge {
             instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
-            // 2026-05-27: 默认 10 (原 1 → 10),为 PPT 工作流 fan-out 场景预留。
+            // 默认 10，为会话级多智能体 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
             // 但走 SubAgentManager.max_agents fallback 不 hard crash。
@@ -1434,10 +1433,8 @@ impl Pinvou3Bridge {
             goal_state,
             tools_always_load,
             prefer_bwrap,
-            // 会话初始思考开关:本地 vLLM(Qwen3.6)必须关 thinking。
-            // 关键:工作流会话只走 SpawnSubAgent、不发 SendMessage(对话型品悟
-            // 已取消),session 拿不到 SendMessage 里那份 off → 角色全员 thinking
-            // 全开(6/12 taizi 思考失控实证)。在 engine 配置层钉死,不依赖对话。
+            // 会话初始思考开关：本地 vLLM(Qwen3.6)必须关 thinking。在 engine
+            // 配置层统一钉死，避免子智能体继承到未预期的思考模式。
             reasoning_effort: self.request_reasoning_effort(),
             // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
             // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
@@ -1472,7 +1469,7 @@ impl Pinvou3Bridge {
             max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true(三省六部走 SpawnSubAgent,必须开)。
+            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
             //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
             //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
@@ -1901,8 +1898,7 @@ impl Pinvou3Bridge {
     /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
     /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
     /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
-    /// 因此多智能体工作流由 `engine.rs::apply_workflow_turn_policy` 同时收紧 mode、
-    /// trust 与审批字段，定时任务则按 profile。
+    /// 因此需要审批的运行必须同步收紧 mode、trust 与审批字段；定时任务按 profile。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -2353,31 +2349,16 @@ mod tests {
             bridge.audit_workspace("sess-code-temp", &execution),
             execution
         );
-    }
 
-    #[test]
-    fn session_roots_exposes_both_roots_for_every_session_kind() {
-        let mut bridge = fixture_bridge();
-        let private_plain = crate::platform::paths::session_workspace_dir("sess-plain");
-        // 未注入 resolver：普通会话两个根一致，均为会话私有目录。
-        let roots = bridge.session_roots("sess-plain");
-        assert_eq!(roots.execution, private_plain);
-        assert_eq!(roots.ledger, private_plain);
-
-        let project = std::env::temp_dir().join("pinvou3-session-roots-test-project");
-        let hit = project.clone();
-        bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
-            (session_id == "sess-code-project").then(|| hit.clone())
-        }));
-
-        // 绑项目的原生代码会话：执行根 = 项目目录，账本根 = 会话私有目录。
+        // session_roots() 结构体取法与上面的 workspace/audit 双取法同源
+        // (原 session_roots_exposes_both_roots_for_every_session_kind 的断言):
+        // 命中项目的会话 execution=项目、ledger=会话私有;其余会话两根一致。
         let roots = bridge.session_roots("sess-code-project");
         assert_eq!(roots.execution, project);
         assert_eq!(
             roots.ledger,
             crate::platform::paths::session_workspace_dir("sess-code-project")
         );
-        // 未命中（普通 / 临时代码）：执行根与账本根一致，均为会话私有目录。
         for sid in ["sess-plain", "sess-code-temp"] {
             let roots = bridge.session_roots(sid);
             let private = crate::platform::paths::session_workspace_dir(sid);
@@ -4090,6 +4071,8 @@ mod tests {
     /// gating: 纯对话元卡(restrict_tools=true)→ 本轮 allowed_tools=Some(空表)=零工具;
     /// 普通卡 / 未加持(false)→ Pinvou 基础白名单。这是卡牌制造专家"只产可收藏的内联卡、绝不
     /// 写文件"的**工具层**强制手段(底座从 schema 删工具),不靠模型自觉遵守 prompt。
+    /// R-2 注:op 链路不感知会话类型,该白名单对 code 会话同样生效(前端入口见
+    /// CodexAcpView.jsx `restrictTools` 注释,S-1 分化时按策略驱动)。
     #[test]
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
@@ -4116,18 +4099,15 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
         );
-    }
 
-    /// R-2:逐轮工具白名单对 code 会话同样生效——op 链路不感知会话类型,
-    /// `restrict_tools=true` 时空白名单把工具挡在模型视野外;false 时恢复 Pinvou 白名单。
-    /// 前端入口见 CodexAcpView.jsx `restrictTools` 注释(S-1 分化时按策略驱动)。
-    #[test]
-    fn build_send_message_op_restrict_tools_also_applies_to_code_sessions() {
+        // code 会话同链路生效(原 build_send_message_op_restrict_tools_also_
+        // applies_to_code_sessions 的断言):op 链路不感知会话类型,S-1 分化若
+        // 往这里加会话类型分支,下面两条必须报警。
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code-project"
         }));
-        let allowed = |restrict| match bridge
+        let allowed_code = |restrict| match bridge
             .build_send_message_op(
                 "sess-code-project",
                 "hi".to_string(),
@@ -4141,12 +4121,12 @@ mod tests {
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
         assert_eq!(
-            allowed(true),
+            allowed_code(true),
             Some(Vec::new()),
             "code 会话逐轮白名单入口必须生效(R-2)"
         );
         assert_eq!(
-            allowed(false),
+            allowed_code(false),
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
@@ -4203,14 +4183,13 @@ mod tests {
         assert_eq!(
             cfg.reasoning_effort.as_deref(),
             Some("off"),
-            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关。工作流会话只走 \
-             SpawnSubAgent 不发 SendMessage,引擎配置层不钉死 off 角色就全员 \
-             thinking 全开(6/12 taizi 思考失控实证)"
+            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关；引擎配置层统一钉死，\
+             避免子智能体继承到未预期的思考模式"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
             cfg.max_subagents, 10,
-            "max_subagents 默认 10：2026-05-27 从 1 解锁，为 PPT 工作流 fan-out 预留。\
+            "max_subagents 默认 10：为会话级多智能体 fan-out 预留。\
              真并发 4+ 在弱模型下仍有 timeout 风险，走 SubAgentManager fallback 不 hard crash"
         );
         assert_eq!(
@@ -4535,12 +4514,34 @@ mod tests {
             "Engine hooks 与 exec_shell shell_env 必须共享同一 executor"
         );
         let hooks = engine_executor.config();
+        assert!(hooks.enabled, "hook executor 必须启用");
         assert!(
             hooks.hooks.iter().any(|hook| {
                 hook.event == HookEvent::ToolCallBefore
                     && hook.name.as_deref() == Some("pinvou3-sensitive-firewall")
             }),
             "敏感目录硬拦截 hook 必须保留"
+        );
+        // 平台脚本命令契约(原 sensitive_firewall_hook_uses_platform_script 的断言):
+        // Windows 用 PowerShell 脚本,其余平台用 bash 脚本。
+        let firewall_command = hooks
+            .hooks
+            .iter()
+            .find(|hook| hook.name.as_deref() == Some("pinvou3-sensitive-firewall"))
+            .map(|hook| hook.command.as_str())
+            .unwrap_or_default();
+        #[cfg(windows)]
+        assert!(
+            firewall_command.contains("powershell.exe")
+                && firewall_command.contains("deny_sensitive_paths.ps1")
+                && !firewall_command.contains("bash"),
+            "Windows sensitive firewall hook must use PowerShell, got: {firewall_command}"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            firewall_command.starts_with("bash ")
+                && firewall_command.contains("deny_sensitive_paths.sh"),
+            "non-Windows sensitive firewall hook must use bash script, got: {firewall_command}"
         );
         #[cfg(unix)]
         assert!(
@@ -4904,30 +4905,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// OpenaiCompatible preset 必须让用户提供的模型名生效，而不是回退到默认。
-    /// 9e296c4 模型列表化后,legacy preset+custom_* 经 `migrate_models()`(每次
-    /// `UserPrefs::load()` 都跑)物化成 active SavedModel 才生效——测试显式调一次模拟之。
-    #[test]
-    fn openai_compatible_uses_user_provided_name() {
-        let (_lock, _env) = locked_env(&[
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ]);
-        let mut bridge = fixture_bridge();
-        set_active_model(
-            &mut bridge,
-            ModelPreset::OpenaiCompatible,
-            "my-custom-model",
-            "https://api.openai.com/v1",
-            "",
-        );
-        assert_eq!(bridge.model(), "my-custom-model");
-        assert_eq!(bridge.provider(), "openai");
-    }
-
-    /// OpenaiCompatible preset 必须透传任意模型名（如自定义兼容端点模型）。
+    /// OpenaiCompatible preset 必须透传任意模型名（如自定义兼容端点模型）,
+    /// 而不是回退到默认。9e296c4 模型列表化后,legacy preset+custom_* 经
+    /// `migrate_models()`(每次 `UserPrefs::load()` 都跑)物化成 active SavedModel
+    /// 才生效——测试显式调一次模拟之。
     #[test]
     fn openai_compatible_passthrough_model_name() {
         let (_lock, _env) = locked_env(&[
@@ -5141,33 +5122,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn moonshot_model_defaults_to_high_reasoning_effort() {
-        let (_lock, _env) = locked_env(&[
-            "DEEPSEEK_MODEL",
-            "DEEPSEEK_PROVIDER",
-            "DEEPSEEK_BASE_URL",
-            "DEEPSEEK_API_KEY",
-        ]);
-        let mut bridge = fixture_bridge();
-        set_active_model(
-            &mut bridge,
-            ModelPreset::Kimi,
-            "moonshot-v1-8k",
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-        );
-
-        assert_eq!(bridge.provider(), "moonshot");
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
-        assert_eq!(
-            bridge.build_dt_config().reasoning_effort.as_deref(),
-            Some("high")
-        );
-    }
-
     /// 用户显式设置的 `SavedModel.reasoning_effort` 必须覆盖 provider 默认
     /// （此处验证 off 覆盖 moonshot 默认 high），且三个注入点保持一致。
+    /// 注:provider 默认值本身(moonshot→high)由
+    /// known_reasoning_routes_preserve_provider_identity_and_stream_shape 的
+    /// Kimi 首case覆盖;未显式设置时 request_reasoning_effort() 的默认注入
+    /// 断言保留在下方本测试的 baseline 段。
     #[test]
     fn explicit_reasoning_effort_overrides_provider_default() {
         let (_lock, _env) = locked_env(&[
@@ -5184,6 +5144,11 @@ mod tests {
             "https://api.moonshot.cn/v1",
             "sk-test",
         );
+
+        // baseline:未显式设置时 Moonshot 默认 high
+        // (原 moonshot_model_defaults_to_high_reasoning_effort 的默认断言)。
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
+
         bridge.prefs.advanced.saved_models[0].reasoning_effort = Some("off".to_string());
 
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));

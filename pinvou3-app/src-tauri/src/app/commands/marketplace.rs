@@ -213,6 +213,10 @@ pub async fn install_marketplace_tool(
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
+    // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -420,7 +424,7 @@ pub async fn cancel_marketplace_tool_oauth_login(
 }
 
 #[tauri::command]
-pub fn uninstall_marketplace_tool(
+pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
@@ -428,6 +432,8 @@ pub fn uninstall_marketplace_tool(
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （阻塞版：命令保持同步，目录体量小、重写极快）。
     pool.refresh_live_sessions_skills_blocking();
+    // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -484,6 +490,8 @@ pub async fn install_marketplace_skill(
     // code scope 已初始化时新装技能默认仍关闭（sync 进 code 禁用集，见下面
     // install_marketplace_skill_sync），plain 会话立即可见。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -520,6 +528,8 @@ pub async fn update_marketplace_skill(
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 
@@ -555,7 +565,20 @@ pub async fn import_skill_package(
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 重写在线会话组合目录（下一轮 prompt 生效）。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
+}
+
+/// FNV-1a 64 位（确定性、跨平台稳定）：中文文件名 md 导入的无 frontmatter 兜底
+/// id 派生。与 DefaultHasher 不同，不依赖进程内随机种子，重导/跨进程 id 一致。
+fn stable_stem_hash(stem: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in stem.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
@@ -571,6 +594,14 @@ fn import_skill_md_content(
         .map(|i| &filename[..i])
         .unwrap_or(filename);
     let fallback = crate::features::marketplace::skill_marketplace::sanitize_skill_name(stem);
+    // 中文/纯符号文件名：sanitize 全映射为 `-` 后兜底恒为 "skill"，两个不同文件会
+    // 静默互覆盖（二轮评审）。用文件名的稳定哈希派生唯一 id——同一文件重导 = 同 id
+    // = 升级覆盖；不同文件 = 不同 id（FNV-1a 64 位，确定性、跨平台稳定）。
+    let fallback = if fallback == "skill" && !stem.is_empty() {
+        format!("skill-{}", stable_stem_hash(stem))
+    } else {
+        fallback
+    };
     let mut md = md;
     if crate::features::marketplace::skill_marketplace::read_skill_name_from_str(&md).is_none() {
         md = format!("---\nname: {fallback}\n---\n\n{md}");
@@ -650,9 +681,14 @@ pub async fn import_spanner_package(
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
+    // 与 `install_marketplace_tool` / `import_skill_package_bytes` 同口径。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     log::info!(
         "[marketplace] 插件导入: id={} kind={:?} icon={}",
         report.id,
@@ -706,10 +742,14 @@ pub async fn import_spanner_package_bytes(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))?;
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
-    report?;
+    let report = report?;
+    // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     pool.refresh_disallowed_tools().await;
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
 }
 
@@ -730,12 +770,25 @@ pub async fn import_skill_md_bytes(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data_base64)
         .map_err(|e| format!("解码数据失败: {e}"))?;
+    // 上传字节大小上限：与 zip 通道对齐，避免单条 .md 把磁盘写爆。
+    use crate::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    if bytes.len() as u64 > MAX_PLUGIN_SIZE_BYTES {
+        return Err(format!(
+            "技能文件超过 {} MiB 上限",
+            MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+        ));
+    }
     let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
     let filename_for_import = filename.clone();
-    tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
-        .await
-        .map_err(|e| format!("任务执行失败: {e}"))??;
+    let report =
+        tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
+            .await
+            .map_err(|e| format!("任务执行失败: {e}"))??;
+    // 上传安全默认：与 `import_skill_package_bytes` 同口径，加入 DenyAll scope。
+    crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(&report.id);
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
 }
 
@@ -793,6 +846,8 @@ pub async fn import_skill_package_bytes(
     name?;
     // 与对话框导入一致:重写在线会话组合目录(下一轮 prompt 生效)。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(true)
 }
 
@@ -806,6 +861,8 @@ pub async fn uninstall_marketplace_skill(
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
     pool.refresh_live_sessions_skills().await;
+    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
+    pool.refresh_permission_rulesets().await;
     Ok(())
 }
 

@@ -13,7 +13,7 @@
 //! government-writing、装「PPT 生成」pptx MCP 时一并装 pptx),已无独立「技能」市场页;用户上传 zip 技能包能力保留。
 //!
 //! 更新机制:无版本号。install/update 时把目录树内容指纹写入 BundleStore 记录
-//! (`content_fingerprint`)；列出技能（打开工具商店）时按「记录指纹 vs 当前嵌入
+//! (`content_fingerprint`)；列出技能（打开插件中心）时按「记录指纹 vs 当前嵌入
 //! 资源指纹（上游更新）∪ 磁盘指纹 vs 记录指纹（本地改动）」判定
 //! `update_available`，前端显示"更新"按钮,用户确认后走 `install` 的原子覆盖重装(保留启用状态)。
 //! 上传技能无嵌入对应物,不参与检测。
@@ -43,7 +43,7 @@ pub(crate) const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 const INSTALLED_FROM_MARKER: &str = ".installed-from";
 
 /// 底座每次启动会清掉的已下线 skill 名;安装时拒绝撞名,免得装了被清。
-const RETIRED_SKILL_NAMES: &[&str] = &[
+pub(crate) const RETIRED_SKILL_NAMES: &[&str] = &[
     "legacy-ppt-workflow",
     "pinvou-review-plan",
     "pinvou-review-final",
@@ -155,7 +155,7 @@ pub struct MarketplaceSkillInfo {
 
 // 停用开关(按模式 scope 持久化)------------------------------------------------
 //
-// 技能停用按会话模式 scope 独立持久化到 `~/.pinvou3/disabled_skills.json`
+// 技能停用按会话模式 scope 持久化到统一 `~/.pinvou3/disabled_bundles.json`
 // (`{scopes: {<mode>: [...]}, initialized: [...]}`,scope 键即模式名,与连接器
 // 开关同构),过滤职责移交
 // **按会话拼的组合 skills_dir**(`features/assistant/skill_materialization.rs`):

@@ -55,7 +55,7 @@
       }
     }
 
-    listen("workflow:agent_progress", function (e) {
+    listen("multiagent:agent_progress", function (e) {
       var p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({
@@ -68,7 +68,7 @@
       });
     });
 
-    listen("workflow:agent_complete", function (e) {
+    listen("multiagent:agent_complete", function (e) {
       var p = e.payload || {};
       if (!p.session_id || !p.agent_id) return;
       dispatchSubagentUpdate({

@@ -886,8 +886,6 @@
   listen("chat:user_input_required", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};
     if (hasChatItemForTool("user_input", p.id)) return;
-    if (state.workflow.run.status === "stopped" &&
-        state.workflow.run.sessionId && p.session_id === state.workflow.run.sessionId) return;
     var questions = p.questions || [];
     if (!Array.isArray(questions) || questions.length === 0) return;
     addChatItem({
@@ -988,6 +986,20 @@
       return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
     }).filter(Boolean);
   }
+  function normalizeMountedRemoteCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (!entry || typeof entry !== "object") return null;
+      var serverId = entry.serverId != null ? entry.serverId : entry.server_id;
+      var collectionId = entry.collectionId != null ? entry.collectionId : entry.collection_id;
+      if (!serverId || collectionId == null) return null;
+      var key = String(serverId) + ":" + String(collectionId);
+      if (seen[key]) return null;
+      seen[key] = true;
+      return { serverId: serverId, collectionId: collectionId, enabled: entry.enabled !== false };
+    }).filter(Boolean);
+  }
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
@@ -1014,6 +1026,26 @@
       state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
       notify();
     }
+    function commitRemote(value) {
+      if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
+      if (!Array.isArray(value)) return;
+      state.mountedRemoteCollections = normalizeMountedRemoteCollections(value);
+      notify();
+    }
+    var payloadRemote = Array.isArray(p.remote_collections)
+      ? p.remote_collections
+      : (Array.isArray(p.remoteCollections) ? p.remoteCollections : null);
+    if (payloadRemote) {
+      // Collection deletion carries the post-cascade list, so the composer drops its chip
+      // synchronously instead of waiting for another IPC round trip.
+      commitRemote(payloadRemote);
+    } else {
+      // Older producers omit remote mounts. Re-read the session fact source so this shared event
+      // still converges both local and remote mount state.
+      invoke("session_mounted_remote_collections", { sessionId: sessionId })
+        .then(function (collections) { commitRemote(collections); })
+        .catch(function () {});
+    }
     // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
     invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
       .then(function (snapshot) { commit(snapshot); })
@@ -1039,7 +1071,7 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;
@@ -1104,26 +1136,6 @@
     });
     notify();
   });
-
-  // workflow:project_started —— start_workflow 后端建项目+绑定 session 后 emit。
-  // 必须真正 switchToSession 切过去（load 新 session 的空 messages + sync engine +
-  // syncSessionSkill），否则只设 activeSessionId 会让旧对话的 messages 残留在屏上，
-  // 顶部又叠加 PhaseChips，看起来像"旧对话被 append 了项目名"（Phase A 关键 bug）。
-  // refreshHistoryList 先跑让新 session 进 sidebar 列表 + 刷 bindings(🧭)。
-  // switchToSession 内部已调 syncSessionSkill，切完 App useEffect 自动 setCurrentView('chat')。
-  // [卡片流] start_workflow 后端建项目+绑定 session 后 emit。
-  // 新设计：**不再 switchToSession 跳聊天页** —— 用户停在工作流看板，
-  // 工作流 session 作为后台 session 跑，看板靠下面的 workflow:* 事件按 session_id 驱动。
-  listen("workflow:project_started", async function (e) {
-    var p = e.payload || {};
-    state.workflow.run = {
-      active: true, sessionId: p.session_id || null, projectDir: p.project_dir || null,
-      scenario: p.scenario || null, status: "running", agents: {}, cards: [], selectedRole: null,
-    };
-    await refreshHistoryList();
-    notify();
-  });
-
 
     return {
       latestTimelineCompletion: latestTimelineCompletion,

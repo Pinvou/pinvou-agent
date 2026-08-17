@@ -74,7 +74,7 @@ function injectSource() {
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
         case 'check_for_update': return Promise.resolve({available:false});
         case 'find_resumable_run': return Promise.resolve(null);
-        case 'list_workflows': case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
+        case 'list_workspace_files': case 'get_session_persona_events': case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_active_persona': return Promise.resolve(null);
         case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});

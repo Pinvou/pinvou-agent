@@ -168,9 +168,8 @@ pub fn view_title(kind: &str) -> &'static str {
         "session" => "对话",
         "codex-session" => "Coding 对话",
         "persona" => "专家",
-        "workflow" => "工作流",
         "monitor" => "系统监控",
-        "toolstore" => "工具商店",
+        "toolstore" => "插件中心",
         "cardpool" => "专家卡牌池",
         "localenv" => "本地环境",
         "outputs" => "产出物",
@@ -362,7 +361,7 @@ mod tests {
         );
         assert_ne!(
             detached_label("session", Some("a")),
-            detached_label("workflow", Some("a"))
+            detached_label("persona", Some("a"))
         );
         assert_ne!(
             detached_label("monitor", None),
@@ -372,7 +371,7 @@ mod tests {
 
     #[test]
     fn view_title_known_and_fallback() {
-        assert_eq!(view_title("workflow"), "工作流");
+        assert_eq!(view_title("persona"), "专家");
         assert_eq!(view_title("codex-session"), "Coding 对话");
         assert_eq!(view_title("outputs"), "产出物");
         assert_eq!(view_title("???"), "PINVOU");
@@ -397,8 +396,8 @@ mod tests {
         let query = format!(
             "ui={}&detached=1&kind={}",
             crate::platform::ui_cache::UI_CACHE_SCHEMA,
-            urlencode("workflow")
+            urlencode("session")
         );
-        assert_eq!(query, "ui=vite-react-1&detached=1&kind=workflow");
+        assert_eq!(query, "ui=vite-react-1&detached=1&kind=session");
     }
 }

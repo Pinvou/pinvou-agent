@@ -53,7 +53,6 @@ const PREVIEW_SCHEDULED_RUN_SHORTCUTS = [
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { PinvouSummonCard } from '../features/tools/tool-renderers.jsx';
 import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/Personas.jsx';
-import { WorkflowView } from '../features/workflow/WorkflowView.jsx';
 import { SearchView } from '../features/search/SearchView.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
@@ -67,7 +66,7 @@ let appFirstRenderMarked = false;
 
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
-  'settings', 'models', 'vllm', 'interaction', 'personas', 'workflow',
+  'settings', 'models', 'vllm', 'interaction', 'personas',
   'memory', 'remoteControl', 'updater', 'dependencies',
 ];
 
@@ -611,8 +610,6 @@ function workspaceDisplayName(path) {
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
           setCurrentView('chat');
-        } else if (currentView === 'workflow') {
-          setCurrentView('cardpool');
         }
       }, [currentView]);
 
@@ -679,7 +676,6 @@ function workspaceDisplayName(path) {
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
       // Build chat history from sessions
-      const skillBindings = (bs && bs.workflow && bs.workflow.bindings) || {};
       const sessionBusy = (bs && bs.sessionBusy) || {};
       const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
         const isPlaceholder = !s.title || DEFAULT_CHAT_TITLES.has(s.title);
@@ -697,7 +693,6 @@ function workspaceDisplayName(path) {
           updatedAt: s.updated_at || s.created_at || '',
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
-          skill: skillBindings[s.id] || null,
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
@@ -1596,7 +1591,7 @@ function workspaceDisplayName(path) {
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, workflow: t.workflow, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
@@ -2106,7 +2101,6 @@ function workspaceDisplayName(path) {
                 />
               </SettingsErrorBoundary>
             )}
-            {currentView === 'workflow' && <WorkflowView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
             {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}

@@ -136,10 +136,29 @@ pub(crate) fn skill_owner_package(skill_name: &str) -> String {
     }
     for tool in MarketplaceManager::new().available_tools() {
         if tool.companion_skills.iter().any(|s| s == skill_name) {
-            return tool.id;
+            // V5「随包」认领：包本体已装才把技能归属到包（与 list_bundles 的认领
+            // 条件一致）；未装时技能保留独立纯技能包形态（owner = 技能名自身）。
+            // 保证 save 归一与物化排除跟 UI 展示的包形态对齐（二轮评审：scope
+            // save 归一与 V5 条件认领冲突）。
+            if bundle_installed(&tool.id) {
+                return tool.id;
+            }
+            break;
         }
     }
     skill_name.to_string()
+}
+
+/// 包是否已安装：BundleStore 记录优先；store 不可读时回退 installed.json——
+/// 与 `list_bundles` 的 V5 认领判定同口径（Phase 2 过渡期 installed.json 仍权威）。
+fn bundle_installed(id: &str) -> bool {
+    match super::store::BundleStore::new().records() {
+        Ok(records) => records.iter().any(|r| r.id == id && r.installed),
+        Err(_) => MarketplaceManager::new()
+            .installed_ids()
+            .iter()
+            .any(|installed| installed == id),
+    }
 }
 
 /// 凭据目标：env（mcp.json 环境变量占位）、credential（系统凭据存储）、bearer（Authorization 头）。
@@ -463,10 +482,13 @@ impl BundleRegistry {
             });
         }
 
-        // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）
+        // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）。
+        // 登记侧写入的记录 id 是 `ima-skills`（技能包 install 的登记口径），卡 id 是
+        // `ima`——两个 id 任一有记录都算已装，保证「一个包 = 一张卡 = 一个开关」。
         let ima_skills = ["ima-skills"];
-        let (ima_installed, ima_degraded) =
-            store_state("ima").unwrap_or((self.cli_bundle_installed("ima"), None));
+        let (ima_installed, ima_degraded) = store_state("ima")
+            .or_else(|| store_state("ima-skills"))
+            .unwrap_or((self.cli_bundle_installed("ima"), None));
         out.push(BundleInfo {
             id: "ima".to_string(),
             name: "腾讯 ima".to_string(),

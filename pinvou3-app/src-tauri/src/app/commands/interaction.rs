@@ -11,12 +11,10 @@ pub async fn compact_now(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.compact_now(&sid)
         .await
-        .map_err(|e| format!("compact_now: {e:?}"))
+        .map_err(|e| format!("compact_now: {e:#}"))
 }
 
 // ===================== 阶段 D: Plan / YOLO 双模式 =====================
@@ -203,9 +201,9 @@ pub async fn accept_plan(
     {
         let rollback = plan_claim.rollback();
         return Err(match rollback {
-            Ok(()) => format!("accept_plan send_user_message: {error:?}"),
+            Ok(()) => format!("accept_plan send_user_message: {error:#}"),
             Err(rollback_error) => format!(
-                "accept_plan send_user_message: {error:?}; restore plan claim failed: {rollback_error:#}"
+                "accept_plan send_user_message: {error:#}; restore plan claim failed: {rollback_error:#}"
             ),
         });
     }
@@ -326,57 +324,11 @@ pub async fn submit_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let response = UserInputResponse { answers };
     pool.submit_user_input(&sid, tool_call_id, response)
         .await
-        .map_err(|e| format!("submit_user_input: {e:?}"))
-}
-
-/// [2026-06-06] 工作流素材上传：把用户选的文件拷进当前 run 的 配套材料/ 目录。
-/// 前端素材收集卡片「📎 上传素材」按钮 → dialogOpen 选文件 → 调此命令落盘。
-/// materials_auditor 重扫 配套材料/ 即可识别。返回实际落盘的文件名（含同名去重后的名）。
-#[tauri::command]
-pub async fn add_run_materials(
-    session_id: Option<String>,
-    paths: Vec<String>,
-    store: State<'_, SessionStore>,
-) -> Result<Vec<String>, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
-    let workspace = store
-        .ledger_root(&sid)
-        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
-    let project = crate::features::assistant::harness::find_project_dir(&workspace)
-        .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
-    let dst_dir = project.join("配套材料");
-    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("建配套材料目录失败: {e}"))?;
-    let mut added = Vec::new();
-    for p in &paths {
-        let src = std::path::Path::new(p);
-        let base = src
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| format!("非法路径: {p}"))?;
-        // 同名去重（参照 attach_file 的命名逻辑）
-        let (stem, ext) = match base.rsplit_once('.') {
-            Some((s, e)) => (s.to_string(), format!(".{e}")),
-            None => (base.to_string(), String::new()),
-        };
-        let mut candidate = base.to_string();
-        let mut n = 1;
-        while dst_dir.join(&candidate).exists() {
-            candidate = format!("{stem}-{n}{ext}");
-            n += 1;
-        }
-        std::fs::copy(src, dst_dir.join(&candidate))
-            .map_err(|e| format!("拷贝 {base} 失败: {e}"))?;
-        added.push(candidate);
-    }
-    Ok(added)
+        .map_err(|e| format!("submit_user_input: {e:#}"))
 }
 
 /// 前端 ✕ 按钮 / 切换 session 时调用：取消 request_user_input。
@@ -388,12 +340,10 @@ pub async fn cancel_user_input(
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     pool.cancel_user_input(&sid, tool_call_id)
         .await
-        .map_err(|e| format!("cancel_user_input: {e:?}"))
+        .map_err(|e| format!("cancel_user_input: {e:#}"))
 }
 
 /// 会话当前的挂起输入请求与 turn 状态。
@@ -416,9 +366,6 @@ pub async fn get_pending_user_inputs(
         pending: crate::features::assistant::pending_user_input::list(&session_id),
     })
 }
-
-// (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
-//  本 PR 只含工作流基座 + 三省六部)
 
 #[tauri::command]
 pub async fn restart_engine(
@@ -447,12 +394,10 @@ pub async fn summon_pinvou(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<crate::features::review::PinvouReview, String> {
-    let sid = session_id
-        .or_else(|| store.active_id())
-        .ok_or_else(|| "no active session".to_string())?;
+    let sid = require_active_sid(session_id, &store)?;
     let session = store
         .load(&sid)
-        .map_err(|e| format!("summon_pinvou load({sid}): {e:?}"))?;
+        .map_err(|e| format!("summon_pinvou load({sid}): {e:#}"))?;
     let bridge = pool
         .fresh_bridge_for(&sid)
         .await
@@ -469,5 +414,5 @@ pub async fn summon_pinvou(
         mode.as_deref(),
     )
     .await
-    .map_err(|e| format!("summon_pinvou: {e:?}"))
+    .map_err(|e| format!("summon_pinvou: {e:#}"))
 }

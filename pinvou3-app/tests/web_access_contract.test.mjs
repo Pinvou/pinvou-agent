@@ -46,12 +46,10 @@ const commands = fs.readdirSync(commandsRoot)
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
 const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
-const workflowCommands = fs.readFileSync(path.join(commandsRoot, 'workflows.rs'), 'utf8');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
 const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
 const toolRenderers = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-const workflowView = fs.readFileSync(path.join(root, 'src', 'features', 'workflow', 'WorkflowView.jsx'), 'utf8');
 const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowledge', 'KnowledgeView.jsx'), 'utf8');
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
@@ -213,8 +211,6 @@ assert.match(webBridge, /var draftComposer = realId \? "" : \(state\.composerDra
   'WebUI background session events must snapshot an unmaterialized draft');
 assert.match(webBridge, /if \(!realId\) restoreBuffer\.composerDraft = draftComposer/,
   'WebUI background session events must restore an unmaterialized draft');
-assert.match(workflowCommands, /start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?emit_session_event\(&app, "session:list_changed", &sid, "created"\)/);
-assert.match(remoteControlCommands, /web_access_start_skill_session\([\s\S]*?app: AppHandle[\s\S]*?start_skill_session\(name, Some\(false\), app, store, pool\)/);
 for (const eventName of ['session:model_changed', 'session:persona_changed']) {
   assert.equal(allowedEvents.has(eventName), true, `${eventName} must reach both clients`);
   assert.match(webBridge, new RegExp(`listen\\("${eventName.replace(':', '\\:')}"`));
@@ -296,8 +292,6 @@ assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.ok((toolStoreView.match(/if \(!canMutateToolStore\) return;/g) || []).length >= 4,
   'all tool install, uninstall, and import handlers must fail closed in WebUI');
-assert.match(workflowView, /can\('artifactDownload'\)/);
-assert.match(workflowView, /can\('hostFilePicker'\)/);
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
 assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);

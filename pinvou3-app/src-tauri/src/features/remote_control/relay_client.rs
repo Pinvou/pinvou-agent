@@ -1163,10 +1163,8 @@ mod tests {
             ),
             Some(RelayTerminal::Missing)
         );
-    }
-
-    #[test]
-    fn terminal_messages_are_scoped_to_the_registered_endpoint() {
+        // 终结判定只对已注册 endpoint 生效:他端点消息不得终结本连接
+        // (原 terminal_messages_are_scoped_to_the_registered_endpoint)。
         assert_eq!(
             terminal_message(
                 &json!({
