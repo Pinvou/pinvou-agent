@@ -479,6 +479,14 @@ impl TurnLifecycle {
         state.active && state.submitted
     }
 
+    /// 终态是否已认领（`terminal_emitted`）。供 `cancel` 返回结果组装使用：
+    /// 目标轮已认领终态 ⇒ claim 已完成、`finish_terminal_emission` 已重开
+    /// reserve 闸门（emit 后置契约）⇒ 前端可直接 proceed，无需等事件。
+    /// 读取发生在 claim 原子临界区之外，false 时等事件是安全的（事件将到）。
+    pub(crate) fn is_terminal_emitted(&self) -> bool {
+        self.state.lock().terminal_emitted
+    }
+
     pub(crate) fn reserve(self: &Arc<Self>) -> Result<TurnReservation> {
         let reservation_id = {
             let mut state = self.state.lock();
