@@ -1424,6 +1424,67 @@ mod tests {
         });
     }
 
+    /// 腾讯文档官方端点要求原始 Token(无 Bearer 前缀),四个远程 server 共用同一
+    /// secret_headers 声明:每个 server 都落 `env_headers.Authorization` 指向同一
+    /// 环境变量,不写 bearer_token_env_var(那会强制加 Bearer 前缀),也不落明文。
+    #[test]
+    fn install_tencent_docs_raw_authorization_env_headers_on_all_servers() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "tencent-docs",
+                r#"{
+                    "id":"tencent-docs","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"","source_key":"TENCENT_DOCS_TOKEN","provider":"tencent-docs","required":true}],
+                    "servers":[
+                        {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
+                        {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
+                        {"name":"tdoc-doc","url":"https://docs.qq.com/api/v6/doc/mcp"},
+                        {"name":"tdoc-sheet","url":"https://docs.qq.com/api/v6/sheet/mcp"}
+                    ]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("tdoc");
+            store
+                .set(
+                    &mcp_secret_reference("tencent-docs", "header", "TENCENT_DOCS_TOKEN"),
+                    &secret,
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            mgr.install("tencent-docs", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
+                let entry = &mcp["servers"][server];
+                assert!(
+                    entry.get("url").is_some(),
+                    "server {server} 应写入 mcp.json"
+                );
+                assert!(
+                    entry.get("bearer_token_env_var").is_none(),
+                    "server {server} 不应走 Bearer 前缀注入"
+                );
+                assert_eq!(
+                    entry["env_headers"]["Authorization"], "PINVOU3_MCP_SECRET_TENCENT_DOCS_TOKEN",
+                    "server {server} 应以原始值 env_headers 注入 Authorization"
+                );
+            }
+            assert!(mcp["servers"]["tencent-docs"].get("headers").is_none());
+            assert!(!mcp.to_string().contains(&secret));
+
+            // 卸载:四个 server 一并从 mcp.json 移除,凭据删除。
+            mgr.uninstall("tencent-docs").unwrap();
+            let mcp = read_mcp_json();
+            for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
+                assert!(mcp["servers"].get(server).is_none());
+            }
+        });
+    }
+
     #[test]
     fn sync_secret_env_vars_restores_header_secret() {
         with_temp_home(|| {

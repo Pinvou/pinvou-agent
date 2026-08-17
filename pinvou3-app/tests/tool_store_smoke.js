@@ -38,6 +38,7 @@ function injectSource() {
     const TOOL_META={
       weather:['高德天气',[]],iwencai:['同花顺问财',[]],qcc:['企查查',[]],
       'patsnap-search':['智慧芽专利&文献融合检索',[]],
+      'tencent-docs':['腾讯文档 MCP',['tencent-docs-skill']],
       'canva-mcp':['Canva 可画',[]],
       'yuandian-mcp':['华宇元典法律数据',[]],
       obsidian:['Obsidian 知识库',[]],pptx:['PPT 生成',[]],gongwen:['公文写作',['government-writing']]
@@ -277,6 +278,19 @@ async function closeDetail(page, title) {
     return window.__TOOL_STORE_TEST__.installed['patsnap-search']&&call?.args?.config?.PATSNAP_API_KEY==='patsnap-test-token';
   }));
 
+  await action(page,'腾讯文档 MCP','配置','tencent-docs');
+  rec('腾讯文档安装前展示个人 Token 配置',await page.evaluate(()=>{
+    const input=document.querySelector('input[type="password"][placeholder="粘贴腾讯文档个人 Token"]');
+    return document.body.innerText.includes('连接腾讯文档')&&!!input;
+  }));
+  const tdocInput=await page.$('input[type="password"][placeholder="粘贴腾讯文档个人 Token"]');
+  await tdocInput.type('tdoc-test-token');
+  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  rec('腾讯文档经 Token 凭据配置连接',await page.evaluate(()=>{
+    const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='tencent-docs');
+    return window.__TOOL_STORE_TEST__.installed['tencent-docs']&&call?.args?.config?.TENCENT_DOCS_TOKEN==='tdoc-test-token';
+  }));
+
   await action(page,'腾讯 ima','配置','ima');
   rec('腾讯 ima 安装前展示 Client ID 和 API Key 配置',await page.evaluate(()=>{
     const client=document.querySelector('input[type="password"][placeholder="Client ID"]');
@@ -389,6 +403,7 @@ async function closeDetail(page, title) {
     if(x.args.toolId==='weather')return Object.keys(x.args.config||{}).join(',')==='AMAP_KEY';
     if(x.args.toolId==='iwencai')return Object.keys(x.args.config||{}).join(',')==='IWENCAI_API_KEY';
     if(x.args.toolId==='patsnap-search')return Object.keys(x.args.config||{}).join(',')==='PATSNAP_API_KEY';
+    if(x.args.toolId==='tencent-docs')return Object.keys(x.args.config||{}).join(',')==='TENCENT_DOCS_TOKEN';
     if(x.args.toolId==='ima')return false;
     return x.args&&x.args.toolId&&!x.args.config;
   }));

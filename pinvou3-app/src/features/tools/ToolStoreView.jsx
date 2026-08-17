@@ -54,6 +54,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   tmeet: 'assets/tool-icons/wb-tencent-meeting.png',
   qcc: 'assets/tool-icons/qcc-user.png',
   'patsnap-search': 'assets/tool-icons/wb-patsnap-search.png',
+  'tencent-docs': 'assets/tool-icons/wb-tencent-docs.png',
   ima: 'assets/tool-icons/wb-ima-mcp.png',
   obsidian: 'assets/tool-icons/obsidian.ico',
   'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',

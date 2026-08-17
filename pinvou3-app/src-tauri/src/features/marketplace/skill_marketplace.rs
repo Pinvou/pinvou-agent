@@ -90,6 +90,16 @@ fn preset_manifests() -> &'static [SkillManifest] {
             icon: "BookOpen",
             color: "bg-gradient-to-b from-sky-500 to-indigo-600",
         },
+        SkillManifest {
+            id: "tencent-docs-skill",
+            skill_name: "tencent-docs",
+            source_dir: "tencent-docs-skill",
+            title: "腾讯文档",
+            subtitle: "在线文档/表格/幻灯片/智能表格 创建、编辑、管理",
+            description: "腾讯文档官方 MCP Skill（v1.0.41 适配版）：配合工具商店「腾讯文档 MCP」连接器使用，内置官方品类路由（智能文档/Word/Excel/PPT/思维导图/流程图/智能表格）与完整工具 API 参考。Token 由连接器写入本机系统凭据。",
+            icon: "FileText",
+            color: "bg-gradient-to-b from-blue-500 to-indigo-600",
+        },
     ]
 }
 
@@ -851,6 +861,63 @@ mod tests {
             .any(|s| s.id == "ima-skills" && s.installed));
 
         mgr.uninstall("ima-skills").unwrap();
+        assert!(!skill_dir.exists(), "卸载应删目录");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 腾讯文档官方 skill(vendored):安装落盘到 frontmatter name(tencent-docs),
+    /// 品类参考与 smartcanvas 模板随包;mcporter 依赖脚本(setup.sh/import_file.sh/
+    /// ocr.js)不应存在,适配版 get_slide_info.sh 应在。
+    #[test]
+    fn install_tencent_docs_preset_with_official_references() {
+        let tmp = fresh_dir("tdoc");
+        let mgr = SkillMarketplaceManager::with_skills_dir(tmp.clone());
+
+        mgr.install("tencent-docs-skill").unwrap();
+        let skill_dir = tmp.join("tencent-docs");
+        assert!(skill_dir.join("SKILL.md").is_file(), "SKILL.md 应落盘");
+        assert_eq!(
+            read_skill_name(&skill_dir.join("SKILL.md")).as_deref(),
+            Some("tencent-docs")
+        );
+        for reference in [
+            "references/manage_references.md",
+            "references/smartsheet_references.md",
+            "references/docengine_references.md",
+            "references/slideengine_references.md",
+            "sheet/api/mcp-api.md",
+            "smartcanvas/entry.md",
+            "slide/entry.md",
+        ] {
+            assert!(
+                skill_dir.join(reference).is_file(),
+                "{reference} 应随包落盘"
+            );
+        }
+        // mcporter 依赖脚本不应 vendored 进来
+        for dropped in ["setup.sh", "import_file.sh", "ocr.js"] {
+            assert!(
+                !skill_dir.join(dropped).exists(),
+                "{dropped} 依赖 mcporter,不应保留"
+            );
+        }
+        assert!(
+            skill_dir
+                .join("sidebar-pptx-generator/scripts/get_slide_info.sh")
+                .is_file(),
+            "适配版状态脚本应在"
+        );
+        let skmd = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            !skmd.contains("mcporter"),
+            "SKILL.md 不应残留 mcporter 调用说明"
+        );
+        assert!(mgr
+            .list_skills()
+            .iter()
+            .any(|s| s.id == "tencent-docs-skill" && s.installed));
+
+        mgr.uninstall("tencent-docs-skill").unwrap();
         assert!(!skill_dir.exists(), "卸载应删目录");
         let _ = std::fs::remove_dir_all(&tmp);
     }

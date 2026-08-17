@@ -1,0 +1,59 @@
+{
+  "id": "tencent-docs",
+  "name": "腾讯文档 MCP",
+  "description": "接入腾讯文档官方远程 MCP，读写在线文档/表格/幻灯片/智能表格，管理知识库空间与文件。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。",
+  "version": "1.0.0",
+  "icon": "filetext",
+  "category": "协作",
+  "mcp_tools": [],
+  "command": "",
+  "args": [],
+  "validate_on_install": true,
+  "secret_headers": [
+    {
+      "header": "Authorization",
+      "scheme": "",
+      "source_key": "TENCENT_DOCS_TOKEN",
+      "provider": "tencent-docs",
+      "required": true
+    }
+  ],
+  "config_fields": [
+    {
+      "key": "TENCENT_DOCS_TOKEN",
+      "label": "腾讯文档 Token",
+      "required": true,
+      "target": "bearer",
+      "secret": true
+    }
+  ],
+  "servers": [
+    {
+      "name": "tencent-docs",
+      "url": "https://docs.qq.com/openapi/mcp"
+    },
+    {
+      "name": "tdoc-slide",
+      "url": "https://docs.qq.com/api/v6/slide/mcp"
+    },
+    {
+      "name": "tdoc-doc",
+      "url": "https://docs.qq.com/api/v6/doc/mcp"
+    },
+    {
+      "name": "tdoc-sheet",
+      "url": "https://docs.qq.com/api/v6/sheet/mcp"
+    }
+  ],
+  "companion_skills": ["tencent-docs-skill"],
+  "routing_rules": [
+    "腾讯文档/docs.qq.com/在线文档/在线表格/幻灯片/智能文档/智能表格/思维导图/流程图/收集表/知识库空间/文档导入导出 → `mcp_tencent-docs_*`（通用文档服务），PPT 精细编辑 → `mcp_tdoc-slide_*`，Word 精细编辑 → `mcp_tdoc-doc_*`，Excel 精细编辑 → `mcp_tdoc-sheet_*`，不要用 `web_search` 替代文档内容读取"
+  ],
+  "tool_table_entries": [
+    "| 在线文档/表格/幻灯片读写、文件与知识库空间管理 | `mcp_tencent-docs_*` (腾讯文档官方通用服务) |",
+    "| PPT 幻灯片精细编辑（形状/文本/图表/批注/动画） | `mcp_tdoc-slide_*` (腾讯文档 slide 引擎) |",
+    "| Word 文档精细编辑 | `mcp_tdoc-doc_*` (腾讯文档 doc 引擎) |",
+    "| Excel 表格精细编辑（单元格/公式/样式/冻结/保护） | `mcp_tdoc-sheet_*` (腾讯文档 sheet 引擎) |"
+  ],
+  "pip_dependencies": []
+}

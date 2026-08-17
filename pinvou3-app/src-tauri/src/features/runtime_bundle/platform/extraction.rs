@@ -540,6 +540,14 @@ impl Pinvou3Bundle {
             patsnap_dir.join("manifest.json"),
             PATSNAP_SEARCH_MANIFEST_JSON,
         )?;
+        // 工具市场：腾讯文档（官方远程 MCP ×4，个人 Token 经无 scheme Authorization
+        // 头注入——官方端点要求原始 Token，不能加 Bearer 前缀）
+        let tencent_docs_dir = dir.join("tencent-docs");
+        std::fs::create_dir_all(&tencent_docs_dir)?;
+        std::fs::write(
+            tencent_docs_dir.join("manifest.json"),
+            TENCENT_DOCS_MANIFEST_JSON,
+        )?;
         // 工具市场：Obsidian 知识库 MCP server（本地 stdio，检索本机 vault）
         let obsidian_dir = dir.join("obsidian");
         std::fs::create_dir_all(&obsidian_dir)?;

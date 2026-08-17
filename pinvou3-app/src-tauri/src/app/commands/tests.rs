@@ -1357,6 +1357,9 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(url_in_external_allowlist(
         "https://meeting.tencent.com/qrcode-login.html?code=abc"
     ));
+    assert!(url_in_external_allowlist(
+        "https://docs.qq.com/scenario/open-claw.html?nlc=1"
+    ));
     assert!(url_in_external_allowlist("http://localhost:8080/"));
     assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
     assert!(url_in_external_allowlist("http://[::1]:3000/"));
@@ -1377,6 +1380,13 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
     assert!(!url_in_external_allowlist(
         "https://meeting.tencent.com.evil.com/qrcode-login.html"
     ));
+    assert!(!url_in_external_allowlist(
+        "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1"
+    ));
+    assert!(!url_in_external_allowlist(
+        "https://docs.qq.com.evil.com/openapi/mcp"
+    ));
+    assert!(!url_in_external_allowlist("http://docs.qq.com/"));
     assert!(!url_in_external_allowlist("http://obsidian.md/"));
     assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
     assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
