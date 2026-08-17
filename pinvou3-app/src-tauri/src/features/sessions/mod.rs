@@ -59,7 +59,9 @@ use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
 /// (persona/review/knowledge) and must not form a `core → features`
 /// reverse dependency. Consumers should import from
 /// `crate::features::sessions::{...}`.
-pub use self::mode_state::{MountedCollection, MountedCollectionsSnapshot, SessionModeState};
+pub use self::mode_state::{
+    MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection, SessionModeState,
+};
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{

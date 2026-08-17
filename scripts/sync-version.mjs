@@ -8,8 +8,10 @@
 // 同步目标：
 //   1. pinvou3-app/src-tauri/tauri.conf.json 的 "version" 字段
 //   2. pinvou3-app/src-tauri/Cargo.toml 的 [package] 下第一处 version = "..." 行（不动依赖版本）
-//   3. pinvou3-app/package.json 的 "version" 字段
-//   4. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
+//   3. pinvou-knowledge/Cargo.toml 的 [package] 版本
+//   4. pinvou-knowledge/Cargo.lock 中 pinvou-knowledge 包版本
+//   5. pinvou3-app/package.json 的 "version" 字段
+//   6. pinvou3-app/package-lock.json 的根 "version" 与 packages[""].version（文件不存在时跳过）
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -22,6 +24,8 @@ const CHECK_ONLY = process.argv.includes('--check');
 const VERSION_FILE = resolve(REPO_ROOT, 'VERSION');
 const TAURI_CONF = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/tauri.conf.json');
 const CARGO_TOML = resolve(REPO_ROOT, 'pinvou3-app/src-tauri/Cargo.toml');
+const KNOWLEDGE_CARGO_TOML = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.toml');
+const KNOWLEDGE_CARGO_LOCK = resolve(REPO_ROOT, 'pinvou-knowledge/Cargo.lock');
 const PACKAGE_JSON = resolve(REPO_ROOT, 'pinvou3-app/package.json');
 const PACKAGE_LOCK = resolve(REPO_ROOT, 'pinvou3-app/package-lock.json');
 
@@ -111,11 +115,56 @@ function writeCargoVersion(path, version) {
   writeFileSync(path, lines.join('\n'));
 }
 
+export function updateCargoLockPackageVersion(content, packageName, targetVersion = null) {
+  const lines = content.split('\n');
+  const matches = [];
+  for (let start = 0; start < lines.length; start++) {
+    if (lines[start].trim() !== '[[package]]') continue;
+    let name = null;
+    let version = null;
+    let versionIndex = -1;
+    for (let index = start + 1; index < lines.length && lines[index].trim() !== '[[package]]'; index++) {
+      const nameMatch = /^name\s*=\s*"([^"]+)"/u.exec(lines[index]);
+      const versionMatch = /^version\s*=\s*"([^"]+)"/u.exec(lines[index]);
+      if (nameMatch) name = nameMatch[1];
+      if (versionMatch && versionIndex === -1) {
+        version = versionMatch[1];
+        versionIndex = index;
+      }
+    }
+    if (name === packageName && versionIndex !== -1) {
+      matches.push({ version, versionIndex });
+    }
+  }
+  if (matches.length !== 1) {
+    throw new Error(`Cargo.lock 中应恰好存在一个 ${packageName} 包，实际找到 ${matches.length} 个`);
+  }
+  if (targetVersion !== null) {
+    const { versionIndex } = matches[0];
+    lines[versionIndex] = lines[versionIndex].replace(
+      CARGO_VERSION_RE,
+      `version = "${targetVersion}"`,
+    );
+  }
+  return { version: matches[0].version, content: lines.join('\n') };
+}
+
+function readCargoLockVersion(path, packageName) {
+  return updateCargoLockPackageVersion(readFileSync(path, 'utf8'), packageName).version;
+}
+
+function writeCargoLockVersion(path, packageName, version) {
+  const result = updateCargoLockPackageVersion(readFileSync(path, 'utf8'), packageName, version);
+  writeFileSync(path, result.content);
+}
+
 export function main() {
   const target = readTargetVersion();
   const targets = [
     { name: 'pinvou3-app/src-tauri/tauri.conf.json', read: () => readJsonVersion(TAURI_CONF), write: () => writeJsonVersion(TAURI_CONF, target) },
     { name: 'pinvou3-app/src-tauri/Cargo.toml', read: () => readCargoVersion(CARGO_TOML), write: () => writeCargoVersion(CARGO_TOML, target) },
+    { name: 'pinvou-knowledge/Cargo.toml', read: () => readCargoVersion(KNOWLEDGE_CARGO_TOML), write: () => writeCargoVersion(KNOWLEDGE_CARGO_TOML, target) },
+    { name: 'pinvou-knowledge/Cargo.lock', read: () => readCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge'), write: () => writeCargoLockVersion(KNOWLEDGE_CARGO_LOCK, 'pinvou-knowledge', target) },
     { name: 'pinvou3-app/package.json', read: () => readJsonVersion(PACKAGE_JSON), write: () => writeJsonVersion(PACKAGE_JSON, target) },
   ];
   // package-lock.json 可能不存在（未提交 lock 等场景），存在才纳入同步/校验

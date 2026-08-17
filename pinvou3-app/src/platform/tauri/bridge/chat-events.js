@@ -984,6 +984,20 @@
       return { collectionId: collectionId, enabled: typeof entry === "object" ? entry.enabled !== false : true };
     }).filter(Boolean);
   }
+  function normalizeMountedRemoteCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (!entry || typeof entry !== "object") return null;
+      var serverId = entry.serverId != null ? entry.serverId : entry.server_id;
+      var collectionId = entry.collectionId != null ? entry.collectionId : entry.collection_id;
+      if (!serverId || collectionId == null) return null;
+      var key = String(serverId) + ":" + String(collectionId);
+      if (seen[key]) return null;
+      seen[key] = true;
+      return { serverId: serverId, collectionId: collectionId, enabled: entry.enabled !== false };
+    }).filter(Boolean);
+  }
   listen("remote_control:kb_mount_changed", function (e) {
     var p = e && e.payload;
     if (!p || !state.activeSessionId) return;
@@ -1010,6 +1024,26 @@
       state.mountedCollection = firstEnabled ? firstEnabled.collectionId : null;
       notify();
     }
+    function commitRemote(value) {
+      if (generation !== kbMountSyncGeneration || state.activeSessionId !== sessionId) return;
+      if (!Array.isArray(value)) return;
+      state.mountedRemoteCollections = normalizeMountedRemoteCollections(value);
+      notify();
+    }
+    var payloadRemote = Array.isArray(p.remote_collections)
+      ? p.remote_collections
+      : (Array.isArray(p.remoteCollections) ? p.remoteCollections : null);
+    if (payloadRemote) {
+      // Collection deletion carries the post-cascade list, so the composer drops its chip
+      // synchronously instead of waiting for another IPC round trip.
+      commitRemote(payloadRemote);
+    } else {
+      // Older producers omit remote mounts. Re-read the session fact source so this shared event
+      // still converges both local and remote mount state.
+      invoke("session_mounted_remote_collections", { sessionId: sessionId })
+        .then(function (collections) { commitRemote(collections); })
+        .catch(function () {});
+    }
     // 事件可能由并发命令乱序发出；重新读取后端事实源，并以 generation 防止旧请求晚回覆盖。
     invoke("session_mounted_collections_snapshot", { sessionId: sessionId })
       .then(function (snapshot) { commit(snapshot); })
@@ -1035,7 +1069,7 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;

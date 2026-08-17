@@ -4242,6 +4242,7 @@ async function multipleKnowledgeMountBehavior() {
   var bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-multi-kb"), true);
   var serverMounted = [];
+  var serverRemoteMounted = [];
   var revision = 0;
   function snapshot() {
     revision += 1;
@@ -4263,6 +4264,20 @@ async function multipleKnowledgeMountBehavior() {
     return snapshot();
   };
   harness.handlers.session_unmount_collection = function () { serverMounted = []; return snapshot(); };
+  harness.handlers.session_add_mounted_remote_collection = function (args) {
+    var existing = serverRemoteMounted.find(function (entry) {
+      return entry.serverId === args.serverId && entry.collectionId === args.collectionId;
+    });
+    if (existing) existing.enabled = true;
+    else serverRemoteMounted.push({ serverId: args.serverId, collectionId: args.collectionId, enabled: true });
+    return serverRemoteMounted;
+  };
+  harness.handlers.session_remove_mounted_remote_collection = function (args) {
+    serverRemoteMounted = serverRemoteMounted.filter(function (entry) {
+      return entry.serverId !== args.serverId || entry.collectionId !== args.collectionId;
+    });
+    return serverRemoteMounted;
+  };
 
   await bridge.knowledge.mountCollection(7);
   await bridge.knowledge.mountCollection(8);
@@ -4289,13 +4304,27 @@ async function multipleKnowledgeMountBehavior() {
   assert.strictEqual(mounted.mountedCollection, null, "a disabled-only mount list has no legacy active id");
 
   await bridge.knowledge.mountCollection(7);
+  await bridge.knowledge.mountRemoteCollection("cube", 101);
   mounted = bridge.state.get('knowledge');
   assert.strictEqual(mounted.mountedCollections[0].enabled, true, "mounting again re-enables in place");
   assert.strictEqual(mounted.mountedCollection, 7);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "cube", collectionId: 101, enabled: true }],
+    "remote and local mounts must coexist before clearing all"
+  );
 
   await bridge.knowledge.unmountCollection();
   mounted = bridge.state.get('knowledge');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedCollections)), []);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)), [],
+    "clearing all mounts must also remove remote collections");
+  assert.deepStrictEqual(serverRemoteMounted, [], "the remote mount fact source must be cleared");
+  var remoteRemove = harness.calls.find(function (call) {
+    return call.cmd === "session_remove_mounted_remote_collection";
+  });
+  assert.strictEqual(remoteRemove.args.sessionId, "chat-multi-kb",
+    "remove-all must keep remote cleanup bound to the clicked session");
   assert.strictEqual(mounted.mountedCollection, null, "clearing all mounts updates both state shapes");
 }
 
@@ -4388,6 +4417,65 @@ async function remoteKnowledgeMountSnapshotDeduplicatesCollections() {
   assert.strictEqual(mounted.mountedCollectionsRevision, 2);
 }
 
+async function remoteKnowledgeDeletionEventRefreshesRemoteMounts() {
+  var harness = createBridgeHarness();
+  var bridge = harness.bridge;
+  var serverRemoteMounted = [
+    { serverId: "cube", collectionId: 7, enabled: true },
+    { serverId: "cube", collectionId: 8, enabled: true },
+    { serverId: "other", collectionId: 7, enabled: false },
+  ];
+  harness.handlers.session_mounted_remote_collections = function () {
+    return serverRemoteMounted;
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("chat-kb-remote-delete"), true);
+  var readsBeforePayload = harness.calls.filter(function (call) {
+    return call.cmd === "session_mounted_remote_collections";
+  }).length;
+
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+    remote_collections: [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+  });
+
+  var mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [
+      { serverId: "cube", collectionId: 8, enabled: true },
+      { serverId: "other", collectionId: 7, enabled: false },
+    ],
+    "the post-delete event must immediately remove only the exact server and collection mount"
+  );
+  assert.strictEqual(
+    harness.calls.filter(function (call) {
+      return call.cmd === "session_mounted_remote_collections";
+    }).length,
+    readsBeforePayload,
+    "an authoritative event payload must take priority over an extra IPC read"
+  );
+
+  serverRemoteMounted = [{ serverId: "other", collectionId: 7, enabled: false }];
+  await harness.emit("remote_control:kb_mount_changed", {
+    session_id: "chat-kb-remote-delete",
+    revision: 0,
+    collections: [],
+  });
+  await tick();
+  await tick();
+  mounted = bridge.state.get("knowledge");
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(mounted.mountedRemoteCollections)),
+    [{ serverId: "other", collectionId: 7, enabled: false }],
+    "events from older producers must re-read the remote mount fact source"
+  );
+}
+
 async function draftKnowledgeMountsCreateOneSession() {
   var harness = createBridgeHarness();
   var bridge = harness.bridge;
@@ -4466,6 +4554,7 @@ Promise.resolve()
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
   .then(remoteKnowledgeMountSnapshotDeduplicatesCollections)
+  .then(remoteKnowledgeDeletionEventRefreshesRemoteMounts)
   .then(draftKnowledgeMountsCreateOneSession)
   .then(draftKnowledgeQueueStaysOnMaterializedSessionAfterSwitch)
   .then(deepSeekTurnTimelineLifecycleBehavior)

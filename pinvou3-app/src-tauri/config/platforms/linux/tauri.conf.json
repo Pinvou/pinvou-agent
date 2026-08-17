@@ -4,7 +4,8 @@
     "targets": ["deb"],
     "resources": {
       "resources/platforms/linux/asr/": "runtime/asr",
-      "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge"
+      "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge",
+      "resources/platforms/linux/knowledge-host/": "runtime/knowledge-host"
     },
     "linux": {
       "deb": {

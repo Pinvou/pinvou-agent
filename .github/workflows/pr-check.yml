@@ -8,6 +8,8 @@ name: PR Check
 # - frontend-test:Draft 跑 lint/build/逻辑测试；Ready PR 跑定向浏览器 smoke；
 #   Merge Queue 对最新组合提交跑完整受影响前端门禁。
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
+# - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
+#   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
 # - rust-test(编译类):Draft/普通 PR 默认不跑;Ready 高风险 PR 可加 ci:full-rust
 #   标签提前跑；Merge Queue 对最新组合提交运行；main push 无条件累计验证并写暖
 #   cache(防 concurrency pending 替换盲区)。
@@ -121,6 +123,8 @@ jobs:
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
+      knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
+      knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
       pet: ${{ steps.filter.outputs.pet }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -152,6 +156,17 @@ jobs:
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
               - '.github/workflows/mac-build.yml'
+            knowledge_rust:
+              - 'pinvou-knowledge/**/*.rs'
+              - 'pinvou-knowledge/Cargo.toml'
+              - 'pinvou-knowledge/Cargo.lock'
+              - 'pinvou-knowledge/deploy/**'
+              - '.github/workflows/pr-check.yml'
+            knowledge_dependencies:
+              - 'pinvou-knowledge/Cargo.toml'
+              - 'pinvou-knowledge/Cargo.lock'
+              - 'pinvou3-app/src-tauri/deny.toml'
+              - '.github/workflows/pr-check.yml'
             release_contract:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
@@ -172,6 +187,7 @@ jobs:
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/src-tauri/resources/**'
+              - 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'
               - 'pinvou3-app/tests/codex_acp_windows_*'
               - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
@@ -423,12 +439,66 @@ jobs:
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       # 版本一致性校验(--check)由 version-consistency job 无路径门全事件覆盖,
-      # 此处不重复;仅跑 Tauri overlay 与各平台打包契约。
+      # 此处不重复;仅跑 Tauri overlay、各平台打包与知识宿主契约。
       - name: Tauri 打包与发布配置契约
         run: |
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
           npm --prefix pinvou3-app run test:macos-phase2
+          npm --prefix pinvou3-app run test:knowledge-host-packaging
+
+  # pinvou-knowledge 是可单独部署的 crate，必须直接验证自己的默认 feature 图、
+  # 测试与部署入口，而不只依赖 Tauri 作为 client-only path dependency 的间接编译。
+  # 各项收在同一 job 复用一份缓存，避免过度分拆。
+  knowledge-rust:
+    name: knowledge-rust
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.knowledge_rust == 'true' || needs.changes.outputs.knowledge_dependencies == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou-knowledge
+          shared-key: knowledge-rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path pinvou-knowledge/Cargo.toml -- --check
+
+      - name: cargo clippy (all targets, all features)
+        run: cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps
+
+      - name: cargo test
+        run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features
+
+      - name: 部署脚本 shell 语法
+        run: bash -n pinvou-knowledge/deploy/install.sh
+
+      - name: cargo-deny
+        if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # 共用现有许可证/来源策略，但审计对象显式指向独立 crate。
+      - name: cargo deny check
+        if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
+        run: >-
+          cargo deny
+          --manifest-path pinvou-knowledge/Cargo.toml
+          --config pinvou3-app/src-tauri/deny.toml
+          check advisories licenses bans sources
 
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
@@ -549,8 +619,9 @@ jobs:
       }}
     runs-on: ubuntu-latest
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
-    # 移除 sccache 后仓库内 crate 每轮重编、冷编译更长,放宽到 90min。
-    timeout-minutes: 90
+    # 知识库依赖进入主测试二进制后,Merge Queue 两次在 ThinLTO 链接期令 16GB
+    # hosted runner 失联。限制 backend 并行会延长链接,故同步放宽到 120min。
+    timeout-minutes: 120
     env:
       # 经 rustc-stack-wrapper 直接注入 RUST_MIN_STACK=16MiB 到编译期 rustc 进程
       # (规避 codewhale-tui O2 编译的栈溢出/SIGBUS)。不链式接 sccache:sccache 的
@@ -565,9 +636,11 @@ jobs:
       #   - Thin LTO:跨 crate 死代码消除 → test binary 变小(rustc 给依赖 crate 传
       #     -C linker-plugin-lto,生成 LLVM bitcode,link 阶段合并——故依赖 lld)。
       #   - lld:link 阶段处理 LLVM bitcode(lld 原生支持,BFD ld 不支持)。
+      #   - --thinlto-jobs=1:避免多个 ThinLTO backend 并行把 16GB runner
+      #     推过内存峰值并导致 hosted runner 与 GitHub 失联。
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1"
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:
@@ -705,6 +778,11 @@ jobs:
         )
       }}
     runs-on: windows-latest
+    # 状态机回归使用 Bash 循环；job 级固定 shell 也覆盖 merge ref 从 base
+    # 带入该步骤的场景。本 job 其余 run 命令均兼容 Bash。
+    defaults:
+      run:
+        shell: bash
     # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
     # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。
     timeout-minutes: 90
@@ -769,7 +847,36 @@ jobs:
           --all-targets --features dev-tools
 
       - name: Windows Rust 单元测试链接检查
-        run: cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $records = @(& cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml `
+            --lib --no-run --message-format=json)
+          $cargoExit = $LASTEXITCODE
+          $records | ForEach-Object { Write-Host $_ }
+          if ($cargoExit -ne 0) {
+            throw "FAIL: Windows Rust 单元测试链接检查失败(exit=$cargoExit)"
+          }
+
+          $testExe = $null
+          foreach ($line in $records) {
+            try {
+              $record = $line.ToString() | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+              continue
+            }
+            if ($record.reason -eq "compiler-artifact" -and
+                $record.target.name -eq "pinvou3_lib" -and
+                $record.profile.test -eq $true -and
+                $record.executable) {
+              $testExe = $record.executable
+            }
+          }
+          if (-not $testExe -or -not (Test-Path -LiteralPath $testExe -PathType Leaf)) {
+            throw "FAIL: cargo 未报告 pinvou3_lib 测试 exe"
+          }
+          "PINVOU3_TEST_EXE=$testExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Windows Rust 测试 exe: $testExe"
 
       # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
       # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
@@ -778,15 +885,16 @@ jobs:
 
       # 0xc0000139 根因(已由上述诊断定位):muda 静态导入 TaskDialogIndirect,该符号仅
       # 存在于 Common-Controls v6 side-by-side 程序集;主 exe 由 tauri-build 嵌入声明该
-      # 依赖的清单,而 cargo test 的 pinvou3_lib-*.exe 是 lib 单测二进制,既不在
-      # rustc-link-arg-bins 也不在 rustc-link-arg-tests 的作用范围(本地实验已证),
-      # 无清单时 loader 绑定 System32 的 v5 comctl32 → 启动即挂。
-      # Windows loader 支持外部清单:把 <exe>.manifest 放在 exe 旁即可生效,无需改链接。
-      - name: Windows 测试 exe 挂外部 Common-Controls v6 清单
-        shell: bash
+      # 依赖的清单,而 cargo test 的 pinvou3_lib-*.exe 没有 v6 依赖声明。
+      # link.exe 已给测试 exe 嵌入默认清单,Windows 会优先使用内嵌资源而忽略同目录
+      # <exe>.manifest；因此必须用 runner 自带的 Windows SDK mt.exe 更新 resource #1。
+      - name: Windows 测试 exe 嵌入 Common-Controls v6 清单
+        shell: pwsh
         run: |
-          set -euo pipefail
-          MANIFEST='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          $ErrorActionPreference = "Stop"
+          $manifestPath = Join-Path $env:RUNNER_TEMP "pinvou3-test-common-controls.manifest"
+          @'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
           <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
             <dependency>
               <dependentAssembly>
@@ -795,19 +903,39 @@ jobs:
                   publicKeyToken="6595b64144ccf1df" language="*"/>
               </dependentAssembly>
             </dependency>
-          </assembly>'
-          count=0
-          for exe in pinvou3-app/src-tauri/target/debug/deps/pinvou3_lib-*.exe; do
-            [ -e "$exe" ] || { echo "FAIL: 未找到测试 exe" >&2; exit 1; }
-            printf '%s' "$MANIFEST" > "${exe}.manifest"
-            count=$((count+1))
-          done
-          echo "已挂外部清单的测试 exe 数: $count"
+          </assembly>
+          '@ | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+          $mt = Get-ChildItem -Path (Join-Path $sdkBin "*\x64\mt.exe") -File |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $mt) {
+            throw "FAIL: Windows SDK mt.exe 不存在"
+          }
+
+          if (-not $env:PINVOU3_TEST_EXE) {
+            throw "FAIL: PINVOU3_TEST_EXE 未设置"
+          }
+          $testExe = Get-Item -LiteralPath $env:PINVOU3_TEST_EXE
+          & $mt.FullName -nologo -manifest $manifestPath "-outputresource:$($testExe.FullName);#1"
+          if ($LASTEXITCODE -ne 0) {
+            throw "FAIL: 无法向 $($testExe.Name) 嵌入 Common-Controls v6 清单"
+          }
+          Write-Host "已嵌入清单的测试 exe: $($testExe.FullName)"
 
       - name: Windows 原子替换状态机回归
         shell: bash
         run: |
           set -euo pipefail
+          # 直接运行已经由 mt.exe 修补的链接产物。这里不能再次调用 cargo test，
+          # 否则 Cargo 可能重链并覆盖 exe，导致 Common-Controls v6 清单丢失。
+          test_exe="$(cygpath -u "$PINVOU3_TEST_EXE")"
+          [[ -f "$test_exe" ]] || {
+            echo "FAIL: 测试 exe 不存在:$test_exe" >&2
+            exit 1
+          }
+          cd pinvou3-app/src-tauri
           # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
           # 导致的静默空跑。
           for filter in \
@@ -816,7 +944,7 @@ jobs:
             'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
             'artifact_public_read_' \
             'features::memory::tests::topic_migration_'; do
-            cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "$filter" -- --test-threads=1 2>&1 | tee /tmp/windows_regression.log
+            "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
               exit 1
@@ -879,6 +1007,7 @@ jobs:
       - frontend-test
       - relay-test
       - release-contract-test
+      - knowledge-rust
       - rust-lint
       - rust-test
       - macos-codex-runtime-test
@@ -896,6 +1025,7 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend-test.result }}
           RELAY_RESULT: ${{ needs.relay-test.result }}
           RELEASE_CONTRACT_RESULT: ${{ needs.release-contract-test.result }}
+          KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
@@ -918,6 +1048,7 @@ jobs:
             "frontend-test:$FRONTEND_RESULT" \
             "relay-test:$RELAY_RESULT" \
             "release-contract-test:$RELEASE_CONTRACT_RESULT" \
+            "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \

@@ -38,6 +38,15 @@ pub struct MountedCollection {
     pub enabled: bool,
 }
 
+/// 会话挂载的远程知识集。服务器 ID 与服务端集合 ID 共同构成稳定身份。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedRemoteCollection {
+    pub server_id: String,
+    pub collection_id: i64,
+    pub enabled: bool,
+}
+
 /// Revisioned snapshot of every mounted collection for one session. The
 /// revision bumps on any mutation so the Tauri boundary can publish a single
 /// revisioned event that lets concurrent clients reconcile out-of-order
@@ -94,6 +103,9 @@ pub struct SessionModeState {
     /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
     #[serde(default)]
     pub mounted_collections: Vec<MountedCollection>,
+    /// 远程知识集挂载，与本地挂载可以同时启用并由检索工具统一合并。
+    #[serde(default)]
+    pub mounted_remote_collections: Vec<MountedRemoteCollection>,
     /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
     #[serde(skip)]
     pub mounted_collections_revision: u64,
@@ -116,6 +128,7 @@ impl Default for SessionModeState {
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
         }
@@ -156,6 +169,7 @@ mod type_tests {
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
         };
@@ -680,6 +694,138 @@ impl SessionStore {
 
     pub fn mounted_collection(&self, id: &str) -> Option<i64> {
         self.mounted_collection_ids(id).into_iter().next()
+    }
+
+    pub fn mounted_remote_collections(&self, id: &str) -> Vec<MountedRemoteCollection> {
+        self.mode_states
+            .read()
+            .get(id)
+            .map(|state| state.mounted_remote_collections.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn add_mounted_remote_collection(
+        &self,
+        id: &str,
+        server_id: String,
+        collection_id: i64,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            if let Some(collection) = collections.iter_mut().find(|collection| {
+                collection.server_id == server_id && collection.collection_id == collection_id
+            }) {
+                collection.enabled = true;
+            } else {
+                collections.push(MountedRemoteCollection {
+                    server_id,
+                    collection_id,
+                    enabled: true,
+                });
+            }
+            collections
+        })
+    }
+
+    pub fn set_mounted_remote_collection_enabled(
+        &self,
+        id: &str,
+        server_id: &str,
+        collection_id: i64,
+        enabled: bool,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            if let Some(collection) = collections.iter_mut().find(|collection| {
+                collection.server_id == server_id && collection.collection_id == collection_id
+            }) {
+                collection.enabled = enabled;
+            }
+            collections
+        })
+    }
+
+    pub fn remove_mounted_remote_collection(
+        &self,
+        id: &str,
+        server_id: &str,
+        collection_id: i64,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            collections.retain(|collection| {
+                collection.server_id != server_id || collection.collection_id != collection_id
+            });
+            collections
+        })
+    }
+
+    /// Remove one remote collection from every in-memory session.
+    pub fn remove_mounted_remote_collection_from_all(
+        &self,
+        server_id: &str,
+        collection_id: i64,
+    ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let previous_len = state.mounted_remote_collections.len();
+            state.mounted_remote_collections.retain(|collection| {
+                collection.server_id != server_id || collection.collection_id != collection_id
+            });
+            if state.mounted_remote_collections.len() == previous_len {
+                continue;
+            }
+            changed.push((session_id.clone(), state.mounted_remote_collections.clone()));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    /// Remove every mount belonging to a disconnected remote server from all sessions.
+    pub fn remove_remote_server_mounts(
+        &self,
+        server_id: &str,
+    ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let previous_len = state.mounted_remote_collections.len();
+            state
+                .mounted_remote_collections
+                .retain(|collection| collection.server_id != server_id);
+            if state.mounted_remote_collections.len() == previous_len {
+                continue;
+            }
+            changed.push((session_id.clone(), state.mounted_remote_collections.clone()));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    fn update_mounted_remote_collections<F>(
+        &self,
+        id: &str,
+        update: F,
+    ) -> Vec<MountedRemoteCollection>
+    where
+        F: FnOnce(Vec<MountedRemoteCollection>) -> Vec<MountedRemoteCollection>,
+    {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let mut normalized = Vec::new();
+        for collection in update(state.mounted_remote_collections.clone()) {
+            if collection.server_id.trim().is_empty()
+                || collection.collection_id <= 0
+                || normalized.iter().any(|mounted: &MountedRemoteCollection| {
+                    mounted.server_id == collection.server_id
+                        && mounted.collection_id == collection.collection_id
+                })
+            {
+                continue;
+            }
+            normalized.push(collection);
+        }
+        state.mounted_remote_collections = normalized.clone();
+        normalized
     }
 
     // ===================== per-session mode 持久化（所有会话） =====================

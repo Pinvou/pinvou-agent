@@ -1793,6 +1793,82 @@ fn mounted_collections_are_ordered_deduplicated_and_legacy_compatible() {
 }
 
 #[test]
+fn remote_and_local_collections_can_be_mounted_together() {
+    let (store, _g) = isolated_store();
+    let sid = "s-mixed-kb";
+    store.set_mounted_collection(sid, Some(7));
+    store.add_mounted_remote_collection(sid, "cube".to_string(), 7);
+    store.add_mounted_remote_collection(sid, "cube".to_string(), 7);
+    store.add_mounted_remote_collection(sid, "other".to_string(), 7);
+    assert_eq!(store.mounted_collection_ids(sid), vec![7]);
+    assert_eq!(
+        store.mounted_remote_collections(sid),
+        vec![
+            MountedRemoteCollection {
+                server_id: "cube".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+            MountedRemoteCollection {
+                server_id: "other".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+        ]
+    );
+    store.set_mounted_remote_collection_enabled(sid, "cube", 7, false);
+    assert!(!store.mounted_remote_collections(sid)[0].enabled);
+    let changed = store.remove_remote_server_mounts("cube");
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].0, sid);
+    assert_eq!(store.mounted_remote_collections(sid).len(), 1);
+}
+
+#[test]
+fn disconnecting_remote_server_removes_its_mounts_from_every_affected_session() {
+    let (store, _g) = isolated_store();
+    store.set_mounted_collection("session-a", Some(7));
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 7);
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 8);
+    store.add_mounted_remote_collection("session-a", "other".to_string(), 7);
+    store.add_mounted_remote_collection("session-b", "cube".to_string(), 9);
+    store.add_mounted_remote_collection("session-unaffected", "other".to_string(), 10);
+
+    let changed = store.remove_remote_server_mounts("cube");
+
+    assert_eq!(
+        changed
+            .iter()
+            .map(|(session_id, _)| session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-a", "session-b"]
+    );
+    assert_eq!(
+        changed[0].1,
+        vec![MountedRemoteCollection {
+            server_id: "other".to_string(),
+            collection_id: 7,
+            enabled: true,
+        }],
+        "events must receive the authoritative post-disconnect mount list"
+    );
+    assert!(store.mounted_remote_collections("session-b").is_empty());
+    assert_eq!(
+        store.mounted_remote_collections("session-unaffected"),
+        vec![MountedRemoteCollection {
+            server_id: "other".to_string(),
+            collection_id: 10,
+            enabled: true,
+        }]
+    );
+    assert_eq!(
+        store.mounted_collection("session-a"),
+        Some(7),
+        "disconnecting a remote server must not disturb local mounts"
+    );
+}
+
+#[test]
 fn mounted_collection_item_updates_merge_across_concurrent_clients() {
     let (store, _g) = isolated_store();
     let sid = "s-concurrent-multi-kb";
@@ -1896,6 +1972,57 @@ fn deleting_collection_removes_mount_from_every_affected_session() {
             .revision,
         unaffected_revision,
         "unaffected sessions must not receive a spurious revision"
+    );
+}
+
+#[test]
+fn deleting_remote_collection_removes_only_the_exact_mount_from_every_session() {
+    let (store, _g) = isolated_store();
+    store.set_mounted_collection("session-a", Some(7));
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 7);
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 8);
+    store.add_mounted_remote_collection("session-a", "other".to_string(), 7);
+    store.add_mounted_remote_collection("session-b", "cube".to_string(), 7);
+    store.set_mounted_remote_collection_enabled("session-b", "cube", 7, false);
+    store.add_mounted_remote_collection("session-unaffected", "cube".to_string(), 9);
+
+    let changed = store.remove_mounted_remote_collection_from_all("cube", 7);
+
+    assert_eq!(
+        changed
+            .iter()
+            .map(|(session_id, _)| session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-a", "session-b"]
+    );
+    assert_eq!(
+        store.mounted_remote_collections("session-a"),
+        vec![
+            MountedRemoteCollection {
+                server_id: "cube".to_string(),
+                collection_id: 8,
+                enabled: true,
+            },
+            MountedRemoteCollection {
+                server_id: "other".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+        ]
+    );
+    assert!(store.mounted_remote_collections("session-b").is_empty());
+    assert_eq!(
+        store.mounted_remote_collections("session-unaffected"),
+        vec![MountedRemoteCollection {
+            server_id: "cube".to_string(),
+            collection_id: 9,
+            enabled: true,
+        }]
+    );
+    assert_eq!(
+        store.mounted_collection("session-a"),
+        Some(7),
+        "remote deletion must not disturb local mounts with the same numeric id"
     );
 }
 

@@ -245,7 +245,7 @@
       startupLoading: false,
       startupReady: null,
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
-      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'extract'|'done', downloaded, total, ready }
+      progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
     },
     scheduledTasks: [],
@@ -5463,11 +5463,25 @@
     notify();
   });
 
-  // 知识库 embedding 模型下载进度（download → verify → extract → done）
+  // 知识库 embedding 模型下载进度（download → verify → prepare → done）
   listen("kb_model:progress", function (e) {
     var p = e && e.payload;
     if (!p) return;
     state.kbModelSetup = Object.assign({}, state.kbModelSetup, { progress: p });
+    notify();
+  });
+
+  // A second local process (the bundled shared-knowledge host) can install the
+  // managed model after startup. Replace the cached snapshot when the backend
+  // publishes a newly observed status.
+  listen("kb_model:status", function (e) {
+    var status = e && e.payload;
+    if (!status) return;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: !!status.loading,
+      startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
+      status: status,
+    });
     notify();
   });
 

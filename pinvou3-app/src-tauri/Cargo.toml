@@ -28,17 +28,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["local-embed"]
-local-embed = ["dep:fastembed"]
+local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
+pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+semver = "1"
 toml = "1"
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
@@ -142,6 +144,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 futures-util = "0.3"
 rand = "0.9"
 base64 = "0.22"
+age = { version = "=0.12.1", default-features = false }
+tempfile = "3"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
@@ -180,13 +184,11 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
-fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
 windows = "0.61.3"
 
 [target.'cfg(not(windows))'.dependencies]
-fastembed = { version = "4", optional = true }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
