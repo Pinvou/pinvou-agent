@@ -45,6 +45,8 @@ const HOST_OWNER_DEVICE_META: &str = "host_owner_device_id";
 
 pub struct ServiceBoot {
     pub service: Arc<KnowledgeService>,
+    // 持有到服务进程退出，让裸二进制的备份/恢复路径能感知服务正在运行。
+    _data_dir_lock: crate::KnowledgeDataDirLock,
 }
 
 pub struct KnowledgeService {
@@ -108,6 +110,7 @@ fn check_attempt_rate(
 
 impl KnowledgeService {
     pub fn boot(data_dir: PathBuf, model_dir: Option<PathBuf>) -> Result<ServiceBoot, String> {
+        let data_dir_lock = crate::try_lock_knowledge_data_dir(&data_dir)?;
         crate::backup::recover_interrupted_restore(&data_dir)?;
         std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
         let tls = crate::tls::ensure_tls_identity(&data_dir)?;
@@ -197,7 +200,10 @@ impl KnowledgeService {
                 *service.model_error.write() = Some(error);
             }
         }
-        Ok(ServiceBoot { service })
+        Ok(ServiceBoot {
+            service,
+            _data_dir_lock: data_dir_lock,
+        })
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -1447,6 +1453,19 @@ mod tests {
         ] {
             assert!(!is_private_share_endpoint(endpoint), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn boot_rejects_a_second_service_on_the_same_data_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let _boot = KnowledgeService::boot(root.path().to_path_buf(), None).unwrap();
+
+        let error = match KnowledgeService::boot(root.path().to_path_buf(), None) {
+            Ok(_) => panic!("second boot on the same data directory must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, crate::KNOWLEDGE_DATA_DIR_BUSY);
     }
 
     #[test]

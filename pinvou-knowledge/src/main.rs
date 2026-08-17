@@ -113,6 +113,8 @@ async fn main() -> anyhow::Result<()> {
         if args.restore_input.is_some() || args.backup_recipient.is_empty() {
             anyhow::bail!("备份参数无效");
         }
+        let _data_dir_lock = pinvou_knowledge::try_lock_knowledge_data_dir(&args.data_dir)
+            .map_err(anyhow::Error::msg)?;
         let manifest =
             backup::create_encrypted_backup(&args.data_dir, output, &args.backup_recipient)
                 .map_err(anyhow::Error::msg)?;
@@ -133,6 +135,8 @@ async fn main() -> anyhow::Result<()> {
             Some("content-only") => RestoreMode::ContentOnly,
             _ => anyhow::bail!("恢复模式无效"),
         };
+        let _data_dir_lock = pinvou_knowledge::try_lock_knowledge_data_dir(&args.data_dir)
+            .map_err(anyhow::Error::msg)?;
         let manifest = backup::restore_encrypted_backup(&args.data_dir, input, &identity, mode)
             .map_err(anyhow::Error::msg)?;
         serde_json::to_writer(std::io::stdout(), &manifest)?;

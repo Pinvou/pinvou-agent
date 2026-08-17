@@ -498,7 +498,10 @@ install_or_upgrade() {
   was_active=0
   systemctl is-active --quiet "$SERVICE" >/dev/null 2>&1 && was_active=1
   rollback_pending=1
-  trap 'rollback_install' EXIT HUP INT TERM
+  trap 'rollback_install' EXIT
+  trap 'rollback_install; exit 129' HUP
+  trap 'rollback_install; exit 130' INT
+  trap 'rollback_install; exit 143' TERM
 
   install -d -m 0755 -o root -g root "$INSTALL_DIR"
   install -d -m 0700 -o "$service_uid" -g "$service_gid" "$DATA_DIR"

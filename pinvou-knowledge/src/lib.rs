@@ -43,6 +43,10 @@ pub const EXPECTED_SERVER_ID_HEADER: &str = "x-pinvou-expected-server-id";
 pub const KNOWLEDGE_MODEL_INSTALL_BUSY: &str = "另一进程正在准备知识库模型，请稍后刷新并重试";
 const KNOWLEDGE_MODEL_INSTALL_LOCK_FILE: &str = ".bge-m3.install.lock";
 
+/// 共享知识库数据目录被另一进程（通常是正在运行的服务）占用时的提示。
+pub const KNOWLEDGE_DATA_DIR_BUSY: &str =
+    "共享知识库服务正在运行或另一进程正在操作数据目录，请先停止服务后重试";
+
 #[derive(Debug)]
 pub struct KnowledgeModelInstallLock {
     file: File,
@@ -87,6 +91,52 @@ fn knowledge_model_lock_parent(model_dir: &Path) -> Result<&Path, String> {
         Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
         Some(parent) => Ok(parent),
         None => Err("模型目录无父目录".to_string()),
+    }
+}
+
+#[derive(Debug)]
+pub struct KnowledgeDataDirLock {
+    file: File,
+}
+
+impl Drop for KnowledgeDataDirLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// 尝试获取共享知识库数据目录的跨进程排他锁。
+///
+/// 服务端在 boot 期间持有该锁直至退出，裸二进制的备份/恢复路径用同一把锁
+/// 感知服务是否在运行，避免在服务在线时直接替换数据目录造成数据分裂。
+/// 锁文件位于数据目录的父目录中，因此 restore 对数据目录本身的重命名
+/// （换入 staging、回滚）不会影响锁；进程退出或崩溃时操作系统自动释放。
+pub fn try_lock_knowledge_data_dir(data_dir: &Path) -> Result<KnowledgeDataDirLock, String> {
+    let parent = match data_dir.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => return Err("共享知识库数据目录无父目录".to_string()),
+    };
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建数据目录父目录({}): {error}", parent.display()))?;
+    let name = data_dir
+        .file_name()
+        .ok_or_else(|| "共享知识库数据目录无效".to_string())?;
+    let lock_path = parent.join(format!(".{}.data.lock", name.to_string_lossy()));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("无法打开数据目录锁({}): {error}", lock_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(KnowledgeDataDirLock { file }),
+        Err(TryLockError::WouldBlock) => Err(KNOWLEDGE_DATA_DIR_BUSY.to_string()),
+        Err(TryLockError::Error(error)) => Err(format!(
+            "无法锁定共享知识库数据目录({}): {error}",
+            data_dir.display()
+        )),
     }
 }
 
@@ -222,7 +272,8 @@ mod tests {
 
     use super::{
         chunk_text, is_supported_document_path, knowledge_model_lock_parent,
-        try_lock_knowledge_model_install, KNOWLEDGE_MODEL_INSTALL_BUSY,
+        try_lock_knowledge_data_dir, try_lock_knowledge_model_install, KNOWLEDGE_DATA_DIR_BUSY,
+        KNOWLEDGE_MODEL_INSTALL_BUSY,
     };
 
     #[test]
@@ -321,6 +372,63 @@ mod tests {
 
         let guard = try_lock_knowledge_model_install(&model_dir)
             .expect("process exit must release the model lock");
+        drop(guard);
+    }
+
+    #[test]
+    fn data_dir_lock_child_process() {
+        let Some(data_dir) = std::env::var_os("PINVOU_TEST_DATA_LOCK_DIR").map(PathBuf::from)
+        else {
+            return;
+        };
+        let ready = PathBuf::from(
+            std::env::var_os("PINVOU_TEST_DATA_LOCK_READY").expect("child ready path"),
+        );
+        let release = PathBuf::from(
+            std::env::var_os("PINVOU_TEST_DATA_LOCK_RELEASE").expect("child release path"),
+        );
+        let _guard = try_lock_knowledge_data_dir(&data_dir).expect("child acquires lock");
+        std::fs::write(&ready, b"ready").expect("child reports acquired lock");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !release.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn data_dir_lock_serializes_processes_and_releases_on_exit() {
+        let root = tempfile::tempdir().expect("temporary data parent");
+        let data_dir = root.path().join("knowledge-data");
+        let ready = root.path().join("child-ready");
+        let release = root.path().join("child-release");
+        let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg("tests::data_dir_lock_child_process")
+            .arg("--nocapture")
+            .env("PINVOU_TEST_DATA_LOCK_DIR", &data_dir)
+            .env("PINVOU_TEST_DATA_LOCK_READY", &ready)
+            .env("PINVOU_TEST_DATA_LOCK_RELEASE", &release)
+            .spawn()
+            .expect("spawn lock holder");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not acquire the data dir lock");
+        }
+
+        let contention = try_lock_knowledge_data_dir(&data_dir).unwrap_err();
+        std::fs::write(&release, b"release").expect("release child lock");
+        let status = child.wait().expect("wait for lock holder");
+        assert!(status.success());
+        assert_eq!(contention, KNOWLEDGE_DATA_DIR_BUSY);
+
+        let guard = try_lock_knowledge_data_dir(&data_dir)
+            .expect("process exit must release the data dir lock");
         drop(guard);
     }
 }

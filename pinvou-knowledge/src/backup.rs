@@ -52,10 +52,17 @@ pub enum RestoreMode {
 }
 
 pub fn recover_interrupted_restore(data_dir: &Path) -> Result<(), String> {
+    let rollback = restore_rollback_path(data_dir);
     if data_dir.exists() {
+        // 恢复在 staging 已换入 data_dir、清理 rollback 前崩溃时，data_dir 已是
+        // 恢复后的完整数据，残留的 rollback 只是上一轮换入前的旧数据；不清理会让
+        // replace_data_dir 永远以「恢复回滚目录已存在」拒绝后续恢复。
+        if rollback.exists() {
+            fs::remove_dir_all(&rollback)
+                .map_err(|error| format!("无法清理中断恢复遗留的旧数据：{error}"))?;
+        }
         return Ok(());
     }
-    let rollback = restore_rollback_path(data_dir);
     if rollback.exists() {
         fs::rename(&rollback, data_dir)
             .map_err(|error| format!("无法恢复中断前的共享知识库数据：{error}"))?;
@@ -103,9 +110,15 @@ pub fn create_encrypted_backup(
     // checkpoint, then use SQLite itself to materialize one transactional snapshot.
     // VACUUM INTO reads the complete logical database even when a concurrent reader
     // prevents the checkpoint from draining the WAL completely.
+    // 快照体积与数据目录相当，必须落在数据目录父目录（与恢复暂存区同一策略），
+    // 避免系统 /tmp（常为 tmpfs 或小分区）被大库撑爆。
+    let snapshot_parent = data_dir
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "共享知识库数据目录无效".to_string())?;
     let snapshot_dir = tempfile::Builder::new()
         .prefix(".pinvou-knowledge-backup-snapshot-")
-        .tempdir()
+        .tempdir_in(snapshot_parent)
         .map_err(|error| format!("无法创建数据库备份快照：{error}"))?;
     let snapshot_database = snapshot_dir.path().join(DATABASE_NAME);
     create_database_snapshot(&database, &snapshot_database)?;
@@ -882,6 +895,23 @@ mod tests {
         recover_interrupted_restore(&data).unwrap();
 
         assert_eq!(fs::read(data.join("sentinel")).unwrap(), b"previous");
+        assert!(!rollback.exists());
+    }
+
+    #[test]
+    fn interrupted_restore_cleanup_after_successful_swap_drops_the_stale_rollback() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("knowledge-data");
+        let rollback = restore_rollback_path(&data);
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("sentinel"), b"restored").unwrap();
+        fs::create_dir_all(&rollback).unwrap();
+        fs::write(rollback.join("sentinel"), b"previous").unwrap();
+
+        recover_interrupted_restore(&data).unwrap();
+
+        // staging 已换入后崩溃：data_dir 是恢复后的数据，rollback 只是旧数据残留。
+        assert_eq!(fs::read(data.join("sentinel")).unwrap(), b"restored");
         assert!(!rollback.exists());
     }
 }

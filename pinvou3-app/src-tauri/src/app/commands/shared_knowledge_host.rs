@@ -227,16 +227,19 @@ pub async fn shared_kb_host_restore(
         if claim.server_id == server_id {
             return Err("迁移恢复没有生成新的主机身份，已保留所有者凭据以便重试".to_string());
         }
-        let connection = remote
-            .register_local_owner("127.0.0.1:3210", &claim.token)
-            .await?;
-        consume_matching_owner_claim(&app, &claim).await?;
+        // 迁移恢复已替换服务身份，指向旧 server_id 的连接与挂载随即失效；先清理
+        // 旧连接再注册新连接，避免注册成功后才清理失败、残留指向已失效身份的连接。
+        // 若此后注册失败，所有者凭据尚未消费，可按原流程重试。
         crate::app::commands::remote_knowledge::remove_connection_with_mounts(
             remote.inner(),
             sessions.inner(),
             &app,
             &server_id,
         )?;
+        let connection = remote
+            .register_local_owner("127.0.0.1:3210", &claim.token)
+            .await?;
+        consume_matching_owner_claim(&app, &claim).await?;
         return Ok(connection);
     }
     remote

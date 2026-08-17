@@ -315,7 +315,10 @@ test('existing standalone data and model are adopted with a complete rollback pa
   assert.match(helper, /rollback_install\(\)/u);
   assert.match(helper, /mv -f "\$UNIT_BACKUP" "\$UNIT_FILE"/u);
   assert.match(helper, /chown -R "\$\{old_data_uid\}:\$\{old_data_gid\}" "\$DATA_DIR"/u);
-  assert.match(helper, /trap 'rollback_install' EXIT HUP INT TERM/u);
+  assert.match(helper, /trap 'rollback_install' EXIT\n/u);
+  assert.match(helper, /trap 'rollback_install; exit 129' HUP/u);
+  assert.match(helper, /trap 'rollback_install; exit 130' INT/u);
+  assert.match(helper, /trap 'rollback_install; exit 143' TERM/u);
 });
 
 test('permanent removal validates the fixed data directory before recursive deletion', () => {

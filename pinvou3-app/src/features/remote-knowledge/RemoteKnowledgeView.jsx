@@ -1231,9 +1231,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const deleting = !document.deletedAt;
     const command = document.deletedAt ? 'remote_kb_restore_document' : 'remote_kb_delete_document';
     const busyKey = `document-trash-${document.id}`;
-    const requestVersion = documentsRequestRef.current;
     const previousDocuments = documentsRef.current;
-    const previousCollections = collections;
     const optimisticDocument = { ...document, deletedAt: deleting ? Math.floor(Date.now() / 1000) : null };
     const optimisticDocuments = includeTrash
       ? previousDocuments.map(item => (item.id === document.id ? optimisticDocument : item))
@@ -1258,13 +1256,13 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       });
       setNotice({ type: 'success', text: deleting ? t.remoteKbDocumentTrashed : t.remoteKbDocumentRestored });
     } catch (error) {
-      if (serverId === selectedServerRef.current
-        && collectionId === selectedCollectionRef.current
-        && requestVersion === documentsRequestRef.current) {
-        documentsRef.current = previousDocuments;
-        setDocuments(previousDocuments);
-        setCollections(previousCollections);
-      }
+      // 失败不恢复入口快照：busy key 按文档隔离，并发操作交错时旧快照会把
+      // 其他文档已生效的乐观改动一并回滚。改为重新拉取服务端权威状态
+      //（loadCollections/loadDocuments 自带过期请求与选中态防护）。
+      await Promise.all([
+        loadCollections(serverId),
+        loadDocuments(serverId, collectionId, true),
+      ]);
       setNotice({ type: 'error', text: String(error) });
       return;
     } finally {

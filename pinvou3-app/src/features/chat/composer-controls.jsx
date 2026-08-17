@@ -61,12 +61,18 @@ const ComposerKbSelector = ({
 
   const loadList = async () => {
     if (!bridge.available || !bridge.knowledge.listCollections) { setCollections([]); return; }
+    let local;
     try {
-      const local = ((await bridge.knowledge.listCollections()) || []).map(c => ({ ...c, key: `local:${c.id}`, source: 'local', serverId: null, serverName: null, ready: true }));
-      let remoteCollections = [];
-      // 显式会话态（原生 Code 车道）当前只实现了本地知识集命令；不要把远程条目
-      // 交给它的 onMount/onRemove 回调，否则相同数字 id 可能被当成本地知识集挂错。
-      if (isTauriAvailable() && !explicitMountState) {
+      local = ((await bridge.knowledge.listCollections()) || []).map(c => ({ ...c, key: `local:${c.id}`, source: 'local', serverId: null, serverName: null, ready: true }));
+    }
+    catch (e) { setCollections([]); return; }
+    let remoteCollections = [];
+    // 显式会话态（原生 Code 车道）当前只实现了本地知识集命令；不要把远程条目
+    // 交给它的 onMount/onRemove 回调，否则相同数字 id 可能被当成本地知识集挂错。
+    if (isTauriAvailable() && !explicitMountState) {
+      // 远程加载单独兜底：remote_kb_connections 或单个 server 失败只跳过远程
+      // 集合，保留已加载的本地列表。
+      try {
         const servers = (await invokeTauri('remote_kb_connections')) || [];
         const pages = await Promise.all(servers.map(async server => {
           try {
@@ -75,10 +81,9 @@ const ComposerKbSelector = ({
           } catch (_) { return []; }
         }));
         remoteCollections = pages.flat();
-      }
-      setCollections(local.concat(remoteCollections));
+      } catch (_) { /* 远程不可用时不影响本地列表 */ }
     }
-    catch (e) { setCollections([]); }
+    setCollections(local.concat(remoteCollections));
   };
   const refreshModelStatus = async () => {
     if (!bridge.available || !bridge.knowledge.kbModelStatus) { setModelStatus({ installed: true }); return; } // mock/旧后端不 gate
