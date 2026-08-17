@@ -60,11 +60,6 @@ impl Pinvou3Bundle {
         // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
         self.cleanup_removed_marketplace_tools()?;
         crate::platform::startup::mark("bundle_extract:cleanup_retired:done");
-        // 工作流目录同 skills:immutable bundle 资源,每次启动防御性重写
-        // (防 "VERSION 对得上但目录缺失"),无副作用。
-        crate::platform::startup::mark("bundle_extract:write_workflows:start");
-        self.write_workflows()?;
-        crate::platform::startup::mark("bundle_extract:write_workflows:done");
         // PR #132 早期构建曾把 CLI 解包进 immutable bundle；统一在线安装后清掉该
         // app 自有旧目录，避免旧二进制掩盖按需安装与 hash 校验。
         let _ = std::fs::remove_dir_all(paths::bundle_root().join("connectors"));
@@ -271,16 +266,6 @@ impl Pinvou3Bundle {
         let dir = self.skills_dir.join("visual-design");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
-        Ok(())
-    }
-
-    /// 解包内嵌的工作流目录到 `~/.pinvou3/bundle/workflow/`。
-    /// 每次启动防御性重写（immutable bundle 资源）。
-    fn write_workflows(&self) -> std::io::Result<()> {
-        let workflow_root = paths::bundle_workflow_dir();
-        // sansheng-liubu
-        let dest = workflow_root.join("sansheng-liubu");
-        Self::extract_dir(&SANSHENG_LIUBU_DIR, &dest)?;
         Ok(())
     }
 

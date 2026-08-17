@@ -268,7 +268,7 @@ class ArchitectureGuardUnitTests(unittest.TestCase):
             (common / "tool").write_bytes(b"\x7fELF")
             generated = (
                 root
-                / "pinvou3-app/src-tauri/resources/common/web-template/node_modules/tool"
+                / "pinvou3-app/src-tauri/resources/common/generated/node_modules/tool"
             )
             generated.parent.mkdir(parents=True)
             generated.write_bytes(b"\x7fELF")

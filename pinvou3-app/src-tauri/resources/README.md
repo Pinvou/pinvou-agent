@@ -6,8 +6,7 @@
 resources/
 ├─ common/
 │  ├─ bundle/             # 编译进应用并释放到 ~/.pinvou3/bundle
-│  ├─ skill-marketplace/  # 编译期内嵌的技能市场索引
-│  └─ web-template/       # 所有桌面平台共享的网页模板
+│  └─ skill-marketplace/  # 编译期内嵌的技能市场索引
 └─ platforms/
    └─ linux/asr/          # 仅由 Linux overlay 打包的 ASR 启动资源
 ```

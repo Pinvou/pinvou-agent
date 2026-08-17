@@ -35,10 +35,6 @@
   function openExternalUrl(url) { return invoke("open_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
   // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
   function openUserExternalUrl(url) { return invoke("open_user_external_url", { url: url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-  // 奏折宝箱:列 run 成品文档(deliverables/ 下文件,二进制成品排前)
-  function listDeliverables(projectDir) {
-    return invoke("list_deliverables", { projectDir: projectDir }).catch(function () { return []; });
-  }
   function deliverableCategory(path) {
     var ext = (String(path || "").split(".").pop() || "").toLowerCase();
     if (ext === "html" || ext === "htm" || ext === "mhtml" || ext === "mht") return "web";
@@ -297,7 +293,6 @@
       openInSystem: openInSystem,
       openArtifactExternal: openArtifactExternal,
       downloadArtifact: downloadArtifact,
-      listDeliverables: listDeliverables,
       listDeliverableIndex: listDeliverableIndex,
       openExternalUrl: openExternalUrl,
       openUserExternalUrl: openUserExternalUrl,

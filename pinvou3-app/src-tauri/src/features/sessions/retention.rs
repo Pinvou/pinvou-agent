@@ -167,9 +167,8 @@ impl SessionStore {
         }
         let contains = |candidate: &str| ids.iter().any(|id| id == candidate);
 
-        let (removed_modes, removed_multi_agent) = {
+        let removed_multi_agent = {
             let mut modes = self.mode_states.write();
-            let before = modes.len();
             let mut removed_multi_agent = false;
             modes.retain(|id, state| {
                 let keep = !contains(id.as_str());
@@ -178,11 +177,8 @@ impl SessionStore {
                 }
                 keep
             });
-            (modes.len() != before, removed_multi_agent)
+            removed_multi_agent
         };
-        if removed_modes {
-            self.save_skill_bindings();
-        }
         if removed_multi_agent {
             // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
             // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。

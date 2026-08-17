@@ -206,21 +206,7 @@ pub(crate) async fn chat_with_reservation(
             reference_absolute,
         )
     };
-    // 工作流 Phase 可视化:用户在工作流页"启用"卡片 = start_skill_session
-    // 新建一个绑定了 skill 的 session。该 session 第一条 chat 消息时,
-    // 把 skill body + phase 规则 prepend 一次,后续 turn 靠 LLM session 上下文保持。
-    //
-    // 另外 — 实测 Qwen3.6 在长上下文里对 system prompt 顶端的 phase marker
-    // MANDATORY 段遵循率衰减(legacy-ppt-workflow 跑到 p5+ 后频繁不出 `<phase id=".."/>`
-    // marker),每个 user turn 都重申一遍约束,把信号搬到距 LLM 最近的位置。
     let pending_injections = store.take_pending_turn_injections(&sid);
-    if let Some(injected) = pending_injections.skill_instruction() {
-        full = format!("{injected}\n\n---\n\n{full}");
-    }
-    // [phase marker 下线] 原 active_skill 非工作流分支每 turn 注入 `<phase id=.../>`
-    // marker reminder,但消费链(底座抽取 → chat:phase_changed → 前端 chips)已整体拆除,
-    // marker 产出后无人消费。已删。active_skill 的 pending_instruction(skill body)仍走上面。
-
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。
     if let Some(body) = pending_injections.persona_body() {

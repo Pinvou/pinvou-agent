@@ -323,9 +323,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
     let scope = match command {
         // Commands whose Rust API historically falls back to the desktop
         // process-wide active Session must be explicit over WebUI.
-        "add_run_materials"
-        | "approve_workflow_gate"
-        | "archive_recent_work_memory"
+        "archive_recent_work_memory"
         | "cancel_generation"
         | "cancel_user_input"
         | "compact_now"
@@ -336,11 +334,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "edit_last_turn"
         | "get_memory_overview"
         | "ignore_pending_memory"
-        | "kick_workflow"
         | "never_pending_memory"
-        | "reject_workflow_gate"
-        | "retry_workflow_role"
-        | "stop_workflow"
         | "submit_user_input"
         | "summon_pinvou"
         | "update_memory_profile"
@@ -360,7 +354,6 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "get_session_pinvou_reviews"
         | "get_session_pinvou_scene_events"
         | "get_session_timeline"
-        | "get_workflow_state"
         | "list_shell_tasks"
         | "list_workspace_files"
         | "save_session_persona_events"
@@ -377,15 +370,9 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "session_unmount_collection"
         | "set_plan_mode_next"
         | "set_session_model"
-        | "unbind_session_skill"
         | "unequip_persona"
         | "web_access_artifact_info"
         | "web_access_chat"
-        | "web_access_get_gate_report"
-        | "web_access_get_role_logs"
-        | "web_access_get_role_outputs"
-        | "web_access_get_role_prompt"
-        | "web_access_list_deliverables"
         | "web_access_read_artifact_chunk"
         | "web_access_read_artifact_image_b64"
         | "web_access_read_artifact_text"
@@ -405,7 +392,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
 
         // Omitting these deliberately uses the global/default behavior without
         // consulting the desktop active pointer.
-        "get_effective_model_config" | "start_workflow" => Optional("sessionId"),
+        "get_effective_model_config" => Optional("sessionId"),
         _ => return None,
     };
     Some(scope)

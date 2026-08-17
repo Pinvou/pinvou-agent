@@ -41,7 +41,7 @@ pub use crate::features::marketplace::skill_scope::*;
 /// 技能来源目录（除项目级），**first-wins 顺序（高优先级在前）**。与底座并集
 /// 语义一致：同名技能按高优先级来源入组合目录、低优先级跳过（底座发现时同名
 /// 不重复加入）。用户手放技能（`~/.pinvou3/user/skills/`）覆盖市场安装
-/// （`bundle/skills/`），与工作流视图 list_skills_v2 的合并顺序一致。
+/// （`bundle/skills/`），用户目录中的同名 Skill 优先。
 fn skill_source_dirs() -> Vec<PathBuf> {
     vec![paths::user_skills_dir(), paths::bundle_skills_dir()]
 }

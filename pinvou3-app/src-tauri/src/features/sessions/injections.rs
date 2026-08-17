@@ -3,10 +3,9 @@
 //! Both guards live next to the mode-state machine because they only make
 //! sense when paired with an in-progress turn submission:
 //!
-//! - [`PendingTurnInjections`] checks out the two per-session one-shot prompt
-//!   injections (skill instruction + persona body). Unless committed after
-//!   Engine submission, `Drop` restores values that still belong to the same
-//!   skill/persona and have not been replaced meanwhile.
+//! - [`PendingTurnInjections`] checks out the per-session one-shot persona body.
+//!   Unless committed after Engine submission, `Drop` restores a value that still
+//!   belongs to the same persona and has not been replaced meanwhile.
 //! - [`PendingPlanClaim`] checks out the currently actionable Plan ticket.
 //!   Claiming switches the session to Yolo before the execution turn is
 //!   submitted. `Drop` restores Plan + ticket on every pre-submission error or
@@ -17,24 +16,17 @@ use anyhow::Result;
 use super::SessionModeState;
 use super::SessionStore;
 
-/// Transactional checkout of the two per-session one-shot prompt injections.
-/// Unless committed after Engine submission, Drop restores values that still
-/// belong to the same skill/persona and have not been replaced meanwhile.
+/// Transactional checkout of the per-session one-shot persona body.
+/// Unless committed after Engine submission, Drop restores a value that still
+/// belongs to the same persona and has not been replaced meanwhile.
 pub(crate) struct PendingTurnInjections {
     pub(crate) store: SessionStore,
     pub(crate) session_id: String,
-    pub(crate) skill: Option<(String, String)>,
     pub(crate) persona: Option<(Option<String>, String)>,
     pub(crate) committed: bool,
 }
 
 impl PendingTurnInjections {
-    pub(crate) fn skill_instruction(&self) -> Option<&str> {
-        self.skill
-            .as_ref()
-            .map(|(_, instruction)| instruction.as_str())
-    }
-
     pub(crate) fn persona_body(&self) -> Option<&str> {
         self.persona.as_ref().map(|(_, body)| body.as_str())
     }
@@ -49,11 +41,8 @@ impl Drop for PendingTurnInjections {
         if self.committed {
             return;
         }
-        self.store.restore_pending_turn_injections(
-            &self.session_id,
-            self.skill.take(),
-            self.persona.take(),
-        );
+        self.store
+            .restore_pending_turn_injections(&self.session_id, self.persona.take());
     }
 }
 

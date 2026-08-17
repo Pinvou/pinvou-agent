@@ -50,6 +50,19 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", trigger)
         self.assertIn("cancel-in-progress: false", self.release_workflow)
 
+    def test_release_workflow_does_not_reference_retired_web_template(self):
+        for retired_reference in (
+            "test:web-template-packaging",
+            "prepare:web-template",
+            "resources/common/web-template",
+            "网页模板发布前冒烟",
+        ):
+            self.assertNotIn(
+                retired_reference,
+                self.release_workflow,
+                f"发布流程仍引用已退役网页模板: {retired_reference}",
+            )
+
     def test_pull_request_has_lightweight_release_contract_gate(self):
         self.assertIn("release_contract:", self.pr_workflow)
         self.assertIn("  release-contract-test:", self.pr_workflow)

@@ -1,4 +1,4 @@
-//! 工作流审计流水（edict「奏折归档」思路）：append-only JSONL。
+//! 助手审计流水：append-only JSONL。
 //!
 //! 一行 = 一个事件：{"ts":"<RFC3339>","kind":"...","role":"...","detail":{...}}
 //! 文件在 session workspace 根：`<ws>/workflow_audit.jsonl`。

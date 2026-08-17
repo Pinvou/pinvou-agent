@@ -252,15 +252,7 @@ pub async fn read_skill_body(name: String) -> Result<String, String> {
     if safe_name != name || safe_name.is_empty() {
         return Err(format!("invalid skill name: {name}"));
     }
-    // legacy-ppt-workflow 在 workflow/,review 等 skill 在 skills/;先查 workflow 再 fallback skills。
-    let wf_path = paths::bundle_workflow_dir()
-        .join(&safe_name)
-        .join("SKILL.md");
-    let path = if wf_path.is_file() {
-        wf_path
-    } else {
-        paths::bundle_skills_dir().join(&safe_name).join("SKILL.md")
-    };
+    let path = paths::bundle_skills_dir().join(&safe_name).join("SKILL.md");
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
     // 剥 frontmatter ---\n...\n---\n
@@ -326,48 +318,6 @@ pub async fn submit_user_input(
         .map_err(|e| format!("submit_user_input: {e:#}"))
 }
 
-/// [2026-06-06] 工作流素材上传：把用户选的文件拷进当前 run 的 配套材料/ 目录。
-/// 前端素材收集卡片「📎 上传素材」按钮 → dialogOpen 选文件 → 调此命令落盘。
-/// materials_auditor 重扫 配套材料/ 即可识别。返回实际落盘的文件名（含同名去重后的名）。
-#[tauri::command]
-pub async fn add_run_materials(
-    session_id: Option<String>,
-    paths: Vec<String>,
-    store: State<'_, SessionStore>,
-) -> Result<Vec<String>, String> {
-    let sid = require_active_sid(session_id, &store)?;
-    let workspace = store
-        .ledger_root(&sid)
-        .map_err(|error| format!("resolve ledger root for {sid}: {error:#}"))?;
-    let project = crate::features::assistant::harness::find_project_dir(&workspace)
-        .ok_or_else(|| "当前 session 无工作流项目".to_string())?;
-    let dst_dir = project.join("配套材料");
-    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("建配套材料目录失败: {e}"))?;
-    let mut added = Vec::new();
-    for p in &paths {
-        let src = std::path::Path::new(p);
-        let base = src
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| format!("非法路径: {p}"))?;
-        // 同名去重（参照 attach_file 的命名逻辑）
-        let (stem, ext) = match base.rsplit_once('.') {
-            Some((s, e)) => (s.to_string(), format!(".{e}")),
-            None => (base.to_string(), String::new()),
-        };
-        let mut candidate = base.to_string();
-        let mut n = 1;
-        while dst_dir.join(&candidate).exists() {
-            candidate = format!("{stem}-{n}{ext}");
-            n += 1;
-        }
-        std::fs::copy(src, dst_dir.join(&candidate))
-            .map_err(|e| format!("拷贝 {base} 失败: {e}"))?;
-        added.push(candidate);
-    }
-    Ok(added)
-}
-
 /// 前端 ✕ 按钮 / 切换 session 时调用：取消 request_user_input。
 /// engine 把工具结果置为 "User input cancelled" error,LLM 收到后会继续 turn。
 #[tauri::command]
@@ -403,9 +353,6 @@ pub async fn get_pending_user_inputs(
         pending: crate::features::assistant::pending_user_input::list(&session_id),
     })
 }
-
-// (render_surface 回流 / cloud_keys 云模型配置是独立 feature,不在本 PR——
-//  本 PR 只含工作流基座 + 三省六部)
 
 #[tauri::command]
 pub async fn restart_engine(

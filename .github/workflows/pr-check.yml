@@ -426,9 +426,6 @@ jobs:
         run: |
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
-          npm --prefix pinvou3-app run test:web-template-packaging
-          npm --prefix pinvou3-app run prepare:web-template
-          npm --prefix pinvou3-app/src-tauri/resources/common/web-template run build
           npm --prefix pinvou3-app run test:macos-phase2
 
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。

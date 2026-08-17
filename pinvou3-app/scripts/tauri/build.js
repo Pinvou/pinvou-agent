@@ -13,7 +13,6 @@ const {
 } = require("./platform-config.js");
 const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
-const { prepareWebTemplate } = require("./web-template.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
 const {
   stageWindowsOnnxRuntime,
@@ -151,7 +150,6 @@ function main() {
     prepareWindowsCodexBridge();
   }
   if (hasTauriBuildCommand) {
-    prepareWebTemplate();
     prepareCodexBridge();
     prepareWindowsCodexBridge(windowsBridgeOptions);
     if (process.platform === "win32") {

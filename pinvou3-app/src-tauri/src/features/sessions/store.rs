@@ -103,7 +103,6 @@ impl SessionStore {
         // them here too lets reconciliation discard scheduled-only runtime
         // state immediately instead of resurrecting it after stale profiles
         // have already been removed.
-        store.load_skill_bindings();
         store.load_multi_agent_flags();
         store.load_session_models();
         store.load_pinned_sessions();
@@ -134,7 +133,6 @@ impl SessionStore {
             paths::scheduled_run_profiles_path(),
             scheduled_root,
         )?;
-        store.load_skill_bindings();
         store.load_multi_agent_flags();
         store.load_session_models();
         store.load_pinned_sessions();

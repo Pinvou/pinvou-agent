@@ -123,10 +123,10 @@ test('桥不再维护运行状态机，只暴露发起与只读投影', () => {
   );
   assert.deepEqual(
     Object.keys(listeners).sort(),
-    ['workflow:agent_complete', 'workflow:agent_progress'],
+    ['multiagent:agent_complete', 'multiagent:agent_progress'],
     '只监听子智能体进展/完成，不重建运行状态机',
   );
-  assert.doesNotMatch(source, /workflow:approval_required/, '审批链已退役');
+  assert.doesNotMatch(source, /approval_required/, '审批链已退役');
   assert.doesNotMatch(source, /awaiting_approval/, '运行状态机已退役');
 });
 
@@ -150,10 +150,10 @@ test('详情读取把 offset/revision 游标原样交给后端', async () => {
 
 test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视图决定', () => {
   const { listeners, dispatched } = loadFeature();
-  listeners['workflow:agent_progress']({
+  listeners['multiagent:agent_progress']({
     payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中' },
   });
-  listeners['workflow:agent_complete']({
+  listeners['multiagent:agent_complete']({
     payload: { session_id: 'wf-2', agent_id: 'agent_b2', role_id: 'builder', failed: true },
   });
   assert.equal(dispatched.length, 2, '普通会话（非 wf-）的子智能体事件同样转发');
@@ -185,7 +185,6 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.doesNotMatch(commandSource, /start_workflow_run/, '独立入口命令已退役');
   assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>\)/, 'Work 与原生 Code 多智能体按同轮候选生成委派提醒');
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
@@ -355,7 +354,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     sessionsSource,
-    /load_skill_bindings\(\);\s*store\.load_multi_agent_flags\(\)/,
+    /store\.load_multi_agent_flags\(\)/,
     '启动时必须恢复开关清单',
   );
   assert.match(
