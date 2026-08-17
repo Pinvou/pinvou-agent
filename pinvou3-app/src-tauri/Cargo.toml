@@ -107,7 +107,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
-notify = "6"
+# 8.x：把 mio 收敛到 1.x、连带消除 windows-sys 0.48.0，并修 Windows
+# FILE_NOTIFY_INFORMATION 未对齐 UB。
+# 注意：这不解决 windows-targets 0.48.5（+ 7 个 win 二进制 crate）——那条链由
+# device_query 2.1.0 → windows 0.48.0 持有，与 notify 无关，需单独处理 device_query。
+# 项目仅用稳定高层 API（recommended_watcher / Watcher::watch / EventKind / RecursiveMode），
+# 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
+notify = "8"
 msg_parser = "0.3.0"
 
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
