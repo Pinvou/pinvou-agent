@@ -1770,16 +1770,23 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
 
   await bridge.chat.sendMessage("follow up after the scheduled run");
   var queued = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
-  assert.strictEqual(queued.queued.length, 1, "follow-up input must queue while the initial scheduled turn is active");
+  // mid-turn inject: 走底座 steer channel,turn loop 在下次 step 边界消化,
+  // 不再依赖前端 state.queued + flushQueued 的"等 turn done"路径。
+  assert.strictEqual(queued.queued.length, 0, "follow-up input goes through engine steer, not frontend queue");
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    1,
+    "a mid-turn follow-up must invoke steer_chat while the scheduled engine turn is active"
+  );
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
     0,
-    "a queued follow-up must not overlap the scheduled engine turn"
+    "a mid-turn follow-up must not overlap the scheduled engine turn via chat command"
   );
   assert.strictEqual(
     queued.chatItems.filter(function (item) { return item.type === "assistant"; }).length,
     initialAssistantCount,
-    "queueing a follow-up must not create an overlapping assistant placeholder"
+    "injecting a follow-up must not create an overlapping assistant placeholder"
   );
 
   harness.emit("chat:done", { session_id: "sched-followup" });
@@ -1789,10 +1796,9 @@ async function followupQueuedUntilScheduledInitialTurnTerminal() {
   assert.strictEqual(flushed.queued.length, 0);
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "chat"; }).length,
-    1,
-    "the queued follow-up should flush only after the scheduled terminal event"
+    0,
+    "after chat:done the engine has the steer; no second chat command expected"
   );
-  assert.strictEqual(flushed.busy, true, "the flushed follow-up should own the next busy turn");
 }
 
 async function terminalEventWinsStaleRunningOpen() {
@@ -3240,7 +3246,13 @@ async function scheduledBufferLruNeverEvictsLive() {
     text: "live buffer must survive",
   });
   await bridge.chat.sendMessage("queued live follow-up");
-  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 1);
+  // mid-turn inject: 走底座 steer channel,不再入前端 state.queued
+  assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).queued.length, 0);
+  assert.strictEqual(
+    harness.calls.filter(function (call) { return call.cmd === "steer_chat"; }).length,
+    1,
+    "live follow-up during scheduled turn goes through engine steer"
+  );
   assert.strictEqual(await bridge.scheduled.exitScheduledRunChat(), true);
 
   for (var i = 0; i < 70; i++) {
@@ -3275,7 +3287,12 @@ async function scheduledBufferLruNeverEvictsLive() {
     JSON.stringify(live.chatItems).includes("live buffer must survive"),
     "LRU must never evict a busy scheduled buffer"
   );
-  assert.strictEqual(live.queued.length, 1, "LRU must never evict a scheduled buffer with queued input");
+  // mid-turn inject: 走底座 steer channel,前端 state.queued 不再持有该项
+  assert.strictEqual(live.queued.length, 0, "mid-turn inject does not populate frontend queue");
+  assert.ok(
+    live.steerCallCount === 1 || JSON.stringify(harness.calls).indexOf('"cmd":"steer_chat"') !== -1,
+    "LRU must keep a scheduled buffer with a pending mid-turn inject (via steer_chat)"
+  );
 
   var saturatedHarness = createBridgeHarness();
   await saturatedHarness.bridge.sessions.switchToSession("chat-origin");

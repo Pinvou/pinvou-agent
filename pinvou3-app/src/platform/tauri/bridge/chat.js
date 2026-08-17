@@ -484,12 +484,36 @@
       notify();
     }
 
-    // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
-    // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
-    if (isBusyFor(sid) || state.queued.length > 0) {
+    // Mid-turn inject: 当前 session 正在生成 → 走底座 steer channel,
+    // turn loop 在下次 step 边界自动追加到 session.messages,模型下次思考时看到。
+    // 语义对齐 Claude Code 的"主 agent 空闲时插入"(claude-code-best query.ts:1841)。
+    // 不再依赖前端 state.queued + flushQueued 的"等 turn done"路径 —— 那个语义
+    // 让长 tool 循环里的用户输入要等 4 分钟才被模型看到,体验差。
+    if (isBusyFor(sid)) {
+      var steerPreparation = consumeUiTurnState();
+      var steerText = steerPreparation.payloadText;
+      // attachments 走 mid-turn inject 时简化处理(只发文本);
+      // 附件走另一条线注入是后续工作。
+      state.attachments = [];
+      // 清空 composer draft(对齐 sendMessage 成功路径)
+      state.composerDraft = "";
+      notify();
+      steer(sid, steerText)
+        .catch(function (err) {
+          console.warn("[pinvou3][chat-ui] steer failed, falling back to chat", {
+            sid: sid, error: err && err.toString ? err.toString() : err,
+          });
+          // 降级到 chat() 路径,busy 检查由后端处理
+          return invoke("chat", { message: steerText, attachments: [], sessionId: sid, restrictTools: false })
+            .catch(function () {});
+        });
+      return;
+    }
+    // 兼容旧行为:state.queued 非空时仍走 flushQueued(跨 session 远控等边缘场景)
+    if (state.queued.length > 0) {
       var queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
-      if (!isBusyFor(sid)) flushQueued(sid);
+      flushQueued(sid);
       return;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
@@ -653,6 +677,15 @@
     return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
   }
 
+  // Mid-turn inject: 投到当前 turn 的下个 step 边界。底座 turn loop 在
+  // tool result 处理完后自动追加到 session.messages,模型下次思考时看到。
+  // engine 不在场(没起 / 已 evict)时后端静默 Ok,前端无需处理。
+  async function steer(sid, content) {
+    safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid: sid, len: (content || "").length });
+    await invoke("steer_chat", { sessionId: sid, content: String(content || "") });
+    safeConsoleInfo("[pinvou3][chat-ui] steer ok", { sid: sid });
+  }
+
   async function cancelGeneration() {
     safeConsoleInfo("[pinvou3][chat-ui] cancel clicked", {
       sid: state.activeSessionId,
@@ -737,6 +770,7 @@
       persistPinvouReviews: persistPinvouReviews,
       cancelGeneration: cancelGeneration,
       persistMessages: persistMessages,
+      steer: steer,
     };
   };
 })();
