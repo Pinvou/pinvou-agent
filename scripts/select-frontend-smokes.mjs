@@ -21,7 +21,6 @@ export const FULL_FRONTEND_SMOKES = Object.freeze([
   command("node", "tests/pet_selector_ui_smoke.js"),
   command("npm", "test:tool-store-grouping"),
   command("npm", "test:tool-store-import"),
-  command("npm", "test:tool-store-grouping"),
   command("npm", "test:webui"),
 ]);
 

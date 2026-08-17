@@ -288,8 +288,8 @@ assert.match(bridge, /if \(client && !client\.stateReady\) \{[\s\S]{0,120}initPr
 assert.match(settingsView, /const canManageModels = can\('modelManagement'\);/);
 assert.match(settingsView, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(settingsView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.match(settingsView, /disabled=\{!canMutateToolStore\}/);
-assert.match(settingsView, /if \(!canMutateToolStore\) return;/);
+assert.match(settingsView, /const toolSwitchDisabled = !canMutateToolStore;/);
+assert.match(settingsView, /if \(toolSwitchDisabled \|\| \(hasActiveSession && (enabled|projectSkillsEnabled)\)\) return;/);
 assert.match(settingsView, /bridge\.models\.switchModel\(activeSessionId, id\)/);
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
