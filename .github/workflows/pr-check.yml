@@ -617,8 +617,9 @@ jobs:
       }}
     runs-on: ubuntu-latest
     # Tauri + fastembed + aws-lc-sys 全冷编译耗时长;设上限避免卡死 runner 占用。
-    # 移除 sccache 后仓库内 crate 每轮重编、冷编译更长,放宽到 90min。
-    timeout-minutes: 90
+    # 知识库依赖进入主测试二进制后,Merge Queue 两次在 ThinLTO 链接期令 16GB
+    # hosted runner 失联。限制 backend 并行会延长链接,故同步放宽到 120min。
+    timeout-minutes: 120
     env:
       # 经 rustc-stack-wrapper 直接注入 RUST_MIN_STACK=16MiB 到编译期 rustc 进程
       # (规避 codewhale-tui O2 编译的栈溢出/SIGBUS)。不链式接 sccache:sccache 的
@@ -633,9 +634,11 @@ jobs:
       #   - Thin LTO:跨 crate 死代码消除 → test binary 变小(rustc 给依赖 crate 传
       #     -C linker-plugin-lto,生成 LLVM bitcode,link 阶段合并——故依赖 lld)。
       #   - lld:link 阶段处理 LLVM bitcode(lld 原生支持,BFD ld 不支持)。
+      #   - --thinlto-jobs=1:避免多个 ThinLTO backend 并行把 16GB runner
+      #     推过内存峰值并导致 hosted runner 与 GitHub 失联。
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1"
     # dev profile 的 line-tables-only 已固化进 Cargo.toml [profile.dev],不再需要
     # CARGO_PROFILE_DEV_DEBUG 环境变量。
     steps:

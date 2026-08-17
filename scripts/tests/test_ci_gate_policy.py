@@ -222,6 +222,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "github.event_name == 'push' ||",
             rust_test,
         )
+        self.assertIn("timeout-minutes: 120", rust_test)
+        self.assertIn(
+            'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '
+            '-C link-arg=-Wl,--thinlto-jobs=1"',
+            rust_test,
+        )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # concurrency 可能用后续非 Rust pending 替换含 Rust 变更的 pending;main 的
