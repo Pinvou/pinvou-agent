@@ -13,7 +13,7 @@
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
 //! 在同一个 EngineHandle 内自然累积。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 

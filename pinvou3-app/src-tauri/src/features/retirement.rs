@@ -130,6 +130,7 @@ fn write_json_atomically(path: &Path, value: &serde_json::Value) -> Result<(), S
         .map_err(|error| format!("write {}: {error}", temporary.display()))?;
     let backup = path.with_extension(format!("json.retiring-backup-{nonce}"));
     let result = crate::platform::filesystem::replace_file_atomically(&temporary, path, &backup)
+        .map(|_| ())
         .map_err(|error| format!("replace {}: {error}", path.display()));
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);

@@ -523,7 +523,7 @@ pub(crate) fn spawn_event_forwarder(
                                 &agent_id,
                                 json!({
                                     "agent_id": agent_id,
-                                    "summary": crate::features::assistant::audit::clip(&summary),
+                                    "summary": crate::platform::strings::truncate_utf8(&summary, 600),
                                 }),
                             );
                         }
@@ -535,7 +535,7 @@ pub(crate) fn spawn_event_forwarder(
                                 &agent_id,
                                 json!({
                                     "agent_id": agent_id,
-                                    "error": crate::features::assistant::audit::clip(&error),
+                                    "error": crate::platform::strings::truncate_utf8(&error, 600),
                                 }),
                             );
                         }

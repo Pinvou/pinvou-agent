@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
-use chrono::Utc;
 use super::SessionStore;
 use anyhow::{Context, Result};
+use chrono::Utc;
 
 const SESSION_MODELS_FILE: &str = "_session_models.json";
 const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
