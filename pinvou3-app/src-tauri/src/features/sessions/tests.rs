@@ -6,9 +6,6 @@
 //! public surface plus the few crate-visible helpers they need directly.
 
 use super::*;
-use crate::features::sessions::{
-    ActiveSkillBinding, MountedCollection, SerializableMode, SessionModeState,
-};
 use crate::platform::paths;
 use crate::platform::paths::tests::ENV_LOCK;
 use crate::platform::prefs::UserPrefs;
@@ -1696,14 +1693,11 @@ fn set_mode_preserves_pinvou_review() {
     let (store, _g) = isolated_store();
     store.set_pinvou_review("s1", true);
     store
-        .set_mode("s1", crate::features::sessions::SerializableMode::Yolo)
+        .set_mode("s1", SerializableMode::Yolo)
         .expect("set chat mode");
     let state = store.mode_state("s1");
     assert!(state.pinvou_review_enabled);
-    assert!(matches!(
-        state.mode,
-        crate::features::sessions::SerializableMode::Yolo
-    ));
+    assert!(matches!(state.mode, SerializableMode::Yolo));
 }
 
 #[test]
@@ -1762,7 +1756,7 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
 /// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
 #[test]
 fn mode_switch_loop_preserves_orthogonal_state() {
-    use crate::features::sessions::SerializableMode;
+    use SerializableMode;
     let (store, _g) = isolated_store();
     let sid = "s-loop";
 
@@ -1906,7 +1900,7 @@ fn bind_skill_preserves_mode() {
     let (store, _g) = isolated_store();
     store.set_pinvou_review("s1", true);
     store
-        .set_mode("s1", crate::features::sessions::SerializableMode::Plan)
+        .set_mode("s1", SerializableMode::Plan)
         .expect("set chat plan mode");
     store.bind_skill(
         "s1",
@@ -1919,17 +1913,11 @@ fn bind_skill_preserves_mode() {
     );
     let state = store.mode_state("s1");
     assert!(state.pinvou_review_enabled);
-    assert!(matches!(
-        state.mode,
-        crate::features::sessions::SerializableMode::Plan
-    ));
+    assert!(matches!(state.mode, SerializableMode::Plan));
     store.unbind_skill("s1");
     let state2 = store.mode_state("s1");
     assert!(state2.pinvou_review_enabled);
-    assert!(matches!(
-        state2.mode,
-        crate::features::sessions::SerializableMode::Plan
-    ));
+    assert!(matches!(state2.mode, SerializableMode::Plan));
 }
 
 #[test]
@@ -2507,30 +2495,29 @@ fn fresh_code_session_default_plan_registers_pending_plan() {
         .expect("register plan on fresh code session");
     assert_eq!(registered.mode, SerializableMode::Plan);
     assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
+}
 
-    /// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+/// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
+#[test]
+fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
+    let (store, _guard) = isolated_store();
+    store
+        .set_session_model_id("wf-model-test", Some("old-model".to_string()))
+        .expect("persist initial model");
+    let sidecar = paths::sessions_root().join("_session_models.json");
+    std::fs::remove_file(&sidecar).expect("remove initial sidecar");
+    std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
 
-    #[test]
-    fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
-        let (store, _guard) = isolated_store();
-        store
-            .set_session_model_id("wf-model-test", Some("old-model".to_string()))
-            .expect("persist initial model");
-        let sidecar = paths::sessions_root().join("_session_models.json");
-        std::fs::remove_file(&sidecar).expect("remove initial sidecar");
-        std::fs::create_dir(&sidecar).expect("block sidecar path with a directory");
+    let error = store
+        .set_session_model_id("wf-model-test", Some("new-model".to_string()))
+        .expect_err("an unwritable sidecar must fail the model transaction");
 
-        let error = store
-            .set_session_model_id("wf-model-test", Some("new-model".to_string()))
-            .expect_err("an unwritable sidecar must fail the model transaction");
-
-        assert!(error
-            .to_string()
-            .contains("persist per-session model bindings"));
-        assert_eq!(
-            store.session_model_override("wf-model-test").as_deref(),
-            Some("old-model"),
-            "failed persistence must not leave a memory-only model choice"
-        );
-    }
+    assert!(error
+        .to_string()
+        .contains("persist per-session model bindings"));
+    assert_eq!(
+        store.session_model_override("wf-model-test").as_deref(),
+        Some("old-model"),
+        "failed persistence must not leave a memory-only model choice"
+    );
 }

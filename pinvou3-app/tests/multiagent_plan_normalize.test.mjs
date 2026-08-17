@@ -51,7 +51,9 @@ const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'inte
 const settingsSource = read('src', 'features', 'settings', 'SettingsView.jsx');
 const i18nSource = read('src', 'shared', 'i18n.js');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
-const modeStateSource = read('src-tauri', 'src', 'core', 'mode_state.rs');
+// wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
+// （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。
+const modeStateSource = read('src-tauri', 'src', 'features', 'sessions', 'mode_state.rs');
 const rosterSource = read('src-tauri', 'src', 'features', 'assistant', 'expert_roster.rs');
 const personasSource = read('src-tauri', 'src', 'features', 'personas', 'mod.rs');
 

@@ -498,7 +498,7 @@ impl UserPrefs {
             && (minimax_endpoint_changed || migration.settings_sanitized || memory_policy_changed)
         {
             if let Err(e) = prefs.save_unlocked() {
-                eprintln!("[pinvou3-app] settings normalization save failed: {e:?}");
+                eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
             }
         }
         prefs.sanitize_plaintext_api_keys();
@@ -543,7 +543,7 @@ impl UserPrefs {
         mutate(&mut prefs)?;
         prefs
             .save_unlocked()
-            .map_err(|error| format!("save settings failed: {error:?}"))?;
+            .map_err(|error| format!("save settings failed: {error:#}"))?;
         // 返回再次从磁盘解析的规范化结果，保证桥接层内存状态与实际持久化内容一致。
         Ok(Self::load_unlocked(false))
     }

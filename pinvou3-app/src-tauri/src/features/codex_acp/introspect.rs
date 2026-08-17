@@ -1,5 +1,14 @@
-//! Kimi Code 运行时内省：解析 config.toml / credentials / kimi-code.log
-//! 与会话日志失败标记。本波留在 codex_acp 簇内，Wave 3 才迁出边界。
+//! Kimi Code 运行时内省边界：解析 config.toml / credentials / kimi-code.log
+//! 与会话日志失败标记。
+//!
+//! **归属边界**（Wave 3 源码回查结论）：本文件 100% 为 Kimi Code CLI 内省逻辑，
+//! 已从 codex_acp 的 ACP 协议 / 安装 / 登录职责中干净隔离。Kimi 内省不迁出独立
+//! `kimi_auth` feature——它与 `AgentBackend::KimiAcp` 枚举（store.rs）和 codex_acp
+//! 的 CLI 生命周期紧密耦合，强行迁出会引入 feature→feature 依赖。此文件即为
+//! Kimi 内省的归属边界，外部通过 `pub(super)` 接口访问。
+//!
+//! 注意：`features/assistant/platform/bridge.rs` 中的 Moonshot/Kimi **API provider**
+//! 桥接（model routing/thinking params）是独立子系统，不属于本内省边界。
 
 use super::*;
 

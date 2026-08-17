@@ -178,6 +178,8 @@ pub fn auth_status_decision(
         ),
         S::Restricted => Err("该设备限制使用语音识别（受 MDM / 家长控制等策略管控）".to_string()),
         // NSInteger 的 #[non_exhaustive] 防御：未来苹果新增状态时不编译失败。
+        // 注：status 为 objc 枚举仅实现 Debug 未实现 Display，故保留 {:?}（与
+        // {:#} 的统一约定不冲突——该分支不是错误值透传，而是未知状态诊断）。
         _ => Err(format!("语音识别授权状态异常: {status:?}")),
     }
 }

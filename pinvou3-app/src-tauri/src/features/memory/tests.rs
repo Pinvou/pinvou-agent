@@ -11,6 +11,7 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 
 use crate::platform::paths;
+use crate::platform::prefs::ModelPreset;
 
 use super::io::{
     commit_topic_migration_unlocked_with, current_focus_path, enqueue_memory_candidate,
@@ -21,9 +22,9 @@ use super::io::{
 };
 use super::llm_review::{
     append_memory_review_diagnostic_to, apply_llm_memory_review,
-    assistant_suggests_delivery_complete, discover_turn_suggestions, has_memory_review_signal,
-    memory_review_error_stage, parse_llm_memory_review, sanitize_llm_memory_item,
-    LLM_REVIEW_PROMPT,
+    apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
+    discover_turn_suggestions, has_memory_review_signal, memory_review_error_stage,
+    parse_llm_memory_review, sanitize_llm_memory_item, LLM_REVIEW_PROMPT,
 };
 use super::render::render_from_parts;
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -1692,4 +1693,120 @@ fn render_recent_work_skips_archived_and_expired() {
     assert!(!block.contains("旧材料"));
     assert!(!block.contains("过期材料"));
     assert_eq!(items.len(), 1);
+}
+
+// Wave 3 把 memory 的推理方言判定收敛到共享 core::reasoning_dialect 后，注入
+// 行为（body 字段名与取值、URL 嗅探优先于 model 名回退的次序）只有共享纯函数
+// 的 URL 分类测试覆盖，memory 路径本身无行为级测试。以下三个测试锁定该契约。
+
+#[test]
+fn memory_review_reasoning_controls_inject_for_newly_covered_vendors() {
+    // OpenaiCompatible + 各厂商直连 URL：Wave 3 新增覆盖（原实现返回 None 不注参）。
+    let cases = [
+        (
+            "https://ark.cn-volces.com/api/v3",
+            "doubao-seed-1-6",
+            "thinking",
+        ),
+        ("https://api.minimax.chat/v1", "abab6.5s-chat", "thinking"),
+        (
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.5",
+            "thinking",
+        ),
+        ("https://api.xiaomimimo.com/v1", "mimo-7b", "thinking"),
+        ("https://api.moonshot.cn/v1", "kimi-k2.6-0908", "thinking"),
+    ];
+    for (base_url, model, field) in cases {
+        let mut body = json!({});
+        apply_memory_review_reasoning_controls(
+            &mut body,
+            ModelPreset::OpenaiCompatible,
+            "openai_compatible",
+            base_url,
+            model,
+        );
+        assert_eq!(
+            body[field],
+            json!({ "type": "disabled" }),
+            "{model} @ {base_url} 必须注入 thinking disable"
+        );
+    }
+    // Minimax 簇额外带 reasoning_split（与 review 侧同构）。
+    let mut minimax = json!({});
+    apply_memory_review_reasoning_controls(
+        &mut minimax,
+        ModelPreset::OpenaiCompatible,
+        "openai_compatible",
+        "https://api.minimax.chat/v1",
+        "abab6.5s-chat",
+    );
+    assert_eq!(minimax["reasoning_split"], json!(true));
+}
+
+#[test]
+fn memory_review_reasoning_controls_prefer_url_over_model_fallback() {
+    // URL 能识别厂商时按 URL 注参，model 名回退不再参与：
+    // deepseek URL + qwen 模型名（main 上的旧 memory 会错注 enable_thinking）。
+    let mut body = json!({});
+    apply_memory_review_reasoning_controls(
+        &mut body,
+        ModelPreset::OpenaiCompatible,
+        "openai_compatible",
+        "https://api.deepseek.com/v1",
+        "qwen3-235b",
+    );
+    assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    assert!(body.get("enable_thinking").is_none());
+
+    // URL 识别不到厂商时回退 model 名：自定义代理网关 + qwen/deepseek 模型名。
+    let mut qwen_fallback = json!({});
+    apply_memory_review_reasoning_controls(
+        &mut qwen_fallback,
+        ModelPreset::OpenaiCompatible,
+        "openai_compatible",
+        "https://internal-gateway.corp/v1",
+        "Qwen3-32B",
+    );
+    assert_eq!(qwen_fallback["enable_thinking"], json!(false));
+
+    let mut deepseek_fallback = json!({});
+    apply_memory_review_reasoning_controls(
+        &mut deepseek_fallback,
+        ModelPreset::OpenaiCompatible,
+        "openai_compatible",
+        "https://internal-gateway.corp/v1",
+        "deepseek-v4-pro",
+    );
+    assert_eq!(deepseek_fallback["thinking"], json!({ "type": "disabled" }));
+}
+
+#[test]
+fn memory_review_reasoning_controls_keep_kimi_gate_on_url_path() {
+    // Kimi 门控统一后：URL 命中 moonshot 簇时，k2.5/k2.6 注参、k2.7 与
+    // thinking 变体不注参（k2.7 是 always-thinking 模型，停注是修复而非回归）。
+    let mut k26 = json!({});
+    apply_memory_review_reasoning_controls(
+        &mut k26,
+        ModelPreset::OpenaiCompatible,
+        "openai_compatible",
+        "https://api.moonshot.cn/v1",
+        "kimi-k2.6-0908",
+    );
+    assert_eq!(k26["thinking"], json!({ "type": "disabled" }));
+
+    for model in ["kimi-k2.7", "kimi-k2.7-code", "kimi-k2.6-thinking"] {
+        let mut body = json!({});
+        apply_memory_review_reasoning_controls(
+            &mut body,
+            ModelPreset::OpenaiCompatible,
+            "openai_compatible",
+            "https://api.moonshot.cn/v1",
+            model,
+        );
+        assert!(
+            body.get("thinking").is_none(),
+            "{model} 不应注入 thinking disable"
+        );
+    }
 }
