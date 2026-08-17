@@ -359,6 +359,30 @@ pub(crate) async fn chat_with_reservation(
     }
 }
 
+/// Mid-turn inject: 当前 turn 仍在跑时,把用户消息投递到下个 step 边界。
+/// 底座 `EngineHandle::steer` 在 turn loop 每个 tool result 处理完后、
+/// 下次 model call 之前自动追加到 session.messages,模型下次思考时看到。
+///
+/// 与 `chat()` 的区别:
+/// - `chat()` 触发新 turn(reserve_turn → SendMessage),turn_in_progress 时拒绝
+/// - `steer_chat()` 只往 steer channel 入队,不触发新 turn,turn_in_progress 也能调用
+///
+/// 失败模式:
+/// - session 不存在 / engine 没起 → 后端静默返回 Ok(同 EnginePool::steer 语义)
+/// - channel 满 → 走 mpsc::send error 路径,前端按错误展示
+#[tauri::command]
+pub async fn steer_chat(
+    session_id: Option<String>,
+    content: String,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    let sid = require_active_sid(session_id, &store)?;
+    pool.steer(&sid, content)
+        .await
+        .map_err(|e| format!("steer_chat: {e:#}"))
+}
+
 fn prepare_conversation_attachment_record(
     attachments: &[crate::features::files::file_ingest::IngestResult],
     load_message_index: impl FnOnce() -> Result<usize, String>,

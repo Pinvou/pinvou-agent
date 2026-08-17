@@ -827,6 +827,7 @@
   var retryFirstTurn = chatFeature.retryFirstTurn;
   var prefillComposer = chatFeature.prefillComposer;
   var removeQueued = chatFeature.removeQueued;
+  var steer = chatFeature.steer;
   var summonPinvou = chatFeature.summonPinvou;
   var inspectPinvou = chatFeature.inspectPinvou;
   var recordPinvouReview = chatFeature.recordPinvouReview;
@@ -2177,6 +2178,7 @@
       retryFirstTurn: retryFirstTurn,
       prefillComposer: prefillComposer,
       removeQueued: removeQueued,
+      steer: steer,
       cancelGeneration: cancelGeneration,
       cancelShellTask: cancelShellTask,
     },
