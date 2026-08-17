@@ -48,8 +48,8 @@ Flags:
 
 - `export` 是一体化命令，一条命令自动完成提交→轮询→下载，**无需手动编排轮询**。CLI 内部使用渐进式退避轮询（最多约 5 分钟）。
 - `export` 超时或中断后，CLI 会输出 `jobId`，可用 `dws doc export get --job-id <jobId>` 手动查询任务状态。
-- `export` 当前仅支持钉钉在线文档（alidocs，`contentType=ALIDOC`）导出为 `docx`，**在线表格导出请使用其他命令**。
-- `--output` 既可以是文件完整路径，也可以是目录（CLI 自动按文档名生成 `.docx`）。
+- `export` 仅作用于钉钉在线文档（alidocs，`contentType=ALIDOC`），格式由 `--export-format` 决定：`docx`（默认）/ `markdown` (`.md`) / `pdf`；在线表格（axls）导出走 [`dws sheet export`](../sheet.md)。
+- `--output` 既可以是文件完整路径，也可以是目录（CLI 自动按文档名生成扩展名，按 `--export-format` 为 `.docx`/`.md`/`.pdf`）。
 
 ## 上下文传递
 

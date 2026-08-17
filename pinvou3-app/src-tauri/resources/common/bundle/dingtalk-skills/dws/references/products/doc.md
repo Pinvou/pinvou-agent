@@ -1037,7 +1037,7 @@ EOF
 
 - `export` 是一体化命令，一条命令自动完成提交→轮询→下载，**无需手动编排轮询**。CLI 内部使用渐进式退避轮询（最多约 5 分钟）
 - `export` 超时或中断后，CLI 会输出 `jobId`，可用 `dws doc export get --job-id <jobId>` 手动查询任务状态
-- `export` 当前仅支持钉钉在线文档 (alidocs) 导出为 `docx`；当前开源 CLI 未暴露在线表格导出命令，在线表格数据读取走 `dws sheet range read --node <ID>`
+- `export` 仅作用于钉钉在线文档 (alidocs)，`--export-format` 支持 docx（默认）/ markdown (或 md) / pdf；在线表格 (axls) 导出走 [`dws sheet export`](./sheet.md)（axls → xlsx 格式转换），在线表格数据读取走 `dws sheet range read --node <ID>`
 - `update --mode overwrite` 会**清空原内容后重写**，⚠️ 谨慎使用；必须先 `--dry-run` 预览并在用户确认后加 `--yes`；默认 `--mode append`（追加）更安全
 - `read` 返回 Markdown 格式的文档内容，仅限有"下载"权限的文档
 - `read` 返回的内容中，文档里的附件会以 OSS 临时下载链接形式给出（如 `https://alidocs2.oss-cn-zhangjiakou.aliyuncs.com/res/.../att/<resourceId>.ext?Expires=...`），该链接会过期。链接过期后，可从 URL 路径中提取 `<resourceId>`（即 `/att/` 后、扩展名前的 UUID 部分），然后使用 `media download --node <DOC_ID> --resource-id <resourceId>` 重新获取下载链接

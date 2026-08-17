@@ -65,6 +65,8 @@ def safe_file_name(name: str) -> str:
     fileName 来自 dws/服务端返回，可能含路径分隔符（../ 穿越）、Windows
     保留字符（: * ? " < > |）或设备名（CON/NUL 等）。只保留 basename，
     再把非法字符替换为 _，避免越目录写入或 Windows 上的创建失败/设备名劫持。
+    超长名截断到 200 字符（保留扩展名），防 macOS(255 字节)/Windows(255 字符)
+    落盘 OSError 崩溃；截断只动主名，扩展名原样保留。
     """
     base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)
@@ -78,6 +80,12 @@ def safe_file_name(name: str) -> str:
         *(f"LPT{i}" for i in range(1, 10)),
     }:
         cleaned = f"_{cleaned}"
+    if len(cleaned) > 200:
+        dot = cleaned.rfind(".")
+        if dot > 0:
+            cleaned = cleaned[: 200 - (len(cleaned) - dot)] + cleaned[dot:]
+        else:
+            cleaned = cleaned[:200]
     return cleaned
 
 

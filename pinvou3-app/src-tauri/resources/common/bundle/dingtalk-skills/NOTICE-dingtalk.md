@@ -105,6 +105,8 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 8. `references/products/doc.md` 导出格式口径 3 处（2026-08-17 评审补充，第 6 条同源修正的传播；`dws doc export --help` 实测为 docx（默认）/markdown (.md)/pdf）：`--export-format` flag 说明行「当前仅支持 docx (默认)」改「导出格式: docx (默认) / markdown (或 md) / pdf」；「用户说下载/导出」路由条「格式转换后导出为 docx，未迁移」与末尾「严禁路由到 drive download」提示条「导出为 docx」均改为「按 `--export-format` 导出为 docx（默认）/ markdown / pdf」并指向 `./doc/doc-export.md`。
 9. （2026-08-17 第十轮独立复审补充，第 5 条 `--user` 修正的两处传播漏网）`references/products/doc.md` 权限路由摘要行「`permission add`（需 `--node` + `--user` + `--role`）」改 `--users`；`references/best_practices/04-document.md` grant-doc-access 行「`doc permission add --node <nodeId> --user <UID1,UID2> --role EDITOR`」改 `--users`。另注：`chat message list --user`、`calendar acl add --user` 等处的 `--user` 是各自命令的实名 flag，**不要**随本条误改。
 10. （2026-08-17 第十轮复审勘误）第 1 条「minutes.md 6 处」实为 7 行：`references/products/minutes.md` 的 `Read 工具`/`read_file` → `File(action="read")` 共 5 处标准形态 + 2 处 `File.read` 简写（R4 行与速查表行，简写一并改写为完整形态）。
+11. （2026-08-17 第十一轮复审补充，第 6/8 条导出口径的同族传播漏网 + 二进制实测修正）`doc-export.md`「关键说明」区「当前仅支持…导出为 `docx`，在线表格导出请使用其他命令」改为「仅作用于 alidocs 文档、`--export-format` 决定 docx/markdown/pdf，axls 走 `dws sheet export`」，`--output` 目录扩展名同步改三格式口径；`doc.md` 注意事项区同款「仅支持 docx」+「当前开源 CLI 未暴露在线表格导出命令」（失实：`dws sheet export` 存在且 sheet.md/url-patterns.md 已文档化）一并改写。
+12. （2026-08-17 第十一轮复审，失效 flag 修正）`best_practices/04-document.md` export-doc-as-docx 行的 `--timeout-sec 600` 删除（实测 `unknown flag`；`doc export` 无 timeout flag，轮询窗口内置约 5 分钟）；`best_practices/06-data-analytics.md` export-aitable-to-xlsx 行「加 `--timeout-sec 900`」改写为「`--timeout-ms` 默认且上限 30000、超时返回 taskId 续等」（与 aitable-export-import.md「大表/长任务超时续等」节口径对齐，实测一致）。脚本自身的 `--timeout-sec`（aitable_export/import_via_task.py argparse 参数）不受影响，勿随本条误删。
 
 ## 第六轮收官语义扫描补录（2026-08-16）
 
@@ -122,7 +124,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 对 `dws/scripts/` 全部 33 个 Python 脚本做逐脚本安全审计（路径安全 / 注入面 / 危险操作 / 数据外泄面 / 异常与退出码 / 资源占用 / 跨平台编码）。审计结论：无 shell=True、无 os.system/eval/exec/pickle、无递归删除；subprocess 全部列表形式；文件读入均有大小上限；`OPENCLAW_WORKSPACE` 白名单无 cwd 覆盖绕过。修复以下 5 类，下次 sync 需重放：
 
-1. **subprocess 解码容错（26 处，全部含 `text=True` 的调用）**：`subprocess.run(..., text=True)` 均补 `errors='replace'`。此前 Windows GBK 控制台下 dws 输出含 GBK 外字符（emoji、✓✗ 等 BMP 符号）会抛未捕获 `UnicodeDecodeError`，脚本以 traceback 崩溃且退出码不可控；`errors='replace'` 保证 stderr 信息完整、失败路径仍走受控 return-None/sys.exit。涉及 scripts/ 下 25 个脚本 + `aitable_export_via_task.py`/`aitable_import_via_task.py` 的 run_dws（全覆盖，逐调用核对无一遗漏）。
+1. **subprocess 解码容错（25 处，全部含 `text=True` 的调用；2026-08-17 计数勘误：原记 26，另 3 个 `text=True` 命中是 openpyxl 样式参数、非 subprocess）**：`subprocess.run(..., text=True)` 均补 `errors='replace'`。此前 Windows GBK 控制台下 dws 输出含 GBK 外字符（emoji、✓✗ 等 BMP 符号）会抛未捕获 `UnicodeDecodeError`，脚本以 traceback 崩溃且退出码不可控；`errors='replace'` 保证 stderr 信息完整、失败路径仍走受控 return-None/sys.exit。涉及 scripts/ 下 25 个脚本（全覆盖，逐调用核对无一遗漏）。
 2. **白名单符号链接绕过防护（2 处，复核勘误）**：`import_records.py` 与 `bulk_add_fields.py` 的 `resolve_safe_path` 补「relative_to 失败且目标本身是符号链接时按『路径解析到白名单外』拒绝」分支（保留原错误信息格式）。（2026-08-16 独立复审勘误：实测拦截实际由原有 `(Path.cwd()/path).resolve()` + `relative_to(allowed_root)` 逻辑提供——`resolve()` 跟随符号链接、越界即抛 ValueError，根内链接指向根外/绝对路径/`../` 在补丁前后均被拒绝，本条早先「此前放行」的表述不准；新增分支属纵深防御冗余，保留无害，sync 重放可选。）
 3. **导出文件名净化（aitable_export_via_task.py）**：服务端返回的 `fileName` 未校验直接 `Path.cwd() / file_name` 落盘，含 `../` 可越目录写、含 Windows 保留字符（`:*?"<>|`）创建失败、设备名（CON/NUL）被劫持。新增 `safe_file_name()`：截 basename、非法字符替换 `_`、设备名加 `_` 前缀；默认下载路径与轮询更新 fileName 两处接入（`--output` 显式指定时尊重用户路径）。
 4. **翻页死循环防护（report_inbox_today.py、report_received_today.py）**：`fetch_inbox` 的 cursor 翻页循环无重复游标检测，服务端异常恒定返回同一 `nextCursor` 时无限重拉 dws。补 `seen_cursors` 集合，重复游标 stderr 报错后 break。已 monkeypatch 实测恒定游标在第 2 次调用即终止。
@@ -134,7 +136,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 第七轮同批 commit 还包含以下文档层改动（此前未登记，依据上游 v1.0.58 zip diff 实测，下次 sync 需逐条重放）：
 
-- **裸 `python` → `python3` 改写（约 50 处/17 个 references 文件，上游 v1.0.58 原文均为裸 `python`）**：`references/` 下全部命令示例统一为 `python3 scripts/...`（品悟宿主无裸 `python`，实测 command not found）。脚本自身 docstring 中的 usage 示例仍为上游原文裸 `python`，属已知豁免（模型按 SKILL.md 调用约定执行，不按 docstring）。
+- **裸 `python` → `python3` 改写（55 处/19 个 references 文件，上游 v1.0.58 原文均为裸 `python`；2026-08-17 计数勘误：原记「约 50 处/17 个」为低估）**：`references/` 下全部命令示例统一为 `python3 scripts/...`（品悟宿主无裸 `python`，实测 command not found）。脚本自身 docstring 中的 usage 示例仍为上游原文裸 `python`，属已知豁免（模型按 SKILL.md 调用约定执行，不按 docstring）。
 - **SKILL.md 新增「脚本调用约定」节**：统一 `python3` 调用、`scripts/...` 相对路径须拼完整路径、不假设 CWD（上游 SKILL.md 无此节）。
 - **attendance-report.md**：「报表类型（四选一）」改「五选一」（补签到报表项，`attendance_report_record.py` 覆盖考勤记录/签到报表两型）；「不适用于」指引的三处命令指针修正（`attendance check record`→`attendance record get`、班次查询补 `attendance class search` 并将排班导出导向 attendance-schedule.md 工作流）。
 

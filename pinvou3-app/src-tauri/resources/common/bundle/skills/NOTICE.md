@@ -110,7 +110,9 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 - **references 级修正**:lark-doc-whiteboard.md / lark-doc-update.md / lark-doc-xml.md / style/lark-doc-create-workflow.md / lark-drive-comment-location.md 中对未收录 lark-whiteboard 的引用全部改为「未随包收录 + CLI 命令直给」口径。
   (状态注 2026-08-16:`style/lark-doc-create-workflow.md` 及其所在
   `lark-doc/references/style/` 目录已随 v1.0.87 同步删除——上游把 style/ 并入
-  genres/ 体系,本条对其无需重放;whiteboard/update/xml 三文件仍在,有效。)
+  genres/ 体系,本条对其无需重放;whiteboard/update 两文件仍在,有效;
+  2026-08-17 勘误:lark-doc-xml.md 已与 v1.0.87 上游逐字节一致(上游自行
+  移除了 whiteboard 引用),该文件无需重放。)
 - **references 级修正(2026-07-25 复审补漏)**:lark-doc-create.md / lark-doc-update.md 的 `block_token` 说明、style/lark-doc-style.md 的已有画板编辑指引,lark-whiteboard 引用补「未随包收录 + CLI 直给」;lark-wiki-token-routing.md 的 slides 行改为「lark-slides 未收录,暂不支持」声明;lark-base-cell-value.md / lark-base-view-set-filter.md / lark-drive-search.md 的 lark-contact 提及补「未随包收录」声明并统一为 `lark-cli contact +search-user` 直给。
   (状态注 2026-08-16:`style/lark-doc-style.md` 已随 v1.0.87 同步删除(style/
   并入 genres/),该子项无需重放;slides 行已被 2026-08-16 真实性审查补录
@@ -162,9 +164,10 @@ v1.0.87 diff 实测,均需在下次 sync 重放):
   `lark-drive-import.md` 三篇同类提示,及 `lark-drive-search.md` 的
   `--mine` 取不到 open_id 报错提示)、lark-im/references/lark-im-chat-identity.md(owner 转移需 owner 本人 UAT 授权)、
   lark-wiki/references/lark-wiki-node-create.md(bot 建节点后授权提示)。
-  (重放结果 2026-08-16 实测:lark-drive 四篇各 1 处命中,search.md 的
-  `--mine` 提示现为「请改用显式 `--creator-ids`」口径且未再含裸 auth login
-  字样——上游重写已消化该子项,重放时先 grep 再补。)
+  (重放结果 2026-08-16 实测 + 2026-08-17 勘误:lark-drive 四篇各 1 处命中;
+  search.md 一处先前注「上游重写已消化」系误判——v1.0.87 tag 的
+  lark-drive-search.md L125 `--mine` 行括注仍含「提示运行 lark-cli auth
+  login」裸字样,重放时照常导正,勿跳过。)
 - **别名命令改写为正式名(3 处)**:lark-drive 三个 workflow 文档的
   `sheets +read`/`+find` 改为 `sheets +cells-get`/`+cells-search`——
   `lark-drive-comment-location.md` 单元格读取示例、
@@ -174,7 +177,11 @@ v1.0.87 diff 实测,均需在下次 sync 重放):
   (第七轮复核勘误:`+read`/`+find` 在 1.0.87 是**隐藏别名**,`--help` 实测存在且
   分别转发 `+cells-get`/`+cells-search`——最初判「假命令」系探测方式误报,无上游
   bug 需回馈;改写为正式名仍值得保留(别名不在 `sheets --help` 快捷方式清单中,
-  可见性差),故不回滚,后续 sync 若上游原文用回别名也无需再改。)
+  可见性差),故不回滚,后续 sync 若上游原文用回别名也无需再改。
+  2026-08-17 第十一轮补注:lark-sheets/SKILL.md 场景速查表「查找/替换」行的
+  「❌ 不存在」列曾把 `+find` 与真不存在的 `+cells-find`/`--query` 并列——
+  与本条勘误矛盾,已改为「`+find` 是隐藏别名,正式名 `+cells-search`」口径,
+  下次 sync 保持。)
 - **正文断言矛盾修正(2 处)**:lark-drive-files-list.md 的「不要使用不存在的
   `--folder-token` flag」改为「typed flag `--folder-token` 实际存在(--help 可
   见),本 workflow 统一用 `--params` 传参避免与 shortcut 语义混淆」,并合并
@@ -282,14 +289,16 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   钉扎版本);`_notice.update` 提示改为「新版本会随品悟应用更新自动就位」。
   本条是自更新禁令的正文载体,重放时必须保留,不得回退上游原文。
 - **lark-im / lark-base 的 SKILL.md description 本地重写(2026-07-25 批次沿袭,
-  同批其余 7 域均已登记,唯此两域漏登)**:均为「【何时用:仅当用户明确指向
+  2026-08-17 二次勘误:同批共 3 域漏登——im/base/task;其余 6 域已登记)**:
+  均为「【何时用:仅当用户明确指向
   飞书…;泛指需求默认走本地工具】」防误用前缀 + 全文重组压缩(lark-im 280
-  字符压线,lark-base 277)。重放时保留前缀与压缩,不回退上游直译版。
-- **lark-calendar/SKILL.md「常用其他域命令」区 bot 空日历句(同步提交
-  3b66f343 引入)**:「`--as bot` 查用户日程会拿到空结果,查用户日程必须
-  `--as user`」——依据为 lark-shared/SKILL.md 上游原文第 61 行同款口径,
-  属对上游既有事实的收录补写。同处「压缩身份示例」的删除侧已登记,本条
-  补登新增侧。
+  字符压线,lark-base 277,lark-task 245)。重放时保留前缀与压缩,不回退上游直译版。
+- **lark-calendar/SKILL.md bot 空日历句(同步提交 3b66f343 引入;2026-08-17
+  勘误定位:实际位于 L22「按日程归属选身份」区,非「常用其他域命令」区)**:
+  「`--as bot` 查用户日程会拿到空结果(bot 只能访问自己的(空)日历,原理见
+  lark-shared),查用户日程必须 `--as user`」——依据为 lark-shared/SKILL.md
+  上游原文第 61 行同款口径,属对上游既有事实的收录补写。同处「压缩身份示例」
+  的删除侧已登记,本条补登新增侧。
 - **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。

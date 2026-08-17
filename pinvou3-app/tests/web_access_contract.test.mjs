@@ -124,7 +124,13 @@ for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
     `set_${connector}_enabled`,
   );
 }
-deniedConnectorMutations.push("ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates");
+deniedConnectorMutations.push(
+  "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
+  // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；
+  // 此前两头都不沾，加白名单不会触发测试——与「清单须与注册面同步」承诺矛盾）。
+  "set_disabled_skills", "get_disabled_skills",
+  "set_project_skills_enabled", "get_project_skills_enabled",
+);
 for (const command of deniedConnectorMutations) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only (connector mutations)`);
 }
