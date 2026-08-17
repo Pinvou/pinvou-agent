@@ -599,7 +599,6 @@ pub fn import_plugin_package(
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
     // 注：旧 spanner/ 与 runtime/ 子树已删除，skill 包的脚本由 skill_marketplace
     //     后置 hook 单独处理。
- (refactor(marketplace): 移除 spanner 扳手插件（向 skill-with-runtime 协议迁移）)
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
@@ -743,7 +742,6 @@ pub fn import_plugin_package(
     // 注：旧 spanner 路径已删除——脚本可执行能力的供给在 skill_marketplace.rs 走
     // skill-run wrapper + execpolicy deny rule。
     if !mcp_servers.is_empty() {
- (refactor(marketplace): 移除 spanner 扳手插件（向 skill-with-runtime 协议迁移）)
         if let Err(e) =
             super::MarketplaceManager::new().install(&id, &std::collections::HashMap::new())
         {
