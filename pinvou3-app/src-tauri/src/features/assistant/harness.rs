@@ -24,22 +24,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::platform::paths;
-
-/// 按 UTF-8 char 边界向下取整截断 `s` 到 ≤ `max_bytes` 字节，返回前缀切片。
-/// 直接 `&s[..max_bytes]` 在 max_bytes 落在多字节字符(中文)中间时会 panic——
-/// 角色产出几乎全是中文,曾导致 build_review_prompt 在 spawn_blocking 里 panic
-/// → turn 崩溃 → engine busy flag 永不复位 → 卡死(P0 根因)。所有按字节切中文的
-/// 地方都必须走这里。
-fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
+use crate::platform::strings;
 
 // ── 调度器 JSON 结构 ──
 // 这些 struct 镜像 Python scheduler.py 产出的 JSON schema;部分字段(all_actionable、
@@ -870,7 +855,7 @@ fn run_python_with_timeout(args: &[&str], cwd: &Path, timeout_secs: u64) -> Resu
         eprintln!(
             "[harness] {program} exit={} stderr={}",
             output.status,
-            truncate_on_char_boundary(&stderr, 300)
+            strings::truncate_utf8(&stderr, 300)
         );
     }
 
@@ -896,7 +881,7 @@ fn subprocess_failure_detail(stdout: &str, stderr: &str) -> String {
         (false, true) => stdout.to_string(),
         (false, false) => format!("stderr:\n{stderr}\nstdout:\n{stdout}"),
     };
-    truncate_on_char_boundary(&detail, 4000).to_string()
+    strings::truncate_utf8(&detail, 4000).to_string()
 }
 
 fn run_scheduler(project: &Path, args: &[&str]) -> Result<String, String> {
@@ -1011,7 +996,7 @@ pub(crate) fn model_auth_failure_reason(error: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| truncate_on_char_boundary(line, 400).to_string())
+        .map(|line| strings::truncate_utf8(line, 400).to_string())
 }
 
 /// 把 SubAgent 的失败信封整理成可持久化、可展示的诊断文本。
@@ -1029,12 +1014,12 @@ fn failure_detail(error: &str) -> String {
     } else {
         detail
     };
-    truncate_on_char_boundary(&detail, 4000).to_string()
+    strings::truncate_utf8(&detail, 4000).to_string()
 }
 
 fn failure_summary(detail: &str) -> String {
     let summary = detail.lines().take(6).collect::<Vec<_>>().join(" | ");
-    truncate_on_char_boundary(&summary, 800).to_string()
+    strings::truncate_utf8(&summary, 800).to_string()
 }
 
 fn failure_category(detail: &str) -> &'static str {
@@ -1233,7 +1218,7 @@ fn parse_decision(json: &str) -> Result<SchedulerDecision, String> {
     serde_json::from_str(json).map_err(|e| {
         format!(
             "parse scheduler: {e}\nraw: {}",
-            truncate_on_char_boundary(json, 200)
+            strings::truncate_utf8(json, 200)
         )
     })
 }
@@ -2994,39 +2979,6 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn truncate_never_panics_on_chinese_char_boundary() {
-        // 复现 P0 根因:大纲是中文,直接 &s[..2000] 会切在多字节字符中间 panic。
-        // 构造一个 byte 2000 恰好落在 '压'(3 字节)中间的串。
-        let mut s = String::from("# 中国人口发展趋势分析 — 大纲\n");
-        while s.len() < 2100 {
-            s.push_str("总人口降至14.09亿，老龄化压力持续加大；");
-        }
-        assert!(s.len() > 2000);
-        // 直接字节切片会 panic;helper 必须安全返回 ≤2000 的合法 UTF-8 前缀。
-        let out = truncate_on_char_boundary(&s, 2000);
-        assert!(out.len() <= 2000);
-        assert!(s.starts_with(out));
-        // 返回值本身必须是合法 UTF-8(能再被切片/打印而不 panic)。
-        let _ = format!("{out}...");
-    }
-
-    #[test]
-    fn truncate_returns_whole_string_when_under_limit() {
-        let s = "短中文串";
-        assert_eq!(truncate_on_char_boundary(s, 2000), s);
-    }
-
-    #[test]
-    fn truncate_handles_boundary_exactly_at_limit() {
-        // max_bytes 恰为 char 边界时不应回退。
-        let s = "abcd压"; // "abcd"=4 字节, '压'=3 字节
-        assert_eq!(truncate_on_char_boundary(s, 4), "abcd");
-        // max_bytes 落在 '压' 中间(5,6)→ 回退到 4。
-        assert_eq!(truncate_on_char_boundary(s, 5), "abcd");
-        assert_eq!(truncate_on_char_boundary(s, 6), "abcd");
     }
 
     #[test]

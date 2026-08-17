@@ -1704,7 +1704,7 @@ pub(crate) fn emit_workflow_blocked(
         workspace,
         "blocked",
         "",
-        json!({ "message": crate::features::assistant::audit::clip(message) }),
+        json!({ "message": crate::platform::strings::truncate_utf8(message, 600) }),
     );
     let warmup_report = serde_json::from_str::<serde_json::Value>(message).ok();
     let display_message = warmup_report
@@ -1849,7 +1849,7 @@ pub(crate) async fn apply_harness_action(
                 &ws,
                 "human_gate",
                 &role_id,
-                json!({ "role_name": &role_name, "description": crate::features::assistant::audit::clip(&description) }),
+                json!({ "role_name": &role_name, "description": crate::platform::strings::truncate_utf8(&description, 600) }),
             );
             let _ = app.emit(
                 "workflow:gate_approval",
@@ -1896,7 +1896,7 @@ pub(crate) async fn apply_harness_action(
                 &ws,
                 "blocked",
                 "",
-                json!({ "message": crate::features::assistant::audit::clip(&message) }),
+                json!({ "message": crate::platform::strings::truncate_utf8(&message, 600) }),
             );
             let warmup_report = serde_json::from_str::<serde_json::Value>(&message).ok();
             let _ = app.emit(
@@ -2495,7 +2495,7 @@ fn spawn_event_forwarder(
                                 &role,
                                 json!({
                                     "agent_id": agent_id,
-                                    "summary": crate::features::assistant::audit::clip(&summary),
+                                    "summary": crate::platform::strings::truncate_utf8(&summary, 600),
                                 }),
                             );
                         }
@@ -2508,7 +2508,7 @@ fn spawn_event_forwarder(
                                 &role,
                                 json!({
                                     "agent_id": agent_id,
-                                    "error": crate::features::assistant::audit::clip(&error),
+                                    "error": crate::platform::strings::truncate_utf8(&error, 600),
                                 }),
                             );
                         }

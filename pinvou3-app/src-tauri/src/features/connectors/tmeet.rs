@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 const ID: &str = "tmeet";
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.13";
@@ -411,22 +412,33 @@ pub async fn tmeet_logout() -> Result<Value, String> {
 
 // ─────────────────────── 腾讯会议 skill 门控 ────────────────────────
 
-fn tmeet_disabled_path() -> std::path::PathBuf {
-    crate::platform::paths::pinvou3_home().join("tmeet_disabled")
+/// 腾讯会议技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
+/// `apply_skills` 指向 `apply_tmeet_skills`。
+struct TmeetGate;
+impl ConnectorSkillGate for TmeetGate {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn display_name(&self) -> &'static str {
+        "腾讯会议"
+    }
+    fn disabled_filename(&self) -> &'static str {
+        "tmeet_disabled"
+    }
+    fn apply_skills(&self, visible: bool) -> Result<(), String> {
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_tmeet_skills(visible)
+            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))
+    }
 }
+const GATE: TmeetGate = TmeetGate;
 
 pub fn is_tmeet_disabled() -> bool {
-    tmeet_disabled_path().exists()
+    GATE.is_disabled()
 }
 
 fn set_tmeet_disabled_flag(disabled: bool) -> Result<(), String> {
-    let p = tmeet_disabled_path();
-    if disabled {
-        std::fs::write(&p, b"1").map_err(|e| format!("保存腾讯会议技能停用状态失败: {e}"))?;
-    } else if p.exists() {
-        std::fs::remove_file(&p).map_err(|e| format!("清除腾讯会议技能停用状态失败: {e}"))?;
-    }
-    Ok(())
+    GATE.set_disabled_flag(disabled)
 }
 
 pub fn tmeet_skills_should_show() -> bool {
@@ -436,9 +448,7 @@ pub fn tmeet_skills_should_show() -> bool {
 pub async fn tmeet_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = tmeet_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(show)
-            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
@@ -450,9 +460,7 @@ pub async fn set_tmeet_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_tmeet_disabled_flag(!enabled)?;
         let show = tmeet_skills_should_show();
-        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_tmeet_skills(show)
-            .map_err(|e| format!("更新腾讯会议技能失败: {e}"))?;
+        GATE.apply_skills(show)?;
         Ok(show)
     })
     .await

@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::features::connectors::connector_cli::{self as cc, CliCtx, ConnectorConn};
+use crate::features::connectors::skill_gate::ConnectorSkillGate;
 
 /// 连接器 id(事件前缀 + ConnectorConn 槽位键)。
 const ID: &str = "feishu";
@@ -306,22 +307,31 @@ pub async fn feishu_logout() -> Result<Value, String> {
 // 规则:**已连接(user:ready) 且 未手动停用** 才写技能;否则删掉(省 token / 关闭)。
 // 手动停用标志:`~/.pinvou3/feishu_disabled` 文件存在 = 停用。与连接状态正交。
 
-fn feishu_disabled_path() -> std::path::PathBuf {
-    crate::platform::paths::pinvou3_home().join("feishu_disabled")
+/// 飞书技能门控:停用标志文件机制走 [`ConnectorSkillGate`] 默认实现,
+/// `apply_skills` 指向 `apply_feishu_skills`。
+struct FeishuGate;
+impl ConnectorSkillGate for FeishuGate {
+    fn id(&self) -> &'static str {
+        ID
+    }
+    fn disabled_filename(&self) -> &'static str {
+        "feishu_disabled"
+    }
+    fn apply_skills(&self, visible: bool) -> Result<(), String> {
+        crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
+            .apply_feishu_skills(visible)
+            .map_err(|e| format!("更新飞书技能失败: {e}"))
+    }
 }
+const GATE: FeishuGate = FeishuGate;
 
 /// 用户是否手动停用了飞书技能。
 pub fn is_feishu_disabled() -> bool {
-    feishu_disabled_path().exists()
+    GATE.is_disabled()
 }
 
-fn set_feishu_disabled_flag(disabled: bool) {
-    let p = feishu_disabled_path();
-    if disabled {
-        let _ = std::fs::write(&p, b"1");
-    } else {
-        let _ = std::fs::remove_file(&p);
-    }
+fn set_feishu_disabled_flag(disabled: bool) -> Result<(), String> {
+    GATE.set_disabled_flag(disabled)
 }
 
 /// 飞书技能此刻该不该出现在 skills_dir:**未手动停用 且 已连接**。
@@ -333,30 +343,31 @@ pub fn feishu_skills_should_show() -> bool {
 /// 按当前"应否可见"状态写 / 删技能文件,并广播刷新在跑会话(当前对话即时生效)。
 /// 前端在 **连接成功 / 断开 / 切开关** 后调,统一收口。
 pub async fn feishu_apply_skills() -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(|| {
+    let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = feishu_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_feishu_skills(show);
-        show
+        GATE.apply_skills(show)?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
     Ok(json!({ "visible": show }))
 }
 
 /// composer 飞书开关:`enabled` → 写停用标志 → 按规则增删技能 → 广播刷新。
+///
+/// 注:停用标志写盘此前用 `let _ =` 静默忽略失败,现统一为 `Result` 传播
+/// (Wave 1 批准的契约面变更)。
 pub async fn set_feishu_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || {
-        set_feishu_disabled_flag(!enabled);
+    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        set_feishu_disabled_flag(!enabled)?;
         let show = feishu_skills_should_show();
-        let _ = crate::features::runtime_bundle::platform::Pinvou3Bundle::paths()
-            .apply_feishu_skills(show);
-        show
+        GATE.apply_skills(show)?;
+        Ok(show)
     })
     .await
-    .map_err(|e| format!("spawn_blocking: {e}"))?;
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
     Ok(json!({ "ok": true, "visible": show }))
 }
 

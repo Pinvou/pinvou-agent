@@ -7,13 +7,11 @@
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|extract|done, downloaded, total, ready }`。
 
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use super::KnowledgeService;
 
@@ -247,71 +245,85 @@ pub async fn kb_model_download(
         .unwrap_or_else(|| dir.clone());
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建目录失败: {e}"))?;
     let part = parent.join("bge-m3.tar.gz.part");
+    // 校验通过后 helper 把 .part 原子 rename 成干净的归档名(随后解压、解压完删除)。
+    let archive = parent.join("bge-m3.tar.gz");
 
-    // ── 1. 流式下载 → .part ───────────────────────────────────────
+    // ── 1. 流式下载 → .part → sha256 校验 → rename 为干净归档 ─────────
+    //     复用 platform::download helper(下载/取消/进度/校验/原子提升);解压+部署
+    //     是 KB 专属的第二阶段,留在下面 spawn_blocking。
     let url = std::env::var("PINVOU3_KB_MODEL_URL").unwrap_or_else(|_| MODEL_URL.to_string());
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .user_agent("pinvou3-kb/1.0")
-        .build()
-        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
-    let mut resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("连接模型源失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("模型源响应异常: {e}"))?;
-    let total = resp
-        .content_length()
-        .filter(|n| *n > 0)
-        .unwrap_or(MODEL_TARGZ_SIZE);
-    let mut file = std::fs::File::create(&part).map_err(|e| format!("创建文件失败: {e}"))?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断: {e}"))? {
-        if CANCEL.load(Ordering::Relaxed) {
-            drop(file);
-            let _ = std::fs::remove_file(&part);
-            return Err("已取消".into());
-        }
-        file.write_all(&chunk)
-            .map_err(|e| format!("写盘失败: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if downloaded - last_emit >= 2_097_152 || (total > 0 && downloaded >= total) {
-            last_emit = downloaded;
-            let _ = app.emit(
+    let expected = std::env::var("PINVOU3_KB_MODEL_SHA256")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| (!MODEL_SHA256.is_empty()).then(|| MODEL_SHA256.to_string()));
+    // helper 的 expected_sha256 空串=跳过校验(dev 本地包),与原逻辑一致。
+    let expected_sha256: &str = expected.as_deref().unwrap_or("");
+    // 进度节流:每 2 MiB 或到达 total 才 emit(与原实现一致)。helper 的 on_progress
+    // 是 `Fn`,节流状态用 Arc<Mutex> 承载;total 由 helper 透传(真实 Content-Length
+    // 或缺失时回退 max_bytes=MODEL_TARGZ_SIZE)。
+    let app_clone = app.clone();
+    let last_emit = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+    let last_emit_clone = std::sync::Arc::clone(&last_emit);
+    let on_progress: Box<dyn Fn(u64, u64) + Send> = Box::new(move |downloaded: u64, t: u64| {
+        let mut guard = match last_emit_clone.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if downloaded - *guard >= 2_097_152 || (t > 0 && downloaded >= t) {
+            *guard = downloaded;
+            drop(guard);
+            let _ = app_clone.emit(
                 "kb_model:progress",
-                serde_json::json!({ "stage": "download", "downloaded": downloaded, "total": total }),
+                serde_json::json!({ "stage": "download", "downloaded": downloaded, "total": t }),
             );
         }
-    }
-    drop(file);
+    });
+    let is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync + 'static> =
+        std::sync::Arc::new(|| CANCEL.load(Ordering::Relaxed));
+    // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
+    // sync_all 后、sha256_file 前调用此闭包)。原实现仅在 sha256 存在时 emit
+    // (空串跳过校验的 dev 兜底不发 verify),这里保持一致。frontend 据此从下载进度
+    // (0–95%)切到「校验中」(96%),不再出现 96%→0% 倒退。
+    let on_pre_verify: Option<Box<dyn FnOnce() + Send>> =
+        expected.as_ref().filter(|s| !s.trim().is_empty()).map(|_| {
+            let app_for_verify = app.clone();
+            Box::new(move || {
+                let _ = app_for_verify.emit(
+                    "kb_model:progress",
+                    serde_json::json!({ "stage": "verify" }),
+                );
+            }) as Box<dyn FnOnce() + Send>
+        });
+    let req = crate::platform::download::DownloadRequest {
+        url: &url,
+        dest: &archive,
+        part: &part,
+        expected_sha256,
+        // 进度 total 的回退估算(缺 Content-Length 时按它算 100%),与重构前一致。
+        total_hint: MODEL_TARGZ_SIZE,
+        // 原实现无硬上限,靠 sha256 精确校验兜底;这里给 2 倍的宽松挡板,既挡离谱
+        // 大文件,也放行合法的自定义镜像/重发包(略大于 MODEL_TARGZ_SIZE 仍可用,
+        // 只需 SHA 匹配)。此前复用 MODEL_TARGZ_SIZE 当 max_bytes 会误拒这些镜像。
+        max_bytes: MODEL_TARGZ_SIZE.saturating_mul(2),
+        is_cancelled,
+        user_agent: Some("pinvou3-kb/1.0"),
+        on_progress,
+        on_pre_verify,
+    };
+    crate::platform::download::download_to_part_with_verify(req)
+        .await
+        .map_err(|err| {
+            if err == "已取消" {
+                err
+            } else {
+                format!("模型下载/校验失败: {err}")
+            }
+        })?;
 
-    // ── 2. sha256 校验 + 3. 解压部署（CPU/IO 重，挪 spawn_blocking）───
-    let part2 = part.clone();
+    // ── 2. 解压部署（CPU/IO 重，挪 spawn_blocking）────────────────
     let dir2 = dir.clone();
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        // 校验：const 或 env 给了 sha256 才校验（占位空串=跳过，dev 用本地包时方便）。
-        let expected = std::env::var("PINVOU3_KB_MODEL_SHA256")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| (!MODEL_SHA256.is_empty()).then(|| MODEL_SHA256.to_string()));
-        if let Some(exp) = expected {
-            let _ = app2.emit(
-                "kb_model:progress",
-                serde_json::json!({ "stage": "verify" }),
-            );
-            let got = sha256_file(&part2)?;
-            if !got.eq_ignore_ascii_case(&exp) {
-                let _ = std::fs::remove_file(&part2);
-                return Err(format!(
-                    "模型校验失败(sha256 不匹配): 期望 {exp:.12} 实际 {got:.12}"
-                ));
-            }
-        }
-        // 解压到临时目录再原子换入（避免半包污染落点）。
         let _ = app2.emit(
             "kb_model:progress",
             serde_json::json!({ "stage": "extract" }),
@@ -319,11 +331,14 @@ pub async fn kb_model_download(
         let tmp = dir2.with_extension("tmp");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| format!("创建解压目录失败: {e}"))?;
-        extract_targz(&part2, &tmp)?;
+        extract_targz(&archive, &tmp)?;
         if !model_directory_is_complete(&tmp) {
             let _ = std::fs::remove_dir_all(&tmp);
             return Err("解压结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
         }
+        // 解压完成后清理已校验归档(helper 把 .part rename 成此干净名;dir 换入
+        // 留给后续候选 embedding 验证 + deploy_validated_model 原子提升)。
+        let _ = std::fs::remove_file(&archive);
         Ok(())
     })
     .await
@@ -484,23 +499,6 @@ impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOADING.store(false, Ordering::SeqCst);
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("打开校验文件失败: {e}"))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| format!("读校验文件失败: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(crate::platform::encoding::hex_lower(&digest))
 }
 
 fn extract_targz(targz: &Path, dest: &Path) -> Result<(), String> {
