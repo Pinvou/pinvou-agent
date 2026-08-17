@@ -370,35 +370,21 @@ pub(crate) async fn chat_with_reservation(
 /// 失败模式:
 /// - session 不存在 / engine 没起 → 后端静默返回 Ok(同 EnginePool::steer 语义)
 /// - channel 满 → 走 mpsc::send error 路径,前端按错误展示
+///
+/// 渲染用户气泡的 chat:user_message 由前端 bridge 在 invoke 成功时**主动** emit,
+/// 后端不重复发(避免与 turn_loop drain 的 SessionUpdated 重复 + 让前端能精确
+/// 控制在 state.queued chip → bubble 的视觉切换时机)。
 #[tauri::command]
 pub async fn steer_chat(
     session_id: Option<String>,
     content: String,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
-    app: AppHandle,
 ) -> Result<(), String> {
     let sid = require_active_sid(session_id, &store)?;
-    pool.steer(&sid, content.clone())
+    pool.steer(&sid, content)
         .await
-        .map_err(|e| format!("steer_chat: {e:#}"))?;
-    // Engine turn_loop drain (turn_loop.rs:493) 只把消息追加到 session.messages
-    // 并 emit SessionUpdated,**不会** emit chat:user_message —— 那个事件
-    // 只在 emit_turn_admission 里发(新 turn 起始)。
-    //
-    // 这里手动发 chat:user_message 让前端 applyRemoteUserMessageEvent 走标准
-    // 路径渲染用户气泡(见 bridge/chat-events.js:310 addChatItem)。payload 字段
-    // 与 emit_turn_admission 一致(operation=append),让前端去重逻辑
-    // (remoteAdmissionKeys)能正常处理。
-    let payload = serde_json::json!({
-        "session_id": sid,
-        "content": content,
-        "operation": "append",
-        "base_transcript_revision": "",
-    });
-    let _ = app.emit("chat:user_message", payload.clone());
-    crate::features::remote_control::forward_app_event(&app, "chat:user_message", payload);
-    Ok(())
+        .map_err(|e| format!("steer_chat: {e:#}"))
 }
 
 fn prepare_conversation_attachment_record(

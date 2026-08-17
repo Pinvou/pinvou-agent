@@ -529,8 +529,12 @@
     // Mid-turn inject: 当前 session 正在生成 → 走底座 steer channel,
     // turn loop 在下次 step 边界自动追加到 session.messages,模型下次思考时看到。
     // 语义对齐 Claude Code 的"主 agent 空闲时插入"(claude-code-best query.ts:1841)。
-    // 不再依赖前端 state.queued + flushQueued 的"等 turn done"路径 —— 那个语义
-    // 让长 tool 循环里的用户输入要等 4 分钟才被模型看到,体验差。
+    //
+    // UX 流程:
+    // 1. push 到 state.queued → 输入框上方显示排队 chip
+    // 2. 后端 steer_chat 成功后,steer() 立即 emit chat:user_message,
+    //    applyRemoteUserMessageEvent 检测到 state.queued 有匹配项 → 移除 chip + 渲染气泡
+    // 3. 后端 engine turn_loop 在下次 step 边界真正把消息追加到 session.messages
     if (isBusyFor(sid)) {
       var steerPreparation = consumeUiTurnState();
       var steerText = steerPreparation.payloadText;
@@ -539,13 +543,25 @@
       state.attachments = [];
       // 清空 composer draft(对齐 sendMessage 成功路径)
       state.composerDraft = "";
+      // 排队 chip 立即显示
+      var queuedItem = {
+        id: ++context.itemIdSeq,
+        text: steerText,
+        displayText: steerText,
+        attachments: [],
+        meta: null,
+        restrictTools: false,
+      };
+      state.queued.push(queuedItem);
       notify();
-      steer(sid, steerText)
+      steer(sid, steerText, queuedItem)
         .catch(function (err) {
           console.warn("[pinvou3][chat-ui] steer failed, falling back to chat", {
             sid: sid, error: err && err.toString ? err.toString() : err,
           });
-          // 降级到 chat() 路径,busy 检查由后端处理
+          // 降级到 chat() 路径:移除 chip,按正常 chat 流程发新 turn
+          state.queued = state.queued.filter(function (q) { return q.id !== queuedItem.id; });
+          notify();
           return invoke("chat", { message: steerText, attachments: [], sessionId: sid, restrictTools: false })
             .catch(function () {});
         });
@@ -739,10 +755,39 @@
   // Mid-turn inject: 投到当前 turn 的下个 step 边界。底座 turn loop 在
   // tool result 处理完后自动追加到 session.messages,模型下次思考时看到。
   // engine 不在场(没起 / 已 evict)时后端静默 Ok,前端无需处理。
-  async function steer(sid, content) {
+  //
+  // **前端同步渲染策略**:invoke steer_chat 成功后,直接构造 user bubble +
+  // push 到 state.messages(对应 addRemoteUserMessageEvent 的核心效果)。
+  // 不依赖 emit chat:user_message 事件循环 —— 那个事件由后端 emit_turn_admission
+  // 在新 turn 起始时发,steer 路径不走那条通道。
+  //
+  // state.queued chip 同步移除(由调用方在 invoke 前 push,这里取走)。
+  async function steer(sid, content, queuedItem) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid: sid, len: (content || "").length });
     await invoke("steer_chat", { sessionId: sid, content: String(content || "") });
     safeConsoleInfo("[pinvou3][chat-ui] steer ok", { sid: sid });
+    var cleanText = String(content || "");
+    runSyncOnSession(sid, function () {
+      // 清掉 turn error notice(对齐 applyRemoteUserMessageEvent)
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice;
+      });
+      // 添加用户气泡
+      var uitem = {
+        type: "user",
+        text: cleanText,
+        time: timeStr(),
+      };
+      addChatItem(uitem);
+      // 同步推一份到 state.messages,保留与 chat:user_message 路径一致
+      // (engine 后续 SessionUpdated 会再次推,但前端不会自动重写本地副本)
+      state.messages.push({ role: "user", content: [{ type: "text", text: cleanText }] });
+    });
+    // 移除 state.queued 里的对应 chip
+    if (queuedItem && queuedItem.id != null) {
+      state.queued = state.queued.filter(function (q) { return q.id !== queuedItem.id; });
+    }
+    notify();
   }
 
   async function cancelGeneration() {
