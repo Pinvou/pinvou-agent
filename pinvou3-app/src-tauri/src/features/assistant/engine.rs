@@ -371,6 +371,7 @@ struct StartedTransition {
 pub(crate) fn emit_chat_terminal(
     app: &AppHandle,
     session_id: &str,
+    generation: u64,
     status: TurnOutcomeStatus,
     error: Option<String>,
     shell_cleanup_failed: bool,
@@ -379,6 +380,9 @@ pub(crate) fn emit_chat_terminal(
     crate::features::assistant::pending_user_input::clear_session(session_id);
     let payload = json!({
         "session_id": session_id,
+        // 轮次身份：终态事件必须带 generation，供前端 waitForChatDone 精确
+        // 匹配「被取消的那一轮」，杜绝迟到/错配的 chat:done 提前解锁等待。
+        "generation": generation,
         "status": format!("{status:?}"),
         "error": error,
         "shell_cleanup_failed": shell_cleanup_failed,
@@ -904,9 +908,14 @@ impl TurnLifecycle {
     /// 认领一个未提交 turn 的终态并补发 `chat:done`，最后重置闸门。
     ///
     /// 给 cancel 在 engine 尚未 spawn（reservation 处于 reserved 未 submitted 阶段）
-    /// 时使用：原子认领（关闸防重入）→ 发 `Interrupted` 终态 → 重开闸门。封装成一
+    /// 时使用：原子认领（关闸防重入）→ 重开闸门 → 发 `Interrupted` 终态。封装成一
     /// 个方法是为了让调用方（`EnginePool::cancel`，跨模块）不必直接触碰私有的
     /// 终态收尾逻辑，与权威终态路径一样自包含「发完即重置」。
+    ///
+    /// **emit 后置**：`finish_terminal_emission` 必须在 emit 之前执行，使
+    /// `chat:done` 到达时 reserve 闸门已重开（P0-B 契约：chat:done ⇒ 槽位已释放）。
+    /// 前端 interruptAndSend 不再需要固定 sleep 补窗口。generation 在 finish 前
+    /// 读取（finish 后 `current_turn_generation` 回到 None），随 payload 发出。
     pub(crate) fn emit_unsubmitted_interrupted_terminal(
         &self,
         app: &AppHandle,
@@ -915,14 +924,19 @@ impl TurnLifecycle {
         if !self.claim_unsubmitted_terminal() {
             return false;
         }
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
+        let generation = self.current_turn_generation().unwrap_or(0);
         self.finish_terminal_emission();
+        emit_chat_terminal(app, session_id, generation, TurnOutcomeStatus::Interrupted, None, false);
         true
     }
 
     /// 带目标 epoch 的未提交认领 + 补发 `chat:done`：认领在 state 锁内与
     /// `turn_epoch == target` 校验原子完成，目标轮已结束（新轮已 reserve）时
     /// 返回 `false` 且无副作用，避免把新轮 reservation 误认领为 Interrupted。
+    ///
+    /// 与 [`emit_unsubmitted_interrupted_terminal`] 同构：先重开闸门再发终态
+    /// （P0-B：chat:done ⇒ 槽位已释放），generation 用 target（= 发起取消的
+    /// 那一轮 epoch，claim 校验已保证二者一致）。
     pub(crate) fn emit_unsubmitted_interrupted_terminal_for_epoch(
         &self,
         app: &AppHandle,
@@ -932,8 +946,8 @@ impl TurnLifecycle {
         if !self.claim_unsubmitted_terminal_for_epoch(target) {
             return false;
         }
-        emit_chat_terminal(app, session_id, TurnOutcomeStatus::Interrupted, None, false);
         self.finish_terminal_emission();
+        emit_chat_terminal(app, session_id, target, TurnOutcomeStatus::Interrupted, None, false);
         true
     }
 
@@ -1122,14 +1136,19 @@ async fn finish_reclaimed_lifecycle_turn(
         &status_text,
         terminal_error.as_deref(),
     );
+    // P0-B：先重开闸门再发终态——chat:done 到达时槽位已释放，前端 interruptAndSend
+    // 不再需要固定 sleep 补窗口。generation 必须在 finish 前读取（finish 后
+    // current_turn_generation 回到 None），随 payload 发出供前端按轮匹配。
+    let generation = lifecycle.current_turn_generation().unwrap_or(0);
+    lifecycle.finish_terminal_emission();
     emit_chat_terminal(
         app,
         session_id,
+        generation,
         terminal_status,
         terminal_error,
         shell_cleanup_failed,
     );
-    lifecycle.finish_terminal_emission();
     Some(transition.terminal)
 }
 

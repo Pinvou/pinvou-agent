@@ -1327,26 +1327,35 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // 插队发送:立刻取消当前 turn,起新 turn 发当前文字。
       // 与 handleSend 的区别:handleSend 走 steer/queue 模式(等当前 AI 步
       // 自然结束),handleInterruptSend 走 cancel+chat 路径(放弃当前 AI 进度)。
+      // single-flight(interruptSending)防双击:两次 interruptAndSend 会等同一
+      // 个 chat:done 同时发送,第二个 reserve 失败导致消息丢失。
+      const [interruptSending, setInterruptSending] = useState(false);
       async function handleInterruptSend() {
-        if (isMultiAgentReadOnly || !canSend || !busy) return;
+        if (isMultiAgentReadOnly || !canSend || !busy || interruptSending) return;
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
           return;
         }
-        // 清空输入框再发(对齐 handleSend 成功路径)
-        setInputText('');
-        personalWorkbenchTemplateIdRef.current = null;
-        setPersonalWorkbenchTemplateId(null);
-        if (bridge.chat && typeof bridge.chat.interruptAndSend === "function") {
-          await bridge.chat.interruptAndSend(
-            activeSessionId,
-            constrained.text,
-            constrained.text,
-            [],
-            null,
-            false,
-          );
+        setInterruptSending(true);
+        try {
+          if (bridge.chat && typeof bridge.chat.interruptAndSend === "function") {
+            await bridge.chat.interruptAndSend(
+              activeSessionId,
+              constrained.text,
+              constrained.text,
+              [],
+              null,
+              false,
+            );
+          }
+          // 打断消息已成功投递才清空输入框;失败(槽位被抢占等)时保留文本,
+          // 消息绝不静默丢失(对齐 handleSend 按 accepted 清空的语义)。
+          setInputText('');
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        } finally {
+          setInterruptSending(false);
         }
       }
 
@@ -2037,10 +2046,10 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   return (
                     <div className="flex items-center gap-1.5">
                       {busy && (
-                        <button onClick={handleInterruptSend} disabled={!ready}
+                        <button onClick={handleInterruptSend} disabled={!ready || interruptSending}
                           aria-label={t.interruptMsg || "插队发送"}
                           title={t.interruptMsgTip || "立刻打断 AI 当前任务并发送"}
-                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#FF8A4C] to-[#FF5722] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready && !interruptSending ? 'bg-gradient-to-b from-[#FF8A4C] to-[#FF5722] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                           <Zap size={17} className="translate-x-[1px]" />
                         </button>
                       )}
