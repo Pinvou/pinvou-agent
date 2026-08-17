@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use futures_util::future::join_all;
 use parking_lot::RwLock;
 use pinvou_knowledge::client::{
-    new_join_credentials, normalize_stored_endpoint, normalize_user_endpoint, parse_share,
-    KnowledgeClient, NewJoinCredentials,
+    ca_fingerprint, identity_code, new_join_credentials, normalize_private_user_endpoint,
+    normalize_stored_endpoint, normalize_user_endpoint, parse_share, KnowledgeClient,
+    NewJoinCredentials, RemoteKnowledgeProbe,
 };
 use pinvou_knowledge::model::{
     AccessScope, Collection, CreateCollectionRequest, DeviceGrant, Document, JoinRequestRecord,
@@ -97,6 +98,14 @@ pub struct JoinOutcome {
     pub request: JoinRequestRecord,
     pub connection: Option<RemoteConnection>,
     pub pending: Option<PendingJoin>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteKnowledgeIdentity {
+    pub server_id: String,
+    pub ca_fingerprint: String,
+    pub identity_code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -556,6 +565,88 @@ impl RemoteKnowledgeService {
             }
         }
         Err(format!("无法连接共享知识库：{}", failures.join("；")))
+    }
+
+    /// Creates an owner-approved join request only after the caller has shown
+    /// and explicitly confirmed the stable CA identity obtained by a private
+    /// network probe.
+    pub async fn request_join_confirmed(
+        &self,
+        probe: RemoteKnowledgeProbe,
+        device_name: &str,
+        confirmed_ca_fingerprint: &str,
+        confirmed_identity_code: &str,
+    ) -> Result<JoinOutcome, String> {
+        let _pairing = self.pairing.lock().await;
+        let device_name = device_name.trim();
+        if device_name.is_empty() {
+            return Err("请填写设备名称".to_string());
+        }
+        let (endpoint, network_kind) = normalize_private_user_endpoint(&probe.endpoint)?;
+        let actual_fingerprint = ca_fingerprint(&probe.tls_ca)?;
+        let actual_code = identity_code(&probe.tls_ca)?;
+        if probe.ca_fingerprint != actual_fingerprint
+            || probe.identity_code != actual_code
+            || confirmed_ca_fingerprint != actual_fingerprint
+            || confirmed_identity_code != actual_code
+            || probe.network_kind != network_kind
+        {
+            return Err("共享知识库身份确认信息不一致，请重新探测并核对".to_string());
+        }
+        self.ensure_endpoint_not_connected(&endpoint)?;
+        self.ensure_server_id_not_connected(&probe.server_id)?;
+        let verified = KnowledgeClient::new_pinned(&endpoint, "", &probe.tls_ca, &probe.server_id)?
+            .health()
+            .await?;
+        if verified.server_id != probe.server_id
+            || verified.identity != probe.server_identity
+            || verified.name != probe.server_name
+            || verified.protocol_version != probe.protocol_version
+            || verified.tls_ca != probe.tls_ca
+        {
+            return Err("共享知识库身份已变化，请重新探测并核对".to_string());
+        }
+        let credentials = new_join_credentials();
+        let receipt = KnowledgeClient::request_join(
+            &endpoint,
+            &probe.tls_ca,
+            &probe.server_id,
+            device_name,
+            None,
+            &credentials,
+        )
+        .await?;
+        if receipt.server.server_id != probe.server_id
+            || receipt.server.identity != probe.server_identity
+            || receipt.server.tls_ca != probe.tls_ca
+        {
+            let _ = KnowledgeClient::cancel_join_request(
+                &endpoint,
+                &probe.tls_ca,
+                &probe.server_id,
+                &receipt.request.id,
+                &credentials.claim_secret,
+            )
+            .await;
+            return Err("共享知识库在创建加入申请时身份发生变化".to_string());
+        }
+        self.ensure_server_id_not_connected(&receipt.server.server_id)?;
+        self.persist_join_outcome(endpoint, probe.tls_ca, device_name, credentials, receipt)
+            .await
+    }
+
+    /// Returns only public CA-derived identity material for an existing local
+    /// connection. No device token, join secret, or private key is exposed.
+    pub fn connection_identity(&self, server_id: &str) -> Result<RemoteKnowledgeIdentity, String> {
+        let connection = self.connection(server_id)?;
+        if connection.tls_ca.trim().is_empty() {
+            return Err("该连接没有可核对的稳定 CA 身份".to_string());
+        }
+        Ok(RemoteKnowledgeIdentity {
+            server_id: connection.server_id,
+            ca_fingerprint: ca_fingerprint(&connection.tls_ca)?,
+            identity_code: identity_code(&connection.tls_ca)?,
+        })
     }
 
     pub async fn refresh_join(&self, request_id: &str) -> Result<JoinOutcome, String> {
@@ -1417,6 +1508,34 @@ mod tests {
         assert!(error.contains("另一个地址"));
         assert!(service.ensure_server_id_not_connected("srv-other").is_ok());
         assert_eq!(load_connections(&path).unwrap(), vec![existing]);
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_private_probe_never_persists_join_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote-connections.json");
+        let service = RemoteKnowledgeService::load(path.clone()).unwrap();
+        let probe = RemoteKnowledgeProbe {
+            endpoint: "https://192.168.1.20:3210".to_string(),
+            network_kind: pinvou_knowledge::client::PrivateEndpointKind::Lan,
+            server_id: "server".to_string(),
+            server_identity: "identity".to_string(),
+            server_name: "Cube".to_string(),
+            protocol_version: 2,
+            tls_ca: "untrusted".to_string(),
+            ca_fingerprint: "not-confirmed".to_string(),
+            identity_code: "PINVOU-0000-0000-0000-0000".to_string(),
+            ready: false,
+        };
+
+        assert!(service
+            .request_join_confirmed(probe, "device", "different", "different")
+            .await
+            .is_err());
+        assert!(service.configured_connections().is_empty());
+        assert!(service.pending_joins().is_empty());
+        assert!(!path.exists());
+        assert!(!service.pending_path.exists());
     }
 
     #[test]

@@ -9,6 +9,21 @@
     var state = context.state;
     var notify = context.notify;
     var invoke = context.invoke;
+    var listen = context.listen;
+
+  // Model files may be installed by the bundled shared-knowledge host after
+  // desktop startup. Keep the authoritative bridge snapshot synchronized with
+  // status queries and peer-process installs so stale startup state cannot win.
+  listen("kb_model:status", function (e) {
+    var status = e && e.payload;
+    if (!status) return;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: !!status.loading,
+      startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
+      status: status,
+    });
+    notify();
+  });
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
   // kb_model:progress 事件。repair=true 时重新下载并验证候选模型，成功后原子替换旧目录。
   async function downloadKbModel(repair) {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle, BookOpen, Check, CheckCircle2, ChevronDown, Copy, Database, Download, FolderPlus,
   Link, Plus, RefreshCw, Search, Server, Trash2, Upload, Users, X,
@@ -89,7 +90,7 @@ function OverlayDialog({
   scrollBody = false,
   children,
 }) {
-  return (
+  const dialog = (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
       onMouseDown={() => { if (!closeDisabled) onClose(); }}
@@ -116,6 +117,7 @@ function OverlayDialog({
       </section>
     </div>
   );
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
 function RemoteKnowledgeView({ t, embedded = false }) {
@@ -131,6 +133,10 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const [deviceName, setDeviceName] = useState('');
   const [pendingJoins, setPendingJoins] = useState([]);
   const [joinFeedback, setJoinFeedback] = useState(null);
+  const [nearbyHosts, setNearbyHosts] = useState([]);
+  const [discoveryStatus, setDiscoveryStatus] = useState('idle');
+  const [connectorError, setConnectorError] = useState('');
+  const [identityProbe, setIdentityProbe] = useState(null);
   const [hostStatus, setHostStatus] = useState(null);
   const [showConnector, setShowConnector] = useState(false);
   const [showOwnerPanel, setShowOwnerPanel] = useState(false);
@@ -139,6 +145,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const [ownerJoinRequests, setOwnerJoinRequests] = useState([]);
   const [ownerDevices, setOwnerDevices] = useState([]);
   const [ownerModelStatus, setOwnerModelStatus] = useState(null);
+  const [ownerIdentity, setOwnerIdentity] = useState(null);
   const [shareLink, setShareLink] = useState('');
   const [autoApproveRead, setAutoApproveRead] = useState(false);
   const [shareEndpoint, setShareEndpoint] = useState('');
@@ -205,7 +212,11 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   const anyBusy = Object.keys(busyCounts).length > 0;
   const connecting = isBusy('connect');
   const invitationIsShareLink = invitation.trim().startsWith('pinvou-knowledge://share');
-  const connectionDetailsReady = Boolean(deviceName.trim() && invitationIsShareLink);
+  const connectionDetailsReady = Boolean(deviceName.trim() && invitation.trim());
+  const visibleNearbyHosts = useMemo(
+    () => nearbyHosts.filter(item => !connections.some(connection => connection.serverId === item.serverId)),
+    [connections, nearbyHosts],
+  );
   const pendingOwnerJoinRequests = useMemo(
     () => ownerJoinRequests.filter(item => item.status === 'pending'),
     [ownerJoinRequests],
@@ -586,6 +597,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
       else if (showConnector && !isBusy('connect') && joinFeedback?.status !== 'approved') {
         setShowConnector(false);
         setJoinFeedback(null);
+        setIdentityProbe(null);
       }
     };
     window.addEventListener('keydown', closeOnEscape);
@@ -610,10 +622,37 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     if (!connectionDetailsReady || connecting || connectInFlightRef.current) return;
     connectInFlightRef.current = true;
     try {
-      const outcome = await run('connect', () => invokeTauri('remote_kb_request_join', {
-        source: invitation.trim(),
-        deviceName: deviceName.trim(),
-      }));
+      setConnectorError('');
+      if (!invitationIsShareLink && !identityProbe) {
+        const probe = await run('connect', async () => {
+          try {
+            return await invokeTauri('remote_kb_probe_private_endpoint', { source: invitation.trim() });
+          } catch (error) {
+            setConnectorError(String(error));
+            throw error;
+          }
+        });
+        if (probe) setIdentityProbe(probe);
+        return;
+      }
+      const outcome = await run('connect', async () => {
+        try {
+          return await (invitationIsShareLink
+            ? invokeTauri('remote_kb_request_join', {
+              source: invitation.trim(),
+              deviceName: deviceName.trim(),
+            })
+            : invokeTauri('remote_kb_request_join_confirmed', {
+              probe: identityProbe,
+              deviceName: deviceName.trim(),
+              confirmedCaFingerprint: identityProbe.caFingerprint,
+              confirmedIdentityCode: identityProbe.identityCode,
+            }));
+        } catch (error) {
+          setConnectorError(String(error));
+          throw error;
+        }
+      });
       if (!outcome) return;
       if (outcome.connection) {
         setInvitation('');
@@ -644,9 +683,40 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     }
   }
 
+  async function discoverNearby() {
+    if (discoveryStatus === 'discovering') return;
+    setDiscoveryStatus('discovering');
+    setConnectorError('');
+    try {
+      const discovered = (await invokeTauri('shared_kb_discover_nearby')) || [];
+      setNearbyHosts(discovered);
+      setDiscoveryStatus('done');
+    } catch (error) {
+      setNearbyHosts([]);
+      setDiscoveryStatus('failed');
+      setConnectorError(String(error));
+    }
+  }
+
+  function chooseNearbyHost(probe) {
+    setInvitation(probe.endpoint);
+    setIdentityProbe(probe);
+    setConnectorError('');
+  }
+
+  function closeConnector() {
+    setShowConnector(false);
+    setJoinFeedback(null);
+    setIdentityProbe(null);
+    setConnectorError('');
+  }
+
   function openConnector() {
     setJoinFeedback(null);
+    setIdentityProbe(null);
+    setConnectorError('');
     setShowConnector(true);
+    void discoverNearby();
   }
 
   async function cancelPendingJoin(requestId) {
@@ -767,17 +837,20 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setOwnerJoinRequests([]);
     setOwnerDevices([]);
     setOwnerModelStatus(null);
-    const [shares, requests, devices, modelStatus] = await Promise.all([
+    setOwnerIdentity(null);
+    const [shares, requests, devices, modelStatus, identity] = await Promise.all([
       run('owner-shares', () => invokeTauri('remote_kb_shares', { serverId })),
       run('owner-requests', () => invokeTauri('remote_kb_join_requests', { serverId })),
       run('owner-devices', () => invokeTauri('remote_kb_devices', { serverId })),
       run('owner-model', () => invokeTauri('remote_kb_model_status', { serverId })),
+      run('owner-identity', () => invokeTauri('remote_kb_connection_identity', { serverId })),
     ]);
     if (requestId !== ownerPanelRequestRef.current || serverId !== selectedServerRef.current) return;
     if (shares) setOwnerShares(shares);
     if (requests) setOwnerJoinRequests(requests);
     if (devices) setOwnerDevices(devices);
     if (modelStatus) setOwnerModelStatus(modelStatus);
+    if (identity) setOwnerIdentity(identity);
   }
 
   function moveOwnerPanelTab(event) {
@@ -1789,10 +1862,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
             testId="remote-connect-panel"
             title={t.remoteKbConnectTitle}
             icon={Server}
-            onClose={() => {
-              setShowConnector(false);
-              setJoinFeedback(null);
-            }}
+            onClose={closeConnector}
             closeLabel={t.remoteKbClose}
             closeDisabled={connecting || joinFeedback?.status === 'approved'}
           >
@@ -1815,10 +1885,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                   <button
                     data-testid="remote-join-feedback-close"
                     className={`${primary} mt-5`}
-                    onClick={() => {
-                      setShowConnector(false);
-                      setJoinFeedback(null);
-                    }}
+                    onClick={closeConnector}
                   >
                     {t.remoteKbDone}
                   </button>
@@ -1826,30 +1893,83 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               </div>
             ) : (
               <>
-                <div className="space-y-3 animate-in fade-in duration-150 motion-reduce:animate-none">
-                  <input
-                    autoFocus
-                    data-testid="remote-invitation"
-                    className={`${field} ${invitation.trim() && !invitationIsShareLink ? 'border-[#d63a3a] focus:border-[#d63a3a] focus:ring-[#d63a3a]/10' : ''}`}
-                    value={invitation}
-                    onChange={event => setInvitation(event.target.value)}
-                    onKeyDown={event => { if (event.key === 'Enter') connectServer(); }}
-                    placeholder={t.remoteKbJoinSourcePlaceholder}
-                    aria-label={t.remoteKbJoinSource}
-                    aria-describedby="remote-join-source-help"
-                    aria-invalid={Boolean(invitation.trim() && !invitationIsShareLink)}
-                    spellCheck={false}
-                    disabled={connecting}
-                  />
-                  <input data-testid="remote-device-name" className={field} value={deviceName} onChange={event => setDeviceName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') connectServer(); }} placeholder={t.remoteKbDeviceName} aria-label={t.remoteKbDeviceName} autoComplete="name" disabled={connecting} />
-                  <p id="remote-join-source-help" data-testid="remote-join-source-help" className={`text-[12px] leading-5 ${invitation.trim() && !invitationIsShareLink ? 'text-[#d63a3a]' : muted}`}>
-                    {invitation.trim() && !invitationIsShareLink ? t.remoteKbShareLinkOnly : t.remoteKbJoinHint}
-                  </p>
-                </div>
+                {identityProbe ? (
+                  <div data-testid="remote-identity-confirmation" className="space-y-4 animate-in fade-in slide-in-from-right-1 duration-150 motion-reduce:animate-none">
+                    <div className="rounded-2xl border border-[#0B57D0]/20 bg-[#0B57D0]/[0.035] p-4 dark:border-[#A8C7FA]/20 dark:bg-[#A8C7FA]/[0.05]">
+                      <div className="flex items-start gap-3">
+                        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Server size={18} /></div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className={`truncate text-[14px] font-bold ${ink}`}>{identityProbe.serverName}</h3>
+                          <p className={`mt-1 break-all text-[11.5px] ${muted}`}>{identityProbe.endpoint}</p>
+                        </div>
+                        <span className="rounded-full bg-[#EAF2FF] px-2 py-1 text-[10.5px] font-semibold text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]">
+                          {identityProbe.networkKind === 'tailscale' ? t.remoteKbTailnet : t.remoteKbLan}
+                        </span>
+                      </div>
+                      <div className="mt-4 rounded-xl bg-white px-3.5 py-3 text-center dark:bg-[#171719]">
+                        <p className={`text-[11px] font-medium ${muted}`}>{t.remoteKbIdentityCode}</p>
+                        <p data-testid="remote-identity-code" className={`mt-1 select-all font-mono text-[18px] font-bold tracking-[0.08em] ${ink}`}>{identityProbe.identityCode}</p>
+                      </div>
+                    </div>
+                    <p className={`text-[12px] leading-5 ${muted}`}>{t.remoteKbVerifyIdentityDesc}</p>
+                    <input data-testid="remote-device-name" className={field} value={deviceName} onChange={event => setDeviceName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') connectServer(); }} placeholder={t.remoteKbDeviceName} aria-label={t.remoteKbDeviceName} autoComplete="name" disabled={connecting} />
+                  </div>
+                ) : (
+                  <div className="space-y-4 animate-in fade-in duration-150 motion-reduce:animate-none">
+                    <section aria-labelledby="remote-nearby-title">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 id="remote-nearby-title" className={`text-[13px] font-bold ${ink}`}>{t.remoteKbNearby}</h3>
+                        <button type="button" className={iconButton} onClick={discoverNearby} disabled={discoveryStatus === 'discovering'} aria-label={t.remoteKbRefresh} title={t.remoteKbRefresh}><RefreshCw size={14} className={discoveryStatus === 'discovering' ? 'animate-spin' : ''} /></button>
+                      </div>
+                      {discoveryStatus === 'discovering' ? (
+                        <div data-testid="remote-nearby-discovering" role="status" className={`mt-2 flex items-center gap-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`}>
+                          <RefreshCw size={14} className="animate-spin text-[#0B57D0] dark:text-[#A8C7FA]" />
+                          {t.remoteKbDiscovering}
+                        </div>
+                      ) : visibleNearbyHosts.length ? (
+                        <div data-testid="remote-nearby-list" className="mt-2 space-y-2">
+                          {visibleNearbyHosts.map(probe => (
+                            <button key={`${probe.serverId}:${probe.endpoint}`} type="button" className="flex w-full items-center gap-3 rounded-xl border border-[#e3e7ee] px-3.5 py-3 text-left transition-colors hover:border-[#0B57D0]/35 hover:bg-[#F7F9FC] dark:border-white/10 dark:hover:border-[#A8C7FA]/35 dark:hover:bg-white/[0.04]" onClick={() => chooseNearbyHost(probe)}>
+                              <Server size={16} className="shrink-0 text-[#0B57D0] dark:text-[#A8C7FA]" />
+                              <span className="min-w-0 flex-1"><span className={`block truncate text-[13px] font-semibold ${ink}`}>{probe.serverName}</span><span className={`mt-0.5 block truncate text-[11px] ${muted}`}>{probe.endpoint}</span></span>
+                              <span className={`text-[11px] ${muted}`}>{t.remoteKbVerify}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : discoveryStatus !== 'idle' && (
+                        <p data-testid="remote-nearby-empty" className={`mt-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`}>{t.remoteKbNearbyEmpty}</p>
+                      )}
+                    </section>
+                    <div className="flex items-center gap-3" aria-hidden="true"><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /><span className={`text-[11px] ${muted}`}>{t.remoteKbManualConnect}</span><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /></div>
+                    <input
+                      autoFocus
+                      data-testid="remote-invitation"
+                      className={field}
+                      value={invitation}
+                      onChange={event => {
+                        setInvitation(event.target.value);
+                        setIdentityProbe(null);
+                        setConnectorError('');
+                      }}
+                      onKeyDown={event => { if (event.key === 'Enter') connectServer(); }}
+                      placeholder={t.remoteKbJoinSourcePlaceholder}
+                      aria-label={t.remoteKbJoinSource}
+                      aria-describedby="remote-join-source-help"
+                      spellCheck={false}
+                      disabled={connecting}
+                    />
+                    <input data-testid="remote-device-name" className={field} value={deviceName} onChange={event => setDeviceName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') connectServer(); }} placeholder={t.remoteKbDeviceName} aria-label={t.remoteKbDeviceName} autoComplete="name" disabled={connecting} />
+                    <p id="remote-join-source-help" data-testid="remote-join-source-help" className={`text-[12px] leading-5 ${muted}`}>{t.remoteKbJoinHint}</p>
+                  </div>
+                )}
+                {connectorError && <p role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f]">{connectorError}</p>}
                 <div className="mt-5 flex justify-end gap-2">
-                  <button className={quiet} onClick={() => setShowConnector(false)} disabled={connecting}>{t.remoteKbCancel}</button>
+                  <button className={quiet} onClick={() => {
+                    if (identityProbe) setIdentityProbe(null);
+                    else closeConnector();
+                  }} disabled={connecting}>{identityProbe ? t.remoteKbBack : t.remoteKbCancel}</button>
                   <button data-testid="remote-connect-submit" className={primary} disabled={connecting || !connectionDetailsReady} onClick={connectServer}>
-                    {connecting && <RefreshCw size={14} className="animate-spin" />}{t.remoteKbConnect}
+                    {connecting && <RefreshCw size={14} className="animate-spin" />}{identityProbe ? t.remoteKbConfirmIdentity : (invitationIsShareLink ? t.remoteKbConnect : t.remoteKbVerify)}
                   </button>
                 </div>
               </>
@@ -2008,6 +2128,18 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                 </div>
               ) : (
                 <div id="remote-owner-host-panel" role="tabpanel" aria-labelledby="remote-owner-host-tab" className="space-y-4">
+                  {ownerIdentity && (
+                    <section data-testid="remote-owner-identity" className={ownerSection}>
+                      <div className="flex items-start gap-3">
+                        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><CheckCircle2 size={18} /></div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbHostIdentity}</h3>
+                          <p className={`mt-1 text-[12px] leading-5 ${muted}`}>{t.remoteKbHostIdentityDesc}</p>
+                          <p className={`mt-3 select-all font-mono text-[18px] font-bold tracking-[0.08em] ${ink}`}>{ownerIdentity.identityCode}</p>
+                        </div>
+                      </div>
+                    </section>
+                  )}
                   <section className={ownerSection}>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                       <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Database size={18} /></div>

@@ -129,6 +129,38 @@ function injectSource() {
         case 'remote_kb_pending_joins': return Promise.resolve(window.__REMOTE_PENDING_JOINS__ || []);
         case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
         case 'shared_kb_host_lan_endpoints': return Promise.resolve(['https://192.168.1.20:3210']);
+        case 'shared_kb_discover_nearby': {
+          const discovered=[{
+            endpoint:'https://192.168.1.20:3210',networkKind:'lan',serverId:'nearby-cube',
+            serverIdentity:'nearby-identity',serverName:'Nearby Knowledge',protocolVersion:2,
+            tlsCa:'mock-ca',caFingerprint:'AABBCCDDEEFF00112233445566778899',
+            identityCode:'PINVOU-AABB-CCDD-EEFF-0011',ready:true
+          }];
+          if (window.__REMOTE_DISCOVERY_RESOLVED__) return Promise.resolve(discovered);
+          return new Promise(resolve => {
+            window.__REMOTE_RESOLVE_DISCOVERY__=()=>{
+              window.__REMOTE_DISCOVERY_RESOLVED__=true;
+              resolve(discovered);
+            };
+          });
+        }
+        case 'remote_kb_probe_private_endpoint': return Promise.resolve({
+          endpoint:'https://192.168.1.20:3210',networkKind:'lan',serverId:'manual-cube',
+          serverIdentity:'manual-identity',serverName:'Manual Knowledge',protocolVersion:2,
+          tlsCa:'mock-ca',caFingerprint:'AABBCCDDEEFF00112233445566778899',
+          identityCode:'PINVOU-AABB-CCDD-EEFF-0011',ready:true
+        });
+        case 'remote_kb_request_join_confirmed': {
+          window.__REMOTE_KB_CONFIRMED_JOIN__={...(args||{})};
+          const pending={
+            requestId:'confirmed-join-1',serverId:args?.probe?.serverId,serverIdentity:args?.probe?.serverIdentity,
+            serverName:args?.probe?.serverName,endpoint:args?.probe?.endpoint,
+            deviceName:args?.deviceName || 'Direct device',createdAt:1,expiresAt:9999999999
+          };
+          window.__REMOTE_PENDING_JOINS__=[pending];
+          return Promise.resolve({status:'pending',request:{id:pending.requestId,status:'pending'},connection:null,pending});
+        }
+        case 'remote_kb_connection_identity': return Promise.resolve({serverId:args?.serverId,caFingerprint:'AABBCCDDEEFF00112233445566778899',identityCode:'PINVOU-AABB-CCDD-EEFF-0011'});
         case 'shared_kb_host_reconnect': {
           const connection={serverId:'lan-cube',name:'LAN Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'};
           window.__REMOTE_KB_CONNECTIONS__=[connection];
@@ -450,11 +482,11 @@ async function chooseRemoteUploadSource(page, testId) {
   JSON.stringify({ selectedCollectionBefore, selectedCollectionAfter }));
 
   await page.click('[data-testid="remote-add-server"]');
+  await page.waitForSelector('[data-testid="remote-connect-panel"]');
   const connectDialog = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="remote-connect-panel"][role="dialog"]');
     const nameInput = dialog?.querySelector('[data-testid="remote-device-name"]');
-    const connectButton = [...(dialog?.querySelectorAll('button') || [])]
-      .find(button => button.textContent.trim() === '连接');
+    const connectButton = dialog?.querySelector('[data-testid="remote-connect-submit"]');
     return {
       visible: !!dialog,
       mainForm: !!document.querySelector('[data-testid="remote-knowledge-panel"] > div > [data-testid="remote-connect-panel"]'),
@@ -463,6 +495,8 @@ async function chooseRemoteUploadSource(page, testId) {
       nameLabel: nameInput?.getAttribute('aria-label'),
       sourcePlaceholder: dialog?.querySelector('[data-testid="remote-invitation"]')?.placeholder,
       connectDisabled: connectButton?.disabled,
+      discovering: !!dialog?.querySelector('[data-testid="remote-nearby-discovering"]'),
+      discoveryCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_discover_nearby').length,
     };
   });
   if (process.env.KB_REMOTE_CONNECT_SCREENSHOT) {
@@ -470,21 +504,63 @@ async function chooseRemoteUploadSource(page, testId) {
   }
   rec('⓪c1 添加服务器使用二级弹窗且姓名默认为空', connectDialog.visible && !connectDialog.mainForm
     && connectDialog.nameValue === '' && connectDialog.namePlaceholder === '输入姓名'
-    && connectDialog.nameLabel === '输入姓名' && connectDialog.sourcePlaceholder.includes('pinvou-knowledge://share')
-    && connectDialog.connectDisabled,
+    && connectDialog.nameLabel === '输入姓名' && connectDialog.sourcePlaceholder.includes('192.168.1.20')
+    && connectDialog.connectDisabled && connectDialog.discovering && connectDialog.discoveryCalls === 1,
   JSON.stringify(connectDialog));
+  await page.evaluate(() => window.__REMOTE_RESOLVE_DISCOVERY__?.());
+  await page.waitForSelector('[data-testid="remote-nearby-list"]');
+  const nearbyDiscovery = await page.evaluate(() => ({
+    text: document.querySelector('[data-testid="remote-nearby-list"]')?.innerText || '',
+    calls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'shared_kb_discover_nearby').length,
+  }));
+  rec('⓪c2 自动发现局域网知识库并显示可验证候选', nearbyDiscovery.calls === 1
+    && nearbyDiscovery.text.includes('Nearby Knowledge')
+    && nearbyDiscovery.text.includes('192.168.1.20:3210'), JSON.stringify(nearbyDiscovery));
   await page.type('[data-testid="remote-invitation"]', '192.168.1.20:3210');
   await page.type('[data-testid="remote-device-name"]', 'Alice');
-  const directJoinBlocked = await page.evaluate(() => ({
+  const directJoinReady = await page.evaluate(() => ({
     submitDisabled: document.querySelector('[data-testid="remote-connect-submit"]')?.disabled,
     invalid: document.querySelector('[data-testid="remote-invitation"]')?.getAttribute('aria-invalid'),
     help: document.querySelector('[data-testid="remote-join-source-help"]')?.innerText || '',
-    nearbyVisible: Boolean(document.querySelector('[data-testid="remote-nearby-hosts"]')),
   }));
-  rec('⓪c2 普通加入仅接受所有者生成的共享链接', directJoinBlocked.submitDisabled
-    && directJoinBlocked.invalid === 'true' && directJoinBlocked.help.includes('pinvou-knowledge://share')
-    && !directJoinBlocked.nearbyVisible,
-  JSON.stringify(directJoinBlocked));
+  rec('⓪c3 私网地址可检测但不会直接发送凭据', !directJoinReady.submitDisabled
+    && directJoinReady.invalid === null && directJoinReady.help.includes('核对服务身份'),
+  JSON.stringify(directJoinReady));
+  await page.click('[data-testid="remote-connect-submit"]');
+  await page.waitForSelector('[data-testid="remote-identity-confirmation"]');
+  const identityConfirmation = await page.evaluate(() => ({
+    code: document.querySelector('[data-testid="remote-identity-code"]')?.textContent || '',
+    text: document.querySelector('[data-testid="remote-identity-confirmation"]')?.innerText || '',
+    probeCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_probe_private_endpoint').length,
+    joinCalls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_request_join_confirmed').length,
+  }));
+  rec('⓪c4 私网直连先展示稳定身份码', identityConfirmation.code === 'PINVOU-AABB-CCDD-EEFF-0011'
+    && identityConfirmation.text.includes('Manual Knowledge')
+    && identityConfirmation.probeCalls === 1 && identityConfirmation.joinCalls === 0,
+  JSON.stringify(identityConfirmation));
+  await page.evaluate(() => {
+    const submit = document.querySelector('[data-testid="remote-connect-submit"]');
+    submit?.click();
+    submit?.click();
+  });
+  await page.waitForSelector('[data-testid="remote-join-feedback"][data-status="pending"]');
+  const confirmedJoin = await page.evaluate(() => ({
+    calls: (window.__KB_CALLS__ || []).filter(call => call.cmd === 'remote_kb_request_join_confirmed').length,
+    args: window.__REMOTE_KB_CONFIRMED_JOIN__,
+  }));
+  rec('⓪c5 身份确认防重复提交且直连只创建待审批申请', confirmedJoin.calls === 1
+    && confirmedJoin.args?.deviceName === 'Alice'
+    && confirmedJoin.args?.confirmedIdentityCode === 'PINVOU-AABB-CCDD-EEFF-0011'
+    && confirmedJoin.args?.confirmedCaFingerprint === 'AABBCCDDEEFF00112233445566778899',
+  JSON.stringify(confirmedJoin));
+  await page.click('[data-testid="remote-join-feedback-close"]');
+  await page.waitForSelector('[data-testid="remote-connect-panel"]', { hidden: true });
+  await page.waitForSelector('[data-testid="remote-pending-joins"]');
+  await page.click('[data-testid="remote-cancel-pending-join"]');
+  await page.waitForSelector('[data-testid="remote-pending-joins"]', { hidden: true });
+
+  await page.click('[data-testid="remote-add-server"]');
+  await page.waitForSelector('[data-testid="remote-invitation"]');
   await page.evaluate(() => {
     const input = document.querySelector('[data-testid="remote-invitation"]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;

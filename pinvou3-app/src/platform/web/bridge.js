@@ -5471,6 +5471,20 @@
     notify();
   });
 
+  // A second local process (the bundled shared-knowledge host) can install the
+  // managed model after startup. Replace the cached snapshot when the backend
+  // publishes a newly observed status.
+  listen("kb_model:status", function (e) {
+    var status = e && e.payload;
+    if (!status) return;
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
+      startupLoading: !!status.loading,
+      startupReady: typeof status.ready === "boolean" ? status.ready : state.kbModelSetup.startupReady,
+      status: status,
+    });
+    notify();
+  });
+
   // chat:plan_snapshot —— update_plan/checklist_write 后实时更新进度，与 plan_ready 解耦
   listen("chat:plan_snapshot", function (e) { onSessionEvent(e, function () {
     var p = e.payload || {};

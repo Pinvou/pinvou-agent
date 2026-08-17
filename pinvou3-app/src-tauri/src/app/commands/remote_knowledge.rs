@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use pinvou_knowledge::client::{KnowledgeClient, RemoteKnowledgeProbe};
 use pinvou_knowledge::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, ModelStatus, SearchHit,
     ShareCreated, ShareRecord, TrashedDocument, UpdateDeviceRequest,
@@ -8,9 +9,11 @@ use pinvou_knowledge::model::{
 use tauri::{AppHandle, Emitter, State};
 
 use crate::core::mode_state::MountedRemoteCollection;
+use crate::features::assistant::engine_pool::EnginePool;
+use crate::features::knowledge::{model_download as local_model, KnowledgeService};
 use crate::features::remote_knowledge::{
     discover_folder_files, JoinOutcome, PendingJoin, RemoteConnectionStatus, RemoteFolderDiscovery,
-    RemoteKnowledgeService,
+    RemoteKnowledgeIdentity, RemoteKnowledgeService,
 };
 use crate::features::sessions::SessionStore;
 
@@ -65,6 +68,39 @@ pub async fn remote_kb_request_join(
     device_name: String,
 ) -> Result<JoinOutcome, String> {
     state.request_join(&source, &device_name).await
+}
+
+#[tauri::command]
+pub async fn remote_kb_probe_private_endpoint(
+    source: String,
+) -> Result<RemoteKnowledgeProbe, String> {
+    KnowledgeClient::probe_private_identity(&source).await
+}
+
+#[tauri::command]
+pub async fn remote_kb_request_join_confirmed(
+    state: State<'_, RemoteKnowledgeService>,
+    probe: RemoteKnowledgeProbe,
+    device_name: String,
+    confirmed_ca_fingerprint: String,
+    confirmed_identity_code: String,
+) -> Result<JoinOutcome, String> {
+    state
+        .request_join_confirmed(
+            probe,
+            &device_name,
+            &confirmed_ca_fingerprint,
+            &confirmed_identity_code,
+        )
+        .await
+}
+
+#[tauri::command]
+pub fn remote_kb_connection_identity(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+) -> Result<RemoteKnowledgeIdentity, String> {
+    state.connection_identity(&server_id)
 }
 
 #[tauri::command]
@@ -148,18 +184,56 @@ pub async fn remote_kb_reject_join_request(
 
 #[tauri::command]
 pub async fn remote_kb_model_status(
+    app: AppHandle,
     state: State<'_, RemoteKnowledgeService>,
+    local_knowledge: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
     server_id: String,
 ) -> Result<ModelStatus, String> {
-    state.model_status(&server_id).await
+    let remote_status = state.model_status(&server_id).await?;
+    if !remote_status.downloading {
+        sync_peer_installed_local_model(&app, local_knowledge.inner(), pool.inner()).await;
+    }
+    Ok(remote_status)
 }
 
 #[tauri::command]
 pub async fn remote_kb_download_model(
+    app: AppHandle,
     state: State<'_, RemoteKnowledgeService>,
+    local_knowledge: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
     server_id: String,
 ) -> Result<ModelStatus, String> {
-    state.download_model(&server_id).await
+    let remote_status = state.download_model(&server_id).await?;
+
+    // The bundled Linux host and the desktop process intentionally share the
+    // same user-owned model directory. A host download can therefore make the
+    // local model appear after desktop startup. Load that peer-installed copy
+    // in-process and publish an authoritative status so the startup snapshot
+    // cannot keep the local UI stuck on "not installed".
+    if !remote_status.downloading {
+        sync_peer_installed_local_model(&app, local_knowledge.inner(), pool.inner()).await;
+    }
+
+    Ok(remote_status)
+}
+
+async fn sync_peer_installed_local_model(
+    app: &AppHandle,
+    local_knowledge: &KnowledgeService,
+    pool: &EnginePool,
+) {
+    if !local_model::model_installed() {
+        return;
+    }
+    if let Err(error) = local_model::load_installed_embedder(local_knowledge, pool).await {
+        eprintln!(
+            "[knowledge] shared host model is installed, but desktop hot-load failed: {error}"
+        );
+    }
+    let local_status = local_model::current_status(local_knowledge);
+    let _ = app.emit("kb_model:status", &local_status);
 }
 
 #[tauri::command]

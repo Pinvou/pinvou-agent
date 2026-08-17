@@ -265,6 +265,7 @@ pub fn session_mounted_collections_snapshot(
 
 use crate::features::knowledge as knowledge_domain;
 use crate::features::knowledge::model_download as model_domain;
+use crate::features::remote_knowledge::RemoteKnowledgeService;
 use knowledge_domain::*;
 use model_domain::*;
 
@@ -304,10 +305,58 @@ sync_command_passthrough!(knowledge_domain, kb_embed_info(state: State<'_, Knowl
 async_command_passthrough!(knowledge_domain, kb_search(state: State<'_, KnowledgeService>, query: SearchQueryDto) -> Result<Vec<FileHit>, String>);
 async_command_passthrough!(knowledge_domain, kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>);
 
-sync_command_passthrough!(model_domain, kb_model_status(service: State<'_, KnowledgeService>) -> KbModelStatus);
+#[tauri::command]
+pub async fn kb_model_status(
+    app: AppHandle,
+    service: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
+) -> KbModelStatus {
+    // The bundled host may finish installing the shared model after desktop
+    // startup and while its owner panel is closed. A normal local status query
+    // must therefore adopt the complete on-disk model instead of merely
+    // reporting `installed=true, ready=false` and asking the user to retry.
+    if model_domain::model_installed() && !service.semantic_ready() {
+        if let Err(error) =
+            model_domain::load_installed_embedder(service.inner(), pool.inner()).await
+        {
+            eprintln!("[knowledge] installed model hot-load during status refresh failed: {error}");
+        }
+    }
+    let status = model_domain::kb_model_status(service);
+    let _ = app.emit("kb_model:status", &status);
+    status
+}
 sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
-async_command_passthrough!(model_domain, kb_model_download(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, repair: Option<bool>) -> Result<KbModelStatus, String>);
+
+#[tauri::command]
+pub async fn kb_model_download(
+    app: AppHandle,
+    service: State<'_, KnowledgeService>,
+    pool: State<'_, EnginePool>,
+    remote: State<'_, RemoteKnowledgeService>,
+    repair: Option<bool>,
+) -> Result<KbModelStatus, String> {
+    let status = model_domain::kb_model_download(app, service, pool, repair).await?;
+
+    // If this desktop owns the bundled loopback host, tell that process to
+    // re-check the shared model directory. Its download endpoint takes the
+    // cross-process install lock and follows the disk fast path, so it loads
+    // this already-validated copy without downloading it a second time.
+    for connection in remote
+        .configured_connections()
+        .into_iter()
+        .filter(|item| item.scope.is_owner() && item.endpoint == "https://127.0.0.1:3210")
+    {
+        if let Err(error) = remote.download_model(&connection.server_id).await {
+            eprintln!(
+                "[knowledge] desktop model is ready, but shared host refresh failed: {error}"
+            );
+        }
+    }
+
+    Ok(status)
+}
 use super::prelude::*;
 
 #[cfg(test)]

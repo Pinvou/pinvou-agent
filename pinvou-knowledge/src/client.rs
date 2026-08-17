@@ -2,12 +2,12 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use rand::RngCore;
 use reqwest::{multipart, Method, StatusCode};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
@@ -56,6 +56,30 @@ pub struct NewJoinCredentials {
 pub struct StoredEndpoint {
     pub endpoint: String,
     pub requires_secure_upgrade: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivateEndpointKind {
+    Lan,
+    Tailscale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteKnowledgeProbe {
+    pub endpoint: String,
+    pub network_kind: PrivateEndpointKind,
+    pub server_id: String,
+    pub server_identity: String,
+    pub server_name: String,
+    pub protocol_version: u32,
+    pub tls_ca: String,
+    /// Upper-case SHA-256 of the stable CA certificate DER bytes.
+    pub ca_fingerprint: String,
+    /// A compact, human-comparable rendering of the same CA fingerprint.
+    pub identity_code: String,
+    pub ready: bool,
 }
 
 impl KnowledgeClient {
@@ -166,6 +190,53 @@ impl KnowledgeClient {
             return Err("共享知识库在建立加密连接时身份发生变化".to_string());
         }
         Ok(info)
+    }
+
+    /// Retrieves the public service identity without a device token.
+    ///
+    /// The returned CA is not trusted yet: callers must display its fingerprint
+    /// and require explicit user confirmation. A second request pinned to that
+    /// CA prevents an address from changing identity within the probe itself.
+    pub async fn probe_private_identity(endpoint: &str) -> Result<RemoteKnowledgeProbe, String> {
+        crate::ensure_tls_crypto_provider();
+        let (endpoint, network_kind) = normalize_private_user_endpoint(endpoint)?;
+        // Resolve MagicDNS once, verify that it maps to a private Tailnet/ULA
+        // address, then pin all subsequent traffic to the concrete IP. This
+        // closes the DNS-rebinding gap between probe, confirmation and join.
+        let endpoint = resolve_private_endpoint(&endpoint, network_kind).await?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(PROBE_TIMEOUT)
+            .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| error.to_string())?;
+        let response = http
+            .get(format!("{endpoint}/api/v1/info"))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let info: ServerInfo = decode(response).await?;
+        validate_probed_server_info(&info)?;
+        let ca_fingerprint = ca_fingerprint(&info.tls_ca)?;
+        let verified = Self::new_pinned(&endpoint, "", &info.tls_ca, &info.server_id)?
+            .health()
+            .await?;
+        if !same_probed_server_identity(&info, &verified) {
+            return Err("共享知识库在建立加密连接时身份发生变化".to_string());
+        }
+        Ok(RemoteKnowledgeProbe {
+            endpoint,
+            network_kind,
+            server_id: info.server_id,
+            server_identity: info.identity,
+            server_name: info.name,
+            protocol_version: info.protocol_version,
+            tls_ca: info.tls_ca,
+            identity_code: identity_code_from_fingerprint(&ca_fingerprint),
+            ca_fingerprint,
+            ready: verified.ready,
+        })
     }
 
     pub fn endpoint(&self) -> &str {
@@ -800,6 +871,173 @@ pub fn normalize_user_endpoint(value: &str) -> Result<String, String> {
     normalize_endpoint(url.as_str())
 }
 
+/// Accepts only explicit private endpoints used by discovery/manual joining.
+/// Public addresses, loopback/link-local addresses and arbitrary DNS names are
+/// rejected before any network request is made.
+pub fn normalize_private_user_endpoint(
+    value: &str,
+) -> Result<(String, PrivateEndpointKind), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("请输入局域网或 Tailscale 服务地址".to_string());
+    }
+    let value = if value.contains("://") {
+        value.to_string()
+    } else {
+        format!("https://{value}")
+    };
+    let mut url = url::Url::parse(&value).map_err(|_| "服务地址无效".to_string())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("首次私网连接必须使用不含路径或凭据的 HTTPS 地址".to_string());
+    }
+    if url.port().is_none() {
+        url.set_port(Some(3210))
+            .map_err(|_| "服务端口无效".to_string())?;
+    }
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    let network_kind = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) if is_rfc1918(address) => PrivateEndpointKind::Lan,
+        Ok(IpAddr::V4(address)) if is_tailnet(address) => PrivateEndpointKind::Tailscale,
+        Ok(IpAddr::V6(address)) if is_tailscale_ipv6(address) => PrivateEndpointKind::Tailscale,
+        Ok(IpAddr::V6(address)) if is_ula(address) => PrivateEndpointKind::Lan,
+        Ok(_) => return Err("仅支持 RFC1918/ULA 局域网地址或 Tailscale 地址".to_string()),
+        Err(_) if is_tailscale_dns_name(&host) => PrivateEndpointKind::Tailscale,
+        Err(_) => return Err("DNS 地址仅支持显式的 Tailscale *.ts.net 名称".to_string()),
+    };
+    Ok((canonical_endpoint(url), network_kind))
+}
+
+pub fn ca_fingerprint(tls_ca: &str) -> Result<String, String> {
+    let pem = URL_SAFE_NO_PAD
+        .decode(tls_ca.trim())
+        .map_err(|_| "共享知识库加密身份无效".to_string())?;
+    reqwest::Certificate::from_pem(&pem).map_err(|_| "共享知识库加密身份无效".to_string())?;
+    let pem_text = std::str::from_utf8(&pem).map_err(|_| "共享知识库加密身份无效".to_string())?;
+    let encoded_der = pem_text
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .map(str::trim)
+        .collect::<String>();
+    let der = STANDARD
+        .decode(encoded_der)
+        .map_err(|_| "共享知识库加密身份无效".to_string())?;
+    Ok(Sha256::digest(&der)
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect())
+}
+
+pub fn identity_code(tls_ca: &str) -> Result<String, String> {
+    ca_fingerprint(tls_ca).map(|fingerprint| identity_code_from_fingerprint(&fingerprint))
+}
+
+fn identity_code_from_fingerprint(fingerprint: &str) -> String {
+    format!(
+        "PINVOU-{}-{}-{}-{}",
+        &fingerprint[0..4],
+        &fingerprint[4..8],
+        &fingerprint[8..12],
+        &fingerprint[12..16]
+    )
+}
+
+fn validate_probed_server_info(info: &ServerInfo) -> Result<(), String> {
+    if info.protocol_version < 2
+        || info.server_id.trim().is_empty()
+        || info.server_id.len() > 512
+        || info.identity.trim().is_empty()
+        || info.identity.len() > 512
+        || info.name.trim().is_empty()
+        || info.name.len() > 512
+    {
+        return Err("目标地址不是受支持的 PINVOU 共享知识库".to_string());
+    }
+    ca_fingerprint(&info.tls_ca).map(|_| ())
+}
+
+fn same_probed_server_identity(first: &ServerInfo, pinned: &ServerInfo) -> bool {
+    first.server_id == pinned.server_id
+        && first.identity == pinned.identity
+        && first.name == pinned.name
+        && first.protocol_version == pinned.protocol_version
+        && first.tls_ca == pinned.tls_ca
+}
+
+fn is_rfc1918(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    octets[0] == 10
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 168)
+}
+
+fn is_tailnet(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_ula(address: std::net::Ipv6Addr) -> bool {
+    (address.segments()[0] & 0xfe00) == 0xfc00
+}
+
+fn is_tailscale_ipv6(address: std::net::Ipv6Addr) -> bool {
+    let segments = address.segments();
+    segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+}
+
+fn is_tailscale_dns_name(host: &str) -> bool {
+    host.strip_suffix(".ts.net")
+        .is_some_and(|prefix| !prefix.is_empty() && !prefix.ends_with('.'))
+}
+
+async fn resolve_private_endpoint(
+    endpoint: &str,
+    network_kind: PrivateEndpointKind,
+) -> Result<String, String> {
+    let mut url = url::Url::parse(endpoint).map_err(|_| "服务地址无效".to_string())?;
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(endpoint.to_string());
+    }
+    if network_kind != PrivateEndpointKind::Tailscale || !is_tailscale_dns_name(host) {
+        return Err("私网 DNS 地址无效".to_string());
+    }
+    let port = url.port().unwrap_or(3210);
+    let mut resolved = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("无法解析 Tailscale 地址：{error}"))?
+        .map(|address| address.ip())
+        .filter(|address| match address {
+            IpAddr::V4(address) => is_tailnet(*address),
+            IpAddr::V6(address) => is_tailscale_ipv6(*address),
+        })
+        .collect::<Vec<_>>();
+    resolved.sort_by_key(|address| (matches!(address, IpAddr::V6(_)), address.to_string()));
+    resolved.dedup();
+    let address = resolved.into_iter().next().ok_or_else(|| {
+        "Tailscale 名称没有解析到 100.64.0.0/10 或 Tailscale IPv6 地址".to_string()
+    })?;
+    url.set_host(Some(&address.to_string()))
+        .map_err(|_| "Tailscale 地址无效".to_string())?;
+    Ok(canonical_endpoint(url))
+}
+
 fn is_loopback_host(host: &str) -> bool {
     let host = host
         .trim_end_matches('.')
@@ -884,6 +1122,99 @@ mod tests {
         assert_eq!(
             normalize_user_endpoint("100.64.12.34:4321").unwrap(),
             "https://100.64.12.34:4321"
+        );
+    }
+
+    #[test]
+    fn private_first_contact_accepts_lan_and_explicit_tailscale_only() {
+        for (source, expected, kind) in [
+            (
+                "192.168.1.20",
+                "https://192.168.1.20:3210",
+                PrivateEndpointKind::Lan,
+            ),
+            (
+                "https://172.31.4.9:4321/",
+                "https://172.31.4.9:4321",
+                PrivateEndpointKind::Lan,
+            ),
+            (
+                "https://[fd12::3]:3210",
+                "https://[fd12::3]:3210",
+                PrivateEndpointKind::Lan,
+            ),
+            (
+                "100.100.12.34",
+                "https://100.100.12.34:3210",
+                PrivateEndpointKind::Tailscale,
+            ),
+            (
+                "cube.team-name.ts.net:4321",
+                "https://cube.team-name.ts.net:4321",
+                PrivateEndpointKind::Tailscale,
+            ),
+        ] {
+            assert_eq!(
+                normalize_private_user_endpoint(source).unwrap(),
+                (expected.to_string(), kind),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_first_contact_rejects_public_loopback_link_local_and_ambiguous_names() {
+        for source in [
+            "8.8.8.8:3210",
+            "127.0.0.1:3210",
+            "169.254.1.2:3210",
+            "172.32.0.1:3210",
+            "fe80::1",
+            "knowledge.example.com:3210",
+            "ts.net:3210",
+            "http://192.168.1.20:3210",
+            "https://user:secret@192.168.1.20:3210",
+            "https://192.168.1.20:3210/api/v1/info",
+            "https://192.168.1.20:3210?redirect=1",
+        ] {
+            assert!(normalize_private_user_endpoint(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn pinned_probe_allows_runtime_readiness_to_change_without_changing_identity() {
+        let first = ServerInfo {
+            server_id: "server".to_string(),
+            identity: "identity".to_string(),
+            name: "Cube".to_string(),
+            version: "0.8.1".to_string(),
+            protocol_version: 2,
+            tls_ca: "ca".to_string(),
+            initialized: true,
+            ready: false,
+            model: "bge-m3".to_string(),
+        };
+        let mut pinned = first.clone();
+        pinned.ready = true;
+
+        assert!(same_probed_server_identity(&first, &pinned));
+        pinned.server_id = "other".to_string();
+        assert!(!same_probed_server_identity(&first, &pinned));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn identity_code_is_stably_derived_from_the_public_ca() {
+        let root = tempfile::tempdir().unwrap();
+        let tls = crate::tls::ensure_tls_identity(root.path()).unwrap();
+
+        let fingerprint = ca_fingerprint(&tls.ca_encoded).unwrap();
+
+        assert_eq!(fingerprint.len(), 64);
+        assert_eq!(identity_code(&tls.ca_encoded).unwrap().len(), 26);
+        assert_eq!(
+            identity_code(&tls.ca_encoded).unwrap(),
+            identity_code_from_fingerprint(&fingerprint)
         );
     }
 

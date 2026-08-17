@@ -6,6 +6,8 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 
+#[cfg(feature = "discovery")]
+pub mod discovery;
 pub mod embedding;
 pub mod model;
 #[cfg(feature = "client")]

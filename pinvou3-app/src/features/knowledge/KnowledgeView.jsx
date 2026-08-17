@@ -13,6 +13,60 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
 
+const MODEL_PROGRESS_RADIUS = 31;
+const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
+
+function ModelProgressIndicator({ downloading, percent, label }) {
+  if (!downloading) {
+    return (
+      <div className="flex flex-col items-center gap-2.5" role="status" aria-live="polite">
+        <div className="relative h-[76px] w-[76px]" aria-hidden="true">
+          <svg className="h-full w-full animate-spin motion-reduce:animate-none" viewBox="0 0 76 76">
+            <circle cx="38" cy="38" r={MODEL_PROGRESS_RADIUS} fill="none" stroke="currentColor" strokeWidth="6" className="text-[#edf0fa] dark:text-white/10" />
+            <circle cx="38" cy="38" r={MODEL_PROGRESS_RADIUS} fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeDasharray="48 147" className="text-[#5b6cf2]" />
+          </svg>
+        </div>
+        <span className="text-[12.5px] font-semibold text-[#2f6beb] dark:text-[#A8C7FA]">{label}</span>
+      </div>
+    );
+  }
+
+  const progressOffset = MODEL_PROGRESS_CIRCUMFERENCE * (1 - percent / 100);
+  return (
+    <div className="flex flex-col items-center gap-2.5" role="status" aria-live="polite">
+      <div
+        className="relative h-[76px] w-[76px]"
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${percent}%`}
+      >
+        <svg className="h-full w-full -rotate-90" viewBox="0 0 76 76" aria-hidden="true">
+          <circle cx="38" cy="38" r={MODEL_PROGRESS_RADIUS} fill="none" stroke="currentColor" strokeWidth="6" className="text-[#edf0fa] dark:text-white/10" />
+          <circle
+            cx="38"
+            cy="38"
+            r={MODEL_PROGRESS_RADIUS}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="6"
+            strokeLinecap="round"
+            strokeDasharray={MODEL_PROGRESS_CIRCUMFERENCE}
+            strokeDashoffset={progressOffset}
+            className="text-[#5b6cf2] transition-[stroke-dashoffset] duration-300 motion-reduce:transition-none"
+          />
+        </svg>
+        <span className="absolute inset-0 flex items-center justify-center text-[17px] font-extrabold tabular-nums text-[#2f6beb] dark:text-[#A8C7FA]">
+          {percent}<span className="ml-0.5 text-[10px] font-bold">%</span>
+        </span>
+      </div>
+      <span className="text-[12.5px] font-semibold text-[#2f6beb] dark:text-[#A8C7FA]">{label}</span>
+    </div>
+  );
+}
+
     const KnowledgeView = ({ theme, t, mode }) => {
       // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
       const outputsOnly = mode === 'outputs';
@@ -1300,13 +1354,11 @@ let kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], al
                   </div>
                 ) : (
                   <div className="mt-5 max-w-[480px] mx-auto">
-                    <div className={`h-2 rounded-full overflow-hidden bg-[#edf0fa] dark:bg-white/10`}>
-                      <div className="h-full rounded-full transition-all" style={{ width: dlPct + '%', background: 'linear-gradient(90deg,#5b6cf2,#2f8bff)' }} />
-                    </div>
-                    <div className="flex justify-between mt-2.5 text-[12.5px]">
-                      <span className={`font-semibold text-[#2f6beb] dark:text-[#A8C7FA]`}>{modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}</span>
-                      {downloading && <span className="font-bold text-[#2f6beb]">{dlPct}%</span>}
-                    </div>
+                    <ModelProgressIndicator
+                      downloading={downloading}
+                      percent={dlPct}
+                      label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
+                    />
                   </div>
                 )}
               </div>

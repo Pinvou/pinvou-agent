@@ -35,7 +35,7 @@ dev-tools = []
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
-pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client"] }
+pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
 serde_json = "1.0"

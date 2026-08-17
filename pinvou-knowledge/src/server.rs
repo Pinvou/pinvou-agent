@@ -23,6 +23,22 @@ const SMALL_JSON_LIMIT: usize = 16 * 1024;
 const UPLOAD_REQUEST_LIMIT: usize = MAX_UPLOAD_BYTES + 1024 * 1024;
 
 pub async fn serve(service: Arc<KnowledgeService>, bind: SocketAddr) -> Result<(), String> {
+    // mDNS only announces a display name and a listening address. The stable
+    // CA and server identity are learned by an explicit untrusted probe and
+    // must be confirmed by the user before a join request is created.
+    let _discovery = if bind.ip().is_unspecified() && bind.port() != 0 {
+        service.server_info().ok().and_then(|info| {
+            match crate::discovery::advertise(&info.name, bind.port()) {
+                Ok(advertisement) => Some(advertisement),
+                Err(error) => {
+                    eprintln!("[pinvou-knowledge] LAN discovery unavailable: {error}");
+                    None
+                }
+            }
+        })
+    } else {
+        None
+    };
     let app = router(service.clone());
     let tls = tls_config(&service).await?;
     axum_server::bind_rustls(bind, tls)

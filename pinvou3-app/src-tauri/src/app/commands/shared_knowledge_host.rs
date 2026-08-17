@@ -1,6 +1,8 @@
-use std::{io::Write, path::PathBuf, str::FromStr};
+use std::{io::Write, path::PathBuf, str::FromStr, time::Duration};
 
 use age::secrecy::ExposeSecret;
+use futures_util::future::join_all;
+use pinvou_knowledge::client::{KnowledgeClient, RemoteKnowledgeProbe};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -47,6 +49,30 @@ pub async fn shared_kb_host_status() -> SharedKnowledgeHostStatus {
 #[tauri::command]
 pub fn shared_kb_host_lan_endpoints() -> Vec<String> {
     shared_knowledge_host::lan_endpoints()
+}
+
+#[tauri::command]
+pub async fn shared_kb_discover_nearby() -> Result<Vec<RemoteKnowledgeProbe>, String> {
+    let candidates = tokio::task::spawn_blocking(|| {
+        pinvou_knowledge::discovery::discover_lan_candidates(Duration::from_millis(1500))
+    })
+    .await
+    .map_err(|error| format!("局域网发现任务失败：{error}"))??;
+    // Bound active probes even if a noisy or hostile LAN floods mDNS results.
+    let probes = join_all(candidates.into_iter().take(32).map(|candidate| async move {
+        KnowledgeClient::probe_private_identity(&candidate.endpoint).await
+    }))
+    .await;
+    let mut discovered = probes
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    discovered.sort_by(|left, right| {
+        left.server_name
+            .cmp(&right.server_name)
+            .then_with(|| left.endpoint.cmp(&right.endpoint))
+    });
+    Ok(discovered)
 }
 
 #[tauri::command]
