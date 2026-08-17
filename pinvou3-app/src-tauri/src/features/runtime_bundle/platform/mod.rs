@@ -253,11 +253,6 @@ pub const PRESENT_ARTIFACT_SERVER_PY: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/present_artifact_server.py");
 
 // --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-/// spanner 扳手插件包的通用 MCP 适配器（plugin-protocol §15）：把
-/// `bundles/<id>/plugin.json` 声明的 stdin→stdout 入口包装成单工具 MCP server。
-/// 解包到 `~/.pinvou3/bundle/spanner_runner.py`，mcp.json 用 `<python> <path> <plugin.json>` 拉起。
-pub const SPANNER_RUNNER_PY: &str =
-    include_str!("../../../../resources/common/bundle/spanner_runner.py");
 
 // --- 工具市场：内置 MCP server 资源 ---
 // 编译期内嵌资源已收编到 `marketplace::mcp_catalog`（单一真相源：清单、释放、

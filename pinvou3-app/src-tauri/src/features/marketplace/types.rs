@@ -40,10 +40,6 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
-    /// spanner 扳手插件入口（相对 `bundles/<id>/spanner/`）。Some 时走 spanner_runner 包装
-    /// （plugin-protocol §15），mcp.json 的 args 指向内置 spanner_runner + plugin.json。
-    #[serde(default)]
-    pub spanner_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

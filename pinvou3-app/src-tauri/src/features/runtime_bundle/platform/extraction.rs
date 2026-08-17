@@ -565,9 +565,6 @@ impl Pinvou3Bundle {
         // pinvou 内置 present_artifact server
         let server = paths::bundle_present_artifact_server();
         std::fs::write(&server, PRESENT_ARTIFACT_SERVER_PY)?;
-        // spanner 扳手插件包的通用 MCP 适配器（每次启动防御性重写，immutable 资源）
-        let spanner_runner = paths::bundle_spanner_runner();
-        std::fs::write(&spanner_runner, SPANNER_RUNNER_PY)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

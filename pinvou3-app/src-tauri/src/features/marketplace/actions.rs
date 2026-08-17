@@ -115,7 +115,7 @@ pub fn actions_for(bundle: &BundleInfo, readiness: Readiness) -> Vec<BundleActio
                 out.push(action(ACTION_CONFIGURE, None));
             }
         }
-        BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill | BundleKind::Spanner => {
+        BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill => {
             if !bundle.installed {
                 if bundle.oauth {
                     out.push(action(ACTION_CONNECT, Some(ActionFlow::Oauth)));
@@ -160,7 +160,6 @@ mod tests {
             mcp_servers: vec![],
             skills: vec![],
             cli: vec![],
-            spanners: vec![],
             credentials: vec![],
             description: String::new(),
             version: String::new(),

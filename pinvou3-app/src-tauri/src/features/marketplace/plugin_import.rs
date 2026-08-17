@@ -28,38 +28,9 @@ use crate::features::marketplace::bundle::BundleKind;
 /// 插件包解压累计上限（自带运行时可能较大，放宽到 200 MiB）。
 pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 
-/// spanner 清单（plugin.json 的 `spanner` 字段）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpannerSpec {
-    /// 入口文件，相对 `spanner/` 目录（如 `main.py`）。
-    pub entry: String,
-    /// 自带运行时声明；缺省用内置 python。
-    #[serde(default)]
-    pub runtime: Option<SpannerRuntime>,
-    /// 输入参数 JSON Schema。
-    pub input_schema: serde_json::Value,
-    /// 输出结果 JSON Schema（可选）。
-    #[serde(default)]
-    pub output_schema: Option<serde_json::Value>,
-    /// 单次调用超时（秒）。
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    /// 是否后台执行（长任务）。
-    #[serde(default)]
-    pub background: Option<bool>,
-}
-
-/// spanner 的自带运行时声明（语言不限：python/node/deno/…）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpannerRuntime {
-    /// 运行时类型标识（如 "python"、"node"）。
-    pub kind: String,
-    /// 运行时目录，相对 zip 根（如 "runtime"）。
-    #[serde(default)]
-    pub dir: Option<String>,
-}
-
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
+/// 可执行能力现在通过 skill 包的 SKILL.md frontmatter `tools[]` + `runtime` 段声明，
+/// 不再有「spanner 独立组件」入口——见 skill_marketplace.rs 与 skill-run wrapper。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub manifest_version: u32,
@@ -72,13 +43,11 @@ pub struct PluginManifest {
     /// 可选图标，相对 zip 根（"icon.svg"/"icon.png"）。
     #[serde(default)]
     pub icon: Option<String>,
-    /// spanner 组件声明（单扳手插件）。
-    #[serde(default)]
-    pub spanner: Option<SpannerSpec>,
-    /// 多组件声明（mcp_servers / skills）；与 `spanner` 并存的组合包。
+    /// 多组件声明（mcp_servers / skills）。脚本可执行能力迁移到 skill 包内：
+    /// skill 根目录的 SKILL.md frontmatter `tools[]` + `runtime` 字段声明可执行入口。
     #[serde(default)]
     pub components: Option<PluginComponents>,
-    /// 未知字段原样保留。
+    /// 未知字段原样保留（前向兼容旧 spanner 字段）。
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -187,7 +156,6 @@ struct ComponentDetection {
     id: String,
     mcp_servers: Vec<String>,
     skills: Vec<String>,
-    spanners: Vec<String>,
     /// 裸技能回退：(skill_root, name)。`skill_root=""` 表示根级 SKILL.md。
     bare_skill: Option<(String, String)>,
     /// 裸 MCP 回退：(mcp_root, mcp_id)。`mcp_root=""` 表示根级 manifest.json。
@@ -196,11 +164,14 @@ struct ComponentDetection {
 
 /// 识别组件向量 + 包 id。
 ///
-/// 有 `plugin.json` → 按 `components`（mcp_servers/skills）+ `spanner` 声明，逐组件校验
-/// 目录存在；无 `plugin.json` → 结构回退（`mcp/manifest.json` → MCP、`skills/*/SKILL.md`
-/// → skills），并对「符合 skills 标准」的裸技能包（任意位置 SKILL.md，frontmatter name）
+/// 有 `plugin.json` → 按 `components`（mcp_servers/skills）声明，逐组件校验目录存在；
+/// 无 `plugin.json` → 结构回退（`mcp/manifest.json` → MCP、`skills/*/SKILL.md` → skills），
+/// 并对「符合 skills 标准」的裸技能包（任意位置 SKILL.md，frontmatter name）
 /// 与「符合 MCP 标准」的裸 MCP 包（任意位置 manifest.json 能解析出 ToolManifest）做回退
 /// 兼容，落盘时规范化为本项目的 `skills/<name>/` / `mcp/` 布局。
+///
+/// 注意：可执行能力（曾经的 spanner）现在并入 skill 包 —— 检测脚本 + runtime 看
+/// `skill_marketplace::install` 的 `tools` 段处理，此处不再识别独立「spanner」组件。
 fn detect_components(
     manifest: &Option<PluginManifest>,
     mcp_manifest_bytes: &Option<Vec<u8>>,
@@ -216,7 +187,6 @@ fn detect_components(
         }
         let mut mcp = Vec::new();
         let mut skills = Vec::new();
-        let mut spanners = Vec::new();
         if let Some(comps) = &m.components {
             for c in &comps.mcp_servers {
                 let dir = c.dir.trim_end_matches('/');
@@ -233,14 +203,10 @@ fn detect_components(
                 skills.push(c.id.clone());
             }
         }
-        if m.spanner.is_some() {
-            spanners.push(id.clone());
-        }
         return Ok(ComponentDetection {
             id,
             mcp_servers: mcp,
             skills,
-            spanners,
             bare_skill: None,
             bare_mcp: None,
         });
@@ -249,7 +215,6 @@ fn detect_components(
     // 无 manifest：结构回退。
     let mut mcp = Vec::new();
     let mut skills = Vec::new();
-    let spanners = Vec::new();
     let mut id = String::new();
     let mut bare_skill = None;
     let mut bare_mcp = None;
@@ -314,7 +279,7 @@ fn detect_components(
         }
     }
 
-    if mcp.is_empty() && skills.is_empty() && spanners.is_empty() {
+    if mcp.is_empty() && skills.is_empty() {
         return Err("插件包不含任何组件（空包）".to_string());
     }
     if id.is_empty() || !super::skill_marketplace::is_safe_skill_name(&id) {
@@ -324,7 +289,6 @@ fn detect_components(
         id,
         mcp_servers: mcp,
         skills,
-        spanners,
         bare_skill,
         bare_mcp,
     })
@@ -354,12 +318,9 @@ fn landing_target(
     if let Some(r) = path_str.strip_prefix("skills/") {
         return Some(("skills".to_string(), r.to_string()));
     }
-    if let Some(r) = path_str.strip_prefix("spanner/") {
-        return Some(("spanner".to_string(), r.to_string()));
-    }
-    if let Some(r) = path_str.strip_prefix("runtime/") {
-        return Some(("runtime".to_string(), r.to_string()));
-    }
+    // 注：原 `spanner/` 前缀分支已删除——脚本可执行能力通过 skill 包的
+    // SKILL.md frontmatter `tools[]` 段声明，由 skill_marketplace::install
+    // 后置 hook 注册 skill-run wrapper；不再有独立的 spanner 子目录布局。
 
     // 裸 MCP 回退。
     if let Some((root, _mcp_id)) = bare_mcp {
@@ -415,148 +376,13 @@ fn synthesized_manifest(det: &ComponentDetection) -> PluginManifest {
         version: None,
         description: None,
         icon: None,
-        spanner: None,
         components: Some(comps),
         extra: std::collections::BTreeMap::new(),
     }
 }
 
-/// 解析 spanner 入口脚本的运行时命令：自带运行时目录优先 → 内置 python 兜底。
-/// 与 `spanner_runner.py` 的 `_resolve_runtime` 同口径（语言不限：python/node/deno…）。
-fn resolve_spanner_runtime(pkg_dir: &Path, spanner: &SpannerSpec) -> Result<Vec<String>, String> {
-    if let Some(runtime) = &spanner.runtime {
-        let kind = runtime.kind.to_ascii_lowercase();
-        if let Some(dir) = runtime.dir.as_deref() {
-            // runtime.dir 与 spanner.entry 同口径拒绝路径穿越/绝对路径（二轮评审）：
-            // 相对包内路径才允许，`..`/`/abs`/Windows 盘符直接拒收。
-            let dir_is_abs = std::path::Path::new(dir).is_absolute();
-            if dir.is_empty()
-                || dir.contains("..")
-                || dir.starts_with('/')
-                || dir.starts_with('\\')
-                || dir_is_abs
-            {
-                return Err(format!("非法 spanner runtime.dir '{dir}'"));
-            }
-            let rt_path = pkg_dir.join(dir);
-            if rt_path.is_dir() {
-                let candidates: &[&str] = match kind.as_str() {
-                    "python" | "python3" => &[
-                        "bin/python",
-                        "bin/python3",
-                        "python.exe",
-                        "python3.exe",
-                        "python",
-                    ],
-                    "node" | "nodejs" => &["bin/node", "node.exe", "node"],
-                    "deno" => &["deno", "deno.exe"],
-                    _ => &[],
-                };
-                for cand in candidates {
-                    let p = rt_path.join(cand);
-                    if p.is_file() {
-                        return Ok(vec![p.to_string_lossy().to_string()]);
-                    }
-                }
-            }
-        }
-    }
-    // 兜底：内置 python（python_command 已处理 Windows 内置 pythonw / PINVOU3_PYTHON /
-    // 系统 python 的优先级）。
-    Ok(vec![crate::platform::paths::python_command()])
-}
-
-/// 安装时 smoke test：用与运行时一致的命令 spawn 入口脚本，喂空参数 `{}`，校验
-/// 能正常退出且 stdout 是合法 JSON。
-///
-/// 这是「脚本不可用」的第一道拦截——在 install() 写 mcp.json/installed.json **之前**
-/// 暴露（语法错 / 缺依赖 / 运行时不可解析 / 输出非 JSON 都会被当场拒绝），而不是等
-/// 模型调用 tools/call 后才炸。空参数下脚本应能跑通并返回任意合法 JSON（即便返回
-/// `{"error": ...}` 也视为「脚本可运行」；真正业务正确性由 schema + 运行时保证）。
-fn smoke_test_spanner(pkg_dir: &Path, spanner: &SpannerSpec) -> Result<(), String> {
-    let entry_rel = spanner
-        .entry
-        .trim_start_matches("spanner/")
-        .trim_start_matches("./");
-    if entry_rel.is_empty() || entry_rel.contains("..") || entry_rel.starts_with('/') {
-        return Err(format!("非法 spanner 入口 '{}'", spanner.entry));
-    }
-    let spanner_dir = pkg_dir.join("spanner");
-    let entry_path = spanner_dir.join(entry_rel);
-    if !entry_path.is_file() {
-        return Err(format!("spanner 入口 '{}' 不存在", spanner.entry));
-    }
-    let runtime = resolve_spanner_runtime(pkg_dir, spanner)?;
-    let mut child = std::process::Command::new(&runtime[0])
-        .args(&runtime[1..])
-        .arg(&entry_path)
-        .current_dir(&spanner_dir)
-        // 自检不写 __pycache__，避免污染落盘包目录
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动入口失败（{}）: {e}", runtime[0]))?;
-
-    // 喂空参数并关闭 stdin（脚本读到 EOF 即知道参数结束）。
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().ok_or("stdin 不可用")?;
-        stdin
-            .write_all(b"{}")
-            .map_err(|e| format!("写 stdin: {e}"))?;
-    }
-
-    // 带超时等待（默认 20s；spanner.timeout_secs 优先）。声明值可被包作者任意放大
-    // （manifest 字段无上限），这里钳制在 5 分钟内，避免一个包让导入永久挂起
-    // （二轮评审：smoke 超时无上限）。
-    let timeout_secs = spanner.timeout_secs.unwrap_or(20).clamp(1, 300);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => {
-                if std::time::Instant::now() > deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("smoke test 超时（{}s）", timeout_secs));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(e) => return Err(format!("等待入口退出失败: {e}")),
-        }
-    };
-
-    // 读 stdout/stderr（smoke test 输出极小，退出后再读不会因管道满而死锁）。
-    use std::io::Read;
-    let mut out = String::new();
-    if let Some(mut so) = child.stdout.take() {
-        so.read_to_string(&mut out)
-            .map_err(|e| format!("读 stdout: {e}"))?;
-    }
-    let mut err = String::new();
-    if let Some(mut se) = child.stderr.take() {
-        se.read_to_string(&mut err)
-            .map_err(|e| format!("读 stderr: {e}"))?;
-    }
-
-    if !status.success() {
-        let code = status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "被信号终止".to_string());
-        return Err(format!("入口退出码 {code}：{}", err.trim()));
-    }
-    let out_trim = out.trim();
-    if out_trim.is_empty() || serde_json::from_str::<serde_json::Value>(out_trim).is_err() {
-        return Err(format!("入口 stdout 不是合法 JSON：{}", out_trim));
-    }
-    Ok(())
-}
-
-/// 统一导入：解压插件包（spanner / mcp / skill / 组合）→ 安全校验 → 识别 → 落盘
-/// `bundles/<id>/`（mcp/ + skills/ + spanner/ + 图标）→ 登记 BundleStore。
+/// 统一导入：解压插件包（mcp / skill / 组合）→ 安全校验 → 识别 → 落盘
+/// `bundles/<id>/`（mcp/ + skills/ + 图标）→ 登记 BundleStore。
 pub fn import_plugin_package(
     zip_path: &str,
     display_name: &str,
@@ -708,17 +534,15 @@ pub fn import_plugin_package(
         &other_manifests,
         &all_paths,
     )?;
-    let (id, mcp_servers, skills, spanners) = (
+    let (id, mcp_servers, skills) = (
         det.id.clone(),
         det.mcp_servers.clone(),
         det.skills.clone(),
-        det.spanners.clone(),
     );
     let kind = crate::features::marketplace::bundle::derive_bundle_kind(
         &mcp_servers,
         &skills,
         &[],
-        &spanners,
     )
     .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
@@ -771,7 +595,11 @@ pub fn import_plugin_package(
             }
         }
     }
-    // 落盘到 staged：mcp/ + skills/ + spanner/ + runtime/ 子树 → bundles/<id>/ 原子 rename。
+
+    // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
+    // 注：旧 spanner/ 与 runtime/ 子树已删除，skill 包的脚本由 skill_marketplace
+    //     后置 hook 单独处理。
+ (refactor(marketplace): 移除 spanner 扳手插件（向 skill-with-runtime 协议迁移）)
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
@@ -833,44 +661,8 @@ pub fn import_plugin_package(
             std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
         }
 
-        // 2) spanner 校验 + 合成 mcp/manifest.json（spanner → MCP 包装，plugin-protocol §15.4）。
-        if let Some(spanner) = manifest.as_ref().and_then(|m| m.spanner.clone()) {
-            let entry_rel = spanner
-                .entry
-                .trim_start_matches("spanner/")
-                .trim_start_matches("./");
-            if entry_rel.is_empty() || entry_rel.contains("..") || entry_rel.starts_with('/') {
-                return Err(format!("非法 spanner 入口 '{}'", spanner.entry));
-            }
-            if !staged.join("spanner").join(&entry_rel).is_file() {
-                return Err(format!(
-                    "spanner 入口 '{}' 不在 spanner/ 子树内",
-                    spanner.entry
-                ));
-            }
-            let synth = serde_json::json!({
-                "id": id,
-                "name": manifest.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| id.clone()),
-                "description": manifest.as_ref().and_then(|m| m.description.clone()).unwrap_or_default(),
-                "version": manifest.as_ref().and_then(|m| m.version.clone()).unwrap_or_else(|| "1.0.0".to_string()),
-                "icon": "",
-                "category": "spanner",
-                "mcp_tools": [format!("mcp_{id}_{id}")],
-                "command": "python",
-                "args": ["server.py"],
-                "spanner_entry": entry_rel,
-                // spanner + skill 组合包：把检测到的技能声明为配套技能，让技能引导与
-                // 扳手插件同卡、同开关（与 mcp+skill 组合包同一口径），模型更愿调用。
-                "companion_skills": skills.clone(),
-            });
-            let mcp_dir = staged.join("mcp");
-            std::fs::create_dir_all(&mcp_dir).map_err(|e| format!("建 mcp 目录: {e}"))?;
-            std::fs::write(
-                mcp_dir.join("manifest.json"),
-                serde_json::to_string_pretty(&synth).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("写 mcp/manifest.json: {e}"))?;
-        }
+        // 2) spanner 旧路径删除——脚本可执行能力通过 skill 包的 SKILL.md frontmatter
+        //    `tools[]` + `runtime` 段声明。此处不再合成 mcp/manifest.json。
 
         // 3) plugin.json 落盘：有原声明的写规范化副本；无 plugin.json 的裸包合成
         //    最小自描述清单（§5.2 派生 manifest），保证按包聚合目录始终带 plugin.json。
@@ -920,17 +712,8 @@ pub fn import_plugin_package(
         return Err(e);
     }
 
-    // 安装时 smoke test：spanner 组件在 rename 之前做一次真实 spawn 自检（喂空参数、
-    // 校验能跑通 + stdout 合法 JSON）。失败只清理 staged，不留半安装状态——把
-    // 「脚本不可用」挡在 install() 之前，而不是等模型调用后才暴露。
-    if !spanners.is_empty() {
-        if let Some(spanner) = manifest.as_ref().and_then(|m| m.spanner.as_ref()) {
-            if let Err(e) = smoke_test_spanner(&staged, spanner) {
-                let _ = std::fs::remove_dir_all(&staged);
-                return Err(format!("spanner 安装自检失败（{id}）: {e}"));
-            }
-        }
-    }
+    // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘，
+    // 脚本可执行能力改为 skill 包自身的后置 smoke（看 skill_marketplace.rs::install）。
 
     // 原子落盘：先把旧目录挪到 .old 备份，rename 成功后再删 .old；rename 失败则
     // 把 .old 复原回去，保证「旧包不丢、新包不入」——避免既往版本 `remove+rename`
@@ -955,12 +738,12 @@ pub fn import_plugin_package(
         let _ = std::fs::remove_dir_all(&backup);
     }
 
-    // 供给：MCP/spanner 组件走 install 管线写 mcp.json + installed.json（底座据此拉起
-    // server，工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。
-    // 供给失败 = 导入失败：不登记 installed=true、不返回成功——避免用户得到
-    // 「导入成功」的空壳包（半安装状态，二轮评审 M-3(c)）。包文件保留在
-    // bundles/<id>/ 供重试（重试走原子落盘替换；也可在商店按未安装卡直接装）。
-    if !mcp_servers.is_empty() || !spanners.is_empty() {
+    // 供给：MCP 组件走 install 管线写 mcp.json + installed.json（底座据此拉起 server，
+    // 工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。
+    // 注：旧 spanner 路径已删除——脚本可执行能力的供给在 skill_marketplace.rs 走
+    // skill-run wrapper + execpolicy deny rule。
+    if !mcp_servers.is_empty() {
+ (refactor(marketplace): 移除 spanner 扳手插件（向 skill-with-runtime 协议迁移）)
         if let Err(e) =
             super::MarketplaceManager::new().install(&id, &std::collections::HashMap::new())
         {
@@ -1023,7 +806,32 @@ mod tests {
     }
 
     #[test]
-    fn plugin_manifest_parses_minimal_func() {
+    fn plugin_manifest_parses_minimal_components_only() {
+        // 旧的 spanner 字段（已废弃）应当仍能被 serde 容忍进入 `extra` map
+        // （前向兼容字段保留）。本测试校验 components-only 包能正常解析。
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "weather",
+            "name": "天气查询",
+            "icon": "icon.svg",
+            "components": {
+                "mcp_servers": [{"id":"weather","dir":"mcp"}],
+                "skills": [{"id":"weather","dir":"skills/weather"}]
+            }
+        }"#;
+        let m: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.id, "weather");
+        assert_eq!(m.icon.as_deref(), Some("icon.svg"));
+        assert!(m.components.is_some());
+        let comps = m.components.unwrap();
+        assert_eq!(comps.mcp_servers.len(), 1);
+        assert_eq!(comps.skills.len(), 1);
+    }
+
+    /// 前向兼容：plugin.json 含已废弃的 `spanner` 字段（旧上传包）应被解析为
+    /// `extra` 兜底，未映射到结构体字段上，但仍可通过 deser 进入。
+    #[test]
+    fn plugin_manifest_parses_legacy_spanner_field_as_extra() {
         let json = r#"{
             "manifest_version": 1,
             "id": "weather",
@@ -1036,11 +844,9 @@ mod tests {
         }"#;
         let m: PluginManifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.id, "weather");
-        assert_eq!(m.icon.as_deref(), Some("icon.svg"));
-        let spanner = m.spanner.unwrap();
-        assert_eq!(spanner.entry, "main.py");
-        assert!(spanner.runtime.is_none());
-        assert!(spanner.input_schema.is_object());
+        // 旧 spanner 字段落到 `extra` map 里以便日志/排障，仍可读。
+        let legacy = m.extra.get("spanner");
+        assert!(legacy.is_some(), "旧 spanner 字段应被 forward-compat 保留到 extra");
     }
 
     #[test]
@@ -1060,65 +866,6 @@ mod tests {
         assert_eq!(comps.mcp_servers[0].id, "combo-demo");
         assert_eq!(comps.skills.len(), 1);
         assert_eq!(comps.skills[0].dir, "skills/combo-demo");
-    }
-
-    #[test]
-    fn import_spanner_package_lands_layout_with_default_icon() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-spanner-import-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        std::env::set_var("PINVOU3_HOME", &dir);
-
-        let zip_path = dir.join("spanner.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                br#"{"manifest_version":1,"id":"hello","name":"Hello","version":"1.0.0","spanner":{"entry":"main.py","input_schema":{"type":"object","properties":{}}}}"#,
-            )
-            .unwrap();
-            zw.start_file("spanner/main.py", opts).unwrap();
-            zw.write_all(b"import json,sys\njson.dump({'ok': json.load(sys.stdin)}, sys.stdout)")
-                .unwrap();
-            zw.finish().unwrap();
-        }
-
-        let report = import_plugin_package(&zip_path.to_string_lossy(), "spanner.zip").unwrap();
-        assert_eq!(report.id, "hello");
-        assert_eq!(report.kind, BundleKind::Spanner);
-        assert_eq!(report.icon, "icon.svg");
-
-        let pkg = dir.join("bundles").join("hello");
-        assert!(pkg.join("plugin.json").is_file(), "plugin.json 应落盘");
-        assert!(pkg.join("spanner/main.py").is_file(), "spanner 入口应落盘");
-        assert!(
-            pkg.join("mcp/manifest.json").is_file(),
-            "合成 mcp manifest 应落盘"
-        );
-        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
-
-        let synth: crate::features::marketplace::ToolManifest =
-            serde_json::from_str(&std::fs::read_to_string(pkg.join("mcp/manifest.json")).unwrap())
-                .unwrap();
-        assert_eq!(synth.spanner_entry.as_deref(), Some("main.py"));
-        assert_eq!(synth.mcp_tools, vec!["mcp_hello_hello".to_string()]);
-
-        match prev {
-            Some(v) => std::env::set_var("PINVOU3_HOME", v),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

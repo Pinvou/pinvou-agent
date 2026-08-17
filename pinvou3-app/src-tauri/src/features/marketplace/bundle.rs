@@ -199,6 +199,8 @@ pub struct ConfigFieldSpec {
 
 /// 包形态（内容现算，不落存储）。优先级定死（修复方案 V2）：
 /// cli 非空 → Cli > servers+skills 均非空 → Bundle > servers 非空 → Mcp > skills 非空 → Skill。
+/// 注：旧 `Spanner` 变体已删除——脚本可执行能力并入 skill 包，通过 SKILL.md frontmatter
+/// `tools[]` + `runtime` 段声明，由 skill_marketplace::install 后置 hook 注册。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BundleKind {
@@ -210,8 +212,6 @@ pub enum BundleKind {
     Mcp,
     /// 纯技能包：仅 skills（市场预置、用户上传；含凭据型技能包如 ima）
     Skill,
-    /// 扳手插件包：仅 spanner（声明式 schema + 无状态单次进程 + 自带运行时）
-    Spanner,
 }
 
 /// 空包错误：mcp_servers/skills/cli 全空（修复方案 V7，schema 层拦截，不默认归 Skill）。
@@ -239,9 +239,6 @@ pub struct BundleInfo {
     pub skills: Vec<String>,
     /// 包内 CLI 连接器 id（无则空）
     pub cli: Vec<String>,
-    /// 包内扳手插件 id（无则空）
-    #[serde(default)]
-    pub spanners: Vec<String>,
     /// 包声明的凭据项（收敛自 config_fields/secret_env/secret_headers）
     pub credentials: Vec<CredentialSpec>,
     /// 功能事实（修复方案 V4 下沉；icon/color/todayImg/welcomeQueries/i18n 留前端 overlay）
@@ -361,7 +358,6 @@ impl BundleRegistry {
                 mcp_servers: vec![tool.id.clone()],
                 skills: companions,
                 cli: Vec::new(),
-                spanners: Vec::new(),
                 credentials,
                 description: tool.description.clone(),
                 version: tool.version.clone(),
@@ -400,7 +396,6 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
-                spanners: Vec::new(),
                 credentials: Vec::new(),
                 description: skill.description.clone(),
                 version: String::new(),
@@ -429,7 +424,6 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: vec![skill.id.clone()],
                 cli: Vec::new(),
-                spanners: Vec::new(),
                 credentials: Vec::new(),
                 description: skill.description.clone(),
                 version: String::new(),
@@ -466,7 +460,6 @@ impl BundleRegistry {
                 mcp_servers: Vec::new(),
                 skills: skill_dirs.iter().map(|s| (*s).to_string()).collect(),
                 cli: vec![(*id).to_string()],
-                spanners: Vec::new(),
                 credentials: Vec::new(),
                 description: (*desc).to_string(),
                 version,
@@ -496,7 +489,6 @@ impl BundleRegistry {
             mcp_servers: Vec::new(),
             skills: ima_skills.iter().map(|s| s.to_string()).collect(),
             cli: Vec::new(),
-            spanners: Vec::new(),
             credentials: vec![
                 CredentialSpec {
                     key: "IMA_CLIENT_ID".to_string(),
@@ -553,27 +545,25 @@ impl BundleRegistry {
     }
 }
 
-/// 纯函数：由内容推导包形态（修复方案 V2 优先级定死 + V7 空包报错 + §15 Spanner）。
-/// 优先级：cli 非空 → Cli > mcp+skills/spanners 组合 → Bundle > mcp 非空 → Mcp
-/// > skills 非空 → Skill > spanners 非空 → Spanner；全空 → Err（空包 schema 层拦截）。
+/// 纯函数：由内容推导包形态（修复方案 V2 优先级定死 + V7 空包报错）。
+/// 优先级：cli 非空 → Cli > mcp+skills 组合 → Bundle > mcp 非空 → Mcp
+/// > skills 非空 → Skill；全空 → Err（空包 schema 层拦截）。
+///
+/// 注：旧 spanners 参数已删除——脚本可执行能力通过 skill 包的 SKILL.md frontmatter
+/// `tools[]` 段声明，不影响 kind 推导。
 pub fn derive_bundle_kind(
     mcp_servers: &[String],
     skills: &[String],
     cli: &[String],
-    spanners: &[String],
 ) -> Result<BundleKind, InvalidBundle> {
     if !cli.is_empty() {
         Ok(BundleKind::Cli)
-    } else if !mcp_servers.is_empty() && (!skills.is_empty() || !spanners.is_empty()) {
-        Ok(BundleKind::Bundle)
-    } else if !skills.is_empty() && !spanners.is_empty() {
+    } else if !mcp_servers.is_empty() && !skills.is_empty() {
         Ok(BundleKind::Bundle)
     } else if !mcp_servers.is_empty() {
         Ok(BundleKind::Mcp)
     } else if !skills.is_empty() {
         Ok(BundleKind::Skill)
-    } else if !spanners.is_empty() {
-        Ok(BundleKind::Spanner)
     } else {
         Err(InvalidBundle)
     }
@@ -675,7 +665,7 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 Readiness::NotReady("cli_not_installed")
             }
         }
-        BundleKind::Mcp | BundleKind::Bundle | BundleKind::Spanner => {
+        BundleKind::Mcp | BundleKind::Bundle => {
             // 本地免凭据（无必填凭据）恒 Ready；有必填凭据则查系统凭据
             let missing: Vec<&str> = bundle
                 .credentials
@@ -798,41 +788,28 @@ mod tests {
     fn derives_bundle_kind_by_content() {
         let mcp = |id: &str| id.to_string();
         // V7：空包报错，不默认归 Skill
-        assert_eq!(derive_bundle_kind(&[], &[], &[], &[]), Err(InvalidBundle));
-        // V2 优先级：cli 恒赢 > Bundle > Mcp > Skill > Spanner
+        assert_eq!(derive_bundle_kind(&[], &[], &[]), Err(InvalidBundle));
+        // V2 优先级：cli 恒赢 > Bundle > Mcp > Skill
         assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[], &[], &[]),
+            derive_bundle_kind(&[mcp("a")], &[], &[]),
             Ok(BundleKind::Mcp)
         );
         assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[], &[]),
+            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[]),
             Ok(BundleKind::Bundle)
         );
         assert_eq!(
-            derive_bundle_kind(&[], &[mcp("s")], &[], &[]),
+            derive_bundle_kind(&[], &[mcp("s")], &[]),
             Ok(BundleKind::Skill)
         );
         assert_eq!(
-            derive_bundle_kind(&[], &[], &[mcp("feishu")], &[]),
+            derive_bundle_kind(&[], &[], &[mcp("feishu")]),
             Ok(BundleKind::Cli)
         );
         // 即使有 servers+skills，cli 非空仍归 Cli
         assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[mcp("feishu")], &[]),
+            derive_bundle_kind(&[mcp("a")], &[mcp("s")], &[mcp("feishu")]),
             Ok(BundleKind::Cli)
-        );
-        // spanner：纯扳手插件包；与 mcp/skill 组合归 Bundle
-        assert_eq!(
-            derive_bundle_kind(&[], &[], &[], &[mcp("f")]),
-            Ok(BundleKind::Spanner)
-        );
-        assert_eq!(
-            derive_bundle_kind(&[mcp("a")], &[], &[], &[mcp("f")]),
-            Ok(BundleKind::Bundle)
-        );
-        assert_eq!(
-            derive_bundle_kind(&[], &[mcp("s")], &[], &[mcp("f")]),
-            Ok(BundleKind::Bundle)
         );
     }
 
@@ -845,7 +822,6 @@ mod tests {
             mcp_servers: vec![],
             skills: vec![],
             cli: vec![],
-            spanners: vec![],
             credentials: creds,
             description: String::new(),
             version: String::new(),
@@ -936,7 +912,6 @@ mod tests {
             pip_dependencies: vec![],
             servers: vec![],
             companion_skills: vec![],
-            spanner_entry: None,
         };
         let creds = tool_credentials(&tool);
         assert_eq!(creds.len(), 2);

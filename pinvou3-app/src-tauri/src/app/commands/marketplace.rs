@@ -637,11 +637,14 @@ fn import_skill_md_content(
     result
 }
 
-/// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：spanner/mcp/skill/组合包），
+/// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：mcp/skill/组合包），
 /// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 true=已导入，
 /// false=用户取消。
+///
+/// 注：旧名 `import_spanner_package` 已重命名——脚本可执行能力并入 skill 包
+/// 通过 SKILL.md frontmatter `tools[]` 段声明，不再有独立 spanner 组件。
 #[tauri::command]
-pub async fn import_spanner_package(
+pub async fn import_plugin_package_cmd(
     app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<bool, String> {
@@ -698,10 +701,12 @@ pub async fn import_spanner_package(
     Ok(true)
 }
 
-/// 拖放导入插件包（统一上传，与 `import_spanner_package` 同语义）：前端把 zip 读成
+/// 拖放导入插件包（统一上传，与 `import_plugin_package_cmd` 同语义）：前端把 zip 读成
 /// base64 传这里，临时落盘后走 `import_plugin_package`。返回 true=已导入。
+///
+/// 注：旧名 `import_spanner_package_bytes` 已重命名——见上面注释。
 #[tauri::command]
-pub async fn import_spanner_package_bytes(
+pub async fn import_plugin_package_bytes_cmd(
     filename: String,
     data_base64: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,

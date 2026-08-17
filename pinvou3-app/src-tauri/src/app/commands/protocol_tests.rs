@@ -232,10 +232,10 @@ command_protocol!(
         "install_marketplace_skill",
         "update_marketplace_skill",
         "import_skill_package",
-        "import_skill_package_bytes",
-        "import_spanner_package",
-        "import_spanner_package_bytes",
+        "import_plugin_package_cmd",
+        "import_plugin_package_bytes_cmd",
         "import_skill_md_bytes",
+        "import_skill_package_bytes",
         "uninstall_marketplace_skill",
         "bundle_readiness"
     ]

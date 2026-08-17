@@ -195,132 +195,13 @@ fn bare_mcp_import_lands_and_registers() {
     });
 }
 
-/// spanner 扳手插件包：落盘 spanner/ + 合成 mcp/manifest.json + 供给 spanner_runner。
-/// spanner + skill 组合包：配套技能声明 companion_skills，让技能引导与工具同卡。
-#[test]
-fn spanner_import_lands_and_registers_spanner_runner() {
-    with_temp_home(|| {
-        let home = std::env::var("PINVOU3_HOME").unwrap();
-        let home = std::path::Path::new(&home);
-        let zip_path = home.join("spanner.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"hello","name":"Hello","version":"1.0.0","spanner":{"entry":"main.py","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},"components":{"skills":[{"id":"hello","dir":"skills/hello"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("spanner/main.py", opts).unwrap();
-            zw.write_all(b"import json,sys\njson.dump({'ok': json.load(sys.stdin)}, sys.stdout)")
-                .unwrap();
-            zw.start_file("skills/hello/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: hello\n---\n# hello").unwrap();
-            zw.finish().unwrap();
-        }
-
-        let report = pinvou3_lib::features::marketplace::plugin_import::import_plugin_package(
-            &zip_path.to_string_lossy(),
-            "spanner.zip",
-        )
-        .unwrap();
-        assert_eq!(report.id, "hello");
-        let pkg = home.join("bundles").join("hello");
-        assert!(pkg.join("spanner/main.py").is_file(), "spanner 入口应落盘");
-        assert!(
-            pkg.join("skills/hello/SKILL.md").is_file(),
-            "配套技能应落盘"
-        );
-        assert!(
-            pkg.join("mcp/manifest.json").is_file(),
-            "合成 mcp manifest 应落盘"
-        );
-        assert!(pkg.join("plugin.json").is_file(), "plugin.json 应落盘");
-        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
-
-        // 合成 manifest 应带 spanner_entry + companion_skills（技能与工具同卡/同开关）。
-        let synth: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(pkg.join("mcp/manifest.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            synth["spanner_entry"], "main.py",
-            "合成 manifest 应带 spanner_entry"
-        );
-        let companions = synth["companion_skills"].as_array().unwrap();
-        assert!(
-            companions.iter().any(|c| c.as_str() == Some("hello")),
-            "合成 manifest 应声明 companion_skills=hello，实际: {companions:?}"
-        );
-
-        // 供给：mcp.json 的 args 应指向 spanner_runner.py + plugin.json（非 server.py）。
-        let mgr = pinvou3_lib::features::marketplace::MarketplaceManager::new();
-        assert!(
-            mgr.installed_ids().contains(&"hello".to_string()),
-            "installed.json 应含 hello"
-        );
-        let mcp_raw = std::fs::read_to_string(pinvou3_lib::platform::paths::mcp_config_path())
-            .unwrap_or_default();
-        let mcp: serde_json::Value = serde_json::from_str(&mcp_raw).unwrap();
-        let server = &mcp["servers"]["hello"];
-        let args = server["args"].as_array().expect("args 应为数组");
-        assert!(
-            args.iter().any(|a| a
-                .as_str()
-                .map(|s| s.ends_with("spanner_runner.py"))
-                .unwrap_or(false)),
-            "spanner 供给的 args 应含 spanner_runner.py，实际: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a
-                .as_str()
-                .map(|s| s.ends_with("plugin.json"))
-                .unwrap_or(false)),
-            "spanner 供给的 args 应含 plugin.json，实际: {args:?}"
-        );
-    });
-}
-
-/// 安装时 smoke test：入口脚本语法错误 → 导入应被拒绝（不留半安装状态）。
-#[test]
-fn spanner_import_rejects_broken_script() {
-    with_temp_home(|| {
-        let home = std::env::var("PINVOU3_HOME").unwrap();
-        let home = std::path::Path::new(&home);
-        let zip_path = home.join("broken.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"broken","name":"Broken","version":"1.0.0","spanner":{"entry":"main.py","input_schema":{"type":"object","properties":{}}}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("spanner/main.py", opts).unwrap();
-            // 故意写坏：语法错误
-            zw.write_all(b"this is not valid python !!!").unwrap();
-            zw.finish().unwrap();
-        }
-
-        let err = pinvou3_lib::features::marketplace::plugin_import::import_plugin_package(
-            &zip_path.to_string_lossy(),
-            "broken.zip",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("安装自检失败") || err.contains("smoke test"),
-            "应返回安装自检失败，实际: {err}"
-        );
-        // 不留半安装：包目录不应存在
-        assert!(
-            !home.join("bundles").join("broken").exists(),
-            "broken 包不应落盘"
-        );
-    });
-}
+/// Super-skill 路径在 `feat/exec-skill` 后续 commit 里加 smoke test。
+/// 旧 spanner 两项 e2e（spanner_import_lands_and_registers_spanner_runner、
+/// spanner_import_rejects_broken_script）随 spanner 退场删除。
+/// 注：spanner_import_lands_and_registers_spanner_runner 校验 spanner_entry +
+/// companion_skills + spanner_runner.py 注入 mcp.json args；老路径不再适用。
+/// spanner_import_rejects_broken_script 校验 smoke test 拦 syntax error；
+/// 新 skill 包的 smoke 由 skill_marketplace::install 接管（同样 fail-fast）。
 
 /// 单个 SKILL.md 文件包装后的形态（zip 根只放一个 SKILL.md）→ 裸技能回退识别并落盘。
 /// 这是 import_skill_md_bytes 底层走的路。

@@ -156,9 +156,6 @@ pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
 /// spanner 扳手插件包的通用 MCP 适配器脚本绝对路径（mcp.json 的 args 指向它）。
-pub fn bundle_spanner_runner() -> PathBuf {
-    bundle_root().join("spanner_runner.py")
-}
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }

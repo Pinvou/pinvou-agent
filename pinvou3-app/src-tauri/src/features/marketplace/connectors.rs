@@ -250,31 +250,17 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         server_dir: &std::path::Path,
         servers: &mut serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
-        let args: Vec<String> = if manifest.spanner_entry.is_some() {
-            // spanner 扳手插件（plugin-protocol §15）：args = [spanner_runner, plugin.json]。
-            vec![
-                crate::platform::paths::bundle_spanner_runner()
-                    .to_string_lossy()
-                    .to_string(),
-                crate::platform::paths::bundles_root()
-                    .join(&manifest.id)
-                    .join("plugin.json")
-                    .to_string_lossy()
-                    .to_string(),
-            ]
-        } else {
-            manifest
-                .args
-                .iter()
-                .map(|a| {
-                    if a == "server.py" || a.ends_with("/server.py") {
-                        server_dir.join("server.py").to_string_lossy().to_string()
-                    } else {
-                        a.clone()
-                    }
-                })
-                .collect()
-        };
+        let args: Vec<String> = manifest
+            .args
+            .iter()
+            .map(|a| {
+                if a == "server.py" || a.ends_with("/server.py") {
+                    server_dir.join("server.py").to_string_lossy().to_string()
+                } else {
+                    a.clone()
+                }
+            })
+            .collect();
 
         let mut env = manifest
             .env
