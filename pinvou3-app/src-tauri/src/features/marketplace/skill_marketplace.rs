@@ -1288,9 +1288,129 @@ fn parse_inline_yaml_value(s: &str) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod super_skill_tests {
     use super::*;
+    use crate::platform::paths;
 
     fn sample_md(body: &str) -> String {
         format!("---\nname: pua\n{body}\n---\n# skill body\n")
+    }
+
+    // ----------------------------------------------------------------------
+    // Commit 3 集成测试：用 3 个真实 skill 的 frontmatter 形式（visualizer /
+    // package-author / image-resize-demo），各建一份临时 SKILL.md，跑
+    // `register_skill_exec_priority_paths` 模拟 super-skill install 钩子。
+    // 注：只测 *配置面*（frontmatter 解析 + priority_paths 写入 + 幂等），不
+    // 实际执行 skill-run wrapper——后者需要 wrapper 与 entry 在真机本地（与
+    // 分支 DLL 问题同源，参见 .luzeyang/PR302-review-fixes/super-skill-RFC.md §6）。
+    // ----------------------------------------------------------------------
+
+    fn run_install_hook(md_text: &str, skill_dir: &std::path::Path) {
+        std::fs::write(skill_dir.join("SKILL.md"), md_text).unwrap();
+        let _ = std::fs::create_dir_all(skill_dir.join("scripts"));
+        std::fs::write(
+            skill_dir.join("scripts").join("entry.py"),
+            b"import json,sys\njson.dump({'ok': True}, sys.stdout)",
+        )
+        .unwrap();
+        // 模拟 SkillMarketplaceManager::install 后置 hook（私有 fn，同模块内可访问）。
+        let mgr = SkillMarketplaceManager::new();
+        let skill_name = read_skill_name_from_str(md_text).unwrap_or_else(|| "demo".into());
+        let _ = mgr.register_skill_exec_priority_paths(skill_dir, &skill_name);
+    }
+
+    /// Test 1: visualizer 类（python + 单一 tool，runtime.dir 自带）
+    #[test]
+    fn super_skill_visualizer_like_skills_register_priority_paths() {
+        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-super-skill-visualizer-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let md = sample_md(
+            "runtime:\n  kind: python\n  dir: runtime\ntools:\n  - name: render_dashboard\n    entry: scripts/render.py\n    timeout_secs: 30\n",
+        );
+        let skill_dir = dir.join("skills").join("visualizer");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        run_install_hook(&md, &skill_dir);
+
+        let listed = paths::skill_priority_paths();
+        assert!(
+            listed.iter().any(|p| p.to_string_lossy().contains("visualizer")),
+            "priority_paths 应含 visualizer 路径：{:?}",
+            listed
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Test 2: package-author 类（node + 多个 tools）
+    #[test]
+    fn super_skill_package_author_like_skills_register_priority_paths() {
+        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-super-skill-pkgauthor-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let md = sample_md(
+            "runtime:\n  kind: node\ntools:\n  - name: synthesize\n    entry: scripts/synth.mjs\n  - name: validate\n    entry: scripts/validate.mjs\n",
+        );
+        let skill_dir = dir.join("skills").join("package-author");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        run_install_hook(&md, &skill_dir);
+
+        let listed = paths::skill_priority_paths();
+        assert!(
+            listed.iter().any(|p| p.to_string_lossy().contains("package-author")),
+            "priority_paths 应含 package-author 路径"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Test 3: 内容-only skill（runtime + tools 都不声明）不写 priority_paths
+    #[test]
+    fn content_only_skill_does_not_register_priority_paths() {
+        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-super-skill-content-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let md = sample_md("description: content only\n");
+        let skill_dir = dir.join("skills").join("content-only");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        run_install_hook(&md, &skill_dir);
+
+        let listed = paths::skill_priority_paths();
+        assert!(
+            !listed.iter().any(|p| p.to_string_lossy().contains("content-only")),
+            "内容-only skill 不应触发 priority_paths：{:?}",
+            listed
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
