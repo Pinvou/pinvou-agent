@@ -722,7 +722,7 @@ impl From<crate::core::reasoning_dialect::ReasoningDialect> for MemoryReviewReas
     }
 }
 
-fn apply_memory_review_reasoning_controls(
+pub(super) fn apply_memory_review_reasoning_controls(
     body: &mut Value,
     preset: ModelPreset,
     provider: &str,

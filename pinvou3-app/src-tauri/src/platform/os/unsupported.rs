@@ -185,9 +185,20 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 #[cfg(unix)]
 pub use super::posix::{path_component_eq, platform_compat_path, python_command};
 
+// macOS 由 macos_path 提供自有实现（APFS 注释在案），经 glob 消费时被显式
+// re-export 遮蔽，这里的转发在其编译面上不可达；仅当 unsupported 自身作为
+// platform（linux/windows/macos 之外的 unix 兜底目标）时才需要从 posix 继承。
+#[cfg(all(unix, not(target_os = "macos")))]
+pub use super::posix::filesystem_path_identity_key;
+
 #[cfg(not(unix))]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
+}
+
+#[cfg(not(unix))]
+pub fn filesystem_path_identity_key(path: &str) -> String {
+    path.to_string()
 }
 
 #[cfg(not(unix))]
