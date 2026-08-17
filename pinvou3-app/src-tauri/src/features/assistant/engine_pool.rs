@@ -28,7 +28,6 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{bail, Context, Result};
 use deepseek_tui::core::events::TurnOutcomeStatus;
-use serde::Serialize;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
 use deepseek_tui::tools::shell::{ShellJobSnapshot, ShellResult};
@@ -36,6 +35,7 @@ use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
+use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
