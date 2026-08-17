@@ -65,8 +65,10 @@ def safe_file_name(name: str) -> str:
     fileName 来自 dws/服务端返回，可能含路径分隔符（../ 穿越）、Windows
     保留字符（: * ? " < > |）或设备名（CON/NUL 等）。只保留 basename，
     再把非法字符替换为 _，避免越目录写入或 Windows 上的创建失败/设备名劫持。
-    超长名截断到 200 字符（保留扩展名），防 macOS(255 字节)/Windows(255 字符)
-    落盘 OSError 崩溃；截断只动主名，扩展名原样保留。
+    超长名按 UTF-8 字节截断到 200 字节（保留扩展名），防 macOS(255 字节)/
+    Windows(255 字符) 落盘 OSError 崩溃——文件系统限制按字节计，中文每字符
+    占 3 字节，按字符数截断无法防中文长名 OSError；截断只动主名，扩展名
+    原样保留（扩展名本身超长时按无主名扩展处理，整体截断）。
     """
     base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)
@@ -80,12 +82,15 @@ def safe_file_name(name: str) -> str:
         *(f"LPT{i}" for i in range(1, 10)),
     }:
         cleaned = f"_{cleaned}"
-    if len(cleaned) > 200:
+    if len(cleaned.encode("utf-8")) > 200:
         dot = cleaned.rfind(".")
-        if dot > 0:
-            cleaned = cleaned[: 200 - (len(cleaned) - dot)] + cleaned[dot:]
+        ext = cleaned[dot:] if dot > 0 else ""
+        ext_bytes = len(ext.encode("utf-8"))
+        if 0 < ext_bytes <= 20:
+            stem = cleaned[:dot].encode("utf-8")[: 200 - ext_bytes]
+            cleaned = stem.decode("utf-8", "ignore") + ext
         else:
-            cleaned = cleaned[:200]
+            cleaned = cleaned.encode("utf-8")[:200].decode("utf-8", "ignore")
     return cleaned
 
 

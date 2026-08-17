@@ -132,6 +132,13 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 验证：全量 `python3 -m py_compile` 通过；usage-error 路径 exit code 非 0；`--help` 冒烟通过。注：第 2-4 类防护的验证为开发期一次性实测/monkeypatch（未提交可重放单测），本仓库防回归门禁仅覆盖文档口径（`connector_skills_contract.test.js` 的 python3 断言）；如需长期回归防护，后续可在 `pinvou3-app/tests/` 补脚本级单测。
 
+## PR #299 审阅代修（2026-08-17）
+
+对第七轮登记的第 2、3 条做收口修正，下次 sync 需重放：
+
+1. **`resolve_safe_path` 符号链接冗余分支删除（import_records.py、bulk_add_fields.py）**：第七轮第 2 条新增的 `target_path.is_symlink()` 分支检查的是 `resolve()` 之后的路径（恒为 False，死代码），且 NOTICE 已勘误拦截实际由 `resolve()` + `relative_to()` 提供。删除该死分支，统一为「路径超出允许范围」错误信息，注释改为说明 resolve 语义；安全属性不变（实测 `../`、绝对路径、根内符号链接指向根外仍全部拒绝）。
+2. **`safe_file_name` 截断改为按 UTF-8 字节（aitable_export_via_task.py）**：原实现两处缺陷——扩展名本身超 200 字符时 `200 - ext_len` 为负索引、截断后反而更长；按字符数截断 200 对中文名无效（200 中文字符约 600 字节，仍超 macOS 255 字节限制）。改为按 UTF-8 字节截断到 200 字节，扩展名 ≤20 字节时保留、超长扩展名按无主名扩展整体截断；docstring 同步更正。
+
 ### 第七轮文档层走查类补登记（2026-08-16，独立复审补录）
 
 第七轮同批 commit 还包含以下文档层改动（此前未登记，依据上游 v1.0.58 zip diff 实测，下次 sync 需逐条重放）：
