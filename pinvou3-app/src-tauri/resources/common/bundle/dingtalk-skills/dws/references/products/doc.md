@@ -571,7 +571,7 @@ Example:
 Flags:
       --node string           要导出的文档标识，支持文档 URL 或 dentryUuid (必填)
       --output string         本地保存路径，文件路径或目录 (必填)
-      --export-format string  导出格式，当前仅支持 docx (默认)
+      --export-format string  导出格式: docx (默认) / markdown (或 md) / pdf
 ```
 
 CLI 内部自动完成：提交导出任务 → 渐进式退避轮询（最多约 5 分钟）→ 成功后自动下载文件。
@@ -670,7 +670,7 @@ Flags:
 
 用户说"下载/导出/下载到本地/导出文档/导出为Word/导出为docx/把文档导出来":
 - **必须先判断目标文件类型**，再决定走 `doc export` 还是 `drive download`：
-  - 在线文档（alidocs/adoc）→ **`doc export`**（内容级命令，格式转换后导出为 docx，未迁移）
+  - 在线文档（alidocs/adoc）→ **`doc export`**（内容级命令，格式转换后按 `--export-format` 导出为 docx（默认）/ markdown / pdf，详见 `./doc/doc-export.md`）
   - 已有文件（PDF、图片、附件、视频等非在线文档）→ **`drive download`**（`doc download` 已弃用）
 - 判断方法：
   1. 用户明确说"导出文档"/"导出为 Word/docx" → 直接走 `doc export`
@@ -679,7 +679,7 @@ Flags:
      - `contentType` = `ALIDOC` → 走 `doc export`
      - `contentType` = `DOCUMENT`/`IMAGE`/`VIDEO` 等 → 走 `drive download`
 
-> **严禁将"导出文档"直接路由到 `drive download`**。`drive download` 只能下载已有文件（原样下载），`doc export` 是将在线文档格式转换后导出为 docx，两者完全不同。
+> **严禁将"导出文档"直接路由到 `drive download`**。`drive download` 只能下载已有文件（原样下载），`doc export` 是将在线文档格式转换后按 `--export-format` 导出为 docx（默认）/ markdown / pdf，两者完全不同。
 
 用户说"复制文档/拷贝一份/复制到":
 - 复制 → `copy` (需源 --node 和目标 --folder/--workspace)

@@ -102,6 +102,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 5. `references/products/doc/doc-permission.md` 9 处：`--user` → `--users`（flag 实名）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
 6. `references/products/doc/doc-export.md`：标题与 `--export-format` 说明由「仅 docx」改「docx（默认）/ markdown（或 md）/ pdf」，补 markdown 导出示例与「`--output` 传目录时按格式自动追加扩展名」。
 7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。
+8. `references/products/doc.md` 导出格式口径 3 处（2026-08-17 评审补充，第 6 条同源修正的传播；`dws doc export --help` 实测为 docx（默认）/markdown (.md)/pdf）：`--export-format` flag 说明行「当前仅支持 docx (默认)」改「导出格式: docx (默认) / markdown (或 md) / pdf」；「用户说下载/导出」路由条「格式转换后导出为 docx，未迁移」与末尾「严禁路由到 drive download」提示条「导出为 docx」均改为「按 `--export-format` 导出为 docx（默认）/ markdown / pdf」并指向 `./doc/doc-export.md`。
 
 ## 第六轮收官语义扫描补录（2026-08-16）
 

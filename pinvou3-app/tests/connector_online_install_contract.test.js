@@ -43,19 +43,25 @@ for (const platformSource of [linux, macos]) {
 
 // 版本联动：工具卡展示版本必须与 lock 钉扎（及 tmeet.rs npm 钉扎）一致，
 // 防止再次出现卡片版本与实际安装版本脱节（如历史上的 v1.0.56 vs lock 1.0.65）。
-const lock = JSON.parse(
-  read(
-    "src-tauri",
-    "resources",
-    "platforms",
-    "macos",
-    "aarch64",
-    "bundle",
-    "connectors",
-    "connectors.lock.json",
-  ),
-);
-const lockVersions = Object.fromEntries(lock.artifacts.map((a) => [a.name, a.version]));
+// 5 份平台 lock 全量校验（NOTICE 承诺「5 份任一即可，版本字段一致」由此背书）：
+// 只改其中一份的版本而漏改其余（或漏改卡片）都会在此失败。
+const lockVersionsByPlatform = {};
+for (const [osDir, archDir] of [
+  ["macos", "aarch64"],
+  ["macos", "x86_64"],
+  ["linux", "aarch64"],
+  ["linux", "x86_64"],
+  ["windows", "x86_64"],
+]) {
+  const lock = JSON.parse(
+    read("src-tauri", "resources", "platforms", osDir, archDir, "bundle", "connectors", "connectors.lock.json"),
+  );
+  lockVersionsByPlatform[`${osDir}/${archDir}`] = Object.fromEntries(lock.artifacts.map((a) => [a.name, a.version]));
+}
+const lockVersions = lockVersionsByPlatform["macos/aarch64"];
+for (const [platform, versions] of Object.entries(lockVersionsByPlatform)) {
+  assert.deepEqual(versions, lockVersions, `${platform} connectors.lock.json 版本与其他平台不一致`);
+}
 const cardVersion = (marker) => {
   const line = toolCommon.split("\n").find((l) => l.includes(marker));
   const match = line && line.match(/version: 'v([\d.]+)'/);

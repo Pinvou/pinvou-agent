@@ -68,12 +68,17 @@ SOFTWARE.
 
 - **命令真实性核实**:用 0.1.9 二进制实测(向 `~/.config/wecom/cache/service_<域>.json` 注入上游 `registry.rs` 认可的工具清单后跑 `<域> <工具> --help`)全量验证 7 个 skill 引用的 45 条命令,全部存在;`get_doc_content`/`smartpage_*`/smartsheet 新建/todo 必填 `follower_id`/`search_todo_userid` 均与 0.1.9 相符,无需改动。
 - **frontmatter 防误用语义补齐(pinvou3 适配)**:7 个 skill 的 description 原为上游直译,缺「何时用 + 泛指默认本地」防误用前缀(对照 lark/dws/tmeet 收录口径),逐个改写为 `何时用:仅当用户明确指向企业微信…时使用;泛指…默认走本地工具` 开头,全部 ≤280 字符。
+- **引擎工具名修正(pinvou3 适配,PR #299 第四轮)**:`wecomcli-smartsheet/SKILL.md` 接口路由表硬规则行的「先 `read` 对应 references 文件」改为「先用 `File(action="read")` 读取对应 references 文件」(上游裸 `read` 是品悟引擎已退役的工具名,与 lark/dws/tmeet 的 File(action="read") 口径对齐)。
 - 未发现上游通用话术残留(文件读取工具名均为品悟口径、无全局安装类指引)、悬空相对链接(22 个引用全部存在)。
 
-> 对账注(2026-08-16,NOTICE 对账实测):以 0.1.9 发布点 `72e14f7` 为真值逐 skill
-> diff,实际差异全集 = 上文「结构性修改」「提示词去重与精简」「上游同步」「结构
-> 下沉」各条 +「frontmatter 防误用语义补齐」,无未登记分叉;`metadata.requires.bins`
-> 与 `cliHelp` 为上游原生(0.1.9 各 skill frontmatter 自带,勿当本地修改重放)。
+> 对账注(2026-08-16,NOTICE 对账实测;2026-08-17 评审勘误补两条):以 0.1.9 发布点
+> `72e14f7` 为真值逐 skill diff,实际差异全集 = 上文「结构性修改」「提示词去重与
+> 精简」「上游同步」「结构下沉」各条 +「frontmatter 防误用语义补齐」+ 以下两条
+> 历史分叉:`wecomcli-smartsheet/SKILL.md` 的 File(action="read") 工具名修正
+> (见上)与同文件 `+smartsheet_update_records_auto_file` 示例中 `records.values`
+> 双层嵌套的 JSON 结构修正(上游 `bae1cc3` 原文为 `"values": {"values":{...}}`,
+> 历史修复见 PR #131,上游未修须持续重放);`metadata.requires.bins` 与
+> `cliHelp` 为上游原生(0.1.9 各 skill frontmatter 自带,勿当本地修改重放)。
 > 各 skill 重放基线:wecomcli-contact/doc/meeting/msg/schedule = `72e14f7`,
 > wecomcli-smartsheet = `bae1cc3`,wecomcli-todo = `9d2aeaf`(`9eb7898` 仅改
 > README,与 skills/ 无关);上游合并 wecomcli-sheet/smartpage 进 doc 或发新 tag
@@ -88,8 +93,10 @@ SOFTWARE.
 >   pinvou3-app/src-tauri/resources/common/bundle/wecom-skills/wecomcli-msg
 > # smartsheet/todo 分别用 bae1cc3 / 9d2aeaf 建 worktree 复核
 > ```
-> 实测输出特征(用于自检):diff 只报各 SKILL.md differ、
-> wecomcli-meeting 下多出 `references/workflows.md`、wecomcli-todo 下多出
-> `examples/`(已删)、以及本 NOTICE 文件本身——这四类之外的「Only in/differ」
-> 即为新的未登记分叉。注意 `72e14f7` 等是 commit hash(非 tag),wecom-cli
-> 仓库以 changeset 发版,`git log --oneline` 可按上文 MR 编号(!35/!36/!37)定位。
+> 实测输出特征(用于自检;2026-08-17 勘误:以下特征是对各 skill 全目录 diff 的
+> 汇总,smartsheet/todo 须分别对 `bae1cc3`/`9d2aeaf` 建 worktree 才成立):
+> diff 只报各 SKILL.md differ、wecomcli-meeting 下多出 `references/workflows.md`、
+> wecomcli-todo 下多出 `examples/`(已删)、以及本 NOTICE 文件本身——这四类之外的
+> 「Only in/differ」即为新的未登记分叉。注意 `72e14f7` 等是 commit hash(非 tag),
+> wecom-cli 仓库以 changeset 发版,`git log --oneline` 可按上文 MR 编号(!35/!36/!37)
+> 定位。

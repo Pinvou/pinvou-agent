@@ -106,7 +106,7 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 - **lark-sheets**:description 压缩至 280 内;删除错误的 `set +H` 建议(Linux sh/dash 下为非法选项),改为单引号包裹方案;示例 `--sheet-name "Sheet1"` 改为占位符。
 - **lark-wiki**:description 压缩至 280 内;删除与「成员管理硬限制」重复的决策条。
 - **lark-im**:`Read 工具` 改为实际工具名 `read_file`;身份映射段去重;`--download-resources` 段去重;删除无对应文档的 Card Messages 孤儿段;权限表下沉至 `references/lark-im-scopes.md`(新增)。
-- **lark-task**:删除 shipped lark-cli 中不存在的 `+subscribe-event` 表行及其 reference 文件(reference 文件已删,无需重放;表行删除项在 v1.0.87 上游文本上仍需重放——1.0.87 实测无该命令,维持删除);lark-minutes 断链改为直接写 `lark-cli minutes +todo`;时间格式改为 `YYYY-MM-DD HH:MM:SS`;补 `lark-cli whoami` 提示。
+- **lark-task**:删除 shipped lark-cli 中不存在的 `+subscribe-event` 表行及其 reference 文件(reference 文件已删,无需重放;2026-08-17 勘误:经对 v1.0.87 上游 tarball 全量 grep,上游已无 subscribe-event 字样,表行删除项同样无需重放);lark-minutes 断链改为直接写 `lark-cli minutes +todo`;时间格式改为 `YYYY-MM-DD HH:MM:SS`;补 `lark-cli whoami` 提示。
 - **references 级修正**:lark-doc-whiteboard.md / lark-doc-update.md / lark-doc-xml.md / style/lark-doc-create-workflow.md / lark-drive-comment-location.md 中对未收录 lark-whiteboard 的引用全部改为「未随包收录 + CLI 命令直给」口径。
   (状态注 2026-08-16:`style/lark-doc-create-workflow.md` 及其所在
   `lark-doc/references/style/` 目录已随 v1.0.87 同步删除——上游把 style/ 并入
@@ -229,8 +229,9 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 对照上游 v1.0.87 tag tarball 全量 diff 复审,以下既有本地分叉此前未登记,
 下次 sync 需逐条重放:
 
-- **`python` → `python3` 改写(7 处/3 文件,上游 v1.0.87 原文均为裸 `python`;
-  品悟宿主环境无裸 `python`,实测 command not found)**:
+- **`python` → `python3` 改写(5 处/3 文件,上游 v1.0.87 原文均为裸 `python`;
+  品悟宿主环境无裸 `python`,实测 command not found;2026-08-17 计数勘误:原记
+  「7 处」,实测 sop 1 + read-data 3 + write-cells 1 = 5 处)**:
   `lark-base/references/lark-base-data-analysis-sop.md`(uv run 示例 1 处)、
   `lark-sheets/references/lark-sheets-read-data.md`(3 处)、
   `lark-sheets/references/lark-sheets-write-cells.md`(1 处管道示例)。
@@ -247,3 +248,21 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   整节(obj_type + obj_token 解析后按 doc/sheet/bitable 分流的交接表)。
 - **lark-shared/SKILL.md**:新增「临时文件一律写 `tmp/` 子目录」安全规则
   (过程文件不污染工作目录根的产出物列表)。
+- **lark-contact 断链适配 3 处(PR #299 同步引入,2026-08-17 补登记)**:
+  上游 v1.0.87 在 `lark-calendar/SKILL.md`(2 处,「常用其他域命令」区的
+  搜索用户/通讯录行)与 `lark-task/SKILL.md`(1 处,负责人真实姓名注)原本
+  指向未收录技能(`../lark-contact/SKILL.md` 断链/「详见 lark-contact」),
+  本地改为「lark-contact skill 未随包收录,用 `lark-cli contact +search-user`
+  直连」口径。`lark-base/references/lark-base-filter-condition.md:111` 的同类
+  适配 1 处一并列入本条(filter-condition 为 v1.0.87 新文件,适配随首次同步带入)。
+- **表格管道转义 7 处(第五/八轮审查引入,2026-08-17 补登记)**:
+  `lark-base/references/lark-base-data-analysis-sop.md`(4 处,类型表
+  `string\|null` 等)、`lark-doc/references/lark-doc-script.md`(2 处,
+  `--as user\|bot` 与 `--format` 枚举)、`lark-im/references/card/components/
+  checker.md`(1 处,`plain_text\|"lark_md"`)——单元格代码跨度内的 `|` 须
+  `\|` 转义,否则 GFM 渲染表格列破裂。
+- **lark-sheets 临时文件口径对齐(2026-08-17 评审修正)**:SKILL.md 两处
+  「临时文件放系统临时目录」(脚本配合节)与「别把临时文件写进用户项目目录」
+  (stdin/@file 陷阱条)按 lark-shared 的 `tmp/` 规则改写为「写 cwd 下 `tmp/`
+  子目录」——上游「系统临时目录」是绝对路径,与 `@file` 仅接受 cwd 相对路径
+  的约束冲突;重放时以本条为准,不回放上游原文。

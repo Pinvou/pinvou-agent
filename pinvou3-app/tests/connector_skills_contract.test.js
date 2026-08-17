@@ -45,6 +45,16 @@ for (const f of docs) {
     assert.ok(!text.includes(gone), `${rel(f)}: 引用已删除对象 ${gone}`);
   }
 }
+// 已删除文件的“本体复发”不可见（文本引用黑名单只防引用）：机械 sync 恢复整个
+// 目录时，被删文件可能以不自指内容回归，直接断言路径不存在。
+const removedFiles = [
+  ["dingtalk-skills", "dws", "references", "channel-login.md"],
+  ["skills", "lark-calendar", "references", "lark-calendar-agenda.md"],
+  ["skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
+];
+for (const parts of removedFiles) {
+  assert.ok(!fs.existsSync(bundle(...parts)), `${parts.join("/")}: 已删除文件复发（见 NOTICE 登记）`);
+}
 
 // 2) 引擎工具名唯一口径 + 自更新禁令
 for (const f of docs) {
@@ -65,8 +75,10 @@ for (const f of docs) {
 for (const f of docs) {
   const text = read(f);
   assert.ok(
-    !/\bnpm\s+(?:install|i)\s+(?:-g|--global)\b/.test(text),
-    `${rel(f)}: 残留 npm 全局安装教学（npm install -g / npm i -g / --global 均禁止）`,
+    !/\bnpm\s+(?:-g\s+|--global\s+)?(?:install|i)\s+(?:-g\s+|--global\s+)?\S+/.test(text) &&
+      !/\bnpm\s+(?:install|i)\s+[^-\n]*@latest\b/.test(text) &&
+      !/\b@[a-z0-9-]+\/[a-z0-9.-]+@latest\b/.test(text),
+    `${rel(f)}: 残留 npm 安装教学（-g/--global/@latest 均禁止，安装由品悟代管）`,
   );
   assert.ok(!/\bnpx\s+\S*skills\b/.test(text), `${rel(f)}: 残留 npx skills 教学（含 scoped 形态）`);
   // dws 脚本示例统一 python3：宿主环境无裸 `python` 命令（macOS/Homebrew/Win embeddable 均只装 python3）
@@ -77,9 +89,10 @@ for (const f of docs) {
 for (const f of docs) {
   for (const line of read(f).split("\n")) {
     if (/(hermes|openclaw(?!_workspace))/i.test(line)) {
-      // dws dev 渠道枚举（opencode/claudecode/.../hermes/openclaw/custom）是真实
-      // CLI 渠道值而非宿主断言，豁免含「渠道」的行。
-      if (line.includes("渠道")) continue;
+      // dws dev 渠道枚举行是真实 CLI 渠道值而非宿主断言（如
+      // “# 明确指定渠道（opencode/.../hermes/openclaw/custom）”、
+      // “`hermes`/`openclaw` 渠道走官方建联”）——按枚举语境而非「渠道」二字豁免。
+      if (/[（(][^）)]*hermes[^）)]*openclaw[^）)]*[）)]/i.test(line) || /hermes`?\/`?openclaw`?\s*渠道/.test(line)) continue;
       assert.ok(
         line.includes("品悟"),
         `${rel(f)}: 上游宿主断言未锚定品悟语境: ${line.trim()}`,
@@ -123,10 +136,10 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);
 }
 
-// 7) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由
-const EXEMPT_FILES = [
-  // dws scripts 的 OPENCLAW_WORKSPACE 为路径护栏 env（未设时回退 cwd），非宿主断言
-  // 历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现
-];
+// 7) 语义扫描豁免登记：以上规则若在上游 sync 后出现合理新豁免，必须在本清单登记文件+理由。
+// EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
+// cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
+const EXEMPT_FILES = [];
+assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
 
 console.log("✓ connector skills pinvou-contract lint passed");
