@@ -45,6 +45,24 @@ pub fn current_system_locale() -> Option<String> {
     String::from_utf16(&locale_names[..first_len]).ok()
 }
 
+/// 进程存活探测：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 成功即存活；
+/// 权限不足（ERROR_ACCESS_DENIED）也视为存活（进程存在但属于其他用户/更高完整性
+/// 级别）。消费方：browser watch 删除 stale 端口文件前的持有者护栏。
+pub fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: 仅查询进程存在性；句柄非空时立即关闭，无泄漏。
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if !handle.is_null() {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return true;
+    }
+    let err = unsafe { GetLastError() };
+    err == ERROR_ACCESS_DENIED
+}
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])

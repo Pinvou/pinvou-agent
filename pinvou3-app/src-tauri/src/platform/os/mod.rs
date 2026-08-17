@@ -44,8 +44,9 @@ pub use interface::{
     pandoc_dependency_packages, pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path,
     path_component_eq, pdf_dependency_packages, pdf_ocr_missing_message,
     pdf_render_missing_message, pdf_text_missing_message, pdf_tool_exists, pdf_tool_path,
-    platform_compat_path, presentation_pdf_missing_message, python_command, reveal_target,
-    show_archive_dependency_check, show_ocr_dependency_check, show_pandoc_dependency_check,
-    show_pdf_dependency_check, super_permission_is_enabled, super_permission_turn_reminder,
-    system_default_open_supported, user_home_dir, validate_upload_location,
+    platform_compat_path, presentation_pdf_missing_message, process_alive, python_command,
+    reveal_target, show_archive_dependency_check, show_ocr_dependency_check,
+    show_pandoc_dependency_check, show_pdf_dependency_check, super_permission_is_enabled,
+    super_permission_turn_reminder, system_default_open_supported, user_home_dir,
+    validate_upload_location,
 };

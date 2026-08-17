@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import './browser-i18n.js'; // 三语文案补丁（side effect）
 import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { frameToViewport as frameToViewportCoords } from './frame-to-viewport.mjs';
 import {
   AppWindow,
   ChevronLeft,
@@ -145,7 +146,10 @@ export function BrowserView({ theme, t }) {
       e.preventDefault();
       const p = frameToViewportRef.current(e.clientX, e.clientY);
       if (!p) return;
-      sendInputRef.current({ type: 'wheel', x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY });
+      // 修饰键随滚轮转发（CDP modifiers 位掩码，同 click）：触控板双指捏合
+      // 产生 ctrlKey:true 的 wheel，不带修饰键转发时页面内捏合缩放退化为滚动。
+      const modifiers = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+      sendInputRef.current({ type: 'wheel', x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY, modifiers });
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
@@ -240,36 +244,13 @@ export function BrowserView({ theme, t }) {
   }, []);
 
   // ---- 用户交互（坐标换算 → CDP Input） ----
+  // 换算逻辑是独立纯函数模块 frame-to-viewport.mjs（object-contain letterbox
+  // 黑边剔除 + pageScaleFactor 除法），单测见 tests/browser_frame_to_viewport.test.mjs。
   const frameToViewport = useCallback(
-    (clientX, clientY) => {
-      const img = imgRef.current;
-      if (!img || !img.naturalWidth) return null;
-      const rect = img.getBoundingClientRect();
-      // `<img>` 是 object-contain 等比缩放：getBoundingClientRect 返回整盒，
-      // 宽高比不一致时上下/左右有 letterbox 黑边。必须按实际绘制区换算，
-      // 绘制区之外的点击/移动不映射进页面坐标。
-      const aspect = img.naturalWidth / img.naturalHeight;
-      let drawnW = rect.width;
-      let drawnH = drawnW / aspect;
-      if (drawnH > rect.height) {
-        drawnH = rect.height;
-        drawnW = drawnH * aspect;
-      }
-      const offsetX = rect.left + (rect.width - drawnW) / 2;
-      const offsetY = rect.top + (rect.height - drawnH) / 2;
-      const px = clientX - offsetX;
-      const py = clientY - offsetY;
-      if (px < 0 || py < 0 || px > drawnW || py > drawnH) return null; // 黑边内
-      let x = (px / drawnW) * img.naturalWidth;
-      let y = (py / drawnH) * img.naturalHeight;
-      // 页面缩放（pageScaleFactor≠1）时坐标换算到 CSS 像素
-      const p = frameMeta && frameMeta.pageScaleFactor;
-      if (p && p > 0 && p !== 1) {
-        x /= p;
-        y /= p;
-      }
-    return { x, y };
-  }, [frameMeta]);
+    (clientX, clientY) =>
+      frameToViewportCoords(imgRef.current, clientX, clientY, frameMeta && frameMeta.pageScaleFactor),
+    [frameMeta]
+  );
   const frameToViewportRef = useRef(frameToViewport);
   frameToViewportRef.current = frameToViewport;
 
@@ -411,6 +392,10 @@ export function BrowserView({ theme, t }) {
             placeholder={t.browserUrlPlaceholder}
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
+            // IME 组合确认候选词的 Enter 不得触发提交导航（macOS WKWebView
+            // bug 165004 下 isComposing 已复位但 keyCode 229 保留，必须走
+            // 统一守卫；契约见 tests/ime_compose_guard.test.mjs）。
+            onKeyDown={(e) => { if (e.key === 'Enter' && isImeComposing(e)) e.preventDefault(); }}
             spellCheck={false}
             data-testid="browser-url-input"
           />

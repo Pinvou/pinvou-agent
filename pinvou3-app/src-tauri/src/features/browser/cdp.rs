@@ -89,7 +89,7 @@ impl CdpSession {
                 self.pending.lock().await.remove(&id);
                 return Err("CDP 响应超时（30s）".to_string());
             }
-            Ok(Err(_)) => return Err("CDP 响应超时（连接已关闭）".to_string()),
+            Ok(Err(_)) => return Err("CDP 连接已关闭（响应通道被丢弃）".to_string()),
             Ok(Ok(r)) => r,
         };
         response
@@ -112,9 +112,11 @@ impl CdpSession {
         .await;
     }
 
-    /// 尽力发送一帧（读循环专用）：ack 类小帧丢弃即失序，仅打日志由上层观察。
+    /// 尽力发送一帧（读循环专用）：ack 类小帧丢弃即失序，失败打日志便于现场诊断。
     async fn notify(&self, session_id: Option<&str>, method: &str, params: Value) {
-        let _ = self.call(session_id, method, params).await;
+        if let Err(e) = self.call(session_id, method, params).await {
+            eprintln!("[browser] CDP 通知帧发送失败（{method}）: {e}");
+        }
     }
 }
 
@@ -134,8 +136,17 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     // 若此处无界等待，ensure_started 持 start_mtx 会把整个浏览器生命周期冻结
     // （stop()/watch 自动接入/后续 ensure_started 全部被卡住）。reqwest 默认
     // client 无超时，WS 握手同样无超时，必须显式包 timeout。
+    // 回环探测不走系统代理：reqwest 默认 auto_sys_proxy，设了 HTTP_PROXY 且未配
+    // NO_PROXY 的用户会把 127.0.0.1 请求发往代理而失败（每次启动仅探测一次，
+    // 一次性 client 即可）。
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .context("构建 HTTP client")?;
     let body = tokio::time::timeout(Duration::from_secs(10), async {
-        reqwest::get(&version_url)
+        client
+            .get(&version_url)
+            .send()
             .await
             .context("GET /json/version")?
             .error_for_status()

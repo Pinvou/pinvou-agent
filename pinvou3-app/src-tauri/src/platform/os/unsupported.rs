@@ -253,6 +253,12 @@ pub fn bundled_node() -> Option<std::path::PathBuf> {
     None
 }
 
+/// 非桌面平台无进程存活探测能力：返回 false（浏览器功能本就不支持这些平台，
+/// chrome_candidates 为空，该桩实际不可达）。
+pub fn process_alive(_pid: u32) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

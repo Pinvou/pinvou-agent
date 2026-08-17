@@ -163,8 +163,10 @@ function writePortFile(port, owner) {
       /* Windows 无 chmod 语义，忽略 */
     }
     renameSync(tmp, CDP_PORT_JSON); // 原子替换
+    return true;
   } catch (e) {
     log('写端口文件失败:', e.message);
+    return false;
   }
 }
 
@@ -319,6 +321,9 @@ async function main() {
   const portFile = readPortFile();
   let port = portFile?.port ?? 0;
   let chromeReady = port > 0 && probeCdp(port, 2000);
+  // 自启 Chrome 后端口文件写入失败标记：走统一失败出口时保留具体原因，
+  // 不被「CDP 未就绪」的泛化记录覆盖。
+  let portFileWriteFailed = false;
 
   if (!chromeReady) {
     // 需要（重新）启动：先拿独占锁，避免与品悟 BrowserManager 双启同一 profile
@@ -386,8 +391,18 @@ async function main() {
           port = pickFreePort();
           if (startChrome(port)) {
             chromeReady = probeCdp(port, 15000);
-            if (chromeReady) writePortFile(port, 'mcp');
-            else log('Chrome 已启动但 CDP 未就绪');
+            if (chromeReady && !writePortFile(port, 'mcp')) {
+              // Chrome 已就绪但端口文件没落盘：Rust 侧永远发现不了该实例
+              // （前端 Tab 不出现），用户触发 ensure_started 还会对同一
+              // profile 双启 Chrome 撞单实例锁。与 Rust 侧同等场景一致按
+              // 致命处理：记录原因后置 chromeReady=false，走下方统一失败
+              // 出口（先由 finally 释放启动锁，再 cleanup 回收自启 Chrome
+              // 并退出）。
+              writeLastError(`CDP 端口文件写入失败: ${CDP_PORT_JSON}`);
+              portFileWriteFailed = true;
+              chromeReady = false;
+            }
+            if (!chromeReady && !portFileWriteFailed) log('Chrome 已启动但 CDP 未就绪');
           }
         }
       } finally {
@@ -411,8 +426,9 @@ async function main() {
     // 工具根本不会注册——与其以端口 0 误导 spawn，不如干净退出并给出可读日志；
     // 引擎对非 required server 的启动失败是非致命的，品悟 BrowserManager 之后
     // 兜底拉起 Chrome，下次会话重试即恢复。
-    if (startedByUs && chromeChild) {
+    if (startedByUs && chromeChild && !portFileWriteFailed) {
       // Chrome 拉起来了但 CDP 没就绪：记录具体原因，供 Rust 侧注入模型可见提示。
+      // （端口文件写入失败的原因已在写入处记录，不覆盖。）
       writeLastError('Chrome 已启动但 CDP 未就绪');
     }
     // 未找到 Chrome / Chrome 启动失败的原因已由 startChrome 写入 last-error.json。

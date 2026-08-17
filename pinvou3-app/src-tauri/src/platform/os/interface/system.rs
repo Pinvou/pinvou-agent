@@ -198,13 +198,22 @@ pub fn bundled_node() -> Option<std::path::PathBuf> {
     super::super::platform::bundled_node()
 }
 
+/// 进程存活探测（browser watch 删除 stale 端口文件前的持有者护栏）。
+/// 平台差异必须在适配层实现，消费方（features）不得直接写 `#[cfg(unix)]`。
+pub fn process_alive(pid: u32) -> bool {
+    super::super::platform::process_alive(pid)
+}
+
 /// 收紧文件权限为仅当前用户可读写（browser 端口文件等无鉴权敏感文件的落盘路径）。
 /// Unix 侧 chmod 0o600（与 browser-wrapper.mjs 一致）；Windows 无 POSIX 权限语义为 no-op。
 /// 平台差异必须在适配层实现，消费方（features）不得直接写 `#[cfg(unix)]`。
 #[cfg(unix)]
 pub fn make_private_file(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    // 收紧失败不得静默吞掉：无鉴权敏感文件以宽松权限残留是安全问题，打警告便于诊断。
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!("[platform] 收紧文件权限失败（{}）: {e}", path.display());
+    }
 }
 
 /// 非 Unix 平台 no-op（Windows 无 POSIX 权限语义）。
@@ -216,7 +225,10 @@ pub fn make_private_file(_path: &Path) {}
 #[cfg(unix)]
 pub fn make_private_dir(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    // 收紧失败不得静默吞掉：含登录会话的目录以宽松权限残留是安全问题，打警告便于诊断。
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        eprintln!("[platform] 收紧目录权限失败（{}）: {e}", path.display());
+    }
 }
 
 /// 非 Unix 平台 no-op（Windows 无 POSIX 权限语义）。

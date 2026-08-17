@@ -4,6 +4,9 @@ use std::process::Command;
 
 use super::linux_path;
 
+// Unix 通用 helper 从 posix.rs 继承（与 linux_path.rs 的 Wave 3 去重同口径）。
+pub use super::super::posix::process_alive;
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(target.as_ref())

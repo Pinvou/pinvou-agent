@@ -193,6 +193,21 @@ impl BrowserManager {
                     // 避免永久空转探测（wrapper 崩溃残留/异常退出场景）。
                     fail_count += 1;
                     if fail_count >= 5 {
+                        // 持有者存活护栏：端口文件中的 pid（app/wrapper 进程）仍存活
+                        // 时不得删除——Chrome 可能只是 wedged 而持有者健康（wrapper 只在
+                        // 自启时写一次端口文件，误删后无人重写，下个启动者会对同一
+                        // profile 双启 Chrome 撞单实例锁；与路径 1 保留文件的口径一致）。
+                        // pid 已死（或文件损坏读不出 pid）才判定 stale 删除；持有者
+                        // 存活时重置计数，继续探测等待其 Chrome 恢复。
+                        if let Some(pid) = port_file_holder_pid() {
+                            if crate::platform::os::process_alive(pid) {
+                                eprintln!(
+                                    "[browser] 端口探测失败但持有者 pid {pid} 存活，保留端口文件"
+                                );
+                                fail_count = 0;
+                                continue;
+                            }
+                        }
                         eprintln!("[browser] 端口文件 stale（端口 {port}），清理后重试");
                         let _ = std::fs::remove_file(paths::browser_cdp_port_json());
                         fail_count = 0;
@@ -404,6 +419,11 @@ impl BrowserManager {
             if spawned_by_us {
                 let _ = std::fs::remove_file(paths::browser_cdp_port_json());
             }
+            // 清空 page_sessions 缓存：sessionId 是每条 WebSocket 连接私有的，本次
+            // 连接已在上方关闭——残留条目会让下次 ensure_started 的新连接命中死 sid
+            // （必然失败 → watch 无限重试，且 browser:activated 从未 emit，用户无
+            // UI 入口触发 stop，只能重启应用）。
+            self.page_sessions.lock().clear();
             return Err(e.clone());
         }
         // 成功接入：清除历史失败记录，避免 24h 内向模型注入陈旧的「浏览器不可用」
@@ -630,7 +650,16 @@ impl BrowserManager {
         let had_child = inner.child.is_some();
         if let Some(mut child) = inner.child.take() {
             let _ = child.kill();
-            let _ = child.wait();
+            // 限期等待（与 stop() 同口径；此处是同步上下文，用 std::thread::sleep）：
+            // 进程处于不可杀状态时无界 wait 会让应用退出永久挂起——超时放弃等待，
+            // 句柄随 Child drop 关闭，进程留待系统回收，退出优先。
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
         if let Some(task) = inner.loop_task.take() {
             task.abort();
@@ -767,7 +796,9 @@ impl BrowserManager {
         let tabs = list_page_tabs(&session, &self.page_sessions)
             .await
             .map_err(|e| format!("关标签页后枚举失败: {e}"))?;
-        if let Some(first) = tabs.first() {
+        // Target.closeTarget 后立即 getTargets 仍可能含刚关闭的将死 target，
+        // 显式排除（与 on_target_destroyed 同口径）。
+        if let Some(first) = tabs.iter().find(|t| t.target_id != target_id) {
             let sid = self
                 .page_sessions
                 .lock()
@@ -1159,33 +1190,21 @@ async fn run_event_loop(
                     }
                 }
                 "Target.targetCreated" | "Target.targetDestroyed" => {
-                    // browser 级 Target 事件包含 iframe/worker 等非页面 target：不过滤
-                    // 会让前端对每次 iframe 增删都触发一次标签页全量枚举（经 CDP
-                    // 往返），密集页面下事件风暴。
-                    let target_type = params
-                        .pointer("/targetInfo/type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if target_type != "page" {
-                        continue;
-                    }
-                    // 激活页被（MCP/页面脚本）销毁时先自愈切换，再通知前端刷新——
-                    // 否则截图流冻结在已销毁 target 的最后一帧且无人恢复
-                    // （session 存活，watch 崩溃恢复不触发）。
-                    if method == "Target.targetDestroyed" {
-                        if let Some(tid) = params
-                            .pointer("/targetInfo/targetId")
-                            .and_then(Value::as_str)
-                        {
-                            app.state::<BrowserManager>().on_target_destroyed(tid).await;
+                    // 协议形状差异与路由判定见 route_target_event：created 带完整
+                    // targetInfo（可过滤非页面 target），destroyed 只有 { targetId }。
+                    match route_target_event(&method, &params) {
+                        TargetEventRoute::Ignore => continue,
+                        // 激活页被（MCP/页面脚本）销毁时先自愈切换，再通知前端刷新——
+                        // 否则截图流冻结在已销毁 target 的最后一帧且无人恢复
+                        // （session 存活，watch 崩溃恢复不触发）。
+                        TargetEventRoute::Destroy(tid) => {
+                            app.state::<BrowserManager>()
+                                .on_target_destroyed(&tid)
+                                .await;
                         }
-                    } else {
                         // 全部标签页关闭后模型新建标签页：自动补激活新页。
-                        if let Some(tid) = params
-                            .pointer("/targetInfo/targetId")
-                            .and_then(Value::as_str)
-                        {
-                            app.state::<BrowserManager>().on_target_created(tid).await;
+                        TargetEventRoute::Create(tid) => {
+                            app.state::<BrowserManager>().on_target_created(&tid).await;
                         }
                     }
                     let payload = json!({ "event": method, "params": params });
@@ -1211,6 +1230,43 @@ fn active_locked(inner: &Inner) -> Result<(&CdpSession, String), String> {
         .clone()
         .ok_or_else(|| "没有激活的标签页".to_string())?;
     Ok((session.as_ref(), sid))
+}
+
+/// browser 级 Target 事件的路由判定（纯函数，便于单测协议形状）。
+///
+/// 协议形状差异（实测/协议文档）：`Target.targetCreated` 的 params 携带完整
+/// `targetInfo`（可按 type 过滤掉 iframe/worker 等非页面 target——不过滤会让前端对
+/// 每次 iframe 增删都触发一次标签页全量枚举，密集页面下事件风暴）；
+/// `Target.targetDestroyed` 的 params **只有 `{ targetId }`**，没有 targetInfo——
+/// 对它按 targetInfo.type 过滤会把全部销毁事件丢弃（type 恒取不到），激活页销毁
+/// 自愈（on_target_destroyed）与标签刷新通知即成为死代码。销毁事件不做类型过滤：
+/// on_target_destroyed 内部（page_sessions 删除 + active_target 比对）本身幂等，
+/// 非页面 target 传入无害。
+#[derive(Debug, PartialEq, Eq)]
+enum TargetEventRoute {
+    Create(String),
+    Destroy(String),
+    Ignore,
+}
+
+fn route_target_event(method: &str, params: &Value) -> TargetEventRoute {
+    match method {
+        "Target.targetCreated" => {
+            let info = params.get("targetInfo");
+            if info.and_then(|i| i.get("type")).and_then(Value::as_str) != Some("page") {
+                return TargetEventRoute::Ignore;
+            }
+            match info.and_then(|i| i.get("targetId")).and_then(Value::as_str) {
+                Some(tid) => TargetEventRoute::Create(tid.to_string()),
+                None => TargetEventRoute::Ignore,
+            }
+        }
+        "Target.targetDestroyed" => match params.get("targetId").and_then(Value::as_str) {
+            Some(tid) => TargetEventRoute::Destroy(tid.to_string()),
+            None => TargetEventRoute::Ignore,
+        },
+        _ => TargetEventRoute::Ignore,
+    }
 }
 
 /// 导航/新建标签页的 URL 协议白名单（UI 路径）：http/https/about:blank，
@@ -1422,7 +1478,12 @@ fn find_chrome() -> Option<PathBuf> {
 
 async fn probe_cdp(port: u16, timeout: Duration) -> bool {
     let url = format!("http://127.0.0.1:{port}/json/version");
-    tokio::time::timeout(timeout, reqwest::get(&url))
+    // 回环探测不走系统代理：reqwest 默认 auto_sys_proxy，设了 HTTP_PROXY 且未配
+    // NO_PROXY 的用户会把 127.0.0.1 请求发往代理而失败。探测频次低，一次性 client 即可。
+    let Ok(client) = reqwest::Client::builder().no_proxy().build() else {
+        return false;
+    };
+    tokio::time::timeout(timeout, client.get(&url).send())
         .await
         .ok()
         .and_then(|r| r.ok())
@@ -1441,7 +1502,12 @@ async fn pick_free_port() -> Result<u16, String> {
             return Ok(port);
         }
     }
-    Ok(base)
+    // 候选区间全占用：直接报错而不是回落到已知被占的 base——后者会让 Chrome
+    // bind 失败，调用方白等 15s CDP 探测超时才能感知。
+    Err(format!(
+        "端口区间 {base}..{} 全部被占用，无法启动 Chrome",
+        base + 200
+    ))
 }
 
 fn start_chrome(chrome: &Path, port: u16) -> Result<Child, String> {
@@ -1479,13 +1545,28 @@ fn start_chrome(chrome: &Path, port: u16) -> Result<Child, String> {
 
 fn port_file() -> Option<u16> {
     let raw = std::fs::read_to_string(paths::browser_cdp_port_json()).ok()?;
-    let v: Value = serde_json::from_str(&raw).ok()?;
-    // 显式校验合法端口范围：损坏/他人写入的值（如 65536+k）经 `as u16` 会静默
-    // 回绕到任意端口，探测错误端点（多耗 ~10s 后才走 stale 清理）。
+    parse_port_json(&raw)
+}
+
+/// 解析端口文件内容。显式校验合法端口范围：损坏/他人写入的值（如 65536+k）经
+/// `as u16` 会静默回绕到任意端口，探测错误端点（多耗 ~10s 后才走 stale 清理）。
+fn parse_port_json(raw: &str) -> Option<u16> {
+    let v: Value = serde_json::from_str(raw).ok()?;
     v.get("port")
         .and_then(Value::as_u64)
         .filter(|p| (1..=65535).contains(p))
         .map(|p| p as u16)
+}
+
+/// 端口文件中的持有者 pid（写文件方 app/wrapper 进程）：watch 删除 stale 文件前的
+/// 存活护栏（持有者仍活着时文件不算 stale，见 spawn_watch 路径 2）。
+fn port_file_holder_pid() -> Option<u32> {
+    let raw = std::fs::read_to_string(paths::browser_cdp_port_json()).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    v.get("pid")
+        .and_then(Value::as_u64)
+        .filter(|p| *p <= u32::MAX as u64)
+        .map(|p| p as u32)
 }
 
 /// 启动锁是否 stale：mtime 超过 60s 即视为持有者崩溃/被杀后的残留。
@@ -1522,4 +1603,103 @@ fn write_port_file(port: u16, owner: &str) -> Result<(), String> {
     // （与 wrapper 的 chmod 0o600 一致；平台差异在 platform::os 适配层实现）。
     crate::platform::os::make_private_file(&tmp);
     std::fs::rename(&tmp, &path).map_err(|e| format!("落盘端口文件失败: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- browser 级 Target 事件路由（targetDestroyed 的 params 只有 targetId） ---
+
+    #[test]
+    fn route_target_created_page_creates() {
+        let params = json!({ "targetInfo": { "targetId": "T1", "type": "page" } });
+        assert_eq!(
+            route_target_event("Target.targetCreated", &params),
+            TargetEventRoute::Create("T1".to_string())
+        );
+    }
+
+    #[test]
+    fn route_target_created_non_page_ignored() {
+        // iframe/worker 等非页面 target 不触发枚举/通知（事件风暴防护）。
+        for ty in ["worker", "service_worker", "iframe", "other"] {
+            let params = json!({ "targetInfo": { "targetId": "T1", "type": ty } });
+            assert_eq!(
+                route_target_event("Target.targetCreated", &params),
+                TargetEventRoute::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn route_target_destroyed_uses_top_level_target_id() {
+        // 协议形状（此前漏掉的场景）：targetDestroyed 的 params 仅 { targetId }，
+        // 无 targetInfo——旧实现按 targetInfo.type 过滤会把销毁事件全部丢弃。
+        let params = json!({ "targetId": "T9" });
+        assert_eq!(
+            route_target_event("Target.targetDestroyed", &params),
+            TargetEventRoute::Destroy("T9".to_string())
+        );
+    }
+
+    #[test]
+    fn route_target_destroyed_without_target_id_ignored() {
+        assert_eq!(
+            route_target_event("Target.targetDestroyed", &json!({})),
+            TargetEventRoute::Ignore
+        );
+        // 损坏形状：targetId 出现在 targetInfo 里（旧实现的错误假设）不应路由。
+        let params = json!({ "targetInfo": { "targetId": "T9", "type": "page" } });
+        assert_eq!(
+            route_target_event("Target.targetDestroyed", &params),
+            TargetEventRoute::Ignore
+        );
+    }
+
+    // --- 导航/新建标签页的 URL 协议白名单 ---
+
+    #[test]
+    fn is_allowed_url_accepts_http_https_about_blank() {
+        assert!(is_allowed_url("http://example.com"));
+        assert!(is_allowed_url("https://example.com/path?q=1"));
+        assert!(is_allowed_url("HTTP://EXAMPLE.COM"));
+        assert!(is_allowed_url("Https://example.com"));
+        assert!(is_allowed_url("about:blank"));
+    }
+
+    #[test]
+    fn is_allowed_url_rejects_local_and_script_schemes() {
+        assert!(!is_allowed_url("file:///etc/passwd"));
+        assert!(!is_allowed_url("javascript:alert(1)"));
+        assert!(!is_allowed_url("data:text/html,<script></script>"));
+        assert!(!is_allowed_url("chrome://settings"));
+        assert!(!is_allowed_url(""));
+        // 超短串（get(..7)/get(..8) 为 None，不得 panic）
+        assert!(!is_allowed_url("http:"));
+        assert!(!is_allowed_url("ht"));
+        // 非 ASCII 前缀（get 切片遇非字符边界返回 None，不得 panic）
+        assert!(!is_allowed_url("ｈｔｔｐ://example.com"));
+    }
+
+    // --- 端口文件解析（范围校验防 as u16 回绕） ---
+
+    #[test]
+    fn parse_port_json_accepts_valid_ports() {
+        assert_eq!(parse_port_json(r#"{"port": 9222}"#), Some(9222));
+        assert_eq!(parse_port_json(r#"{"port": 1}"#), Some(1));
+        assert_eq!(parse_port_json(r#"{"port": 65535}"#), Some(65535));
+    }
+
+    #[test]
+    fn parse_port_json_rejects_out_of_range_and_garbage() {
+        assert_eq!(parse_port_json(r#"{"port": 0}"#), None);
+        assert_eq!(parse_port_json(r#"{"port": 65536}"#), None);
+        assert_eq!(parse_port_json(r#"{"port": 70000}"#), None);
+        // 非数字、负数、缺字段、非法 JSON
+        assert_eq!(parse_port_json(r#"{"port": "9222"}"#), None);
+        assert_eq!(parse_port_json(r#"{"port": -1}"#), None);
+        assert_eq!(parse_port_json(r#"{"pid": 123}"#), None);
+        assert_eq!(parse_port_json("not json"), None);
+    }
 }
