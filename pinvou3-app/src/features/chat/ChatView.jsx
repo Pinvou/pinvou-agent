@@ -2089,16 +2089,23 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <Trash2 size={18} />
                   </button>
                 )}
-                {busy ? (
+                {busy && !hasDraftText ? (
                   <button onClick={handleCancel} disabled={cancellingSessionIds.has(activeSessionId)}
                     className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center bg-black/5 dark:bg-white/10 text-[#C5221F] dark:text-[#F28B82] hover:bg-black/10 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                     <StopCircle size={20} />
                   </button>
                 ) : (() => {
+                  // busy 时输入了文字 → Stop 按钮 morph 为 Send(队列)按钮:
+                  // 点击或 Enter 会把消息入队,本轮 chat:done 后自动接力发送。
+                  // handleSend 与 bridge.chat.sendMessage 已正确处理 busy→queue 语义,
+                  // 这里只换按钮形态不动逻辑。文字清空后 Stop 按钮会自动回来。
                   const ready = canSend && !sceneCapabilityPreparing;
+                  const isQueue = busy && ready;
                   return (
-                    <button onClick={handleSend} disabled={!ready} aria-label={t.sendMsg} title={t.sendMsg}
-                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0' : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                    <button onClick={handleSend} disabled={!ready}
+                      aria-label={isQueue ? t.queueMsg : t.sendMsg}
+                      title={isQueue ? t.queueMsgTip : t.sendMsg}
+                      className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
                       <Send size={17} className="translate-x-[1px]" />
                     </button>
                   );

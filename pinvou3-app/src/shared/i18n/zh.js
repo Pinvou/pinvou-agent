@@ -422,6 +422,8 @@ export const dictZh = {
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
         skillPrefill: name => `我要用 ${name} 完成: `,
         queuedTag: '排队中', queuedCancel: '撤销',
+        queueMsg: '加入队列', queueMsgTip: '本轮结束后自动发送',
+        interruptMsg: '插队发送', interruptMsgTip: '立刻打断 AI 当前任务并发送',
         attachParsing: '解析中…', attachFailed: '失败', attachProtectedLocation: '文件位置受保护', attachAdd: '添加附件',
         attachFromDevice: '从此设备上传', attachFromHost: '从桌面实例选择', attachUploading: pct => `上传中 ${pct}%`,
         attachmentOpen: '使用默认应用打开', attachmentDownload: '下载附件', attachmentCopyAddress: '复制地址',
