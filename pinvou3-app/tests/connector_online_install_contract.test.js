@@ -64,8 +64,9 @@ for (const [platform, versions] of Object.entries(lockVersionsByPlatform)) {
 }
 const cardVersion = (marker) => {
   const line = toolCommon.split("\n").find((l) => l.includes(marker));
-  const match = line && line.match(/version: 'v([\d.]+)'/);
-  return match && match[1];
+  const match = line && line.match(/version:\s*['"]v([\d.]+)['"]/);
+  assert.ok(match, `tool-common.jsx 未在 ${marker} 行找到 version: 'v…'（格式变更须同步本断言）`);
+  return match[1];
 };
 assert.equal(cardVersion("backendId: 'feishu', feishuCli: true"), lockVersions["lark-cli"]);
 assert.equal(cardVersion("backendId: 'dingtalk', dingtalkCli: true"), lockVersions["dws"]);

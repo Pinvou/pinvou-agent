@@ -20,15 +20,25 @@ function walk(dir, out = []) {
 
 const files = packs.flatMap((pack) => walk(bundle(pack)));
 const docs = files.filter(
-  (f) => f.endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
+  (f) => path.basename(f).toLowerCase().endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
 );
 const read = (f) => fs.readFileSync(f, "utf8");
 const rel = (f) => path.relative(root, f);
+// 规则 1/4 判定前剥掉 URL 与行内代码段:黑名单/宿主断言是子串匹配,上游正文
+// 在 URL(如 …/recovery-guide)或代码标识符中合法出现这些词不是违例。
+const stripAnchors = (line) =>
+  line.replace(/https?:\/\/\S+/g, "").replace(/`[^`]*`/g, "");
 
 // 1) 已删除的 CLI 形态不得回潮（--api-version v2 在 lark-cli 1.0.87 移除等）
+// 叙述性提及豁免：sync 后文档说明「历史版本曾有 X，已移除」属合规内容，
+// 不是引用违例；真实引用不会自带移除语境。
+const removedCtx = /已移除|已删除|已删[，，,).。]|不再提供|不再收录|不随包分发/;
 for (const f of docs) {
   const text = read(f);
-  assert.ok(!/--api-version/.test(text), `${rel(f)}: 残留 --api-version`);
+  // 跨行拆分形态（行尾 `--api-` 换行接 `version`）与全角连字符变体一并覆盖
+  const joined = text.replace(/-\r?\n\s*/g, "");
+  assert.ok(!/--api[-－]?\s*version/.test(joined), `${rel(f)}: 残留 --api-version`);
+  const proseLines = text.split("\n").map(stripAnchors);
   for (const gone of [
     // 注意：sheets +read/+find 是 lark-cli 1.0.87 的隐藏别名（→ +cells-get/+cells-search），
     // 真实存在，不得列入黑名单；whiteboard +query 才是已删除命令。
@@ -42,7 +52,8 @@ for (const f of docs) {
     "comments-guide",
     "core-operations",
   ]) {
-    assert.ok(!text.includes(gone), `${rel(f)}: 引用已删除对象 ${gone}`);
+    const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
+    assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
   }
 }
 // 已删除文件的“本体复发”不可见（文本引用黑名单只防引用）：机械 sync 恢复整个
@@ -80,12 +91,14 @@ for (const f of docs) {
       !/\b@[a-z0-9-]+\/[a-z0-9.-]+@latest\b/.test(text),
     `${rel(f)}: 残留 npm 安装教学（-g/--global/@latest 均禁止，安装由品悟代管）`,
   );
-  assert.ok(!/\bnpx\s+\S*skills\b/.test(text), `${rel(f)}: 残留 npx skills 教学（含 scoped 形态）`);
+  assert.ok(!/\bnpx\s+(?:\S*skills\b|(?:@[\w.-]+\/)?[\w.-]+\s+skills\b)/.test(text), `${rel(f)}: 残留 npx skills 教学（含路径与 scoped 子命令形态）`);
   // dws 脚本示例统一 python3：宿主环境无裸 `python` 命令（macOS/Homebrew/Win embeddable 均只装 python3）
-  assert.ok(!/\bpython\s+(?!3)\S*\.py/.test(text), `${rel(f)}: 脚本调用用裸 python（应为 python3）`);
+  assert.ok(!/\bpython\s+(?!3\b)(?:-\w+\s+)*\S*\.py/.test(text), `${rel(f)}: 脚本调用用裸 python（应为 python3）`);
 }
 
-// 4) 上游宿主断言（Hermes/OpenClaw，含小写形态）必须以品悟为锚
+// 4) 上游宿主断言（Hermes/OpenClaw，含小写形态）必须以品悟为锚。
+// 判定前剥掉 URL 与行内代码段：宿主词仅出现在链接/代码标识符（如
+// https://…/hermes-setup、`hermes_config_path`）时是客观引用而非宿主断言。
 for (const f of docs) {
   for (const line of read(f).split("\n")) {
     if (/(hermes|openclaw(?!_workspace))/i.test(line)) {
@@ -93,8 +106,9 @@ for (const f of docs) {
       // “# 明确指定渠道（opencode/.../hermes/openclaw/custom）”、
       // “`hermes`/`openclaw` 渠道走官方建联”）——按枚举语境而非「渠道」二字豁免。
       if (/[（(][^）)]*hermes[^）)]*openclaw[^）)]*[）)]/i.test(line) || /hermes`?\/`?openclaw`?\s*渠道/.test(line)) continue;
+      const hostInProse = /(hermes|openclaw(?!_workspace))/i.test(stripAnchors(line));
       assert.ok(
-        line.includes("品悟"),
+        !hostInProse || line.includes("品悟"),
         `${rel(f)}: 上游宿主断言未锚定品悟语境: ${line.trim()}`,
       );
     }
@@ -105,7 +119,7 @@ for (const f of docs) {
 for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith("lark-"))) {
   for (const line of read(f).split("\n")) {
     if (/^\s*\|/.test(line)) continue;
-    if (/auth login/.test(line) && !/logout|--scope|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则|授权，|等\s/.test(line)) {
+    if (/auth login/.test(line) && !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
       assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
     }
   }

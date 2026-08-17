@@ -79,6 +79,16 @@ SOFTWARE.
 > 双层嵌套的 JSON 结构修正(上游 `bae1cc3` 原文为 `"values": {"values":{...}}`,
 > 历史修复见 PR #131,上游未修须持续重放);`metadata.requires.bins` 与
 > `cliHelp` 为上游原生(0.1.9 各 skill frontmatter 自带,勿当本地修改重放)。
+> (2026-08-17 第十轮独立复审再补两条 `wecomcli-doc/SKILL.md` 既有内容级分叉,
+> 均为基线期已有、此前未入差异全集,重放时保留本地版:)
+> ① `get_doc_content` 适用范围句删去上游「智能表格」字样并改由紧邻行分流
+> `/smartsheet/*` → `wecomcli-smartsheet` skill(与「结构性修改」的路由架构
+> 一致;上游原文同句自相矛盾地既列智能表格又指引改用 smartsheet skill);
+> ② `+smartpage_create` 特殊语法注改写:上游「该 `+` 仅适用于此命令,不要
+> 泛化到其他 doc 子命令」为过时表述(上游 smartsheet 实际已带 `+` 前缀命令),
+> 本地为「不要自行给其他 `doc` 子命令加 `+`;带 `+` 的命令(含 smartsheet 的
+> `+smartsheet_add_records_auto_file`/`+smartsheet_update_records_auto_file`)
+> 必须原样保留加号」。
 > 各 skill 重放基线:wecomcli-contact/doc/meeting/msg/schedule = `72e14f7`,
 > wecomcli-smartsheet = `bae1cc3`,wecomcli-todo = `9d2aeaf`(`9eb7898` 仅改
 > README,与 skills/ 无关);上游合并 wecomcli-sheet/smartpage 进 doc 或发新 tag

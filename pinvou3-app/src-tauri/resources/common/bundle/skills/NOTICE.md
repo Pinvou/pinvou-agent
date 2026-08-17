@@ -259,10 +259,37 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   `lark-base/references/lark-base-data-analysis-sop.md`(4 处,类型表
   `string\|null` 等)、`lark-doc/references/lark-doc-script.md`(2 处,
   `--as user\|bot` 与 `--format` 枚举)、`lark-im/references/card/components/
-  checker.md`(1 处,`plain_text\|"lark_md"`)——单元格代码跨度内的 `|` 须
-  `\|` 转义,否则 GFM 渲染表格列破裂。
+  checker.md`(1 处,`pc_display_rule:"always"\|"on_hover"`)——单元格代码跨度内的 `|` 须
+  `\|` 转义,否则 GFM 渲染表格列破裂。(2026-08-17 勘误:checker.md 一条示例文
+  原写作 `plain_text\|"lark_md"`,经核上游 v1.0.87 该单元格本就自带转义;实际
+  未转义并修复的是 `pc_display_rule:"always"\|"on_hover"` 行,计数与文件无误,
+  仅示例文指错单元格。)
 - **lark-sheets 临时文件口径对齐(2026-08-17 评审修正)**:SKILL.md 两处
   「临时文件放系统临时目录」(脚本配合节)与「别把临时文件写进用户项目目录」
   (stdin/@file 陷阱条)按 lark-shared 的 `tmp/` 规则改写为「写 cwd 下 `tmp/`
   子目录」——上游「系统临时目录」是绝对路径,与 `@file` 仅接受 cwd 相对路径
   的约束冲突;重放时以本条为准,不回放上游原文。
+
+### 第十轮独立复审补登记(2026-08-17,评审勘误)
+
+对照上游 v1.0.87 tag 全量 diff 复审,以下既有本地分叉此前未登记或登记
+有误,下次 sync 逐条重放:
+
+- **lark-shared/SKILL.md「更新检查」节重写(第四轮 f2f7dfbc 引入,此前未登记)**:
+  上游「始终使用 `lark-cli update` 更新」整段改成品悟钉扎口径——品悟内
+  lark-cli 由应用按 `connectors.lock.json` 钉扎分发与升级,不要执行
+  `lark-cli update` 自行更新(自行更新会脱离品悟校验,下次使用时被重装回
+  钉扎版本);`_notice.update` 提示改为「新版本会随品悟应用更新自动就位」。
+  本条是自更新禁令的正文载体,重放时必须保留,不得回退上游原文。
+- **lark-im / lark-base 的 SKILL.md description 本地重写(2026-07-25 批次沿袭,
+  同批其余 7 域均已登记,唯此两域漏登)**:均为「【何时用:仅当用户明确指向
+  飞书…;泛指需求默认走本地工具】」防误用前缀 + 全文重组压缩(lark-im 280
+  字符压线,lark-base 277)。重放时保留前缀与压缩,不回退上游直译版。
+- **lark-calendar/SKILL.md「常用其他域命令」区 bot 空日历句(同步提交
+  3b66f343 引入)**:「`--as bot` 查用户日程会拿到空结果,查用户日程必须
+  `--as user`」——依据为 lark-shared/SKILL.md 上游原文第 61 行同款口径,
+  属对上游既有事实的收录补写。同处「压缩身份示例」的删除侧已登记,本条
+  补登新增侧。
+- **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
+  (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
+  上游即可,无需重放(登记仅为对账完备)。

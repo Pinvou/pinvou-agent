@@ -712,7 +712,7 @@ Flags:
 - 删除 → `block delete`
 
 用户说"给某人开权限/分享给某人/授权某文档/把这篇文档给 xxx 看":
-- 新增权限 → `permission add`（需 `--node` + `--user` + `--role`）
+- 新增权限 → `permission add`（需 `--node` + `--users` + `--role`）
 - 修改权限 → `permission update`
 - 查看谁有权限 → `permission list`
 

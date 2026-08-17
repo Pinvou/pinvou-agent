@@ -99,10 +99,12 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 2. `field-rules.md`：field 子命令计数「4 个」改「5 个」——补 `field search-options`（搜索单选/多选字段选项）行，并注明 `list` 仅是 `field get` 的别名。
 3. `url-patterns.md` 三处：axls 条补「导出用 `dws sheet export`（单命令一站式提交→轮询→可选下载）」；「在线表格导出上游未暴露」改为「用 `dws sheet export`（axls→xlsx），单工作表纯 CSV 用 `dws sheet export-csv`」；「分享」路由表两条的 `doc permission add --user` 改为 `dws drive permission add --users`（按姓名授权用 `doc +access-grant`），区分依据同步改为 drive permission。
 4. `references/products/markdown.md`：命令表补 `markdown diff` 行，并新增「比较差异」节（`--node`/`--version`/`--version2`/`--file`/`--context` 用法与 4 种组合示例，经 `dws markdown diff --help` 实测）。
-5. `references/products/doc/doc-permission.md` 9 处：`--user` → `--users`（flag 实名）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
+5. `references/products/doc/doc-permission.md`（2026-08-17 计数勘误：实测为 14 行，上游原文含 14 处 `--user`、本地 0 处，原记「9 处」不准）：`--user` → `--users`（flag 实名，`dws doc permission add --help` 实测）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
 6. `references/products/doc/doc-export.md`：标题与 `--export-format` 说明由「仅 docx」改「docx（默认）/ markdown（或 md）/ pdf」，补 markdown 导出示例与「`--output` 传目录时按格式自动追加扩展名」。
 7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。
 8. `references/products/doc.md` 导出格式口径 3 处（2026-08-17 评审补充，第 6 条同源修正的传播；`dws doc export --help` 实测为 docx（默认）/markdown (.md)/pdf）：`--export-format` flag 说明行「当前仅支持 docx (默认)」改「导出格式: docx (默认) / markdown (或 md) / pdf」；「用户说下载/导出」路由条「格式转换后导出为 docx，未迁移」与末尾「严禁路由到 drive download」提示条「导出为 docx」均改为「按 `--export-format` 导出为 docx（默认）/ markdown / pdf」并指向 `./doc/doc-export.md`。
+9. （2026-08-17 第十轮独立复审补充，第 5 条 `--user` 修正的两处传播漏网）`references/products/doc.md` 权限路由摘要行「`permission add`（需 `--node` + `--user` + `--role`）」改 `--users`；`references/best_practices/04-document.md` grant-doc-access 行「`doc permission add --node <nodeId> --user <UID1,UID2> --role EDITOR`」改 `--users`。另注：`chat message list --user`、`calendar acl add --user` 等处的 `--user` 是各自命令的实名 flag，**不要**随本条误改。
+10. （2026-08-17 第十轮复审勘误）第 1 条「minutes.md 6 处」实为 7 行：`references/products/minutes.md` 的 `Read 工具`/`read_file` → `File(action="read")` 共 5 处标准形态 + 2 处 `File.read` 简写（R4 行与速查表行，简写一并改写为完整形态）。
 
 ## 第六轮收官语义扫描补录（2026-08-16）
 
