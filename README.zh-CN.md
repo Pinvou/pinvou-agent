@@ -179,7 +179,6 @@ pinvou3-app/          Tauri 2 + React/Vite 桌面应用
 CodeWhale/            Agent 底座 submodule
 pinvou3-app/resources/mcp-servers/
                       独立 MCP 服务
-workflows/            可复用工作流
 scripts/              测试、守卫、构建与发布脚本
 docs/                 架构设计、验证报告与维护文档
 ```

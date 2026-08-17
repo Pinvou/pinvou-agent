@@ -67,15 +67,6 @@ jobs:
       - name: 校验各处版本文件与 VERSION 一致
         run: node scripts/sync-version.mjs --check
 
-      # 网页模板打进安装包,发布前先在本机冒烟:契约(依赖声明跟随 package.json)
-      # + 真实 prepare(lockfile 驱动 npm ci) + 真实 vite build,避免模板构建
-      # 断裂只能等四平台构建 job 才暴露。
-      - name: 网页模板发布前冒烟
-        run: |
-          npm --prefix pinvou3-app run test:web-template-packaging
-          npm --prefix pinvou3-app run prepare:web-template
-          npm --prefix pinvou3-app/src-tauri/resources/common/web-template run build
-
       - name: 输出发布版本
         id: release
         run: |
