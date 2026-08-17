@@ -16,7 +16,7 @@
   const SEMANTIC_COMMAND_REQUIREMENTS = {
     hostFilePicker: ["web_access_list_host_files", "web_access_ingest_file"],
     artifactDownload: ["web_access_artifact_info", "web_access_read_artifact_chunk"],
-    browserMicrophone: ["web_access_transcribe_voice_audio"],
+    browserMicrophone: ["web_access_transcribe_voice_audio", "web_access_postprocess_voice_text"],
     sessionModelSwitch: ["set_session_model"],
     deviceFileUpload: [
       "web_access_upload_attachment_chunk",

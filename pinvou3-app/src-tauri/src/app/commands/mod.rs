@@ -20,6 +20,8 @@ pub(crate) mod attachments;
 pub(crate) mod chat;
 pub(crate) mod codex;
 pub(crate) mod connectors;
+pub(crate) mod ctrip;
+pub(crate) mod ctrip_browser;
 pub(crate) mod dependencies;
 pub(crate) mod files;
 pub(crate) mod interaction;

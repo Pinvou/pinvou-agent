@@ -661,6 +661,33 @@ pub async fn web_access_transcribe_voice_audio(
         .await
 }
 
+#[tauri::command]
+pub async fn web_access_postprocess_voice_text(
+    text: String,
+    mode: String,
+    session_id: String,
+    draft_text: Option<String>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<super::voice::VoicePostprocessResponse, String> {
+    crate::features::sessions::validate_session_id(&session_id)
+        .map_err(|error| format!("invalid Session id: {error:#}"))?;
+    store
+        .load(&session_id)
+        .map_err(|error| format!("load Session {session_id}: {error:#}"))?;
+    super::voice::postprocess_voice_text(
+        super::voice::VoicePostprocessRequest {
+            text,
+            mode,
+            session_id: Some(session_id),
+            draft_text,
+        },
+        pool,
+        store,
+    )
+    .await
+}
+
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects
 /// files outside that Session's isolated workspace/artifact authority.
 #[tauri::command]

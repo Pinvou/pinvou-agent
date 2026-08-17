@@ -26,6 +26,9 @@ import { ScheduledTasksView } from '../features/scheduled/ScheduledTasksView.jsx
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
+import { AiosShell } from './AiosShell.jsx';
+import { ctripBrowserAssist } from './ctripBrowserAssist.js';
+import { buildCtripSearchUrl, ctripWendaoConnector, extractTripDraft, isCtripBookingPrompt } from './ctripWendaoConnector.js';
 import {
   sessionTitlePlainText,
   sessionTitlePresentation,
@@ -147,6 +150,9 @@ function workspaceDisplayName(path) {
       }, []);
       const [activeChat, setActiveChat] = useState(null);
       const [currentView, setCurrentView] = useState('chat');
+      const [aiosOpenTaskId, setAiosOpenTaskId] = useState(null);
+      const [aiosOptimisticTasks, setAiosOptimisticTasks] = useState([]);
+      const [ctripFlow, setCtripFlow] = useState(null);
       const [activeTheme, setActiveTheme] = useState('dark');
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showMegacubeSite = !!platformCapabilities.showMegacubeSite;
@@ -606,6 +612,22 @@ function workspaceDisplayName(path) {
           modelConfigInitRef.current = true;
         }
       }, [bs]);
+
+      useEffect(() => {
+        if (aiosOpenTaskId === '__draft__' && bs && bs.activeSessionId) {
+          setAiosOpenTaskId(bs.activeSessionId);
+        }
+      }, [aiosOpenTaskId, bs && bs.activeSessionId]);
+
+      useEffect(() => {
+        const sid = bs && bs.activeSessionId;
+        if (!sid) return;
+        setAiosOptimisticTasks(prev => prev.map(task => (
+          task.status === 'processing' && !task.sessionId && String(task.previousSessionId || '') !== String(sid || '')
+            ? { ...task, sessionId: sid, id: sid }
+            : task
+        )));
+      }, [bs && bs.activeSessionId]);
 
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
@@ -1634,6 +1656,572 @@ function workspaceDisplayName(path) {
           />
         );
       };
+
+      const aiosTaskHistory = pinnedChatHistory
+        .concat(regularHistory)
+        .sort((a, b) => String(b.updatedAt || b.pinnedAt || '').localeCompare(String(a.updatedAt || a.pinnedAt || '')))
+        .map(chat => ({
+          ...chat,
+          taskKind: 'regular',
+          preview: chat.subtitle || chat.title,
+        }));
+      const realAiosTaskIds = new Set(aiosTaskHistory.map(chat => String(chat.id)));
+      const aiosVisibleTasks = aiosOptimisticTasks
+        .filter(task => !realAiosTaskIds.has(String(task.sessionId || task.id)))
+        .concat(aiosTaskHistory);
+      const aiosOpenTask = aiosOpenTaskId
+        ? (
+          aiosVisibleTasks.find(chat => String(chat.id) === String(aiosOpenTaskId))
+          || (activeChat ? chatHistory.find(chat => String(chat.id) === String(activeChat)) : null)
+          || { id: aiosOpenTaskId, title: t.newChat, date: '' }
+        )
+        : null;
+      const useAiosShell = (() => {
+        try {
+          return window.localStorage.getItem('pinvou.legacyMain') !== 'true';
+        } catch {
+          return true;
+        }
+      })();
+
+      async function handleAiosOpenTask(task) {
+        if (!task || !task.id || !bridge.available) return;
+        if (task.optimistic && !task.sessionId) return;
+        await handleSwitchSession(task.id);
+        setAiosOpenTaskId(task.id);
+      }
+
+      async function handleAiosDeleteTask(task) {
+        if (!task || !task.id) return;
+        if (task.optimistic) {
+          setAiosOptimisticTasks(prev => prev.filter(item => String(item.id) !== String(task.id)));
+          if (ctripFlow && String(ctripFlow.taskId) === String(task.id)) setCtripFlow(null);
+          return;
+        }
+        if (!bridge.available) return;
+        await handleDeleteSession(task.id);
+        if (String(aiosOpenTaskId || '') === String(task.id)) {
+          setAiosOpenTaskId(null);
+        }
+        setSettingsToast('已删除会话');
+      }
+
+      function patchAiosOptimisticTask(taskId, patch) {
+        setAiosOptimisticTasks(prev => prev.map(task => (
+          String(task.id) === String(taskId) ? { ...task, ...patch } : task
+        )));
+      }
+
+      function buildCtripTask(taskId, prompt) {
+        return {
+          id: taskId,
+          title: prompt,
+          preview: '正在检查携程问道连接器',
+          date: t.uiAios?.recently || t.recently || '刚刚',
+          taskKind: 'ctrip',
+          optimistic: true,
+          ctrip: true,
+          status: 'auth_checking',
+          resultPreview: '',
+        };
+      }
+
+      function buildCtripHandoffSummary(details = {}, url = '') {
+        const pairs = [
+          ['出发地', details.origin],
+          ['目的地', details.destination],
+          ['日期', details.date],
+          ['舱位', details.cabin],
+          ['成人', details.adults],
+          ['儿童', details.children],
+          ['预算', details.budget],
+          ['时间偏好', details.timePreference],
+          ['携程链接', url],
+        ].filter(([, value]) => String(value || '').trim());
+        return pairs.map(([label, value]) => `${label}：${value}`).join('\n');
+      }
+
+      function shouldContinueCtripAssist(prompt) {
+        const text = String(prompt || '').trim();
+        if (!ctripFlow || ctripFlow.step !== 'result') return false;
+        return /(继续订|继续办理|继续下单|帮我下单|去携程|打开携程|携程办理|继续)/.test(text);
+      }
+
+      async function startCtripBookingFlow(prompt) {
+        const taskId = `ctrip-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const details = extractTripDraft(prompt);
+        setAiosOptimisticTasks(prev => [buildCtripTask(taskId, prompt), ...prev].slice(0, 8));
+        setAiosOpenTaskId(null);
+        setCurrentView('chat');
+        setCtripFlow({
+          visible: true,
+          taskId,
+          prompt,
+          step: 'checking_auth',
+          details,
+          submitting: false,
+          error: '',
+        });
+        try {
+          const [capabilities, auth] = await Promise.all([
+            ctripWendaoConnector.getCapabilityMatrix(),
+            ctripWendaoConnector.authStatus(),
+          ]);
+          if (!capabilities.queryTravel) {
+            patchAiosOptimisticTask(taskId, {
+              status: 'failed',
+              preview: '当前携程问道连接器不可用',
+              resultPreview: '连接器能力不足：无法查询旅行信息。',
+            });
+            setCtripFlow({
+              visible: true,
+              taskId,
+              prompt,
+              step: 'capability_blocked',
+              details,
+              capabilities,
+              auth,
+              error: '当前携程问道连接器不支持查询。',
+            });
+            return;
+          }
+          if (!auth.connected) {
+            patchAiosOptimisticTask(taskId, {
+              status: 'needs_auth',
+              preview: '需要配置携程问道 Token 后才能查询',
+            });
+            setCtripFlow({
+              visible: true,
+              taskId,
+              prompt,
+              step: 'auth',
+              details,
+              capabilities,
+              auth,
+              error: '',
+            });
+            return;
+          }
+          patchAiosOptimisticTask(taskId, {
+            status: 'needs_details',
+            preview: '需要确认携程问道查询条件',
+          });
+          setCtripFlow({
+            visible: true,
+            taskId,
+            prompt,
+            step: 'details',
+            details,
+            capabilities,
+            auth,
+            error: '',
+          });
+        } catch (error) {
+          patchAiosOptimisticTask(taskId, {
+            status: 'failed',
+            preview: String(error || '携程问道连接器检查失败'),
+          });
+          setCtripFlow(prev => prev ? { ...prev, step: 'error', error: String(error || '携程问道连接器检查失败') } : null);
+        }
+      }
+
+      async function handleCtripAction(action, payload = {}) {
+        const flow = ctripFlow;
+        if (!flow) return;
+        const taskId = flow.taskId;
+        if (action === 'close') {
+          setCtripFlow(null);
+          return;
+        }
+        if (action === 'cancel_browser_assist') {
+          patchAiosOptimisticTask(taskId, {
+            status: 'browser_cancelled',
+            preview: '已结束携程浏览器协助',
+            resultPreview: buildCtripHandoffSummary(flow.details || {}, flow.ctripUrl || flow.result?.officialUrl || ''),
+          });
+          setCtripFlow(null);
+          return;
+        }
+        if (action === 'continue_after_user_action') {
+          patchAiosOptimisticTask(taskId, {
+            status: 'browser_order_review',
+            preview: '正在等待你核对携程订单页信息',
+            resultPreview: buildCtripHandoffSummary(flow.details || {}, flow.ctripUrl || flow.result?.officialUrl || ''),
+          });
+          setCtripFlow(prev => prev ? {
+            ...prev,
+            step: 'browser_order_review',
+            submitting: false,
+            error: '',
+          } : prev);
+          return;
+        }
+        if (action === 'browser_result_ready') {
+          patchAiosOptimisticTask(taskId, {
+            status: 'browser_order_review',
+            preview: '正在等待你核对携程页面的候选方案',
+            resultPreview: buildCtripHandoffSummary(flow.details || {}, flow.ctripUrl || flow.result?.officialUrl || ''),
+          });
+          setCtripFlow(prev => prev ? {
+            ...prev,
+            step: 'browser_order_review',
+            submitting: false,
+            error: '',
+          } : prev);
+          return;
+        }
+        if (action === 'request_submit_confirmation') {
+          patchAiosOptimisticTask(taskId, {
+            status: 'submit_confirmation_required',
+            preview: '最终提交订单前需要你确认',
+            resultPreview: buildCtripHandoffSummary(flow.details || {}, flow.ctripUrl || flow.result?.officialUrl || ''),
+          });
+          setCtripFlow(prev => prev ? {
+            ...prev,
+            step: 'submit_confirmation_required',
+            submitting: false,
+            error: '',
+          } : prev);
+          return;
+        }
+        if (action === 'confirm_submit_order') {
+          const url = payload.url || flow.ctripUrl || flow.result?.officialUrl || buildCtripSearchUrl(flow.details || {});
+          try {
+            if (bridge.available && bridge.artifacts?.openExternalUrl) {
+              await bridge.artifacts.openExternalUrl(url);
+            } else if (typeof window !== 'undefined') {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }
+          } catch (error) {
+            setCtripFlow(prev => prev ? { ...prev, error: String(error || '打开携程失败') } : prev);
+            return;
+          }
+          patchAiosOptimisticTask(taskId, {
+            status: 'payment_required',
+            preview: '请在携程页面手动提交，并由你本人完成支付',
+            resultPreview: buildCtripHandoffSummary(flow.details || {}, url),
+          });
+          setCtripFlow(prev => prev ? {
+            ...prev,
+            step: 'payment_required',
+            ctripUrl: url,
+            submitting: false,
+            error: '',
+          } : prev);
+          return;
+        }
+        if (action === 'decline_auth') {
+          patchAiosOptimisticTask(taskId, {
+            status: 'paused',
+            preview: '未配置携程问道 Token，已暂停查询',
+            resultPreview: '可以手动打开携程搜索，但 Pinvou 暂时无法调用携程问道。',
+          });
+          setCtripFlow(null);
+          return;
+        }
+        if (action === 'connect') {
+          setCtripFlow(prev => prev ? { ...prev, submitting: true, error: '' } : prev);
+          patchAiosOptimisticTask(taskId, { status: 'authorizing', preview: '正在保存携程问道 Token' });
+          try {
+            const auth = await ctripWendaoConnector.connectAccount({ token: payload.token });
+            patchAiosOptimisticTask(taskId, { status: 'needs_details', preview: '已配置携程问道 Token，需要确认查询条件' });
+            setCtripFlow(prev => prev ? { ...prev, step: 'details', auth, submitting: false, error: '' } : prev);
+          } catch (error) {
+            patchAiosOptimisticTask(taskId, { status: 'auth_failed', preview: '携程问道 Token 配置失败' });
+            setCtripFlow(prev => prev ? { ...prev, submitting: false, error: String(error || '配置失败') } : prev);
+          }
+          return;
+        }
+        if (action === 'disconnect') {
+          await ctripWendaoConnector.disconnectAccount();
+          patchAiosOptimisticTask(taskId, { status: 'needs_auth', preview: '已清除携程问道 Token，需要重新配置' });
+          setCtripFlow(prev => prev ? { ...prev, step: 'auth', auth: { connected: false }, submitting: false, error: '' } : prev);
+          return;
+        }
+        if (action === 'submit_details') {
+          const details = { ...(flow.details || {}), ...(payload.details || {}) };
+          setCtripFlow(prev => prev ? { ...prev, step: 'searching', details, submitting: true, error: '' } : prev);
+          patchAiosOptimisticTask(taskId, { status: 'searching', preview: '正在通过携程问道查询旅行信息' });
+          try {
+            const result = await ctripWendaoConnector.queryTravel({ prompt: flow.prompt, details });
+            patchAiosOptimisticTask(taskId, {
+              status: 'wendao_ready',
+              preview: '携程问道已返回查询结果',
+              resultPreview: result.result,
+            });
+            setCtripFlow(prev => prev ? { ...prev, step: 'result', details, result, submitting: false, error: '' } : prev);
+          } catch (error) {
+            patchAiosOptimisticTask(taskId, { status: 'failed', preview: '携程问道查询失败' });
+            setCtripFlow(prev => prev ? { ...prev, step: 'details', submitting: false, error: String(error || '携程问道查询失败') } : prev);
+          }
+          return;
+        }
+        if (action === 'start_browser_assist') {
+          const url = payload.url || flow.result?.officialUrl || buildCtripSearchUrl(flow.details || {});
+          setCtripFlow(prev => prev ? {
+            ...prev,
+            step: 'browser_prepare',
+            ctripUrl: url,
+            error: '',
+            submitting: true,
+          } : prev);
+          patchAiosOptimisticTask(taskId, {
+            status: 'browser_prepare',
+            preview: '正在准备携程专用协助窗口',
+          });
+          try {
+            const assist = await ctripBrowserAssist.startSearch({
+              url,
+              details: flow.details || {},
+            });
+            const filled = Array.isArray(assist.filled) ? assist.filled : [];
+            const blocked = Boolean(assist.blocked);
+            if (blocked) {
+              const reason = assist.reason || '携程页面需要登录、验证码、安全验证或实名信息，已暂停自动操作。';
+              patchAiosOptimisticTask(taskId, {
+                status: 'user_action_required',
+                preview: reason,
+                resultPreview: buildCtripHandoffSummary(flow.details || {}, url),
+              });
+              setCtripFlow(prev => prev ? {
+                ...prev,
+                step: 'user_action_required',
+                ctripUrl: url,
+                browserAssist: assist,
+                submitting: false,
+                error: reason,
+              } : prev);
+              return;
+            }
+            if (!assist.ok) {
+              const reason = assist.reason || '未识别到可自动填写的携程搜索控件，需要你接管页面。';
+              patchAiosOptimisticTask(taskId, {
+                status: 'browser_blocked',
+                preview: '携程自动搜索未完成，已降级为手动接管',
+                resultPreview: buildCtripHandoffSummary(flow.details || {}, url),
+              });
+              setCtripFlow(prev => prev ? {
+                ...prev,
+                step: 'browser_blocked',
+                ctripUrl: url,
+                browserAssist: assist,
+                submitting: false,
+                error: reason,
+              } : prev);
+              return;
+            }
+            patchAiosOptimisticTask(taskId, {
+              status: 'browser_searching',
+              preview: filled.length
+                ? `已尝试填写 ${filled.length} 项条件并触发携程搜索`
+                : '已尝试触发携程搜索',
+              resultPreview: buildCtripHandoffSummary(flow.details || {}, url),
+            });
+            setCtripFlow(prev => prev ? {
+              ...prev,
+              step: 'browser_searching',
+              ctripUrl: url,
+              browserAssist: assist,
+              submitting: false,
+              error: '',
+            } : prev);
+          } catch (error) {
+            const message = String(error || '打开携程失败');
+            patchAiosOptimisticTask(taskId, {
+              status: 'browser_blocked',
+              preview: '无法打开携程页面，已降级为手动接管',
+              resultPreview: buildCtripHandoffSummary(flow.details || {}, url),
+            });
+            setCtripFlow(prev => prev ? {
+              ...prev,
+              step: 'browser_blocked',
+              ctripUrl: url,
+              submitting: false,
+              error: message,
+            } : prev);
+          }
+          return;
+        }
+        if (action === 'open_ctrip') {
+          const url = payload.url || flow.ctripUrl || flow.result?.officialUrl || buildCtripSearchUrl(flow.details || {});
+          try {
+            if (isTauriAvailable()) {
+              await ctripBrowserAssist.openWindow(url);
+            } else if (bridge.available && bridge.artifacts?.openExternalUrl) {
+              await bridge.artifacts.openExternalUrl(url);
+            } else if (typeof window !== 'undefined') {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }
+          } catch (error) {
+            setCtripFlow(prev => prev ? { ...prev, error: String(error || '打开携程失败') } : prev);
+          }
+        }
+      }
+
+      async function handleAiosSubmitPrompt(text) {
+        const prompt = String(text || '').trim();
+        if (!prompt) return;
+        if (shouldContinueCtripAssist(prompt)) {
+          await handleCtripAction('start_browser_assist');
+          return;
+        }
+        if (isCtripBookingPrompt(prompt)) {
+          await startCtripBookingFlow(prompt);
+          return;
+        }
+        if (!bridge.available || !bridge.chat || !bridge.chat.sendMessage) return;
+        const optimisticId = `aios-pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        setAiosOptimisticTasks(prev => [{
+          id: optimisticId,
+          optimisticId,
+          title: prompt,
+          preview: '正在处理',
+          date: t.uiAios?.recently || t.recently || '刚刚',
+          taskKind: 'regular',
+          optimistic: true,
+          status: 'processing',
+          previousSessionId: activeChat || '',
+        }, ...prev].slice(0, 8));
+        setCurrentView('chat');
+        setAiosOpenTaskId(null);
+        try {
+          if (bridge.sessions && bridge.sessions.createNewSession) {
+            await bridge.sessions.createNewSession();
+          }
+          await bridge.chat.sendMessage(prompt);
+        } catch (error) {
+          setAiosOptimisticTasks(prev => prev.map(task => (
+            task.id === optimisticId || task.optimisticId === optimisticId
+              ? { ...task, status: 'failed', preview: String(error || '发送失败') }
+              : task
+          )));
+        }
+      }
+
+      async function handleAiosSendActive(text) {
+        const prompt = String(text || '').trim();
+        if (!prompt || !bridge.available || !bridge.chat || !bridge.chat.sendMessage) return;
+        await bridge.chat.sendMessage(prompt);
+      }
+
+      async function handleAiosSubmitUserInput(item, answers, questions) {
+        if (!item || !item.toolCallId || !bridge.available || !bridge.interaction || !bridge.interaction.submitUserInput) return;
+        await bridge.interaction.submitUserInput(item.id || item.toolCallId, item.toolCallId, answers, questions || item.questions || []);
+      }
+
+      async function handleAiosCancelUserInput(item) {
+        if (!item || !item.toolCallId || !bridge.available || !bridge.interaction || !bridge.interaction.cancelUserInput) return;
+        await bridge.interaction.cancelUserInput(item.id || item.toolCallId, item.toolCallId);
+      }
+
+      function handleAiosVoiceInput(draftText, setValue, options) {
+        if (!bridge.available || !bridge.voice || !bridge.voice.startVoiceInput) return;
+        const voiceInput = (bs && bs.voiceInput) || { status: 'idle' };
+        if (voiceInput.status === 'requesting_permission') {
+          bridge.voice.cancelVoiceInput();
+          return;
+        }
+        if (voiceInput.status === 'transcribing' || voiceInput.status === 'postprocessing') return;
+        const mode = options?.mode === 'edit' ? 'edit' : 'dictation';
+        bridge.voice.startVoiceInput(String(draftText || ''), (text, draftBeforeStart, context) => {
+          if (typeof setValue !== 'function') return;
+          if (mode === 'edit' || context?.mode === 'edit') {
+            setValue(String(text || '').trim());
+            return;
+          }
+          setValue(prev => (
+            bridge.voice && bridge.voice.appendVoiceText
+              ? bridge.voice.appendVoiceText(prev, text)
+              : `${String(prev || '').trim()} ${String(text || '').trim()}`.trim()
+          ));
+        }, { mode });
+      }
+
+      function handleAiosCancelVoiceInput() {
+        if (bridge.available && bridge.voice && bridge.voice.cancelVoiceInput) bridge.voice.cancelVoiceInput();
+      }
+
+      function handleAiosClearVoiceInput() {
+        if (bridge.available && bridge.voice && bridge.voice.clearVoiceInput) bridge.voice.clearVoiceInput();
+      }
+
+      function handleAiosPrefill(text) {
+        setChatPrefill(String(text || ''));
+      }
+
+      if (useAiosShell) {
+        return (
+          <>
+            <AiosShell
+              theme={activeTheme}
+              t={t}
+              tasks={aiosVisibleTasks}
+              activeSessionId={activeChat}
+              activeTaskId={aiosOpenTaskId === '__draft__' ? activeChat : aiosOpenTaskId}
+              activeTask={aiosOpenTask}
+              chatItems={(bs && bs.chatItems) || []}
+              busy={!!(bs && bs.busy)}
+              thinking={bs && bs.thinking}
+              artifacts={(bs && bs.artifacts) || []}
+              artifactApi={bridge.available ? bridge.artifacts : null}
+              onOpenTask={handleAiosOpenTask}
+              onDeleteTask={handleAiosDeleteTask}
+              onCloseTask={() => setAiosOpenTaskId(null)}
+              onSubmitPrompt={handleAiosSubmitPrompt}
+              onSendActive={handleAiosSendActive}
+              onToggleTheme={() => handleSetTheme(activeTheme === 'dark' ? 'light' : 'dark')}
+              voiceInput={(bs && bs.voiceInput) || { status: 'idle' }}
+              onVoiceInput={handleAiosVoiceInput}
+              onCancelVoiceInput={handleAiosCancelVoiceInput}
+              onClearVoiceInput={handleAiosClearVoiceInput}
+              onSubmitUserInput={handleAiosSubmitUserInput}
+              onCancelUserInput={handleAiosCancelUserInput}
+              ctripFlow={ctripFlow}
+              onCtripAction={handleCtripAction}
+              onPrefill={handleAiosPrefill}
+              onOpenEditor={(initial) => setPersonaEditor({ initial })}
+            />
+
+            {archiveConfirm && createPortal(
+              <ArchiveConfirmDialog
+                theme={activeTheme}
+                t={t}
+                onCancel={() => setArchiveConfirm(null)}
+                onConfirm={confirmArchiveSession}
+              />,
+              document.body
+            )}
+
+            {archiveToast && createPortal(
+              <ArchiveToast
+                theme={activeTheme}
+                t={t}
+                onClose={() => setArchiveToast(false)}
+                onView={() => {
+                  setArchiveToast(false);
+                  setSearchShowArchived(true);
+                  navigateFromScheduledRun('search');
+                }}
+              />,
+              document.body
+            )}
+
+            {settingsToast && createPortal(
+              <div className="fixed left-1/2 bottom-8 z-[120] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+                {settingsToast}
+              </div>,
+              document.body
+            )}
+
+            {personaEditor && (
+              <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
+                onClose={() => setPersonaEditor(null)}
+                onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
+                onDeleted={() => setPersonaEditor(null)} />
+            )}
+          </>
+        );
+      }
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}

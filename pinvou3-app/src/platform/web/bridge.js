@@ -410,14 +410,18 @@
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
       voiceNoDevice: "No available microphone detected. Check that the recording device is enabled and not in use.",
       voiceConstraintUnsupported: "Could not start recording: the current microphone or WebView does not support the required audio configuration. Try again; if it still fails, check microphone settings or update system components.",
-      voiceEmptyResult: "No speech recognized. Move closer to the microphone and try again.",
+      voiceEmptyResult: "No clear speech was detected. Move closer to the microphone, speak for about 2 seconds, then try again.",
       voiceContextMismatch: "Recognition finished, but the active session changed, so the result was not inserted.",
       voiceTimeout: "Voice input timed out. Please try again.",
       voiceRecognitionFailed: "Speech recognition failed. Please try again later.",
       voiceInputFailed: "Voice input failed. Check the microphone and try again.",
       voiceCancelled: "Voice input cancelled",
       voiceTranscribing: "Recognizing speech…",
-      voiceTooShort: "Recording too short. Please try again.",
+      voiceEditPostprocessing: "Applying voice edit…",
+      voicePostprocessFailed: "Voice edit failed. Please try again.",
+      voiceEditNoChange: "Voice edit did not change the draft.",
+      voiceEditApplied: "Voice edit applied",
+      voiceTooShort: "Recording is too short. Speak for at least 1 second, then try again.",
       voiceWritten: "Voice text inserted into the input box",
       voiceNeedDesktopAsr: "Install the speech recognition component on the desktop first, then use the microphone from the browser.",
       voiceRequestingPermission: "Requesting microphone permission…",
@@ -517,14 +521,18 @@
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
       voiceNoDevice: "利用可能なマイクが検出されませんでした。録音デバイスが有効か、他で使用されていないか確認してください。",
       voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定を確認するかシステムコンポーネントを更新してください。",
-      voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
+      voiceEmptyResult: "明瞭な音声を検出できませんでした。マイクに近づき、2秒ほど話してから再試行してください。",
       voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
       voiceTimeout: "音声入力がタイムアウトしました。もう一度お試しください。",
       voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
       voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
       voiceCancelled: "音声入力をキャンセルしました",
       voiceTranscribing: "音声を認識中…",
-      voiceTooShort: "録音が短すぎます。もう一度お試しください。",
+      voiceEditPostprocessing: "音声編集を反映中…",
+      voicePostprocessFailed: "音声編集に失敗しました。もう一度お試しください。",
+      voiceEditNoChange: "音声編集で下書きは変更されませんでした。",
+      voiceEditApplied: "音声編集を反映しました",
+      voiceTooShort: "録音時間が短すぎます。1秒以上話してから再試行してください。",
       voiceWritten: "音声を入力欄に書き込みました",
       voiceNeedDesktopAsr: "先にデスクトップ側で音声認識コンポーネントをインストールしてから、ブラウザーでマイクを使用してください。",
       voiceRequestingPermission: "マイクの権限を要求中…",
@@ -624,14 +632,18 @@
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
       voiceNoDevice: "未检测到可用麦克风，请检查录音设备是否启用或被占用。",
       voiceConstraintUnsupported: "无法启动录音：当前麦克风或 WebView 不支持所需的录音配置。请重试；若仍失败，请检查麦克风设置或更新系统组件。",
-      voiceEmptyResult: "未识别到语音内容，请靠近麦克风后重试。",
+      voiceEmptyResult: "没有检测到清晰语音，请靠近麦克风，说 2 秒左右后再重试。",
       voiceContextMismatch: "识别已完成，但当前会话已切换，结果未自动写入。",
       voiceTimeout: "本次语音输入超时，请重试。",
       voiceRecognitionFailed: "语音识别失败，请稍后重试。",
       voiceInputFailed: "语音输入失败，请检查麦克风后重试。",
       voiceCancelled: "已取消语音输入",
       voiceTranscribing: "正在识别语音…",
-      voiceTooShort: "录音时间过短，请重试。",
+      voiceEditPostprocessing: "正在按语音编辑草稿…",
+      voicePostprocessFailed: "语音编辑失败，请重试。",
+      voiceEditNoChange: "语音编辑没有产生修改。",
+      voiceEditApplied: "语音编辑已应用",
+      voiceTooShort: "录音时间太短，请至少说 1 秒后再重试。",
       voiceWritten: "语音已写入输入框",
       voiceNeedDesktopAsr: "请先在桌面端安装语音识别组件，再从浏览器使用麦克风。",
       voiceRequestingPermission: "正在请求麦克风权限…",
@@ -7779,6 +7791,14 @@
 
   // ── 语音输入（WebView one-shot 录音 → 本地 SenseVoice/FunASR ASR；Linux webview 录音授权见 lib.rs setup）──────────────
   var activeVoiceInput = null;
+  var VOICE_MIN_ASR_DURATION_MS = 1200;
+  var VOICE_SILENCE_RMS = 0.0025;
+  var VOICE_SILENCE_PEAK = 0.015;
+  var VOICE_POSTPROCESS_TIMEOUT_MS = 12000;
+
+  function normalizeVoiceMode(mode) {
+    return mode === "edit" ? "edit" : "dictation";
+  }
 
   function setVoiceInputStatus(status, patch) {
     var next = Object.assign({}, state.voiceInput, patch || {});
@@ -7825,7 +7845,7 @@
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
-    if (rawCategory === "empty_result") {
+    if (rawCategory === "empty_result" || /ASR empty result|0 vad segments|no usable text/i.test(rawMessage)) {
       return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
     }
     if (rawCategory === "context_mismatch") {
@@ -7884,6 +7904,18 @@
     return out;
   }
 
+  function analyzeVoiceSamples(samples) {
+    var peak = 0;
+    var sumSquares = 0;
+    for (var i = 0; i < samples.length; i++) {
+      var value = Math.abs(samples[i] || 0);
+      if (value > peak) peak = value;
+      sumSquares += value * value;
+    }
+    var rms = samples.length ? Math.sqrt(sumSquares / samples.length) : 0;
+    return { peak: peak, rms: rms };
+  }
+
   function downsamplePcm(samples, sourceRate, targetRate) {
     if (!samples.length || sourceRate === targetRate) return samples;
     var ratio = sourceRate / targetRate;
@@ -7928,6 +7960,51 @@
     return buffer;
   }
 
+  function withVoiceTimeout(promise, timeoutMs, category, stage, message) {
+    var timer = null;
+    return Promise.race([
+      promise,
+      new Promise(function (_, reject) {
+        timer = setTimeout(function () {
+          reject({ category: category || "timeout", stage: stage || "postprocessing", message: message || bt("voicePostprocessFailed") });
+        }, timeoutMs);
+      }),
+    ]).finally(function () {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  async function postprocessVoiceText(rawText, mode, draftText, sessionId) {
+    var normalizedMode = normalizeVoiceMode(mode);
+    var payload = IS_WEB
+      ? {
+          text: String(rawText || ""),
+          mode: normalizedMode,
+          sessionId: sessionId || "",
+          draftText: String(draftText || ""),
+        }
+      : {
+          request: {
+            text: String(rawText || ""),
+            mode: normalizedMode,
+            session_id: sessionId || null,
+            draft_text: String(draftText || ""),
+          },
+        };
+    var res = await withVoiceTimeout(
+      invoke(IS_WEB ? "web_access_postprocess_voice_text" : "postprocess_voice_text", payload),
+      VOICE_POSTPROCESS_TIMEOUT_MS,
+      "postprocess_failed",
+      "postprocessing",
+      bt("voicePostprocessFailed")
+    );
+    return {
+      text: String((res && res.text) || "").trim(),
+      mode: normalizedMode,
+      source: String((res && res.source) || ""),
+    };
+  }
+
   async function finishVoiceInput(cancelled, timedOut) {
     var session = activeVoiceInput;
     if (!session) return;
@@ -7948,8 +8025,19 @@
       }
       var raw = mergeFloatChunks(session.chunks);
       var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
-      if (durationMs < 300) {
+      if (durationMs < VOICE_MIN_ASR_DURATION_MS) {
         throw { category: "recording_failed", stage: "recording", message: bt("voiceTooShort") };
+      }
+      var metrics = analyzeVoiceSamples(raw);
+      emitVoiceDiagnostic(
+        "recording",
+        "info",
+        "voice sample metrics durationMs=" + Math.round(durationMs) + " peak=" + metrics.peak.toFixed(4) + " rms=" + metrics.rms.toFixed(4),
+        "",
+        ""
+      );
+      if (metrics.peak < VOICE_SILENCE_PEAK && metrics.rms < VOICE_SILENCE_RMS) {
+        throw { category: "empty_result", stage: "recording", message: bt("voiceEmptyResult") };
       }
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
@@ -7971,11 +8059,30 @@
       if (state.activeSessionId !== session.sessionId) {
         throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
       }
-      if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
+      var mode = normalizeVoiceMode(session.mode);
+      var finalText = text;
+      var writebackContext = { mode: mode, rawText: text, source: "asr" };
+      if (mode === "edit") {
+        setVoiceInputStatus("postprocessing", { message: bt("voiceEditPostprocessing"), stage: "postprocessing", mode: mode });
+        var processed = await postprocessVoiceText(text, mode, session.draftBeforeStart, session.sessionId);
+        if (activeVoiceInput !== session) return;
+        finalText = String((processed && processed.text) || "").trim();
+        writebackContext = { mode: mode, rawText: text, source: processed.source || "llm" };
+        if (!finalText || finalText === String(session.draftBeforeStart || "").trim()) {
+          setVoiceInputStatus("completed", { message: bt("voiceEditNoChange"), completedAt: Date.now(), mode: mode });
+          emitVoiceDiagnostic("writeback", "warn", "voice edit produced no change", bt("voiceEditNoChange"), "no_change");
+          return;
+        }
       }
-      setVoiceInputStatus("completed", { message: bt("voiceWritten"), completedAt: Date.now() });
-      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+      if (typeof session.writeback === "function") {
+        session.writeback(finalText, session.draftBeforeStart, writebackContext);
+      }
+      setVoiceInputStatus("completed", {
+        message: mode === "edit" ? bt("voiceEditApplied") : bt("voiceWritten"),
+        completedAt: Date.now(),
+        mode: mode,
+      });
+      emitVoiceDiagnostic("writeback", "info", mode === "edit" ? "voice edit applied" : "voice text written back", mode === "edit" ? bt("voiceEditApplied") : "语音已写入输入框", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
@@ -8049,7 +8156,7 @@
     invoke("kb_model_cancel").catch(function () {});
   }
 
-  async function startVoiceInput(draftText, writeback) {
+  async function startVoiceInput(draftText, writeback, options) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
       return;
@@ -8105,6 +8212,7 @@
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
+      mode: normalizeVoiceMode(options && options.mode),
       writeback: writeback,
       chunks: [],
       sampleRate: 16000,
@@ -8115,6 +8223,7 @@
     setVoiceInputStatus("requesting_permission", {
       message: bt("voiceRequestingPermission"),
       sessionId: session.sessionId,
+      mode: session.mode,
       startedAt: session.startedAt,
       stage: "permission",
     });
@@ -8159,7 +8268,7 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording", mode: session.mode });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);

@@ -14,6 +14,14 @@
   var activeVoiceInput = null;
   var VOICE_DEVICE_PROBE_TIMEOUT_MS = 1500;
   var VOICE_DEVICE_REQUEST_TIMEOUT_MS = 8000;
+  var VOICE_MIN_ASR_DURATION_MS = 1200;
+  var VOICE_SILENCE_RMS = 0.0025;
+  var VOICE_SILENCE_PEAK = 0.015;
+  var VOICE_POSTPROCESS_TIMEOUT_MS = 12000;
+
+  function normalizeVoiceMode(mode) {
+    return mode === "edit" ? "edit" : "dictation";
+  }
 
   function setVoiceInputStatus(status, patch) {
     var next = Object.assign({}, state.voiceInput, patch || {});
@@ -63,7 +71,7 @@
         diagnostic: constraint ? "unsupported media constraint: " + constraint : "unsupported media constraint",
       };
     }
-    if (rawCategory === "empty_result") {
+    if (rawCategory === "empty_result" || /ASR empty result|0 vad segments|no usable text/i.test(rawMessage)) {
       return { category: "empty_result", stage: rawStage, message: bt("voiceEmptyResult") };
     }
     if (rawCategory === "context_mismatch") {
@@ -180,6 +188,18 @@
     return out;
   }
 
+  function analyzeVoiceSamples(samples) {
+    var peak = 0;
+    var sumSquares = 0;
+    for (var i = 0; i < samples.length; i++) {
+      var value = Math.abs(samples[i] || 0);
+      if (value > peak) peak = value;
+      sumSquares += value * value;
+    }
+    var rms = samples.length ? Math.sqrt(sumSquares / samples.length) : 0;
+    return { peak: peak, rms: rms };
+  }
+
   function downsamplePcm(samples, sourceRate, targetRate) {
     if (!samples.length || sourceRate === targetRate) return samples;
     var ratio = sourceRate / targetRate;
@@ -224,6 +244,37 @@
     return buffer;
   }
 
+  function withVoiceTimeout(promise, timeoutMs, category, stage, message) {
+    var timer = null;
+    return Promise.race([
+      promise,
+      new Promise(function (_, reject) {
+        timer = setTimeout(function () {
+          reject({ category: category || "timeout", stage: stage || "postprocessing", message: message || bt("voicePostprocessFailed") });
+        }, timeoutMs);
+      }),
+    ]).finally(function () {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  async function postprocessVoiceText(rawText, mode, draftText, sessionId) {
+    var normalizedMode = normalizeVoiceMode(mode);
+    var res = await withVoiceTimeout(invoke("postprocess_voice_text", {
+      request: {
+        text: String(rawText || ""),
+        mode: normalizedMode,
+        session_id: sessionId || null,
+        draft_text: String(draftText || ""),
+      },
+    }), VOICE_POSTPROCESS_TIMEOUT_MS, "postprocess_failed", "postprocessing", bt("voicePostprocessFailed"));
+    return {
+      text: String((res && res.text) || "").trim(),
+      mode: normalizedMode,
+      source: String((res && res.source) || ""),
+    };
+  }
+
   async function finishVoiceInput(cancelled, timedOut) {
     var session = activeVoiceInput;
     if (!session) return;
@@ -244,8 +295,19 @@
       }
       var raw = mergeFloatChunks(session.chunks);
       var durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
-      if (durationMs < 300) {
+      if (durationMs < VOICE_MIN_ASR_DURATION_MS) {
         throw { category: "recording_failed", stage: "recording", message: bt("voiceRecordingTooShort") };
+      }
+      var metrics = analyzeVoiceSamples(raw);
+      emitVoiceDiagnostic(
+        "recording",
+        "info",
+        "voice sample metrics durationMs=" + Math.round(durationMs) + " peak=" + metrics.peak.toFixed(4) + " rms=" + metrics.rms.toFixed(4),
+        "",
+        ""
+      );
+      if (metrics.peak < VOICE_SILENCE_PEAK && metrics.rms < VOICE_SILENCE_RMS) {
+        throw { category: "empty_result", stage: "recording", message: bt("voiceEmptyResult") };
       }
       var pcm = downsamplePcm(raw, session.sampleRate, 16000);
       var wav = encodeWav(pcm, 16000);
@@ -262,11 +324,30 @@
       if (state.activeSessionId !== session.sessionId) {
         throw { category: "context_mismatch", stage: "writeback", message: "voice result discarded because active session changed" };
       }
-      if (typeof session.writeback === "function") {
-        session.writeback(text, session.draftBeforeStart);
+      var mode = normalizeVoiceMode(session.mode);
+      var finalText = text;
+      var writebackContext = { mode: mode, rawText: text, source: "asr" };
+      if (mode === "edit") {
+        setVoiceInputStatus("postprocessing", { message: bt("voiceEditPostprocessing"), stage: "postprocessing", mode: mode });
+        var processed = await postprocessVoiceText(text, mode, session.draftBeforeStart, session.sessionId);
+        if (activeVoiceInput !== session) return;
+        finalText = String((processed && processed.text) || "").trim();
+        writebackContext = { mode: mode, rawText: text, source: processed.source || "llm" };
+        if (!finalText || finalText === String(session.draftBeforeStart || "").trim()) {
+          setVoiceInputStatus("completed", { message: bt("voiceEditNoChange"), completedAt: Date.now(), mode: mode });
+          emitVoiceDiagnostic("writeback", "warn", "voice edit produced no change", bt("voiceEditNoChange"), "no_change");
+          return;
+        }
       }
-      setVoiceInputStatus("completed", { message: bt("voiceWrittenBack"), completedAt: Date.now() });
-      emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
+      if (typeof session.writeback === "function") {
+        session.writeback(finalText, session.draftBeforeStart, writebackContext);
+      }
+      setVoiceInputStatus("completed", {
+        message: mode === "edit" ? bt("voiceEditApplied") : bt("voiceWrittenBack"),
+        completedAt: Date.now(),
+        mode: mode,
+      });
+      emitVoiceDiagnostic("writeback", "info", mode === "edit" ? "voice edit applied" : "voice text written back", mode === "edit" ? bt("voiceEditApplied") : "语音已写入输入框", "");
     } catch (err) {
       var normalized = normalizeVoiceError(err, "transcribing");
       setVoiceInputStatus("failed", {
@@ -339,7 +420,7 @@
   }
 
 
-  async function startVoiceInput(draftText, writeback) {
+  async function startVoiceInput(draftText, writeback, options) {
     if (activeVoiceInput && state.voiceInput.status === "recording") {
       finishVoiceInput(false, false);
       return;
@@ -364,6 +445,7 @@
       id: Date.now().toString(36),
       sessionId: state.activeSessionId || null,
       draftBeforeStart: String(draftText || ""),
+      mode: normalizeVoiceMode(options && options.mode),
       writeback: writeback,
       chunks: [],
       sampleRate: 16000,
@@ -373,6 +455,7 @@
     setVoiceInputStatus("requesting_permission", {
       message: bt("voiceCheckingDevice"),
       sessionId: session.sessionId,
+      mode: session.mode,
       startedAt: session.startedAt,
       stage: "device",
     });
@@ -442,7 +525,7 @@
       session.processor.connect(session.zeroGain);
       session.zeroGain.connect(session.audioContext.destination);
       session.timeoutId = setTimeout(function () { finishVoiceInput(false, true); }, 10000);
-      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording" });
+      setVoiceInputStatus("recording", { message: bt("voiceRecording"), stage: "recording", mode: session.mode });
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);

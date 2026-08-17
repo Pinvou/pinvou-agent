@@ -631,6 +631,9 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     // Canva 可画 MCP 返回的设计编辑链接/预览图资源
     "https://www.canva.cn/",
     "https://export-download.canva.cn/",
+    // 携程问道 Token 申请页与携程官方搜索页
+    "https://www.ctrip.com/",
+    "https://flights.ctrip.com/",
 ];
 
 fn url_is_loopback_http(url: &str) -> bool {
