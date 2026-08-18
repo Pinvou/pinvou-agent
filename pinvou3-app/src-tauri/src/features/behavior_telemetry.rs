@@ -1,31 +1,34 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Manager;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::platform::{filesystem, paths};
 
-const DEFAULT_TELEMETRY_BASE_URL: &str = "https://www.pinvou.com/pinvou3/telemetry";
-const DEFAULT_BEHAVIOR_EVENTS_URL: &str =
-    "https://www.pinvou.com/pinvou3/stats/api/behavior/events";
 const STATE_VERSION: u8 = 1;
+const EVENT_QUEUE_CAPACITY: usize = 512;
+const EVENT_FLUSH_MAX: usize = 50;
+const EVENT_FLUSH_DEBOUNCE: Duration = Duration::from_millis(1500);
 
 #[derive(Clone)]
 pub struct BehaviorTelemetry {
     client: reqwest::Client,
     runtime: Arc<RuntimeConfig>,
     state: Arc<Mutex<Option<PersistedState>>>,
+    credential_gate: Arc<Mutex<()>>,
+    event_tx: Option<mpsc::Sender<BehaviorEvent>>,
 }
 
 #[derive(Debug)]
 struct RuntimeConfig {
+    enabled: bool,
     telemetry_base_url: String,
     behavior_events_url: String,
     enrollment_token: Option<String>,
@@ -177,20 +180,67 @@ impl BehaviorEvent {
 
 impl BehaviorTelemetry {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            runtime: Arc::new(RuntimeConfig::from_env()),
+        let runtime = Arc::new(RuntimeConfig::from_env());
+        let event_tx = runtime.enabled.then(|| {
+            let (tx, rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+            tauri::async_runtime::spawn(Self::run_worker(rx, Self::worker_clone(runtime.clone())));
+            tx
+        });
+        let telemetry = Self {
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(12))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            runtime,
             state: Arc::new(Mutex::new(load_state().ok().flatten())),
+            credential_gate: Arc::new(Mutex::new(())),
+            event_tx,
+        };
+        if telemetry.runtime.enabled && telemetry.event_tx.is_none() {
+            log::debug!("[pinvou3][behavior] telemetry disabled: queue initialization failed");
         }
+        telemetry
     }
 
     pub fn track(&self, event: BehaviorEvent) {
-        let telemetry = self.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) = telemetry.send_events(vec![event]).await {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        if let Err(error) = tx.try_send(event) {
+            log::debug!("[pinvou3][behavior] telemetry queue skipped event: {error}");
+        }
+    }
+
+    fn worker_clone(runtime: Arc<RuntimeConfig>) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(12))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            runtime,
+            state: Arc::new(Mutex::new(load_state().ok().flatten())),
+            credential_gate: Arc::new(Mutex::new(())),
+            event_tx: None,
+        }
+    }
+
+    async fn run_worker(mut rx: mpsc::Receiver<BehaviorEvent>, telemetry: Self) {
+        let mut batch = Vec::with_capacity(EVENT_FLUSH_MAX);
+        while let Some(event) = rx.recv().await {
+            batch.push(event);
+            while batch.len() < EVENT_FLUSH_MAX {
+                match tokio::time::timeout(EVENT_FLUSH_DEBOUNCE, rx.recv()).await {
+                    Ok(Some(event)) => batch.push(event),
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            let events = std::mem::take(&mut batch);
+            if let Err(error) = telemetry.send_events(events).await {
                 log::debug!("[pinvou3][behavior] telemetry skipped: {error:#}");
             }
-        });
+        }
     }
 
     async fn send_events(&self, events: Vec<BehaviorEvent>) -> Result<()> {
@@ -232,7 +282,11 @@ impl BehaviorTelemetry {
     }
 
     async fn ensure_credentials(&self) -> Result<Credentials> {
-        if let Some(credentials) = self.current_credentials() {
+        if let Some(credentials) = self.current_credentials().await {
+            return Ok(credentials);
+        }
+        let _credential_guard = self.credential_gate.lock().await;
+        if let Some(credentials) = self.current_credentials().await {
             return Ok(credentials);
         }
         let enrollment_token = self
@@ -241,7 +295,7 @@ impl BehaviorTelemetry {
             .as_deref()
             .context("PINVOU_TELEMETRY_ENROLLMENT_TOKEN is not configured")?;
         let mut state = {
-            let mut guard = self.state.lock();
+            let mut guard = self.state.lock().await;
             let state = guard.get_or_insert_with(|| PersistedState::fresh(&self.runtime));
             state.clone()
         };
@@ -280,14 +334,15 @@ impl BehaviorTelemetry {
         state.device_id = Some(registered.device_id);
         state.device_token = Some(registered.device_token);
         persist_state(&state)?;
-        let mut guard = self.state.lock();
+        let mut guard = self.state.lock().await;
         *guard = Some(state);
         self.current_credentials()
+            .await
             .context("telemetry credentials missing after registration")
     }
 
-    fn current_credentials(&self) -> Option<Credentials> {
-        let state = self.state.lock().clone()?;
+    async fn current_credentials(&self) -> Option<Credentials> {
+        let state = self.state.lock().await.clone()?;
         if state.telemetry_base_url != self.runtime.telemetry_base_url
             || state.behavior_events_url != self.runtime.behavior_events_url
         {
@@ -318,16 +373,26 @@ struct Credentials {
 
 impl RuntimeConfig {
     fn from_env() -> Self {
+        let requested_enabled = std::env::var("PINVOU_BEHAVIOR_TELEMETRY_ENABLED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
         let telemetry_base_url = std::env::var("PINVOU_TELEMETRY_BASE_URL")
-            .unwrap_or_else(|_| DEFAULT_TELEMETRY_BASE_URL.to_string())
+            .unwrap_or_default()
             .trim_end_matches('/')
             .to_string();
-        let behavior_events_url = std::env::var("PINVOU_BEHAVIOR_EVENTS_URL")
-            .unwrap_or_else(|_| DEFAULT_BEHAVIOR_EVENTS_URL.to_string());
+        let behavior_events_url = std::env::var("PINVOU_BEHAVIOR_EVENTS_URL").unwrap_or_default();
         let enrollment_token = std::env::var("PINVOU_TELEMETRY_ENROLLMENT_TOKEN")
             .ok()
             .filter(|value| value.len() >= 24);
+        let enabled =
+            requested_enabled && !telemetry_base_url.is_empty() && !behavior_events_url.is_empty();
         Self {
+            enabled,
             telemetry_base_url,
             behavior_events_url,
             enrollment_token,
@@ -507,6 +572,7 @@ mod tests {
     #[test]
     fn generated_registration_secret_meets_server_minimum() {
         let runtime = RuntimeConfig {
+            enabled: true,
             telemetry_base_url: "https://example.test/pinvou3/telemetry".to_string(),
             behavior_events_url: "https://example.test/pinvou3/stats/api/behavior/events"
                 .to_string(),

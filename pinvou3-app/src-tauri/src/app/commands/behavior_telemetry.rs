@@ -23,7 +23,6 @@ pub fn track_behavior_event(
     app: AppHandle,
 ) -> Result<(), String> {
     let event_name = match request.event_name.as_str() {
-        "task_started" => "task_started",
         "voice_started" => "voice_started",
         "scene_triggered" => "scene_triggered",
         _ => return Err("unsupported behavior event".to_string()),
@@ -44,14 +43,12 @@ pub fn track_behavior_event(
     if let Some(value) = request.stage {
         event = event.stage(value);
     }
-    if let Some(value) = request.tool_key {
-        event.tool_key = Some(value);
-    }
-    if let Some(value) = request.tool_name {
-        event.tool_name = Some(value);
-    }
-    if let Some(value) = request.tool_type {
-        event.tool_type = Some(value);
+    if request.tool_key.is_some() || request.tool_name.is_some() || request.tool_type.is_some() {
+        event = event.tool(
+            request.tool_key.unwrap_or_default(),
+            request.tool_name.unwrap_or_default(),
+            request.tool_type.unwrap_or_default(),
+        );
     }
     if let Some(value) = request.success {
         event = event.success(value);

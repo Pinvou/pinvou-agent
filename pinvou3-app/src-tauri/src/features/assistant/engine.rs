@@ -1780,8 +1780,7 @@ fn spawn_event_forwarder(
                         &app,
                         crate::features::behavior_telemetry::BehaviorEvent::new("task_started")
                             .session(&session_id)
-                            .turn(&turn_id)
-                            .input_type("text"),
+                            .turn(&turn_id),
                     );
                     crate::features::behavior_telemetry::track_model_used(
                         &app,
@@ -3093,6 +3092,13 @@ fn spawn_event_forwarder(
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
             }) => {
+                crate::features::behavior_telemetry::track(
+                    &app,
+                    crate::features::behavior_telemetry::BehaviorEvent::new("task_finished")
+                        .session(&session_id)
+                        .turn(&turn_id)
+                        .status("failed"),
+                );
                 let _ = turn_events.send(EngineTurnSignal::Terminal {
                     turn_id,
                     status: TurnOutcomeStatus::Failed,
