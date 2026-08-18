@@ -3,6 +3,7 @@ use pinvou_cli::{
     execute, parse_args, render_list,
 };
 use std::path::PathBuf;
+#[cfg(not(feature = "product-backend"))]
 use std::sync::Mutex;
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment

@@ -215,7 +215,10 @@ where
                 Ok(outcome) => outcome,
                 Err(error) => {
                     let timeout = error.code() == "task_timeout";
-                    let invalid_output = error.code() == "private_output_resolution_failed";
+                    let invalid_output = matches!(
+                        error.code(),
+                        "private_output_resolution_failed" | "missing_final_answer"
+                    );
                     TaskOutcome::new(
                         task.task_id(),
                         if timeout {

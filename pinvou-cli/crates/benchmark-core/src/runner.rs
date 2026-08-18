@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use agent_backend_api::{
-    AgentBackendError, AgentRunObserver, AgentTaskInput, AgentToolPolicyId, HeadlessAgentBackend,
-    PrepareRequest, PrivateInputHandle, PrivateInputResolver, ResolvedPrivateInput, SafeAgentEvent,
-    SafeRunStatus,
+    AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentTaskInput, AgentToolPolicyId,
+    HeadlessAgentBackend, PrepareRequest, PrivateInputHandle, PrivateInputResolver,
+    ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus,
 };
 use async_trait::async_trait;
 
@@ -117,25 +117,29 @@ where
     B: HeadlessAgentBackend + 'static,
 {
     async fn run_task(&self, task: &BenchmarkTask, _context: &RunContext) -> Result<TaskOutcome> {
-        let (prompt, attachments, timeout_duration, tool_policy) = match task.execution() {
-            ExecutionRequest::NativeTurn {
-                prompt_handle,
-                attachments,
-                timeout,
-                tool_policy,
-                ..
-            } => (
-                prompt_handle.clone(),
-                attachments.clone(),
-                *timeout,
-                tool_policy.as_str().to_owned(),
-            ),
-            ExecutionRequest::ExternalHarness { .. } => {
-                return Err(BenchmarkError::coded("external_harness_unsupported"));
-            }
-        };
+        let (prompt, attachments, timeout_duration, tool_policy, output_contract) =
+            match task.execution() {
+                ExecutionRequest::NativeTurn {
+                    prompt_handle,
+                    attachments,
+                    timeout,
+                    tool_policy,
+                    output_contract,
+                } => (
+                    prompt_handle.clone(),
+                    attachments.clone(),
+                    *timeout,
+                    tool_policy.as_str().to_owned(),
+                    output_contract.as_str().to_owned(),
+                ),
+                ExecutionRequest::ExternalHarness { .. } => {
+                    return Err(BenchmarkError::coded("external_harness_unsupported"));
+                }
+            };
         let tool_policy = AgentToolPolicyId::new(tool_policy)
             .map_err(|_| BenchmarkError::coded("unsupported_tool_policy"))?;
+        let output_contract = AgentOutputContractId::new(output_contract)
+            .map_err(|_| BenchmarkError::coded("unsupported_output_contract"))?;
         let deadline = tokio::time::Instant::now() + timeout_duration;
         let mut resolved_attachments = Vec::with_capacity(attachments.len());
         for attachment in &attachments {
@@ -164,7 +168,7 @@ where
             deadline,
             self.backend.run(
                 &session,
-                AgentTaskInput::new(task.task_id(), prompt),
+                AgentTaskInput::new(task.task_id(), prompt).with_output_contract(output_contract),
                 self.private_inputs.clone(),
                 observer.clone(),
             ),
@@ -203,7 +207,12 @@ where
         if close_result.is_err() {
             return Err(BenchmarkError::coded("backend_close_failed"));
         }
-        let outcome = result.map_err(|_| BenchmarkError::coded("backend_run_failed"))?;
+        let outcome = result.map_err(|error| match error {
+            AgentBackendError::Operation(code) if code == "missing_final_answer" => {
+                BenchmarkError::coded("missing_final_answer")
+            }
+            _ => BenchmarkError::coded("backend_run_failed"),
+        })?;
         let private_output = match private_output {
             Some(Ok(output)) => Some(output),
             Some(Err(_)) => return Err(BenchmarkError::coded("private_output_resolution_failed")),

@@ -213,19 +213,15 @@ fn validate_parent(parent: &Path) -> Result<PathBuf> {
             "gaia_submission_target_unsafe".into(),
         ));
     }
-    for ancestor in parent.ancestors() {
-        let candidate = if ancestor.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            ancestor
-        };
-        let metadata = fs::symlink_metadata(candidate)
-            .map_err(|_| BenchmarkError::Contract("gaia_submission_target_unsafe".into()))?;
-        if !metadata.is_dir() || is_link_or_reparse(&metadata) {
-            return Err(BenchmarkError::Contract(
-                "gaia_submission_target_unsafe".into(),
-            ));
-        }
+    // 只校验叶子父目录本身,不逐级拒绝 symlink 祖先:防覆写由 create_new +
+    // hard_link 承担,而 macOS 的 /var($TMPDIR 祖先)等系统 symlink 会让
+    // 祖先级检查把所有合法临时目录判为不安全。
+    let metadata = fs::symlink_metadata(parent)
+        .map_err(|_| BenchmarkError::Contract("gaia_submission_target_unsafe".into()))?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return Err(BenchmarkError::Contract(
+            "gaia_submission_target_unsafe".into(),
+        ));
     }
     parent
         .canonicalize()
@@ -260,5 +256,29 @@ mod tests {
             super::validate_parent(Path::new("")).unwrap(),
             Path::new(".").canonicalize().unwrap()
         );
+    }
+
+    /// validate_parent 只拒绝叶子层的 symlink;经由 symlink 祖先(如 macOS
+    /// /var → /private/var)到达的真实目录必须可用,否则 $TMPDIR 下写
+    /// submission 恒失败。
+    #[cfg(unix)]
+    #[test]
+    fn submission_accepts_parent_behind_symlinked_ancestor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gaia-submission-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("real").join("inner")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("real"), tmp.join("link")).unwrap();
+
+        assert!(super::validate_parent(&tmp.join("link").join("inner")).is_ok());
+        // 叶子父目录本身是 symlink 仍拒绝。
+        assert!(super::validate_parent(&tmp.join("link")).is_err());
+
+        std::fs::remove_dir_all(tmp).unwrap();
     }
 }

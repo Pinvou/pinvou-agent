@@ -20,7 +20,7 @@ pub use event::{RunEvent, RunEventKind};
 pub use manifest::{ModelIdentity, RunManifest};
 pub use private_prediction::{PrivatePredictionContentType, PrivatePredictionPayload, ScorerView};
 pub use registry::BenchmarkRegistry;
-pub use report::{ReportArtifact, publish_markdown_report};
+pub use report::{ReportArtifact, publish_markdown_report, publish_score_json};
 pub use runner::{NativeAgentRunner, TaskRunner};
 pub use service::{BenchmarkService, RunSummary};
 pub use store::{RecoveredRun, RunStore};

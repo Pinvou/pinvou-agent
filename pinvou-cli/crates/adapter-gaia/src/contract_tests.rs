@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use agent_backend_api::{
     AttachmentHandle, PrivateInputHandle, ResolvedAttachmentSource, SecretOutput, SecretText,
@@ -28,10 +28,10 @@ struct TempSnapshot(PathBuf);
 
 impl TempSnapshot {
     fn new() -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // 同进程并行测试线程在粗粒度时钟(如 macOS)下纳秒时间戳可能同 tick
+        // 撞名,互相 remove_dir_all;用进程内原子计数保证唯一。
+        static SNAPSHOT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let unique = SNAPSHOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "pinvou-gaia-unit-contract-{}-{unique}",
             std::process::id()
@@ -424,10 +424,9 @@ fn default_unit_resolver_freezes_attachment_and_uses_safe_errors() {
     let resolved = inputs
         .resolve_handle(&PrivateInputHandle::new("gaia:safe-task-1:prompt"))
         .unwrap();
-    assert_eq!(
-        resolved.prompt().expose_to_backend(),
-        "PRIVATE_QUESTION_SENTINEL"
-    );
+    let prompt = resolved.prompt().expose_to_backend();
+    assert!(prompt.starts_with("PRIVATE_QUESTION_SENTINEL"));
+    assert!(prompt.contains("FINAL ANSWER: <answer>"));
     assert!(!format!("{inputs:?} {resolved:?}").contains("PRIVATE_QUESTION_SENTINEL"));
 
     let source = inputs

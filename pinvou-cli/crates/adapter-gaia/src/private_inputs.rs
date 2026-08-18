@@ -5,10 +5,13 @@ use std::sync::Arc;
 
 use agent_backend_api::{
     AgentBackendError, AttachmentHandle, PrivateInputHandle, PrivateInputResolver,
-    ResolvedAttachmentSource, ResolvedPrivateInput,
+    ResolvedAttachmentSource, ResolvedPrivateInput, SecretText,
 };
 
 use crate::GaiaDataset;
+
+const FINAL_ANSWER_INSTRUCTION: &str =
+    "\n\nReturn only the final answer using exactly this format:\nFINAL ANSWER: <answer>";
 
 const PRIVATE_INPUT_UNKNOWN: &str = "gaia_private_input_unknown";
 const ATTACHMENT_HANDLE_UNKNOWN: &str = "gaia_attachment_handle_unknown";
@@ -40,7 +43,11 @@ impl GaiaPrivateInputs {
             .into_iter()
             .collect();
         Ok(ResolvedPrivateInput::new(
-            row.question().clone(),
+            SecretText::new(format!(
+                "{}{}",
+                row.question().expose_to_backend(),
+                FINAL_ANSWER_INSTRUCTION
+            )),
             attachments,
         ))
     }

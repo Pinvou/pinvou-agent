@@ -191,6 +191,31 @@ impl fmt::Debug for AgentToolPolicyId {
 #[error("unsafe agent tool policy id")]
 pub struct UnsafeAgentToolPolicyId;
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct AgentOutputContractId(String);
+
+impl AgentOutputContractId {
+    pub fn new(value: impl Into<String>) -> Result<Self, UnsafeAgentOutputContractId> {
+        validate_identity_component(value.into(), 128)
+            .map(Self)
+            .map_err(|_| UnsafeAgentOutputContractId)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for AgentOutputContractId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AgentOutputContractId([validated])")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error("unsafe agent output contract id")]
+pub struct UnsafeAgentOutputContractId;
+
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 #[error("unsafe suite model identity")]
 pub struct UnsafeSuiteModelIdentity;
@@ -477,6 +502,7 @@ impl fmt::Debug for PrepareRequest {
 pub struct AgentTaskInput {
     task_id: String,
     prompt: PrivateInputHandle,
+    output_contract: Option<AgentOutputContractId>,
 }
 
 impl AgentTaskInput {
@@ -484,7 +510,13 @@ impl AgentTaskInput {
         Self {
             task_id: task_id.into(),
             prompt,
+            output_contract: None,
         }
+    }
+
+    pub fn with_output_contract(mut self, output_contract: AgentOutputContractId) -> Self {
+        self.output_contract = Some(output_contract);
+        self
     }
 
     pub fn task_id(&self) -> &str {
@@ -493,6 +525,10 @@ impl AgentTaskInput {
 
     pub fn prompt_handle(&self) -> &PrivateInputHandle {
         &self.prompt
+    }
+
+    pub fn output_contract(&self) -> Option<&AgentOutputContractId> {
+        self.output_contract.as_ref()
     }
 }
 
