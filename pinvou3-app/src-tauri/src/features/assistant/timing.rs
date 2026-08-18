@@ -997,6 +997,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
+    /// 排队双轮:同 session 连续两个 start_turn 入队后,一次 observation 收尾
+    /// 只允许 pop 队首轮。此前 forwarder 双重 finish(usage 版 + observation 版)
+    /// 会连 pop 两次,把第二轮的 assistant_done 提前写坏;该调用点已收敛为
+    /// 单次 observation 收尾,本测试钉住"一次收尾只消费一个活跃轮"的语义。
+    #[test]
+    fn queued_second_turn_survives_single_observation_finish() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-queued-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("PINVOU3_HOME", &tmp);
+
+        let sid = "session-queued";
+        let first = start_turn(sid);
+        let second = start_turn(sid);
+        assert_ne!(first, second);
+
+        // 模拟当前 forwarder 的单次 observation 收尾(带 usage 与目录摘要)。
+        finish_turn_with_observation(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage::default()),
+            Some(ToolCatalogSummary::from_serialized_catalog(1, b"[{}]")),
+        );
+
+        let timeline = read_timeline(sid).unwrap();
+        let done_events: Vec<_> = timeline
+            .iter()
+            .filter(|event| event.event == "assistant_done")
+            .collect();
+        assert_eq!(done_events.len(), 1, "exactly one turn must be finished");
+        assert_eq!(done_events[0].turn_id, first);
+        // observation 字段随该次收尾落盘,不因重复收尾丢失。
+        assert_eq!(done_events[0].tool_calls, Some(0));
+        assert!(done_events[0].authorized_tool_catalog.is_some());
+
+        // 第二轮仍在队首,后续收尾应归属它。
+        finish_turn_with_observation(sid, "Completed", None, None, None);
+        let timeline = read_timeline(sid).unwrap();
+        let done_events: Vec<_> = timeline
+            .iter()
+            .filter(|event| event.event == "assistant_done")
+            .collect();
+        assert_eq!(done_events.len(), 2);
+        assert_eq!(done_events[1].turn_id, second);
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
     #[test]
     fn records_first_turn_phases_and_terminal_authorized_catalog() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
