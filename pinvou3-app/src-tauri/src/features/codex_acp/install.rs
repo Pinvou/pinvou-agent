@@ -517,6 +517,68 @@ pub(super) fn official_script_supported(backend: AgentBackend) -> bool {
         _ => false,
     }
 }
+
+struct InstallOutputReaders {
+    child_finished: Arc<AtomicBool>,
+    stdout: Option<tokio::task::JoinHandle<String>>,
+    stderr: Option<tokio::task::JoinHandle<String>>,
+}
+
+impl InstallOutputReaders {
+    fn spawn(
+        app: &AppHandle,
+        backend: AgentBackend,
+        stdout: tokio::process::ChildStdout,
+        stderr: tokio::process::ChildStderr,
+    ) -> Self {
+        let child_finished = Arc::new(AtomicBool::new(false));
+        let stdout_app = app.clone();
+        let stderr_app = app.clone();
+        let stdout_child_finished = child_finished.clone();
+        let stderr_child_finished = child_finished.clone();
+        let stdout = tokio::spawn(async move {
+            stream_install_lines(
+                &stdout_app,
+                backend,
+                "stdout",
+                stdout,
+                &stdout_child_finished,
+            )
+            .await
+        });
+        let stderr = tokio::spawn(async move {
+            stream_install_lines(
+                &stderr_app,
+                backend,
+                "stderr",
+                stderr,
+                &stderr_child_finished,
+            )
+            .await
+        });
+        Self {
+            child_finished,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+        }
+    }
+
+    async fn finish(mut self) -> (String, String) {
+        self.child_finished.store(true, Ordering::Release);
+        let stdout = self.stdout.take().expect("stdout reader missing");
+        let stderr = self.stderr.take().expect("stderr reader missing");
+        let (stdout, stderr) = tokio::join!(stdout, stderr);
+        (stdout.unwrap_or_default(), stderr.unwrap_or_default())
+    }
+}
+
+impl Drop for InstallOutputReaders {
+    fn drop(&mut self) {
+        // wait/timeout 任一异常出口也要通知已启动的读取任务收口，避免永久挂起。
+        self.child_finished.store(true, Ordering::Release);
+    }
+}
+
 /// 执行官方安装脚本（unix: `curl -fsSL <url> | bash`，Windows: `irm <url> | iex`），
 /// 10 分钟超时，输出尾部写入诊断日志。
 pub(super) async fn run_official_install_script(
@@ -556,16 +618,7 @@ pub(super) async fn run_official_install_script(
     emit_install_progress(app, backend, "command", &command_line);
     let stdout = child.stdout.take().context("读取安装脚本标准输出失败")?;
     let stderr = child.stderr.take().context("读取安装脚本错误输出失败")?;
-    let stdout_app = app.clone();
-    let stderr_app = app.clone();
-    let stdout_reader =
-        tokio::spawn(
-            async move { stream_install_lines(&stdout_app, backend, "stdout", stdout).await },
-        );
-    let stderr_reader =
-        tokio::spawn(
-            async move { stream_install_lines(&stderr_app, backend, "stderr", stderr).await },
-        );
+    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
         Ok(result) => result.context("等待安装脚本进程失败")?,
@@ -583,8 +636,7 @@ pub(super) async fn run_official_install_script(
             );
         }
     };
-    let stdout = stdout_reader.await.unwrap_or_default();
-    let stderr = stderr_reader.await.unwrap_or_default();
+    let (stdout, stderr) = output_readers.finish().await;
     diagnostics::write(
         operation_id,
         "script:output",
@@ -660,16 +712,7 @@ pub(super) async fn run_npm_global_upgrade(
     );
     let stdout = child.stdout.take().context("读取 npm 标准输出失败")?;
     let stderr = child.stderr.take().context("读取 npm 错误输出失败")?;
-    let stdout_app = app.clone();
-    let stderr_app = app.clone();
-    let stdout_reader =
-        tokio::spawn(
-            async move { stream_install_lines(&stdout_app, backend, "stdout", stdout).await },
-        );
-    let stderr_reader =
-        tokio::spawn(
-            async move { stream_install_lines(&stderr_app, backend, "stderr", stderr).await },
-        );
+    let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
         Ok(result) => result.context("等待 npm 全局升级进程失败")?,
@@ -687,8 +730,7 @@ pub(super) async fn run_npm_global_upgrade(
             );
         }
     };
-    let stdout = stdout_reader.await.unwrap_or_default();
-    let stderr = stderr_reader.await.unwrap_or_default();
+    let (stdout, stderr) = output_readers.finish().await;
     diagnostics::write(
         operation_id,
         "npm:output",
@@ -1184,6 +1226,30 @@ mod tests {
         assert!(!kimi_version_supported("0.31"));
         assert!(!kimi_version_supported("native"));
     }
+
+    #[test]
+    fn running_silent_installer_keeps_output_pipe_open() {
+        let idle_timeout = Duration::from_secs(30);
+
+        // Kimi 的大二进制下载期间可能超过 30 秒没有任何 stdout；主进程仍在
+        // 运行时绝不能结束读取，否则安装器下一次写日志会收到 SIGPIPE。
+        assert!(!install_output_idle_expired(
+            false,
+            Duration::from_secs(31),
+            idle_timeout,
+        ));
+        // 只有主进程已经退出、且孙进程仍长期持有管道时才启用兜底。
+        assert!(!install_output_idle_expired(
+            true,
+            Duration::from_secs(29),
+            idle_timeout,
+        ));
+        assert!(install_output_idle_expired(
+            true,
+            Duration::from_secs(30),
+            idle_timeout,
+        ));
+    }
 }
 
 pub(super) fn clear_install_progress(app: &AppHandle, backend: AgentBackend) {
@@ -1297,44 +1363,12 @@ pub(super) fn stale_official_target(target: &Path, resolved_ok: Option<&Path>) -
     !is_working_file || !resolved_ok.is_some_and(|path| path == target)
 }
 
-pub(super) fn stale_official_target_detects_broken_residual() {
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-acp-stale-target-test-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
-    let target = root.join("claude");
-    std::fs::write(&target, "not a real binary").unwrap();
-    // 探测没解析到任何路径 → 坏残留。
-    assert!(stale_official_target(&target, None));
-    // 探测解析到另一份拷贝 → 该路径文件仍是不可用残留。
-    assert!(stale_official_target(
-        &target,
-        Some(Path::new("/elsewhere/claude"))
-    ));
-    // 探测解析到同一路径（版本可用）→ 正常安装，不拦截。
-    assert!(!stale_official_target(&target, Some(&target)));
-    // 0 字节半成品（下载中断）→ 坏残留。
-    let empty = root.join("kimi");
-    std::fs::write(&empty, "").unwrap();
-    assert!(stale_official_target(&empty, None));
-    // 目录占据文件路径（脚本失败遗留）→ 挡住脚本写入，坏残留。
-    let dir = root.join("codex");
-    std::fs::create_dir_all(&dir).unwrap();
-    assert!(stale_official_target(&dir, None));
-    // 目标不存在 → 全新安装，不拦截。
-    assert!(!stale_official_target(&root.join("absent"), None));
-
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
 pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
     app: &AppHandle,
     backend: AgentBackend,
     kind: &'static str,
     reader: R,
+    child_finished: &AtomicBool,
 ) -> String {
     const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
     let mut reader = BufReader::new(reader);
@@ -1342,7 +1376,7 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
     let mut output = String::new();
     let mut pending: Option<String> = None;
     let mut last_emit = Instant::now();
-    let mut last_data = Instant::now();
+    let mut post_exit_idle_started: Option<Instant> = None;
     loop {
         line.clear();
         match tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut line)).await {
@@ -1352,7 +1386,7 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
                 if trimmed.is_empty() {
                     continue;
                 }
-                last_data = Instant::now();
+                post_exit_idle_started = child_finished.load(Ordering::Acquire).then(Instant::now);
                 output.push_str(&trimmed);
                 output.push('\n');
                 pending = Some(truncate_install_line(&trimmed));
@@ -1364,15 +1398,36 @@ pub(super) async fn stream_install_lines<R: AsyncRead + Unpin>(
                 }
             }
             Ok(Err(_)) => break,
-            // 500ms 无数据：继续等，但累计空闲超过 30s（孙进程持管道）则结束。
-            Err(_) if last_data.elapsed() >= IDLE_TIMEOUT => break,
-            Err(_) => {}
+            // 主安装进程仍在运行时，静默下载可以远超 30 秒，不能提前关闭管道，
+            // 否则安装器后续写 stdout 会收到 SIGPIPE（exit 141）。只有主进程
+            // 已退出且孙进程仍持有管道时，才用空闲超时结束读取。
+            Err(_) => {
+                let child_finished = child_finished.load(Ordering::Acquire);
+                if child_finished {
+                    let idle_started = post_exit_idle_started.get_or_insert_with(Instant::now);
+                    if install_output_idle_expired(
+                        child_finished,
+                        idle_started.elapsed(),
+                        IDLE_TIMEOUT,
+                    ) {
+                        break;
+                    }
+                }
+            }
         }
     }
     if let Some(pending_line) = pending.take() {
         emit_install_progress(app, backend, kind, &pending_line);
     }
     output
+}
+
+fn install_output_idle_expired(
+    child_finished: bool,
+    idle: Duration,
+    idle_timeout: Duration,
+) -> bool {
+    child_finished && idle >= idle_timeout
 }
 
 pub(super) fn stream_std_lines<R: std::io::Read + Send + 'static>(

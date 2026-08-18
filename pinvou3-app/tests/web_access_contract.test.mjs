@@ -91,6 +91,50 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
+// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
+// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
+// Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
+// 连接器开关/装卸（set_*_enabled、*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
+for (const command of [
+  'feishu_status',
+  'feishu_skills_state',
+  'wecom_status',
+  'wecom_skills_state',
+  'dingtalk_status',
+  'dingtalk_skills_state',
+  'tmeet_status',
+  'tmeet_skills_state',
+  'ima_status',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
+}
+// 连接器变更面保持桌面专用：连接/断开（*_connect_begin/*_logout、ima_connect/ima_logout）、
+// 逐连接器开关（set_*_enabled）与全局清单写入（set_disabled_connectors）、原生 CLI 安装
+// （*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3 物化技能包）、
+// OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
+// 清单须与 lib.rs 连接器注册面保持同步。
+const deniedConnectorMutations = [];
+for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
+  deniedConnectorMutations.push(
+    `${connector}_connect_begin`,
+    `${connector}_logout`,
+    `${connector}_ensure_cli`,
+    `${connector}_cancel`,
+    `${connector}_apply_skills`,
+    `set_${connector}_enabled`,
+  );
+}
+deniedConnectorMutations.push(
+  "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
+  // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；
+  // 此前两头都不沾，加白名单不会触发测试——与「清单须与注册面同步」承诺矛盾）。
+  "set_disabled_skills", "get_disabled_skills",
+  "set_project_skills_enabled", "get_project_skills_enabled",
+);
+for (const command of deniedConnectorMutations) {
+  assert.equal(allowed.has(command), false, `${command} must remain desktop-only (connector mutations)`);
+}
+
 for (const command of [
   'web_access_chat',
   'web_access_create_session_and_chat',

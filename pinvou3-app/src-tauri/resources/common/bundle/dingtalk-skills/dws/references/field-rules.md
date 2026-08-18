@@ -18,14 +18,15 @@
 
 ## field 子命令总览
 
-> ⚠️ field 有且仅有以下 **4 个** 子命令，没有 `list`、`reorder`、`move`：
+> ⚠️ field 有且仅有以下 **5 个** 子命令，没有 `reorder`、`move`（`list` 仅是 `field get` 的别名）：
 
 | 子命令 | 用途 |
 |-------|------|
-| `field get` | 获取字段详情（含完整 config/options）。**不是 `field list`** |
+| `field get` | 获取字段详情（含完整 config/options）。**不是独立于 `field get` 的 `field list`**（`list` 只是 `get` 的别名） |
 | `field create` | **创建字段（支持通过 config.options 设置选项）** |
 | `field update` | 更新字段名称或配置（**不能改类型**，**不能改顺序**） |
 | `field delete` | 删除字段（不可逆） |
+| `field search-options` | 搜索单选/多选字段的选项 |
 
 > **想"调整字段顺序"？请使用 `view update`**（视图层操作，不属于 `field` 子命令）：
 > - 通过 `--config '{"visibleFieldIds":["fld1","fld2",...]}'` 传入 fieldId 数组，数组顺序即视图中的字段显示顺序

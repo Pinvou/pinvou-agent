@@ -316,7 +316,7 @@ ask_question({
 ### 阶段 5: 调用脚本执行排班
 
 ```bash
-python scripts/attendance_schedule_import.py \
+python3 scripts/attendance_schedule_import.py \
   --group-id <groupId> \
   --schedules '<JSON数组>' \
   --confirm
@@ -456,7 +456,7 @@ dws aisearch person --keyword "张三" --dimension name --format json
 # ... 用户确认 ...
 
 # 4. 调用脚本执行
-python scripts/attendance_schedule_import.py \
+python3 scripts/attendance_schedule_import.py \
   --group-id 123456 \
   --schedules '[{"userId":"user001","workDate":"2026-05-19","classId":789,"isRest":"N"},{"userId":"user001","workDate":"2026-05-20","classId":789,"isRest":"N"},{"userId":"user001","workDate":"2026-05-21","classId":789,"isRest":"N"},{"userId":"user001","workDate":"2026-05-22","classId":789,"isRest":"N"},{"userId":"user001","workDate":"2026-05-23","classId":789,"isRest":"N"}]' \
   --confirm
@@ -476,7 +476,7 @@ dws attendance group get --group-id <groupId> --format json
 dws aisearch person --keyword "李四" --dimension name --format json
 
 # 3. 回显确认 → 用户确认 → 执行
-python scripts/attendance_schedule_import.py \
+python3 scripts/attendance_schedule_import.py \
   --group-id 123456 \
   --schedules '[{"userId":"user002","workDate":"2026-05-21","classId":0,"isRest":"Y"}]' \
   --confirm
@@ -498,7 +498,7 @@ dws contact dept search --query "研发部" --format json
 dws contact dept list-members --ids <deptId> --format json
 
 # 3. 回显确认 → 用户确认 → 执行
-python scripts/attendance_schedule_import.py \
+python3 scripts/attendance_schedule_import.py \
   --group-id 123456 \
   --schedules '[...]' \
   --confirm
@@ -533,7 +533,7 @@ python scripts/attendance_schedule_import.py \
 ### 查询导出 — 阶段 2: 调用脚本
 
 ```bash
-python scripts/attendance_schedule_export.py \
+python3 scripts/attendance_schedule_export.py \
   --users <userId1,userId2,...> \
   --start <YYYY-MM-DD> \
   --end <YYYY-MM-DD> \
@@ -569,7 +569,7 @@ dws attendance group search --query "研发组" --format json
 dws attendance group filtered-get --group-id <groupId> --member --format json
 
 # 2. 调用脚本导出
-python scripts/attendance_schedule_export.py \
+python3 scripts/attendance_schedule_export.py \
   --users user001,user002,user003 \
   --start 2026-05-18 \
   --end 2026-05-24
@@ -583,7 +583,7 @@ dws aisearch person --keyword "张三" --dimension name --format json
 dws aisearch person --keyword "李四" --dimension name --format json
 
 # 2. 调用脚本导出
-python scripts/attendance_schedule_export.py \
+python3 scripts/attendance_schedule_export.py \
   --users user001,user002 \
   --start 2026-05-01 \
   --end 2026-05-31

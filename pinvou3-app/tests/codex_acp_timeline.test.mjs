@@ -33,6 +33,7 @@ const event = (seq, type, data, turnId = 'turn-1') => ({
 try {
   const {
     appendAcpEvent,
+    buildElicitationContent,
     commandExecutionDetails,
     projectAcpTimeline,
     resolveAcpSessionControls,
@@ -702,6 +703,27 @@ try {
   // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
   assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
   'ComposerModeChip must early-return when the clicked mode equals the active mode');
+
+  // ── buildElicitationContent：保留属性 answerKey 不被 Object.prototype 吞掉 ──
+  // requestedSchema 的 property key 后端仅校验非空，constructor/toString/__proto__ 是合法输入。
+  // 普通 {} 会让 __proto__ 赋值触发 setter（字段在 JSON 序列化时静默丢失）、constructor/toString
+  // 读/写命中 Object.prototype；无原型对象构造应保留全部字段。
+  {
+    const groups = [
+      { questionId: 'constructor', answerKey: 'constructor', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'A', value: 'A', other: false }] },
+      { questionId: 'toString', answerKey: 'toString', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'B', value: 'B', other: false }] },
+      { questionId: '__proto__', answerKey: '__proto__', otherAnswerKey: null, multiSelect: false, answers: [{ label: 'X', value: 'X', other: false }] },
+    ];
+    const content = buildElicitationContent(groups);
+    assert.equal(Object.prototype.hasOwnProperty.call(content, 'constructor'), true, 'constructor 作为 own property 保留');
+    assert.equal(Object.prototype.hasOwnProperty.call(content, 'toString'), true, 'toString 作为 own property 保留');
+    assert.equal(Object.prototype.hasOwnProperty.call(content, '__proto__'), true, '__proto__ 作为 own property 保留（普通 {} 会丢）');
+    assert.equal(content['constructor'], 'A');
+    assert.equal(content['toString'], 'B');
+    assert.equal(content['__proto__'], 'X');
+    assert.equal(JSON.stringify(content), '{"constructor":"A","toString":"B","__proto__":"X"}', 'JSON 序列化不得静默丢失保留键');
+    assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
+  }
 
   console.log('codex_acp_timeline: ok');
 } finally {

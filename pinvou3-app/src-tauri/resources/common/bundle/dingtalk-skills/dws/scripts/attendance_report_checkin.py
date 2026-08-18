@@ -3,7 +3,7 @@
 考勤报表导出 — 签到记录粒度
 
 [AI Agent 强制门禁] 调用本脚本前必须先阅读：
-   dingtalk-workspace/references/products/attendance-report.md
+   ../references/products/attendance-report.md
 
   本脚本是"签到报表导出工作流"的执行末端，工作流完整定义在 attendance-report.md。
 
@@ -81,7 +81,7 @@ def _get_operator_context() -> tuple[str, str]:
         result = subprocess.run(
             ["dws", "auth", "status", "--format", "json"],
             capture_output=True,
-            text=True,
+            text=True, errors='replace',
             timeout=30,
         )
     except FileNotFoundError:

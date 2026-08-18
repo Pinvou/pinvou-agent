@@ -54,7 +54,7 @@ dws aitable record history-list \
 
 ```bash
 dws aitable record history-list --base-id BASE --table-id TBL --record-id REC --format json \
-  | jq '.data.histories[] | {version, action, operateTime}'
+  --jq '.data.histories[] | {version, action, operateTime}'
 ```
 
 ### 2. 翻页拉全量历史
@@ -73,14 +73,14 @@ dws aitable record history-list --base-id BASE --table-id TBL --record-id REC --
 
 ```bash
 dws aitable record history-list --base-id BASE --table-id TBL --record-id REC --limit 50 --format json \
-  | jq '[.data.histories[] | select(.action == "updateRecords")][0].oldValue'
+  --jq '[.data.histories[] | select(.action == "updateRecords")][0].oldValue'
 ```
 
 ### 4. 只看更新事件（排除新增行）
 
 ```bash
 dws aitable record history-list --base-id BASE --table-id TBL --record-id REC --format json \
-  | jq '.data.histories[] | select(.action == "updateRecords") | {version, operateTime}'
+  --jq '.data.histories[] | select(.action == "updateRecords") | {version, operateTime}'
 ```
 
 > 记录被 `record delete` 删除后，其历史不再返回（`histories` 为空数组），无法通过本命令回溯删除事件。

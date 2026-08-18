@@ -1,6 +1,6 @@
 # 考勤 (attendance) 命令参考
 
-> **【命令可用性提示】** 当前 dws 已注册全部考勤子命令组（`record` / `check` / `approve` / `shift` / `schedule` / `class` / `adjustment` / `overtime` / `group` / `summary` / `rules` / `selfsetting` / `globalsetting` / `vacation` / `checkin` / `report` / `boss-check`）。查询与写操作大多可直接调用后端，不会再返回 `unknown command`，不要以"开源版不支持"为由拒答。个别命令返回受账号权限和组织数据影响：`report` 系列仅管理员可用；非管理员或数据为空时可能返回空列表或权限错误。执行前可用 `dws <cmd> --help` 或 `--dry-run` 验证参数。
+> **【命令可用性提示】** 当前 dws 已注册全部考勤子命令组（`record` / `check` / `approve` / `shift` / `schedule` / `class` / `adjustment` / `overtime` / `group` / `summary` / `rules` / `selfsetting` / `globalsetting` / `vacation` / `checkin` / `report` / `boss-check`）。查询与写操作大多可直接调用后端，不会再返回 `unknown command`，不要以"命令不存在/不支持"为由拒答。个别命令返回受账号权限和组织数据影响：`report` 系列仅管理员可用；非管理员或数据为空时可能返回空列表或权限错误。执行前可用 `dws <cmd> --help` 或 `--dry-run` 验证参数。
 
 > **【必读】日期范围严格计算规则 — 所有含 --start/--end 或 --from/--to 的命令均适用**
 >
@@ -597,7 +597,6 @@ Example:
 Flags:
       --date string        查询日期, 格式 YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss (必填)
       --stats-type string  统计类型: week 周统计 / month 月统计 (必填)
-      --tag-name string    标签名称 (可选)
       --user string        钉钉用户 ID (必填)
 ```
 
@@ -1066,7 +1065,7 @@ Flags:
 用户说"考勤数据/查询考勤报表数据" → `report query-data`（单次查询场景，非导出）
   **导出考勤/导出报表/生成考勤报表/出勤汇总导出/考勤明细导出/迟到早退统计导出/全员考勤数据导出/月度考勤报表/考勤表格/考勤 Excel** → **必须先用 `File(action="read")` 读取 [attendance-report.md](./attendance-report.md) 后按其中的工作流执行**。
   - **排除**：如果用户说的是"导出**排班**表"/"导出**排班**"/"**排班**导出"，这属于**排班查询导出**，应路由到 [attendance-schedule.md](./attendance-schedule.md)，而非本条。判断标准：句中含"排班"二字 → 走排班；不含"排班"或明确说"考勤报表/考勤数据/出勤统计" → 走报表。
-  - **严禁**绕过 `attendance-report.md` 直接调用 `python scripts/attendance_report_*.py` 任何脚本
+  - **严禁**绕过 `attendance-report.md` 直接调用 `python3 scripts/attendance_report_*.py` 任何脚本
   - **严禁**仅凭脚本 `--help` 或本文件"自动化脚本"表格里的脚本路径就推断参数自行组装命令
   - 该文档定义了：报表类型默认值、列选择策略（`--column-keywords`）、阶段 1 人员获取流程、错误处理、输出摘要规范，缺一不可
   - 违反约束的后果：报表数据不全、列错位、人员遗漏、用户得到错误结果
@@ -1089,7 +1088,7 @@ dws attendance schedule import --group-id 123456 \
   --yes --format json
 
 #  获取排班记录 — 禁止直接调用，必须走 attendance-schedule.md 排班查询导出工作流
-# python scripts/attendance_schedule_export.py --users user001,user002 --start 2026-04-01 --end 2026-04-30
+# python3 scripts/attendance_schedule_export.py --users user001,user002 --start 2026-04-01 --end 2026-04-30
 
 # 查询可管理的班次列表
 dws attendance class search --format json
@@ -1259,7 +1258,7 @@ dws attendance checkin records --operator-corp-id corp001 --operator-staff-id op
 - `group update` 的 --group-id 必填，其余均可选，至少需指定一个修改项；仅需对要修改的字段赋値，未传字段会从已有配置自动补充；修改打卡地址/wifi/蓝牙等复杂子对象时用 `--group-vo` 传入完整 JSON；`--group-vo` 与单字段 flag 同时传入时单字段 flag 优先级更高
 - `group create` 的 `--name` 和 `--type` 必填，`--type` 必须为 FIXED/TURN/NONE 之一；type=FIXED 时 `--group-vo` 必须包含 `workDayClassList`（非空）和 `defaultClassId`（非 null）；由于保存考勤组耗时较久，建议加 `--timeout 10`
 - `group filtered-get` 的 `--group-id` 必填，`--member/--position/--wifi/--bles` 均可选，默认 false。**返回结果中如含成员 userId 列表，必须调用 `dws contact user get --ids <userId1>,<userId2>,...`（支持逗号分隔传多个 ID），将 userId 转换为员工姓名后再输出；不得直接输出裸 userId。**
-- `summary` 必须同时传 `--user`、`--date`、`--stats-type`（week 周统计 / month 月统计），三者缺一即报错；`--date` 支持 `YYYY-MM-DD` 或 `yyyy-MM-dd HH:mm:ss`；`--tag-name` 可选
+- `summary` 必须同时传 `--user`、`--date`、`--stats-type`（week 周统计 / month 月统计），三者缺一即报错；`--date` 支持 `YYYY-MM-DD` 或 `yyyy-MM-dd HH:mm:ss`
 - `rules` 的 `--date` 支持 YYYY-MM-DD 或 yyyy-MM-dd HH:mm:ss 两种格式
 - `selfsetting get/save` 的 `--setting-scene` 必须是 `checkRemind`、`fastCheck`、`checkResultNotify`、`lackRemind`、`personalAttendStatNotify`、`bossAttendStatNotify` 之一
 - `selfsetting get/save` 的 MCP 入参 `userId` 为必填；CLI 的 `--user` 也必填，必须显式传入目标用户 ID
@@ -1339,8 +1338,8 @@ dws attendance boss-check --plan-id 948964045503 --time "2026-05-13 18:00" --res
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [attendance_my_record.py](../../scripts/attendance_my_record.py) | 查看我今天/指定日期的考勤记录 | `python attendance_my_record.py today` |
-| [attendance_team_shift.py](../../scripts/attendance_team_shift.py) | 查询团队成员本周排班 | `python attendance_team_shift.py --users userId1,userId2` |
+| [attendance_my_record.py](../../scripts/attendance_my_record.py) | 查看我今天/指定日期的考勤记录 | `python3 attendance_my_record.py today` |
+| [attendance_team_shift.py](../../scripts/attendance_team_shift.py) | 查询团队成员本周排班 | `python3 attendance_team_shift.py --users userId1,userId2` |
 | [attendance_report_common.py](../../scripts/attendance_report_common.py) | 考勤报表导出公共模块（不可单独执行） | — |
 | [attendance_vacation_balance.py](../../scripts/attendance_vacation_balance.py) | 假期余额列表 Excel 导出 | **禁止直接调用**，必须先读 [attendance-vacation.md](./attendance-vacation.md) 按工作流执行 |
 | attendance_report_detail.py | 考勤报表 — **明细粒度** |  **禁止直接调用**，必须先读 [attendance-report.md](./attendance-report.md) 按工作流执行 |

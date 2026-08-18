@@ -1,6 +1,6 @@
 # doc block（块级精细编辑：list / insert / update / delete）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 > 2. [`./style/doc-update-workflow.md`](./style/doc-update-workflow.md) — 改写流程（编辑形态优先级、JSONML validator 行为）
 > 3. [`./format/doc-jsonml-cookbook.md`](./format/doc-jsonml-cookbook.md) — JSONML 范例（含 callout / 分栏 / 表格 / 标题等节点的完整命令）

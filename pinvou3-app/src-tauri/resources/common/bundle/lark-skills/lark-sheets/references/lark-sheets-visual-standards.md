@@ -1,7 +1,7 @@
 # 飞书表格样式与配色规范
 
 > **本文定位**：飞书表格"正确视觉输出"的取值标准与美化决策流——配色、表头、对齐、数值格式、斑马纹、列宽行高、图表展示，以及新增 / 继承 / 美化已有区域三类场景的做法。
-> **边界**：本文只讲"样式长什么样、怎么决策"；**怎么调用工具写入样式**（`cell_styles` / `border_styles` 字段、合并、resize 等参数）见 `lark-sheets-write-cells` / `lark-sheets-range-operations` / `lark-sheets-batch-update`。**条件格式**（高亮 / 标红 / 数据条 / 色阶）见 `lark-sheets-conditional-format`。本文不含 shortcut，铁律见 `lark-sheets-core-operations`。
+> **边界**：本文只讲"样式长什么样、怎么决策"；**怎么调用工具写入样式**（`cell_styles` / `border_styles` 字段、合并、resize 等参数）见 `lark-sheets-write-cells` / `lark-sheets-range-operations` / `lark-sheets-batch-update`。**条件格式**（高亮 / 标红 / 数据条 / 色阶）见 `lark-sheets-conditional-format`。本文不含 shortcut，通用编辑准则见主 SKILL.md「飞书表格编辑准则」。
 
 ## 最高优先级原则
 
@@ -23,6 +23,8 @@
 5. **列宽 + 行高 + 自动换行**：详细规则见 `lark-sheets-range-operations` 的「写入后列宽自适应」章节（按最长字符数扩列宽 / 长文本设置 `cell_styles.word_wrap="auto-wrap"` + 调高行高 / 长数字设置 `number_format` 防科学计数法）
 
 **差异化标注场景**：用户要求"重复行 / 异常值 / 重要项视觉区分"时，标注列 / 行必须设置与普通数据**显著不同**的 `cell_styles`（背景色 + 加粗 + 字体色至少改一项），不能与普通数据格式完全一致。
+
+**显式要求边框 / 表头 / 对齐时同样按上面标准落地**（不必等用户说"美化"）：① 用户说"给某矩形区域加边框"必须**整个矩形含表头行、数据行、汇总行全部加内外框**，落地后核起 / 末行、末列三边界（反例：要求加边框的区域实际无任何边框）；② **新建表头前先确认哪一行才是表头**——别把已有的第一行数据误当表头刷成蓝底白字，真正该加的表头列也要建出来（反例：把第一行数据误设成了表头样式）；③ 新增 / 编辑区域的字号必须与原表一致，禁止 13 号与 14 号、10 号与 11 号混杂（反例：新列字号与原表不一致）。
 
 ## 通用样式规范
 
@@ -62,7 +64,7 @@
   - 若追加位置紧邻汇总行、说明区或空白分隔区，先判断真实数据区域边界再操作，避免破坏原有结构。
   - **Zebra Stripes 维护**：插入或删除行后若影响后续行奇偶性，须从受影响行往后重建条纹（先清理再重设）。少量增删用局部重建，大量变动用全局清理+统一重建。
   - 具体采样与复制流程见下方「场景二：从已有区域继承美化」。
-- **列宽调整**（飞书 `+rows-resize / +cols-resize` 按 pixel 传值）：
+- **列宽 / 行高调整**（飞书 `+cols-resize` / `+rows-resize` 直接给像素值：统一尺寸用 `--range` + `--width`/`--height <px>`，多列 / 多行不同尺寸用 `--widths`/`--heights` map 一次调用完成，如 `--widths '{"A":100,"C:E":120}'`）：
   - 禁止硬编码固定列宽，须根据该列实际内容长度估算像素。
   - 经验估算：中文每字约 15-18px，英文/数字每字约 7-9px，外加 10-16px padding。
   - 上下限建议 80~400px；超上限启用自动换行（`word_wrap: auto-wrap`）+ 调整行高，而非无限加宽。
@@ -80,7 +82,7 @@
 - 包含必要元素：标题、图例、数据标签、坐标轴标题。
 - 调整至合适大小，避免数据和标签过多堆叠。
 - **图表放置防重叠**：新增图表前须计算放置区域，避免与已有图表重叠。具体步骤：
-  1. 调用 `+chart-list` 获取当前工作表所有已有图表的 `position`（锚点单元格：`row` 行索引、`col` 列索引如 "A"/"B"）、`offset`（锚点内偏移：`row_offset`、`col_offset`，单位像素）以及 `size`（`width`、`height`，单位像素）。
+  1. 调用 `+chart-list` 获取当前工作表所有已有图表的 `position`（锚点单元格：`col` 是列字母如 "A"/"B"、`row` 是 1-based 行号；以 `+chart-list` 实际返回字段为准）、`offset`（锚点内偏移：`row_offset`、`col_offset`，单位像素）以及 `size`（`width`、`height`，单位像素）。
   2. 获取工作表的行高和列宽信息（像素）。
   3. 根据每个图表的锚点 `position.row`/`position.col` + 偏移 `offset.row_offset`/`offset.col_offset` + 尺寸 `size.width`/`size.height`，结合行高列宽，计算出每个已有图表覆盖的像素矩形区域 `(x_min, y_min, x_max, y_max)`。
   4. 为新图表选定大小后，候选放置位置应避开所有已有矩形区域；若存在重叠则向下或向右偏移，直至找到无冲突位置。
@@ -153,7 +155,7 @@ Step 1 — 格式铺开：`+batch-update` + `+range-copy`（或 `+range-fill`）
 Step 2 — 内容覆写：`+batch-update` + `+cells-set`（仅传 value/formula，不传任何样式）
   └── 将每行的实际数据写入，cell_styles 全部省略，因为格式已在 Step 1 中就位
 
-Step 3 — 微调收尾：`+batch-update` + `+rows-resize / +cols-resize` / `+cells-{merge|unmerge}` 等
+Step 3 — 微调收尾：`+rows-resize --heights` / `+cols-resize --widths`（行高列宽 map 一次调用完成）、`+batch-update` + `+cells-{merge|unmerge}` 等
   └── 调整行高列宽、处理合并单元格、扩展条件格式范围等边缘情况
 ```
 
@@ -201,4 +203,3 @@ Step 3 — 微调收尾：`+batch-update` + `+rows-resize / +cols-resize` / `+ce
 - 合并区域样式只写左上角，不要对合并内的其他单元格重复写入样式。
 
 > 合并单元格完整的安全操作规则（含数据保护、样式占位等 5 条）见 `lark-sheets-range-operations` 的 `+cells-{merge|unmerge}` 章节。
-

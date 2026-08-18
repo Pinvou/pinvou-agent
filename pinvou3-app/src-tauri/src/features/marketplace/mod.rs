@@ -977,69 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn model_tool_names_generates_prefix_rules_for_remote_oauth_server() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "yuandian-mcp",
-                r#"{
-                    "id":"yuandian-mcp","name":"华宇元典","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
-                    "servers":[
-                        {
-                            "name":"yuandian_mcp",
-                            "url":"https://open.chineselaw.com/mcp",
-                            "scopes":["mcp"],
-                            "oauth_resource":"https://open.chineselaw.com/mcp"
-                        }
-                    ]
-                }"#,
-            );
-
-            let mgr = MarketplaceManager::new();
-            assert_eq!(
-                mgr.model_tool_names(&["yuandian-mcp".to_string()]),
-                vec!["mcp_yuandian_mcp_*".to_string()]
-            );
-        });
-    }
-
-    #[test]
-    fn install_remote_oauth_server_writes_deepseek_oauth_config() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "yuandian-mcp",
-                r#"{
-                    "id":"yuandian-mcp","name":"华宇元典","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
-                    "servers":[
-                        {
-                            "name":"yuandian_mcp",
-                            "url":"https://open.chineselaw.com/mcp",
-                            "scopes":["mcp"],
-                            "oauth_resource":"https://open.chineselaw.com/mcp"
-                        }
-                    ]
-                }"#,
-            );
-
-            let mgr = MarketplaceManager::new();
-            mgr.install("yuandian-mcp", &std::collections::HashMap::new())
-                .unwrap();
-
-            let mcp = read_mcp_json();
-            let server = &mcp["servers"]["yuandian_mcp"];
-            assert_eq!(server["url"], "https://open.chineselaw.com/mcp");
-            assert_eq!(server["scopes"], serde_json::json!(["mcp"]));
-            assert_eq!(server["oauth_resource"], "https://open.chineselaw.com/mcp");
-            assert!(server.get("headers").is_none());
-            assert_eq!(
-                mgr.oauth_remote_server_name("yuandian-mcp").as_deref(),
-                Some("yuandian_mcp")
-            );
-        });
-    }
-
-    #[test]
     fn canva_oauth_server_writes_config_and_model_prefix() {
         with_temp_home(|| {
             write_tool_manifest(
@@ -1476,41 +1413,6 @@ mod tests {
                 .as_str()
                 .unwrap();
             assert_eq!(amap, "${PINVOU3_MCP_SECRET_AMAP_KEY}");
-            assert!(!mcp.to_string().contains(&secret));
-        });
-    }
-
-    #[test]
-    fn install_qcc_secret_header_uses_bearer_env_without_plain_secret() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "qcc",
-                r#"{
-                    "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
-                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
-                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
-                }"#,
-            );
-            let store = MemoryCredentialStore::default();
-            let secret = secret_value("qcc");
-            store
-                .set(
-                    &mcp_secret_reference("qcc", "header", "QCC_API_KEY"),
-                    &secret,
-                )
-                .unwrap();
-            let mgr = MarketplaceManager::with_store(store);
-
-            mgr.install("qcc", &std::collections::HashMap::new())
-                .unwrap();
-
-            let mcp = read_mcp_json();
-            assert!(mcp["servers"]["qcc-company"].get("headers").is_none());
-            assert_eq!(
-                mcp["servers"]["qcc-company"]["bearer_token_env_var"],
-                "PINVOU3_MCP_SECRET_QCC_API_KEY"
-            );
             assert!(!mcp.to_string().contains(&secret));
         });
     }

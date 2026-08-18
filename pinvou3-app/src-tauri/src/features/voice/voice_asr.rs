@@ -529,21 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn sha256_helper_matches_known_content() {
-        let root = std::env::temp_dir().join(format!("pinvou3-asr-sha-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&root);
-        let file = root.join("model.gguf");
-        std::fs::write(&file, b"abc").unwrap();
-
-        assert_eq!(
-            crate::platform::hashing::sha256_file(&file).unwrap(),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn model_verification_checks_size_and_sha256() {
         let root = std::env::temp_dir().join(format!("pinvou3-asr-verify-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&root);

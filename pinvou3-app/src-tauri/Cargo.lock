@@ -6100,7 +6100,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6126,7 +6126,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "age",
  "agent-client-protocol",

@@ -9,26 +9,46 @@ function normalizedOptions(question) {
   }));
 }
 
-function initialState(questions, initialAnswers) {
-  const selected = {};
-  const other = {};
+function initialState(questions, initialAnswers, otherAnswerLabel) {
+  // 用无原型对象：question.id 后端仅校验非空，constructor/toString/__proto__ 是合法输入；
+  // 普通 {} 会让这些键命中 Object.prototype（读函数/写触发 __proto__ setter），导致未选择
+  // 被判为已回答、伪造“其他答案”或历史答案无法形成 own property（重挂载丢选中态）。
+  const selected = Object.create(null);
+  const other = Object.create(null);
   for (const question of questions) {
     const answers = (initialAnswers || []).filter(answer => answer && answer.id === question.id);
     const options = normalizedOptions(question);
+    // “其他”答案判定（评审第五轮 P2）：
+    //   1) 显式布尔 other 标记优先——包括明确的 false。warm 路径（restoredAnswers）保留 other
+    //      标记；若问题 allow_free_text=false 却存在名为“其他”的普通预设项（isFreeTextPlaceholderOption
+    //      过滤被 allowOther 跳过、该预设项保留），提交链路会产生 { other: false }，必须尊重它，
+    //      否则该预设项重挂载后既不高亮也看不到答案。
+    //   2) 冷重载路径后端只持久化 {id,label,value}（UserInputAnswer 无 other 字段，已被剥离）；
+    //      仅当该问题允许自由输入（allowOther）时才按 label 命中“其他”文案兼容判定，allowOther=false
+    //      时不存在自定义答案，不应把名为“其他”的预设项误判为 other。
+    const isOtherAnswer = answer => {
+      if (typeof answer.other === 'boolean') return answer.other;
+      return Boolean(question.allowOther)
+        && otherAnswerLabel != null && otherAnswerLabel !== ''
+        && answer.label === otherAnswerLabel;
+    };
+    // 预设匹配优先按 label：跨语言冷重载时 otherAnswerLabel 随界面语言变化，“其他”答案的 label
+    // （如中文“其他”）不再命中英文预设；此时不应回退到 value 匹配，否则撞值的“其他”答案会被
+    // 误判为预设（评审第五轮 P2）。仅当 label 缺失时才按 value 回退，兼容 label 缺失的历史数据。
+    const findOption = answer => (
+      answer.label != null && answer.label !== ''
+        ? options.find(option => option.label === answer.label)
+        : options.find(option => option.value === answer.value)
+    );
+    const matchesOption = answer => Boolean(findOption(answer));
     const optionValues = answers
-      .filter(answer => options.some(option => (
-        option.label === answer.label || option.value === answer.value
-      )))
+      .filter(answer => !isOtherAnswer(answer) && matchesOption(answer))
       .map(answer => {
-        const option = options.find(candidate => (
-          candidate.label === answer.label || candidate.value === answer.value
-        ));
+        const option = findOption(answer);
         return option && option.value;
       })
       .filter(value => value != null);
-    const custom = answers.find(answer => !options.some(option => (
-      option.label === answer.label || option.value === answer.value
-    )));
+    const custom = answers.find(answer => isOtherAnswer(answer) || !matchesOption(answer));
     if (question.multiSelect) {
       if (optionValues.length) selected[question.id] = optionValues;
     } else if (optionValues.length) {
@@ -43,6 +63,12 @@ function initialState(questions, initialAnswers) {
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+// 状态更新必须保持无原型，否则 spread 回普通对象会让未显式设置的保留键重新命中
+// Object.prototype（例如选 constructor 前读取 selected['constructor'] 拿到函数）。
+function copyState(state) {
+  return Object.assign(Object.create(null), state);
 }
 
 export function QuestionChoiceCard({
@@ -63,7 +89,7 @@ export function QuestionChoiceCard({
   onCancel,
 }) {
   const cardId = useId();
-  const initial = initialState(questions, initialAnswers);
+  const initial = initialState(questions, initialAnswers, otherAnswerLabel);
   const [selected, setSelected] = useState(initial.selected);
   const [other, setOther] = useState(initial.other);
   const locked = resolved || submitting;
@@ -71,35 +97,45 @@ export function QuestionChoiceCard({
   function choose(question, value) {
     if (locked) return;
     setOther(current => {
-      const next = { ...current };
+      const next = copyState(current);
       delete next[question.id];
       return next;
     });
     setSelected(current => {
-      if (!question.multiSelect) return { ...current, [question.id]: value };
+      const next = copyState(current);
+      if (!question.multiSelect) {
+        next[question.id] = value;
+        return next;
+      }
       const values = Array.isArray(current[question.id]) ? current[question.id] : [];
-      return {
-        ...current,
-        [question.id]: values.includes(value)
-          ? values.filter(candidate => candidate !== value)
-          : [...values, value],
-      };
+      next[question.id] = values.includes(value)
+        ? values.filter(candidate => candidate !== value)
+        : [...values, value];
+      return next;
     });
   }
 
   function changeOther(question, value) {
     if (locked) return;
     setSelected(current => {
-      const next = { ...current };
+      const next = copyState(current);
       delete next[question.id];
       return next;
     });
-    setOther(current => ({ ...current, [question.id]: value }));
+    setOther(current => {
+      const next = copyState(current);
+      next[question.id] = value;
+      return next;
+    });
   }
 
   function changeValue(question, value) {
     if (locked) return;
-    setSelected(current => ({ ...current, [question.id]: value }));
+    setSelected(current => {
+      const next = copyState(current);
+      next[question.id] = value;
+      return next;
+    });
   }
 
   function answered(question) {
@@ -181,6 +217,14 @@ export function QuestionChoiceCard({
                         const active = selectedValues.includes(option.value);
                         return (
                           <label key={String(option.value)}
+                            onClick={(event) => {
+                              // 选项整行可点：点击文本/描述区域直接选中（WebView 下 label 隐式
+                              // 激活不可靠）；点击圆点本身交给原生 onChange，避免双触发。
+                              if (locked) return;
+                              if (event.target === event.currentTarget.querySelector('input')) return;
+                              event.preventDefault();
+                              choose(question, option.value);
+                            }}
                             className={`rounded-xl border px-3 py-2.5 cursor-pointer transition-colors ${
                               active
                                 ? 'border-blue-500/55 bg-blue-500/[0.08]'
@@ -208,7 +252,15 @@ export function QuestionChoiceCard({
                       })}
                     </div>
                   ) : question.inputType === 'boolean' ? (
-                    <label className="mt-2 flex items-center gap-2 text-[12px]">
+                    <label
+                      className="mt-2 flex items-center gap-2 text-[12px]"
+                      onClick={(event) => {
+                        if (locked) return;
+                        if (event.target === event.currentTarget.querySelector('input')) return;
+                        event.preventDefault();
+                        changeValue(question, !Boolean(selected[question.id]));
+                      }}
+                    >
                       <input
                         type="checkbox"
                         checked={Boolean(selected[question.id])}

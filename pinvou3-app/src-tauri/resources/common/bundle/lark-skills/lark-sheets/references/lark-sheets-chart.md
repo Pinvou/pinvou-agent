@@ -27,16 +27,19 @@
 
 **多图表需求**：当用户同时提到多种分析（如"统计占比 + 对比数量"），必须创建多个图表，每个对应一种类型，不要只做一个。
 
-**`--properties` 结构锚点（构造前必读）**：`--properties` 顶层只有 `position` / `offset` / `size` / `snapshot` 四个字段，**没有**顶层 `data`，也没有再嵌一层 `properties`。图表数据配置全部挂在 `snapshot.data` 下——下文及示例里出现的 `refs` / `headerMode` / `dim1` / `dim2` / `nameRef` 一律指 `snapshot.data.refs` / `snapshot.data.headerMode` / `snapshot.data.dim1` / `snapshot.data.dim2`（及其下的 `serie.nameRef` / `series[].nameRef`）；样式 / 堆叠 / 数据标签等在 `snapshot.plotArea` 下。完整结构以 `lark-cli sheets +chart-create --print-schema --flag-name properties` 为准。
+**`--properties` 结构锚点（构造前必读）**：`--properties` 顶层只有 `position` / `offset` / `size` / `snapshot` 四个字段，**没有**顶层 `data`，也没有再嵌一层 `properties`。图表数据配置全部挂在 `snapshot.data` 下——下文及示例里出现的 `refs` / `headerMode` / `dim1` / `dim2` / `nameRef` 一律指 `snapshot.data.refs` / `snapshot.data.headerMode` / `snapshot.data.dim1` / `snapshot.data.dim2`（及其下的 `serie.nameRef` / `series[].nameRef`）；样式 / 堆叠 / 数据标签等在 `snapshot.plotArea` 下。**构造起点优先用 `lark-cli sheets +chart-create --print-example <column|bar|line|area|pie|scatter|radar|combo>` 拿最小可用模板改参**（本地即时返回）；查深层字段用点分路径切片 `--print-schema --flag-name properties.snapshot.plotArea.axes`，别整篇 dump 翻页。完整结构以 `--print-schema --flag-name properties` 为准。
 
 **常见配置错误（必须注意）**：
 - **图表类型选择错误**：用户说"堆积柱形图/百分比堆积"时，应在 `properties.snapshot.plotArea.plot.extra.stack` 中配置堆叠；百分比堆叠需在该 stack 下设置 `percentage: true`。用户说"占比/比例"时，优先考虑饼图或百分比堆积图。注意区分 `column`（柱形图，纵向）与 `bar`（条形图，横向）是两个不同的 type 取值，"对比/各 XX" 类纵向柱默认用 `column`
-- **数据标签缺失**：用户需要看到具体数值时，需配置 `properties.snapshot.plotArea.plot.labels`（数据标签）相关字段
+- **数据标签开关**：`plotArea.plot.labels` 对象的**存在性即开关**——
+  - 用户需要看到具体数值/类别时：传入 `labels` 并配置 `value` / `category` / `series` / `percentage` 等显示位。
+  - 用户明确说"不要数据标签 / 关掉标签"时：**整个 `labels` 字段省略**。不要用 `labels: { value: false, category: false, series: false }` 这种"全部置 false"的写法关闭——只要传了 `labels`，系统就会显示数据标签（且默认兜底显示 value）。
 - **数据源范围与系列名来源要对齐**：
   - **默认情况（inline 模式）**：`refs` 范围**应包含表头行**（首行/首列即系列名），且范围要精确覆盖目标数据，不要多选或少选。
   - **合并标题行要跳过**：如果表格在表头上方存在合并的标题行（如"员工统计表"横跨多列的大标题），`refs` 必须跳过标题行、从真正的列标题行开始。例如表头在第 3 行、数据在第 4-20 行，则 `refs` 应为 `A3:G20` 而非 `A1:G20`。包含合并标题行会导致列名识别错误、表头被当作数据参与聚合计算。
   - **数据与表头分离时必须用 detached 模式**：当 `refs` 只覆盖完整数据的一个子集（按筛选/分组只画其中一段），而真正的语义表头在该子集之外时，**必须**设置 `snapshot.data.headerMode='detached'`：refs 仅传纯数据范围，维度名/系列名通过 `snapshot.data.dim1.serie.nameRef` / `snapshot.data.dim2.series[].nameRef` 指向真正的表头单元格。详见下文"硬性规则：数据与表头分离场景必须使用 detached 模式"。
-- **axes[].label 不接受 `format` / `number_format` 字段**：想给坐标轴数值加千分位、百分号等格式化时，不要在 `axes[i].label` 里传 `format` 或 `number_format`（schema 未定义，会报 `unexpected property "format" is not defined in schema`）。数值格式化统一在源数据单元格的 `cell_styles.number_format` 里设置（写 `+cells-set` 时），图表会沿用单元格格式。
+- **axes[].label 不接受 `format` / `number_format` 字段**：想给坐标轴数值加千分位、百分号等格式化时，不要在 `axes[i].label` 里传 `format` 或 `number_format`（schema 未定义，会报 `unexpected property "format" is not defined in schema`）。数值格式化统一在源数据单元格的 `cell_styles.number_format` 里设置（写 `+cells-set` 时），图表会沿用单元格格式。**日期轴同理**：横轴显示成 `45297` 这类 Excel 序列号，是因为源日期列没设日期格式——给源列设 `number_format="yyyy-mm-dd"` 后横轴才会显示成日期（反例：折线图横轴日期显示为序列号）。大数值轴显示科学计数法同理，给源列设整数 / 千分位格式（反例：透视表数值轴显示科学计数法）。
+- **轴口径要对齐用户要的指标**：用户要"占比 / 比例"时，**纵轴应是百分比**——用饼图，或柱 / 条形图设 `stack.percentage: true` 让纵轴变 %，并把数据源指向占比列 / 让数据标签显示百分比；不要交付纵轴仍是原始计数的图（反例：要求看各类占比，却用普通堆积柱、纵轴是 0–350 的人数而非百分比）。
 - **创建后必须验证**：图表创建后必须调用 `+chart-list` 验证配置是否正确
 
 > **⚠️ 硬性规则：当用户通过列标题名称（而非列索引）指定横轴/纵轴系列时，必须先读取表格首行（表头）来确定列名与列索引的对应关系，再设置 `dim1`/`dim2` 的 `index`。**
@@ -66,7 +69,7 @@
 >
 > **反向约束**：场景 A 下不要写 `nameRef`——首行命名已经生效，多写反而冗余。`nameRef` 仅在场景 B 下使用（且必填）。
 
-## ⚠️ chart 数据源引用 pivot 时必须排除总计行（高频致命错误）
+## ⚠️ chart 数据源引用 pivot 时必须排除总计行
 
 当 chart 要基于刚创建的 pivot 产物画图时，**禁止凭猜写 `refs`**。pivot 默认启用 `show_row_grand_total` / `show_col_grand_total`，产物最后一行/一列通常是"总计"。如果 `refs` 把总计行一并框进去：
 - **柱形图**末尾会多一根天文数字柱子（=所有数据求和），把其他柱子压扁到看不见
@@ -84,15 +87,17 @@
 
 1. **查尺寸**：`+workbook-info` 拿该 sheet 的 `row_count` / `column_count`（下文记为 rowCount / columnCount；`+sheet-info` 只返回布局，不含行列总数）。
 2. **估跨度**：默认单元格 **105 px 宽 × 27 px 高**，`needCols = ceil(width/105)`，`needRows = ceil(height/27)`。
-3. **校验**：`position.row + needRows ≤ rowCount` 且 `col_idx + needCols ≤ columnCount`（col 按 A=0、B=1、…、Z=25、AA=26… 换算）。
+3. **校验**：`position.row + needRows ≤ rowCount` 且 `col_idx + needCols ≤ columnCount`（`position.row` 为 **0-based**：首行 = `row:0`，与 A1 区间 / `+dim-insert --position` 的 1-based 行号不同；col 按 A=0、B=1、…、Z=25、AA=26… 换算）。
 4. **不够就先扩表**，二选一，禁止硬塞越界位置：
    - **优先**放数据下方空区：`position = {row: data_end_row + 2, col: "A"}`；
    - 否则先调 `+dim-insert`（`lark-sheets-sheet-structure`）扩行/列，再 create。
 
+⚠️ **图表落点禁止压在已有数据矩形内**——必须落在数据区**右侧或下方的空白**，否则图表浮层会遮挡原始数据被判失败（反例：折线图落在数据区中间，遮挡了下方原始数据）。
+
 **示例**：21 列 sheet 放 600×400 图 → `needCols=6, needRows=15`
 - ❌ `{row: 0, col: "W"}` — col=22 越界
 - ✅ `{row: 42, col: "A"}` — 放数据下方
-- ✅ 先 `+dim-insert --dimension column --start 21 --end 27`（在 U 列后插 6 列；U=index 20，after 即从 21 起），再放图到 `{row: 0, col: "V"}`
+- ✅ 先 `+dim-insert --position V --count 6`（在 V 列前插 6 列，即 U 列之后），再放图到 `{row: 0, col: "V"}`
 
 ## Shortcuts
 
@@ -119,7 +124,8 @@ _公共四件套 · 系统：`--dry-run`_
 
 | Flag | Type | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--properties` | string + File + Stdin（复合 JSON） | required | 图表完整配置 JSON。顶层字段为 `position` / `offset` / `size` / `snapshot`（无顶层 `data`，也无再嵌一层 `properties`）；图表数据配置在 `snapshot.data` 下（含 `refs` / `headerMode` / `dim1` / `dim2`）。结构嵌套深，完整结构跑 `--print-schema --flag-name properties` |
+| `--properties` | string + File + Stdin（复合 JSON） | required | 图表完整配置 JSON。顶层字段为 `position` / `offset` / `size` / `snapshot`（无顶层 `data`，也无再嵌一层 `properties`）；图表数据配置在 `snapshot.data` 下（含 `refs` / `headerMode` / `dim1` / `dim2`）；必须至少含 `snapshot.data.dim1.serie.index` 或 `dim2.series[].index` 之一，否则 server 拒。结构嵌套深，完整结构跑 `--print-schema --flag-name properties` |
+| `--print-example` | string | optional | 打印指定图表类型的最小可用 `--properties` 模板后直接退出（`area` / `bar` / `column` / `combo` / `line` / `pie` / `radar` / `scatter`）。纯本地执行，不需要 locator flag、不发网络请求；传入未知类型时列出全部可用类型 |
 
 ### `+chart-update`
 
@@ -147,9 +153,9 @@ _公共四件套 · 系统：`--yes`、`--dry-run`_
 _创建/更新的图表属性_
 
 **顶层字段**：
-- `position` (object) — 必填 { row: number, col: string }
+- `position` (object?) — 必填 { row: number, col: string }
 - `offset` (object?) — 可选 { row_offset?: number, col_offset?: number }
-- `size` (object) — 必填 { width: number, height: number }
+- `size` (object?) — 必填 { width: number, height: number }
 - `snapshot` (object?) — 图表快照配置 { title?: object, subTitle?: object, style?: object, legend?: oneOf, plotArea: object, …共 6 项 }
 
 ## Examples
@@ -164,24 +170,28 @@ _创建/更新的图表属性_
 
 > **`snapshot.data` 必填 `dim1.serie.index` 或 `dim2.series[].index` 之一**（1-based，对应 `refs.value` 范围内的列序）。schema 允许传空 `{}` 但 server 运行时强制：缺则被拒为 `snapshot.data.dim1.serie.index and dim2.series[].index are both missing; at least one must be set`，即便侥幸通过也只会渲染空图。
 
+> ⚠️ **含 `'Sheet'!` 前缀的 `--properties` 必须走 stdin 或 `@file`，不要用 inline 单引号**。`refs` / `nameRef` 里的 sheet 前缀带单引号（`'Sheet1'!A1`），若塞进 inline 的 `--properties '{...}'`，bash 会把内层那对单引号吃掉（sheet 名带空格还会被拆成多个词），JSON 直接被破坏。下面示例统一用 `--properties - <<'JSON' … JSON`（heredoc 定界符加引号 = 不做 shell 替换），或 `--properties @file.json`（`@` 只接 cwd 下相对路径）。
+
 最小可用列图（inline 模式：refs 含表头行）：
 
 ```bash
 lark-cli sheets +chart-create --url "https://example.feishu.cn/sheets/shtXXX" \
-  --sheet-name "Sheet1" --properties '{
-    "position":{"row":42,"col":"A"},
-    "size":{"width":600,"height":400},
-    "snapshot":{
-      "data":{
-        "refs":[{"value":"'Sheet1'!A1:B10"}],
-        "dim1":{"serie":{"index":1}},
-        "dim2":{"series":[{"index":2}]}
-      },
-      "plotArea":{"plot":{"type":"column"}}
-    }
-  }'
+  --sheet-name "Sheet1" --properties - <<'JSON'
+{
+  "position":{"row":42,"col":"A"},
+  "size":{"width":600,"height":400},
+  "snapshot":{
+    "data":{
+      "refs":[{"value":"'Sheet1'!A1:B10"}],
+      "dim1":{"serie":{"index":1}},
+      "dim2":{"series":[{"index":2}]}
+    },
+    "plotArea":{"plot":{"type":"column"}}
+  }
+}
+JSON
 
-# 走文件（推荐配置较多时）
+# 或落到 cwd 下相对路径文件再用 @file
 lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties @chart-config.json
 ```
 
@@ -190,7 +200,8 @@ lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties @ch
 饼图比 column / bar 更复杂：`sectors` 是 object，里面再包一个**单数** `sector` 数组——CLI 不替你 normalize，写错路径会被 server schema 直接拒。
 
 ```bash
-lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties '{
+lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties - <<'JSON'
+{
   "position":{"row":24,"col":"F"},
   "size":{"width":600,"height":450},
   "snapshot":{
@@ -208,7 +219,8 @@ lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties '{
       "dim2":{"series":[{"index":2,"aggregateType":"sum"}]}
     }
   }
-}'
+}
+JSON
 ```
 
 **数据与表头分离（必须用 `detached` + `nameRef`）**：
@@ -216,7 +228,8 @@ lark-cli sheets +chart-create --url "..." --sheet-name "Sheet1" --properties '{
 场景：周度销量明细表，真实表头在第 1 行（A1=周次、C1=订单量、D1=退款量），数据按 B 列"店铺"分段；用户只要"3 号店"那一段（第 11–17 行）。
 
 ```bash
-lark-cli sheets +chart-create --url "..." --sheet-name "Sheet2" --properties '{
+lark-cli sheets +chart-create --url "..." --sheet-name "Sheet2" --properties - <<'JSON'
+{
   "position":{"row":7,"col":"F"},
   "size":{"width":600,"height":360},
   "snapshot":{
@@ -233,7 +246,8 @@ lark-cli sheets +chart-create --url "..." --sheet-name "Sheet2" --properties '{
       ]}
     }
   }
-}'
+}
+JSON
 ```
 
 约束：

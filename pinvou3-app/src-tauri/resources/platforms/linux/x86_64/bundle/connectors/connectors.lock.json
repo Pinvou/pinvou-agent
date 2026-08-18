@@ -4,21 +4,21 @@
   "artifacts": [
     {
       "name": "dws",
-      "version": "1.0.51",
+      "version": "1.0.58",
       "license": "Apache-2.0",
       "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli",
-      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.51/dws-linux-amd64.tar.gz",
-      "archiveSha256": "d7b87fe7b9f7ae48467b776dfc08c72fa5fe6a760ca22484ca14efef5eb3df9a",
-      "binarySha256": "cf046cb659353c88d2de4829ed65b7d83e9e7c6b42007100ec16d29fe924baaf"
+      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.58/dws-linux-amd64.tar.gz",
+      "archiveSha256": "3ccadcc6f070a39d2b2ba20429a4fcdc2f21639bf79f34361dc7d16f501bfda6",
+      "binarySha256": "61dfc2d29cc11357fb9eff772dad68c0bc80611c5f4106c86973c05423fbda38"
     },
     {
       "name": "lark-cli",
-      "version": "1.0.65",
+      "version": "1.0.87",
       "license": "MIT",
       "source": "https://github.com/larksuite/cli",
-      "url": "https://github.com/larksuite/cli/releases/download/v1.0.65/lark-cli-1.0.65-linux-amd64.tar.gz",
-      "archiveSha256": "2d8fbd33e79d06efcd7243971d3a4e1a049ad91d04f0ca97214c6730e10c24c8",
-      "binarySha256": "cd17c09ef6333b521824b9b87bb1e7d78aa020b22fd95ad93d487a9492d1926f"
+      "url": "https://github.com/larksuite/cli/releases/download/v1.0.87/lark-cli-1.0.87-linux-amd64.tar.gz",
+      "archiveSha256": "6027b1ddc12440400581bbdf9554850d8e119c7dd400439b1220e7a87b9673c5",
+      "binarySha256": "1e8930cff821b0e5774c9f2cb38b8627099e13ea36965c79677980e8d07088a2"
     },
     {
       "name": "wecom-cli",

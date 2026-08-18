@@ -430,12 +430,14 @@ impl CredentialStore for SystemCredentialStore {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct MemoryCredentialStore {
     values: Arc<Mutex<HashMap<(String, String), String>>>,
     fail: Arc<Mutex<Option<String>>>,
 }
 
+#[cfg(test)]
 impl MemoryCredentialStore {
     pub fn fail_with(&self, message: impl Into<String>) {
         *self.fail.lock().expect("memory credential fail lock") = Some(message.into());
@@ -454,6 +456,7 @@ impl MemoryCredentialStore {
     }
 }
 
+#[cfg(test)]
 impl CredentialStore for MemoryCredentialStore {
     fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
         self.maybe_fail()?;

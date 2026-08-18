@@ -161,25 +161,6 @@ pub fn all_summaries() -> Vec<PersonaSummary> {
     out
 }
 
-/// 可承担工具任务的专家卡轻量摘要。纯对话元卡仍展示在专家池，但不能作为子智能体 profile。
-/// 多智能体匹配走此接口，避免每轮仅为名称/简介评分就克隆约 1.2MB 的全部正文。
-pub fn executable_summaries() -> Vec<PersonaSummary> {
-    let mut out: Vec<PersonaSummary> = embedded()
-        .iter()
-        .filter(|card| !card.conversational_only)
-        .map(PersonaCard::summary)
-        .collect();
-    out.extend(
-        user_lock()
-            .read()
-            .expect("user lock")
-            .iter()
-            .filter(|card| !card.conversational_only)
-            .map(PersonaCard::summary),
-    );
-    out
-}
-
 /// 可承担工具任务的专家卡完整快照。
 ///
 /// 多智能体名册与当轮候选提醒必须从同一次读取生成，不能先取摘要、再逐张
@@ -447,23 +428,6 @@ mod tests {
         let s = serde_json::to_string(&embedded()[0].summary()).unwrap();
         assert!(!s.contains("\"body\""), "summary 不应含 body");
         assert!(s.contains("\"source\""), "summary 应含 source");
-    }
-
-    #[test]
-    fn executable_summaries_exclude_conversational_meta_cards() {
-        let summaries = executable_summaries();
-        assert!(
-            summaries
-                .iter()
-                .any(|card| card.id == "engineering-frontend-developer"),
-            "执行型内置专家应进入轻量候选源"
-        );
-        assert!(
-            summaries
-                .iter()
-                .all(|card| card.id != "pinvou-card-creator"),
-            "纯对话卡牌制造器不得进入子智能体候选源"
-        );
     }
 
     #[test]

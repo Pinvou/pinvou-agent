@@ -26,7 +26,7 @@ def run_dws(
         return {'dry_run': True}
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
+            cmd, capture_output=True, text=True, errors='replace', timeout=60
         )
         if result.returncode != 0:
             print(f"  ✗ 错误：{result.stderr.strip()}")

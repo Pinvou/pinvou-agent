@@ -11,7 +11,8 @@ const MobileTopBar = ({ theme, t, title, onMenu, onNewChat }) => {
   const btnCls = 'w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-colors text-[#444746] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#333537]';
   return (
     <div data-testid="mobile-top-bar" className="h-12 shrink-0 flex items-center gap-1 px-2 bg-[#F0F4F9] dark:bg-[#1E1F20]">
-      <button type="button" aria-label={t.uiComponents.openNavigation} onClick={onMenu} className={btnCls}>
+      <button type="button" data-testid="mobile-navigation-open"
+        aria-label={t.uiComponents.openNavigation} onClick={onMenu} className={btnCls}>
         <Menu size={20} />
       </button>
       <span className="flex-1 min-w-0 truncate text-center text-[15px] font-medium px-1">{title}</span>

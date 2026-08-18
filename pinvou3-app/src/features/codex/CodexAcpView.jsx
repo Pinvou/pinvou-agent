@@ -20,6 +20,7 @@ import {
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
+  buildElicitationContent,
   commandExecutionDetails,
   projectAcpTimeline,
   resolveAcpSessionControls,
@@ -586,17 +587,10 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
   });
 
   function submit(groups) {
-    const content = {};
-    for (const group of groups) {
-      const custom = group.answers.find(answer => answer.other);
-      if (custom && group.otherAnswerKey) {
-        content[group.otherAnswerKey] = custom.value;
-      } else if (group.multiSelect) {
-        content[group.answerKey] = group.answers.map(answer => answer.value);
-      } else if (group.answers[0]) {
-        content[group.answerKey] = group.answers[0].value;
-      }
-    }
+    // content 用无原型对象构造（见 buildElicitationContent）：answerKey 为
+    // constructor/toString/__proto__ 时普通 {} 会命中 Object.prototype，字段在
+    // JSON 序列化时静默丢失。
+    const content = buildElicitationContent(groups);
     onRespond(elicitation.elicitationId, 'accept', content);
   }
 
@@ -679,6 +673,9 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       id: group.questionId,
       label: answer.other ? (conversationCopy && conversationCopy.otherAnswer) || answer.label : answer.label,
       value: String(answer.value),
+      // 保留 other 标记：QuestionChoiceCard 还原历史答案时据此把“其他”与预设选项区分开，
+      // 避免“其他值 == 预设 value”被误判为预设（评审 P2）。
+      other: answer.other,
     })));
     onSubmitAnswers(item.toolCallId, answers);
   }
@@ -687,6 +684,7 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
     <QuestionChoiceCard
       title={copy.choiceTitle}
       questions={questions}
+      initialAnswers={item.restoredAnswers || []}
       resolved={!actionable}
       submitting={responding}
       submitLabel={copy.submit}
@@ -2608,32 +2606,44 @@ export function CodexAcpView({
   /// cancel_user_input（显式 sessionId，不经过 bridge 全局 activeSession）。
   async function respondNativeInput(toolCallId, answers) {
     if (!activeId) return;
+    // entry 捕获 sid：invoke 挂起期间用户切到别的原生会话时，await 后重新读
+    // activeId 会把 restoredAnswers 写进（或找不到卡而漏写）错误 lane——与 bridge
+    // submitUserInput 的 sid 捕获同一约定。
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('submit_user_input', { toolCallId, answers, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'submitted');
+      await invoke('submit_user_input', { toolCallId, answers, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'submitted', answers);
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
   async function cancelNativeInput(toolCallId) {
     if (!activeId) return;
+    const sid = activeId;
     setResponding(true); setError('');
     try {
-      await invoke('cancel_user_input', { toolCallId, sessionId: activeId });
-      markNativeInputResolved(toolCallId, 'cancelled');
+      await invoke('cancel_user_input', { toolCallId, sessionId: sid });
+      markNativeInputResolved(sid, toolCallId, 'cancelled');
     } catch (err) { showError(err); }
     finally { setResponding(false); }
   }
 
-  function markNativeInputResolved(toolCallId, cardState) {
-    const lane = getNativeLane(activeId);
+  function markNativeInputResolved(sessionId, toolCallId, cardState, answers) {
+    const lane = getNativeLane(sessionId);
+    // 无条件按 type + toolCallId 定位：chat:tool_end（applyNativeChatEvent 同样按
+    // !item.resolved 查找）可能先于 invoke 返回把卡置为 resolved，若这里仍要求
+    // !item.resolved 会因竞态漏写 restoredAnswers，重挂载时历史卡丢失选中态。
     const card = [...lane.items].reverse().find(item => (
-      item && item.type === 'user_input' && item.toolCallId === toolCallId && !item.resolved
+      item && item.type === 'user_input' && item.toolCallId === toolCallId
     ));
     if (card) {
       card.resolved = true;
       card.cardState = cardState;
+      // 提交后立即记住答案：即使不切会话、仅组件重挂载，历史卡也能恢复选中态。
+      if (cardState === 'submitted' && Array.isArray(answers) && answers.length) {
+        card.restoredAnswers = answers;
+      }
     }
     setNativeLaneTick(tick => tick + 1);
   }

@@ -6,7 +6,8 @@
 上传本地文件到飞书云空间（云盘/云存储）。目标位置可以是 Drive 文件夹，也可以是 wiki 节点。
 
 ## 快速决策
-- 用户要在 Drive 里上传、创建、读取、局部 patch 或覆盖更新**原生 `.md` 文件**（不是导入成 docx）：本环境无 lark-markdown 技能；远端下载用 `drive +download`、本地编辑用文件工具、回传用 `drive +upload`。
+- 用户要在 Drive 里上传、创建、读取、局部 patch 或覆盖更新**原生 `.md` 文件**（不是导入成 docx）：本环境无 lark-markdown 技能；远端下载用 `drive +download`、本地编辑用文件工具、回传用 `drive +upload`，即「download → 本地编辑 → upload（覆盖传 `--file-token`）」组合路径。
+- 用户在修改/重写/更新已有普通文件时，优先使用覆盖上传方式，而不是直接上传一个新文件。
 
 ## 命令
 
@@ -50,7 +51,7 @@ lark-cli schema drive.files.upload_prepare
 >
 > 以应用身份上传时，结果里会额外返回 `permission_grant` 字段，明确说明授权结果：
 > - `status = granted`：当前 CLI 用户已获得该文件的可管理权限
-> - `status = skipped`：本地没有可用的当前用户 `open_id`，因此不会自动授权；可提示用户先完成 `lark-cli auth login`，再让 AI / agent 继续使用应用身份（bot）授予当前用户权限
+> - `status = skipped`：本地没有可用的当前用户 `open_id`，因此不会自动授权；可提示用户按 [`lark-shared`](../../lark-shared/SKILL.md) 的按需授权流程（`auth login --scope ...`）完成用户身份登录，再让 AI / agent 继续使用应用身份（bot）授予当前用户权限
 > - `status = failed`：文件已上传成功，但自动授权用户失败；会带上失败原因，并提示稍后重试或继续使用 bot 身份处理该文件
 >
 > `permission_grant.perm = full_access` 表示该资源已授予“可管理权限”。

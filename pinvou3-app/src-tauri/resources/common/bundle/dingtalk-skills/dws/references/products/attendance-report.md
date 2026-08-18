@@ -1,7 +1,7 @@
 # 考勤报表导出参考 (attendance-report)
 
 > 本文档由 `attendance.md` 路由调用。当用户提到"考勤报表"、"导出考勤"、"出勤汇总"、"考勤明细"、"迟到早退统计"、"全员考勤数据"、"某月考勤统计"、"考勤表格"、"考勤 Excel" 时，应阅读本文档执行。
-> 不适用于：个人单日打卡查询（用 `attendance check record`）、班次查询（用 `attendance schedule get`）、假期余额（用 `vacation balance`）、审批进度（用 `oa`）。
+> 不适用于：个人单日打卡查询（用 `attendance record get`）、班次/班次定义查询（用 `attendance class search`）、排班查询导出（走 [attendance-schedule.md](./attendance-schedule.md) 工作流，禁止直接调 `attendance schedule get`）、假期余额（用 `vacation balance`）、审批进度（用 `oa`）。
 
 ##  强制门禁（必须先读完本文档才能执行）
 
@@ -112,8 +112,8 @@ Agent 解析用户意图（报表类型、人员范围、时间范围、关注�
 ### 阶段 0: 参数解析与确认查询范围
 
 1. **解析用户输入**（两个独立维度）：
-   - **报表类型**（四选一）：明细 / 月度汇总（默认） / 每日统计 / 考勤记录
-   - **列选择**（独立维度）：预定义列集合（默认） / 用户指定维度筛选（考勤记录不适用）
+   - **报表类型**（五选一）：明细 / 月度汇总（默认） / 每日统计 / 考勤记录 / 签到报表
+   - **列选择**（独立维度）：预定义列集合（默认） / 用户指定维度筛选（考勤记录、签到报表不适用）
    - **人员维度**：指定员工 / 某个部门 / 多个部门（暂不支持全公司查询）
    - **时间维度**：本周 / 本月 / 自定义时间段
    - **记录子类型**（仅考勤记录）：leave(请假) / trip(出差) / out(外出) / patch(补卡)
@@ -157,10 +157,12 @@ dws contact dept list-members --ids <deptId> --format json
 
 ### 阶段 3: 调用脚本生成 Excel
 
+> **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）。下方示例中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径；实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**。
+
 #### 月度汇总 / 每日统计
 
 ```bash
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users <userId1>,<userId2>,... \
   --start "<yyyy-MM-dd>" \
   --end "<yyyy-MM-dd>" \
@@ -180,7 +182,7 @@ python scripts/attendance_report_monthly.py \
 #### 明细
 
 ```bash
-python scripts/attendance_report_detail.py \
+python3 scripts/attendance_report_detail.py \
   --users <userId1>,<userId2>,... \
   --start "<yyyy-MM-dd>" \
   --end "<yyyy-MM-dd>" \
@@ -194,7 +196,7 @@ python scripts/attendance_report_detail.py \
 #### 考勤记录
 
 ```bash
-python scripts/attendance_report_record.py \
+python3 scripts/attendance_report_record.py \
   --type <leave|trip|out|patch> \
   --users <userId1>,<userId2>,... \
   --start "<yyyy-MM-dd>" \
@@ -224,7 +226,7 @@ python scripts/attendance_report_record.py \
 #### 签到报表
 
 ```bash
-python scripts/attendance_report_checkin.py \
+python3 scripts/attendance_report_checkin.py \
   --users <userId1>,<userId2>,... \
   --start "<yyyy-MM-dd>" \
   --end "<yyyy-MM-dd>" \
@@ -505,7 +507,7 @@ dws contact dept search --query "研发组" --format json
 dws contact dept list-members --ids <deptId> --format json
 
 # 2. 调用脚本（默认月度汇总，不传 --column-keywords）
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30"
 ```
@@ -514,7 +516,7 @@ python scripts/attendance_report_monthly.py \
 **用户说**: "帮我出一份研发组 4 月的加班报表"
 
 ```bash
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30" \
   --column-keywords "加班-审批单统计,加班总时长,考勤结果"
@@ -524,7 +526,7 @@ python scripts/attendance_report_monthly.py \
 **用户说**: "帮我导出研发组 4 月的请假出差情况"
 
 ```bash
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30" \
   --column-keywords "请假,出差时长,外出时长,考勤结果"
@@ -534,7 +536,7 @@ python scripts/attendance_report_monthly.py \
 **用户说**: "帮我出研发组 4 月的异常考勤报表"
 
 ```bash
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30" \
   --column-keywords "迟到次数,迟到时长,严重迟到次数,严重迟到时长,旷工迟到次数,早退次数,早退时长,上班缺卡次数,下班缺卡次数,旷工天数,考勤结果"
@@ -544,7 +546,7 @@ python scripts/attendance_report_monthly.py \
 **用户说**: "帮我出一份研发组 4 月的工作时长报表"
 
 ```bash
-python scripts/attendance_report_monthly.py \
+python3 scripts/attendance_report_monthly.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30" \
   --column-keywords "工作时长"
@@ -554,7 +556,7 @@ python scripts/attendance_report_monthly.py \
 **用户说**: "帮我出一份研发组 4 月每天的出勤情况"
 
 ```bash
-python scripts/attendance_report_daily.py \
+python3 scripts/attendance_report_daily.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30"
 ```
@@ -563,7 +565,7 @@ python scripts/attendance_report_daily.py \
 **用户说**: "帮我导出研发组 4 月的考勤明细"
 
 ```bash
-python scripts/attendance_report_detail.py \
+python3 scripts/attendance_report_detail.py \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30"
 ```
@@ -572,7 +574,7 @@ python scripts/attendance_report_detail.py \
 **用户说**: "帮我导出研发组 4 月的请假记录"
 
 ```bash
-python scripts/attendance_report_record.py \
+python3 scripts/attendance_report_record.py \
   --type leave \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30"
@@ -582,7 +584,7 @@ python scripts/attendance_report_record.py \
 **用户说**: "帮我导出研发组 4 月的出差记录"
 
 ```bash
-python scripts/attendance_report_record.py \
+python3 scripts/attendance_report_record.py \
   --type trip \
   --users userId1,userId2,... \
   --start "2026-04-01" --end "2026-04-30"
@@ -592,7 +594,7 @@ python scripts/attendance_report_record.py \
 **用户说**: "帮我导出研发组 5 月的补卡记录"
 
 ```bash
-python scripts/attendance_report_record.py \
+python3 scripts/attendance_report_record.py \
   --type patch \
   --users userId1,userId2,... \
   --start "2026-05-01" --end "2026-05-31"
@@ -602,7 +604,7 @@ python scripts/attendance_report_record.py \
 **用户说**: "帮我导出研发组上周的签到记录"
 
 ```bash
-python scripts/attendance_report_checkin.py \
+python3 scripts/attendance_report_checkin.py \
   --users userId1,userId2,... \
   --start "2026-05-26" --end "2026-06-01"
 ```

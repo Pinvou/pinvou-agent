@@ -45,7 +45,8 @@ static WECOM_SKILLS_DIR: Dir<'_> =
 static DINGTALK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/dingtalk-skills");
 
-/// 腾讯会议官方 CLI skill(tmeet-skill,来自 WorkBuddy 腾讯会议 CLI 连接器)。
+/// 腾讯会议官方 CLI skill(tmeet-skill,MIT,同步自 github.com/TencentCloud/
+/// tencentmeeting-cli 对应 tag 的 `skills/tmeet-skill/`,见 NOTICE-tmeet.md)。
 /// 独立放 `tmeet-skills/`，按腾讯会议连接 / 停用状态单独门控。
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
@@ -86,7 +87,11 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 /// 0.18: 连接器 CLI 统一为首次使用在线安装；原生 CLI 按平台 lock 校验后落用户目录
 /// 0.19: 增加多智能体深度护栏 hook，防止模型用单次 `max_depth` 覆盖会话上限
 /// 0.20: 多智能体深度上限调整为两层，正数覆盖仍拦截
-pub const BUNDLE_VERSION: &str = concat!("0.21-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.21: 完整移除三省六部及专家团队
+/// 0.22: 连接器技能全量同步（lark 1.0.87 / dws 1.0.58 / tmeet 1.0.15 / wecom 适配）。
+///       四棵技能树不参与内容哈希，须 bump 语义版本让已连接用户启动即同步刷新
+///       （否则要等首帧后 refresh_connector_auth_gates 补刷）
+pub const BUNDLE_VERSION: &str = concat!("0.22-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -110,7 +115,7 @@ fn work_layer_sections() -> (&'static str, &'static str) {
 }
 
 /// work 模式完整 instructions（共享骨架 + work 层占位替换）。
-/// 与拆分前 instructions.md 逐字节相等（golden 测试 `work_instructions_render_byte_identical_to_legacy` 锁定）。
+/// 与拆分前 instructions.md 逐字节相等。
 pub fn instructions_md() -> &'static str {
     static RENDERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RENDERED.get_or_init(|| {
@@ -730,6 +735,42 @@ mod tests {
         let content = std::fs::read_to_string(&skill_path).unwrap();
         assert!(content.contains("name: visual-design"));
         assert!(skill_path.starts_with(&bundle.skills_dir));
+        cleanup(&tmp);
+    }
+
+    /// include_dir! 内嵌树中的 `__pycache__/` 与 `*.pyc` 不得物化到用户 bundle
+    /// (在仓库里直接运行技能脚本会产生这些编译缓存,详见 extract_dir 文档注释)。
+    /// 覆盖实际走 extract_dir 的两棵树(lark skills 与 dws);构建机存在 pycache 时
+    /// 验证排除逻辑生效,不存在时断言"零物化 pyc"作为回归基线。
+    #[test]
+    fn extract_dir_skips_python_compilation_caches() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.apply_feishu_skills(true).unwrap();
+        bundle.apply_dingtalk_skills(true).unwrap();
+
+        let mut caches: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        if p.file_name().is_some_and(|n| n == "__pycache__") {
+                            out.push(p);
+                        } else {
+                            walk(&p, out);
+                        }
+                    } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pyc")) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        walk(&bundle.skills_dir, &mut caches);
+        assert!(caches.is_empty(), "物化出了 Python 编译缓存: {caches:?}");
         cleanup(&tmp);
     }
 

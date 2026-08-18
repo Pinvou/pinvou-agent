@@ -508,17 +508,6 @@ pub struct EnginePool {
 }
 
 impl EnginePool {
-    /// boot bridge(一次)并建空池。不预热任何 engine(lazy)。
-    #[allow(dead_code)]
-    pub fn new(app: AppHandle, store: SessionStore) -> Result<Self> {
-        Self::new_with_dependencies(
-            app,
-            store,
-            Arc::new(|_, _| Vec::new()),
-            Arc::new(|_| Vec::new()),
-        )
-    }
-
     pub fn new_with_dependencies(
         app: AppHandle,
         store: SessionStore,
@@ -1140,32 +1129,6 @@ impl EnginePool {
             .map_err(|error| format!("解析会话状态根失败: {error:#}"))
     }
 
-    /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
-    #[allow(dead_code)]
-    pub async fn send_user_message(
-        &self,
-        session_id: &str,
-        content: String,
-        mode: AppMode,
-        restrict_tools_for_turn: bool,
-    ) -> Result<()> {
-        let reservation = self.reserve_turn(session_id)?;
-        let display_message = user_display_message(content.clone());
-        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
-            && self.multi_agent_mode_available(session_id))
-        .then(ExpertRosterSnapshot::capture);
-        self.send_reserved_user_message(
-            session_id,
-            content,
-            display_message,
-            mode,
-            restrict_tools_for_turn,
-            expert_snapshot,
-            reservation,
-        )
-        .await
-    }
-
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
     pub(crate) async fn send_reserved_user_message(
@@ -1202,7 +1165,7 @@ impl EnginePool {
         }
         reservation.ensure_active()?;
         // Side B 卡片池: 该 session 加持了专家面具时,每 turn 注入轻锚点(短)维持身份。
-        // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_persona_body)。
+        // 完整 body 已在加持首条消息一次性注入(commands::chat take_pending_turn_injections)。
         // 在 pool 层解析,所有上层调用(chat / accept_plan)自动带上锚点。
         // 同一张卡派生两样每-turn 状态: ① 轻锚点(粘性身份) ② 是否清空工具表
         // (纯对话元卡如卡牌制造专家 → 本轮零工具,防它误写文件)。每 turn 实时读 active

@@ -117,7 +117,7 @@ pub struct Pinvou3Bridge {
     pub bundle: Pinvou3Bundle,
     pub workspace: PathBuf,
     /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
-    /// active。EnginePool spawn 时按该 session 的 model_id 注入(见 `with_session_model`)。
+    /// active。EnginePool spawn 时按该 session 的 model_id 注入。
     pub session_model: Option<SavedModel>,
     /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
     /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
@@ -332,7 +332,6 @@ impl Pinvou3Bridge {
     /// (通常是 scenario 自己的 tempdir),而不是 `paths::user_home_dir()`。
     /// 让 L1 真 vLLM dialog harness 能给每个 scenario 一个隔离的产出目录,
     /// 避免污染用户 $HOME 也避免 scenario 之间互相干扰。
-    #[allow(dead_code)] // L1 runner 接入前临时 unused
     pub fn boot_with_workspace(ws: PathBuf) -> Result<Self> {
         let mut this = Self::boot()?;
         this.workspace = ws;
@@ -641,13 +640,6 @@ impl Pinvou3Bridge {
     /// 用它克隆→改 model 名→塞回 session_model,实现「请求用 vLLM 实际名字」。
     pub fn effective_model_owned(&self) -> Option<SavedModel> {
         self.effective_model().cloned()
-    }
-
-    /// 克隆一份 bridge 并绑定 per-session 模型(EnginePool spawn 时按 session model_id 注入)。
-    pub fn with_session_model(&self, model: Option<SavedModel>) -> Self {
-        let mut b = self.clone();
-        b.session_model = model;
-        b
     }
 
     pub fn provider(&self) -> String {

@@ -37,7 +37,7 @@ def validate_resource_id(resource_id: str) -> bool:
 def run_dws(dws_bin: str, args: list[str], timeout_sec: int = 120) -> Tuple[int, str, str]:
     cmd = [dws_bin] + args
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=timeout_sec)
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except subprocess.TimeoutExpired:
         return 124, "", f"dws command timeout after {timeout_sec}s"
@@ -57,6 +57,47 @@ def normalize_download_url(url: str) -> str:
     if url.startswith("http://") or url.startswith("https://"):
         return url
     return f"https://{url}"
+
+
+def safe_file_name(name: str) -> str:
+    """把服务端返回的 fileName 规整为安全的本地文件名。
+
+    fileName 来自 dws/服务端返回，可能含路径分隔符（../ 穿越）、Windows
+    保留字符（: * ? " < > |）或设备名（CON/NUL 等）。只保留 basename，
+    再把非法字符替换为 _，避免越目录写入或 Windows 上的创建失败/设备名劫持。
+    Win32 会剥离末组件的尾随点/空格："report.xlsx." 被静默改名为
+    report.xlsx（与回显的 savedPath 不一致），"..." 等全点名是目录别名、
+    写入抛 PermissionError，故尾随点/空格一律剥掉、剥空后回退默认名。
+    超长名按 UTF-8 字节截断到 200 字节（保留扩展名），防 macOS(255 字节)/
+    Windows(255 字符) 落盘 OSError 崩溃——文件系统限制按字节计，中文每字符
+    占 3 字节，按字符数截断无法防中文长名 OSError；截断只动主名，扩展名
+    原样保留（扩展名本身超长时按无主名扩展处理，整体截断）；截断可能切
+    在点上留下新尾点，截断后再剥一次。
+    """
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)
+    cleaned = cleaned.rstrip(". ")
+    if not cleaned:
+        cleaned = "export_result.bin"
+    # Windows 保留设备名（CON、CON.txt、NUL.xlsx 等）加前缀规避
+    stem = re.match(r"^[^.]+", cleaned)
+    if stem and stem.group(0).upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        cleaned = f"_{cleaned}"
+    if len(cleaned.encode("utf-8")) > 200:
+        dot = cleaned.rfind(".")
+        ext = cleaned[dot:] if dot > 0 else ""
+        ext_bytes = len(ext.encode("utf-8"))
+        if 0 < ext_bytes <= 20:
+            stem = cleaned[:dot].encode("utf-8")[: 200 - ext_bytes]
+            cleaned = stem.decode("utf-8", "ignore") + ext
+        else:
+            cleaned = cleaned.encode("utf-8")[:200].decode("utf-8", "ignore")
+        cleaned = cleaned.rstrip(". ") or "export_result.bin"
+    return cleaned
 
 
 def download_file(url: str, output_path: Path) -> Tuple[bool, str]:
@@ -138,7 +179,7 @@ def main() -> None:
 
     download_url = data.get("downloadUrl")
     task_id = data.get("taskId")
-    file_name = data.get("fileName") or "export_result.bin"
+    file_name = safe_file_name(data.get("fileName") or "export_result.bin")
 
     polls = 0
     while not download_url and task_id and polls < args.max_polls:
@@ -168,7 +209,7 @@ def main() -> None:
             fail(f"export_data 轮询返回失败: {json.dumps(obj2, ensure_ascii=False)}")
         d2 = obj2.get("data", {}) or {}
         download_url = d2.get("downloadUrl") or download_url
-        file_name = d2.get("fileName") or file_name
+        file_name = safe_file_name(d2.get("fileName") or file_name)
         task_id = d2.get("taskId") or task_id
         if not download_url:
             time.sleep(0.2)
@@ -196,6 +237,7 @@ def main() -> None:
         return
 
     norm_url = normalize_download_url(download_url)
+    # --output 显式指定时尊重用户路径；默认落当前目录时用净化后的 fileName
     output_path = Path(args.output).expanduser().resolve() if args.output else Path.cwd() / file_name
     ok, dl_err = download_file(norm_url, output_path)
     if not ok:

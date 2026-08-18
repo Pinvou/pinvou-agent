@@ -48,6 +48,8 @@ def resolve_safe_path(
         target_path.relative_to(allowed_root)
         return target_path
     except ValueError:
+        # resolve() 已跟随符号链接：根内链接指向根外时解析结果落在根外，
+        # 同样在此被拒绝，「先建链接再读根外文件」的绕过不成立。
         raise ValueError(
             f"路径超出允许范围：{path}\n"
             f"目标路径：{target_path}\n"
@@ -150,7 +152,7 @@ def run_dws(args: List[str]) -> Optional[Dict[str, Any]]:
     cmd = ['dws'] + args
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120
+            cmd, capture_output=True, text=True, errors='replace', timeout=120
         )
         if result.returncode != 0:
             print(f"错误：{result.stderr.strip()}")

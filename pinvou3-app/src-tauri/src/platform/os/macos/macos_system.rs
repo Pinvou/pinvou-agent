@@ -3,6 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::macos_path;
+use objc2_foundation::NSLocale;
+
+pub fn current_system_locale() -> Option<String> {
+    NSLocale::preferredLanguages()
+        .firstObject()
+        .map(|locale| locale.to_string())
+        .filter(|locale| !locale.trim().is_empty())
+}
 
 /// 校验路径存在且至少有一个可执行位(owner/group/other 任一有 x bit)。
 /// 与 Linux 侧 `which` 自带的可执行性校验对齐:`command_exists` 此前只调

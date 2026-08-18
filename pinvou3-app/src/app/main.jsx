@@ -10,7 +10,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { dict, LANG_TO_TAG, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -309,11 +309,12 @@ function workspaceDisplayName(path) {
       }, [platformCapabilities.localVllmSupported]);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState(() => {
-        if (!isWeb) return 'zh';
+        const systemLanguage = initialSystemLanguage();
+        if (!isWeb) return systemLanguage;
         try {
           const value = window.localStorage.getItem('pinvou.web.language');
-          return value && dict[value] ? value : 'zh';
-        } catch (_) { return 'zh'; }
+          return value && dict[value] ? value : systemLanguage;
+        } catch (_) { return systemLanguage; }
       });
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
@@ -533,7 +534,7 @@ function workspaceDisplayName(path) {
           scheduledTaskAutoOpenSeenRef.current = bs.scheduledTaskAutoOpenId;
           setCurrentView('scheduled');
         }
-        // UI 语言/主题:启动时从落盘 settings 恢复一次(此前只写不读,重启即回中文+深色)
+        // UI 语言/主题:启动时从落盘 settings 恢复一次；无语言配置时后端已按系统 locale 补齐。
         if (!uiPrefsInitRef.current && bs.settings) {
           if (isWeb) {
             bootedLanguageRef.current = language;
@@ -541,7 +542,7 @@ function workspaceDisplayName(path) {
             const lang = TAG_TO_LANG[bs.settings.language];
             if (lang && lang !== language) setLanguage(lang);
             // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
-            bootedLanguageRef.current = lang || 'zh';
+            bootedLanguageRef.current = lang || language;
             // 后端 Theme 枚举(prefs.rs)只认 genesis/liquid-light/liquid-dark;深色=genesis,浅色=liquid-light
             const th = bs.settings.theme === 'liquid-light' ? 'light' : 'dark';
             if (th !== activeTheme) setActiveTheme(th);
@@ -1714,6 +1715,7 @@ function workspaceDisplayName(path) {
           {isWeb && isSidebarOpen && (
             <button
               type="button"
+              data-testid="mobile-navigation-close"
               aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
               className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
