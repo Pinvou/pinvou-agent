@@ -70,7 +70,6 @@ pub fn run_product_eval_smoke(options: EvalSmokeOptions) -> Result<EvalSmokeOutc
             }
 
             let store = SessionStore::boot().context("boot eval session store")?;
-            store.load_skill_bindings();
             store.load_session_models();
             store.load_pinned_sessions();
             store.load_hidden_sessions();
