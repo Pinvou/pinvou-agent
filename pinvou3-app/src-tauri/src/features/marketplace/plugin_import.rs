@@ -1,3 +1,8 @@
+// architecture-guard: allow-target-cfg -- rename_dir_with_retry 仅对 Windows 启用
+// PermissionDenied 重试（杀软/索引器瞬时占用新建目录句柄致 rename os error 5，
+// 实测命中）；Unix 上该错误是真实权限问题不应重试。平台分流仅这一个布尔判断，
+// 下沉 platform 适配层得不偿失；重试路径由 reimport_same_plugin_package_is_allowed
+// 与并发全套测试覆盖。
 //! 插件包统一导入：mcp / skill / 组合包 + 图标落盘（plugin-protocol.md）。
 //!
 //! 统一上传路径：用户上传一个 zip，无论内容是哪种能力类型（MCP server、skill、
