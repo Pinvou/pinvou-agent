@@ -147,3 +147,8 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 - **SKILL.md 新增「脚本调用约定」节**：统一 `python3` 调用、`scripts/...` 相对路径须拼完整路径、不假设 CWD（上游 SKILL.md 无此节）。
 - **attendance-report.md**：「报表类型（四选一）」改「五选一」（补签到报表项，`attendance_report_record.py` 覆盖考勤记录/签到报表两型）；「不适用于」指引的三处命令指针修正（`attendance check record`→`attendance record get`、班次查询补 `attendance class search` 并将排班导出导向 attendance-schedule.md 工作流）。
 
+## PR #299 审阅代修（2026-08-18）
+
+协作者复审阻塞项收口，下次 sync 需重放：
+
+1. **`safe_file_name` 补 Windows 尾随点/全点名规整（aitable_export_via_task.py）**：Win32 剥离末组件尾随点/空格——`"report.xlsx."` 落盘被静默改名为 `report.xlsx`（与回显 savedPath 不一致）；`"..."` 等全点名是目录别名、`write_bytes` 抛 `PermissionError`；超长字节截断也可能切在点上留下新尾点。修复：字符替换后 `rstrip(". ")`、剥空后回退 `export_result.bin`（取代原先仅判 `"."`/`".."` 的分支）、设备名判断与字节截断之后各再规整一次。补可重放纯函数单测 `scripts/tests/test_dws_safe_file_name.py`（fast-gate `unittest discover` 自动执行）——第七轮登记注「第 3 条仅一次性实测」自此有持久化回归防护。

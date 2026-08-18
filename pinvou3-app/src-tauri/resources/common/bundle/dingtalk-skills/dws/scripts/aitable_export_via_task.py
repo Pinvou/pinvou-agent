@@ -65,14 +65,19 @@ def safe_file_name(name: str) -> str:
     fileName 来自 dws/服务端返回，可能含路径分隔符（../ 穿越）、Windows
     保留字符（: * ? " < > |）或设备名（CON/NUL 等）。只保留 basename，
     再把非法字符替换为 _，避免越目录写入或 Windows 上的创建失败/设备名劫持。
+    Win32 会剥离末组件的尾随点/空格："report.xlsx." 被静默改名为
+    report.xlsx（与回显的 savedPath 不一致），"..." 等全点名是目录别名、
+    写入抛 PermissionError，故尾随点/空格一律剥掉、剥空后回退默认名。
     超长名按 UTF-8 字节截断到 200 字节（保留扩展名），防 macOS(255 字节)/
     Windows(255 字符) 落盘 OSError 崩溃——文件系统限制按字节计，中文每字符
     占 3 字节，按字符数截断无法防中文长名 OSError；截断只动主名，扩展名
-    原样保留（扩展名本身超长时按无主名扩展处理，整体截断）。
+    原样保留（扩展名本身超长时按无主名扩展处理，整体截断）；截断可能切
+    在点上留下新尾点，截断后再剥一次。
     """
     base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)
-    if not cleaned or cleaned in {".", ".."}:
+    cleaned = cleaned.rstrip(". ")
+    if not cleaned:
         cleaned = "export_result.bin"
     # Windows 保留设备名（CON、CON.txt、NUL.xlsx 等）加前缀规避
     stem = re.match(r"^[^.]+", cleaned)
@@ -91,6 +96,7 @@ def safe_file_name(name: str) -> str:
             cleaned = stem.decode("utf-8", "ignore") + ext
         else:
             cleaned = cleaned.encode("utf-8")[:200].decode("utf-8", "ignore")
+        cleaned = cleaned.rstrip(". ") or "export_result.bin"
     return cleaned
 
 
