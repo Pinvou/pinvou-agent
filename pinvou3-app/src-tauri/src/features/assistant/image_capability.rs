@@ -199,9 +199,9 @@ mod tests {
 
     #[test]
     fn moonshot_always_thinking_list_covers_bridge_canonical_names() {
-        // 名单与 bridge.rs moonshot_model_requires_explicit_thinking 保持一致;
-        // 探测 payload 与真实链路必须同一口径,否则 always-thinking 模型
-        // 识图探测会被网关 400 误判(2026-08 kimi-for-coding 实测)。
+        // 钉住 always-thinking 名单的命中/误伤边界：探测 payload 与真实链路
+        // 必须同一口径,否则 always-thinking 模型识图探测会被网关 400 误判
+        // (2026-08 kimi-for-coding 实测)。
         for name in [
             "kimi-for-coding",
             "kimi-for-coding-highspeed",

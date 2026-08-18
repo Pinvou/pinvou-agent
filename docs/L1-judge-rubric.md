@@ -76,7 +76,7 @@ target/l1-judge/<ts>-report.md        ← Claude 评分后写这里
 
 > "调 subagent 时,任务边界划得清不清楚"
 
-仅当 scenario 涉及 subagent 工具 (`agent_spawn` / `agent_open` / `agent_eval` / `delegate_to_agent` 等) 时评分。否则 N/A。
+仅当 scenario 涉及 subagent 工具 (`agent`) 时评分。否则 N/A。
 
 | 分 | 判别 |
 |---|---|
@@ -135,7 +135,7 @@ ls target/l1-runs/<ts>/
   - "不要先 list_dir 探目录" → 不应调 list_dir
   - **白名单外工具出现** → 默认工具使用 ≤2 分（`rlm`/`tasks`/`automation`/`github`/`Run` 等未放出家族，以及 `git_*`/`apply_patch`/`exec_shell*` 等 v0.9.5 已退役旧名——模型可见面以 `pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs` 的 `PINVOU3_ALLOWED_TOOLS` 白名单为准，完整机制见 `docs/capability-governance.md`）
   - **过激探目录** → 工具使用 ≤3 分 (translate/简单 QA 等任务调 list_dir/read_file 探环境)
-- **任务拆分合理性 / 结果综合能力 (r2 维度 5/6)**:仅 subagent scenario 评。看 `agent_spawn` 的 prompt 字段、subagent 数量、`agent_result` 后主 agent 输出综合度
+- **任务拆分合理性 / 结果综合能力 (r2 维度 5/6)**:仅 subagent scenario 评。看 `agent` 工具调用的任务描述、subagent 数量、拿到 subagent 结果后主 agent 输出综合度
 
 **每个分附一句话理由**——理由必须具体引用 transcript 内容,不能空洞("还可以"不算理由)。
 
@@ -261,7 +261,7 @@ ls target/l1-runs/<ts>/
 ### 版本历史
 
 - **r1** (2026-05-18): 初版,4 维 × 1-5 分,N/A 跳过。Step 3 增加 blocklist 工具/过激探目录扣分条款。
-- **r2** (2026-05-18): 加 2 维 (任务拆分合理性 / 结果综合能力),用于 subagent scenario。blocklist 扣分加 `PINVOU3_BLOCKLIST_OVERRIDE` env 豁免条款。
+- **r2** (2026-05-18): 加 2 维 (任务拆分合理性 / 结果综合能力),用于 subagent scenario。
 
 ### 改版流程
 

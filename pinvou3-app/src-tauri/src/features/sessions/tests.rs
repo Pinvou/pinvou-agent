@@ -1620,17 +1620,6 @@ fn generate_session_id_url_safe() {
 }
 
 #[test]
-fn set_pinvou_review_persists() {
-    let (store, _g) = isolated_store();
-    // 默认关闭(原 pinvou_review_defaults_off 的断言)。
-    assert!(!store.mode_state("s1").pinvou_review_enabled);
-    store.set_pinvou_review("s1", true);
-    assert!(store.mode_state("s1").pinvou_review_enabled);
-    store.set_pinvou_review("s1", false);
-    assert!(!store.mode_state("s1").pinvou_review_enabled);
-}
-
-#[test]
 fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     let (store, _g) = isolated_store();
     let sid = "plan-ticket-session";
@@ -1680,10 +1669,9 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
 
 /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
 /// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
-/// 品悟开关 / 挂载知识集 / 人格卡等正交状态必须原样保留。
+/// 待注入人格 body / 挂载知识集 / 人格卡等正交状态必须原样保留。
 /// (discard_plan「算了」不在此列:放弃方案但留在当前 mode,不调 set_mode。)
 /// 防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时连带清掉这些字段。
-/// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 三字段)。
 #[test]
 fn mode_switch_loop_preserves_orthogonal_state() {
     use SerializableMode;
@@ -1692,7 +1680,7 @@ fn mode_switch_loop_preserves_orthogonal_state() {
 
     // 起始默认 Yolo,挂满正交状态
     assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
-    store.set_pinvou_review(sid, true);
+    store.set_pending_persona_body(sid, Some("PENDING BODY".into()));
     store.set_mounted_collection(sid, Some(42));
     store.set_active_persona(sid, Some("expert-x".into()));
 
@@ -1710,7 +1698,11 @@ fn mode_switch_loop_preserves_orthogonal_state() {
 
     // 三个正交字段全保留
     let st = store.mode_state(sid);
-    assert!(st.pinvou_review_enabled, "切 mode 清了品悟开关");
+    assert_eq!(
+        st.pending_persona_body.as_deref(),
+        Some("PENDING BODY"),
+        "切 mode 清了待注入人格 body"
+    );
     assert_eq!(st.mounted_collection, Some(42), "切 mode 卸载了知识集");
     assert_eq!(
         st.active_persona.as_deref(),
@@ -1728,17 +1720,17 @@ fn pending_turn_injections_restore_on_drop_and_commit_only_after_submission() {
     {
         let pending = store.take_pending_turn_injections("s1");
         assert_eq!(pending.persona_body(), Some("PERSONA BODY"));
-        assert!(store.take_pending_persona_body("s1").is_none());
+        assert!(store.mode_state("s1").pending_persona_body.is_none());
         // Simulate attachment/build/Engine submission failure.
     }
     assert_eq!(
-        store.take_pending_persona_body("s1").as_deref(),
+        store.mode_state("s1").pending_persona_body.as_deref(),
         Some("PERSONA BODY")
     );
 
     store.set_pending_persona_body("s1", Some("SECOND PERSONA".into()));
     store.take_pending_turn_injections("s1").commit();
-    assert!(store.take_pending_persona_body("s1").is_none());
+    assert!(store.mode_state("s1").pending_persona_body.is_none());
 }
 
 #[test]

@@ -54,7 +54,7 @@ pub struct UpdateInfo {
 }
 
 /// 多平台更新清单的单平台资产。`latest.json` 的 `platforms` map 每个值用这个类型。
-/// 客户端按 `build_platform_key()` 选自己平台的资产;缺失则回退到顶层 url/sha256/size。
+/// 客户端按平台 key（如 `macos-universal`、`linux-arm64`）选自己平台的资产;缺失则回退到顶层 url/sha256/size。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformAsset {
     pub url: String,
@@ -103,25 +103,6 @@ pub struct PendingUpdateReportResult {
 }
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
-}
-
-/// 拼 OTA 平台 key,与 `latest.json` 的 `platforms` map key 对齐。
-/// - macOS 固定返回 `"macos-universal"`:Mac 走 Universal 二进制,单包同时覆盖 arm64 / x86_64,
-///   manifest 里不再按 arch 分条目。
-/// - 其它平台仍按 `"{os}-{arch}"`,arch 归一:aarch64→arm64、x86_64→x86_64、其它原样。
-pub fn build_platform_key() -> String {
-    let os = std::env::consts::OS;
-    match os {
-        "macos" => "macos-universal".to_string(),
-        _ => {
-            let arch = match std::env::consts::ARCH {
-                "aarch64" => "arm64",
-                "x86_64" => "x86_64",
-                other => other,
-            };
-            format!("{}-{}", os, arch)
-        }
-    }
 }
 
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
@@ -185,29 +166,6 @@ pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult,
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_platform_key_matches_expected() {
-        let key = build_platform_key();
-        if std::env::consts::OS == "linux" {
-            assert!(
-                key == "linux-arm64" || key == "linux-x86_64",
-                "unexpected linux platform key: {key}"
-            );
-        }
-        if std::env::consts::OS == "macos" {
-            assert!(
-                key == "macos-universal",
-                "unexpected macos platform key: {key}"
-            );
-        }
-        if std::env::consts::OS == "windows" {
-            assert!(
-                key == "windows-x86_64" || key == "windows-arm64",
-                "unexpected windows platform key: {key}"
-            );
-        }
-    }
 
     #[test]
     fn update_info_platforms_defaults_empty() {

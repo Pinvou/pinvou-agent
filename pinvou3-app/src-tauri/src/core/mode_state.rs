@@ -61,29 +61,3 @@ pub struct ModeDefaultsView {
     pub design: Option<SerializableMode>,
     pub code: Option<SerializableMode>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mode_round_trips_to_app_mode() {
-        assert!(matches!(
-            SerializableMode::Plan.to_app_mode(),
-            AppMode::Plan
-        ));
-        assert!(matches!(
-            SerializableMode::Yolo.to_app_mode(),
-            AppMode::Yolo
-        ));
-    }
-
-    #[test]
-    fn mode_lane_parses_and_rejects_unknown() {
-        assert!(ModeLane::parse("work").is_ok());
-        assert!(ModeLane::parse("design").is_ok());
-        assert!(ModeLane::parse("code").is_ok());
-        assert!(ModeLane::parse(" CodE ").is_err());
-        assert!(ModeLane::parse("").is_err());
-    }
-}
