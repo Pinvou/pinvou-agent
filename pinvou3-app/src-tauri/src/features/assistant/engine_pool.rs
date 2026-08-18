@@ -39,9 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
-use crate::features::assistant::eval::analysis::{
-    EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity,
-};
+use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::runtime_model::{
@@ -1330,6 +1328,32 @@ impl EnginePool {
             .map_err(|error| format!("解析会话状态根失败: {error:#}"))
     }
 
+    /// 发用户消息给指定 session 的 engine(没起则 lazy spawn)。
+    #[allow(dead_code)]
+    pub async fn send_user_message(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        restrict_tools_for_turn: bool,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+            && self.multi_agent_mode_available(session_id))
+        .then(ExpertRosterSnapshot::capture);
+        self.send_reserved_user_message(
+            session_id,
+            content,
+            display_message,
+            mode,
+            restrict_tools_for_turn,
+            expert_snapshot,
+            reservation,
+        )
+        .await
+    }
+
     pub(crate) async fn send_eval_user_message(
         &self,
         session_id: &str,
@@ -2058,8 +2082,7 @@ mod scheduled_model_tests {
 
         assert_eq!(first, second);
         assert!(
-            crate::features::assistant::eval::analysis::validate_judge_identity(&first, &second)
-                .is_err()
+            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
         );
 
         std::env::remove_var("DEEPSEEK_MODEL");

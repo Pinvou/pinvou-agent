@@ -72,14 +72,6 @@ pub trait ProductRuntimePort: Send + Sync {
     ) -> Result<ProductTurnOutcome> {
         anyhow::bail!("unsupported_tool_policy")
     }
-    async fn run_with_staged_attachments(
-        &self,
-        _session_id: &str,
-        _prompt: &str,
-        _staged_workspace: &Path,
-    ) -> Result<ProductTurnOutcome> {
-        anyhow::bail!("attachments_runtime_unsupported")
-    }
     async fn run_with_staged_attachments_and_policy(
         &self,
         _session_id: &str,
@@ -87,7 +79,7 @@ pub trait ProductRuntimePort: Send + Sync {
         _staged_workspace: &Path,
         _policy: ProductToolPolicy,
     ) -> Result<ProductTurnOutcome> {
-        anyhow::bail!("unsupported_tool_policy")
+        anyhow::bail!("attachments_runtime_unsupported")
     }
     async fn cancel(&self, session_id: &str) -> Result<()>;
     async fn close(&self, session_id: &str) -> Result<()>;
@@ -157,7 +149,7 @@ fn prepare_product_attachment_content(
         if !file_type.is_file() || file_type.is_symlink() {
             return Err(fixed_error());
         }
-        let staged_path = crate::app::commands::attachments::stage_file_in_workspace(
+        let staged_path = crate::stage_file_in_workspace(
             entry.path().to_string_lossy().as_ref(),
             &basename,
             &execution_root,
@@ -198,26 +190,6 @@ impl ProductRuntimePort for EnginePoolPort {
     ) -> Result<ProductTurnOutcome> {
         self.run_content(session_id, prompt.to_owned(), policy.0)
             .await
-    }
-
-    async fn run_with_staged_attachments(
-        &self,
-        session_id: &str,
-        prompt: &str,
-        staged_workspace: &Path,
-    ) -> Result<ProductTurnOutcome> {
-        let execution_root = self
-            .runtime
-            .eval_session_execution_root(session_id)
-            .map_err(|_| anyhow::anyhow!("attachment_staging_failed"))?;
-        let prompt = prompt.to_owned();
-        let staged_workspace = staged_workspace.to_path_buf();
-        let _content = tokio::task::spawn_blocking(move || {
-            prepare_product_attachment_content(prompt, staged_workspace, execution_root)
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("attachment_staging_failed"))??;
-        anyhow::bail!("unsupported_tool_policy")
     }
 
     async fn run_with_staged_attachments_and_policy(
@@ -622,6 +594,43 @@ fn backend_error(code: &'static str) -> AgentBackendError {
     AgentBackendError::Operation(code.to_owned())
 }
 
+fn extract_final_answer(output: &str) -> Option<String> {
+    const MARKER: &str = "FINAL ANSWER:";
+    output
+        .rfind(MARKER)
+        .map(|index| output[index + MARKER.len()..].trim())
+        .filter(|answer| !answer.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn project_private_output(
+    task: &AgentTaskInput,
+    assistant_text: String,
+) -> Result<String, AgentBackendError> {
+    match task.output_contract().map(|contract| contract.as_str()) {
+        Some("gaia-final/v1") => extract_final_answer(&assistant_text)
+            .ok_or_else(|| backend_error("missing_final_answer")),
+        _ => Ok(assistant_text),
+    }
+}
+
+#[cfg(test)]
+mod final_answer_contract_tests {
+    use super::extract_final_answer;
+
+    #[test]
+    fn gaia_contract_uses_the_last_non_empty_final_answer_marker() {
+        let output = "analysis\nFINAL ANSWER: stale\nmore analysis\nFINAL ANSWER: 42\n";
+        assert_eq!(extract_final_answer(output), Some("42".to_owned()));
+    }
+
+    #[test]
+    fn gaia_contract_rejects_missing_or_empty_final_answer_markers() {
+        assert_eq!(extract_final_answer("analysis only"), None);
+        assert_eq!(extract_final_answer("FINAL ANSWER:   \n"), None);
+    }
+}
+
 fn emit_finished(
     observer: &dyn AgentRunObserver,
     task_id: &str,
@@ -879,7 +888,15 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                 )
                 .await;
         }
-        let output = match self.store_private_output(session_id, turn.assistant_text) {
+        let private_output = match project_private_output(&task, turn.assistant_text) {
+            Ok(output) => output,
+            Err(error) => {
+                return self
+                    .fail_run_locked(session_id, &runtime_session, runtime_state, error)
+                    .await;
+            }
+        };
+        let output = match self.store_private_output(session_id, private_output) {
             Ok(output) => output,
             Err(error) => {
                 return self
@@ -980,7 +997,9 @@ where
         .context("build headless async runtime")?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    let mut context = tauri::generate_context!();
+    // 复用 lib.rs 的单一 generate_context 展开点:本 crate 内二次展开会在
+    // macOS 触发 embed_plist 的 _EMBED_INFO_PLIST 重复符号链接错误。
+    let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
         .setup(move |app| {

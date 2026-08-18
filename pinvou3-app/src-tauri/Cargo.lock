@@ -30,15 +30,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-backend-api"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "aes-gcm"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -101,6 +92,15 @@ dependencies = [
  "rand 0.8.6",
  "secrecy",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "agent-backend-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4917,7 +4917,7 @@ dependencies = [
  "flume",
  "if-addrs 0.15.0",
  "log",
- "mio 1.2.0",
+ "mio",
  "socket-pktinfo",
  "socket2",
 ]
