@@ -6345,7 +6345,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6380,7 +6380,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "age",
  "agent-backend-api",

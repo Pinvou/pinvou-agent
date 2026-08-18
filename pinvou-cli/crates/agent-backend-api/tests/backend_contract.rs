@@ -6,11 +6,11 @@ use std::sync::{
 use std::time::Duration;
 
 use agent_backend_api::{
-    AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
-    AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend, NoopAgentRunObserver,
-    PrepareRequest, PrivateInputHandle, PrivateInputResolver, PrivateOutputHandle,
-    ResolvedAttachmentSource, ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus,
-    SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
+    AgentBackendError, AgentOutputContractId, AgentRunObserver, AgentSessionHandle, AgentTaskInput,
+    AgentTaskOutcome, AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend,
+    NoopAgentRunObserver, PrepareRequest, PrivateInputHandle, PrivateInputResolver,
+    PrivateOutputHandle, ResolvedAttachmentSource, ResolvedPrivateInput, SafeAgentEvent,
+    SafeRunStatus, SafeUsageMetrics, SecretOutput, SecretText, SuiteModelIdentity, notify_observer,
 };
 use async_trait::async_trait;
 
@@ -170,6 +170,19 @@ fn prepare_request_defaults_to_no_tool_policy_and_can_opt_in() {
     let request = PrepareRequest::new("gaia-task", Vec::new()).with_tool_policy(policy.clone());
     assert_eq!(request.tool_policy(), Some(&policy));
     assert!(!format!("{request:?}").contains(policy.as_str()));
+}
+
+#[test]
+fn task_input_defaults_to_no_output_contract_and_can_opt_in_safely() {
+    let legacy = AgentTaskInput::new("legacy", PrivateInputHandle::new("prompt"));
+    assert_eq!(legacy.output_contract(), None);
+
+    let contract = AgentOutputContractId::new("gaia-final/v1").unwrap();
+    let input = AgentTaskInput::new("gaia", PrivateInputHandle::new("prompt"))
+        .with_output_contract(contract.clone());
+    assert_eq!(input.output_contract(), Some(&contract));
+    assert!(!format!("{input:?}").contains(contract.as_str()));
+    assert!(AgentOutputContractId::new("token=secret").is_err());
 }
 
 #[test]

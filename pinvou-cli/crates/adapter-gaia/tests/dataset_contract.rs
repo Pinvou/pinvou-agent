@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use adapter_gaia::{
     GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_SHA256,
@@ -87,10 +87,10 @@ struct TempSnapshot {
 
 impl TempSnapshot {
     fn new() -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // 同进程并行测试线程在粗粒度时钟(如 macOS)下纳秒时间戳可能同 tick
+        // 撞名,互相 remove_dir_all;用进程内原子计数保证唯一。
+        static SNAPSHOT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let unique = SNAPSHOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "pinvou-gaia-contract-{}-{unique}",
             std::process::id()
@@ -690,10 +690,9 @@ fn adapter_private_inputs_resolve_prompt_but_reject_raw_dataset_attachment_witho
     let resolved = inputs
         .resolve_handle(&PrivateInputHandle::new("gaia:safe-task-1:prompt"))
         .unwrap();
-    assert_eq!(
-        resolved.prompt().expose_to_backend(),
-        "SYNTHETIC_PRIVATE_QUESTION_ALPHA"
-    );
+    let prompt = resolved.prompt().expose_to_backend();
+    assert!(prompt.starts_with("SYNTHETIC_PRIVATE_QUESTION_ALPHA"));
+    assert!(prompt.contains("FINAL ANSWER: <answer>"));
     assert_eq!(resolved.attachments().len(), 1);
     assert_eq!(
         resolved.attachments()[0].expose_to_backend(),

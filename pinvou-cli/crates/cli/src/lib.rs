@@ -6,9 +6,11 @@ use adapter_gaia::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter, GaiaDataset, GaiaSnapshotManager,
     GaiaSource, HfSnapshotDownloader,
 };
-use benchmark_core::{BenchmarkAdapter, RunStore};
 #[cfg(any(test, feature = "product-backend"))]
-use benchmark_core::{TaskOutcome, publish_markdown_report};
+use benchmark_core::TaskOutcome;
+use benchmark_core::{
+    BenchmarkAdapter, OfficialScoreReport, RunStore, publish_markdown_report, publish_score_json,
+};
 
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
@@ -747,6 +749,8 @@ fn open_gaia_run(run_id: &str) -> Result<(GaiaAdapter, benchmark_core::Completed
 fn score_gaia(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let (adapter, run) = open_gaia_run(run_id)?;
     let report = adapter.score(&run).map_err(core_error)?;
+    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    publish_gaia_score_artifacts(&store, run_id, &report)?;
     let comparable = report.comparable_accuracy();
     let text = match (output, comparable) {
         (OutputMode::Human, Some(accuracy)) => format!(
@@ -784,6 +788,73 @@ fn score_gaia(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
     Ok(success(text))
 }
 
+fn publish_gaia_score_artifacts(
+    store: &RunStore,
+    run_id: &str,
+    report: &OfficialScoreReport,
+) -> Result<(), CliError> {
+    let (status, comparable_accuracy) = match report.comparable_accuracy() {
+        Some(accuracy) => ("official_compatible_local", Some(accuracy)),
+        None => ("unofficial_partial", None),
+    };
+    let mut score = serde_json::json!({
+        "run_id": run_id,
+        "status": status,
+        "split": report.split(),
+        "level": report.level(),
+        "evaluated": report.evaluated(),
+        "correct": report.correct(),
+    });
+    if let Some(accuracy) = comparable_accuracy {
+        score["comparable_accuracy"] = serde_json::json!(accuracy);
+    }
+    let mut score_bytes =
+        serde_json::to_vec(&score).map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
+    score_bytes.push(b'\n');
+    publish_or_verify_bytes(store, "score.json", &score_bytes)?;
+
+    let accuracy = comparable_accuracy
+        .map(|value| format!("{value:.6}"))
+        .unwrap_or_else(|| "不可比较".to_owned());
+    let markdown = format!(
+        "# GAIA Level 1 评测报告\n\n- Run ID: `{run_id}`\n- 状态: `{status}`\n- Split: `{}`\n- Level: `{}`\n- 完成评分: {}\n- 正确: {} / {}\n- Comparable accuracy: {accuracy}\n",
+        report.split(),
+        report.level(),
+        report.evaluated(),
+        report.correct(),
+        report.evaluated(),
+    );
+    let report_path = store.run_dir().join("report.md");
+    if report_path.exists() {
+        let existing = std::fs::read(&report_path)
+            .map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
+        if existing != markdown.as_bytes() {
+            return Err(CliError::failed("gaia_score_artifact_conflict"));
+        }
+    } else {
+        publish_markdown_report(store, &markdown).map_err(core_error)?;
+    }
+    Ok(())
+}
+
+fn publish_or_verify_bytes(store: &RunStore, name: &str, expected: &[u8]) -> Result<(), CliError> {
+    let path = store.run_dir().join(name);
+    if path.exists() {
+        let existing =
+            std::fs::read(path).map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
+        if existing != expected {
+            return Err(CliError::failed("gaia_score_artifact_conflict"));
+        }
+        return Ok(());
+    }
+    if name != "score.json" {
+        return Err(CliError::failed("gaia_score_artifact_failed"));
+    }
+    publish_score_json(store, expected)
+        .map_err(core_error)
+        .map(|_| ())
+}
+
 fn submission_gaia(
     run_id: &str,
     destination: &Path,
@@ -800,12 +871,11 @@ fn submission_gaia(
     Ok(success(text))
 }
 
+/// 生成 JSON 字符串字面量的内部内容(不含引号)。委托 serde_json,覆盖
+/// 控制字符等全部需要转义的码点;手写 replace 会漏掉 \t、\u0000-\u001F。
 fn json_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
+    let encoded = serde_json::to_string(value).unwrap_or_default();
+    encoded[1..encoded.len().saturating_sub(1)].to_owned()
 }
 
 #[cfg(not(feature = "product-backend"))]
@@ -1219,6 +1289,43 @@ mod tests {
             .find_map(|line| line.strip_prefix("Smoke Health Score: "))
             .unwrap();
         assert!(report.contains(&format!("总分：{score} (pinvou-product-score/v1)")));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gaia_score_publishes_machine_and_markdown_artifacts() {
+        use adapter_gaia::GaiaAdapter;
+        use benchmark_core::{
+            BenchmarkAdapter, ModelIdentity, OfficialScoreReport, RunManifest, Split, ToolPolicyId,
+        };
+
+        let base = temp_base("gaia-score-artifacts");
+        let adapter = GaiaAdapter::new();
+        let manifest = RunManifest::new(
+            "gaia-score-artifacts",
+            adapter.descriptor(),
+            Split::new(GAIA_SPLIT),
+            ModelIdentity::new("fixture", "model").unwrap(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        let store = RunStore::create(&base, &manifest).unwrap();
+        let report = OfficialScoreReport::compatible(53, 31, GAIA_SPLIT, "1");
+
+        publish_gaia_score_artifacts(&store, "gaia-score-artifacts", &report).unwrap();
+
+        let score: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.run_dir().join("score.json")).unwrap())
+                .unwrap();
+        assert_eq!(score["run_id"], "gaia-score-artifacts");
+        assert_eq!(score["evaluated"], 53);
+        assert_eq!(score["correct"], 31);
+        assert_eq!(score["status"], "official_compatible_local");
+        let markdown = std::fs::read_to_string(store.run_dir().join("report.md")).unwrap();
+        assert!(markdown.contains("# GAIA Level 1 评测报告"));
+        assert!(markdown.contains("31 / 53"));
+
         std::fs::remove_dir_all(base).unwrap();
     }
 }

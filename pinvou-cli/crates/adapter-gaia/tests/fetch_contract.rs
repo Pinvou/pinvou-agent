@@ -19,6 +19,13 @@ impl TempDir {
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path).unwrap();
+        // fetch 管理器对 acquisition/worktree 有私有权限契约(0700);
+        // 默认 umask(如 0755 的 TMPDIR)会让夹具目录触发 ImportFailed。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         Self(path)
     }
 

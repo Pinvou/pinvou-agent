@@ -197,6 +197,7 @@ struct MockState {
     prepared_tool_policies: Vec<Option<String>>,
     prepared_attachment_names: Vec<String>,
     run: Vec<String>,
+    run_output_contracts: Vec<Option<String>>,
     closed: usize,
     active: usize,
     max_active: usize,
@@ -330,6 +331,10 @@ impl HeadlessAgentBackend for MockBackend {
             state.active += 1;
             state.max_active = state.max_active.max(state.active);
             state.run.push(task.task_id().into());
+            state.run_output_contracts.push(
+                task.output_contract()
+                    .map(|contract| contract.as_str().to_owned()),
+            );
             state.active -= 1;
         }
         observer.on_event(&SafeAgentEvent::tool_finished(
@@ -426,6 +431,27 @@ async fn native_turn_forwards_the_validated_tool_policy_to_prepare() {
     assert_eq!(
         backend.state.lock().unwrap().prepared_tool_policies,
         [Some("smoke/v1".to_owned())]
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn native_turn_forwards_the_validated_output_contract_to_run() {
+    let base = temp_base("output-contract-forwarding");
+    let backend = Arc::new(MockBackend::default());
+    let runner = NativeAgentRunner::new(backend.clone());
+
+    runner
+        .run_task(
+            &task("output-contract-probe"),
+            &RunContext::new("output-contract-probe", base.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        backend.state.lock().unwrap().run_output_contracts,
+        [Some("text/v1".to_owned())]
     );
     fs::remove_dir_all(base).unwrap();
 }
