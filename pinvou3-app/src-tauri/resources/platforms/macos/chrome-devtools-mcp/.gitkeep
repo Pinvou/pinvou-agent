@@ -1,7 +1,7 @@
 本目录由 pinvou3-app/scripts/tauri/chrome-devtools-mcp.js 构建期 vendor：
 npm registry 官方 chrome-devtools-mcp（Apache-2.0，sha512 硬编码校验），
-产物 build/（rollup 自包含，约 13MB）+ .vendor-version.json，随安装包经
-resource overlay 分发到 runtime/chrome-devtools-mcp。
+产物 build/（rollup 自包含，约 13MB）+ catalog-shim.json（懒启动 shim 应答目录）
++ .vendor-version.json，随安装包经 resource overlay 分发到 runtime/chrome-devtools-mcp。
 
 本 .gitkeep 被 git 跟踪，保证 CI 的 Tauri 资源布局测试（tauri_platform_layout /
 tauri_effective_config）通过资源存在性断言；构建产物被 .gitignore 忽略。

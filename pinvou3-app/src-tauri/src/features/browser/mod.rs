@@ -84,6 +84,12 @@ pub struct BrowserManager {
     /// 主进程退出标记：shutdown_on_exit 置位后 watch 退出、ensure_started 拒绝——
     /// 防止退出瞬间 watch 重新拉起 Chrome 成为无人回收的孤儿进程。
     shutting_down: std::sync::atomic::AtomicBool,
+    /// 显式 stop() 未能确认关闭的实例身份（端口文件 port + started_at）：watch 不得
+    /// 自动重接入同一实例。场景：wrapper 拥有的 Chrome 上 `Browser.close` 失败（CDP
+    /// 瞬时错误/wedged）时端口文件按 wedge 保护保留，若无此抑制，watch 2s 后重新
+    /// 接入并重发 `browser:activated`——用户的显式停止被静默撤销且永远无法停止。
+    /// 端口文件身份变化（wrapper 拉起新实例写入新 started_at）后抑制自然解除。
+    stopped_instance: tokio::sync::Mutex<Option<(u16, i64)>>,
     /// target_id → flatten sessionId 缓存：同一标签页复用 attach。CDP 对同一
     /// target 的每次 attach 都产生独立 session 且不自动释放，无缓存会在高频
     /// 枚举/切换下无界泄漏 Chrome 侧 session。
@@ -100,6 +106,7 @@ impl BrowserManager {
             activated: std::sync::atomic::AtomicBool::new(false),
             streaming: std::sync::atomic::AtomicBool::new(false),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            stopped_instance: tokio::sync::Mutex::new(None),
             page_sessions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             app: parking_lot::Mutex::new(None),
         }
@@ -162,8 +169,9 @@ impl BrowserManager {
                         }
                         let had_child = inner.child.is_some();
                         if let Some(mut child) = inner.child.take() {
-                            let _ = child.kill();
-                            let _ = child.wait();
+                            // 限期等待：持 inner 锁无界 wait 会在 Chrome 不可杀时
+                            // 冻结整个 BrowserManager（见 kill_and_wait_bounded）。
+                            kill_and_wait_bounded(&mut child, Duration::from_secs(5)).await;
                         }
                         inner.port = None;
                         inner.active_session = None;
@@ -184,10 +192,11 @@ impl BrowserManager {
                     }
                 }
                 // 2) 未接入：端口文件有效则接入并激活 Tab。
-                let Some(port) = port_file() else {
+                let Some(identity) = port_file_identity() else {
                     fail_count = 0;
                     continue;
                 };
+                let port = identity.0;
                 if !probe_cdp(port, Duration::from_millis(800)).await {
                     // 端口文件存在但 Chrome 已死：连续失败后清掉 stale 文件，
                     // 避免永久空转探测（wrapper 崩溃残留/异常退出场景）。
@@ -215,6 +224,11 @@ impl BrowserManager {
                     continue;
                 }
                 fail_count = 0;
+                // 显式 stop() 未能确认关闭的实例（端口文件保留防双启）不得被 watch
+                // 复活：身份匹配即跳过，直到 wrapper 写入新实例（started_at 变化）。
+                if *mgr.stopped_instance.lock().await == Some(identity) {
+                    continue;
+                }
                 if mgr.ensure_started().await.is_ok() {
                     if !mgr
                         .activated
@@ -412,8 +426,7 @@ impl BrowserManager {
             // （复用 wrapper 实例的路径失败时其端口文件仍然健康，删除会丢协调文件）。
             let spawned_by_us = spawned_child.is_some();
             if let Some(mut child) = spawned_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_and_wait_bounded(&mut child, Duration::from_secs(5)).await;
             }
             // 仅自启实例失败时清端口文件（避免误删 wrapper 的健康协调文件）。
             if spawned_by_us {
@@ -465,21 +478,16 @@ impl BrowserManager {
         };
         let had_child = inner.child.is_some();
         if let Some(mut child) = inner.child.take() {
-            if !closed_via_cdp {
-                let _ = child.kill();
-            }
             // wait 必须限期：此处同时持有 start_mtx 与 inner，`Browser.close` 被接受
             // 后进程退出仍可能任意缓慢（unload 处理/崩溃清理），无界同步 wait 会
             // 冻结整个 BrowserManager（命令/watch/后续 stop 全部排队，代际也救不了）。
             // 超时后强 kill 再等一次；仍不退（内核级卡死）则放弃等待——句柄随
             // Child drop 关闭，进程留待系统回收，锁先释放。
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if closed_via_cdp {
+                // Browser.close 已被接受：只限期等待优雅退出，不先 kill。
+                wait_exit_bounded(&mut child, Duration::from_secs(5)).await;
+            } else {
+                kill_and_wait_bounded(&mut child, Duration::from_secs(5)).await;
             }
         }
         // Browser.close 失败（wedged）且无子进程句柄可 kill（wrapper 启动的实例）时，
@@ -497,6 +505,14 @@ impl BrowserManager {
         // 不可删，持有者正常启动完成后自删，崩溃残留由 60s stale 判定兜底。
         if closed_via_cdp || had_child {
             let _ = std::fs::remove_file(paths::browser_cdp_port_json());
+            *self.stopped_instance.lock().await = None;
+        } else if had_session {
+            // 已接入但未能确认关闭（Browser.close 失败且无自启句柄）：端口文件按
+            // 上方 wedge 保护保留，但必须记录实例身份抑制 watch 的自动重接入——
+            // 否则 2s 后 watch 探测成功会重新接入并重发 browser:activated，用户
+            // 的显式停止被静默撤销，且此状态下每次 stop 都走同一路径、永远无法
+            // 停止。wrapper 之后拉起新实例（新 started_at）时抑制自然解除。
+            *self.stopped_instance.lock().await = port_file_identity();
         }
         if lock_file_stale(&paths::browser_start_lock()) {
             let _ = std::fs::remove_file(paths::browser_start_lock());
@@ -1116,10 +1132,10 @@ impl BrowserManager {
             if !probe_cdp(port, Duration::from_secs(15)).await {
                 // Chrome 已 spawn 但 CDP 未就绪：先杀掉再报错，避免孤儿 Chrome
                 // 占住 profile 单实例锁导致后续所有启动尝试反复失败（需手动杀进程
-                // 才能恢复）。
+                // 才能恢复）。限期等待：此处持 start_mtx + OS 启动锁，无界 wait
+                // 会在 Chrome 不可杀时冻结整个 BrowserManager。
                 let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_and_wait_bounded(&mut child, Duration::from_secs(5)).await;
                 return Err("Chrome 已启动但 CDP 未就绪".to_string());
             }
             if let Err(e) = write_port_file(port, "app") {
@@ -1127,8 +1143,7 @@ impl BrowserManager {
                 // drop 不终止进程，放任会留下无端口文件的孤儿 Chrome，占住 profile
                 // 单实例锁让后续启动反复 15s 失败（需手动杀进程恢复）。
                 let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_and_wait_bounded(&mut child, Duration::from_secs(5)).await;
                 return Err(e);
             }
             Ok((port, Some(child)))
@@ -1548,6 +1563,43 @@ fn port_file() -> Option<u16> {
     parse_port_json(&raw)
 }
 
+/// 端口文件的实例身份（port + started_at）：stop() 抑制标记与 watch 比对的依据
+/// （同一实例重写入 started_at 不变；wrapper/本模块拉起新实例时 started_at 变化）。
+fn port_file_identity() -> Option<(u16, i64)> {
+    let raw = std::fs::read_to_string(paths::browser_cdp_port_json()).ok()?;
+    parse_port_identity_json(&raw)
+}
+
+/// 解析端口文件的实例身份（纯函数，便于单测）。started_at 缺失/损坏时归 0——
+/// 身份仍可用于「同一文件未被重写」的判定（重写必然带新 started_at）。
+fn parse_port_identity_json(raw: &str) -> Option<(u16, i64)> {
+    let port = parse_port_json(raw)?;
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let started_at = v.get("started_at").and_then(Value::as_i64).unwrap_or(0);
+    Some((port, started_at))
+}
+
+/// 限期等待进程退出（不主动 kill）：无界 `Child::wait()` 是同步阻塞调用，出现在
+/// 持锁（inner / start_mtx / OS 启动锁）的 async 路径上时，Chrome 一旦进入不可杀
+/// 状态会冻结整个 BrowserManager（watch/命令/stop 全部排队）。超时后补一次 kill
+/// 并放弃等待——句柄随 Child drop 关闭，进程留待系统回收，锁先释放。
+async fn wait_exit_bounded(child: &mut Child, timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// kill 后限期等待退出（所有持锁清理路径的统一口径，见 wait_exit_bounded）。
+async fn kill_and_wait_bounded(child: &mut Child, timeout: Duration) {
+    let _ = child.kill();
+    wait_exit_bounded(child, timeout).await;
+}
+
 /// 解析端口文件内容。显式校验合法端口范围：损坏/他人写入的值（如 65536+k）经
 /// `as u16` 会静默回绕到任意端口，探测错误端点（多耗 ~10s 后才走 stale 清理）。
 fn parse_port_json(raw: &str) -> Option<u16> {
@@ -1597,11 +1649,10 @@ fn write_port_file(port: u16, owner: &str) -> Result<(), String> {
     // tmp 名带 pid：多进程（app 实例/wrapper）并发写同一端口文件时互不覆盖
     // （wrapper 侧用 `.tmp`，见 browser-wrapper.mjs）。
     let tmp = path.with_extension(format!("json.rust-tmp-{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_string_pretty(&data).unwrap())
+    // CDP 无鉴权：创建即收紧 0600（消除「先写后 chmod」的宽松权限窗口；
+    // 与 wrapper 的 chmod 0o600 一致；平台差异在 platform::os 适配层实现）。
+    crate::platform::os::write_private_file(&tmp, &serde_json::to_string_pretty(&data).unwrap())
         .map_err(|e| format!("写端口文件失败: {e}"))?;
-    // CDP 无鉴权：收紧端口文件权限，同机其他本地用户不应能读到端口坐标
-    // （与 wrapper 的 chmod 0o600 一致；平台差异在 platform::os 适配层实现）。
-    crate::platform::os::make_private_file(&tmp);
     std::fs::rename(&tmp, &path).map_err(|e| format!("落盘端口文件失败: {e}"))
 }
 
@@ -1701,5 +1752,25 @@ mod tests {
         assert_eq!(parse_port_json(r#"{"port": -1}"#), None);
         assert_eq!(parse_port_json(r#"{"pid": 123}"#), None);
         assert_eq!(parse_port_json("not json"), None);
+    }
+
+    // --- 端口文件实例身份（stop 抑制标记与 watch 比对的依据） ---
+
+    #[test]
+    fn parse_port_identity_distinguishes_instances() {
+        let a = parse_port_identity_json(r#"{"port": 9222, "started_at": 1000}"#);
+        let b = parse_port_identity_json(r#"{"port": 9222, "started_at": 2000}"#);
+        assert_eq!(a, Some((9222, 1000)));
+        assert_eq!(b, Some((9222, 2000)));
+        // 同端口不同 started_at = 不同实例（重启后抑制必须解除）
+        assert_ne!(a, b);
+        // started_at 缺失归 0：仍可用于「文件未被重写」判定
+        assert_eq!(
+            parse_port_identity_json(r#"{"port": 9222}"#),
+            Some((9222, 0))
+        );
+        // 端口非法/文件损坏：无身份
+        assert_eq!(parse_port_identity_json(r#"{"port": 70000}"#), None);
+        assert_eq!(parse_port_identity_json("not json"), None);
     }
 }

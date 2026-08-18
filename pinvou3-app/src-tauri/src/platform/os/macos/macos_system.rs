@@ -155,15 +155,27 @@ pub fn nvidia_smi_candidates() -> Vec<&'static str> {
     Vec::new()
 }
 
-/// 专用有头 Chrome 的可执行候选（macOS 以应用内可执行文件绝对路径为主）。
+/// 专用有头 Chrome 的可执行候选（macOS 以应用内可执行文件绝对路径为主；
+/// 含 `~/Applications` 用户级安装——仅装用户级 Chrome 的机器否则永远探测不到）。
 /// 与 `browser-wrapper.mjs` 的 darwin 候选保持一致（漂移时两侧同步）。
 pub fn chrome_candidates() -> Vec<String> {
-    vec![
+    let mut candidates = vec![
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
         "/Applications/Chromium.app/Contents/MacOS/Chromium".to_string(),
         "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser".to_string(),
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge".to_string(),
-    ]
+    ];
+    // `~/Applications` 用户级安装（HOME 缺失时不产出相对路径候选，避免随 cwd 误判）。
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_apps = std::path::PathBuf::from(home).join("Applications");
+        for name in [
+            "Google Chrome.app/Contents/MacOS/Google Chrome",
+            "Chromium.app/Contents/MacOS/Chromium",
+        ] {
+            candidates.push(home_apps.join(name).to_string_lossy().into_owned());
+        }
+    }
+    candidates
 }
 
 /// 随安装包捆绑的 node：macOS 复用 codex-bridge 运行时 node（无捆绑时 None，

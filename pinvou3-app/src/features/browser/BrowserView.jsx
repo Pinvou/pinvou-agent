@@ -21,7 +21,7 @@ import {
   XIcon,
 } from '../../components/icons.jsx';
 
-const HOME_URL = 'https://www.bing.com';
+const HOME_URL = 'about:blank'; // 社区版主页保持中立，不导向特定厂商站点
 
 export function BrowserView({ theme, t }) {
   const isDark = theme === 'dark';

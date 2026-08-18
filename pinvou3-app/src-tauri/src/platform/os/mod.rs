@@ -38,7 +38,7 @@ pub use interface::{
     current_system_locale, disable_super_permission, email_dependency_packages, email_manual_hint,
     email_tool_exists, enable_super_permission, external_application_path, file_url_from_path,
     filesystem_path_identity_key, find_chrome, kill_pid_tree, libreoffice_missing_message,
-    libreoffice_open_fallback_needed, libreoffice_tool_path, make_private_dir, make_private_file,
+    libreoffice_open_fallback_needed, libreoffice_tool_path, make_private_dir,
     msg_converter_required, msg_native_supported, nvidia_smi_candidates, obsidian_config_path,
     ocr_dependency_packages, ocr_tessdata_dir, ocr_tool_exists, ocr_tool_path, open_target,
     pandoc_dependency_packages, pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path,
@@ -48,5 +48,5 @@ pub use interface::{
     reveal_target, show_archive_dependency_check, show_ocr_dependency_check,
     show_pandoc_dependency_check, show_pdf_dependency_check, super_permission_is_enabled,
     super_permission_turn_reminder, system_default_open_supported, user_home_dir,
-    validate_upload_location,
+    validate_upload_location, write_private_file,
 };

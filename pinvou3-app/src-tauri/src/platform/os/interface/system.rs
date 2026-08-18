@@ -204,21 +204,29 @@ pub fn process_alive(pid: u32) -> bool {
     super::super::platform::process_alive(pid)
 }
 
-/// 收紧文件权限为仅当前用户可读写（browser 端口文件等无鉴权敏感文件的落盘路径）。
-/// Unix 侧 chmod 0o600（与 browser-wrapper.mjs 一致）；Windows 无 POSIX 权限语义为 no-op。
-/// 平台差异必须在适配层实现，消费方（features）不得直接写 `#[cfg(unix)]`。
+/// 以 0600 权限创建并写入文件的全部内容（Unix 创建即收紧，消除「先写后 chmod」
+/// 的宽松权限窗口——用于 cdp-port.json / mcp.work.json 等无鉴权敏感文件的 tmp
+/// 落盘，随后由调用方 rename 原子落位）。Windows 无 POSIX 语义，退化为普通写入
+/// （靠用户目录 ACL）。平台差异必须在本适配层实现，消费方（features）不得直接
+/// 写 `#[cfg(unix)]`。
 #[cfg(unix)]
-pub fn make_private_file(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    // 收紧失败不得静默吞掉：无鉴权敏感文件以宽松权限残留是安全问题，打警告便于诊断。
-    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-        eprintln!("[platform] 收紧文件权限失败（{}）: {e}", path.display());
-    }
+pub fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
 }
 
-/// 非 Unix 平台 no-op（Windows 无 POSIX 权限语义）。
+/// 非 Unix 平台退化为普通写入（无 POSIX 权限语义）。
 #[cfg(not(unix))]
-pub fn make_private_file(_path: &Path) {}
+pub fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}
 
 /// 收紧目录权限为仅当前用户可访问（browser profile 等含登录会话/缓存的目录）。
 /// Unix 侧 chmod 0o700；Windows 无 POSIX 权限语义为 no-op（靠用户目录 ACL）。

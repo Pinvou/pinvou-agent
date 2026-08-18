@@ -519,6 +519,26 @@ impl Pinvou3Bundle {
                 missing.join("; ")
             ));
         }
+        // 用户自配了同名 browser MCP server（如 playwright-mcp）：工作模式会话回落
+        // 全局配置（用户的 server 原样保留、优先于内嵌 wrapper），此时 mcp_browser_*
+        // 指向用户自己的 server，内嵌侧边栏的画面预览/交互不会工作——必须如实告知
+        // 模型，否则它会向用户宣称「操作会实时显示在浏览器 Tab」的死功能。
+        if let Ok(raw) = std::fs::read_to_string(&self.mcp_json) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(existing) = v
+                    .get("servers")
+                    .and_then(|s| s.as_object())
+                    .and_then(|s| s.get("browser"))
+                {
+                    if !is_browser_wrapper_residue(existing) {
+                        return Some(
+                            "用户在全局 MCP 配置中自配了名为 browser 的 server,内嵌浏览器(侧边栏画面预览/交互)本期不接管该名字:mcp_browser_* 工具来自用户自配 server,不要宣称操作会实时显示在浏览器 Tab。若用户需要内嵌浏览器,引导其将自配 server 改名后重开会话。"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
         // 最近一次动态启动失败(Chrome 启动失败/CDP 未就绪等),24h 内新鲜才提示。
         let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
             return None;
@@ -596,10 +616,17 @@ impl Pinvou3Bundle {
         ));
         match serde_json::to_string_pretty(&obj) {
             Ok(json) => {
-                if std::fs::write(&tmp, json).is_ok() {
-                    // 内容含全局 mcp.json 完整副本（可能带用户自配 server 的密钥
-                    // env）：与 cdp-port.json 同卫生标准收紧为 0600。
-                    crate::platform::os::make_private_file(&tmp);
+                // 内容未变跳过重写：每次 spawn 会话（含随后回落全局的 code 会话）
+                // 都会走到这里，相同内容还 tmp+rename 是纯无效磁盘写放。
+                if std::fs::read_to_string(&work_path)
+                    .map(|existing| existing == json)
+                    .unwrap_or(false)
+                {
+                    return work_path;
+                }
+                // 内容含全局 mcp.json 完整副本（可能带用户自配 server 的密钥
+                // env）：创建即收紧 0600（消除先写后 chmod 的宽松权限窗口）。
+                if crate::platform::os::write_private_file(&tmp, &json).is_ok() {
                     if std::fs::rename(&tmp, &work_path).is_ok() {
                         return work_path;
                     }
