@@ -14,16 +14,19 @@ use windows_sys::Win32::System::Registry::{
 pub fn current_system_locale() -> Option<String> {
     let mut language_count = 0;
     let mut buffer_len = 0;
-    // The sizing call is expected to return false with an insufficient-buffer error.
-    unsafe {
+    // MSDN sizing call: null buffer with *pcchLanguagesBuffer = 0 returns TRUE
+    // and stores the required size (trailing double NUL included). Still check
+    // the return value so a failed call leaving buffer_len undefined cannot
+    // trigger a bogus large allocation below.
+    let sized = unsafe {
         GetUserPreferredUILanguages(
             MUI_LANGUAGE_NAME,
             &mut language_count,
             std::ptr::null_mut(),
             &mut buffer_len,
-        );
-    }
-    if buffer_len <= 1 {
+        )
+    };
+    if sized == 0 || buffer_len <= 1 {
         return None;
     }
     let mut locale_names = vec![0u16; buffer_len as usize];

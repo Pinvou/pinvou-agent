@@ -15,8 +15,13 @@ pub(crate) mod posix;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) mod unsupported;
 
-mod interface;
+// GNU 消息 locale 语义的环境变量探测，仅 linux 与 unsupported 平台消费
+// (windows/macos 各有原生实现)，按 posix.rs 先例门控到消费平台并集，
+// 避免在非消费平台累积 dead_code(见 [lints] 中 dead_code 升 deny 计划)。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod locale;
+
+mod interface;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux as platform;
