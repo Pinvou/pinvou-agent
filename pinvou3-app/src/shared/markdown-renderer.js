@@ -33,7 +33,6 @@ function fencedCodeIsClosed(token) {
 const markdown = new Marked(MARKDOWN_OPTIONS);
 
 markdown.use({
-  useNewRenderer: true,
   renderer: {
     code(token) {
       const fenceClosed = fencedCodeIsClosed(token);

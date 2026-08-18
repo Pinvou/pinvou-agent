@@ -131,7 +131,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
         },
         SetPermissionStateCompletedHandler,
     };
-    use windows::core::{Interface, HSTRING};
+    use windows_core::{Interface, HSTRING};
 
     let origin = window
         .url()
@@ -147,7 +147,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     window
         .with_webview(move |webview| {
             let callback_sender = Arc::clone(&sender);
-            let schedule_result: windows::core::Result<()> = (|| unsafe {
+            let schedule_result: windows_core::Result<()> = (|| unsafe {
                 let webview13 = webview
                     .controller()
                     .CoreWebView2()?

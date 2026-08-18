@@ -107,30 +107,57 @@ function mappedFence(token, tokenMap, source) {
   };
 }
 
+// Marked 14+ keeps literal tabs in list/blockquote token raws while the mapped
+// source text expands leading tabs to spaces, so raw subsequence matching fails.
+// Expand tabs on the matched side with the same rule as lexerSourceMap and
+// collapse the per-character match back onto the original string.
+function matchTokenText(value, parentText, cursor) {
+  const raw = String(value);
+  if (!raw.includes('\t')) {
+    const map = subsequenceMap(raw, parentText, cursor);
+    if (!map) return null;
+    return { text: raw, offsets: raw.split('').map((_, index) => index), map };
+  }
+  const expansion = lexerSourceMap(raw);
+  const expandedMap = subsequenceMap(expansion.text, parentText, cursor);
+  if (!expandedMap) return null;
+  const map = new Array(raw.length).fill(null);
+  for (let index = 0; index < expandedMap.length; index += 1) {
+    map[expansion.offsets[index]] = expandedMap[index];
+  }
+  let last = null;
+  for (let index = 0; index < map.length; index += 1) {
+    if (map[index] === null) map[index] = last;
+    else last = map[index];
+  }
+  return { text: expansion.text, offsets: expansion.offsets, map };
+}
+
+// Turn a matchTokenText result into a recursion map: from character positions of
+// the (possibly tab-expanded) matched text back to offsets in the original source.
+function tokenSourceMap(match, parentMap) {
+  return composeMaps(composeMaps(match.offsets, match.map), parentMap);
+}
+
 function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
   let cursor = 0;
   for (const token of tokens || []) {
     if (!token?.raw) continue;
-    const relativeMap = subsequenceMap(token.raw, parentText, cursor);
-    if (!relativeMap) {
+    let match = matchTokenText(token.raw, parentText, cursor);
+    if (!match) {
       if (token.type === 'blockquote' && token.text && token.tokens) {
         const mappedText = token.text.endsWith('\n') ? token.text.slice(0, -1) : token.text;
-        const textMap = subsequenceMap(mappedText, parentText, cursor);
-        if (textMap) {
-          cursor = textMap[textMap.length - 1] + 1;
-          walkTokenSequence(
-            token.tokens,
-            mappedText,
-            composeMaps(textMap, parentMap),
-            source,
-            fences,
-          );
+        match = matchTokenText(mappedText, parentText, cursor);
+        if (match) {
+          cursor = match.map[match.map.length - 1] + 1;
+          walkTokenSequence(token.tokens, match.text, tokenSourceMap(match, parentMap), source, fences);
         }
       }
       continue;
     }
-    cursor = relativeMap[relativeMap.length - 1] + 1;
-    const tokenMap = composeMaps(relativeMap, parentMap);
+    cursor = match.map[match.map.length - 1] + 1;
+    const frameMap = tokenSourceMap(match, parentMap);
+    const tokenMap = composeMaps(match.map, parentMap);
 
     if (token.type === 'code' && token.codeBlockStyle !== 'indented') {
       const fence = mappedFence(token, tokenMap, source);
@@ -139,9 +166,15 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
     }
 
     if (token.type === 'blockquote' && token.text && token.tokens) {
-      const textMap = subsequenceMap(token.text, token.raw);
-      if (textMap) {
-        walkTokenSequence(token.tokens, token.text, composeMaps(textMap, tokenMap), source, fences);
+      const textMatch = matchTokenText(token.text, match.text, 0);
+      if (textMatch) {
+        walkTokenSequence(
+          token.tokens,
+          textMatch.text,
+          tokenSourceMap(textMatch, frameMap),
+          source,
+          fences,
+        );
       }
       continue;
     }
@@ -150,13 +183,19 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
       let itemCursor = 0;
       for (const item of token.items) {
         if (!item?.raw || !item.text) continue;
-        const itemRelativeMap = subsequenceMap(item.raw, token.raw, itemCursor);
-        if (!itemRelativeMap) continue;
-        itemCursor = itemRelativeMap[itemRelativeMap.length - 1] + 1;
-        const itemMap = composeMaps(itemRelativeMap, tokenMap);
-        const textMap = subsequenceMap(item.text, item.raw);
-        if (textMap) {
-          walkTokenSequence(item.tokens, item.text, composeMaps(textMap, itemMap), source, fences);
+        const itemMatch = matchTokenText(item.raw, match.text, itemCursor);
+        if (!itemMatch) continue;
+        itemCursor = itemMatch.map[itemMatch.map.length - 1] + 1;
+        const itemFrameMap = tokenSourceMap(itemMatch, frameMap);
+        const textMatch = matchTokenText(item.text, itemMatch.text, 0);
+        if (textMatch) {
+          walkTokenSequence(
+            item.tokens,
+            textMatch.text,
+            tokenSourceMap(textMatch, itemFrameMap),
+            source,
+            fences,
+          );
         }
       }
     }
