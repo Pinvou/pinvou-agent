@@ -88,7 +88,7 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
         )
 
-    def test_pr_submodule_verifier_only_allows_the_registered_security_candidate(self):
+    def test_pr_submodule_verifier_never_relaxes_public_reachability(self):
         verifier = PUBLIC_SUBMODULE_VERIFIER.read_text(encoding="utf-8")
         fork_guard = FORK_GUARD.read_text(encoding="utf-8")
         candidate_pattern = re.compile(r'^LOCAL_SECURITY_HEAD="([0-9a-f]{40})"$', re.M)
@@ -98,9 +98,11 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIsNotNone(verifier_candidate)
         self.assertIsNotNone(guard_candidate)
         self.assertEqual(verifier_candidate.group(1), guard_candidate.group(1))
-        self.assertIn("args+=(--allow-registered-candidate)", self.pr_workflow)
-        self.assertIn('github.event_name }}" == "pull_request"', self.pr_workflow)
-        self.assertIn('github.event_name }}" == "merge_group"', self.pr_workflow)
+        self.assertNotIn("--allow-registered-candidate", self.pr_workflow)
+        candidate_gate = self.pr_workflow.split(
+            "- name: 公开底座 gitlink 可达性", maxsplit=1
+        )[1].split("- name: 初始化公共底座 submodule", maxsplit=1)[0]
+        self.assertNotIn("github.event_name", candidate_gate)
         self.assertIn('[[ "$gitlink" == "$LOCAL_SECURITY_HEAD" ]]', verifier)
         self.assertIn("unknown argument", verifier)
 
@@ -211,6 +213,30 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
+
+    def test_benchmark_workspace_and_headless_contract_have_required_gates(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        self.assertIn("benchmark:", changes)
+        self.assertIn("- 'pinvou-cli/**'", changes)
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge.rs'",
+            changes,
+        )
+
+        benchmark = self.pr_workflow.split("\n  benchmark-test:", maxsplit=1)[1].split(
+            "\n  required-gate:", maxsplit=1
+        )[0]
+        self.assertIn("cargo test --manifest-path pinvou-cli/Cargo.toml --all-features", benchmark)
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --no-default-features", benchmark
+        )
+        self.assertIn("--features benchmark-hooks", benchmark)
+
+        required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn("- benchmark-test", required_gate)
+        self.assertIn('"benchmark-test:$BENCHMARK_TEST_RESULT"', required_gate)
 
     def test_rust_modes_preserve_fast_drafts_and_final_queue_validation(self):
         self.assertIn("merge_group:", self.pr_workflow)
