@@ -186,7 +186,11 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
-        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        // 评测会话(eval_ 前缀,含 GAIA 私有题目)同样不进用户历史:正常路径
+        // 由评测运行器清理,崩溃残留的会话也不能把私密题目带进会话列表。
+        out.retain(|metadata| {
+            !metadata.id.starts_with("sched-") && !metadata.id.starts_with("eval_")
+        });
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     }

@@ -22,11 +22,6 @@ name = "dump_system_prompt"
 path = "src/bin/dump_system_prompt.rs"
 required-features = ["dev-tools"]
 
-[[bin]]
-name = "eval_smoke"
-path = "src/bin/eval_smoke.rs"
-required-features = ["dev-tools"]
-
 [lib]
 name = "pinvou3_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

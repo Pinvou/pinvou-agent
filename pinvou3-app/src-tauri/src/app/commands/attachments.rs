@@ -153,7 +153,9 @@ where
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
-pub(crate) fn stage_file_in_workspace(
+/// 将附件以受控文件名落进 workspace 子目录;供 GUI 附件命令与 headless
+/// 评测附件 staging(lib 根 re-export)共用。
+pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,

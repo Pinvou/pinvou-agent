@@ -2,20 +2,15 @@
 
 mod app;
 mod core;
-#[cfg(feature = "dev-tools")]
-mod eval_cli;
 pub mod features;
-#[cfg(feature = "benchmark-hooks")]
-pub mod headless_bridge;
 pub mod platform;
 
-pub use app::commands::attachments::build_message_with_attachments;
-#[cfg(feature = "dev-tools")]
-pub use eval_cli::{
-    judge_status_label, run_product_eval_smoke, EvalSmokeOptions, EvalSmokeOutcome,
-};
+pub use app::commands::attachments::{build_message_with_attachments, stage_file_in_workspace};
 
 use tauri::Manager;
+
+#[cfg(feature = "benchmark-hooks")]
+pub use features::assistant::product_runtime::headless_bridge;
 
 use crate::app::commands;
 use crate::features::{
@@ -119,6 +114,15 @@ fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized:
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 全 crate 唯一的 `generate_context!()` 展开点。
+///
+/// macOS 的 embed_plist 用 `#[no_mangle] static _EMBED_INFO_PLIST` 让重复
+/// 展开成为链接错误;GUI(`run`)与 headless 评测宿主(benchmark-hooks)必须
+/// 共用这里的单一 Context 构造,不得在别处再展开该宏。
+pub fn build_tauri_context() -> tauri::Context {
+    tauri::generate_context!()
+}
+
 pub fn run() {
     // 必须最先执行:进程级选定 rustls CryptoProvider。
     // 见 Cargo.toml 的 rustls/reqwest 注释——reqwest 0.13 自带 aws-lc-rs 但只「借用」
@@ -937,12 +941,11 @@ pub fn run() {
             commands::marketplace::bundle_readiness,
             commands::marketplace::export_plugin_spec,
             commands::files::verify_upload,
-            commands::eval::run_eval_smoke,
         ]);
 
     startup::mark("tauri:builder_configured");
     startup::mark("tauri:context:start");
-    let context = tauri::generate_context!();
+    let context = build_tauri_context();
     startup::mark("tauri:context:done");
     // Keep the historical marker so old and new startup runs remain comparable.
     startup::mark("tauri:run_enter");

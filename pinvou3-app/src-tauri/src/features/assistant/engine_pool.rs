@@ -39,9 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
 };
-use crate::features::assistant::eval::analysis::{
-    EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity,
-};
+use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::assistant::runtime_model::{
@@ -2095,8 +2093,7 @@ mod scheduled_model_tests {
 
         assert_eq!(first, second);
         assert!(
-            crate::features::assistant::eval::analysis::validate_judge_identity(&first, &second)
-                .is_err()
+            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
         );
 
         std::env::remove_var("DEEPSEEK_MODEL");

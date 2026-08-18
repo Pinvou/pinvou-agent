@@ -17,11 +17,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::features::assistant::engine_pool::EnginePool;
-use crate::features::assistant::eval::analysis::{EvalModelSelection, EvalSuiteModelSnapshot};
+use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot};
 use crate::features::assistant::timing;
 use std::time::Duration;
 
 pub(crate) mod eval_tool_policy;
+#[cfg(feature = "benchmark-hooks")]
+pub mod headless_bridge;
 
 /// 会话创建规格
 pub struct SessionSpec {
@@ -107,7 +109,7 @@ fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>
 
 /// 产品聊天 runtime seam。
 ///
-/// GUI 和 PinvouChatRunner 都通过此 trait 驱动会话，
+/// GUI 和 headless 评测宿主都通过此 trait 驱动会话，
 /// 确保评测与生产走同一条构造路径。
 pub trait ProductChatRuntime: Send + Sync {
     /// 确保会话已创建并就绪
@@ -145,7 +147,7 @@ pub(crate) struct EvalSuiteModelGuard {
 }
 
 impl EvalSuiteModelGuard {
-    pub(crate) fn identity(&self) -> &crate::features::assistant::eval::analysis::ModelIdentity {
+    pub(crate) fn identity(&self) -> &crate::features::assistant::eval::ModelIdentity {
         self.snapshot.identity()
     }
 
@@ -166,9 +168,7 @@ impl EnginePoolRuntime {
         Self { pool }
     }
 
-    pub(crate) fn tested_eval_identity(
-        &self,
-    ) -> crate::features::assistant::eval::analysis::ModelIdentity {
+    pub(crate) fn tested_eval_identity(&self) -> crate::features::assistant::eval::ModelIdentity {
         self.pool.tested_eval_identity()
     }
 

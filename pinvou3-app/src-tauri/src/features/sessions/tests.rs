@@ -366,10 +366,25 @@ fn scheduled_session_is_isolated_but_directly_loadable() {
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-isolated"))
         .expect("create scheduled run");
+    // 崩溃残留的评测会话(eval_ 前缀,含 GAIA 私有题目)不得进入用户列表。
+    let eval_id = "eval_gaia-case-1_crash-leftover".to_string();
+    let eval_session = create_saved_session_with_id_and_mode(
+        eval_id.clone(),
+        &[],
+        "/eval-model",
+        &paths::sessions_root(),
+        0,
+        None,
+        Some("yolo"),
+    );
+    store
+        .save_session_atomic(&eval_session)
+        .expect("persist eval leftover");
 
     let listed = store.list().expect("list chats");
     assert!(listed.iter().any(|item| item.id == chat.metadata.id));
     assert!(!listed.iter().any(|item| item.id == scheduled.metadata.id));
+    assert!(!listed.iter().any(|item| item.id == eval_id));
     assert!(paths::sessions_root()
         .join(format!("{}.json", scheduled.metadata.id))
         .exists());

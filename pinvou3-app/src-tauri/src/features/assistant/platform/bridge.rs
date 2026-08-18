@@ -1934,7 +1934,8 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(
-                deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact)),
+                deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
+                    .with_read_only_dispatch(),
             )),
         })
     }
@@ -3833,6 +3834,7 @@ mod tests {
         let security = turn_tool_security.expect("mandatory turn security");
         assert_eq!(security.trusted_external_paths_override(), Some(&[][..]));
         assert!(security.exact_dispatch().is_some());
+        assert!(security.requires_read_only_dispatch());
         assert!(
             hook_executor.is_none(),
             "restricted eval turns must not launch shell-backed hooks"

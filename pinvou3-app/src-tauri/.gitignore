@@ -5,3 +5,4 @@
 
 # SenseVoice 引擎运行副产物(已钉死写入 ~/.pinvou3/asr,此处兜底)
 fbank_lfr_cmvn_feature.json
+.cargo/config.local.toml
