@@ -175,12 +175,15 @@
       notify();
     }
 
-    async function startRemoteControl() {
+    async function startRemoteControl(options) {
       var seq = ++webAccessIntentSeq;
+      var wasActive = !!state.webAccess.active;
       state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
       notify();
       try {
-        var info = await invoke("web_access_enable");
+        var info = await invoke("web_access_enable", {
+          allowHostWorkspace: !!(options && options.allowHostWorkspace),
+        });
         if (seq !== webAccessIntentSeq) return info; // 已有更新的用户操作，不写反状态
         state.webAccess = Object.assign({}, state.webAccess, info || {}, {
           active: true, starting: false, last_error: null,
@@ -190,7 +193,7 @@
       } catch (error) {
         if (seq !== webAccessIntentSeq) throw error;
         state.webAccess = Object.assign({}, state.webAccess, {
-          active: false, web_client_connected: false, starting: false,
+          active: wasActive, web_client_connected: wasActive && !!state.webAccess.web_client_connected, starting: false,
           status: "error", last_error: String(error),
         });
         notify();
@@ -211,7 +214,7 @@
       if (seq !== webAccessIntentSeq) return; // 已有更新的用户操作，不写反状态
       state.webAccess = Object.assign({}, state.webAccess, {
         active: false, endpoint_id: null, url: null, qr_data_url: null,
-        web_client_connected: false, status: "stopped", starting: false,
+        web_client_connected: false, host_workspace_authorized: false, status: "stopped", starting: false,
       });
       notify();
     }

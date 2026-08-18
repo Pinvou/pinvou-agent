@@ -4,6 +4,27 @@ import {
   stripTerminalControlSequences,
 } from '../conversation/conversation-model.js';
 
+export function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem('pinvou_conversation_ui_v2') !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function updateAcpAttachmentDraft(drafts, attachmentId, update) {
+  for (const [owner, attachments] of Object.entries(drafts || {})) {
+    if (!attachments.some(attachment => attachment.id === attachmentId)) continue;
+    return {
+      ...drafts,
+      [owner]: attachments.map(attachment => (
+        attachment.id === attachmentId ? update(attachment) : attachment
+      )),
+    };
+  }
+  return drafts;
+}
+
 function contentText(content) {
   if (!content) return '';
   if (typeof content === 'string') return content;
@@ -358,6 +379,12 @@ export function appendAcpEvent(events, incoming) {
     return events;
   }
   return [...(events || []), incoming].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+}
+
+export function mergeAcpTimelineSnapshot(snapshot, current, sessionId) {
+  return (current || [])
+    .filter(event => event?.sessionId === sessionId)
+    .reduce((merged, event) => appendAcpEvent(merged, event), snapshot || []);
 }
 
 export function resolveAcpSessionControls(info) {

@@ -52,7 +52,7 @@
     "test:ime-compose-guard": "node tests/ime_compose_guard.test.mjs",
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
-    "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs && node tests/attachment_bubble_logic.test.mjs",
+    "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs && node tests/acp_native_attachment_client.test.mjs && node tests/attachment_bubble_logic.test.mjs",
     "test:voice-input": "node tests/voice_input_error_logic.test.js",
     "test:floating-voice-drag": "node tests/floating_voice_drag_logic.test.mjs",
     "test:voice-asr-cancel": "node tests/voice_asr_cancel_logic.test.js",

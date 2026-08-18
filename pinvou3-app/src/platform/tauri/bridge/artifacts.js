@@ -16,7 +16,6 @@
     var isDeliverable = context.isDeliverable;
     var isAbsPath = context.isAbsPath;
     var sessionStates = context.sessionStates;
-    var ensureSession = context.ensureSession;
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var attachIdSeq = 0;
   // ── 产物面板 ─────────────────────────────────────────────────────
@@ -119,13 +118,6 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  function updateAttachmentDragState(active) {
-    active = !!active;
-    if (!!state.attachmentDragActive === active) return;
-    state.attachmentDragActive = active;
-    notify();
-  }
-
   function encodeBase64Bytes(bytes) {
     var binary = "";
     var stride = 0x8000;
@@ -137,12 +129,6 @@
 
   async function addDroppedFileAttachment(file) {
     if (!file) return;
-    if (!state.activeSessionId && ensureSession) await ensureSession();
-    var sessionId = state.activeSessionId;
-    if (!sessionId) {
-      addSystemItem(bt("attachNeedSession"));
-      return;
-    }
     var id = ++attachIdSeq;
     var att = { id: id, basename: file.name || "attachment", status: "parsing", result: null, error: null, cancelled: false, uploadId: null };
     var commitAcknowledged = false;
@@ -160,8 +146,7 @@
         if (att.cancelled) throw new Error(bt("attachAddCancelled"));
         var end = Math.min(offset + 192 * 1024, file.size);
         var bytes = await file.slice(offset, end).arrayBuffer();
-        result = await invoke("ingest_dropped_file_chunk", {
-          sessionId: sessionId,
+        result = await invoke("ingest_draft_file_chunk", {
           uploadId: uploadId,
           filename: file.name || "attachment",
           offset: offset,
@@ -174,8 +159,9 @@
       }
       if (att.cancelled) throw new Error(bt("attachAddCancelled"));
       if (!result || !result.basename) throw new Error(bt("attachInvalidResult"));
-      Object.defineProperty(result, "__pinvouManagedAttachmentSessionId", {
-        value: sessionId,
+      Object.defineProperty(result, "__pinvouManagedDraftAttachmentId", {
+        configurable: true,
+        value: uploadId,
         enumerable: false,
       });
       att.basename = result.basename || att.basename;
@@ -186,8 +172,7 @@
       // explicit cancellation, or an acknowledged commit with an invalid
       // response, may delete the completed directory.
       if (att.uploadId && (att.cancelled || commitAcknowledged)) {
-        await invoke("cancel_dropped_file_upload", {
-          sessionId: sessionId,
+        await invoke("cancel_draft_file_upload", {
           uploadId: att.uploadId,
         }).catch(function () {});
       }
@@ -219,23 +204,6 @@
       .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
   }
 
-  function initAttachmentDrop() {
-    if (initAttachmentDrop.done) return;
-    initAttachmentDrop.done = true;
-    if (!root.PinvouAttachmentDropController) {
-      console.warn("[attachment] drop controller is unavailable");
-      return;
-    }
-    root.PinvouAttachmentDropController.install({
-      document: document,
-      onActiveChange: updateAttachmentDragState,
-      onFiles: async function (files) {
-        for (var index = 0; index < files.length; index++) {
-          await addDroppedFileAttachment(files[index]);
-        }
-      }
-    });
-  }
   async function addPasteImage(filename, bytes) {
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
@@ -272,12 +240,36 @@
       for (var i = 0; i < paths.length; i++) { await addAttachmentByPath(paths[i]); }
     } catch (e) { addSystemItem(bt("filePickFailed") + e); }
   }
-  // 浏览器上传通道是 WebUI 专属入口(deviceFileUpload 能力在桌面显式关闭),
-  // 桌面此桩仅维持 attachments 域协议一致;原生附件继续走 pickAndAttach。
-  async function uploadDeviceFiles() {
-    throw new Error("device file upload is a WebUI-only entry; use pickAndAttach on desktop");
+  // 文件选择按钮在桌面仍走原生路径；HTML5 拖放拿不到路径时通过同一域方法
+  // 分块写入 sessionless 草稿区，直到实际发送才归属到目标会话。
+  async function uploadDeviceFiles(files) {
+    var list = Array.prototype.slice.call(files || []).filter(Boolean);
+    for (var index = 0; index < list.length; index++) {
+      await addDroppedFileAttachment(list[index]);
+    }
   }
-  initAttachmentDrop();
+
+  async function adoptManagedAttachments(attachments, sessionId) {
+    var list = Array.prototype.slice.call(attachments || []);
+    for (var index = 0; index < list.length; index++) {
+      var attachment = list[index];
+      var result = attachment && attachment.result;
+      var uploadId = result && result.__pinvouManagedDraftAttachmentId;
+      if (!uploadId) continue;
+      var adopted = await invoke("adopt_draft_attachment", {
+        sessionId: sessionId,
+        uploadId: uploadId,
+      });
+      Object.defineProperty(adopted, "__pinvouManagedAttachmentSessionId", {
+        configurable: true,
+        value: sessionId,
+        enumerable: false,
+      });
+      attachment.result = adopted;
+      attachment.basename = adopted.basename || attachment.basename;
+    }
+    return list;
+  }
 
 
     return {
@@ -302,6 +294,7 @@
       clearAttachments: clearAttachments,
       pickAndAttach: pickAndAttach,
       uploadDeviceFiles: uploadDeviceFiles,
+      adoptManagedAttachments: adoptManagedAttachments,
       resolveConversationAttachment: resolveConversationAttachment,
       openConversationAttachment: openConversationAttachment,
       revealConversationAttachment: revealConversationAttachment

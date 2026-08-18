@@ -10,6 +10,8 @@ const feature = read(...featureRoot, "mod.rs");
 // 版本探测落 install.rs，登录态探测落 login.rs。下方相关断言改为读对应子模块。
 const install = read(...featureRoot, "install.rs");
 const login = read(...featureRoot, "login.rs");
+const agentProbe = read(...featureRoot, "agent_probe.rs");
+const authProbe = read(...featureRoot, "auth_probe.rs");
 const runtime = read(...featureRoot, "runtime.rs");
 const latest = read(...featureRoot, "latest.rs");
 const platform = read(...featureRoot, "platform", "mod.rs");
@@ -19,6 +21,7 @@ const macos = read(...featureRoot, "platform", "macos.rs");
 const processRuntime = read("src-tauri", "src", "platform", "process.rs");
 const prepareBridge = read("scripts", "prepare-codex-bridge-runtime.sh");
 const runDev = read("run-dev.sh");
+const codexCommands = read("src-tauri", "src", "app", "commands", "codex.rs");
 
 for (const os of ["windows", "linux", "macos"]) {
   assert.match(
@@ -64,6 +67,39 @@ assert.match(processRuntime, /fn external_command_for[\s\S]*?HiddenCommand::new\
 assert.match(install, /"windows" => "win32"/);
 assert.match(install, /format!\("claude-agent-sdk-\{platform\}-\{arch\}\{libc\}"\)/);
 assert.match(install, /binary = if os == "windows"[\s\S]*?"claude\.exe"/);
+
+const listAgents = codexCommands.match(
+  /pub\(crate\) async fn list_acp_agents_for_pool\([\s\S]*?\n\}/,
+);
+assert.ok(listAgents, "ACP Agent catalog command must remain explicit");
+assert.match(listAgents[0], /AcpPool::agent_catalog\(\)/);
+assert.doesNotMatch(
+  listAgents[0],
+  /refresh_status|agent_statuses|spawn_blocking/,
+  "listing ACP Agents must never probe CLI or authentication state",
+);
+assert.match(feature, /pub fn agent_catalog\(\)[\s\S]*?AgentBackend::ACP_BACKENDS/);
+assert.match(agentProbe, /fn cli_probe_for\([\s\S]*?AgentBackend::ClaudeAcp[\s\S]*?AgentBackend::KimiAcp/);
+assert.match(
+  install,
+  /if matches!\(probe, CliVersionProbe::TimedOut\)[\s\S]*?probe_cli_version\(&path\)/,
+  "a slow first CLI launch may retry once",
+);
+assert.doesNotMatch(
+  install,
+  /CliVersionProbe::Failed\s*\|\s*CliVersionProbe::TimedOut[\s\S]{0,120}probe_cli_version/,
+  "deterministic CLI failures must stay cached instead of spawning repeatedly",
+);
+assert.match(
+  authProbe,
+  /struct AgentAuthProbeSlot \{[\s\S]*?gate: parking_lot::Mutex<\(\)>[\s\S]*?generation: AtomicU64/,
+  "authentication probes must be coalesced and generation-aware per Agent",
+);
+assert.match(
+  authProbe,
+  /fn invalidate_auth_cache\([\s\S]*?generation[\s\S]*?fetch_add\(1, Ordering::AcqRel\)[\s\S]*?auth_cache\.write\(\)\.remove/,
+  "authentication invalidation must prevent an in-flight stale result from repopulating the cache",
+);
 
 assert.match(linux, /SYSTEM_CODEX_NAME: &str = "codex"/);
 assert.ok(!linux.includes('Command::new("cmd")'));

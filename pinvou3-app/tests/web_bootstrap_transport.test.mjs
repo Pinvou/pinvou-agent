@@ -305,6 +305,85 @@ async function connectWithCapabilities(events, listener) {
     'an older desktop without upload support must keep the device upload entry hidden');
 }
 
+// 代码模式只在目标桌面完整实现 Web-safe ACP 命令与事件合同时开放。
+// 任一命令或 acp:event 缺失都代表旧桌面，入口必须 fail closed。
+{
+  const acpCommands = [
+    'web_access_list_acp_agents',
+    'web_access_get_acp_agent_status',
+    'web_access_list_codex_acp_sessions',
+    'web_access_create_codex_acp_session',
+    'web_access_get_codex_acp_session_info',
+    'web_access_set_codex_acp_model',
+    'web_access_set_codex_acp_mode',
+    'web_access_set_codex_acp_config_option',
+    'web_access_codex_acp_prompt',
+    'cancel_codex_acp',
+    'web_access_get_codex_acp_timeline',
+    'web_access_get_codex_acp_pending_permissions',
+    'respond_codex_acp_permission',
+    'web_access_get_codex_acp_pending_elicitations',
+    'respond_codex_acp_elicitation',
+    'web_access_list_codex_workspace',
+    'web_access_search_codex_workspace',
+    'web_access_preview_codex_workspace_file',
+    'get_codex_workspace_changes',
+    'get_codex_workspace_diff',
+    'web_access_list_host_files',
+    'web_access_ingest_file',
+    'web_access_discard_attachment',
+  ];
+  const negotiate = async (snapshotCommands, snapshotEvents) => {
+    const harness = bootClient({
+      allowed_commands: acpCommands,
+      allowed_events: ['acp:event'],
+    });
+    const client = harness.window.PinvouWebClient;
+    await client.policyPromise;
+    client.markFrontendReady();
+    await Promise.resolve();
+    client.markStateReady();
+    assert.equal(harness.window.PinvouPlatform.can('acpCodeMode'), false,
+      'ACP code mode must fail closed before capability negotiation');
+    const socket = harness.MockWebSocket.instances[0];
+    socket.open();
+    socket.message({
+      v: 2,
+      type: 'web_client_joined',
+      endpoint_id: 'endpoint_test',
+      lease_id: 'lease_test',
+      desktop_connected: true,
+    });
+    socket.message({
+      v: 2,
+      type: 'desktop_snapshot',
+      stream_epoch: 'epoch_test',
+      seq: 0,
+      snapshot: {
+        capabilities: {
+          protocol_version: 2,
+          commands: snapshotCommands,
+          events: snapshotEvents,
+        },
+      },
+    });
+    const supported = harness.window.PinvouPlatform.can('acpCodeMode');
+    socket.close();
+    assert.equal(harness.window.PinvouPlatform.can('acpCodeMode'), supported,
+      'a transient disconnect must retain the last negotiated compatibility result');
+    assert.equal(harness.window.PinvouPlatform.canInvoke('web_access_list_acp_agents'), false,
+      'transport-backed commands must remain unavailable while disconnected');
+    return supported;
+  };
+
+  assert.equal(await negotiate(acpCommands, ['acp:event']), true,
+    'the complete Web ACP contract must enable code mode');
+  assert.equal(await negotiate(acpCommands.slice(0, -1), ['acp:event']), false,
+    'a desktop missing one required ACP command must keep code mode hidden');
+  assert.equal(await negotiate(acpCommands, []), false,
+    'a desktop missing acp:event must keep code mode hidden');
+}
+
 // 首条消息使用调用方提供的稳定请求 ID。WebSocket 重连后必须复用同一 ID，
 // 桌面端才能从持久 RPC ledger 返回原结果而不重复创建 Session 或发送消息。
 {

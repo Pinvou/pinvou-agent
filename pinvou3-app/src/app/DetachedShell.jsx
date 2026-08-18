@@ -4,9 +4,10 @@ import { MonitorView } from '../features/monitor/MonitorView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { ToolStoreView } from '../features/tools/ToolStoreView.jsx';
 import { CardPoolView } from '../features/personas/Personas.jsx';
-import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
+import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
+import { listAcpSessions } from '../platform/acp/client.js';
 import { dict, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {
@@ -65,7 +66,7 @@ function DetachedCodexSessionView({ id, theme, t, bs }) {
     let unlisten = null;
     const refresh = async () => {
       try {
-        const next = await invokeTauri('list_codex_acp_sessions');
+        const next = await listAcpSessions();
         if (!disposed) {
           setSessions(Array.isArray(next) ? next : []);
           setLoadFailed(false);

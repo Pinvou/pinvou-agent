@@ -220,27 +220,63 @@ pub(super) fn find_in_path(name: &str) -> Option<PathBuf> {
         .map(|dir| dir.join(name))
         .find(|candidate| nonempty_file(candidate))
 }
-/// `--version` 探测与 cli_status_success 一致限制 3 秒，避免卡住的 CLI 拖住状态轮询。
-pub(super) fn command_version_output(executable: &Path) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CliVersionProbe {
+    Found(String),
+    TimedOut,
+    Failed,
+}
+
+/// `--version` 探测与登录态探测使用同一 15 秒上限。结果由上层按 Agent 缓存，
+/// 只有首次选择或主动重查时支付进程启动成本。
+fn command_version_probe(executable: &Path) -> CliVersionProbe {
     let mut command = crate::platform::process::external_command(executable);
     command
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    let mut child = command.spawn().ok()?;
+    let Ok(mut child) = command.spawn() else {
+        return CliVersionProbe::Failed;
+    };
     match child.wait_timeout(Duration::from_secs(15)) {
         Ok(Some(status)) if status.success() => {}
-        Ok(Some(_)) => return None,
-        Ok(None) | Err(_) => {
+        Ok(Some(_)) => return CliVersionProbe::Failed,
+        Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            return None;
+            return CliVersionProbe::TimedOut;
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return CliVersionProbe::Failed;
         }
     }
     let mut version = String::new();
-    child.stdout.take()?.read_to_string(&mut version).ok()?;
-    Some(version.trim().to_string())
+    let Some(mut stdout) = child.stdout.take() else {
+        return CliVersionProbe::Failed;
+    };
+    if stdout.read_to_string(&mut version).is_err() {
+        return CliVersionProbe::Failed;
+    }
+    let version = version.trim();
+    if version.is_empty() {
+        CliVersionProbe::Failed
+    } else {
+        CliVersionProbe::Found(version.to_string())
+    }
+}
+
+pub(super) fn command_version_output(executable: &Path) -> Option<String> {
+    match command_version_probe(executable) {
+        CliVersionProbe::Found(version) => Some(version),
+        CliVersionProbe::TimedOut | CliVersionProbe::Failed => None,
+    }
+}
+
+pub(super) fn probe_cli_version(executable: &Path) -> CliVersionProbe {
+    command_version_probe(executable)
 }
 pub(super) fn command_version(command: &Path) -> Option<String> {
     let version = command_version_output(command)?;
@@ -248,8 +284,28 @@ pub(super) fn command_version(command: &Path) -> Option<String> {
 }
 pub(super) fn probe_cli(backend: AgentBackend, path: Option<PathBuf>) -> Option<ResolvedCli> {
     let path = path?;
-    let version = command_version(&path);
-    let install_source = detect_install_source(backend, &path);
+    // 官方 CLI 首次经过系统安全扫描时也可能偶发超过单次自检上限。仅超时
+    // 时补一次重试；缺失或明确失败不额外 spawn。
+    let probe = probe_cli_version(&path);
+    let probe = if matches!(probe, CliVersionProbe::TimedOut) {
+        probe_cli_version(&path)
+    } else {
+        probe
+    };
+    let version = match probe {
+        CliVersionProbe::Found(version) => Some(version),
+        CliVersionProbe::TimedOut | CliVersionProbe::Failed => None,
+    };
+    let version_supported = version.as_deref().is_some_and(|version| match backend {
+        AgentBackend::ClaudeAcp => claude_version_supported(version),
+        AgentBackend::KimiAcp => kimi_version_supported(version),
+        AgentBackend::Deepseek | AgentBackend::CodexAcp => false,
+    });
+    let install_source = if version_supported {
+        path_install_source(backend, &path)
+    } else {
+        detect_install_source(backend, &path)
+    };
     Some(ResolvedCli {
         path,
         version,

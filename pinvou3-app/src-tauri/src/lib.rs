@@ -248,6 +248,11 @@ pub fn run() {
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }
+            let _ = std::thread::Builder::new()
+                .name("draft-attachment-sweep".to_string())
+                .spawn(|| {
+                    features::files::attachment_upload::sweep_stale_draft_attachments();
+                });
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
             if cfg!(debug_assertions) {
@@ -709,6 +714,21 @@ pub fn run() {
             commands::remote_control::web_access_discard_attachment,
             commands::remote_control::web_access_read_conversation_attachment_chunk,
             commands::remote_control::web_access_chat,
+            commands::remote_control::web_access_create_codex_acp_session,
+            commands::remote_control::web_access_list_codex_workspace,
+            commands::remote_control::web_access_search_codex_workspace,
+            commands::remote_control::web_access_preview_codex_workspace_file,
+            commands::remote_control::web_access_codex_acp_prompt,
+            commands::remote_control::web_access_get_codex_acp_timeline,
+            commands::remote_control::web_access_get_codex_acp_session_info,
+            commands::remote_control::web_access_set_codex_acp_model,
+            commands::remote_control::web_access_set_codex_acp_mode,
+            commands::remote_control::web_access_set_codex_acp_config_option,
+            commands::remote_control::web_access_get_codex_acp_pending_permissions,
+            commands::remote_control::web_access_get_codex_acp_pending_elicitations,
+            commands::remote_control::web_access_list_codex_acp_sessions,
+            commands::remote_control::web_access_list_acp_agents,
+            commands::remote_control::web_access_get_acp_agent_status,
             commands::remote_control::web_access_save_session_messages_chunk,
             commands::remote_control::web_access_transcribe_voice_audio,
             commands::remote_control::web_access_read_artifact_chunk,
@@ -775,6 +795,9 @@ pub fn run() {
             commands::artifacts::open_external_url,
             commands::artifacts::open_user_external_url,
             commands::files::ingest_file,
+            commands::files::ingest_draft_file_chunk,
+            commands::files::cancel_draft_file_upload,
+            commands::files::adopt_draft_attachment,
             commands::files::ingest_dropped_file_chunk,
             commands::files::cancel_dropped_file_upload,
             commands::files::discard_dropped_attachment,

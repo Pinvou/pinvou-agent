@@ -83,6 +83,21 @@ function copyRuntimeAssets() {
   };
 }
 
+function enforceAcpLazyChunk() {
+  return {
+    name: 'pinvou-enforce-acp-lazy-chunk',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const acpChunks = Object.values(bundle).filter(output => output.type === 'chunk'
+        && Object.keys(output.modules).some(moduleId => moduleId.replaceAll('\\', '/')
+          .endsWith('/features/codex/CodexAcpView.jsx')));
+      if (acpChunks.length !== 1 || acpChunks[0].isEntry || acpChunks[0].name === 'main') {
+        throw new Error('CodexAcpView must remain in one non-entry lazy chunk');
+      }
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const webBuild = mode === 'web';
   return {
@@ -96,7 +111,7 @@ export default defineConfig(({ mode }) => {
     port: Number(process.env.PINVOU3_UI_DEV_PORT || 1420),
     strictPort: true,
   },
-  plugins: [react(), copyRuntimeAssets()],
+  plugins: [react(), copyRuntimeAssets(), enforceAcpLazyChunk()],
   build: {
     outDir: webBuild ? '../../remote-control-relay/web/dist' : '../dist',
     emptyOutDir: true,

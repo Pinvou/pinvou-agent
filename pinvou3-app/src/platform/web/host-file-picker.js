@@ -18,6 +18,7 @@
     selectedCount: function (n) { return "已选择 " + n + " 项"; },
     thisComputer: "此电脑", home: "用户目录", emptyFolder: "此目录中没有可选内容",
     loadFailed: function (err) { return "读取失败：" + err; },
+    workspaceNotAuthorized: "请先在桌面端允许远程访问本机目录",
     alreadyOpen: "已有文件选择器正在打开",
   };
 
@@ -75,10 +76,13 @@
       var selected = new Map();
       var currentPath = null;
       var parentPath = null;
+      var currentWorkspaceHandle = null;
       var rootEntries = [];
       var showingRoots = false;
       var disposed = false;
       var loadGeneration = 0;
+      var initialPath = options.defaultPath || null;
+      var initialPathPending = Boolean(initialPath);
 
       var overlay = element("div", "pinvou-host-picker-overlay");
       var panel = element("div", "pinvou-host-picker-panel");
@@ -142,7 +146,9 @@
         selectionLabel.textContent = directoryMode
           ? (currentPath ? labels.currentFolder(currentPath) : "")
           : (count ? labels.selectedCount(count) : "");
-        confirm.disabled = directoryMode ? !currentPath : count === 0;
+        confirm.disabled = directoryMode
+          ? (!currentPath || (options.workspaceGrant === true && !currentWorkspaceHandle))
+          : count === 0;
       }
 
       function chooseEntry(entry, row) {
@@ -219,6 +225,7 @@
         showingRoots = true;
         currentPath = null;
         parentPath = null;
+        currentWorkspaceHandle = null;
         pathLabel.textContent = labels.thisComputer;
         rootsButton.disabled = false;
         up.disabled = true;
@@ -230,6 +237,8 @@
         showingRoots = false;
         currentPath = listing && (listing.path || listing.current_path || listing.currentPath) || null;
         parentPath = listing && (listing.parent || listing.parent_path || listing.parentPath) || null;
+        currentWorkspaceHandle = listing
+          && (listing.workspace_handle || listing.workspaceHandle) || null;
         pathLabel.textContent = currentPath || labels.thisComputer;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = !parentPath && rootEntries.length === 0;
@@ -239,17 +248,29 @@
       function load(path) {
         var generation = ++loadGeneration;
         showingRoots = false;
+        currentWorkspaceHandle = null;
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = true;
         confirm.disabled = true;
         body.replaceChildren(element("div", "pinvou-host-picker-status", labels.loadingPath));
-        client.invoke("web_access_list_host_files", { path: path || null }).then(function (listing) {
+        client.invoke("web_access_list_host_files", {
+          path: path || null,
+          issueWorkspaceHandle: options.workspaceGrant === true,
+        }).then(function (listing) {
           if (disposed || generation !== loadGeneration) return;
+          if (initialPathPending && path === initialPath) initialPathPending = false;
           renderListing(listing);
         }).catch(function (error) {
           if (disposed || generation !== loadGeneration) return;
+          if (initialPathPending && path === initialPath) {
+            initialPathPending = false;
+            load(null);
+            return;
+          }
           rootsButton.disabled = rootEntries.length === 0;
-          body.replaceChildren(element("div", "pinvou-host-picker-error", labels.loadFailed(String(error && error.message ? error.message : error))));
+          var message = String(error && error.message ? error.message : error);
+          if (message.indexOf("host_workspace_not_authorized") >= 0) message = labels.workspaceNotAuthorized;
+          body.replaceChildren(element("div", "pinvou-host-picker-error", labels.loadFailed(message)));
         });
       }
 
@@ -265,11 +286,13 @@
         else if (!showingRoots) showRoots();
       });
       confirm.addEventListener("click", function () {
-        if (directoryMode) finish(currentPath);
+        if (directoryMode && options.workspaceGrant === true) {
+          finish({ path: currentPath, workspaceHandle: currentWorkspaceHandle });
+        } else if (directoryMode) finish(currentPath);
         else finish(multiple ? Array.from(selected.keys()) : Array.from(selected.keys())[0] || null);
       });
       window.addEventListener("keydown", onKeyDown);
-      load(null);
+      load(initialPath);
     });
   }
 
@@ -289,7 +312,16 @@
   ].join("");
   document.head.appendChild(style);
 
-  window.PinvouHostFilePicker = { open: openRemoteHostPicker };
+  window.PinvouHostFilePicker = {
+    open: openRemoteHostPicker,
+    openWorkspace: function (options) {
+      return openRemoteHostPicker(Object.assign({}, options || {}, {
+        directory: true,
+        multiple: false,
+        workspaceGrant: true,
+      }));
+    },
+  };
   if (window.__TAURI__ && window.__TAURI__.dialog) {
     window.__TAURI__.dialog.open = openRemoteHostPicker;
   }

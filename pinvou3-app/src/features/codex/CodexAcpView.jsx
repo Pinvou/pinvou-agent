@@ -2,29 +2,37 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { can } from '../../shared/platform.js';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Paperclip, Plus, Send,
-  RefreshCw, Sparkles, StopCircle, Terminal, User, Wrench,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import {
+  refreshAcpAgentCatalog,
+  startSerialStatusPolling,
+  useAcpAgentStatus,
+} from './runtimeStatus.js';
+import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
-  runtimeInstallInProgress,
-  runtimeLoginInProgress,
-  runtimeNoticeMode,
   runtimeOperationFor,
 } from './runtimeNoticeState.js';
+import {
+  AgentServiceFailureNotice,
+  RuntimeNotice,
+  runtimeSourceLabel,
+} from './AcpRuntimeNotices.jsx';
 import { ComposerPopover, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
   buildElicitationContent,
+  mergeAcpTimelineSnapshot,
+  updateAcpAttachmentDraft,
   commandExecutionDetails,
   projectAcpTimeline,
-  resolveAcpSessionControls,
+  resolveAcpSessionControls, unifiedConversationUiEnabled,
 } from './acp-state.js';
 import {
   applyNativeChatEvent,
@@ -72,6 +80,7 @@ import {
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { PlanLayer, ToolCard, cardBoxCls, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
+import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import {
@@ -79,10 +88,26 @@ import {
   listenTauri,
   openTauriDialog,
 } from '../../platform/tauri/client.js';
-
+import {
+  createAcpSession,
+  discardAcpAttachment,
+  getAcpSessionInfo,
+  ingestAcpAttachmentPath,
+  loadAcpPendingElicitations,
+  loadAcpPendingPermissions,
+  loadAcpTimeline,
+  listAcpSessions,
+  openAcpExternalUrl,
+  pickAcpWorkspace,
+  setAcpConfigOption,
+  setAcpMode,
+  setAcpModel,
+  submitAcpPrompt,
+  uploadAcpDeviceAttachment,
+} from '../../platform/acp/client.js';
+import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
-const UNIFIED_CONVERSATION_UI_KEY = 'pinvou_conversation_ui_v2';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 
 // 草稿配置快照缓存已抽到 ./acp-draft-controls.js（供设置页共用，避免与
@@ -94,14 +119,6 @@ import {
 } from './acp-draft-controls.js';
 const AGENT_SELECTION_KEY = 'pinvou_codex_agent_selection';
 const CODE_AGENT_IDS = ['pinvou', 'codex', 'claude', 'kimi'];
-
-function unifiedConversationUiEnabled() {
-  try {
-    return localStorage.getItem(UNIFIED_CONVERSATION_UI_KEY) !== 'false';
-  } catch {
-    return true;
-  }
-}
 
 function workspaceName(path, unknownDirectory) {
   const normalized = String(path || '').replace(/[\\/]+$/, '');
@@ -935,260 +952,6 @@ function Turn({
   );
 }
 
-function setupHintText(copy, hint) {
-  return copy.setupHints?.[hint] || '';
-}
-function RuntimeNotice({
-  status,
-  working,
-  operation,
-  error,
-  onInstall,
-  onLogin,
-  onOpenLogin,
-  onSubmitLoginCode,
-  onRefresh,
-  resetKey,
-  suppressAdvisoryUpgrade = false,
-  copy,
-}) {
-  const [authorizationCode, setAuthorizationCode] = useState('');
-  const [declinedUpgrade, setDeclinedUpgrade] = useState(false);
-  useEffect(() => {
-    setAuthorizationCode('');
-  }, [status?.agent_id, status?.login_in_progress]);
-  useEffect(() => {
-    setDeclinedUpgrade(false);
-  }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
-  const noticeMode = runtimeNoticeMode(status, declinedUpgrade || suppressAdvisoryUpgrade);
-  if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
-  const rawError = error || status.error;
-  const visibleError = rawError
-    ? (copy.showRawErrors ? rawError : copy.operationFailed)
-    : '';
-  if (noticeMode === 'bridge_unavailable') {
-    const isCodex = status.agent_id === 'codex';
-    return (
-      <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] p-4 flex items-start gap-3">
-        <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{isCodex ? copy.bridgeUnavailable : copy.setupRequired}</div>
-          <div className="mt-1 text-[12px] text-gray-500">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
-          {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
-        </div>
-        {!isCodex && (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-red-500/20 text-[12px] font-medium">
-            {copy.recheck}
-          </button>
-        )}
-      </div>
-    );
-  }
-  if (noticeMode === 'install') {
-    const agentName = status.agent_name || 'Agent';
-    const action = status.install_action || 'manual';
-    const isPackageManagerUpgrade = action === 'brew_upgrade' || action === 'npm_upgrade';
-    const canAutoUpgrade = (status.update_available || status.update_required || isPackageManagerUpgrade) && action !== 'manual' && action !== 'none';
-    const canDeferUpgrade = status.update_available && status.installed && !status.update_required;
-    const installing = runtimeInstallInProgress(status, operation);
-    const installHints = {
-      official_script: copy.officialScriptHint(agentName),
-    };
-    const installButtons = {
-      official_script: copy.confirmInstall,
-    };
-    const hint = isPackageManagerUpgrade
-      ? copy.packageManagerUpgradeHint(status.install_source)
-      : installHints[action] || setupHintText(copy, status.setup_hint) || copy.manualInstallHint(agentName);
-    const busyLabel = copy.installing;
-    return (
-      <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.05] p-4 flex items-center gap-3">
-        <Terminal size={19} className="text-blue-500 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">
-            {status.update_required
-              ? copy.cliUpdateRequired(agentName, status.version, status.latest_version)
-              : status.update_available
-                ? copy.cliUpdateAvailable(agentName, status.version, status.latest_version)
-              : status.version
-                ? copy.cliOutdated(status.version, status.min_version)
-                : copy.cliMissing(agentName)}
-          </div>
-          <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
-          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
-        </div>
-        {canAutoUpgrade ? (
-          <div className="flex shrink-0 items-center gap-2">
-            {canDeferUpgrade && (
-              <button onClick={() => setDeclinedUpgrade(true)} disabled={working || installing} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium disabled:opacity-50">
-                {copy.declineUpgrade}
-              </button>
-            )}
-            <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
-              {installing && <RefreshCw size={12} className="animate-spin" />}
-              {installing ? busyLabel : copy.upgrade}
-            </button>
-          </div>
-        ) : installButtons[action] ? (
-          <button onClick={() => onInstall()} disabled={working || installing} className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-[12px] font-medium disabled:opacity-50 inline-flex items-center gap-1.5">
-            {installing && <RefreshCw size={12} className="animate-spin" />}
-            {installing ? busyLabel : installButtons[action]}
-          </button>
-        ) : (
-          <button onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-blue-500/20 text-[12px] font-medium">
-            {copy.recheck}
-          </button>
-        )}
-      </div>
-    );
-  }
-  if (noticeMode === 'login') {
-    const waitingForLogin = runtimeLoginInProgress(status, operation);
-    const loginUrlReady = waitingForLogin && Boolean(status.login_url);
-    const agentName = status.agent_name || 'Agent';
-    const waitingTitle = copy.waitingAgentLogin
-      ? copy.waitingAgentLogin(agentName)
-      : copy.waitingLogin;
-    const signedOutTitle = copy.agentNotLoggedIn
-      ? copy.agentNotLoggedIn(agentName)
-      : copy.notLoggedIn;
-    const loginHint = copy.agentLoginHint
-      ? copy.agentLoginHint(agentName)
-      : (setupHintText(copy, status.setup_hint) || copy.loginHint);
-    return (
-      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
-        <Sparkles size={19} className="text-amber-500 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold">{waitingForLogin ? waitingTitle : signedOutTitle}</div>
-          <div className="text-[12px] text-gray-500">
-            {loginUrlReady
-              ? (copy.finishAgentAuth ? copy.finishAgentAuth(agentName) : copy.finishBrowserAuth)
-              : waitingForLogin
-                ? copy.openingAuth
-                : loginHint}
-          </div>
-          {status.login_code && (
-            <div className="mt-2 inline-flex rounded-lg border border-amber-500/25 bg-white/70 px-2.5 py-1 font-mono text-[13px] font-semibold tracking-wider text-amber-800 dark:bg-black/20 dark:text-amber-200">
-              {copy.deviceCode ? copy.deviceCode(status.login_code) : status.login_code}
-            </div>
-          )}
-          {waitingForLogin && status.login_input_required && status.agent_id === 'claude' && (
-            <form
-              className="mt-2 flex max-w-md items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const code = authorizationCode.trim();
-                if (code) onSubmitLoginCode(code);
-              }}
-            >
-              <input
-                value={authorizationCode}
-                onChange={event => setAuthorizationCode(event.target.value)}
-                placeholder={copy.authorizationCodePlaceholder}
-                aria-label={copy.authorizationCodePlaceholder}
-                autoComplete="off"
-                className="min-w-0 flex-1 rounded-lg border border-amber-500/25 bg-white/80 px-2.5 py-1.5 text-[12px] outline-none focus:border-amber-500 dark:bg-black/20"
-              />
-              <button
-                type="submit"
-                disabled={!authorizationCode.trim()}
-                className="rounded-lg border border-amber-500/30 px-2.5 py-1.5 text-[12px] font-medium text-amber-700 disabled:opacity-40 dark:text-amber-300"
-              >
-                {copy.submitAuthorizationCode}
-              </button>
-            </form>
-          )}
-          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
-        </div>
-        {loginUrlReady && (
-          <button onClick={onOpenLogin} className="px-3 py-1.5 rounded-xl border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[12px] font-medium">
-            {copy.reopenAuth}
-          </button>
-        )}
-        <button onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
-          {waitingForLogin ? copy.waitAuth : copy.authorize}
-        </button>
-      </div>
-    );
-  }
-  if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
-  return null;
-}
-function runtimeSourceLabel(status, copy) {
-  if (!status) return '';
-  return copy?.runtimeSources?.[status.runtime_source] || '';
-}
-
-function AgentServiceFailureNotice({
-  failure,
-  agentName,
-  working,
-  onSwitchAccount,
-  onManageProviders,
-  onDismiss,
-  copy,
-  providerCopy,
-}) {
-  if (!failure) return null;
-  const recoverWithAccount = ['entitlement', 'quota', 'authentication'].includes(failure.kind);
-  const title = failure.kind === 'entitlement'
-    ? copy.entitlementUnavailable(agentName)
-    : failure.kind === 'quota'
-      ? copy.quotaUnavailable(agentName)
-      : failure.kind === 'authentication'
-        ? copy.authorizationExpired(agentName)
-        : copy.serviceUnavailable(agentName);
-  const description = recoverWithAccount
-    ? copy.accountRecoveryHint
-    : copy.serviceRecoveryHint;
-  return (
-    <div data-testid="acp-service-failure" className="rounded-2xl border border-red-500/20 bg-red-500/[0.055] p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle size={19} className="mt-0.5 shrink-0 text-red-500" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold text-red-700 dark:text-red-300">{title}</div>
-          <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
-            <div className="mt-1 break-words text-[11px] text-red-500">{failure.detail}</div>
-          </details>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {recoverWithAccount && (
-            <button
-              type="button"
-              onClick={onSwitchAccount}
-              disabled={working}
-              className="rounded-xl bg-red-500 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
-            >
-              {copy.switchAccount}
-            </button>
-          )}
-          {onManageProviders && providerCopy && (
-            <button
-              type="button"
-              data-testid="acp-failure-manage-providers"
-              onClick={onManageProviders}
-              disabled={working}
-              className="rounded-xl border border-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-600 disabled:opacity-50 dark:text-red-300"
-            >
-              {providerCopy.faultManage}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onDismiss}
-            disabled={working}
-            className="rounded-xl border border-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-600 disabled:opacity-50 dark:text-red-300"
-          >
-            {copy.dismissNotice}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function CodexAcpView({
   theme,
   t,
@@ -1206,7 +969,7 @@ export function CodexAcpView({
   fixedSession = false,
 }) {
   const codexCopy = t.uiCodex;
-  const [agents, setAgents] = useState([]);
+  const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
   const [draftAgentId, setDraftAgentId] = useState(loadAgentSelection() || 'pinvou');
   const [status, setStatus] = useState(null);
   const [events, setEvents] = useState([]);
@@ -1217,6 +980,8 @@ export function CodexAcpView({
   const [sessionLoading, setSessionLoading] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachmentDrafts, setAttachmentDrafts] = useState({});
+  const attachmentDraftsRef = useRef(attachmentDrafts);
+  attachmentDraftsRef.current = attachmentDrafts;
   const [workspaceReferenceDrafts, setWorkspaceReferenceDrafts] = useState({});
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [subagentPanel, setSubagentPanel] = useState(null);
@@ -1234,6 +999,7 @@ export function CodexAcpView({
   };
   const [responding, setResponding] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -1254,6 +1020,7 @@ export function CodexAcpView({
   useOutsidePointerClose(accountMenuOpen, () => setAccountMenuOpen(false), [accountMenuPanelRef, accountMenuTriggerRef]);
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  const [draftWorkspaceHandle, setDraftWorkspaceHandle] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [draftControlsCache, setDraftControlsCache] = useState(loadDraftControlsCache);
   // 草稿态（会话未创建）下用户预选的配置：{ [agentId]: { model?, mode?, configs: { [id]: value } } }
@@ -1264,12 +1031,17 @@ export function CodexAcpView({
   const autoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const attachmentIdRef = useRef(0);
+  const attachmentMenuTriggerRef = useRef(null);
+  const deviceFileInputRef = useRef(null);
+  const cancelledAttachmentIdsRef = useRef(new Set());
   const skipNextActiveLoadRef = useRef(null);
   const sessionLoadRequestRef = useRef(0);
   const preserveDraftWorkspaceRef = useRef(false);
   const draftEpochRef = useRef(draftEpoch);
   const activeIdRef = useRef(activeId);
+  const lastActiveSessionIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  if (activeId) lastActiveSessionIdRef.current = activeId;
   const projection = useMemo(() => projectAcpTimeline(events), [events]);
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = !activeId ? draftControlsCache[draftAgentId] || null : null;
@@ -1422,7 +1194,7 @@ export function CodexAcpView({
     : isNativeAgent;
   const nativeMultiAgentEnabled = nativeMultiAgentAvailable && nativeMultiAgentSelected;
   const activeAgentName = activeSession?.agent_name
-    || agents.find(agent => agent.agent_id === activeAgentId)?.agent_name
+    || agents?.find(agent => agent.agent_id === activeAgentId)?.agent_name
     || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
@@ -1478,6 +1250,7 @@ export function CodexAcpView({
     window.addEventListener('pinvou:open-subagent', onOpen);
     return () => window.removeEventListener('pinvou:open-subagent', onOpen);
   }, [isNativeAgent, rememberScrollBeforeRightPanelChange]);
+  const { acceptStatus, refreshStatus } = useAcpAgentStatus(activeAgentIdRef, setStatus);
   const activeStatus = status?.agent_id === activeAgentId ? status : null;
   const activeRuntimeOperation = runtimeOperationFor(runtimeOperations, activeAgentId);
   const activeRuntimeBusy = Boolean(activeRuntimeOperation);
@@ -1503,6 +1276,16 @@ export function CodexAcpView({
     ? (!activeId || Boolean(activeNativeLane && activeNativeLane.hydrated))
     : (!activeId || (sessionInfoSessionId === activeId && Boolean(sessionInfo)));
   const sessionSyncing = Boolean(activeId && !sessionReady && sessionLoading);
+  const deviceFileUploadAvailable = can('deviceFileUpload');
+  const runtimeManagementAvailable = [
+    'install_acp_agent',
+    'login_acp_agent',
+    'switch_acp_agent_account',
+  ].every(canInvoke);
+  const providerManagementAvailable = [
+    'list_acp_providers',
+    'set_codex_acp_session_provider',
+  ].every(canInvoke);
 
   function applySessionInfo(info, sessionId = activeIdRef.current) {
     if (sessionId !== activeIdRef.current) return info;
@@ -1548,8 +1331,8 @@ export function CodexAcpView({
           : String(current && current.current_model_id || '');
         if (String(staged.model) !== currentValue) {
           current = viaConfig
-            ? await invoke('set_codex_acp_config_option', { sessionId: targetId, configId: 'model', valueId: staged.model })
-            : await invoke('set_codex_acp_model', { sessionId: targetId, modelId: staged.model });
+            ? await setAcpConfigOption(targetId, 'model', staged.model)
+            : await setAcpModel(targetId, staged.model);
         }
       }
       if (staged.mode) {
@@ -1559,14 +1342,14 @@ export function CodexAcpView({
           : String(current && current.modes && current.modes.currentModeId || '');
         if (String(staged.mode) !== currentValue) {
           current = viaConfig
-            ? await invoke('set_codex_acp_config_option', { sessionId: targetId, configId: 'mode', valueId: staged.mode })
-            : await invoke('set_codex_acp_mode', { sessionId: targetId, modeId: staged.mode });
+            ? await setAcpConfigOption(targetId, 'mode', staged.mode)
+            : await setAcpMode(targetId, staged.mode);
         }
       }
       for (const [configId, valueId] of Object.entries(staged.configs || {})) {
         const optionValue = currentOptionValue(configId);
         if (optionValue === null || optionValue === String(valueId)) continue;
-        current = await invoke('set_codex_acp_config_option', { sessionId: targetId, configId, valueId });
+        current = await setAcpConfigOption(targetId, configId, valueId);
       }
     } catch (err) {
       showError(err);
@@ -1785,23 +1568,24 @@ export function CodexAcpView({
   }
 
   async function refreshSessions() {
-    const next = await invoke('list_codex_acp_sessions');
+    const next = await listAcpSessions();
     const list = next || [];
     if (onSessionsChange) onSessionsChange(list);
     return list;
   }
 
   async function refreshAgents() {
-    const next = await invoke('list_acp_agents');
-    const list = next || [];
-    setAgents(list);
-    return list;
+    return refreshAcpAgentCatalog(setAgents, list => (
+      isWeb || list.some(agent => agent?.agent_id === 'pinvou')
+        ? list
+        : [{ agent_id: 'pinvou', agent_name: '品悟' }, ...list]
+    ));
   }
 
   // 每个 Agent 的 Provider 视图（会话级覆盖下拉与故障引导共用）。
   const [providersViews, setProvidersViews] = useState({});
   async function refreshProviders(agentId = activeAgentId) {
-    if (!agentId) return null;
+    if (!agentId || !providerManagementAvailable) return null;
     try {
       const next = await invoke('list_acp_providers', { agent: agentId });
       setProvidersViews(current => ({ ...current, [agentId]: next }));
@@ -1877,15 +1661,9 @@ export function CodexAcpView({
     }
   }
 
-  async function refreshStatus(agentId = activeAgentId, recheck = false) {
-    // recheck=true 强制后端忽略缓存重新探测（「重新检测」按钮）；轮询不传，保持读缓存。
-    const next = await invoke('get_acp_agent_status', recheck ? { agentId, recheck: true } : { agentId });
-    if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
-    return next;
-  }
-
   function selectDraftAgent(agentId) {
     if (activeId || !agentId) return;
+    activeAgentIdRef.current = agentId;
     setDraftAgentId(agentId);
     saveAgentSelection(agentId);
     setStatus(null);
@@ -1936,23 +1714,19 @@ export function CodexAcpView({
         return null;
       }
       const [timeline, permissions, elicitations] = await Promise.all([
-        invoke('get_codex_acp_timeline', { sessionId: id }),
-        invoke('get_codex_acp_pending_permissions', { sessionId: id }),
-        invoke('get_codex_acp_pending_elicitations', { sessionId: id }),
+        loadAcpTimeline(id),
+        loadAcpPendingPermissions(id),
+        loadAcpPendingElicitations(id),
       ]);
       if (sessionLoadRequestRef.current !== requestId) return null;
-      setEvents(timeline || []);
+      setEvents(current => mergeAcpTimelineSnapshot(timeline, current, id));
       setPending(permissions || []);
       setPendingElicitations(elicitations || []);
-      const session = sessions.find(item => item.id === id);
-      const runtime = await invoke('get_acp_agent_status', {
-        agentId: session?.agent_id || draftAgentId,
-      });
+      const runtime = await refreshStatus(activeAgentIdRef.current);
       if (sessionLoadRequestRef.current !== requestId) return null;
-      if (runtime?.agent_id === activeAgentIdRef.current) setStatus(runtime);
       if (runtime.installed && runtime.node_supported) {
         try {
-          const info = await invoke('get_codex_acp_session_info', { sessionId: id });
+          const info = await getAcpSessionInfo(id);
           if (sessionLoadRequestRef.current !== requestId) return null;
           return applySessionInfo(info, id);
         } catch (err) {
@@ -1965,16 +1739,18 @@ export function CodexAcpView({
     }
   }
 
-  async function createSession(workspacePath = draftWorkspacePath) {
+  async function createSession() {
     setError('');
     setWorkspaceMenuOpen(false);
-    const metadata = await invoke('create_codex_acp_session', {
-      workspacePath,
+    const metadata = await createAcpSession({
+      workspacePath: draftWorkspacePath,
+      workspaceHandle: draftWorkspaceHandle,
       agentId: draftAgentId,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (draftAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
-    if (workspacePath) setRecentWorkspaces(rememberWorkspace(workspacePath));
+    if (draftWorkspacePath) setRecentWorkspaces(rememberWorkspace(draftWorkspacePath));
+    setDraftWorkspaceHandle(null);
     await refreshSessions();
     skipNextActiveLoadRef.current = metadata.id;
     if (onActiveSessionChange) onActiveSessionChange(metadata.id);
@@ -1982,33 +1758,52 @@ export function CodexAcpView({
     return { id: metadata.id, info };
   }
 
-  function beginDraft(workspacePath = null, { clearComposer = false } = {}) {
+  function beginDraft(
+    workspacePath = null,
+    { clearComposer = false, workspaceHandle = null } = {},
+  ) {
     preserveDraftWorkspaceRef.current = true;
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
+    setDraftWorkspaceHandle(workspaceHandle);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
-    setWorkspaceOpen(Boolean(workspacePath));
+    setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
       setDraft('');
+      const keysToClear = [
+        DRAFT_ATTACHMENT_KEY,
+        activeId || lastActiveSessionIdRef.current,
+      ].filter(Boolean);
+      keysToClear.forEach(key => {
+        (attachmentDraftsRef.current[key] || []).forEach(attachment => {
+          if (attachment.status === 'uploading') cancelledAttachmentIdsRef.current.add(attachment.id);
+          if (attachment.result) discardAcpAttachment(attachment.result).catch(() => {});
+        });
+      });
       setAttachmentDrafts(current => {
         const next = { ...current };
-        delete next[DRAFT_ATTACHMENT_KEY];
+        keysToClear.forEach(key => { delete next[key]; });
         return next;
       });
       setWorkspaceReferenceDrafts(current => {
         const next = { ...current };
-        delete next[DRAFT_ATTACHMENT_KEY];
+        keysToClear.forEach(key => { delete next[key]; });
         return next;
       });
     } else if (activeId) {
-      setAttachmentDrafts(current => ({
-        ...current,
-        [DRAFT_ATTACHMENT_KEY]: current[activeId] || [],
-      }));
-      setWorkspaceReferenceDrafts(current => ({
-        ...current,
-        [DRAFT_ATTACHMENT_KEY]: current[activeId] || [],
-      }));
+      // The composer moves to the new draft. Browser attachment handles are
+      // one-shot resources, so retaining a second owner on the old session
+      // would let a consumed handle reappear when the user switches back.
+      setAttachmentDrafts(current => {
+        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
+        delete next[activeId];
+        return next;
+      });
+      setWorkspaceReferenceDrafts(current => {
+        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
+        delete next[activeId];
+        return next;
+      });
     }
     setEvents([]);
     setPending([]);
@@ -2029,16 +1824,14 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(true);
   }
 
-  async function chooseProjectDraft() {
-    const selected = await openTauriDialog({
-      directory: true,
-      multiple: false,
+  async function chooseProjectDraft(defaultPath = null) {
+    const selected = await pickAcpWorkspace({
       title: codexCopy.chooseProjectDialog,
+      defaultPath,
     });
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (path) {
-      setRecentWorkspaces(rememberWorkspace(path));
-      beginDraft(path);
+    if (selected?.path) {
+      setRecentWorkspaces(rememberWorkspace(selected.path));
+      beginDraft(selected.path, { workspaceHandle: selected.workspaceHandle });
     }
   }
 
@@ -2060,22 +1853,19 @@ export function CodexAcpView({
       { id, basename, status: 'parsing', result: null, error: null },
     ]);
     try {
-      const result = await invoke('ingest_file', { path });
-      updateAttachments(sessionId, current => current.map(attachment => (
-        attachment.id === id
-          ? { ...attachment, basename: result.basename || basename, status: 'ready', result }
-          : attachment
-      )));
+      const result = await ingestAcpAttachmentPath(path);
+      setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
+        ...attachment, basename: result.basename || basename, status: 'ready', result,
+      })));
     } catch (err) {
-      updateAttachments(sessionId, current => current.map(attachment => (
-        attachment.id === id
-          ? { ...attachment, status: 'error', error: String(err) }
-          : attachment
-      )));
+      setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
+        ...attachment, status: 'error', error: String(err),
+      })));
     }
   }
 
   async function pickAttachments() {
+    setAttachmentMenuOpen(false);
     const selected = await openTauriDialog({
       multiple: true,
       directory: false,
@@ -2086,7 +1876,70 @@ export function CodexAcpView({
   }
 
   function removeAttachment(id) {
+    cancelledAttachmentIdsRef.current.add(id);
+    const removed = attachments.find(attachment => attachment.id === id);
     updateAttachments(attachmentKey, current => current.filter(attachment => attachment.id !== id));
+    if (removed?.result) discardAcpAttachment(removed.result).catch(() => {});
+    if (removed?.status !== 'uploading') cancelledAttachmentIdsRef.current.delete(id);
+  }
+
+  async function uploadDeviceFiles(files, sessionId = attachmentKey) {
+    const selected = Array.from(files || []).filter(Boolean);
+    for (const file of selected) {
+      const id = `codex-attachment-${++attachmentIdRef.current}`;
+      cancelledAttachmentIdsRef.current.delete(id);
+      updateAttachments(sessionId, current => [
+        ...current,
+        {
+          id,
+          basename: file.name,
+          status: 'uploading',
+          progress: 0,
+          result: null,
+          error: null,
+        },
+      ]);
+      try {
+        const result = await uploadAcpDeviceAttachment(file, {
+          isCancelled: () => cancelledAttachmentIdsRef.current.has(id),
+          onProgress: progress => setAttachmentDrafts(current => updateAcpAttachmentDraft(
+            current, id, attachment => ({ ...attachment, progress }),
+          )),
+        });
+        if (cancelledAttachmentIdsRef.current.has(id)) {
+          await discardAcpAttachment(result).catch(() => {});
+          continue;
+        }
+        setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
+          ...attachment,
+          basename: result.basename || file.name,
+          status: 'ready',
+          progress: 100,
+          result,
+        })));
+      } catch (err) {
+        if (err?.code === 'device_upload_cancelled') continue;
+        const displayError = err?.code === 'device_upload_too_large'
+          ? t.uiAttachments.deviceUploadTooLarge(file.name)
+          : String(err?.message || err);
+        setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
+          ...attachment, status: 'error', error: displayError,
+        })));
+      } finally {
+        cancelledAttachmentIdsRef.current.delete(id);
+      }
+    }
+  }
+
+  function chooseDeviceAttachments() {
+    setAttachmentMenuOpen(false);
+    deviceFileInputRef.current?.click();
+  }
+
+  function handleDeviceFilesChosen(event) {
+    const files = event.target.files;
+    if (files?.length) uploadDeviceFiles(files).catch(showError);
+    event.target.value = '';
   }
 
   function addWorkspaceReference(relativePath) {
@@ -2162,10 +2015,15 @@ export function CodexAcpView({
     const items = Array.from(event.clipboardData && event.clipboardData.items || []);
     const images = items.filter(item => item.type && item.type.startsWith('image/'));
     if (!images.length) return;
+    if (!deviceFileUploadAvailable && !canInvoke('save_paste_image')) return;
     event.preventDefault();
     images.forEach(item => {
       const file = item.getAsFile();
       if (!file) return;
+      if (deviceFileUploadAvailable) {
+        uploadDeviceFiles([file]).catch(showError);
+        return;
+      }
       const reader = new FileReader();
       reader.onload = async () => {
         const bytes = Array.from(new Uint8Array(reader.result));
@@ -2185,9 +2043,13 @@ export function CodexAcpView({
   }
 
   useEffect(() => {
+    let disposed = false;
     let unlisten = null;
-    Promise.all([refreshAgents(), refreshSessions()]).catch(showError);
+    Promise.all([refreshAgents(), refreshSessions()]).catch(nextError => {
+      if (!disposed) showError(nextError);
+    });
     listenTauri('acp:event', message => {
+      if (disposed) return;
       const incoming = message.payload;
       setEvents(current => incoming && incoming.sessionId === activeIdRef.current ? appendAcpEvent(current, incoming) : current);
       if (incoming && incoming.sessionId === activeIdRef.current) {
@@ -2214,14 +2076,42 @@ export function CodexAcpView({
           if (type === 'permission_resolved') setPending(current => current.filter(item => item.toolCallId !== data.toolCallId));
           refreshSessions().catch(() => {});
         } else if (type === 'runtime_ready') {
-          invoke('get_codex_acp_session_info', { sessionId: incoming.sessionId })
+          getAcpSessionInfo(incoming.sessionId)
             .then(info => applySessionInfo(info, incoming.sessionId))
             .catch(() => {});
         }
       }
-    }).then(fn => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(nextError => {
+      if (!disposed) showError(nextError);
+    });
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
   }, []);
+
+  useEffect(() => () => {
+    Object.values(attachmentDraftsRef.current).flat().forEach(attachment => {
+      if (attachment.status === 'uploading') cancelledAttachmentIdsRef.current.add(attachment.id);
+      if (attachment.result) discardAcpAttachment(attachment.result).catch(() => {});
+    });
+  }, []);
+
+  useEffect(() => onPlatformConnectionChange((connection) => {
+    if (connection?.status !== 'connected') return;
+    Promise.all([refreshAgents(), refreshSessions()]).catch(error => {
+      console.warn('[acp] refresh after remote reconnect failed', error);
+    });
+    const sessionId = activeIdRef.current;
+    if (sessionId) {
+      loadSession(sessionId).catch(error => {
+        console.warn('[acp] restore authoritative session after reconnect failed', error);
+      });
+    }
+  }), []);
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
@@ -2251,14 +2141,16 @@ export function CodexAcpView({
   }, []);
 
   useEffect(() => {
+    // 草稿态按需读取选中 Agent 的缓存状态；已有会话由 loadSession 读取，
+    // 避免切换时并发执行两次 CLI/认证探测。外部安装变化由“重新检测”强制刷新。
     // 原生（品悟）会话没有 ACP 状态机，跳过 get_acp_agent_status（后端会拒绝非 ACP agent）。
     if (activeAgentId === 'pinvou') {
       setStatus(null);
       return;
     }
-    // 用户主动切换 Agent 后必须绕过进程内探测缓存，立即反映 App 外的安装/卸载。
-    refreshStatus(activeAgentId, true).catch(showError);
-  }, [activeAgentId]);
+    if (activeId) return;
+    refreshStatus(activeAgentId).catch(showError);
+  }, [activeAgentId, activeId]);
 
   useEffect(() => {
     const latest = events[events.length - 1];
@@ -2417,16 +2309,16 @@ export function CodexAcpView({
     const agentId = activeAgentId;
     beginRuntimeOperation(agentId, 'install');
     setError('');
-    const poll = window.setInterval(() => refreshStatus(agentId).catch(() => {}), 500);
+    const stopPolling = startSerialStatusPolling(() => refreshStatus(agentId));
     try {
       const payload = { agent: agentId };
       if (typeof actionOverride === 'string' && actionOverride) payload.action = actionOverride;
       const next = await invoke('install_acp_agent', payload);
-      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+      acceptStatus(agentId, next);
     }
     catch (err) { showRuntimeError(agentId, err); }
     finally {
-      window.clearInterval(poll);
+      await stopPolling();
       await refreshStatus(agentId).catch(() => {});
       finishRuntimeOperation(agentId, 'install');
     }
@@ -2438,7 +2330,7 @@ export function CodexAcpView({
     setError('');
     try {
       const next = await invoke('login_acp_agent', { agentId });
-      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+      acceptStatus(agentId, next);
     }
     catch (err) { showRuntimeError(agentId, err); }
     finally { finishRuntimeOperation(agentId, 'login'); }
@@ -2452,7 +2344,7 @@ export function CodexAcpView({
     setError('');
     try {
       const next = await invoke('switch_acp_agent_account', { agentId });
-      if (next?.agent_id === activeAgentIdRef.current) setStatus(next);
+      acceptStatus(agentId, next);
     } catch (err) {
       showRuntimeError(agentId, err);
     } finally {
@@ -2489,7 +2381,7 @@ export function CodexAcpView({
       setError(codexCopy.loginRequiredBeforeSend);
       return;
     }
-    if (attachments.some(attachment => attachment.status === 'parsing')) {
+    if (attachments.some(attachment => ['parsing', 'uploading'].includes(attachment.status))) {
       setError(codexCopy.attachmentsParsing);
       return;
     }
@@ -2503,7 +2395,7 @@ export function CodexAcpView({
     try {
       let targetId = activeId;
       if (!targetId) {
-        const created = await createSession(draftWorkspacePath);
+        const created = await createSession();
         targetId = created.id;
         const appliedInfo = await applyDraftConfigSelections(targetId, created.info);
         if (appliedInfo && appliedInfo !== created.info) applySessionInfo(appliedInfo, targetId);
@@ -2528,7 +2420,7 @@ export function CodexAcpView({
       autoScrollRef.current = true;
       setShowScrollBottom(false);
       setDraft('');
-      await invoke('codex_acp_prompt', {
+      await submitAcpPrompt({
         sessionId: targetId,
         message,
         attachments: readyAttachments.map(attachment => attachment.result),
@@ -2553,7 +2445,7 @@ export function CodexAcpView({
     try {
       let targetId = activeId;
       if (!targetId) {
-        const created = await createSession(draftWorkspacePath);
+        const created = await createSession();
         targetId = created.id;
         // 草稿态暂存的模型/知识库/模式/多智能体选择先落到新会话（失败会显式报错）。
         await applyNativeDraftControls(targetId);
@@ -2881,7 +2773,7 @@ export function CodexAcpView({
       return;
     }
     setWorking(true); setConfigApplying('model');
-    try { applySessionInfo(await invoke('set_codex_acp_model', { sessionId: activeId, modelId })); }
+    try { applySessionInfo(await setAcpModel(activeId, modelId)); }
     catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
@@ -2894,9 +2786,7 @@ export function CodexAcpView({
     }
     setWorking(true); setConfigApplying(configId); setError('');
     try {
-      applySessionInfo(await invoke('set_codex_acp_config_option', {
-        sessionId: activeId, configId, valueId,
-      }));
+      applySessionInfo(await setAcpConfigOption(activeId, configId, valueId));
     } catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
@@ -2909,13 +2799,14 @@ export function CodexAcpView({
     }
     setWorking(true); setConfigApplying('mode'); setError('');
     try {
-      applySessionInfo(await invoke('set_codex_acp_mode', { sessionId: activeId, modeId }));
+      applySessionInfo(await setAcpMode(activeId, modeId));
     } catch (err) { showError(err); }
     finally { setWorking(false); setConfigApplying(''); }
   }
 
   return (
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
+        <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
         {activeSession && (
         <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
           <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
@@ -2948,7 +2839,7 @@ export function CodexAcpView({
           </button>
         </header>
         )}
-        {!activeSession && draftWorkspacePath && (
+        {!isWeb && !activeSession && draftWorkspacePath && (
         <header className="h-14 shrink-0 px-5 flex items-center justify-end border-b border-black/[0.05] dark:border-white/[0.06]">
           <button
             type="button"
@@ -2998,6 +2889,7 @@ export function CodexAcpView({
                 <RuntimeNotice
                   status={activeStatus}
                   working={working || activeRuntimeBusy}
+                  managementAvailable={runtimeManagementAvailable}
                   operation={activeRuntimeOperation}
                   error={activeRuntimeError || error}
                   onInstall={install}
@@ -3014,9 +2906,10 @@ export function CodexAcpView({
                     failure={visibleServiceFailure}
                     agentName={activeAgentName}
                     working={working || activeRuntimeBusy}
+                    managementAvailable={runtimeManagementAvailable}
                     onSwitchAccount={switchAccount}
                     onManageProviders={
-                      onOpenSettingsSection
+                      providerManagementAvailable && onOpenSettingsSection
                         ? () => onOpenSettingsSection('providers')
                         : null
                     }
@@ -3087,7 +2980,7 @@ export function CodexAcpView({
                         : undefined
                       : undefined}
                     agentLabel={activeAgentName}
-                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                     onOpenResource={openWorkspaceResource}
                   />
                 )
@@ -3101,7 +2994,7 @@ export function CodexAcpView({
                     onRespond={respond}
                     onRespondElicitation={respondElicitation}
                     responding={responding}
-                    onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+                    onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                     onOpenResource={openWorkspaceResource} />
                 ))}
           </div>
@@ -3131,9 +3024,11 @@ export function CodexAcpView({
                 mode="code"
                 codeSupported
                 codeAgent={activeAgentId}
+                codeAgents={agents}
+                codeAgentsLoading={agents === null}
                 onCodeAgentChange={selectDraftAgent}
                 onManageProviders={
-                  onOpenSettingsSection
+                  providerManagementAvailable && onOpenSettingsSection
                     ? () => onOpenSettingsSection('providers')
                     : null
                 }
@@ -3282,7 +3177,10 @@ export function CodexAcpView({
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
-                                    onClick={() => beginDraft(path)}
+                                    onClick={() => {
+                                      if (isWeb) chooseProjectDraft(path).catch(showError);
+                                      else beginDraft(path);
+                                    }}
                                     className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
                                     <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>
@@ -3294,15 +3192,53 @@ export function CodexAcpView({
                       )}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => pickAttachments().catch(showError)}
-                    className={COMPOSER_ICON_BUTTON_CLASS}
-                    title={codexCopy.addAttachment}
-                    aria-label={codexCopy.addAttachment}
-                  >
-                    <Paperclip size={18} />
-                  </button>
+                  <div className="relative">
+                    <button
+                      ref={attachmentMenuTriggerRef}
+                      type="button"
+                      onClick={() => {
+                        if (deviceFileUploadAvailable) setAttachmentMenuOpen(value => !value);
+                        else pickAttachments().catch(showError);
+                      }}
+                      className={COMPOSER_ICON_BUTTON_CLASS}
+                      title={codexCopy.addAttachment}
+                      aria-label={codexCopy.addAttachment}
+                    >
+                      <Paperclip size={18} />
+                    </button>
+                    <input
+                      ref={deviceFileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      data-testid="codex-device-file-input"
+                      onChange={handleDeviceFilesChosen}
+                    />
+                    <ComposerPopover
+                      open={deviceFileUploadAvailable && attachmentMenuOpen}
+                      onClose={() => setAttachmentMenuOpen(false)}
+                      triggerRef={attachmentMenuTriggerRef}
+                      compact={false}
+                      desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-56 rounded-2xl border border-black/5 bg-white/95 p-1.5 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1E1E20]/95"
+                    >
+                      <button
+                        type="button"
+                        onClick={chooseDeviceAttachments}
+                        className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
+                      >
+                        <Upload size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                        {t.attachFromDevice}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => pickAttachments().catch(showError)}
+                        className="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] text-gray-700 transition-colors hover:bg-[#007AFF] hover:text-white dark:text-gray-200"
+                      >
+                        <Monitor size={15} className="shrink-0 text-gray-400 group-hover:text-white/90" />
+                        {t.attachFromHost}
+                      </button>
+                    </ComposerPopover>
+                  </div>
                   <button
                     type="button"
                     data-testid="codex-voice-input"
@@ -3471,18 +3407,24 @@ export function CodexAcpView({
                             </div>
                           </div>
                           <div className="mt-1 border-t border-black/[0.05] pt-1 dark:border-white/[0.06]">
-                            <button
-                              type="button"
-                              onClick={switchAccount}
-                              disabled={working || activeRuntimeBusy || activeStatus?.login_in_progress}
-                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
-                            >
-                              <User size={15} className="text-blue-500" />
-                              <span className="min-w-0">
-                                <span className="block">{codexCopy.switchAccount}</span>
-                                <span className="mt-0.5 block text-[10px] font-normal text-gray-400">{codexCopy.switchAccountAffectsSessions}</span>
-                              </span>
-                            </button>
+                            {runtimeManagementAvailable ? (
+                              <button
+                                type="button"
+                                onClick={switchAccount}
+                                disabled={working || activeRuntimeBusy || activeStatus?.login_in_progress}
+                                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+                              >
+                                <User size={15} className="text-blue-500" />
+                                <span className="min-w-0">
+                                  <span className="block">{codexCopy.switchAccount}</span>
+                                  <span className="mt-0.5 block text-[10px] font-normal text-gray-400">{codexCopy.switchAccountAffectsSessions}</span>
+                                </span>
+                              </button>
+                            ) : (
+                              <div className="px-3 py-2 text-[10px] leading-4 text-gray-400">
+                                {codexCopy.manageAgentOnDesktop(activeAgentName)}
+                              </div>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -3559,7 +3501,7 @@ export function CodexAcpView({
                       {/* 会话级 Provider 覆盖仅 Codex 生效（spawn 时按会话注入
                           OPENAI_API_KEY）；Claude/Kimi 的 CLI 配置是进程级的，
                           无法按会话隔离，不展示该选项避免误导。 */}
-                      {activeAgentId === 'codex' && Boolean(activeId) && sessionProviderChoices.length > 1 && (
+                      {providerManagementAvailable && activeAgentId === 'codex' && Boolean(activeId) && sessionProviderChoices.length > 1 && (
                         <CodexComposerConfigSelect
                           id="provider"
                           label={(t.uiAcpProviders || {}).sessionProvider || 'Provider'}
@@ -3599,7 +3541,7 @@ export function CodexAcpView({
             onCancel={() => setPendingYoloSwitch(null)}
           />
         )}
-        {!subagentPanel && (activeSession || draftWorkspacePath) && (
+        {!subagentPanel && (activeSession || (!isWeb && draftWorkspacePath)) && (
           <CodexWorkspacePanel
             session={activeSession}
             workspacePath={activeSession ? '' : (draftWorkspacePath || '')}

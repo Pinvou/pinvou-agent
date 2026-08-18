@@ -682,6 +682,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const [actionBusy, setActionBusy] = useState(false);
       const webAccess = (bs && bs.webAccess) || {};
       const webAccessActive = !!webAccess.active;
+      const hostWorkspaceAuthorized = !!webAccess.host_workspace_authorized;
       const statusKey = webAccess.starting ? 'starting' : (webAccess.status || 'idle');
       const remoteCopy = t.uiRemote;
       const statusColors = { idle:'#8A9097', starting:'#F9AB00', connecting_relay:'#F9AB00', waiting_web_client:'#F9AB00', web_client_connected:'#34A853', web_client_disconnected:'#F9AB00', revoked:'#EA4335', stopped:'#8A9097', error:'#EA4335' };
@@ -689,12 +690,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const statusMeta = statusCopy
         ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccess.last_error || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
         : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
-
-      useEffect(() => {
-        if (!webAccessActive && bridge.available) {
-          bridge.remoteControl.startRemoteControl(null).catch(() => {});
-        }
-      }, [canManageWebAccess]);
 
       async function handleRotateWebAccess() {
         if (!bridge.available) return;
@@ -722,7 +717,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       async function handleRetryWebAccess() {
         if (!bridge.available) return;
         setActionBusy(true);
-        try { await bridge.remoteControl.startRemoteControl(null); }
+        try { await bridge.remoteControl.startRemoteControl({ allowHostWorkspace: true }); }
         catch (_) {}
         finally { setActionBusy(false); }
       }
@@ -781,6 +776,8 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               <button onClick={() => navigator.clipboard && navigator.clipboard.writeText(webAccess.url || '')}
                 disabled={!webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] bg-black/5 hover:bg-black/10 disabled:opacity-40 dark:bg-white/10 dark:hover:bg-white/15 dark:disabled:opacity-40`}>{remoteCopy.copy}</button>
+              {webAccessActive && !hostWorkspaceAuthorized && <button disabled={actionBusy} onClick={handleRetryWebAccess}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50">{remoteCopy.allowWorkspace}</button>}
               {webAccessActive ? <button disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
                 className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15`}>{remoteCopy.refresh}</button>
                 : <button disabled={actionBusy} onClick={handleRetryWebAccess}

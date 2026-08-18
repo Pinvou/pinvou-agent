@@ -245,15 +245,15 @@ export function CodeViewerModal({
           >
             {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
           </button>
-          {!diff && (
-            <>
-              <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
-                <FolderOpen size={13} />
-              </button>
-              <button type="button" onClick={onOpen} className={iconButton} title={copy.open}>
-                <ExternalLink size={13} />
-              </button>
-            </>
+          {!diff && onReveal && (
+            <button type="button" onClick={onReveal} className={iconButton} title={copy.reveal}>
+              <FolderOpen size={13} />
+            </button>
+          )}
+          {!diff && onOpen && (
+            <button type="button" onClick={onOpen} className={iconButton} title={copy.open}>
+              <ExternalLink size={13} />
+            </button>
           )}
           {onOpenInNewWindow && (
             <button

@@ -12,6 +12,7 @@
     modelManagement: false,
     toolStoreMutations: false,
     deviceFileUpload: true,
+    acpCodeMode: true,
   };
   const SEMANTIC_COMMAND_REQUIREMENTS = {
     hostFilePicker: ["web_access_list_host_files", "web_access_ingest_file"],
@@ -23,6 +24,34 @@
       "web_access_abort_attachment_upload",
       "web_access_discard_attachment",
     ],
+    acpCodeMode: {
+      commands: [
+        "web_access_list_acp_agents",
+        "web_access_get_acp_agent_status",
+        "web_access_list_codex_acp_sessions",
+        "web_access_create_codex_acp_session",
+        "web_access_get_codex_acp_session_info",
+        "web_access_set_codex_acp_model",
+        "web_access_set_codex_acp_mode",
+        "web_access_set_codex_acp_config_option",
+        "web_access_codex_acp_prompt",
+        "cancel_codex_acp",
+        "web_access_get_codex_acp_timeline",
+        "web_access_get_codex_acp_pending_permissions",
+        "respond_codex_acp_permission",
+        "web_access_get_codex_acp_pending_elicitations",
+        "respond_codex_acp_elicitation",
+        "web_access_list_codex_workspace",
+        "web_access_search_codex_workspace",
+        "web_access_preview_codex_workspace_file",
+        "get_codex_workspace_changes",
+        "get_codex_workspace_diff",
+        "web_access_list_host_files",
+        "web_access_ingest_file",
+        "web_access_discard_attachment",
+      ],
+      events: ["acp:event"],
+    },
   };
 
   if (window.__TAURI__) {
@@ -110,6 +139,13 @@
       this.stateReady = false;
       this.desktopCapabilitiesReady = false;
       this.awaitingCapabilitySnapshot = false;
+      // Capability compatibility and transport availability are deliberately
+      // separate. A transient disconnect must pause RPC without unmounting
+      // feature UI (and losing local drafts) after this endpoint has already
+      // completed a successful negotiation.
+      this.negotiatedCapabilitiesKnown = false;
+      this.negotiatedCommands = new Set();
+      this.negotiatedEvents = new Set();
       this.webAllowedCommands = new Set();
       this.webAllowedEvents = new Set();
       this.pendingListenerRegistrations = 0;
@@ -296,6 +332,10 @@
       this.closedPermanently = true;
       this.joined = false;
       this.desktopOnline = false;
+      this.desktopCapabilitiesReady = false;
+      this.negotiatedCapabilitiesKnown = false;
+      this.negotiatedCommands.clear();
+      this.negotiatedEvents.clear();
       if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
       try { this.socket && this.socket.close(); } catch (_) {}
@@ -306,6 +346,9 @@
         entry.reject(error);
       });
       this.pending.clear();
+      window.dispatchEvent(new CustomEvent("pinvou:web-capabilities", {
+        detail: { commands: [], events: [] },
+      }));
       this.setConnection(status, message);
     }
 
@@ -411,6 +454,9 @@
       this.allowedEvents = new Set(
         Array.from(this.webAllowedEvents).filter((eventName) => events.has(eventName)),
       );
+      this.negotiatedCommands = new Set(this.allowedCommands);
+      this.negotiatedEvents = new Set(this.allowedEvents);
+      this.negotiatedCapabilitiesKnown = true;
       const completesCapabilityHandshake = this.awaitingCapabilitySnapshot;
       this.awaitingCapabilitySnapshot = false;
       this.desktopCapabilitiesReady = true;
@@ -468,12 +514,16 @@
     supportsCapability(capability) {
       if (WEB_CAPABILITIES[capability] !== true) return false;
       const required = SEMANTIC_COMMAND_REQUIREMENTS[capability];
-      if (!required || !required.length) return true;
-      // Command-backed capabilities stay disabled until the installed
-      // desktop reports its exact command snapshot. This lets a newer WebUI
-      // fail closed when it is opened against an older desktop build.
-      if (!this.desktopCapabilitiesReady) return false;
-      return required.every((command) => this.allowedCommands.has(command));
+      if (!required) return true;
+      const requiredCommands = Array.isArray(required) ? required : (required.commands || []);
+      const requiredEvents = Array.isArray(required) ? [] : (required.events || []);
+      if (!requiredCommands.length && !requiredEvents.length) return true;
+      // Fail closed until the first authoritative snapshot. Afterwards retain
+      // compatibility across transient transport loss so React keeps feature
+      // state mounted; supportsCommand/sendRpc remain online-only.
+      if (!this.negotiatedCapabilitiesKnown) return false;
+      return requiredCommands.every((command) => this.negotiatedCommands.has(command))
+        && requiredEvents.every((eventName) => this.negotiatedEvents.has(eventName));
     }
 
     sendRpc(entry) {

@@ -14,6 +14,10 @@ const attachmentDropController = fs.readFileSync(
   path.join(root, 'src', 'features', 'attachments', 'attachment-drop-controller.js'),
   'utf8',
 );
+const attachmentDropHook = fs.readFileSync(
+  path.join(root, 'src', 'features', 'attachments', 'useAttachmentDrop.js'),
+  'utf8',
+);
 const desktopRemoteControlBridge = fs.readFileSync(
   path.join(bridgeRoot, 'bridge', 'remote-control.js'),
   'utf8',
@@ -46,6 +50,19 @@ const commands = fs.readdirSync(commandsRoot)
   .map(name => fs.readFileSync(path.join(commandsRoot, name), 'utf8'))
   .join('\n');
 const remoteControlCommands = fs.readFileSync(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
+const remoteControlManagerRoot = path.join(
+  root,
+  'src-tauri',
+  'src',
+  'features',
+  'remote_control',
+  'manager',
+);
+const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
+  .filter(name => name.endsWith('.rs'))
+  .sort()
+  .map(name => fs.readFileSync(path.join(remoteControlManagerRoot, name), 'utf8'))
+  .join('\n');
 const settingsView = fs.readFileSync(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = fs.readFileSync(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
 const toolStoreView = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'ToolStoreView.jsx'), 'utf8');
@@ -54,6 +71,20 @@ const knowledgeView = fs.readFileSync(path.join(root, 'src', 'features', 'knowle
 const toolCommon = fs.readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-common.jsx'), 'utf8');
 const connectionStatus = fs.readFileSync(path.join(root, 'src', 'features', 'web', 'WebConnectionStatus.jsx'), 'utf8');
 const chatView = fs.readFileSync(path.join(root, 'src', 'features', 'chat', 'ChatView.jsx'), 'utf8');
+const codexView = fs.readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+const acpRuntimeNotices = fs.readFileSync(
+  path.join(root, 'src', 'features', 'codex', 'AcpRuntimeNotices.jsx'),
+  'utf8',
+);
+const codexWorkspacePanel = fs.readFileSync(
+  path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'),
+  'utf8',
+);
+const codeViewerModal = fs.readFileSync(
+  path.join(root, 'src', 'features', 'codex', 'CodeViewerModal.jsx'),
+  'utf8',
+);
+const acpPlatformClient = fs.readFileSync(path.join(root, 'src', 'platform', 'acp', 'client.js'), 'utf8');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
 const allowedEvents = new Set(policy.allowed_events);
@@ -73,8 +104,33 @@ for (const command of [
   'install_marketplace_tool',
   'uninstall_marketplace_skill',
   'uninstall_marketplace_tool',
+  'install_marketplace_skill',
+  'install_marketplace_tool',
+  'uninstall_marketplace_skill',
+  'uninstall_marketplace_tool',
   'import_skill_package',
   'import_skill_package_bytes',
+  'codex_acp_prompt',
+  'get_codex_acp_timeline',
+  'get_codex_acp_session_info',
+  'get_codex_acp_pending_permissions',
+  'get_codex_acp_pending_elicitations',
+  'list_acp_agents',
+  'get_acp_agent_status',
+  'set_codex_acp_model',
+  'set_codex_acp_mode',
+  'set_codex_acp_config_option',
+  'create_codex_acp_session',
+  'list_codex_acp_sessions',
+  'list_codex_workspace',
+  'search_codex_workspace',
+  'preview_codex_workspace_file',
+  'install_acp_agent',
+  'login_acp_agent',
+  'switch_acp_agent_account',
+  'open_acp_agent_login_url',
+  'submit_acp_agent_login_code',
+  'web_access_enable',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
@@ -145,9 +201,55 @@ for (const command of [
   'web_access_cancel_session_download',
   'web_access_load_session_chunk',
   'web_access_transcribe_voice_audio',
+  'web_access_codex_acp_prompt',
+  'web_access_get_codex_acp_timeline',
+  'web_access_get_codex_acp_session_info',
+  'web_access_get_codex_acp_pending_permissions',
+  'web_access_get_codex_acp_pending_elicitations',
+  'web_access_list_acp_agents',
+  'web_access_list_codex_acp_sessions',
+  'web_access_get_acp_agent_status',
+  'web_access_set_codex_acp_model',
+  'web_access_set_codex_acp_mode',
+  'web_access_set_codex_acp_config_option',
+  'web_access_create_codex_acp_session',
+  'web_access_list_codex_workspace',
+  'web_access_search_codex_workspace',
+  'web_access_preview_codex_workspace_file',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be the bounded Web wrapper`);
 }
+
+assert.equal(allowedEvents.has('acp:event'), true,
+  'the shared ACP timeline must reach WebUI through the normal event transport');
+assert.match(bootstrap, /acpCodeMode:\s*\{[\s\S]*?commands:\s*\[[\s\S]*?web_access_codex_acp_prompt[\s\S]*?events:\s*\["acp:event"\]/,
+  'ACP code mode must require the complete Web-safe command and event contract');
+assert.match(acpPlatformClient, /web_access_codex_acp_prompt/);
+assert.match(acpPlatformClient, /attachmentHandles/);
+assert.match(acpPlatformClient, /web_access_create_codex_acp_session/);
+assert.match(acpPlatformClient, /workspaceHandle/);
+assert.doesNotMatch(
+  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0] || '',
+  /web_access_create_codex_acp_session[\s\S]*?workspacePath/,
+  'Web code-session creation must submit only the opaque workspace handle',
+);
+// Web 列表必须走投影命令（主机绝对路径降级为目录名），不得直接调用桌面原命令。
+assert.match(acpPlatformClient, /web_access_list_codex_acp_sessions/,
+  'the Web session list must go through the path-redacting wrapper');
+assert.doesNotMatch(codexView, /list_codex_acp_sessions/,
+  'the shared code UI must list sessions through the platform ACP adapter');
+assert.doesNotMatch(codexView, /invoke\('codex_acp_prompt'/,
+  'the shared code UI must submit through the platform ACP adapter');
+assert.match(acpRuntimeNotices, /manageAgentOnDesktop/,
+  'WebUI must explain that install and login actions happen on the target desktop');
+assert.match(codexWorkspacePanel, /can\('externalSystemOpen'\)/,
+  'desktop-only open and reveal actions must stay hidden in WebUI');
+assert.match(codexWorkspacePanel, /onOpen=\{systemOpenAvailable/);
+assert.match(codexWorkspacePanel, /onReveal=\{systemOpenAvailable/);
+assert.match(codexWorkspacePanel, /onOpenInNewWindow=\{systemOpenAvailable/);
+assert.match(codeViewerModal, /\{!diff && onReveal && \(/);
+assert.match(codeViewerModal, /\{!diff && onOpen && \(/,
+  'the shared code preview must omit desktop system actions when callbacks are unavailable');
 
 // 浏览器本机上传:双入口按能力协商门控,分块有界,取消/失败路径完备。
 assert.match(
@@ -170,12 +272,23 @@ assert.match(webBridge, /web_access_discard_attachment/,
   'removed or late-cancelled attachments must release their opaque desktop handle');
 assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, &session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
+// Agent 安装命令行/输出可能含内部镜像源或主机路径，Web status 投影必须清除。
+assert.match(remoteControlCommands,
+  /project_acp_status_for_web[\s\S]*?status\.install_command = None[\s\S]*?status\.install_latest_line = None/,
+  'the Web agent-status projection must strip install command and output lines');
+assert.match(remoteControlCommands, /redact_workspace_path_for_web|list_codex_acp_sessions_for_web/,
+  'the Web session list must redact host workspace paths to a directory name');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);
 assert.match(bootstrap, /desktopCapabilitiesReady/);
 assert.match(bootstrap, /SEMANTIC_COMMAND_REQUIREMENTS/);
 assert.match(bootstrap, /supportsCapability\(capability\)/);
-assert.match(bootstrap, /if \(!this\.desktopCapabilitiesReady\) return false/);
+assert.match(bootstrap, /supportsCommand\(command\) \{\s*return this\.desktopCapabilitiesReady/,
+  'individual RPC commands must remain unavailable while the desktop is offline');
+assert.match(bootstrap, /if \(!this\.negotiatedCapabilitiesKnown\) return false/,
+  'semantic capabilities must fail closed until the first authoritative snapshot');
+assert.match(bootstrap, /this\.negotiatedCommands = new Set\(this\.allowedCommands\)/,
+  'a negotiated compatibility snapshot must survive transient reconnects');
 assert.match(bridge, /if \(IS_WEB && typeof PLATFORM\.can === "function"\) return PLATFORM\.can\(name\) === true/);
 assert.match(hostFilePicker, /function rememberRoots\(listing\)/,
   'the Web host picker must retain the desktop-provided root inventory');
@@ -187,12 +300,26 @@ assert.match(hostFilePicker, /if \(parentPath\) load\(parentPath\);[\s\S]{0,100}
   'up from a filesystem root must return to the root inventory');
 assert.doesNotMatch(hostFilePicker, /Array\.isArray\(listing\.roots\) && !parentPath/,
   'filesystem roots must not be mixed into a drive directory listing');
-// HTML5 拖放复用 deviceFileUpload 分块通道:同一能力门控、同一上传/取消/丢弃语义。
-assert.match(webBridge, /canAccept: function \(\) \{ return hasCapability\("deviceFileUpload"\); \}/,
+assert.match(hostFilePicker, /openWorkspace:/,
+  'the host picker must expose a dedicated code-workspace selection flow');
+assert.match(hostFilePicker, /issueWorkspaceHandle:\s*options\.workspaceGrant === true/,
+  'only workspace selection should request a one-shot host capability');
+assert.match(hostFilePicker, /workspaceHandle:\s*currentWorkspaceHandle/,
+  'workspace selection must return the host-issued handle with its display path');
+assert.match(hostFilePicker, /host_workspace_not_authorized[\s\S]{0,120}workspaceNotAuthorized/,
+  'an unapproved legacy endpoint must receive a localized desktop-authorization prompt');
+assert.match(hostFilePicker, /initialPathPending[\s\S]*?path === initialPath[\s\S]*?load\(null\)/,
+  'a stale recent workspace must fall back to the normal host-file root instead of trapping the picker');
+// HTML5 拖放由当前可见输入框认领，再复用对应平台的上传通道。
+assert.match(chatView, /enabled=\{bridge\.available && \(!isWeb \|\| can\('deviceFileUpload'\)\)\}/,
   'browser drop must gate on the negotiated device upload capability');
-assert.match(webBridge, /onFiles: function \(files\) \{ return uploadDeviceFiles\(files\); \}/,
-  'browser drop must reuse the device upload pipeline instead of a parallel channel');
-assert.match(webBridge, /PinvouAttachmentDropController\.install/);
+assert.match(chatView, /onFiles=\{files => bridge\.attachments\.uploadDeviceFiles\(files\)\}/,
+  'normal chat drop must reuse the device upload pipeline');
+assert.match(codexView, /onFiles=\{files => uploadDeviceFiles\(files, attachmentKey\)\}/,
+  'ACP Code must own drops while its composer is visible');
+assert.match(attachmentDropHook, /PinvouAttachmentDropController/);
+assert.doesNotMatch(webBridge, /PinvouAttachmentDropController\.install/,
+  'the Web bridge must not route Code drops into the hidden normal-chat draft');
 assert.match(attachmentDropController, /dataTransfer\.dropEffect = "copy"/);
 assert.match(attachmentDropController, /setActive\(true\)/);
 assert.match(attachmentDropController, /setActive\(false\)/);
@@ -383,6 +510,16 @@ assert.match(settingsView, /remoteCopy = t\.uiRemote/);
 assert.match(settingsView, /\{remoteCopy\.title\}/);
 assert.match(settingsView, /\{remoteCopy\.link\}/);
 assert.match(settingsView, /\{remoteCopy\.refresh\}/);
+assert.match(settingsView, /startRemoteControl\(\{ allowHostWorkspace: true \}\)/,
+  'host workspace access must follow an explicit action in the desktop modal');
+assert.doesNotMatch(settingsView, /useEffect\(\(\) => \{[\s\S]{0,240}startRemoteControl/,
+  'opening the remote-control modal must not silently authorize host workspace access');
+assert.match(desktopRemoteControlBridge, /allowHostWorkspace: !!\(options && options\.allowHostWorkspace\)/,
+  'the desktop bridge must carry explicit host-workspace consent');
+assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'only the main desktop WebView may enable a persistent remote endpoint');
+assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
+  'workspace capabilities must fail closed until desktop authorization is persisted');
 assert.doesNotMatch(settingsView, />刷新链接</);
 assert.doesNotMatch(settingsView, /Relay 服务器/);
 assert.doesNotMatch(settingsView, /getWebRelaySettings/);
@@ -395,7 +532,7 @@ assert.doesNotMatch(main, /bs\.webAccess\.active && <span/,
   'an enabled access link must not be presented as a connected phone');
 assert.match(desktopRemoteControlBridge, /listen\("web_access:status"/,
   'desktop bridge must consume live browser connection status events');
-assert.match(desktopRemoteControlBridge, /web_client_connected: false, status: "stopped"/,
+assert.match(desktopRemoteControlBridge, /web_client_connected: false, host_workspace_authorized: false, status: "stopped"/,
   'stopping remote access must clear any stale connected state');
 const desktopBridge = fs.readFileSync(path.join(bridgeRoot, 'bridge.js'), 'utf8');
 assert.match(desktopBridge, /web_client_connected: false/,

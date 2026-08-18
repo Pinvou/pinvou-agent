@@ -819,6 +819,7 @@ mod tests {
             endpoint_id: "ep_1".into(),
             access_token: "browser".into(),
             desktop_secret: "desktop".into(),
+            allow_host_workspace: false,
         }
     }
 

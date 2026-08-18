@@ -7903,28 +7903,6 @@
     } catch (e) { att.status = "error"; att.error = String(e); }
     notify();
   }
-  function updateAttachmentDragState(active) {
-    active = !!active;
-    if (!!state.attachmentDragActive === active) return;
-    state.attachmentDragActive = active;
-    notify();
-  }
-  // HTML5 拖放与「从此设备上传」共用 deviceFileUpload 分块通道:能力同开同关,
-  // 上传/取消/丢弃语义完全一致,拖放只是多一个入口。
-  function initAttachmentDrop() {
-    if (initAttachmentDrop.done) return;
-    initAttachmentDrop.done = true;
-    if (!window.PinvouAttachmentDropController) {
-      console.warn("[attachment] drop controller is unavailable");
-      return;
-    }
-    window.PinvouAttachmentDropController.install({
-      document: document,
-      canAccept: function () { return hasCapability("deviceFileUpload"); },
-      onActiveChange: updateAttachmentDragState,
-      onFiles: function (files) { return uploadDeviceFiles(files); }
-    });
-  }
   async function addPasteImage(filename, bytes) {
     try {
       var path = await invoke("save_paste_image", { filename: filename, bytes: bytes });
@@ -8033,7 +8011,6 @@
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     for (var i = 0; i < list.length; i++) await uploadDeviceFile(list[i]);
   }
-  initAttachmentDrop();
 
 
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────

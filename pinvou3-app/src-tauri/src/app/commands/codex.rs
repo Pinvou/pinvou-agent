@@ -14,7 +14,7 @@ use crate::features::codex_acp::workspace::{
     self, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry, WorkspaceListing, WorkspacePreview,
 };
 use crate::features::codex_acp::{
-    validate_codex_project_workspace, AcpEventEnvelope, AcpPool, AgentBackend,
+    validate_codex_project_workspace, AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend,
     CodexAcpPendingElicitation, CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus,
     CodexAcpWorkspaceInfo, CodexWorkspaceKind,
 };
@@ -49,8 +49,16 @@ pub async fn get_codex_acp_status(acp_pool: State<'_, AcpPool>) -> Result<CodexA
 }
 
 #[tauri::command]
-pub async fn list_acp_agents(acp_pool: State<'_, AcpPool>) -> Result<Vec<CodexAcpStatus>, String> {
-    Ok(acp_pool.agent_statuses().await)
+pub async fn list_acp_agents(
+    acp_pool: State<'_, AcpPool>,
+) -> Result<Vec<AcpAgentDescriptor>, String> {
+    list_acp_agents_for_pool(&acp_pool).await
+}
+
+pub(crate) async fn list_acp_agents_for_pool(
+    _acp_pool: &AcpPool,
+) -> Result<Vec<AcpAgentDescriptor>, String> {
+    Ok(AcpPool::agent_catalog())
 }
 
 #[tauri::command]
@@ -59,17 +67,25 @@ pub async fn get_acp_agent_status(
     recheck: Option<bool>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<CodexAcpStatus, String> {
+    get_acp_agent_status_for_pool(agent_id, recheck, &acp_pool).await
+}
+
+pub(crate) async fn get_acp_agent_status_for_pool(
+    agent_id: String,
+    recheck: Option<bool>,
+    acp_pool: &AcpPool,
+) -> Result<CodexAcpStatus, String> {
     // recheck=true 时忽略探测缓存强制重探测：用户在 App 外手动安装/升级
     // CLI 后点击「重新检测」必须拿到最新状态。轮询调用不传，保持读缓存。
     if recheck.unwrap_or(false) {
-        let pool = acp_pool.inner().clone();
+        let pool = acp_pool.clone();
         return pool
             .recheck_agent_status(&agent_id)
             .await
             .map_err(|error| format!("重新检测 ACP Agent 状态失败: {error:#}"));
     }
-    let pool = acp_pool.inner().clone();
-    pool.status_for_agent(&agent_id)
+    acp_pool
+        .status_for_agent(&agent_id)
         .await
         .map_err(|error| format!("读取 ACP Agent 状态失败: {error:#}"))
 }
@@ -204,9 +220,26 @@ pub async fn codex_acp_prompt(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<(), String> {
+    codex_acp_prompt_with_attachments(
+        session_id,
+        message,
+        attachments.unwrap_or_default(),
+        workspace_references.unwrap_or_default(),
+        &store,
+        &acp_pool,
+    )
+    .await
+}
+
+pub(crate) async fn codex_acp_prompt_with_attachments(
+    session_id: String,
+    message: String,
+    attachments: Vec<crate::features::files::file_ingest::IngestResult>,
+    workspace_references: Vec<String>,
+    store: &SessionStore,
+    acp_pool: &AcpPool,
+) -> Result<(), String> {
     let message = message.trim().to_string();
-    let attachments = attachments.unwrap_or_default();
-    let workspace_references = workspace_references.unwrap_or_default();
     if message.is_empty() && attachments.is_empty() && workspace_references.is_empty() {
         return Err("empty message".to_string());
     }
@@ -565,6 +598,75 @@ pub async fn list_codex_acp_sessions(
         .collect()
 }
 
+/// 把主机工作区路径降级为最末一级目录名，避免向 WebUI 泄漏绝对路径。
+/// 桌面端需要完整路径（历史记录、系统打开等），故投影只在 Web 入口应用。
+pub(crate) fn redact_workspace_path_for_web(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "workspace".to_string())
+}
+
+/// Remove host-specific path components from Session metadata before it
+/// crosses the Web/Relay boundary. Native callers keep the original metadata.
+pub(crate) fn redact_session_metadata_for_web(mut metadata: SessionMetadata) -> SessionMetadata {
+    redact_session_metadata_for_web_in_place(&mut metadata);
+    metadata
+}
+
+fn redact_session_metadata_for_web_in_place(metadata: &mut SessionMetadata) {
+    metadata.workspace = std::path::PathBuf::from(redact_workspace_path_for_web(
+        &metadata.workspace.to_string_lossy(),
+    ));
+}
+
+fn redact_codex_session_list_item_for_web(item: &mut CodexAcpSessionListItem) {
+    redact_session_metadata_for_web_in_place(&mut item.metadata);
+    item.workspace.workspace_path = redact_workspace_path_for_web(&item.workspace.workspace_path);
+}
+
+/// Web 版代码会话列表：复用桌面端列表逻辑，但把工作区路径投影为目录名，
+/// 避免向浏览器暴露主机绝对路径。前端通过 `web_access_list_codex_acp_sessions`
+/// 调用，桌面端继续使用返回完整路径的 `list_codex_acp_sessions`。
+pub async fn list_codex_acp_sessions_for_web(
+    store: &SessionStore,
+    acp_pool: &AcpPool,
+) -> Result<Vec<CodexAcpSessionListItem>, String> {
+    let mut items: Vec<CodexAcpSessionListItem> = store
+        .list()
+        .map_err(|error| format!("list_codex_acp_sessions: {error:?}"))?
+        .into_iter()
+        .filter(|metadata| {
+            matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
+                && (acp_pool.is_acp_metadata(metadata)
+                    || acp_pool.agents().is_code_session(&metadata.id))
+                && !store.is_hidden(&metadata.id)
+        })
+        .map(|metadata| {
+            let backend = acp_pool.backend(&metadata.id);
+            let workspace = acp_pool
+                .workspace_info(&metadata.id)
+                .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
+            Ok(CodexAcpSessionListItem {
+                pinned: store.is_pinned(&metadata.id),
+                pinned_at: store.pinned_at(&metadata.id),
+                metadata,
+                workspace,
+                agent_id: code_session_agent_id(backend),
+                agent_name: backend.display_name().to_string(),
+            })
+        })
+        .collect::<Result<Vec<CodexAcpSessionListItem>, String>>()?;
+    for item in &mut items {
+        redact_codex_session_list_item_for_web(item);
+    }
+    Ok(items)
+}
+
 #[tauri::command]
 pub async fn create_codex_acp_session(
     workspace_path: Option<String>,
@@ -740,6 +842,60 @@ mod tests {
             .expect("create temporary Codex workspace");
         assert!(workspace.is_dir());
         std::fs::remove_dir_all(root).expect("cleanup temporary Codex workspace");
+    }
+
+    #[test]
+    fn redact_workspace_path_for_web_keeps_only_directory_name() {
+        // 绝对路径只保留末级目录名，避免向 WebUI 暴露主机目录结构。
+        assert_eq!(
+            redact_workspace_path_for_web("/Users/asto/Documents/secret-project"),
+            "secret-project"
+        );
+        // 已是末级名称时原样返回；空串兜底为自身。
+        assert_eq!(redact_workspace_path_for_web("repo"), "repo");
+        assert_eq!(redact_workspace_path_for_web(""), "");
+        assert_eq!(redact_workspace_path_for_web("/"), "workspace");
+    }
+
+    fn metadata_with_workspace(workspace: &str) -> SessionMetadata {
+        serde_json::from_value(serde_json::json!({
+            "id": "session-web-projection",
+            "title": "Web projection",
+            "created_at": "2026-08-17T00:00:00Z",
+            "updated_at": "2026-08-17T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": workspace
+        }))
+        .expect("valid SessionMetadata fixture")
+    }
+
+    #[test]
+    fn web_session_projection_removes_absolute_paths_from_serialized_payloads() {
+        const PRIVATE_WORKSPACE: &str = "/Users/asto/Documents/secret-project";
+        let metadata = redact_session_metadata_for_web(metadata_with_workspace(PRIVATE_WORKSPACE));
+        let metadata_json = serde_json::to_value(&metadata).expect("serialize projected metadata");
+        assert_eq!(metadata_json["workspace"], "secret-project");
+        assert!(!metadata_json.to_string().contains(PRIVATE_WORKSPACE));
+
+        let mut item = CodexAcpSessionListItem {
+            metadata: metadata_with_workspace(PRIVATE_WORKSPACE),
+            pinned: false,
+            pinned_at: None,
+            workspace: CodexAcpWorkspaceInfo {
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: PRIVATE_WORKSPACE.to_string(),
+                workspace_available: true,
+            },
+            agent_id: "codex".to_string(),
+            agent_name: "Codex".to_string(),
+        };
+        redact_codex_session_list_item_for_web(&mut item);
+        let item_json = serde_json::to_value(&item).expect("serialize projected list item");
+        assert_eq!(item_json["workspace"], "secret-project");
+        assert_eq!(item_json["workspace_path"], "secret-project");
+        assert!(!item_json.to_string().contains(PRIVATE_WORKSPACE));
     }
 
     #[test]

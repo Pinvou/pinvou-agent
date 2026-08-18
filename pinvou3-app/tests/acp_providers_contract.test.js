@@ -193,8 +193,8 @@ assert.ok(
   '切换/删除当前 Provider 后必须重启该 Agent 运行中会话'
 );
 assert.ok(
-  MOD.includes('invalidate_cli_probe()'),
-  '切换后必须刷新 CLI 探测缓存'
+  MOD.includes('invalidate_auth_cache(backend)'),
+  '切换后必须刷新当前 Agent 的认证缓存'
 );
 assert.ok(
   MOD.includes('configure_codex_provider_env') &&

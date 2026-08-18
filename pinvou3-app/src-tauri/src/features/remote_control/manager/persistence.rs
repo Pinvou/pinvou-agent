@@ -29,12 +29,13 @@ pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     }
 }
 
-pub(super) fn fresh_config() -> WebAccessConfig {
+pub(super) fn fresh_config(allow_host_workspace: bool) -> WebAccessConfig {
     WebAccessConfig {
         relay_url: remote_relay_ws_url(),
         endpoint_id: format!("ep_{}", crate::features::remote_control::short_token(24)),
         access_token: crate::features::remote_control::short_token(48),
         desktop_secret: crate::features::remote_control::short_token(48),
+        allow_host_workspace,
     }
 }
 

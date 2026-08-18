@@ -343,9 +343,7 @@ mod tests {
         writer.apply(&target("pv-aaaaaaaaaaaa")).unwrap();
         let raw = fs::read_to_string(dir.join("config.toml")).unwrap();
         // 产物必须通过官方校验函数（真实解析路径）
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
-            &raw, false
-        ));
+        assert!(crate::features::codex_acp::introspect::kimi_runtime_config_ready(&raw, false));
         let config: Value = toml::from_str(&raw).unwrap();
         assert_eq!(config["default_model"], "pv-aaaaaaaaaaaa-main".into());
         assert_eq!(
@@ -378,9 +376,7 @@ mod tests {
             "kimi".into()
         );
         // 产物仍通过官方校验函数
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
-            &raw, false
-        ));
+        assert!(crate::features::codex_acp::introspect::kimi_runtime_config_ready(&raw, false));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -509,9 +505,7 @@ mod tests {
             .get("pv-aaaaaaaaaaaa")
             .is_none());
         // 恢复后的产物重新通过官方校验（官方登录态不断裂）
-        assert!(crate::features::codex_acp::kimi_runtime_config_ready(
-            &raw, true
-        ));
+        assert!(crate::features::codex_acp::introspect::kimi_runtime_config_ready(&raw, true));
         let _ = fs::remove_dir_all(&dir);
     }
 

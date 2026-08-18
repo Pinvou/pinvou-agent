@@ -25,7 +25,7 @@
     var recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     var reconcileRemoteTurn = context.reconcileRemoteTurn;
     var markRemoteTurn = context.markRemoteTurn;
-    var clearAttachments = context.clearAttachments;
+    var adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     var discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     var isScheduledRunSession = context.isScheduledRunSession;
     var basename = context.basename;
@@ -455,6 +455,29 @@
       }
     }
     var sid = state.activeSessionId;
+    function abandonPreparedAttachments() {
+      state.attachments = state.attachments.filter(function (attachment) {
+        return readyAttachments.indexOf(attachment) < 0;
+      });
+      readyAttachments.forEach(function (attachment) {
+        if (attachment && attachment.result) discardManagedAttachment(attachment.result);
+      });
+      notify();
+    }
+    try {
+      await adoptManagedAttachments(readyAttachments, sid);
+    } catch (error) {
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+        return;
+      }
+      addSystemItem(bt("deviceUploadFailed") + String(error && error.message ? error.message : error));
+      return;
+    }
+    if (state.activeSessionId !== sid) {
+      abandonPreparedAttachments();
+      return;
+    }
     var activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
     var displayText = formatAttachmentDisplayText(text, readyAttachments);
@@ -514,14 +537,20 @@
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
-      if (state.activeSessionId !== sid) return;
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+        return;
+      }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
       }, authoritySyncBufferSnapshot(sid, activeTurnBuffer)));
       addAuthoritySyncNotice(bt("remoteTurnSyncing"));
       return;
     }
-    if (state.activeSessionId !== sid) return;
+    if (state.activeSessionId !== sid) {
+      abandonPreparedAttachments();
+      return;
+    }
     if (isBusyFor(sid) || state.queued.length > 0) {
       var racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
@@ -539,8 +568,12 @@
       preparation.restrictTools,
     );
     if (!accepted) {
-      restoreUiTurnState(preparation.snapshot);
-      notify();
+      if (state.activeSessionId !== sid) {
+        abandonPreparedAttachments();
+      } else {
+        restoreUiTurnState(preparation.snapshot);
+        notify();
+      }
     } else {
       state.attachments = state.attachments.filter(function (attachment) {
         return readyAttachments.indexOf(attachment) < 0;

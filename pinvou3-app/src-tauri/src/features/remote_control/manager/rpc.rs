@@ -313,6 +313,73 @@ pub(super) fn canonicalize_json(value: &Value) -> Value {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebWorkspaceRpcPolicy {
+    HostFileBrowse,
+    CreateWithOptionalGrant,
+    SessionBoundRead,
+}
+
+const NATIVE_WORKSPACE_COMMANDS: &[&str] = &[
+    "create_codex_acp_session",
+    "list_codex_workspace",
+    "search_codex_workspace",
+    "preview_codex_workspace_file",
+    "open_codex_workspace_file",
+    "reveal_codex_workspace_file",
+    "open_code_reader",
+];
+
+fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
+    match command {
+        "web_access_list_host_files" => Some(WebWorkspaceRpcPolicy::HostFileBrowse),
+        "web_access_create_codex_acp_session" => {
+            Some(WebWorkspaceRpcPolicy::CreateWithOptionalGrant)
+        }
+        "web_access_list_codex_workspace"
+        | "web_access_search_codex_workspace"
+        | "web_access_preview_codex_workspace_file" => {
+            Some(WebWorkspaceRpcPolicy::SessionBoundRead)
+        }
+        _ => None,
+    }
+}
+
+fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String> {
+    if NATIVE_WORKSPACE_COMMANDS.contains(&command) {
+        return Err(format!(
+            "{command} is desktop-only; Web must use the scoped workspace wrapper"
+        ));
+    }
+    let Some(policy) = web_workspace_rpc_policy(command) else {
+        return Ok(());
+    };
+    if args.get("workspacePath").is_some() || args.get("workspace_path").is_some() {
+        return Err(format!("{command} does not accept a native workspace path"));
+    }
+    if policy == WebWorkspaceRpcPolicy::HostFileBrowse {
+        for field in ["issueWorkspaceHandle", "issue_workspace_handle"] {
+            if args.get(field).is_some_and(|value| !value.is_boolean()) {
+                return Err(format!("{field} must be a boolean"));
+            }
+        }
+        return Ok(());
+    }
+    if policy == WebWorkspaceRpcPolicy::CreateWithOptionalGrant {
+        let Some(handle) = args.get("workspaceHandle") else {
+            return Ok(());
+        };
+        if handle.is_null() {
+            return Ok(());
+        }
+        let Some(handle) = handle.as_str() else {
+            return Err("workspaceHandle must be a string or null".to_string());
+        };
+        super::workspace_grants::validate_handle(handle)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WebSessionScope {
     Required(&'static str),
     Optional(&'static str),
@@ -371,14 +438,27 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "set_plan_mode_next"
         | "set_session_model"
         | "unequip_persona"
+        | "respond_codex_acp_elicitation"
+        | "respond_codex_acp_permission"
         | "web_access_artifact_info"
         | "web_access_chat"
+        | "web_access_codex_acp_prompt"
+        | "web_access_get_codex_acp_pending_elicitations"
+        | "web_access_get_codex_acp_pending_permissions"
+        | "web_access_get_codex_acp_session_info"
+        | "web_access_get_codex_acp_timeline"
+        | "web_access_list_codex_workspace"
+        | "web_access_preview_codex_workspace_file"
         | "web_access_read_artifact_chunk"
         | "web_access_read_artifact_image_b64"
         | "web_access_read_artifact_text"
         | "web_access_read_artifact_thumbnail"
         | "web_access_render_artifact_visual"
         | "web_access_read_conversation_attachment_chunk"
+        | "web_access_search_codex_workspace"
+        | "web_access_set_codex_acp_config_option"
+        | "web_access_set_codex_acp_mode"
+        | "web_access_set_codex_acp_model"
         | "web_access_transcribe_voice_audio"
         | "web_access_write_artifact_text" => Required("sessionId"),
 
@@ -404,6 +484,7 @@ pub(super) fn validate_web_rpc_scope(
     command: &str,
     args: &Value,
 ) -> Result<(), String> {
+    validate_web_workspace_rpc(command, args)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
     };
