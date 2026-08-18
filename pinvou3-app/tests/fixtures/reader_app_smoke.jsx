@@ -16,7 +16,8 @@ window.__TAURI__ = {
       window.__invokeLog.push({ command, args });
       switch (command) {
         case 'get_settings':
-          throw new Error('fixture: 无设置后端，回退默认语言');
+          // 固定中文，断言不随运行环境系统语言漂移（与 ui_smoke.js 惯例一致）。
+          return { theme: 'liquid-light', language: 'zh-Hans' };
         case 'take_code_reader_pending':
           return PENDING;
         case 'preview_codex_workspace_file':
