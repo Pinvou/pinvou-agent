@@ -105,12 +105,17 @@
 
 | 命令 | 用途 | 必填参数 | 路由提醒 |
 |------|------|----------|----------|
+| `workflow edit-example` | 获取编辑文档与 DSL 示例 | 无 | create/update 前优先调用，内容由服务端提供 |
+| `workflow create` | 创建并发布工作流 | `--base-id` `--dsl` | `--dsl` 为完整 workflow-dsl/v1；非幂等，不自动重试 |
+| `workflow update` | 更新并发布工作流 | `--base-id` `--workflow-id` `--dsl` | 全量替换，先 get 留底；检查 `data.valid/issues` |
 | `workflow list` | 列出 Base 下所有工作流 | `--base-id` | 支持 `--limit [1,100]` / `--offset >=0`；list 出参字段叫 `flowId` |
 | `workflow get` | 获取单个工作流详情（含 flowSchema） | `--base-id` `--workflow-id` | `--workflow-id` 接受 list 里的 `flowId`（同值） |
 | `workflow enable` | 启用工作流 | `--base-id` `--workflow-id` | 返回 `{enabled: true}` 是动作确认；要确认真启用看 list 的 `status` |
 | `workflow disable` | 禁用工作流（高危） | `--base-id` `--workflow-id` `--yes` | 影响业务自动化，建议二次确认；status 变 STOP |
+| `workflow run` | 立即执行工作流（需确认） | `--base-id` `--workflow-id`；记录触发另需 `--table-id` `--record-ids` | 返回 `executionId`；不确定时先用 history 核对，避免重复执行 |
+| `workflow history` | 查询工作流执行历史 | `--base-id` `--workflow-id` | 支持 status、Unix 毫秒时间范围和 page/size；`instanceId` 对应 run 的 `executionId` |
 
-> **当前不支持通过 CLI 新建/修改/删除工作流**，请去 AI 表格 Web 端（数据表页面 → 自动化）配置。
+> 当前支持创建、更新、查询、启停、手动执行和执行历史；删除工作流仍未开放。
 
 ### dashboard & chart → 详见 [aitable-dashboard-chart.md](./aitable/aitable-dashboard-chart.md)
 
@@ -287,7 +292,7 @@ dws aitable chart get --base-id <BASE_ID> --dashboard-id <DASHBOARD_ID> --chart-
 
 ```bash
 # 第一步：创建任务（按 scope 传必要参数）
-dws aitable export data --base-id <BASE_ID> --scope table --table-id <TABLE_ID> --format excel --timeout-ms 1000
+dws aitable export data --base-id <BASE_ID> --scope table --table-id <TABLE_ID> --export-format excel --timeout-ms 1000 --format json
 
 # 第二步：拿 taskId 继续轮询，直到返回 downloadUrl
 dws aitable export data --base-id <BASE_ID> --task-id <TASK_ID> --timeout-ms 3000

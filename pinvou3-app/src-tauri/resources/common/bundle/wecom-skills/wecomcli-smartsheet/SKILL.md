@@ -1,6 +1,6 @@
 ---
 name: wecomcli-smartsheet
-description: 企业微信智能表格(smartsheet)管理技能。提供智能表格的结构管理(子表、字段/列)和数据管理(记录增删改查)。适用场景:(1) 管理智能表格子表和字段/列 (2) 查询、添加、更新、删除智能表格记录。支持通过 docid 或文档 URL 定位文档。当用户提到「企业微信智能表格」「智能表格」,或链接形如 `https://doc.weixin.qq.com/smartsheet/xxx` 时触发该技能。注意:普通文档、在线表格、智能文档/智能主页请用 `wecomcli-doc`。
+description: 何时用:仅当用户明确指向企业微信智能表格(链接 `https://doc.weixin.qq.com/smartsheet/*`、明说企微智能表格)时使用;泛指做个表格默认走本地工具,普通企微文档/在线表格见 wecomcli-doc。企微智能表格结构管理(子表、字段/列)与数据管理(记录增删改查),支持 docid 或 URL 定位;从零新建智能表格走 `wecom-cli doc create_doc`(doc_type=10)。
 metadata:
   requires:
     bins: ["wecom-cli"]
@@ -42,7 +42,7 @@ wecom-cli doc <tool_name> '<json_params>'
 
 ## 接口路由表
 
-> **硬规则**：第二列是 `references/xxx.md` 链接的，命中这一行后**先 `read` 对应 references 文件，再构造命令**。写入/读取记录前，先用 `smartsheet_get_sheet` 拿到目标子表的 `sheet_id`，并用 `smartsheet_get_fields` 了解字段类型。
+> **硬规则**：第二列是 `references/xxx.md` 链接的，命中这一行后**先用 `File(action="read")` 读取对应 references 文件，再构造命令**。写入/读取记录前，先用 `smartsheet_get_sheet` 拿到目标子表的 `sheet_id`，并用 `smartsheet_get_fields` 了解字段类型。
 
 | 用户意图 | 参考位置 |
 |---|---|

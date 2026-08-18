@@ -3,7 +3,7 @@
 考勤排班查询导出脚本
 
 [AI Agent 强制门禁] 本脚本执行前必须先阅读：
-   dingtalk-workspace/references/products/attendance-schedule.md
+   ../references/products/attendance-schedule.md
 
 职责：
   1. 分批查询排班记录（支持大量用户自动分批）

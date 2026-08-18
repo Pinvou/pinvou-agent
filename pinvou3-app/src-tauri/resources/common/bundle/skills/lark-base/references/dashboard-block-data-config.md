@@ -1,6 +1,6 @@
 # dashboard block data_config SSOT
 
-Block 的 `data_config` 字段因 `type` 不同而变化。本文档是 dashboard block `data_config` 的单一事实来源（SSOT），包含组件类型、字段结构、筛选格式、约束和可复制模板。
+Block 的 `data_config` 字段因 `type` 不同而变化。本文档是 Dashboard block 扁平单数据源 `data_config` 的单一事实来源（SSOT），包含组件类型、字段结构、筛选格式、约束和可复制模板。BaseApp 图表的外层结构不同，但每个 `data_sources[]` 元素复用本文的字段取值、筛选、分组、排序及规范化规则；创建或更新 App 组件时，还必须读取 [BaseApp Block data_config](lark-base-app-block-data-config.md) 了解共享 `base_token`、多数据源封装，以及 App 独有的列表组件协议。
 
 ## 支持的组件类型（`type` 枚举）
 
@@ -29,10 +29,12 @@ text: is, isNot, contains, doesNotContain, isEmpty, isNotEmpty
 number: is, isNot, isGreater, isGreaterEqual, isLess, isLessEqual, isEmpty, isNotEmpty
 select（multiple=false）: is, isNot, isEmpty, isNotEmpty
 select（multiple=true）: is, isNot, contains, doesNotContain, isEmpty, isNotEmpty
-datetime: is, isGreater, isGreaterEqual, isLess, isLessEqual, isEmpty, isNotEmpty
+datetime: is, isGreater, isLess, isEmpty, isNotEmpty
 checkbox: is (value: true/false)
 user / created_by / updated_by: is, isNot, isEmpty, isNotEmpty
 ```
+
+`isGreaterEqual` / `isLessEqual` 不是全局不支持：它们可用于 `number`，但不能用于 `datetime` / `created_at` / `updated_at`。日期范围必须用 `isGreater` / `isLess` 配合 `ExactDate`；不要把数字字段的操作符集合套到日期字段上。
 
 ## data_config 通用结构
 
@@ -89,6 +91,10 @@ user / created_by / updated_by: is, isNot, isEmpty, isNotEmpty
 | `view` | 按数据源记录顺序 | 保持原表行序（不常用） |
 
 `sort.order`：`asc`（升序）/ `desc`（降序）
+
+只要写 `sort` 对象，就需要明确排序方向。CLI 会把 `sort.type` 为 `group` 或 `view` 且缺少 `order` 的情况规范化为 `order:"asc"`；`sort.type:"value"` 必须显式写 `order:"asc"` 或 `order:"desc"`，因为指标值排序方向会改变业务含义。
+
+如果表中行序就是业务顺序，首次创建 block 时就一次性设置 `sort:{"type":"view","order":"asc"}` 保留行序，避免创建后再二次更新排序条件。
 
 示例 — 柱状图按销售额降序：
 
@@ -152,12 +158,42 @@ user / created_by / updated_by: is, isNot, isEmpty, isNotEmpty
 | `number` | number | is, isNot, isGreater, isGreaterEqual, isLess, isLessEqual, isEmpty, isNotEmpty | `{"field_name":"金额","operator":"isGreater","value":0}` |
 | `select` (`multiple=false`) | string（选项名） | is, isNot, isEmpty, isNotEmpty | `{"field_name":"状态","operator":"is","value":"已完成"}` |
 | `select` (`multiple=true`) | string[]（选多个）/ string（选单个） | is, isNot, contains, doesNotContain, isEmpty, isNotEmpty | 多选传数组如 `["标签1","标签2"]`；单选传单个字符串 |
-| `datetime` / `created_at` / `updated_at` | number（Unix 毫秒时间戳，13位） | is, isGreater, isGreaterEqual, isLess, isLessEqual, isEmpty, isNotEmpty | `{"field_name":"创建日期","operator":"isGreater","value":1704038400000}` |
+| `datetime` / `created_at` / `updated_at` | `["ExactDate", Unix 毫秒时间戳]` | is, isGreater, isLess, isEmpty, isNotEmpty | `{"field_name":"创建日期","operator":"isGreater","value":["ExactDate",1704038400000]}` |
 | `checkbox` | boolean | is | `{"field_name":"已审核","operator":"is","value":true}` |
 | `user` / `created_by` / `updated_by` | string 或 string[]（用户 ID，格式 `ou_xxx`）。不知道 `open_id` 时先用 `lark-cli contact +search-user --query "<姓名/邮箱/手机号>" --as user` 查 id。 | is, isNot, isEmpty, isNotEmpty | `{"field_name":"负责人","operator":"is","value":"ou_xxxxxxxxxxxxxxxx"}` |
 | 所有类型（为空/不为空） | 不需要 value | isEmpty, isNotEmpty | `{"field_name":"备注","operator":"isEmpty"}` |
 
-> `value` 类型为 `string | number | boolean | string[]`，需根据字段类型匹配正确格式
+> `value` 类型因字段而异，可为 `string | number | boolean | string[] | ["ExactDate", number]`，需按上表构造。
+
+### 日期筛选
+
+图表 `data_config.filter` 筛选 `datetime` / `created_at` / `updated_at` 字段时：
+
+- 有值条件只能使用 `is`、`isGreater` 或 `isLess`，不得使用 `isGreaterEqual` 或 `isLessEqual`。
+- `value` 必须写成 `["ExactDate", <Unix 毫秒时间戳>]`，不得直接传裸时间戳。
+- `isEmpty` / `isNotEmpty` 不传 `value`。
+
+日期区间示例：
+
+```json
+{
+  "filter": {
+    "conjunction": "and",
+    "conditions": [
+      {
+        "field_name": "派单日期",
+        "operator": "isGreater",
+        "value": ["ExactDate", 1785686400000]
+      },
+      {
+        "field_name": "派单日期",
+        "operator": "isLess",
+        "value": ["ExactDate", 1786032000000]
+      }
+    ]
+  }
+}
+```
 
 ## 约束与本地校验
 
@@ -169,9 +205,10 @@ user / created_by / updated_by: is, isNot, isEmpty, isNotEmpty
 - 长度/结构
   - `group_by` 最多 2 个；每项 `field_name` 必填
   - `group_by[].sort.type` 取值 `group|value|view`；`order` 取值 `asc|desc`
-- 规范化（CLI 自动处理）
+- 规范化（CLI 自动处理；`--no-validate` 时不生效，`data_config` 原样透传给后端）
   - `series[].rollup` 自动转成大写（如 `sum` → `SUM`）
   - `group_by[].sort.type/order` 自动转成小写
+  - `group_by[].sort.type` 为 `group` 或 `view` 且缺少 `order` 时，自动补 `order:"asc"`；`value` 排序不会自动补方向
 - 本地校验（可通过 `--no-validate` 跳过）
   - `+dashboard-block-create` 默认对 `data_config` 做轻量校验；失败会聚合错误并给出修复建议
   - `+dashboard-block-update` 不做强类型校验，由后端验证具体字段
@@ -264,13 +301,34 @@ user / created_by / updated_by: is, isNot, isEmpty, isNotEmpty
 
 漏斗图（流程转化）：
 
+先判断用户要看的数值语义：
+
+- **当前数量**：统计每个当前状态/阶段下有多少记录，例如“各环节当前数量”“当前阶段分布”。源表有状态/阶段字段时，直接用 `count_all:true` + `group_by`。
+- **累计数量**：统计到达该阶段及其后续阶段（后缀和）的累计数量，例如“流程转化”“从 A 到 B 各环节转化”。此口径假设流程单向、无跳阶/回退、记录不删除；不满足时须用状态变更历史，不能对当前快照累加。如果表中已有累计数量字段或阶段汇总表，直接用该字段画漏斗图；否则先计算累计数量，创建并写入 helper 汇总表后再画图。
+
+当前数量：
+
 ```json
 {
   "table_name": "表名",
-  "series": [{ "field_name": "数值字段", "rollup": "SUM" }],
+  "count_all": true,
   "group_by": [{ "field_name": "状态字段", "mode": "integrated" }]
 }
 ```
+
+累计数量：
+
+```json
+{
+  "table_name": "流程汇总表名",
+  "series": [{ "field_name": "累计数量", "rollup": "SUM" }],
+  "group_by": [{ "field_name": "阶段字段", "mode": "integrated", "sort": {"type":"view","order":"asc"} }]
+}
+```
+
+如果只有当前状态数据但用户要看流程转化，需要先按业务阶段顺序计算每个阶段的累计数量，再创建 helper 汇总表（如：阶段、累计数量），用 `+record-batch-create` 一次写入后，按“累计数量”模板创建漏斗图。helper 表行序就是业务顺序时，首次创建 block 时一次性设置好 `group_by.sort`。
+
+> ⚠️ 注意:helper 汇总表仅用于源表无法直接聚合出目标形态的场景（如上面的累计数量漏斗图）。只要能在源表上直接用 `group_by` + `rollup`（含 `AVERAGE`）算出，就不需要新建 helper 表。
 
 词云（文本频率）：
 

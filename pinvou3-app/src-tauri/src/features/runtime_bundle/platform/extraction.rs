@@ -370,15 +370,33 @@ impl Pinvou3Bundle {
     /// `root` 是磁盘目标根(对应 include_dir 的顶层),`dir` 可以是任意层级子目录。
     /// `Dir::files()` 返回的 `path()` 是相对于 **include_dir 根** 的完整路径
     /// (如 "roles/taizi.md"),所以一律用 `root.join(file.path())` 定位。
+    /// 排除 `__pycache__/` 与 `*.pyc`:include_dir! 按文件系统内嵌(不受 .gitignore
+    /// 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存若不排除,会被编进
+    /// 应用二进制并物化到用户 `~/.pinvou3/bundle/`(跨平台 cpython 版本耦合)。
     fn extract_dir(dir: &Dir<'_>, root: &std::path::Path) -> std::io::Result<()> {
         for file in dir.files() {
-            let path = root.join(file.path());
+            let rel = file.path();
+            if rel.components().any(|c| c.as_os_str() == "__pycache__")
+                || rel
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pyc"))
+            {
+                continue;
+            }
+            let path = root.join(rel);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&path, file.contents())?;
         }
         for sub in dir.dirs() {
+            if sub
+                .path()
+                .components()
+                .any(|c| c.as_os_str() == "__pycache__")
+            {
+                continue;
+            }
             Self::extract_dir(sub, root)?;
         }
         Ok(())

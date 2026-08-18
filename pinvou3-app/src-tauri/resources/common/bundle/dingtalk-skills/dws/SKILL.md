@@ -1,7 +1,11 @@
 ---
 name: dws
-description: 用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/日历/通讯录/群聊与机器人消息/待办/审批/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/AI听记/邮箱/在线电子表格(axls)/知识库/开放平台文档。用户要求操作上述钉钉产品时使用。
+description: 【何时用:仅当用户明确指向钉钉/DingTalk(钉钉文档、钉钉日程等)时使用;泛指做文档/表格/待办/审批默认走本地工具,不要误用钉钉】用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/组织大脑/日历/通讯录/群聊与机器人消息/待办/审批/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/Markdown文件/AI听记/邮箱/在线电子表格(axls)/知识库/白板/开放平台文档/个人IM与OA事件订阅。用户要求操作上述钉钉产品时使用。
 cli_version: ">=1.0.15"
+metadata:
+  requires:
+    bins: ["dws"]
+  cliHelp: "dws --help"
 ---
 
 # 钉钉全产品 Skill
@@ -9,7 +13,7 @@ cli_version: ">=1.0.15"
 通过 `dws` 命令管理钉钉产品能力。
 
 
-> ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是事实源,与本文档冲突时以 `--help` 为准。
+> ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是 Cobra flags 事实源,Agent 选命令/参数约束/安全确认以 leaf Schema(`--compact`)为准,与本文档冲突时以二者为准。
 
 ## 严格禁止 (NEVER DO)
 - 不要使用 dws 命令以外的方式操作（禁止 curl、HTTP API、浏览器）
@@ -21,65 +25,127 @@ cli_version: ">=1.0.15"
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
 - 单次批量操作不超过 30 条记录
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
-- **脚本优先**:[scripts/](./scripts/) 下的 `python scripts/<name>.py` 已封装翻页/批量逻辑(如 AI表格导入导出、文档创建并写入、钉盘目录树、机器人广播),对应场景优先调用脚本;各脚本参数不统一,先 `python scripts/<name>.py --help` 确认 flag
+- **脚本只用于明确覆盖的复合任务**：[scripts/](./scripts/) 下的脚本可封装 AI 表格批量导入导出、钉盘目录树等流程；当公开 `+` Shortcut 已提供目标唯一解析、分页/部分失败 ledger 和确认语义时，优先 Shortcut。Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本
+- **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）；文档中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径，实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**
+- **实时个人事件例外**：普通 IM 消息、reaction、已读和撤回默认走 `dws event +listen-im ...`；OA 审批、群生命周期、明确的原始 EventKey、Filter DSL、subscribe_id 或原始 envelope 使用 `dws event consume ... --flatten`。不要写脚本轮询消息历史或审批列表
 
+## Shortcut 与原子命令的使用原则
+
+`shortcut` 是对常用操作的高层封装，适合优先承担用户意图；产品参考文档和本 skill 负责判断意图、风险、跨产品流程和复杂参数，CLI 帮助负责声明当前版本真正可调用的命令。
+
+- 先按产品参考、意图表和 recipe 路由。用户意图可由可见 Shortcut 满足时，优先使用 `dws <service> +<verb> ... --format json`，不要手写等价的多步原子命令。只有脚本明确补足 Shortcut 未覆盖的复合交付物且其安全/完整性契约仍适用时才选择脚本。
+- 公开内建 shortcut 同时进入 Runtime Schema。用 `dws schema --cli-path "<service> +<verb>" --compact --format json` 读取 Agent 选择、参数、跨参数约束和 risk/confirmation；只有参数映射、接口绑定或 provenance 审计才通过 `--jq` 精确读取 full leaf；`dws shortcut list --service <service> --format json` 只作为轻量批量发现入口。
+- 真正组装参数前用叶子帮助 `dws <service> +<verb> --help` 核对当前 Cobra 接受的 flags。父级 `dws <service> --help` 只能发现子命令，不能替代叶子参数帮助。
+- shortcut catalog 中 `confirmation=user_required` 时，必须先获得用户确认，确认后才加 `--yes`；`not_required` 不额外确认。
+- 如果 shortcut 不在 help / list 中，改用产品参考里的原子命令、脚本或标准流程；不要猜测未展示的 `+` 命令。
+- shortcut 失败时按“错误处理”流程先加 `--verbose` 复查；若仍失败，应记录具体输入、输出、trace / endpoint / tool 信息。
+
+
+<!-- VISIBLE_SHORTCUTS_OVERVIEW_START -->
+## Shortcut 总览
+
+下面只统计当前公开 catalog 中的 shortcut，不展开完整明细。已知意图应先按产品 Skill、意图表或任务 reference 选择唯一命令；命令已选中时直接执行，只在参数或安全语义不确定时读取 leaf Schema，在当前 Cobra flags 不确定时读取 leaf Help。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service <service> --format json` 做最后回退；不要为已知高频意图加载完整产品 Catalog。
+
+| 服务 | shortcut 数 |
+|---|---:|
+| `aitable` | 92 |
+| `attendance` | 19 |
+| `calendar` | 20 |
+| `chat` | 98 |
+| `contact` | 14 |
+| `devapp` | 19 |
+| `ding` | 4 |
+| `doc` | 45 |
+| `drive` | 28 |
+| `mail` | 10 |
+| `minutes` | 27 |
+| `oa` | 7 |
+| `report` | 2 |
+| `sheet` | 2 |
+| `todo` | 11 |
+| `wiki` | 1 |
+<!-- VISIBLE_SHORTCUTS_OVERVIEW_END -->
+
+## 多组织 / 多账号
+
+- `dws profile list --format json` 默认返回全部账号。自动化只使用每项稳定的 `profile=corpId:userId`；`status/expiresAt/refreshExpAt` 来自真实身份 Token，列表不触发刷新。
+- 输入支持 `corpId:userId`、`corpId:userName`、`corpName:userId`、`corpName:userName`，也兼容单独的 corpId、唯一 corpName 和本地 profile 名。名称只用于输入；重名时必须按报错候选改用 `corpId:userId`。
+- 只传组织时使用该组织明确记录的 `isOrgCurrent=true` 账号。多账号组织没有默认账号时必须让用户指定账号；禁止选择第一项、最近登录或最近使用账号。
+- 不传 `--profile` 使用全局 `isCurrent=true` 账号。`primaryProfile/isPrimary` 仅兼容输出，不参与选择；`previousProfile` 只用于 `profile switch -`。
+- 跨组织读 / 搜：按 `corpId` 去重；每个组织使用唯一 `isOrgCurrent=true` 的 `profile`。组织存在多个账号且没有默认账号时先询问用户。写 / 发 / 删 / 撤回及持久切换前先确认目标组织和账号。
 
 ## 产品总览
 
 | 产品                | 用途                                                   | 参考文件                                                           |
 |-------------------|------------------------------------------------------|----------------------------------------------------------------|
 | `agoal` | 目标管理:战略解码/经营合约/计分卡/用户目标/目标模板/周月报 | [agoal.md](./references/products/agoal.md) |
-| `aisearch`        | AI搜问（搜人首选）：按姓名/部门/职位/职责/上级/下级/手机号/工号维度找人，"谁负责 XX/XX 的负责人/某事项/某项目的人"统一走本产品 | [aisearch.md](./references/products/aisearch.md)               |
+| `aisearch`        | AI搜问（通用找人首选）：按姓名/部门/职位/职责/上级/下级/手机号/工号维度找人，"谁负责 XX/XX 的负责人/某事项/某项目的人"统一走本产品；不含人才池/绩效/职业历程等专项 HR 场景（那些去 `hrbrain`） | [aisearch.md](./references/products/aisearch.md)               |
 | `aitable`         | AI表格：Base/数据表/字段/记录/视图/附件/图表/仪表盘/导入导出/模板搜索            | [aitable.md](./references/products/aitable.md)                 |
 | `attendance`      | 考勤：打卡结果/打卡流水/考勤组查询/考勤规则/汇总统计/假期类型/假期余额（P0 已落地，部分管理类命令仍属 P1） | [attendance.md](./references/products/attendance.md)           |
 | `calendar`        | 日历：日历列表/日程/参与者/附件/响应/会议室/闲忙查询/时间建议                  | [calendar.md](./references/products/calendar.md)               |
-| `chat`            | 群聊与机器人：搜索群/建群/群成员管理/改群名/消息发送(文本/Markdown/图片/文件)/拉取消息/@我/特别关注/机器人群发/单聊/撤回/转发/引用回复/Webhook/机器人搜索     | [chat.md](./references/products/chat.md)                       |
-| `contact`         | 通讯录：用户查询(当前用户/搜索/详情/手机号)/花名册档案(学历/家庭/银行卡/合同)/离职员工查询(姓名/时间范围/部门)/部门查询(搜索/详情/子部门/成员)/角色查询(主管/管理员/财务/HR 等 label)/特别关注列表              | [contact.md](./references/products/contact.md)                 |
+| `chat`            | 群聊与机器人：搜索群/建群/群成员管理/改群名/消息发送(文本/Markdown/图片/文件)/拉取消息/消息收藏/@我/特别关注/机器人群发/单聊/撤回/转发/引用回复/Webhook/机器人搜索 | [chat.md](./references/products/chat.md)                       |
+| `contact`         | 通讯录：用户查询/部门/角色/花名册（学历/家庭/银行卡/紧急联系人/合同等基础字段）/离职员工/特别关注，以及创建企业、企业账号和邀请员工；不含职业历程/绩效/人才池（那些去 `hrbrain`） | [contact.md](./references/products/contact.md)                 |
 | `devdoc`          | 开放平台文档：搜索开发文档                                        | [devdoc.md](./references/products/devdoc.md)                   |
 | `ding`            | DING消息：发送/撤回（应用内/短信/电话）                              | [ding.md](./references/products/ding.md)                       |
 | `doc`             | 钉钉文档：搜索/浏览/读写/块级编辑/评论/文件创建/复制/移动/重命名/**删除/导出 docx/权限管理/媒体上传下载**       | [doc.md](./references/products/doc.md)                         |
 | `drive`           | 钉钉云盘：文件列表/元数据/文件夹/上传(两步)/下载                        | [drive.md](./references/products/drive.md)                     |
+| `hrbrain`         | 组织大脑：人才池管理/员工档案专项模块查询（元数据/批量数据/标签/职业历程/绩效）/结构化高级人才搜索（原始条件表达式）；区别于 `contact` 的基础通讯录档案与 `aisearch` 的通用语义找人 | [hrbrain.md](./references/products/hrbrain.md)                 |
+| `markdown`        | 原生 Markdown 文件：读取/创建/全量覆盖/字面量或 RE2 局部替换              | [markdown.md](./references/products/markdown.md)               |
 | `minutes`         | AI听记：听记列表/摘要/关键词/转写/待办/思维导图/发言人/发言人段落总结/热词/录音控制/成员权限/上传 | [minutes.md](./references/products/minutes.md)                 |
 | `oa`              | OA审批：待处理/详情/同意/拒绝/撤销/记录/已发起/任务/转交/评论/抄送              | [oa.md](./references/products/oa.md)                           |
+| `pat`             | PAT 行为授权：浏览器策略/scope 预览/一次性、会话或永久授权                    | [pat.md](./references/products/pat.md)                         |
 | `report`          | 日志：按模版创建/收件箱/已发送/模版查看/详情/已读统计                         | [report.md](./references/products/report.md)                   |
 | `mail`            | 邮箱：邮箱地址查询/邮件搜索(KQL)/邮件详情/发送邮件                        | [mail.md](./references/products/mail.md)                       |
 | `sheet`           | 在线电子表格(axls)：工作表 CRUD/区域读写/CSV 批量写入/行列增删/合并/查找替换/筛选视图/全局筛选/排序/下拉列表/条件格式/浮动图片/浮动图表/模板/导出 xlsx(单命令一站式) | [sheet.md](./references/products/sheet.md)                     |
 | `todo`            | 待办：创建(含优先级/截止时间/循环)/查询/修改/标记完成/删除                   | [todo.md](./references/products/todo.md)                       |
-| `wiki`            | 知识库：空间创建/详情/列表/搜索 + 成员管理                                | [wiki.md](./references/products/wiki.md)                       |
+| `wiki`            | 知识库：空间创建/详情/列表/搜索 + 成员管理 + 知识库动态查询                | [wiki.md](./references/products/wiki.md)                       |
+| `whiteboard`      | 文档内嵌白板：读取 OpenNodes、追加节点、整页重建                           | [whiteboard.md](./references/products/whiteboard.md)           |
+| `event`           | 个人 IM/OA 事件：监听消息、群生命周期、审批任务与审批实例事件，NDJSON 输出（实时驱动 Agent）| [event.md](./references/products/event.md)                     |
 
 ## 意图判断决策树
 
+用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → **当前无稳定产品参考**（勿猜 `aiapp` 命令）；向用户说明该能力未以产品文档发布
 用户提到"目标管理/Agoal/战略解码/经营合约/计分卡/目标模板/周月报提交统计" → `agoal`
-用户提到"找人/搜人/谁负责 XX/某事项的负责人/某项目的人/团队成员/上级/下级/按工号找人/按手机号找人" → `aisearch`
+用户提到"找人/搜人/谁负责 XX/某事项的负责人/某项目的人/团队成员/上级/下级/按工号找人/按手机号找人" → `aisearch`（通用语义找人；若明确涉及人才池/绩效/职业历程/结构化高级条件，去 `hrbrain`）
 用户提到"表格/多维表/AI表格/记录/数据/视图/图表/仪表盘" → `aitable`
 用户提到"考勤/打卡/排班" → `attendance`
 用户提到"日程/日历/会议室/约会/时间建议" → `calendar`
 用户提到"群聊/建群/群成员/群管理/发消息/发图片消息/发文件消息/发 Markdown 消息/截图发钉钉/转发消息/引用回复/@我/特别关注消息/机器人发消息/Webhook/机器人群发/机器人单聊/通知" → `chat`
-用户提到"通讯录/同事/部门/组织架构/子部门/部门多少人/离职员工/离职名单/离职花名册/花名册/员工档案/学历/家庭/银行卡/紧急联系人/合同/角色/主管角色/管理员角色/财务/HR/特别关注/星标联系人" → `contact`
+用户提到"通讯录/同事/部门/组织架构/子部门/部门多少人/离职员工/离职名单/离职花名册/花名册/基础员工档案(学历/家庭/银行卡/紧急联系人/合同)/角色/主管角色/管理员角色/财务/HR/特别关注/星标联系人/创建企业/企业账号/邀请员工/新员工入职" → `contact`（不含职业历程/绩效/人才池；那些去 `hrbrain`）
 用户提到"开发/API/调用错误 文档" → `devdoc`
 用户提到"DING/紧急消息/电话提醒" → `ding`
 用户提到"钉钉文档/云文档/知识库/读写文档/块级编辑/文档评论/文档复制移动" → `doc`
 用户提到"云盘/文件存储/文件上传下载/文件夹" → `drive`
+用户提到"人才池/储备干部池/员工档案元数据或批量模块数据/职业历程/绩效记录/员工标签/组织大脑/结构化人才搜索(高级条件表达式)" → `hrbrain`（区别于 `aisearch` 的通用语义找人与 `contact` 的基础通讯录档案）
+用户提到"原生 Markdown 文件/.md 文件/读取 Markdown 原文/覆盖 Markdown/局部替换 Markdown" → `markdown`
 用户提到"听记/AI听记/会议纪要/转写/摘要/思维导图/发言人/热词" → `minutes`
 用户提到"邮箱/邮件/发邮件/收邮件/搜邮件/查邮件/邮件草稿/转发邮件/回复邮件/邮件附件/抄送" → `mail`
 用户提到"审批/请假/报销/出差/加班/同意/拒绝/撤销审批" → `oa`
+用户提到"PAT 授权/行为权限/scope 授权/批量授权/一次性授权/会话授权/永久授权/授权浏览器策略" → `pat`
 用户提到"日志/日报/周报/日志统计/写日报/提交周报/发日志/填日志" → `report`
 用户提到"在线电子表格/钉钉表格/axls/工作表/单元格读写/合并单元格/筛选视图/导出 xlsx" → `sheet`
 用户提到"待办/TODO/任务提醒/循环待办" → `todo`
-用户提到"知识库/wiki/团队空间/知识库成员管理" → `wiki`
+用户提到"创建知识库/知识库列表/搜索知识库空间/wiki/团队空间/知识库成员管理/我的文档个人空间" → `wiki`
+用户提到"文档内嵌白板/画布/OpenNodes/白板节点/连接线/整页重建白板" → `whiteboard`；创建空白板卡片先走 `doc whiteboard insert`
+用户提到"监听有人@我/监听单聊或群消息/监听所有单聊或群消息/监听某人发送的消息/监听消息已读/监听消息撤回/监听消息贴表情或表情回应/订阅个人 IM 事件/实时接收钉钉事件/监听并自动回复消息/驱动 Agent 处理消息" → `event +listen-im`；群成员加入/退出、群改名/解散或明确原始 EventKey/Filter DSL → `event consume`
+用户提到"监听待我审批的任务/监听审批任务创建、完成或转交/监听审批单发起或终止/监听我发起的审批完成/监听审批实例完成/订阅 OA 事件/event consume user_oa_approval_*" → `event consume`
+
+普通消息、reaction、已读、撤回监听优先由一个 `dws event +listen-im` 进程表达目标；不同用户、不同群或不同过滤条件拆成独立进程。只有高级事件控制才生成 `dws event consume <event_key> [event_key...] --flatten`。
 
 关键区分: aitable(数据表格) vs todo(待办任务)
 关键区分: report(钉钉日志/日报周报) vs todo(待办任务)
 关键区分: chat send-by-bot(机器人身份发消息) vs send-by-webhook(自定义机器人Webhook告警)
-关键区分: doc(钉钉文档/富文本协同) vs drive(钉钉云盘/二进制文件)
+关键区分: doc(在线富文本文档/adoc) vs markdown(原生 .md 纯文本文件) vs drive(通用文件存储与传输)
+关键区分: contact(基础通讯录档案：学历/家庭/银行卡/紧急联系人/合同/部门角色) vs aisearch person(通用语义找人：谁负责/上级/下级/多维度模糊搜索) vs hrbrain(人才池/员工档案专项模块数据/职业历程/绩效/结构化高级人才搜索)
 关键区分: oa tasks(审批 taskId，审批/拒绝用) vs oa list-pending(收件箱 processInstanceId，查看用)
+关键区分: oa(查询或操作审批) vs event user_oa_approval_*(当前用户审批事件长连接监听)
 
 
 > 更多易混淆场景见 [intent-guide.md](./references/intent-guide.md)
 
 ## 危险操作确认
 
-以下操作为不可逆或高影响操作，执行前**必须先向用户展示操作摘要并获得明确同意**，同意后才加 `--yes` 执行。确认方式：展示操作摘要（操作类型 + 目标对象 + 影响范围），用户明确同意后才加 `--yes` 执行。
+以下操作为不可逆或高影响操作，执行前**必须先向用户展示操作摘要（操作类型 + 目标对象 + 影响范围）并获得明确同意**，同意后才加 `--yes` 执行。
 
 | 产品 | 命令 | 说明 |
 |------|------|------|
@@ -103,55 +169,145 @@ cli_version: ">=1.0.15"
 | `todo` | `task delete` | 删除待办 |
 | `minutes` | `replace-text` | 全文批量替换转写与摘要 |
 
+### 确认门禁的识别与重试协议
+
+非交互环境（Agent/CI，stdin 非 TTY）下，写命令不带 `--yes` 时 CLI **不打印交互提示语**，直接失败并输出结构化错误。识别方式：
+
+- `--format json` 输出（或 stderr）中 `error.reason == "confirmation_required"`，错误信息含「当前环境无法交互确认」
+
+遇到 `confirmation_required` 时按以下协议处理：
+
+1. **不要当普通错误放弃**：把命令、风险等级（`write` / `high-risk-write`）和关键参数展示给用户，明确告知这是写/高风险操作
+2. 用户显式同意 → 在**原始命令**末尾追加 `--yes` 重试（不改动任何业务参数）
+3. 用户拒绝 → 终止，不得改写参数绕过门禁
+4. 想先让用户 review 具体请求：加 `--dry-run` 重试——它**不触发确认门禁**，会输出完整调用预览（`invocation.params`），用户确认预览后再换 `--yes` 执行
+
+**禁止**：
+
+- 看到 `confirmation_required` 就未经用户同意自动追加 `--yes` 静默重试（等于禁用门禁）
+- 把 `confirmation_required` 当网络/权限错误处理或重试
+- 用 `echo yes | dws ...` 等管道方式喂答案代替 `--yes`（管道答案技术上会被接受，但违背了让用户显式知悉的设计意图）
+
 ## 核心流程
 在选择 `dws` 的产品命令前，遵循以下流程：
 
 0. **URL 预检**：输入含 `alidocs.dingtalk.com` URL 时，该域名下存在多种路径格式（`/i/nodes/...`、`/i/p/...`、`/spreadsheetv2/...`、`/document/edit|preview?dentryKey=...` 等），每种的处理流程不同。**必须先读取 [url-patterns.md](./references/url-patterns.md) 中的「alidocs URL 分流决策」**，按其中规则识别 URL 类型后再选择对应产品。含 `shanji.dingtalk.com` URL 时直接路由到 `minutes`。URL 已识别后直接进入对应产品流程，无需后续步骤。
 1. 意图分类：判断用户指令的核心动词/动作属于哪一类。
 2. 歧义追问：指令模糊或包含多个产品的关键字时，严禁猜测，主动向用户追问澄清意图。
-3. 选定产品：参考产品总览和意图判断决策树选定产品，充分阅读对应产品参考文件后执行。
+3. 选定产品：参考产品总览和意图判断决策树选定产品，按任务最小化读取对应产品参考文件后执行（已知高频意图直接用已给出的唯一命令，不预加载完整产品参考）。
 
-## 命令发现（flag / 参数以 binary 为准）
+## 命令发现（Schema 渐进查询 + --help 互为补充）
 
-产品参考文档（`references/products/*.md`）里的 flag 列表是**便于理解用途的参考**，不是权威契约。参数名称、默认值、必填约束以当前二进制编译出的 Cobra 命令为准，**`--help` 是产品命令调用的事实源**：
+### Schema 渐进查询（Agent 选命令首选）
+
+`dws schema` 内嵌当前二进制公开命令面的结构化契约。**Agent 选择命令、读取参数映射/约束和安全语义时必须优先渐进查询 leaf Schema**；真正组装执行参数前，用 `--help` 确认当前 Cobra 接受的 flags：
+
+本节同时适用于基础/原子命令与公开内建 `+` shortcut。用户自定义或未公开 shortcut 不进入发布 Schema；其是否可执行仍以当前 Cobra help 为准。
+
+**已知命令路径例外**：当本 Skill、产品意图表或任务 reference 已经给出精确 CLI path 时，不要再查询产品级/分组级 Schema，也不要调用完整 Shortcut Catalog；可直接执行。只有参数、约束或安全语义不确定时才读取该命令的 leaf Schema，只有当前 Cobra flags 不确定时才补读 leaf Help。
+
+稳定 command identity、主 CLI path 和 alias 由 leaf `ContractFinal.Identity` 与真实 Cobra tree 精确绑定。Agent 不应读取 Catalog 文件、native annotation 或其他生成 JSON 来重新推断命令；所有运行时查询都以当前二进制交付的 Schema 投影为准。
 
 ```bash
-# 人读视图：看 Usage / Example / Flags
-dws <command-path> --help
-# 例：dws calendar event list --help
+# 第 1 层：产品概览（~4.5KB，列出全部产品 + 工具数 + 用途摘要）
+dws schema
 
-# helper-only schema 查询（如 dev.*），普通产品命令不要依赖 schema 推断参数
-dws schema "dev app create"
-# 注：--jq 对 schema 输出无效（不过滤，仍返回完整对象）；schema 结构里必填标在
-# .parameters.<字段>.required，没有 .tool 键。要看必填字段自行读 .parameters 即可。
+# 第 2 层：产品级（列出该产品下全部工具的 cli_path + description + effect/risk）
+dws schema calendar --compact
+
+# 第 3 层：分组级（按命令分组列出工具摘要）
+dws schema "calendar event" --compact
+
+# 第 4 层：Agent leaf（参数契约：type/required/description/constraints/examples）
+dws schema "calendar event create" --compact
+
+# --all：导出所有工具的完整 leaf Schema，仅用于 CI / 审计 / 参数 baseline
+dws schema --all --format json
 ```
 
-**何时用哪条路径：**
-- 只需看某个命令怎么调用 → `dws <cmd> --help`
-- 构造 `--params` / `--json` 时不确定字段类型、必填、别名 → 先看 `dws <cmd> --help`，helper-only 命令再看 `dws schema`
-- 参考文档和 `--help` 冲突时 → **以 `--help` 为准**，文档视为过期
+**`--all` 使用边界（强制）**：`--all` 会返回每个工具的完整参数、约束和安全语义，输出体积很大。仅在用户明确要求全量导出，或执行 CI、Catalog 审计、参数防丢 baseline 时使用。普通业务任务严禁使用 `--all` 做命令发现，也不要把全量结果直接注入 Agent 上下文；必须按“产品概览 → 产品/分组 → leaf”渐进查询。完整兼容性 baseline 必须使用未裁剪的 `schema --all`；`schema --all --compact` 会移除 provenance 和接口映射字段，不得作为完整 baseline。
 
-`dws schema` 在静态端点模式下只保留 helper-only 子树；普通产品命令和 flag 不再通过远程 schema 动态发现。
+同一个工具省略 `--compact` 的 full leaf 与 `--all` 条目是同一份 `ToolSpec` 契约；compact leaf 只做展示投影，不重新解析语义。Alias 查询不得根据 alias 重写或补猜参数。若同一视图观察到内容差异，应作为契约漂移报告，而不是选择其中一份继续执行。
+
+**`--compact` Agent 模式**采用正向字段白名单。保留 `cli_path`、`canonical_path`、`description`、`effect`、`risk`、`confirmation`、`interface_mode`、`availability`、`interface_reason`、`parameters`（含 `type`/`required`/`description`/`default`/`enum`）、`constraints`、`examples`、`use_when`、`avoid_when`；新增 full/audit 字段不会自动泄漏进 Agent 上下文。它有意不返回 `interface_ref`、参数 `property/interface_type` 和 provenance；检查这些映射事实时，用 full leaf 配合 `--jq` 精确投影。
+
+`--compact` 是 Schema 展示能力。当前版本支持；若兼容旧二进制时收到 `unknown_flag: --compact`，仅去掉 `--compact` 重跑同一个 Schema 查询。不要因此判定 leaf 不存在，也不要改用 Schema 查询业务数据。
+
+### Schema 字段速查
+
+```jsonc
+// leaf 级输出（dws schema "calendar event create" --compact）
+{
+  "cli_path": "calendar event create",
+  "canonical_path": "calendar.create_calendar_event",
+  "description": "创建新的日程...",
+  "effect": "write",           // read | write | destructive
+  "risk": "medium",            // low | medium | high
+  "confirmation": "not_required", // not_required | user_required
+  "interface_mode": "mcp",     // mcp | local | composite
+  "availability": "available", // available | unavailable
+  "interface_reason": "",
+  "parameters": {
+    "title": { "type": "string", "required": true, "description": "..." },
+    "start": { "type": "string", "required": true, "format": "date-time" }
+    // ...
+  },
+  "constraints": { "require_together": [["recurrence-type", "recurrence-interval", "recurrence-range-type"]] },
+  "examples": ["dws calendar event create --title ..."]
+}
+```
+
+- `confirmation=user_required` → 必须先向用户确认再加 `--yes`；不要根据 `effect` 或 `risk` 的值自行重写最终 confirmation winner
+- `availability=unavailable` → 不执行该工具；向用户说明 `interface_reason`。`interface_mode` 只描述实现机制，不能覆盖 availability
+- `parameters.<flag>.required=true` → Agent 应提供该参数；Cobra 是否硬拒绝以 `--help`/实际命令契约为准
+- `parameters.<flag>.cli_required=true` → Cobra 将该 flag 标记为硬必填
+- `constraints.require_together` → 列出的 flag 必须同时提供
+
+### Schema、Help 与业务数据的边界
+
+| 信息 | 事实源 |
+|------|--------|
+| 命令是否存在、当前 Cobra 接受哪些 flags | `dws <cli_path> --help` |
+| Agent 选择、CLI 参数/required/组合约束、risk/confirmation（原子/基础命令） | `dws schema "<cli_path>" --compact` |
+| CLI↔RPC 参数映射、接口绑定或 provenance 审计 | full leaf 配合 `--jq` / `--fields` 精确投影；不要把整个 full leaf 注入 Agent 上下文 |
+| shortcut 的参数、组合约束、risk/confirmation、示例 | 已知路径优先 `dws schema --cli-path "<service> +<shortcut>" --compact --format json`；完整 `shortcut list` 仅用于无法定位低频能力时的最后回退 |
+| 人类可读用法 | `dws <cli_path> --help` |
+| 钉钉中的文档、文件、日程、消息等实际数据 | 真正执行对应的 `read` / `search` / `list` 命令 |
+
+Schema 与 Help 冲突是**契约漂移**，不得静默猜测或把两边字段随意拼接：
+
+- 执行参数只使用 Cobra/Help 接受的 flags，并把漂移报告出来。
+- 安全语义冲突时不能选择更宽松行为；先采用更保守的确认方式，无法确认安全执行方式时停止并报告。
+- leaf Schema 是已经按来源 precedence 解析后的契约；不要根据值的“严格程度”自行改写 winner。只有发现它与 Help/实际执行契约冲突时，才进入上述安全降级。
+
+`dws schema` 只查询命令契约，不搜索钉钉文档或业务数据。完成命令发现后，必须继续执行真实命令，例如 `dws doc read`、`dws drive search`；不要把 Schema 查询结果当成业务查询结果。
+
+### Helper-only 与本地 Cobra 命令
+
+`dev.*` 包含 helper-only 执行面，其中远端 helper 未进入 pinned metadata 时标记为 `composite`，不能伪装成 `local`。`event list` / `event schema` 读取内置目录和 payload 定义，属于 `local`；`event consume` / `event status` / `event stop` 同时编排远端个人订阅控制面与本地 bus/consume，属于 `composite`。实现来源不同，不改变统一查询边界：进入全局 `dws schema` 的命令须由 leaf `ContractFinal.Identity` 声明收集，并由同一 `ToolSpec` 投影到 leaf、产品/分组、`--all` 与 Catalog。不得把 Cobra 临时合成结果作为第二条 Schema 数据路径。
+
+事件需要区分两种 Schema：`dws event schema <event_key> --flatten` 查询 Agent 要消费的顶层业务字段；`dws schema "event consume" --compact` 查询 CLI 命令参数。前者是真实业务命令，后者只读取最终内嵌 SchemaRegistry；不能相互替代。
+
+`source` 表示最终命令 identity 的来源，不表示运行时 backing；helper/local/MCP 实现机制读取 `interface_mode`、`availability` 和 provenance，不要假定 `dev.*` 必然是 `source=mcp:<server>`，也不要假定本地命令必然是 `source=cobra`。
 
 ## 错误处理
-1. 遇到错误，加 `--verbose` 重试一次
-2. 若 stderr 出现 `RECOVERY_EVENT_ID=<event_id>`，优先按 [recovery-guide.md](./references/recovery-guide.md) 执行 recovery 闭环
-3. 仍然失败，报告完整错误信息给用户，禁止自行尝试替代方案
-4. 认证失败时，参考 [global-reference.md](./references/global-reference.md) 中的认证章节处理
-5. 各产品高频错误及排查流程见 [error-codes.md](./references/error-codes.md)
-6. 遇到 [capability-limits.md](./references/capability-limits.md) 中列出的「已知不支持操作」时，**直接告知用户不支持并建议在钉钉客户端操作**，不要重试或变通
+1. 先读取 JSON 错误的 `retryable`、`retry_after_seconds`、`next_retry_at`、`hint` 和 `actions`；只有明确 `retryable=true` 时才按服务端节奏做一次有界重试。缺少重试语义时加 `--verbose` 收集诊断后停止
+2. 仍然失败，报告完整错误信息给用户，禁止自行尝试替代方案
+3. 认证失败时，参考 [global-reference.md](./references/global-reference.md) 中的认证章节处理
+4. 各产品高频错误及排查流程见 [error-codes.md](./references/error-codes.md)
+5. 遇到 [capability-limits.md](./references/capability-limits.md) 中列出的「已知不支持操作」时，**直接告知用户不支持并建议在钉钉客户端操作**，不要重试或变通
 
 
 ## 详细参考 (按需读取)
 
-- [references/products/](./references/products/) — 各产品命令详细参考（flag 细节以 `--help` / `dws schema` 为准）
+- [references/products/](./references/products/) — 各产品命令详细参考（Cobra 接受的 flag 以叶子 `--help` 为准；公开基础命令与内建 shortcut 的 Agent 映射/约束/安全语义以 leaf Schema 为准）
 - [references/intent-guide.md](./references/intent-guide.md) — 意图路由指南（易混淆场景对照）
 - [references/url-patterns.md](./references/url-patterns.md) — URL 格式规范 + alidocs URL 分流决策与类型探测流程（含钉盘 `document/edit|preview?dentryKey=` 链接）
 - [references/global-reference.md](./references/global-reference.md) — 全局标志、认证、输出格式
 - [references/field-rules.md](./references/field-rules.md) — AI表格字段类型规则
 - [references/error-codes.md](./references/error-codes.md) — 错误码 + 调试流程
-- [references/recovery-guide.md](./references/recovery-guide.md) — recovery 闭环、`RECOVERY_EVENT_ID`、`execute/finalize` 规范
-- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、日历、机器人消息、通讯录、考勤、日志、待办、文档创建并写入、钉盘目录树等）
-- [references/best_practices/](./references/best_practices/) — 11 个编号场景 recipe(01 消息/02 任务/03 会议/04 文档/05 汇报/06 数据分析/07 听记/08 通讯录/09 邮件/10-11 听记发言人)+ [lite-recipes.md](./references/best_practices/lite-recipes.md) 速查;通用规范在 `_common/`
+- [scripts/](./scripts/) — 各产品批量/复合操作脚本（AI表格批量导入导出、日历、机器人消息、通讯录、考勤、日志、待办、钉盘目录树等）
 - [references/products/aitable/](./references/products/aitable/) — AI表格细分章节(单元格值/字段/公式/筛选/导入导出/记录增删改查/错误恢复/最佳实践);记录操作另见 [aitable-record-ops.md](./references/products/aitable-record-ops.md)
+- [references/products/pat.md](./references/products/pat.md) — PAT 浏览器策略、行为 scope 预览与授权安全要求
 - [references/capability-limits.md](./references/capability-limits.md) — 已知能力限制（doc/aitable/chat/minutes，遇到时直接告知用户不支持）
+- [references/best_practices/](./references/best_practices/) — 11 个编号场景 recipe(01 消息/02 任务/03 会议/04 文档/05 汇报/06 数据分析/07 听记/08 通讯录/09 邮件/10-11 听记发言人)+ [lite-recipes.md](./references/best_practices/lite-recipes.md) 速查;通用规范在 `_common/`

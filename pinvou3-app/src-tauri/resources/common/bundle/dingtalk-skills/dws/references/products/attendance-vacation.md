@@ -92,7 +92,7 @@ dws contact dept list-members --ids <deptId> --format json
 ### 阶段 2：调用脚本生成 Excel
 
 ```bash
-python scripts/attendance_vacation_balance.py \
+python3 scripts/attendance_vacation_balance.py \
   --users <userId1>,<userId2>,... \
   [--leave-keywords "年假,病假,调休"] \
   [--out 假期余额列表.xlsx]

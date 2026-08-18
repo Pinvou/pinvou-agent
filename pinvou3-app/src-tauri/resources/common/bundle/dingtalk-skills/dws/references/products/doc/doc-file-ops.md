@@ -1,6 +1,6 @@
 # doc 文件操作（upload / download / copy / move / rename / delete + folder create）
 
-> **前置条件（MUST READ）：** 执行本命令前，必须先用 Read 工具读取以下文件：
+> **前置条件（MUST READ）：** 执行本命令前，必须先用 File(action="read") 读取以下文件：
 > 1. [`../doc.md`](../doc.md) — 命令路由 + 场景索引 + 意图判断 + 工作流
 
 > **弃用提示（文件管理命令正在迁移到 drive / wiki）**：本文所列 `doc` 文件管理命令虽仍能跑，但执行时会打印弃用警告，请优先改用 `drive` / `wiki` 对应命令：

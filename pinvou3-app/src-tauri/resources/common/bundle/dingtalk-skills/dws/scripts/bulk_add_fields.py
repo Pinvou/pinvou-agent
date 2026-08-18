@@ -34,9 +34,9 @@ ALLOWED_FIELD_TYPES = {
     'text', 'number', 'singleSelect', 'multipleSelect', 'date', 'currency',
     'user', 'department', 'group', 'progress', 'rating', 'checkbox',
     'attachment', 'url', 'richText', 'telephone', 'email', 'idCard',
-    'barcode', 'geolocation', 'primaryDoc', 'formula', 'unidirectionalLink',
-    'bidirectionalLink', 'creator', 'lastModifier', 'createdTime',
-    'lastModifiedTime',
+    'barcode', 'geolocation', 'address', 'primaryDoc', 'formula',
+    'unidirectionalLink', 'bidirectionalLink', 'lookup', 'filterUp',
+    'creator', 'lastModifier', 'createdTime', 'lastModifiedTime',
 }
 FIELD_TYPE_ALIASES = {
     'phone': 'telephone',
@@ -58,6 +58,8 @@ def resolve_safe_path(path: str, allowed_root: Optional[str] = None) -> Path:
         target_path.relative_to(allowed_root)
         return target_path
     except ValueError:
+        # resolve() 已跟随符号链接：根内链接指向根外时解析结果落在根外，
+        # 同样在此被拒绝，「先建链接再读根外文件」的绕过不成立。
         raise ValueError(
             f"路径超出允许范围：{path}\n"
             f"目标路径：{target_path}\n"
@@ -121,9 +123,32 @@ def validate_field_config(field: Dict[str, Any]) -> Tuple[bool, str]:
             )
 
     if field_type in {'unidirectionalLink', 'bidirectionalLink'}:
-        linked_sheet_id = (config or {}).get('linkedSheetId')
-        if not linked_sheet_id or not validate_resource_id(linked_sheet_id):
-            return False, '关联字段必须提供合法的 config.linkedSheetId'
+        linked_table_id = (config or {}).get('linkedTableId')
+        if not linked_table_id or not validate_resource_id(linked_table_id):
+            return False, (
+                '关联字段必须提供合法的 config.linkedTableId（目标 Table ID）'
+            )
+
+    if field_type == 'lookup':
+        cfg = config or {}
+        if not cfg.get('associateField'):
+            return False, 'lookup 必须提供 config.associateField（本表关联字段的 fieldId）'
+        if not cfg.get('valuesField'):
+            return False, 'lookup 必须提供 config.valuesField（关联目标表中要取值的字段 fieldId）'
+        if not cfg.get('aggregator'):
+            return False, 'lookup 必须提供 config.aggregator（SUM/AVERAGE/COUNT/MAX/MIN/CONCATENATE）'
+
+    if field_type == 'filterUp':
+        cfg = config or {}
+        if not cfg.get('targetSheet'):
+            return False, 'filterUp 必须提供 config.targetSheet（目标 Table ID）'
+        filters = cfg.get('filters')
+        if not filters or not isinstance(filters, list):
+            return False, 'filterUp 必须提供 config.filters（至少一条筛选规则）'
+        if not cfg.get('valuesField'):
+            return False, 'filterUp 必须提供 config.valuesField（目标表中要取值的字段 fieldId）'
+        if not cfg.get('aggregator'):
+            return False, 'filterUp 必须提供 config.aggregator（SUM/AVERAGE/COUNT/MAX/MIN/CONCATENATE）'
 
     return True, ''
 
@@ -151,7 +176,7 @@ def run_dws(args: List[str]) -> Optional[Dict[str, Any]]:
     cmd = ['dws'] + args
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
+            cmd, capture_output=True, text=True, errors='replace', timeout=60
         )
         if result.returncode != 0:
             print(f"错误：{result.stderr.strip()}")

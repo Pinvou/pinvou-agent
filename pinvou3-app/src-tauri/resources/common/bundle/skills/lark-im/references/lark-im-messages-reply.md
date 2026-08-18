@@ -147,11 +147,23 @@ lark-cli im +messages-reply --message-id om_xxx --file ./report.pdf
 # Reply with a local video (--video-cover is required as the video cover)
 lark-cli im +messages-reply --message-id om_xxx --video ./demo.mp4 --video-cover ./cover.png
 
+# Reply with a voice message
+lark-cli im +messages-reply --message-id om_xxx --audio ./voice.opus
+
 # With an idempotency key
 lark-cli im +messages-reply --message-id om_xxx --text "Received" --idempotency-key my-unique-id
 
 # Preview the request without executing it
 lark-cli im +messages-reply --message-id om_xxx --markdown $'## Test\n\nhello' --dry-run
+
+# ===== Interactive Card =====
+# 🚫 STOP — before constructing ANY interactive card JSON, you MUST read
+#    card/lark-im-card-create.md and follow its workflow. Do NOT
+#    hand-write or copy a card payload. The JSON passed to --content must be
+#    the OUTPUT of that workflow. This is non-negotiable.
+
+# Once the workflow has produced the card JSON, reply with it:
+lark-cli im +messages-reply --message-id om_xxx --msg-type interactive --content '<card_json_from_workflow>'
 ```
 
 ## Media Input Rules
@@ -159,6 +171,7 @@ lark-cli im +messages-reply --message-id om_xxx --markdown $'## Test\n\nhello' -
 - Media flags accept an existing key (`img_xxx` / `file_xxx`), an `http://` or `https://` URL, or a local file path.
 - Local paths must be relative to the current working directory and stay within it after resolving `..` and symlinks.
 - Absolute paths such as `/tmp/photo.png` are rejected. Run the command from the file's directory and pass `./photo.png`, or copy the file into the current directory first.
+- `--audio` sends a voice message and accepts only Opus audio (`.opus` or Ogg Opus `.ogg`) for local paths and URLs. For `mp3`, `wav`, or other non-Opus audio, convert to `.opus` before using `--audio`, or use `--file` to send the original audio as an attachment.
 
 ## Parameters
 
@@ -173,9 +186,9 @@ lark-cli im +messages-reply --message-id om_xxx --markdown $'## Test\n\nhello' -
 | `--file <path\|url\|key>` | One content option | Cwd-relative local file path, URL, or `file_key` (`file_xxx`)                                                                                                                                 |
 | `--video <path\|url\|key>` | One content option | Cwd-relative local video path, URL, or `file_key` (`file_xxx`); **must be used together with `--video-cover`**                                                                                |
 | `--video-cover <path\|url\|key>` | **Required with `--video`** | Cwd-relative local cover image path, URL, or `image_key` (`img_xxx`)                                                                                                                          |
-| `--audio <path\|url\|key>` | One content option | Cwd-relative local audio path, URL, or `file_key` (`file_xxx`)                                                                                                                                            |
+| `--audio <path\|url\|key>` | One content option | Voice-message audio key, URL, or cwd-relative local path. Local paths and URLs must be Opus (`.opus` or Ogg Opus `.ogg`) |
 | `--reply-in-thread` | No | Reply inside the thread. The reply appears in the target message's thread instead of the main chat stream                                                                                     |
-| `--idempotency-key <key>` | No | Idempotency key; the same key sends only one reply within 1 hour                                                                                                                              |
+| `--idempotency-key <key>` | No | Idempotency key, max 50 characters; the same key sends only one reply within 1 hour                                                                                                          |
 | `--as <identity>` | No | Identity type: `bot` or `user` (default `bot`)                                                                                                                                                |
 | `--dry-run` | No | Print the request only, do not execute it                                                                                                                                                     |
 
@@ -261,3 +274,4 @@ Card content is **not** normalized — use the card-native `<at>` syntax inside 
 - `--as user` uses a user access token (UAT) and requires the `im:message.send_as_user` and `im:message` scopes; the reply is sent as the authorized end user
 - `--as bot` uses a tenant access token (TAT), and requires the `im:message:send_as_bot` scope
 - When using `--markdown` with images, pre-uploading via `images.create` to obtain an `image_key` is recommended for reliability; remote URLs may be auto-resolved at runtime, but if download/upload fails the image is removed with a warning; local paths are not supported
+- **Interactive cards are gated:** you MUST read and follow the [`card/lark-im-card-create.md`](card/lark-im-card-create.md) workflow to produce the card JSON *before* replying. Do not hand-write or copy a card payload — the JSON given to `--msg-type interactive --content` must be the workflow's output. This applies every time, with no exception

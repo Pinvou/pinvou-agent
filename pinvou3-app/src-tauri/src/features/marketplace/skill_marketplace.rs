@@ -456,10 +456,18 @@ impl SkillMarketplaceManager {
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
 /// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
+/// 同样排除 `__pycache__/` 与 `*.pyc`:include_dir! 按文件系统内嵌(不受
+/// .gitignore 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存若不
+/// 排除,会在用户安装预置技能时物化到运行时目录(跨平台 cpython 版本耦合)。
+/// 与 runtime_bundle::platform 的 extract_dir 排除规则保持一致。
 fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std::io::Result<()> {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
-        let p = file.path().to_string_lossy();
+        let p = file.path();
+        if is_python_cache_path(p) {
+            continue;
+        }
+        let p = p.to_string_lossy();
         let rel = p.strip_prefix(&prefix).unwrap_or(&p);
         if Path::new(rel).file_name().and_then(|s| s.to_str()) == Some("SOURCE.md") {
             continue;
@@ -471,9 +479,25 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
         std::fs::write(&target, file.contents())?;
     }
     for sub in dir.dirs() {
+        if sub
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == "__pycache__")
+        {
+            continue;
+        }
         extract_embedded_subdir(sub, source_dir, dest)?;
     }
     Ok(())
+}
+
+/// 相对 include_dir 根的路径是否属于 Python 编译缓存(`__pycache__/` 子树内
+/// 或任意层级的 `.pyc`,大小写不敏感)。纯函数便于单测。
+fn is_python_cache_path(rel: &std::path::Path) -> bool {
+    rel.components().any(|c| c.as_os_str() == "__pycache__")
+        || rel
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pyc"))
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {
@@ -596,6 +620,23 @@ fn is_safe_skill_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `extract_embedded_subdir` 的 Python 编译缓存排除与 runtime_bundle 的
+    /// `extract_dir` 同规则:仓库内跑技能脚本产生的 `__pycache__/`/`*.pyc`
+    /// 会被 include_dir! 内嵌,不得在用户安装预置技能时物化到运行时目录。
+    #[test]
+    fn python_cache_paths_are_excluded_from_extraction() {
+        assert!(is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/__pycache__/validate.cpython-311.pyc"
+        )));
+        assert!(is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/validate.PYC"
+        )));
+        assert!(!is_python_cache_path(std::path::Path::new(
+            "visualizer/scripts/validate_visualizer_html.py"
+        )));
+        assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
+    }
 
     #[test]
     fn parses_frontmatter_name() {

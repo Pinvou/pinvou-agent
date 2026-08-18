@@ -4,7 +4,7 @@
 
 [AI Agent 强制门禁] 本模块不可单独执行，且任何调用方脚本
    （attendance_report_detail/monthly/daily.py）执行前都必须先阅读：
-   dingtalk-workspace/references/products/attendance-report.md
+   ../references/products/attendance-report.md
 
    工作流细节、报表类型判断、人员获取、列选择、错误处理等约束
    全部在 attendance-report.md，禁止凭本脚本源码或 --help 自行组装命令。
@@ -108,7 +108,7 @@ def run_dws(args: list[str]) -> Any:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, errors='replace',
             timeout=DWS_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:

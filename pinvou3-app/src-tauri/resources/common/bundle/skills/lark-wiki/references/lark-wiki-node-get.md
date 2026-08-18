@@ -19,7 +19,7 @@ lark-cli wiki +node-get \
 |------|------|----------|---------|-------------|
 | `--node-token` | string | **Yes** | — | `node_token`, cloud-doc `obj_token`, or a Lark URL embedding one (e.g. `https://feishu.cn/wiki/<token>` or `https://feishu.cn/docx/<token>`). Matches the `--node-token` naming used by sibling `+node-delete` / `+node-copy` / `+move`. |
 | `--token` | string | — (deprecated) | — | Deprecated original name; still accepted for backward compatibility but emits a `Flag --token has been deprecated, use --node-token instead` warning on stderr. New scripts should use `--node-token`. |
-| `--obj-type` | enum | No | — | Needed when `--node-token` is a raw `obj_token`; auto-inferred from the URL path. Not allowed when the token looks like a `node_token` (`wik...`) |
+| `--obj-type` | enum | No | — | Needed when `--node-token` is a raw `obj_token`; auto-inferred from typed Lark URLs. If omitted for a raw token, the shortcut treats it as a wiki `node_token`. |
 | `--space-id` | string | No | — | Optional cross-check: fail if the resolved node does not live in this space |
 | `--format` | enum | No | `json` | `json` / `pretty` / `table` / `csv` / `ndjson` |
 | `--as` | enum | No | `auto` | Identity `user`/`bot`; wiki is user-centric → pass `--as user` |
@@ -51,6 +51,21 @@ lark-cli wiki +node-get \
 - The underlying API is `GET /open-apis/wiki/v2/spaces/get_node`. For a `node_token` no `obj_type` is sent; for an `obj_token` the `obj_type` (explicit or URL-inferred) is required.
 - `creator` falls back to `creator` when `node_creator` is absent. `updated_at` is `obj_edit_time` formatted as RFC3339.
 - No `url` is returned: `get_node` does not provide one and a synthesized `www.feishu.cn/wiki/<node_token>` link is non-canonical/misleading for a read command. Use `node_token` / `obj_token` as the identifiers.
+
+## Terminal business errors
+
+These HTTP 200 responses carry a non-zero business code and are not retryable with the same input:
+
+| Code | Meaning | Required action |
+|------|---------|-----------------|
+| `131006` | The current user or app/bot identity lacks access to the Wiki node or space | This is resource access, not app scope authorization. Do not retry the same request, reauthorize, or switch identity as trial and error; ask the node owner or wiki administrator to grant read access, or use an accessible resource |
+| `131012` | The Wiki node has been deleted | Do not retry the same node token; rediscover the node or ask for a current Wiki link |
+| `131013` | The resource token is invalid | Do not switch identity or reauthorize; correct the URL/token |
+| `131014` | The document is not mounted in Wiki | Stop Wiki resolution; use the corresponding docs/sheets/base/drive command, or provide a Wiki URL/node_token |
+
+## Rate limiting
+
+For `99991400` / `rate_limit`: Do not retry immediately. Wait `retry_after_seconds`, or use exponential backoff with jitter. Stop after 3 total attempts (1 initial + 2 retries).
 
 ## Required Scope
 

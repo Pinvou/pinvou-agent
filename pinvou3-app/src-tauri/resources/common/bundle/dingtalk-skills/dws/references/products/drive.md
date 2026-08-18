@@ -15,6 +15,8 @@ dws drive list --help
 dws drive search --help
 dws drive upload --help
 dws drive download --help
+dws drive stats --help
+dws drive shortcut --help
 ```
 
 规则：
@@ -156,6 +158,28 @@ Flags:
       --space-id string   节点所属空间 ID (可选)
 ```
 
+### 获取节点统计信息
+
+```text
+Usage:
+  dws drive stats --node <NODE_ID_OR_URL>
+```
+
+返回节点可用的阅读、编辑、评论、点赞、预览或下载等统计维度；不同文件类型返回字段可能不同。本命令只读。
+
+### 创建节点快捷方式
+
+```text
+Usage:
+  dws drive shortcut --node <SOURCE_NODE> [--folder <TARGET_FOLDER>] [--workspace <WORKSPACE_ID>]
+Example:
+  dws drive shortcut --node <SOURCE_NODE>
+  dws drive shortcut --node <SOURCE_NODE> --folder <TARGET_FOLDER>
+  dws drive shortcut --node <SOURCE_NODE> --workspace <WORKSPACE_ID>
+```
+
+`--folder` 和 `--workspace` 均可省略，此时由服务端选择默认位置。创建后应通过 `drive list` 回读目标位置。
+
 ### 文件内容获取路由规则
 
 > 当用户请求"分析/查看/读取某个钉盘文件内容"时，**必须先调用 `dws drive info` 获取文件元数据**，再根据返回的 `extension` 字段选择对应链路。
@@ -178,13 +202,22 @@ Usage:
 Example:
   dws drive download --node <dentryUuid> --output ./report.pdf
   dws drive download --node <dentryUuid> --output ~/downloads/
+  dws drive download --node <dentryUuid> --output ./big.zip --part-size 32MB --parallel 8
 Flags:
       --node string       文件 ID (dentryUuid) (必填)
       --output string     本地保存路径 (必填)，可以是文件路径或目录；如果指定目录，文件名从下载 URL 中自动推断
       --space-id string   文件所属空间 ID (可选)
+      --part-size string  分片下载的分片大小，支持 KB/MB/GB 单位，范围 1MB-1GB (默认 16MB)
+      --parallel int      分片下载并发数，范围 1-8 (默认 4)
+      --no-resume         关闭断点续传，忽略历史下载进度从头下载 (默认开启续传)
 ```
 
 > **注意**：`--output` 是必填参数，不传会报错。
+
+> **大文件分片下载**：
+> - 大文件自动分片并发下载，小文件整流下载，行为对用户透明，无需任何额外操作。
+> - 断点续传默认开启：下载中断后重跑同一命令会自动跳过已完成部分继续下载（`<目标文件>.dwspart` 为临时进度文件，下载完成后自动清理）；不需要续传时加 `--no-resume`。
+> - 下载凭证过期会自动刷新并继续下载，已完成的部分不会重下；单个分片失败会自动重试，无需手动处理。
 
 ### 创建文件夹
 
@@ -213,10 +246,13 @@ Example:
   dws drive upload --file ./report.pdf
   dws drive upload --file ./slides.pptx --file-name "Q1汇报.pptx"
   dws drive upload --file ./data.xlsx --folder <dentryUuid>
+  dws drive upload --file ./updated.md --node <fileId>
+  dws drive upload --file ./updated.md --node <nodeId> --workspace <workspaceId> --yes
 Flags:
       --file string        本地文件路径 (必填)
       --file-name string   文件显示名称 (默认使用文件名)
-      --folder string      父节点 ID (dentryUuid)，不传则上传到空间根目录 (可选)
+      --folder string      父节点 ID，不传则上传到空间根目录 (可选，与 --node 互斥)
+      --node string        覆盖目标文件 ID，传入即覆盖已有文件 (可选，与 --folder 互斥)
       --space-id string    目标钉盘空间 ID，不传则使用「我的文件」 (可选)
       --workspace string   目标知识库 ID，传入时路由到文档空间上传 (可选)
       --convert            是否转换为钉钉在线文档 (仅文档空间上传时生效)
@@ -224,6 +260,8 @@ Flags:
 ```
 
 `upload` 命令内部自动完成三步流程（获取凭证 → OSS PUT → 提交入库），无需手动分步操作。上传到知识库/文档空间时加 `--workspace` 参数。
+
+传 `--node` 时改为覆盖指定文件：钉盘路由映射到已有 fileId，知识库路由映射到已有 nodeId。覆盖不可逆，默认要求确认；自动化场景必须先获得用户确认，再追加全局 `--yes`。可先用全局 `--dry-run` 预览操作，不会上传或提交文件。`--node` 与创建新文件所用的 `--folder` 互斥。
 
 ### 获取上传凭证 (手动三步·仅特殊场景)
 
@@ -312,9 +350,12 @@ Flags:
 用户说"钉盘空间/团队文件/有哪些空间/空间列表/团队文件列表" → `wiki space list --type orgSpace`（`drive list-spaces` 已 deprecated）
 用户说"搜索钉盘文件/钉盘里找个文件/查找某个钉盘文件/钉盘中搜索" → `search`
 用户说"文件详情/文件信息" → `info`
+用户说"文件阅读量/编辑量/评论数/下载数/节点统计" → `stats`
+用户说"给文件创建快捷方式/放一个链接到目标文件夹" → `shortcut`
 用户说"下载文件" → `download` 指定 `--output` 保存到本地
 用户说"新建文件夹/创建目录" → `mkdir`（钉盘空间）/ `wiki node create --type folder`（文档空间）
 用户说"上传文件/传文件到钉盘" → `upload`（首选此命令，自动完成三步流程）
+用户说"覆盖/替换钉盘或知识库中的已有文件" → `upload --node <fileId>`（不可逆，先 `--dry-run`，确认后再加 `--yes`）
 用户说"复制文件/移动文件/搬到/移到" → `copy` / `move`
 用户说"重命名/改名" → `rename`
 用户说"删除文件/删除文件夹/移到回收站" → `delete`（危险操作，需确认）
@@ -361,6 +402,10 @@ dws drive mkdir --name "项目资料" --format json
 dws drive upload --file ./报告.pdf --format json
 dws drive upload --file ./报告.pdf --folder <dentryUuid> --format json
 
+# 6b. 覆盖已有文件（先预览；用户确认后再执行）
+dws drive upload --file ./更新版.pdf --node <fileId> --dry-run --format json
+dws drive upload --file ./更新版.pdf --node <fileId> --yes --format json
+
 # 7. 删除文件/文件夹到回收站（危险操作：必须先向用户确认，用户同意后才加 --yes 执行）
 # 正确流程：1.向用户展示"即将删除「文件名」到回收站" → 2.等用户确认 → 3.执行下面命令
 dws drive delete --node <dentryUuid> --yes --format json
@@ -389,7 +434,7 @@ Flags:
       --name string        新名称 (仅 rename 必填)
 ```
 
-> **rename 只传主名，不要带扩展名**：服务端会按文件原扩展名自动补一个后缀。若 `--name` 里已带扩展名（如 `报告.txt`），回读会变成双扩展名 `报告.txt.txt`。正确做法：`dws drive rename --node <ID> --name "报告"`（不含 `.txt`），系统自动补回 `报告.txt`。
+> **rename 会按真实节点元数据处理扩展名**：实际执行前先读取节点类型和当前扩展名。文件的新名称若以当前扩展名结尾，只去掉完全匹配的一层再交给会保留原后缀的服务端；文件夹（包括 `release.v2` 这类带点名称）保持原样，也不再依赖扩展名白名单。`--dry-run` 不读取远端元数据，因此预览保留输入名称。
 
 权限要求：copy 需对源文档有"阅读"权限且对目标文件夹有"编辑"权限；move 需对源文档有"管理"权限且对目标文件夹有"编辑"权限；rename 需对文档有"编辑"权限。
 
@@ -492,7 +537,7 @@ dws drive copy --node <源文件dentryUuid> --folder <目标文件夹fileId> --f
 
 | 操作 | 从返回中提取 | 用于 |
 |------|-------------|------|
-| `list` | **`fileId`**（UUID 格式，注意：不是 `dentryId`） | info / download / delete 的 --node；list / mkdir 的 --folder；`drive copy/move` 的 --node 或 --folder |
+| `list` | **`fileId`**（UUID 格式，注意：不是 `dentryId`） | info / stats / shortcut / download / delete 的 --node；list / mkdir 的 --folder；`drive copy/move/shortcut` 的 --node 或 --folder |
 | `list` | `spaceId` | info / download / mkdir / upload 的 --space-id |
 | `list` | `nextCursor` | 下次 list 的 --cursor |
 | `list-spaces` / `wiki space list` | `rootFolderId` | `drive copy/move` 的 --folder（复制/移动到钉盘 space 根目录时） |
@@ -501,13 +546,15 @@ dws drive copy --node <源文件dentryUuid> --folder <目标文件夹fileId> --f
 | `search` | `spaceId` / `rootFolderId`（空间结果） | list 的 --space-id；`drive copy/move` 的 --folder |
 | `search` | `nextCursor` | search 的 --cursor（翻页） |
 | `mkdir` | `fileId`（UUID 格式） | list / upload 的 --folder |
-| `upload` | `dentryUuid` | download / info 的 --node |
+| `upload` | `dentryUuid` / `nodeId` | download / info / 后续 `upload --node` 覆盖 |
 | `recycle list` | `id`（回收项 ID） | recycle restore 的 --id |
 | `recycle list` | `name`（原始文件名） | 供用户确认还原目标 |
 | `recent` | `recentItems[].nodeId` / `docUrl` | doc read / info / update / block 操作的 --node |
 | `recent` | `nextCursor` | recent 的 --cursor（翻页） |
 
 > **重要**：`drive list` 返回结果中同时包含 `dentryId` 和 `fileId` 两个字段。所有需要传 `--node` 的命令（info / download / delete）必须使用 `fileId`（即 dentryUuid），**不要使用** `dentryId`。
+
+- `upload --node` 会覆盖已有文件且不可逆；`--node` 与 `--folder` 互斥。先 dry-run，得到用户明确确认后再加 `--yes`。
 
 ## 注意事项
 
@@ -520,15 +567,17 @@ dws drive copy --node <源文件dentryUuid> --folder <目标文件夹fileId> --f
 - `--file-name` 必须包含扩展名（如 `report.pdf`）
 - `download` 需要指定 `--output`，CLI 会把文件保存到本地路径或目录
 - 文件名规则：头尾不能有空格；不能含 `*`、`"`、`<`、`>`、`|`、制表符；不能以 `.` 结尾
+- `shortcut` 会创建新节点，执行后必须通过 `drive list` 回读确认目标位置；`stats` 为只读命令
 
 ## 自动化脚本
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [drive_tree_list.py](../../scripts/drive_tree_list.py) | 递归列出钉盘目录树结构 | `python drive_tree_list.py --depth 2` |
+| [drive_tree_list.py](../../scripts/drive_tree_list.py) | 递归列出钉盘目录树结构 | `python3 drive_tree_list.py --depth 2` |
 
 ## 相关产品
 
 - [doc](./doc.md) — 文档内容读写（Markdown/块级编辑/导出），不是文件存储
+- [markdown](./markdown.md) — 钉盘或文档空间中原生 `.md` 文件的读取、创建、覆盖与局部替换
 - [wiki](./wiki.md) — 知识库/空间管理层（空间列表、节点创建、空间内搜索、成员管理）
 - [chat](./chat.md) — 发送图片/文件消息用 `chat message send --msg-type file --file-path`

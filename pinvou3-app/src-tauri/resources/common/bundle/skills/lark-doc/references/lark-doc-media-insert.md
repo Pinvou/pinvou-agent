@@ -1,7 +1,7 @@
 
 # docs +media-insert（文档末尾插入图片/文件）
 
-> **前置条件：** 先阅读 [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
+> **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
 
 把"创建空 block → 上传文件 → 设置 token"三步合并成一个命令，在**文档末尾**插入本地图片或文件。
 
@@ -48,7 +48,7 @@ lark-cli docs +media-insert --doc doxcnXXX --from-clipboard
 
 # 从本地文件插入
 # 除了上传本地文件，还可以在 `docs +update` 时直接通过网络 URL 插入图片，无需先下载到本地：
-lark-cli docs +update --api-version v2 --doc "<doc_id>" --command block_insert_after \
+lark-cli docs +update --doc "<doc_id>" --command block_insert_after \
   --block-id "目标 block_id" \
   --content '<img href="https://example.com/photo.png"/>'
 

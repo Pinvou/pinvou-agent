@@ -1,14 +1,11 @@
 # calendar +suggestion
 
-> **前置条件：** 先阅读 [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md)。
 
 根据非明确时间或一段时间范围，推荐多个可用时间块方案。帮助用户解决协调时间的难题。
 
 **调用时机 (Agent Guidance):**
 - ✅ **当用户需求涉及寻找时间块，且时间未完全确定**（如`今天`、`近三天`、`本周`、`下午`, `无时间描述`）时，调用此工具来获取推荐时间块给用户选择（包括但不限于预约日程）。
 - ❌ **当用户已经明确了具体的时间点**（如`今天下午3点`），则**不需要**调用此工具
-
-需要的scopes: ["calendar:calendar.free_busy:read"]
 
 ## 命令
 
@@ -48,7 +45,7 @@ lark-cli calendar +suggestion \
 | ------------------------------- | ----- | ------------------------------------------------------------------- |
 | `--start <time>`                | 否     | 搜索区间开始时间（支持日期/ISO 8601等格式，默认**当前时间**）                                |
 | `--end <time>`                  | 否     | 搜索区间结束时间（默认与 `--start` 属于同一天，自动取当天结束时间）                                                     |
-| `--attendee-ids <id_list>`     | 否     | 目标参与人 ID 列表。提取对应实体的 ID。支持用户（`ou_` 前缀）和群组（`oc_` 前缀）。多个 ID 使用英文逗号分隔 |
+| `--attendee-ids <id_list>`     | 否     | 目标参与人 ID 列表。提取对应实体的 ID。支持用户（`ou_` 前缀）和群组（`oc_` 前缀）。多个 ID 使用英文逗号分隔。**不要传入 bot 的 open_id**：bot 是虚拟身份，可并行多个会议、无忙闲语义，传入会干扰推荐时段的忙闲计算。 |
 | `--event-rrule <rrule>`         | 否     | 重复日程的重复性规则，规则设置方式参考rfc5545。**【⚠️注意：系统绝对不支持 COUNT，如需限制重复次数，必须转为 UNTIL】**。示例值："FREQ=DAILY;INTERVAL=1"                                              |
 | `--duration-minutes <min>`      | 否     | 会议时长（分钟）。优先使用用户显式指定的值，若未指定则尝试根据上下文推断，推断失败则不传                                        |
 | `--timezone <tz>`               | 否     | 对话中明确提及的预约日程所使用的时区（默认取用户设备时区，例如 `Asia/Shanghai`）                                |
@@ -121,5 +118,4 @@ lark-cli calendar +suggestion \
 ## 参考
 
 - [lark-calendar-create](lark-calendar-create.md) — 创建日程
-- [lark-calendar-freebusy](lark-calendar-freebusy.md) — 查询忙闲时段和rsvp状态
-- [lark-calendar](../SKILL.md) — 日历完整 API
+- [lark-calendar](../SKILL.md) — skill 入口与路由

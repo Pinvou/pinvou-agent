@@ -47,7 +47,7 @@ def run_dws(args: list) -> Optional[Dict[str, Any]]:
     """调用 dws 命令并返回解析后的 JSON 结果。"""
     cmd = ['dws'] + args
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=60)
         if result.returncode != 0:
             print(f"错误：dws 命令失败: {result.stderr.strip()}", file=sys.stderr)
             return None
