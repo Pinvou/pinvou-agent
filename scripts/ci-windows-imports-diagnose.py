@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Windows 测试二进制 PE 导入诊断(定位 STATUS_ENTRYPOINT_NOT_FOUND / 0xc0000139)。
 
-用法:python scripts/ci-windows-imports-diagnose.py [deps 目录]
+用法:python scripts/ci-windows-imports-diagnose.py [deps 目录 | 测试 exe 路径]
 
 背景:windows-rust-test 的回归步骤首次真正执行测试 exe 时启动即挂
 (exit code 0xc0000139)。该错误是「DLL 找到了但导入的符号不存在」,
@@ -11,11 +11,12 @@ Windows 不给出具体缺哪个 DLL/符号,只能静态解析导入表比对导
 定位每个被导入的 DLL,解析其导出表,报告:
   - 找不到的 DLL(MODULE_NOT_FOUND 类问题)
   - DLL 存在但缺失的导入符号(ENTRYPOINT_NOT_FOUND 类问题)
-exe 旁外部清单声明的 SxS 程序集所覆盖的 DLL(如 comctl32)缺符号时
-降级为预期提示:loader 按程序集版本解析,静态走文件系统只会看到
-System32 副本,其缺 v6 专属符号不构成问题。
-仅做诊断,不修改任何文件;exit 0(纯信息输出,不阻断 CI 步骤),
-脚本自身异常同样 exit 0 兜底。
+清单声明的 SxS 程序集所覆盖的 DLL(如 comctl32)缺符号时降级为预期
+提示:loader 按程序集版本解析,静态走文件系统只会看到 System32 副本,
+其缺 v6 专属符号不构成问题。清单优先读 exe 的 RT_MANIFEST 嵌入资源
+(loader 优先级最高,CI 由 mt.exe 嵌入,故诊断步骤必须排在嵌入之后);
+无嵌入时回退 exe 旁外部清单。仅做诊断,不修改任何文件;
+exit 0(纯信息输出,不阻断 CI 步骤),脚本自身异常同样 exit 0 兜底。
 """
 import glob
 import io
@@ -125,6 +126,9 @@ def find_dll(name, exe_dir):
     return None
 
 
+# Windows 资源类型:RT_MANIFEST(清单嵌入在资源目录树的类型 24 下)
+RT_MANIFEST = 24
+
 # SxS 程序集名 → 其覆盖的 DLL。loader 见到清单声明的程序集依赖时,绑定程序集
 # 版本(如 WinSxS 里的 comctl32 v6)而非 System32 的 v5 副本;脚本静态走文件
 # 系统,只会找到 System32 副本,其缺 v6 专属符号(如 TaskDialogIndirect)属预期。
@@ -133,20 +137,60 @@ SXS_ASSEMBLY_DLLS = {
 }
 
 
+def embedded_manifest(exe):
+    """返回 exe RT_MANIFEST(资源类型 24)里的清单文本;无则 None。
+
+    CI 在回归前用 mt.exe 把 v6 清单嵌入 resource #1,loader 实际使用的
+    就是它,故豁免判定以嵌入清单为准。资源目录树三层:类型→名称→语言,
+    目录/条目偏移相对资源节起始,叶子 DATA_ENTRY 里的 OffsetToData 是 RVA。
+    """
+    pe = read_pe(exe)
+    if pe is None:
+        return None
+    data, data_dir, sections = pe
+    res_rva = struct.unpack_from('<I', data, data_dir + 16)[0]
+    if not res_rva:
+        return None
+    base = rva_off(res_rva, sections)
+
+    def walk(dir_off, want_type):
+        n_named, n_id = struct.unpack_from('<HH', data, dir_off + 12)
+        for i in range(n_named + n_id):
+            name, off = struct.unpack_from('<II', data, dir_off + 16 + i * 8)
+            if want_type is not None and name != want_type:
+                continue
+            if off >> 31:  # 高位为 1 → 子目录
+                found = walk(base + (off & 0x7FFFFFFF), None)
+                if found is not None:
+                    return found
+            else:  # 叶子 → IMAGE_RESOURCE_DATA_ENTRY
+                rva, size = struct.unpack_from('<II', data, base + off)
+                fo = rva_off(rva, sections)
+                return data[fo:fo + size].decode('utf-8', errors='replace')
+        return None
+
+    return walk(base, RT_MANIFEST)
+
+
 def manifest_sxs_dlls(exe):
     """返回 exe 清单声明的 SxS 程序集所覆盖的 DLL 名集合(小写)。
 
-    只读外部清单(<exe>.manifest,Windows loader 在无嵌入清单时的回退);
-    嵌入清单在 RT_MANIFEST 资源里,当前不解析。
+    优先读嵌入 RT_MANIFEST;无嵌入时回退外部清单(<exe>.manifest,
+    loader 在无嵌入清单时才使用它,两者并存时外部清单被忽略)。
     """
-    mpath = exe + '.manifest'
-    if not os.path.isfile(mpath):
-        return set()
     try:
-        with open(mpath, 'r', encoding='utf-8', errors='replace') as f:
-            text = f.read()
-    except OSError:
-        return set()
+        text = embedded_manifest(exe)
+    except Exception:  # 资源树解析异常只损失豁免,不拖垮整个诊断
+        text = None
+    if text is None:
+        mpath = exe + '.manifest'
+        if not os.path.isfile(mpath):
+            return set()
+        try:
+            with open(mpath, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except OSError:
+            return set()
     dlls = set()
     for assembly, names in SXS_ASSEMBLY_DLLS.items():
         if assembly in text:
@@ -155,10 +199,15 @@ def manifest_sxs_dlls(exe):
 
 
 def main():
-    deps_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
-    exes = sorted(glob.glob(os.path.join(deps_dir, 'pinvou3_lib-*.exe')), key=os.path.getmtime)
+    arg = sys.argv[1] if len(sys.argv) > 1 else '.'
+    if os.path.isfile(arg):
+        # CI 直接传入待诊断的测试 exe:即回归步骤要运行、刚由 mt.exe 嵌入
+        # v6 清单的那个,避免多产物并存时按 mtime 猜错对象。
+        exes = [os.path.abspath(arg)]
+    else:
+        exes = sorted(glob.glob(os.path.join(arg, 'pinvou3_lib-*.exe')), key=os.path.getmtime)
     if not exes:
-        print('DIAG: no pinvou3_lib-*.exe found in', deps_dir)
+        print('DIAG: no pinvou3_lib-*.exe found in', arg)
         return 0
     exe = exes[-1]
     exe_dir = os.path.dirname(exe)
@@ -167,6 +216,8 @@ def main():
 
     problems = []
     sxs_dlls = manifest_sxs_dlls(exe)
+    if sxs_dlls:
+        print('DIAG SxS 清单豁免 DLL(缺符号属预期):', ', '.join(sorted(sxs_dlls)))
     system_dirs = {os.path.normcase(os.path.abspath(p)) for p in (
         os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32'),
         os.environ.get('SystemRoot', r'C:\Windows'),

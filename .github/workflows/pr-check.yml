@@ -881,14 +881,7 @@ jobs:
           "PINVOU3_TEST_EXE=$testExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Windows Rust 测试 exe: $testExe"
 
-      # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
-      # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
-      # 纯诊断不阻断:脚本异常(如解析到截断 PE)不得挂掉本 job,故 continue-on-error
-      - name: Windows 测试二进制导入诊断
-        continue-on-error: true
-        run: python scripts/ci-windows-imports-diagnose.py pinvou3-app/src-tauri/target/debug/deps
-
-      # 0xc0000139 根因(已由上述诊断定位):muda 静态导入 TaskDialogIndirect,该符号仅
+      # 0xc0000139 根因(已由诊断定位):muda 静态导入 TaskDialogIndirect,该符号仅
       # 存在于 Common-Controls v6 side-by-side 程序集;主 exe 由 tauri-build 嵌入声明该
       # 依赖的清单,而 cargo test 的 pinvou3_lib-*.exe 没有 v6 依赖声明。
       # link.exe 已给测试 exe 嵌入默认清单,Windows 会优先使用内嵌资源而忽略同目录
@@ -928,6 +921,17 @@ jobs:
             throw "FAIL: 无法向 $($testExe.Name) 嵌入 Common-Controls v6 清单"
           }
           Write-Host "已嵌入清单的测试 exe: $($testExe.FullName)"
+
+      # 测试 exe 曾在回归步骤启动即挂(exit code 0xc0000139,STATUS_ENTRYPOINT_NOT_FOUND),
+      # Windows 不指明缺哪个 DLL/符号。此步骤静态解析 PE 导入表作对照输出,纯诊断不阻断。
+      # 纯诊断不阻断:脚本异常(如解析到截断 PE)不得挂掉本 job,故 continue-on-error。
+      # 必须位于「嵌入 Common-Controls v6 清单」之后:脚本读 exe 已嵌入的清单来豁免
+      # SxS 程序集 DLL(如 comctl32)的缺符号假阳性,嵌入前读到的是无 v6 声明的默认清单;
+      # 直接传 $PINVOU3_TEST_EXE 保证诊断对象就是刚嵌入清单、回归将运行的那个 exe。
+      - name: Windows 测试二进制导入诊断
+        continue-on-error: true
+        shell: pwsh
+        run: python scripts/ci-windows-imports-diagnose.py "$env:PINVOU3_TEST_EXE"
 
       - name: Windows 原子替换状态机回归
         shell: bash
