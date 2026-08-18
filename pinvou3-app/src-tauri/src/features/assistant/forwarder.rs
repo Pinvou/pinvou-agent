@@ -843,8 +843,11 @@ pub(crate) fn spawn_event_forwarder(
 
                     // 先完成权威时间线，再发 chat:done。前端终态事件会据此重新
                     // 读取整份时间线，补齐后台运行/页面恢复期间漏掉的本地事件。
+                    // 收尾只走 observation 版一次:tool_calls/catalog 摘要随
+                    // assistant_done 落盘;若先前再用 usage 版收尾会先 pop 掉
+                    // 队首活跃轮,排队双轮场景错配下一轮的时间线。
                     let status_text = format!("{terminal_status:?}");
-                    crate::features::assistant::timing::finish_turn_with_usage(
+                    crate::features::assistant::timing::finish_turn_with_observation(
                         &session_id,
                         &status_text,
                         terminal_error.as_deref(),
@@ -860,6 +863,7 @@ pub(crate) fn spawn_event_forwarder(
                             ),
                             reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
                         }),
+                        authorized_tool_catalog.clone(),
                     );
 
                     {
@@ -913,25 +917,6 @@ pub(crate) fn spawn_event_forwarder(
                         // 这条链已可靠,漏的少数"光说不出卡"由 composer chip 手切 + plan_stuck
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
-                    let status_text = format!("{terminal_status:?}");
-                    crate::features::assistant::timing::finish_turn_with_observation(
-                        &session_id,
-                        &status_text,
-                        terminal_error.as_deref(),
-                        Some(crate::features::assistant::timing::TurnUsage {
-                            input_tokens: u64::from(usage.input_tokens),
-                            output_tokens: u64::from(usage.output_tokens),
-                            cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
-                            cache_miss_tokens: u64::from(
-                                usage.prompt_cache_miss_tokens.unwrap_or(0),
-                            ),
-                            cache_write_tokens: u64::from(
-                                usage.prompt_cache_write_tokens.unwrap_or(0),
-                            ),
-                            reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
-                        }),
-                        authorized_tool_catalog,
-                    );
                     if crate::features::memory::memory_enabled() {
                         if let Some(capture) =
                             crate::features::memory::take_turn_capture(&session_id)
