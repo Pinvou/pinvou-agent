@@ -7,6 +7,12 @@ import { ReaderApp } from '../../src/features/reader/ReaderApp.jsx';
 window.__invokeLog = [];
 window.__readerOpenHandler = null;
 
+// 标签/工具栏断言依赖中文文案：把系统语言固定为中文，使初始语言即 zh，
+// get_settings 解析后 setLanguage 同值短路，拉取 pending 的 effect 不会因
+// 语言状态变化而重跑（重跑会触发第二次 take_code_reader_pending）。
+Object.defineProperty(window.navigator, 'languages', { get: () => ['zh-CN'] });
+Object.defineProperty(window.navigator, 'language', { get: () => 'zh-CN' });
+
 const PENDING = [
   { kind: 'diff', sessionId: 's-1', workspacePath: null, relativePath: 'src/main.py' },
 ];
