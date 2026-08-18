@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isWeb } from '../shared/platform.js';
 
@@ -51,19 +51,40 @@ function useAnchoredPosition(open, triggerRef, active) {
   return style;
 }
 
+// 桌面端外点关闭：不能再渲染 `fixed inset-0` 透明关闭层——composer 祖先的
+// backdrop-filter 会成为 `position: fixed` 的包含块，使关闭层只铺满输入框盒子，
+// 点击弹层外部永远落不到关闭层上。改为 document 级捕获阶段 pointerdown 检测：
+// 命中面板或触发按钮（insideRefs）时忽略，否则关闭。触发按钮必须传入，否则
+// 弹层打开时再点触发按钮会先被外点关闭、随后 toggle 又把它重新打开。
+function useOutsidePointerClose(open, onClose, insideRefs) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const insideRefsRef = useRef(insideRefs);
+  insideRefsRef.current = insideRefs;
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event) => {
+      const refs = insideRefsRef.current || [];
+      const inside = refs.some((ref) => ref && ref.current && ref.current.contains(event.target));
+      if (!inside) onCloseRef.current();
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [open]);
+}
+
 // composer 下拉外壳。桌面端保持原来的就地 absolute 下拉（外观行为不变）；移动 WebUI
 // portal 到 <body> 并按触发按钮真实屏幕位置锚定。`desktopClassName` 是各菜单原有的桌面
 // 定位样式，移动端统一用 POPOVER_SURFACE + 计算出的 inline 定位。
 const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName, menuProps, children }) => {
   const anchored = isWeb && compact;
   const style = useAnchoredPosition(open, triggerRef, anchored);
+  const panelRef = useRef(null);
+  useOutsidePointerClose(open && !anchored, onClose, [panelRef, triggerRef]);
   if (!open) return null;
   if (!anchored) {
     return (
-      <>
-        <div className="fixed inset-0 z-40" onClick={onClose}></div>
-        <div {...menuProps} className={desktopClassName}>{children}</div>
-      </>
+      <div {...menuProps} ref={panelRef} className={desktopClassName}>{children}</div>
     );
   }
   return createPortal(
@@ -77,4 +98,4 @@ const ComposerPopover = ({ open, onClose, triggerRef, compact, desktopClassName,
   );
 };
 
-export { ComposerPopover, POPOVER_SURFACE };
+export { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose };

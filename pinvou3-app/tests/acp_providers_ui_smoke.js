@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * ACP Provider（第三方中转）管理 UI smoke：加载真实 Vite dist，mock TauriBridge，
- * 点击真实 React UI。覆盖设置页「Provider 管理」分节：标签页、新增/保存、
+ * 点击真实 React UI。覆盖设置页 模型 →「ACP 管理」子页：标签页、新增/保存、
  * 一键切换、删除确认、导出警告、env 冲突警告、卸载确认弹窗。
  */
 const fs = require('fs');
@@ -239,14 +239,16 @@ async function clickSettingsSection(page, label) {
     console.log(`${pass ? '✅' : '❌'} ${name}${detail ? '  ' + detail : ''}`);
   };
 
-  // 打开设置 → Provider 管理分节
+  // 打开设置 → 模型分节 → 顶端切换到「ACP 管理」子页
   await page.evaluate(() => {
     const button = [...document.querySelectorAll('button[title="设置"]')].pop();
     if (button) button.click();
   });
   await sleep(600);
-  await clickSettingsSection(page, 'Provider 管理');
-  rec('① Provider 分节渲染', await page.evaluate(() => !!document.querySelector('[data-testid="acp-providers-section"]')));
+  await clickSettingsSection(page, '模型');
+  await page.evaluate(() => document.querySelector('[data-testid="settings-model-tab-acp"]')?.click());
+  await sleep(300);
+  rec('① ACP 管理子页渲染', await page.evaluate(() => !!document.querySelector('[data-testid="acp-providers-section"]')));
   rec('② 三 Agent 标签页', await page.evaluate(() =>
     ['acp-agent-tab-codex', 'acp-agent-tab-claude', 'acp-agent-tab-kimi'].every(id => !!document.querySelector(`[data-testid="${id}"]`))
   ));
