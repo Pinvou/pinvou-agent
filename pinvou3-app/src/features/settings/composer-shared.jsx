@@ -97,7 +97,7 @@ import {
         setCurrentProbedKind(null);
         if (bridge.available && bridge.models && bridge.models.probeLocalServerKind) {
           bridge.models.probeLocalServerKind(current.base_url)
-            .then((kind) => { if (!cancelled) setCurrentProbedKind(kind || 'generic'); })
+            .then((kind) => { if (!cancelled) setCurrentProbedKind(kind); })
             // 探测调用本身失败（命令被拒/版本不支持）≠ 探测出 generic：
             // 置回 null 走 localProbeTiersForKind 的默认四档，不误报「不支持」。
             .catch(() => { if (!cancelled) setCurrentProbedKind(null); })
