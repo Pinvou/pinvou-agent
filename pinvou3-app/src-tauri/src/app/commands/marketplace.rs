@@ -213,8 +213,6 @@ pub async fn install_marketplace_tool(
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
     pool.refresh_live_sessions_skills().await;
-    // 导入包的 CLI/技能脚本纳入 deny 规则集（M-6：import 路径热刷）。
-    pool.refresh_permission_rulesets().await;
     // 新装包的 CLI/技能脚本纳入/移出 deny 规则集（M-6：install 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(())
@@ -430,8 +428,9 @@ pub async fn uninstall_marketplace_tool(
 ) -> Result<(), String> {
     uninstall_marketplace_tool_sync(&tool_id)?;
     // 联动卸载的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
-    // （阻塞版：命令保持同步，目录体量小、重写极快）。
-    pool.refresh_live_sessions_skills_blocking();
+    // （async 命令必须用 async 版：blocking 版的 blocking_lock 在 tokio runtime
+    // 线程上必 panic）。
+    pool.refresh_live_sessions_skills().await;
     // 卸载包的 CLI/技能脚本移出 deny 规则集（M-6：uninstall 路径热刷）。
     pool.refresh_permission_rulesets().await;
     Ok(())

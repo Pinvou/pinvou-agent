@@ -16,7 +16,12 @@ use super::types::ToolManifest;
 use super::MarketplaceManager;
 
 /// 把 JSON 值以 pretty 形式写盘(迁移与 connector 注册共用)。
+/// 写前创建父目录：全新 PINVOU3_HOME 下 `bundle/` 尚不存在，直接写会 ENOENT。
 pub(super) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
+    }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }

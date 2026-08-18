@@ -340,13 +340,37 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tool_id: &str,
         user_config: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
+        self.install_inner(tool_id, user_config, true)
+    }
+
+    /// 上传/导入包的 MCP 供给（plugin_import 统一上传路径）：与 `install` 同一管线，
+    /// 但不自动执行 pip install —— 上传 manifest 声明的 `pip_dependencies` 未经白名单
+    /// 与用户确认（供应链安全），非空时只在日志明确提示需用户自行安装。
+    pub(crate) fn install_upload(&self, tool_id: &str) -> Result<(), String> {
+        self.install_inner(tool_id, &std::collections::HashMap::new(), false)
+    }
+
+    fn install_inner(
+        &self,
+        tool_id: &str,
+        user_config: &std::collections::HashMap<String, String>,
+        pip_auto_install: bool,
+    ) -> Result<(), String> {
         self.migrate_mcp_plaintext_secrets()?;
         let manifest = self
             .load_manifest(tool_id)
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
 
         // 先装 Python 依赖（跨平台 pip）；失败就不注册，让用户可重试。零依赖工具会直接跳过。
-        self.pip_install_deps(&manifest)?;
+        // 上传/导入包禁用 pip 自动安装（供应链安全）：非空依赖只提示，不执行。
+        if pip_auto_install {
+            self.pip_install_deps(&manifest)?;
+        } else if !manifest.pip_dependencies.is_empty() {
+            log::warn!(
+                "[marketplace] 上传包 '{tool_id}' 声明 pip 依赖 {:?}：已跳过自动安装（供应链安全），请自行执行 pip install 后再使用该工具",
+                manifest.pip_dependencies
+            );
+        }
 
         // 按需释放包资源到 bundles/<id>/mcp/（§4：安装时释放，非启动全量）。
         // 自定义工具（无内嵌 spec）已由强制迁移 `migrate_custom_mcp_layout` 搬到
@@ -400,6 +424,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
         // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
         // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
+        // 来源查询必须先于 remove —— 先删登记再查恒为 false（三轮评审：上传包目录
+        // 被误删的数据丢失 bug）。
+        let source_is_upload = store::BundleStore::new()
+            .records()
+            .map(|records| {
+                records
+                    .iter()
+                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
+            })
+            .unwrap_or(false);
         if let Err(e) = store::BundleStore::new().remove(tool_id) {
             log::warn!("[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}");
         }
@@ -411,14 +445,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 是用户自己的内容，卸载只清登记/凭据/mcp.json，保留 `bundles/<id>/` 目录
         // 供重新安装（install 走原子落盘会再覆盖）；内嵌预置才删目录（启动可按
         // 快照重释放）。
-        let source_is_upload = store::BundleStore::new()
-            .records()
-            .map(|records| {
-                records
-                    .iter()
-                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
-            })
-            .unwrap_or(false);
         if !source_is_upload {
             let pkg_dir = paths::bundles_root().join(tool_id);
             if pkg_dir.exists() {
@@ -829,8 +855,10 @@ mod tests {
         stream.write_all(response.as_bytes()).await
     }
 
+    /// 按新包布局写测试 manifest（`bundles/<id>/mcp/manifest.json`）——
+    /// `load_manifest` 只读新布局（+ 内嵌 catalog），旧布局 `bundle/mcp-servers/` 已退役。
     fn write_tool_manifest(tool_id: &str, manifest: &str) {
-        let dir = crate::platform::paths::bundle_mcp_servers_dir().join(tool_id);
+        let dir = mcp_catalog::package_mcp_dir(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
@@ -893,14 +921,14 @@ mod tests {
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
-            let dir = crate::platform::paths::bundle_mcp_servers_dir().join("demo");
-            std::fs::create_dir_all(&dir).unwrap();
-            let manifest = r#"{
+            write_tool_manifest(
+                "demo",
+                r#"{
                 "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
                 "mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
                 "command":"python","args":[]
-            }"#;
-            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            }"#,
+            );
 
             let mgr = MarketplaceManager::new();
             let names = mgr.model_tool_names(&["demo".to_string()]);
@@ -1146,17 +1174,32 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:code 默认全禁已装连接器;plain 仍按空处理。
+            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 四连接器 ∪ 已装技能包
+            // （scope.rs DenyAll 扩集是有意语义）;plain 仍按空处理。
+            let deny_all_default = || {
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
+            };
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                deny_all_default()
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
             save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                deny_all_default()
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
             save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
@@ -1185,16 +1228,25 @@ mod tests {
                 load_disabled_connectors(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            // 旧格式不初始化 code scope → 仍默认全禁。
+            // 旧格式不初始化 code scope → 仍默认全禁（已装连接器 ∪ 内置 CLI 四连接器，
+            // DenyAll 扩集是有意语义）。
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()]
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
             );
-            // 读到即迁移:落盘已是新 map 格式。
-            let content = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                content.contains("\"scopes\""),
-                "迁移后应为新格式: {content}"
+            // 读到即迁移：迁移结果落盘到单一真相源 `disabled_bundles.json`（旧文件不回写）。
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert_eq!(
+                file.scopes.get("plain"),
+                Some(&vec!["weather".to_string(), "pptx".to_string()]),
+                "迁移后应写入 disabled_bundles.json 的 plain scope: {file:?}"
             );
         });
     }
@@ -1222,15 +1274,16 @@ mod tests {
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.initialized.contains("code"));
-            // 落盘已是新格式,且不再带旧键
-            let content = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                content.contains("\"scopes\""),
-                "迁移后应为新格式: {content}"
+            // 落盘已是单一真相源 `disabled_bundles.json` 的新格式（旧文件不回写）。
+            assert_eq!(
+                file.scopes.get("plain"),
+                Some(&vec!["weather".to_string()]),
+                "plain scope 应迁入 disabled_bundles.json: {file:?}"
             );
-            assert!(
-                !content.contains("code_initialized"),
-                "旧键不应残留: {content}"
+            assert_eq!(
+                file.scopes.get("code"),
+                Some(&vec!["pptx".to_string()]),
+                "code scope 应迁入 disabled_bundles.json: {file:?}"
             );
         });
     }
@@ -1255,8 +1308,15 @@ mod tests {
             );
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
-                vec!["weather".to_string(), "pptx".to_string()],
-                "code 未初始化应按 DenyAll 默认全禁已装连接器"
+                vec![
+                    "weather".to_string(),
+                    "pptx".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "code 未初始化应按 DenyAll 默认全禁（已装连接器 ∪ 内置 CLI 四连接器）"
             );
         });
     }
@@ -1732,16 +1792,21 @@ mod tests {
     fn migrate_legacy_manifest_env_moves_secret_to_store_and_removes_plaintext() {
         with_temp_home(|| {
             let secret = secret_value("legacy-amap");
-            write_tool_manifest(
-                "weather",
-                &format!(
+            // 旧布局明文 manifest 迁移：`migrate_mcp_plaintext_secrets` 只扫旧布局
+            // `bundle/mcp-servers/<id>/`（迁移对象本来就是旧版残留），此处直接写旧布局。
+            let dir = crate::platform::paths::bundle_mcp_servers_dir().join("weather");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("manifest.json"),
+                format!(
                     r#"{{
                         "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
                         "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
                         "env":{{"AMAP_KEY":"{secret}","SAFE_VALUE":"kept"}}
                     }}"#
                 ),
-            );
+            )
+            .unwrap();
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
 
@@ -1866,6 +1931,74 @@ mod tests {
 
             assert!(err.contains("IWENCAI_TEST_KEY"));
             assert!(!err.contains("test-secret"));
+        });
+    }
+
+    /// 回归（三轮评审）：Upload 来源的包卸载必须保留 `bundles/<id>/` 目录（用户唯一
+    /// 副本）。来源查询必须先于 `store.remove` —— 此前先删登记再查来源恒 false，
+    /// 上传包目录被误删（数据丢失）。
+    #[test]
+    fn uninstall_upload_source_keeps_package_dir() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-tool",
+                r#"{
+                    "id":"up-tool","name":"Up","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install("up-tool", &std::collections::HashMap::new())
+                .unwrap();
+            // install 镜像写的来源是 Preset；覆盖为 Upload，模拟统一上传管线的登记。
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "up-tool",
+                    store::BundleSource::Upload("pkg.zip".to_string()),
+                ))
+                .unwrap();
+
+            mgr.uninstall("up-tool").unwrap();
+
+            assert!(
+                !mgr.installed_ids().contains(&"up-tool".to_string()),
+                "卸载应移除 installed.json 登记"
+            );
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("up-tool")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "Upload 来源卸载后包目录应保留"
+            );
+        });
+    }
+
+    /// 上传/导入路径禁用 pip 自动安装（供应链安全）：`install_upload` 遇非空
+    /// `pip_dependencies` 不执行 pip install（若执行，不存在的包名会让安装失败），
+    /// 只提示用户自行安装，供给照常完成。
+    #[test]
+    fn install_upload_skips_pip_auto_install() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-pip",
+                r#"{
+                    "id":"up-pip","name":"Up","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"],
+                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+
+            mgr.install_upload("up-pip").unwrap();
+
+            let mcp = read_mcp_json();
+            assert!(
+                mcp["servers"].get("up-pip").is_some(),
+                "跳过 pip 后供给应照常写入 mcp.json"
+            );
+            assert!(mgr.installed_ids().contains(&"up-pip".to_string()));
         });
     }
 }

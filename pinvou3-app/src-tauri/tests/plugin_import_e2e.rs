@@ -3,13 +3,18 @@
 //! 覆盖整条链路：zip 导入 → 落盘 `bundles/<id>/` → install() 写 mcp.json + installed.json。
 //! 跑法：
 //!   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
-//!       --test plugin_import_e2e -- --nocapture --test-threads=1
+//!       --test plugin_import_e2e -- --nocapture
+//!   （4 条用例共享 PINVOU3_HOME env，进程内已用 Mutex 串行化，可并行跑）
 
 use std::io::Write;
 
-/// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。集成测试独立进程、
-/// 串行跑，无需与 lib 单测共享 ENV_LOCK。
+/// 用例间共享 PINVOU3_HOME 环境变量：同 target 默认并行跑，env 互相覆盖会竞态
+/// （三轮评审）——进程内 std Mutex 串行化（与 lib 单测的 ENV_LOCK 同范式，不新增依赖）。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。
 fn with_temp_home<F: FnOnce()>(f: F) {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dir = std::env::temp_dir().join(format!(
         "pinvou-plugin-e2e-{}-{}",
         std::process::id(),

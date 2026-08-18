@@ -237,7 +237,8 @@ command_protocol!(
         "import_skill_md_bytes",
         "import_skill_package_bytes",
         "uninstall_marketplace_skill",
-        "bundle_readiness"
+        "bundle_readiness",
+        "export_plugin_spec"
     ]
 );
 command_protocol!(

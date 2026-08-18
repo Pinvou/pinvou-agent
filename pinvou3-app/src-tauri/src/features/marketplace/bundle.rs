@@ -478,10 +478,18 @@ impl BundleRegistry {
         // 5) 凭据型技能包：ima（OpenAPI 凭据 + companion 技能 ima-skills；V2 归 Skill）。
         // 登记侧写入的记录 id 是 `ima-skills`（技能包 install 的登记口径），卡 id 是
         // `ima`——两个 id 任一有记录都算已装，保证「一个包 = 一张卡 = 一个开关」。
+        // 注意区分「store 不可读」（回退推导）与「记录不存在」（再查别名 id）：
+        // 通用 store_state 对缺记录也返回 Some((false, None))，直接 .or_else 会让
+        // ima-skills 兜底永不触发（三轮评审死代码）。
         let ima_skills = ["ima-skills"];
-        let (ima_installed, ima_degraded) = store_state("ima")
-            .or_else(|| store_state("ima-skills"))
-            .unwrap_or((self.cli_bundle_installed("ima"), None));
+        let (ima_installed, ima_degraded) = match &store_records {
+            Some(records) => ["ima", "ima-skills"]
+                .iter()
+                .find_map(|id| records.iter().find(|r| r.id == *id))
+                .map(|r| (r.installed, r.degraded.clone()))
+                .unwrap_or((false, None)),
+            None => (self.cli_bundle_installed("ima"), None),
+        };
         out.push(BundleInfo {
             id: "ima".to_string(),
             name: "腾讯 ima".to_string(),
@@ -1149,6 +1157,36 @@ mod tests {
             let cfg_keys: Vec<&str> = ima.config_fields.iter().map(|f| f.key.as_str()).collect();
             let cred_keys: Vec<&str> = ima.credentials.iter().map(|c| c.key.as_str()).collect();
             assert_eq!(cfg_keys, cred_keys, "ima 配置字段与凭据声明应同口径");
+        });
+    }
+
+    /// 回归（三轮评审）：store 仅含 `ima-skills` 记录（技能包 install 的登记口径）时，
+    /// ima 卡必须 installed=true —— 此前通用 store_state 对缺记录返回 Some((false,None))，
+    /// `.or_else(|| store_state("ima-skills"))` 永不触发（死代码），ima 卡恒未安装。
+    #[test]
+    fn ima_card_installed_from_ima_skills_record() {
+        with_temp_home(|| {
+            // 无记录 → 未安装
+            assert!(
+                !BundleRegistry::new().bundle("ima").unwrap().installed,
+                "无记录时 ima 应为未安装"
+            );
+            // 仅 ima-skills 记录 → ima 卡已安装
+            store_install(&["ima-skills"]);
+            let ima = BundleRegistry::new().bundle("ima").unwrap();
+            assert!(
+                ima.installed,
+                "store 仅含 ima-skills 记录时 ima 卡应为已安装"
+            );
+            // ima 记录优先于 ima-skills 记录（含 degraded 透传）
+            let store = store::BundleStore::new();
+            let mut record = store::BundleRecord::installed_now("ima", store::BundleSource::Preset);
+            record.installed = false;
+            record.degraded = Some("资源缺失".to_string());
+            store.upsert(record).unwrap();
+            let ima = BundleRegistry::new().bundle("ima").unwrap();
+            assert!(!ima.installed, "ima 记录存在时以其为准");
+            assert_eq!(ima.degraded.as_deref(), Some("资源缺失"));
         });
     }
 }

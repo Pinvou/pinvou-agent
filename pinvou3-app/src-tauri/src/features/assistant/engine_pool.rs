@@ -621,8 +621,9 @@ impl EnginePool {
         }
     }
 
-    /// 同步版在线会话组合目录重写（给保持同步签名的 tauri 命令用，如
-    /// `uninstall_marketplace_tool`）。组合目录体量小、diff 重写极快，阻塞可接受。
+    /// 同步版在线会话组合目录重写（**仅供不在 tokio runtime 上的同步调用方**：
+    /// `blocking_lock` 在 runtime 线程上会 panic，async 命令必须改用
+    /// [`Self::refresh_live_sessions_skills`]）。组合目录体量小、diff 重写极快。
     pub fn refresh_live_sessions_skills_blocking(&self) {
         let sids: Vec<String> = {
             let entries = self.entries.blocking_lock();
@@ -1401,7 +1402,7 @@ impl EnginePool {
     /// execpolicy 硬拦截热刷（scope 门禁通道③）：连接器/技能开关落盘后按各会话
     /// 自己的 scope 重算 deny 规则集（CLI 二进制名 + 禁用技能脚本路径）并广播给
     /// 所有在跑 engine，下一轮即硬拒。新 spawn / 重建的引擎由
-    /// build_engine_config_for_session_at 注入初值——两处共用 `bridge.scope_deny_ruleset`。
+    /// build_engine_config_for_session_roots 注入初值——两处共用 `bridge.scope_deny_ruleset`。
     pub async fn refresh_permission_rulesets(&self) {
         let targets = self
             .entries

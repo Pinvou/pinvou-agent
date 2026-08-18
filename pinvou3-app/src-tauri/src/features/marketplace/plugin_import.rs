@@ -1,7 +1,7 @@
-//! 插件包统一导入：spanner / mcp / skill / 组合包 + 图标落盘（plugin-protocol.md）。
+//! 插件包统一导入：mcp / skill / 组合包 + 图标落盘（plugin-protocol.md）。
 //!
-//! 统一上传路径：用户上传一个 zip，无论内容是哪种能力类型（spanner 扳手插件、
-//! MCP server、skill、或它们的组合），都自动识别 → 安全校验 → 落盘到按包聚合的
+//! 统一上传路径：用户上传一个 zip，无论内容是哪种能力类型（MCP server、skill、
+//! 或它们的组合），都自动识别 → 安全校验 → 落盘到按包聚合的
 //! `bundles/<id>/`，并在商店与运行时按同一套「包」模型读取/开关/卸载。
 //!
 //! zip 形态（plugin-protocol §3/§15）：
@@ -10,10 +10,12 @@
 //! ├── plugin.json        ← 权威声明（可选；组合包/凭据/元数据时必需）
 //! ├── mcp/               ← MCP server（manifest.json + server.py）
 //! ├── skills/<name>/     ← SKILL.md 目录（可多个）
-//! ├── spanner/              ← 扳手插件（main.py：stdin JSON → stdout JSON）
-//! ├── runtime/           ← 可选自带运行时
 //! └── icon.svg|png       ← 可选图标
 //! ```
+//!
+//! 注：旧 `spanner/` 与 `runtime/` 子目录布局已删除。skill 包的 frontmatter
+//! `tools[]` + `runtime` 可执行协议目前仅为 RFC 草案（docs/plugin-package-spec.md），
+//! 执行通路未实施，导入侧不识别也不落盘这两类子树。
 //!
 //! 图标：包内可选 `icon.svg`/`icon.png` → 落盘 `bundles/<id>/icon.<ext>`；缺省 →
 //! 落盘内置默认 `icon.svg`。已装工具图标与工具同目录。
@@ -29,8 +31,8 @@ use crate::features::marketplace::bundle::BundleKind;
 pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
-/// 可执行能力现在通过 skill 包的 SKILL.md frontmatter `tools[]` + `runtime` 段声明，
-/// 不再有「spanner 独立组件」入口——见 skill_marketplace.rs 与 skill-run wrapper。
+/// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
+/// 为 RFC 草案（docs/plugin-package-spec.md），执行通路未实施。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub manifest_version: u32,
@@ -68,8 +70,12 @@ pub struct ComponentRef {
     pub dir: String,
 }
 
-/// 图标扩展名 → 是否允许（只认 svg/png）。
+/// 图标扩展名 → 是否允许（只认 svg/png，且必须是无路径分隔符的纯文件名，
+/// 与 `write_icon_bytes` 的口径一致——`a/icon.png` / `../icon.svg` 一律拒收）。
 pub fn is_supported_icon(path: &str) -> bool {
+    if path.contains('/') || path.contains('\\') || path.contains("..") {
+        return false;
+    }
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".svg") || lower.ends_with(".png")
 }
@@ -117,18 +123,19 @@ pub fn is_safe_component_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-/// 目标包目录与本次导入是否「同一包」：带 plugin.json 的包按 plugin.json 字节
-/// 比对；裸技能包（无 plugin.json）按落盘后的 SKILL.md（`skills/<id>/SKILL.md`）
+/// 目标包目录与本次导入是否「同一包」：带 plugin.json 的包按 plugin.json **语义**
+/// 比对（落盘是 `to_string_pretty` 规范化字节，与 zip 原始字节直比必误判冲突）；
+/// 裸技能包（无 plugin.json）按落盘后的 SKILL.md（`skills/<id>/SKILL.md`）比对；
+/// 裸 MCP 包（无 plugin.json 无 SKILL.md）按规范化落盘的 `mcp/manifest.json` 语义
 /// 比对。任一主内容一致即视为同包重导（允许原子替换），否则视为不同包冲突。
 fn same_package_content(
     pkg_dir: &std::path::Path,
     incoming_plugin: Option<&[u8]>,
     incoming_skill: Option<&(String, Vec<u8>)>,
+    incoming_mcp: Option<&[u8]>,
 ) -> bool {
     if let Some(bytes) = incoming_plugin {
-        return std::fs::read(pkg_dir.join("plugin.json"))
-            .map(|existing| existing.as_slice() == bytes)
-            .unwrap_or(false);
+        return plugin_manifest_semantic_eq(&pkg_dir.join("plugin.json"), bytes);
     }
     if let Some((_, bytes)) = incoming_skill {
         let name = pkg_dir
@@ -141,7 +148,65 @@ fn same_package_content(
                 .unwrap_or(false);
         }
     }
+    if let Some(bytes) = incoming_mcp {
+        return json_bytes_semantic_eq(&pkg_dir.join("mcp").join("manifest.json"), bytes);
+    }
     false
+}
+
+/// 目录 rename 的 Windows 瞬时占用重试：杀毒/索引器会短暂持有新建目录内
+/// 文件的句柄，此时 rename 报 os error 5（拒绝访问），稍等即可恢复——真实
+/// 导入与测试并发下都实测命中。仅 `PermissionDenied` 重试（Unix 上该错误是
+/// 真实权限问题，由 `cfg!(windows)` 限定不进入重试）。
+fn rename_dir_with_retry(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 20;
+    for attempt in 1..=ATTEMPTS {
+        match std::fs::rename(src, dst) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let retryable = cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied;
+                if attempt == ATTEMPTS || !retryable {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    unreachable!()
+}
+
+/// plugin.json 的语义比对：落盘是 `PluginManifest` 解析后 `to_string_pretty` 的
+/// 规范化字节（补了 `version: null` 等 default 字段），与 zip 原始字节不能直比——
+/// 两侧各自解析为 `PluginManifest` 再序列化为 canonical Value 比较（键序/空白/
+/// default 字段差异不误判）；任一侧解析失败回退字节直比（保守）。
+fn plugin_manifest_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool {
+    let Ok(existing) = std::fs::read(disk_path) else {
+        return false;
+    };
+    match (
+        serde_json::from_slice::<PluginManifest>(&existing),
+        serde_json::from_slice::<PluginManifest>(incoming),
+    ) {
+        (Ok(existing), Ok(incoming)) => {
+            serde_json::to_value(&existing).ok() == serde_json::to_value(&incoming).ok()
+        }
+        _ => existing.as_slice() == incoming,
+    }
+}
+
+/// 落盘 JSON 文件与 zip 内原始字节的语义比对：各自解析为 `serde_json::Value` 后
+/// 比较（键序/空白/格式化差异不误判）；任一侧解析失败回退字节直比（保守）。
+fn json_bytes_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool {
+    let Ok(existing) = std::fs::read(disk_path) else {
+        return false;
+    };
+    match (
+        serde_json::from_slice::<serde_json::Value>(&existing),
+        serde_json::from_slice::<serde_json::Value>(incoming),
+    ) {
+        (Ok(existing), Ok(incoming)) => existing == incoming,
+        _ => existing.as_slice() == incoming,
+    }
 }
 
 /// 插件导入报告（统一上传路径的返回）。
@@ -299,7 +364,8 @@ fn detect_components(
 /// 计算单个 zip 条目落盘的目标 `(subdir, rel)`（None = 跳过：plugin.json / 图标单独处理）。
 ///
 /// 优先级：
-/// 1. 固定前缀 `mcp/` / `skills/` / `spanner/` / `runtime/`（本项目标准布局）；
+/// 1. 固定前缀 `mcp/` / `skills/`（本项目标准布局；旧 `spanner/`、`runtime/`
+///    前缀已随 spanner 退场删除，不再识别）；
 /// 2. 裸 MCP 回退根（无 plugin.json 时，manifest.json 所在目录 → `mcp/`）；
 /// 3. 裸技能回退根（无 plugin.json 时，SKILL.md 所在目录 → `skills/<name>/`）。
 ///
@@ -320,9 +386,8 @@ fn landing_target(
     if let Some(r) = path_str.strip_prefix("skills/") {
         return Some(("skills".to_string(), r.to_string()));
     }
-    // 注：原 `spanner/` 前缀分支已删除——脚本可执行能力通过 skill 包的
-    // SKILL.md frontmatter `tools[]` 段声明，由 skill_marketplace::install
-    // 后置 hook 注册 skill-run wrapper；不再有独立的 spanner 子目录布局。
+    // 注：原 `spanner/` 前缀分支已删除，不再有独立的 spanner 子目录布局；skill 包
+    // 的 `tools[]` 可执行协议为 RFC 草案（执行通路未实施），导入侧不识别该前缀。
 
     // 裸 MCP 回退。
     if let Some((root, _mcp_id)) = bare_mcp {
@@ -593,14 +658,33 @@ pub fn import_plugin_package(
     }
 
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
-    // 注：旧 spanner/ 与 runtime/ 子树已删除，skill 包的脚本由 skill_marketplace
-    //     后置 hook 单独处理。
+    // 注：旧 spanner/ 与 runtime/ 子树已删除，导入侧不再识别这两类前缀。
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
+    // 裸 MCP 重导比对输入：规范化 `mcp/manifest.json` 优先；裸包（manifest.json 在
+    // 任意目录）取识别出的回退根 manifest 原始字节。
+    let incoming_mcp: Option<&[u8]> = mcp_manifest_bytes.as_deref().or_else(|| {
+        det.bare_mcp.as_ref().and_then(|(root, _)| {
+            let rel = if root.is_empty() {
+                "manifest.json".to_string()
+            } else {
+                format!("{root}/manifest.json")
+            };
+            other_manifests
+                .iter()
+                .find(|(p, _)| *p == rel)
+                .map(|(_, b)| b.as_slice())
+        })
+    });
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。
     if pkg_dir.exists()
-        && !same_package_content(&pkg_dir, manifest_bytes.as_deref(), best_skill_md.as_ref())
+        && !same_package_content(
+            &pkg_dir,
+            manifest_bytes.as_deref(),
+            best_skill_md.as_ref(),
+            incoming_mcp,
+        )
     {
         return Err(format!(
             "包 id '{id}' 已存在且内容不同，请改名后重试（避免覆盖已有包）"
@@ -613,7 +697,8 @@ pub fn import_plugin_package(
     std::fs::create_dir_all(&staged).map_err(|e| format!("暂存目录: {e}"))?;
 
     let write_result = (|| -> Result<(), String> {
-        // 1) 统一落盘：mcp/ + skills/ + spanner/ + runtime/ 子树 + 裸包回退规范化。
+        // 1) 统一落盘：mcp/ + skills/ 子树 + 裸包回退规范化（旧 spanner/、runtime/
+        //    子树已删除，见 landing_target 注释）。
         let bare_skill = det
             .bare_skill
             .as_ref()
@@ -703,8 +788,7 @@ pub fn import_plugin_package(
         return Err(e);
     }
 
-    // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘，
-    // 脚本可执行能力改为 skill 包自身的后置 smoke（看 skill_marketplace.rs::install）。
+    // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘。
 
     // 原子落盘：先把旧目录挪到 .old 备份，rename 成功后再删 .old；rename 失败则
     // 把 .old 复原回去，保证「旧包不丢、新包不入」——避免既往版本 `remove+rename`
@@ -713,14 +797,14 @@ pub fn import_plugin_package(
     let mut moved_old = false;
     if pkg_dir.exists() {
         let _ = std::fs::remove_dir_all(&backup);
-        if std::fs::rename(&pkg_dir, &backup).is_ok() {
+        if rename_dir_with_retry(&pkg_dir, &backup).is_ok() {
             moved_old = true;
         }
     }
-    if let Err(e) = std::fs::rename(&staged, &pkg_dir) {
+    if let Err(e) = rename_dir_with_retry(&staged, &pkg_dir) {
         // rename 失败：尝试把旧目录复原，让已安装版本继续可用
         if moved_old {
-            let _ = std::fs::rename(&backup, &pkg_dir);
+            let _ = rename_dir_with_retry(&backup, &pkg_dir);
         }
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("落盘: {e}"));
@@ -731,12 +815,12 @@ pub fn import_plugin_package(
 
     // 供给：MCP 组件走 install 管线写 mcp.json + installed.json（底座据此拉起 server，
     // 工具才能注册可用）。纯 skill 包无 mcp/ 目录，跳过（技能走物化通道）。
-    // 注：旧 spanner 路径已删除——脚本可执行能力的供给在 skill_marketplace.rs 走
-    // skill-run wrapper + execpolicy deny rule。
+    // 注：旧 spanner 供给路径已删除；skill 包无可执行供给（tools[]/runtime 协议
+    // 为 RFC 草案，执行通路未实施）。
+    // 上传包走 `install_upload`：pip_dependencies 不自动 pip install（供应链安全），
+    // 非空时只在日志提示用户自行安装。
     if !mcp_servers.is_empty() {
-        if let Err(e) =
-            super::MarketplaceManager::new().install(&id, &std::collections::HashMap::new())
-        {
+        if let Err(e) = super::MarketplaceManager::new().install_upload(&id) {
             return Err(format!("MCP 供给失败（{id}）: {e}"));
         }
     }
@@ -751,7 +835,15 @@ pub fn import_plugin_package(
         id.clone(),
         super::store::BundleSource::Upload(display_name.to_string()),
     );
-    record.content_fingerprint = Some(id.clone());
+    // 真实内容指纹（与 mcp_catalog 释放/技能 install 同一 dir_fingerprint 口径；
+    // 计算失败不留假指纹，降级为 None）。
+    record.content_fingerprint = match super::skill_marketplace::dir_fingerprint(&pkg_dir) {
+        Ok(fp) => Some(fp),
+        Err(e) => {
+            log::warn!("[plugin-import] 计算包内容指纹失败（{id}）: {e}");
+            None
+        }
+    };
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         log::warn!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
     }
@@ -979,6 +1071,128 @@ mod tests {
         );
         assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
         assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同包重导：落盘的 plugin.json 是 `to_string_pretty` 规范化字节，与 zip 原始
+    /// 字节直比必误判冲突（三轮评审）——必须按解析后的语义比对，同包重导应放行。
+    #[test]
+    fn reimport_same_plugin_package_is_allowed() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("combo.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.finish().unwrap();
+        }
+
+        let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
+        assert_eq!(first.id, "demo");
+        // 同包重导：落盘 plugin.json 是规范化字节（与 zip 原始字节不同），语义比对
+        // 一致 → 放行（原子替换），不得报「内容不同」冲突。
+        let second = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
+            .unwrap_or_else(|e| panic!("同包重导应放行，实际报错: {e}"));
+        assert_eq!(second.id, "demo");
+
+        // 对照：同 id 不同内容仍必须拒绝（防静默互覆盖）。
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"另一个包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"另一个包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.finish().unwrap();
+        }
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+        assert!(err.contains("内容不同"), "不同内容应报冲突，实际: {err}");
+
+        match prev {
+            Some(v) => std::env::set_var("PINVOU3_HOME", v),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 裸 MCP 包（无 plugin.json 无 SKILL.md）重导：按规范化落盘的
+    /// `mcp/manifest.json` 语义比对，同包重导应放行（此前恒 false 必误判冲突）。
+    #[test]
+    fn reimport_bare_mcp_package_is_allowed() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-mcp-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        std::env::set_var("PINVOU3_HOME", &dir);
+
+        let zip_path = dir.join("mcp.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"wcalc","name":"计算器","description":"d","version":"1.0.0","icon":"","category":"dev","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("server.py", opts).unwrap();
+            zw.write_all(b"print('server')").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let first = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap();
+        assert_eq!(first.id, "wcalc");
+        let second = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip")
+            .unwrap_or_else(|e| panic!("裸 MCP 同包重导应放行，实际报错: {e}"));
+        assert_eq!(second.id, "wcalc");
 
         match prev {
             Some(v) => std::env::set_var("PINVOU3_HOME", v),
