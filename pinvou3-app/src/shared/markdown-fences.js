@@ -133,13 +133,10 @@ function matchTokenText(value, parentText, cursor) {
   return { text: expansion.text, offsets: expansion.offsets, map };
 }
 
-// Turn a matchTokenText result into a recursion frame: the expanded text plus a
-// map from its character positions to offsets in the original source.
-function tokenFrame(match, parentMap) {
-  return {
-    text: match.text,
-    map: composeMaps(composeMaps(match.offsets, match.map), parentMap),
-  };
+// Turn a matchTokenText result into a recursion map: from character positions of
+// the (possibly tab-expanded) matched text back to offsets in the original source.
+function tokenSourceMap(match, parentMap) {
+  return composeMaps(composeMaps(match.offsets, match.map), parentMap);
 }
 
 function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
@@ -153,13 +150,13 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
         match = matchTokenText(mappedText, parentText, cursor);
         if (match) {
           cursor = match.map[match.map.length - 1] + 1;
-          walkTokenSequence(token.tokens, match.text, tokenFrame(match, parentMap).map, source, fences);
+          walkTokenSequence(token.tokens, match.text, tokenSourceMap(match, parentMap), source, fences);
         }
       }
       continue;
     }
     cursor = match.map[match.map.length - 1] + 1;
-    const frame = tokenFrame(match, parentMap);
+    const frameMap = tokenSourceMap(match, parentMap);
     const tokenMap = composeMaps(match.map, parentMap);
 
     if (token.type === 'code' && token.codeBlockStyle !== 'indented') {
@@ -174,7 +171,7 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
         walkTokenSequence(
           token.tokens,
           textMatch.text,
-          tokenFrame(textMatch, frame.map).map,
+          tokenSourceMap(textMatch, frameMap),
           source,
           fences,
         );
@@ -189,13 +186,13 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
         const itemMatch = matchTokenText(item.raw, match.text, itemCursor);
         if (!itemMatch) continue;
         itemCursor = itemMatch.map[itemMatch.map.length - 1] + 1;
-        const itemFrame = tokenFrame(itemMatch, frame.map);
+        const itemFrameMap = tokenSourceMap(itemMatch, frameMap);
         const textMatch = matchTokenText(item.text, itemMatch.text, 0);
         if (textMatch) {
           walkTokenSequence(
             item.tokens,
             textMatch.text,
-            tokenFrame(textMatch, itemFrame.map).map,
+            tokenSourceMap(textMatch, itemFrameMap),
             source,
             fences,
           );
