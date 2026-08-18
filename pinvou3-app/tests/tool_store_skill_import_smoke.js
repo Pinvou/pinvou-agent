@@ -2,7 +2,7 @@
 /**
  * 工具商店技能包上传冒烟:加载 Vite dist + mock Tauri(desktop,可写权限),
  * 验证 header「上传技能包」按钮触发导入、成功弹窗、列表展示上传技能 description、
- * 拖放 zip 走字节通道 import_spanner_package_bytes。
+ * 拖放 zip 走字节通道 import_plugin_package_bytes_cmd。
  * 前置:先 npm run build:ui。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
@@ -31,29 +31,59 @@ function injectSource() {
   return `(function(){
     window.__TAURI_EVENT_HANDLERS__={};
     window.__PINVOU_MOCK_CALLS__=[];
+    var handlers={
+      get_settings:function(){return {theme:'liquid-light',language:'zh-Hans'};},
+      get_selected_pet:function(){return 'lingling';},
+      get_effective_model_config:function(){return {model:'m',base_url:'http://127.0.0.1:8000/v1',api_key_set:false};},
+      get_app_version:function(){return '0.8.0';},
+      get_backend_status:function(){return {online:true,ok:true,status:'online'};},
+      check_for_update:function(){return {available:false};},
+      get_mode_state:function(){return {mode:'yolo',plan_phase:'none'};},
+      get_super_permission_status:function(){return false;},
+      detect_local_vllm_setup:function(){return {eligible:false};},
+      list_marketplace_tools:function(){return [];},
+      get_marketplace_tool_auth_status:function(){return {status:'not_installed'};},
+      list_marketplace_skills:function(){return [
+        {id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},
+        {id:'my-test-skill',title:'my-test-skill',description:'用大模型整理会议纪要',installed:true,user_uploaded:true,subtitle:''},
+      ];},
+      import_plugin_package_cmd:function(){return true;},
+      import_plugin_package_bytes_cmd:function(){return true;},
+      uninstall_marketplace_skill:function(){return null;},
+      open_external_url:function(){return null;},
+      // 启动期只读命令:null 即走既有回退分支(与旧 default resolve(null) 行为一致)。
+      bundle_readiness:function(){return null;},
+      dingtalk_skills_state:function(){return null;},
+      feishu_skills_state:function(){return null;},
+      get_bundle_visibility:function(){return null;},
+      get_disabled_connectors:function(){return null;},
+      get_mode_defaults:function(){return null;},
+      get_monitor_snapshot:function(){return null;},
+      get_platform_capabilities:function(){return null;},
+      get_project_skills_enabled:function(){return null;},
+      kb_model_load_after_first_frame:function(){return null;},
+      kb_model_status:function(){return null;},
+      list_archived_sessions:function(){return null;},
+      list_models:function(){return null;},
+      list_personas:function(){return null;},
+      list_scheduled_runs:function(){return null;},
+      list_scheduled_tasks:function(){return null;},
+      list_sessions:function(){return null;},
+      refresh_connector_auth_gates:function(){return null;},
+      report_frontend_startup:function(){return null;},
+      report_pending_update_result:function(){return null;},
+      take_pet_navigation:function(){return null;},
+      take_pet_reply:function(){return null;},
+      tmeet_skills_state:function(){return null;},
+      web_access_bridge_ready:function(){return null;},
+      web_access_status:function(){return null;},
+      wecom_skills_state:function(){return null;},
+    };
     function invoke(cmd, args){
       window.__PINVOU_MOCK_CALLS__.push({cmd: cmd, args: args || {}});
-      switch(cmd){
-        case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
-        case 'get_selected_pet': return Promise.resolve('lingling');
-        case 'get_effective_model_config': return Promise.resolve({model:'m',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
-        case 'get_app_version': return Promise.resolve('0.8.0');
-        case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
-        case 'check_for_update': return Promise.resolve({available:false});
-        case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
-        case 'get_super_permission_status': return Promise.resolve(false);
-        case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
-        case 'list_marketplace_tools': return Promise.resolve([]);
-        case 'get_marketplace_tool_auth_status': return Promise.resolve({status:'not_installed'});
-        case 'list_marketplace_skills': return Promise.resolve([
-          {id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},
-          {id:'my-test-skill',title:'my-test-skill',description:'用大模型整理会议纪要',installed:true,user_uploaded:true,subtitle:''},
-        ]);
-        case 'import_spanner_package': return Promise.resolve(true);
-        case 'import_spanner_package_bytes': return Promise.resolve(true);
-        case 'open_external_url': return Promise.resolve(null);
-        default: return Promise.resolve(null);
-      }
+      if (Object.prototype.hasOwnProperty.call(handlers, cmd)) return Promise.resolve(handlers[cmd](args));
+      // 未注册的命令直接 reject：防止前端命令名漂移再被 default 假绿掩盖。
+      return Promise.reject(new Error('unregistered command: ' + cmd));
     }
     window.__TAURI__={core:{invoke},event:{emit:function(){return Promise.resolve();},listen(){return Promise.resolve(()=>{});}}};
   })();`;
@@ -74,8 +104,9 @@ async function clickExact(page, text) {
 (async () => {
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
+  let page;
   try {
-    const page = await browser.newPage();
+    page = await browser.newPage();
     await page.evaluateOnNewDocument(injectSource());
     await page.goto(url, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => document.querySelector('[data-nav="toolstore"]'), { timeout: 20000 });
@@ -86,12 +117,12 @@ async function clickExact(page, text) {
     const hasBtn = await page.evaluate(() => !!document.querySelector('[data-testid="tool-store-upload-btn"]'));
     rec('header「上传技能包」按钮渲染', hasBtn);
 
-    // 2. 点击按钮 → import_spanner_package 被调用 → 成功弹窗
+    // 2. 点击按钮 → import_plugin_package_cmd 被调用 → 成功弹窗
     const clicked = await page.evaluate(() => { document.querySelector('[data-testid="tool-store-upload-btn"]').click(); return true; });
     rec('点击上传按钮', !!clicked);
     await sleep(500);
-    const btnCall = await page.evaluate(() => window.__PINVOU_MOCK_CALLS__.filter(c => c.cmd === 'import_spanner_package').length);
-    rec('按钮触发 import_spanner_package', btnCall >= 1);
+    const btnCall = await page.evaluate(() => window.__PINVOU_MOCK_CALLS__.filter(c => c.cmd === 'import_plugin_package_cmd').length);
+    rec('按钮触发 import_plugin_package_cmd', btnCall >= 1);
     const importedToast = await page.evaluate(() => document.body.innerText.includes('插件包已导入'));
     rec('导入成功弹窗「技能包已导入」', importedToast);
 
@@ -122,7 +153,7 @@ async function clickExact(page, text) {
     await page.evaluate(() => { const s = document.querySelector('[data-testid="tool-store-search"]'); s.value=''; s.dispatchEvent(new Event('input',{bubbles:true})); });
     await sleep(300);
 
-    // 4. 拖放 zip → 走 import_spanner_package_bytes,filename/dataBase64 正确
+    // 4. 拖放 zip → 走 import_plugin_package_bytes_cmd,filename/dataBase64 正确
     const dropSent = await page.evaluate(async () => {
       const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]); // 'PK\x03\x04'
       const file = new File([zipBytes], 'my-skill.zip', { type: 'application/zip' });
@@ -130,7 +161,7 @@ async function clickExact(page, text) {
       dt.items.add(file);
       document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
       await new Promise(r => setTimeout(r, 600));
-      const call = window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'import_spanner_package_bytes');
+      const call = window.__PINVOU_MOCK_CALLS__.find(c => c.cmd === 'import_plugin_package_bytes_cmd');
       if (!call) return { ok: false, why: 'no call' };
       let decoded = null;
       try { decoded = atob(call.args.dataBase64); } catch (_) {}
@@ -138,7 +169,7 @@ async function clickExact(page, text) {
       const correctBytes = decoded === 'PK\x03\x04' + String.fromCharCode(1, 2, 3);
       return { ok: correctName && correctBytes, why: JSON.stringify({ name: call.args.filename, bytesOk: correctBytes }) };
     });
-    rec('拖放 zip 触发 import_spanner_package_bytes', dropSent.ok, dropSent.why);
+    rec('拖放 zip 触发 import_plugin_package_bytes_cmd', dropSent.ok, dropSent.why);
     const dropToast = await page.evaluate(() => document.body.innerText.includes('插件包已导入'));
     rec('拖放导入成功弹窗', dropToast);
 

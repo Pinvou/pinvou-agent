@@ -675,6 +675,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // hiddenByMode = { plain: Set, code: Set }——每个模式被设为「不可见」的包 id。
       const [managingVisibility, setManagingVisibility] = useState(false);
       const [hiddenByMode, setHiddenByMode] = useState({ plain: new Set(), code: new Set() });
+      // ref 镜像：setState updater 执行时机不保证同步，后端载荷以 ref 为基准，
+      // 与 UI 同一份 prev，快速连续勾选不丢写。
+      const hiddenByModeRef = useRef({ plain: new Set(), code: new Set() });
       // 插件指南弹窗：拖入安装说明 + 插件包介绍 + 规范文档下载。
       const [showGuide, setShowGuide] = useState(false);
       // 下载规范文档（桌面端走保存对话框；web 平台无此命令，静默忽略）。
@@ -687,7 +690,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           invokeTauri('get_bundle_visibility', { scope: 'plain' }),
           invokeTauri('get_bundle_visibility', { scope: 'code' }),
         ]).then(([plain, code]) => {
-          setHiddenByMode({ plain: new Set(plain || []), code: new Set(code || []) });
+          const loaded = { plain: new Set(plain || []), code: new Set(code || []) };
+          hiddenByModeRef.current = loaded;
+          setHiddenByMode(loaded);
           setVisibilityLoaded(true);
         }).catch(() => {
           // 读失败不静默清空（后端整集覆盖语义下会把用户已配置的可见性规则冲掉）：
@@ -701,12 +706,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       }, [managingVisibility]);
       // 勾选/取消某工具在某模式的可见性：checked = 可见。
       const toggleModeVisibility = (id, mode, checked) => {
-        if (!canMutateToolStore || !visibilityLoaded) return;
-        const next = new Set(hiddenByMode[mode] || []);
+        if (!canMutateToolStore || !visibilityLoaded || !id) return;
+        const prev = hiddenByModeRef.current;
+        const next = new Set(prev[mode] || []);
         if (checked) next.delete(id); else next.add(id);
-        setHiddenByMode((prev) => ({ ...prev, [mode]: next }));
+        const nextState = { ...prev, [mode]: next };
+        hiddenByModeRef.current = nextState;
+        setHiddenByMode(nextState);
         invokeTauri('set_bundle_visibility', { bundleIds: Array.from(next), scope: mode })
-          .catch(() => {});
+          .catch((e) => {
+            // 写失败：回滚本地勾选态（重读后端为基准）并提示，不静默吞错（三轮评审）。
+            loadHiddenByMode();
+            setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+          });
       };
       // bundle_readiness 统一取数（Phase 2 第八刀，§3.3）：逐连接器 status 命令
       // （feishu/wecom/dingtalk/tmeet/ima_status）的前端调用全部移除，installed /
@@ -1408,7 +1420,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           setBusyId(null);
         }
       };
-      const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_spanner_package'));
+      const handleUploadSkill = () => doImportSkillZip(() => invokeTauri('import_plugin_package_cmd'));
       const handleZipDrop = (files) => {
         const picked = pickSkillDrop(files);
         if (!picked) return Promise.resolve();
@@ -1418,7 +1430,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return Promise.resolve();
         }
         // 单 .md 技能文件走 import_skill_md_bytes；zip 插件包走统一导入字节通道。
-        const command = kind === 'md' ? 'import_skill_md_bytes' : 'import_spanner_package_bytes';
+        const command = kind === 'md' ? 'import_skill_md_bytes' : 'import_plugin_package_bytes_cmd';
         return doImportSkillZip(async () =>
           invokeTauri(command, { filename: file.name, dataBase64: await fileToBase64(file) }));
       };
@@ -2015,12 +2027,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                       return (
                                         <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
                                           {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
+                                            // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选。
+                                            const noBackend = !tool.backendId;
                                             const visible = !(hiddenByMode[m.key] || new Set()).has(tool.backendId);
                                             return (
-                                              <label key={m.key} className="flex items-center gap-2 cursor-pointer">
+                                              <label key={m.key} className={`flex items-center gap-2 ${noBackend ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                                                 <input
                                                   type="checkbox"
                                                   checked={visible}
+                                                  disabled={noBackend}
                                                   onChange={() => toggleModeVisibility(tool.backendId, m.key, !visible)}
                                                   className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                                                 />

@@ -57,7 +57,7 @@ assert.match(toolStoreSource, /ctrl\.install\(/, 'tool store must install the dr
 assert.match(toolStoreSource, /capture: true/, 'tool store must take over in capture phase');
 assert.match(
   toolStoreSource,
-  /import_spanner_package_bytes/,
+  /import_plugin_package_bytes_cmd/,
   'dropped zips must go through the base64 byte channel command',
 );
 assert.match(

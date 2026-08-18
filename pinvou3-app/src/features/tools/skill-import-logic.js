@@ -1,20 +1,10 @@
-// 插件包(zip)导入的纯逻辑:拖放文件里挑 zip、读字节转 base64、大小软限。
-// 与后端 `import_spanner_package_bytes`(Rust 强校验)配套,这里只做展示层友好处理。
+// 插件包(zip)导入的纯逻辑:拖放文件里挑 zip/md、读字节转 base64、大小软限。
+// 与后端 `import_plugin_package_bytes_cmd`(Rust 强校验)配套,这里只做展示层友好处理。
 
 /// zip 未压缩大小软限。拖放走 base64 字节通道,过大有内存开销,这里给 50 MiB 的
 /// 前端软限(仅拖放路径;原生对话框按钮路径不受此限)。后端 `MAX_PLUGIN_SIZE_BYTES`
 /// 仍以 200 MiB 强校验。
 export const MAX_SKILL_ZIP_BYTES = 50 * 1024 * 1024;
-
-/// 从拖放文件列表中挑第一个 .zip(大小写不敏感);没有则 null。
-export function pickSkillZip(files) {
-  const list = files || [];
-  for (let i = 0; i < list.length; i++) {
-    const f = list[i];
-    if (f && typeof f.name === 'string' && /\.zip$/i.test(f.name)) return f;
-  }
-  return null;
-}
 
 /// 从拖放文件列表中挑第一个可导入的技能文件：`.zip`(插件包) 或 `.md`/`.markdown`
 /// (单个技能文件)。返回 { file, kind: 'zip' | 'md' }；没有则 null。
