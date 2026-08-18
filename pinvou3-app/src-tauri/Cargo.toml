@@ -57,7 +57,7 @@ tokio-util = { version = "0.7.16", features = ["compat"] }
 
 # 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
-agent-client-protocol = { version = "1.0.0", features = [
+agent-client-protocol = { version = "2", features = [
     "unstable_elicitation",
     "unstable_session_fork",
 ] }
@@ -115,8 +115,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
 # 8.x：把 mio 收敛到 1.x、连带消除 windows-sys 0.48.0，并修 Windows
 # FILE_NOTIFY_INFORMATION 未对齐 UB。
-# 注意：这不解决 windows-targets 0.48.5（+ 7 个 win 二进制 crate）——那条链由
-# device_query 2.1.0 → windows 0.48.0 持有，与 notify 无关，需单独处理 device_query。
 # 项目仅用稳定高层 API（recommended_watcher / Watcher::watch / EventKind / RecursiveMode），
 # 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
 notify = "8"
@@ -190,7 +188,10 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
-windows = "0.61.3"
+# voice/platform/windows.rs 仅用 COM 基础类型(Interface/HSTRING/Result),它们源自
+# windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
+# 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
+windows-core = "0.61"
 
 [target.'cfg(not(windows))'.dependencies]
 
@@ -201,9 +202,13 @@ windows = "0.61.3"
 # 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
 gtk = "0.18"
 webkit2gtk = "2.0"
-# 多窗口撕离(detach.rs begin_detach_drag):X11 全局鼠标坐标+左键状态,
-# 驱动鬼影跨屏跟随 + 松手落位。Wayland 下不可用 → 降级(后续 task)。
-device_query = "2"
+# 多窗口撕离(detach.rs begin_detach_drag):X11 XQueryPointer 读全局鼠标坐标+左键状态,
+# 驱动鬼影跨屏跟随 + 松手落位。Wayland(无 XWayland)下不可用 → 降级(后续 task)。
+# 直连 x11 而非经 device_query 封装:x11 已被 gdkx11(wry/tauri 栈)拉入图,直连零新增 crate,
+# 且消除 device_query 独占拖入的 windows 0.48 链(windows-targets + 7 个 win 二进制 crate)与
+# macOS-only 传递依赖(readkey/readmouse/macos-accessibility-client)——这些本就永不编译
+# (device_query 的 windows/macOS dep 是 cfg-gated 死重),仅污染 lockfile。仅用 xlib feature。
+x11 = { version = "2.21", features = ["xlib"] }
 
 # =============================================================================
 # Lint 门禁 —— 硬门禁设计:只启用「当前实测零欠账」的 lint(deny);

@@ -146,7 +146,7 @@ assert.doesNotMatch(providersSection, />切换</);
 assert.doesNotMatch(providersSection, />官方登录</);
 const settingsViewProviders = source('features/settings/SettingsView.jsx');
 assert.match(settingsViewProviders, /t\.uiSettings\.providers/);
-assert.match(settingsViewProviders, /renderProviders\(\)/);
+assert.match(settingsViewProviders, /<ProvidersSection/);
 const providerFormModal = source('features/settings/ProviderFormModal.jsx');
 assert.match(providerFormModal, /invokeTauri\(['"]save_acp_provider['"]/);
 assert.doesNotMatch(providerFormModal, /placeholder=\{?['"]输入 API Key/);

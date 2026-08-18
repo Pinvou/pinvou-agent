@@ -2367,13 +2367,18 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
       const usesHomebrewDependencyInstaller = !!platformCapabilities.usesHomebrewDependencyInstaller;
-      const [activeSection, setActiveSection] = useState(initialSection || 'general');
+      // 「ACP 管理」（原 Provider 管理）并入模型设置页：activeSection 用 'model'，
+      // modelTab 区分「模型 / ACP 管理」两个子页；深链 initialSection='providers'
+      // （代码页错误横幅等入口）映射为模型页 + ACP 子页。
+      const [activeSection, setActiveSection] = useState(initialSection === 'providers' ? 'model' : (initialSection || 'general'));
+      const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : 'models');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
       const canUpdateApp = can('appUpdate');
       const canInstallDependencies = can('dependencyInstall');
       const canConfigureDesktopNotifications = can('desktopNotifications');
       const canManageModels = can('modelManagement');
+      const acpProvidersTabVisible = !!platformCapabilities.codexAcpSupported;
       const canPickHostFiles = can('hostFilePicker');
       const [editingModel, setEditingModel] = useState(null);
       const [modelDeleteConfirm, setModelDeleteConfirm] = useState(null);
@@ -2409,7 +2414,12 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
         });
       }, [canUpdateApp, updateFocusTick]);
       useEffect(() => {
-        if (initialSection) setActiveSection(initialSection);
+        if (initialSection === 'providers') {
+          setActiveSection('model');
+          setModelTab('acp');
+        } else if (initialSection) {
+          setActiveSection(initialSection);
+        }
       }, [initialSection]);
       useEffect(() => {
         if (!feedbackNotice) return;
@@ -2792,8 +2802,27 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
       );
       const renderModels = () => (
         <>
+          {acpProvidersTabVisible && (
+            // 左上角小胶囊切换：模型 / ACP 管理（替代原列表上方「模型」小字标题；
+            // 原侧栏「Provider 管理」分节并入为子页）
+            <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.07]">
+              {[
+                { key: 'models', label: t.uiSettings.model },
+                { key: 'acp', label: t.uiSettings.providers },
+              ].map(tab => (
+                <button key={tab.key} type="button" data-testid={`settings-model-tab-${tab.key}`} onClick={() => setModelTab(tab.key)}
+                  className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {modelTab === 'acp' && acpProvidersTabVisible ? (
+            <ProvidersSection t={t} />
+          ) : (
           <section className="mb-6">
-            <SectionTitle>{settingsCopy.modelSection}</SectionTitle>
+            {/* 有 ACP 子页时顶端胶囊切换已承担「模型」标题语义，不再重复小字标题 */}
+            {!acpProvidersTabVisible && <SectionTitle>{settingsCopy.modelSection}</SectionTitle>}
             <Group>
               {(() => {
                 const { preset, custom } = groupModelsForSelector(userModels);
@@ -2824,6 +2853,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
             </Group>
             {modelEnvLocked.length > 0 && <div className={`px-3 mt-2 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>{settingsCopy.envManaged}</div>}
           </section>
+          )}
         </>
       );
       const renderSearch = () => (
@@ -3025,27 +3055,26 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
           </IOSRow>
         </IOSSection>
       );
-      const renderProviders = () => <ProvidersSection t={t} />;
       const renderContent = () => {
         if (activeSection === 'model') return renderModels();
         if (activeSection === 'search') return renderSearch();
         if (activeSection === 'memory') return renderMemory();
         if (activeSection === 'permissions') return renderPermissions();
-        if (activeSection === 'providers') return renderProviders();
         if (activeSection === 'update') return renderUpdate();
         if (activeSection === 'help') return renderHelp();
         return renderGeneral();
       };
-      const sectionTitle = {
-        general: t.uiSettings.general,
-        model: t.uiSettings.model,
-        search: t.uiSettings.search,
-        memory: t.uiSettings.memory,
-        permissions: t.uiSettings.permissions,
-        providers: t.uiSettings.providers,
-        update: t.uiSettings.update,
-        help: t.uiSettings.help,
-      }[activeSection] || t.uiSettings.general;
+      const sectionTitle = (activeSection === 'model' && modelTab === 'acp' && acpProvidersTabVisible)
+        ? t.uiSettings.providers
+        : ({
+            general: t.uiSettings.general,
+            model: t.uiSettings.model,
+            search: t.uiSettings.search,
+            memory: t.uiSettings.memory,
+            permissions: t.uiSettings.permissions,
+            update: t.uiSettings.update,
+            help: t.uiSettings.help,
+          }[activeSection] || t.uiSettings.general);
       const SearchSourceModal = ({ provider, isNew, onClose }) => {
         const option = searchOptions.find(x => x.key === provider);
         const [showSearchKey, setShowSearchKey] = useState(false);
@@ -3175,7 +3204,6 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               </div>
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
-                {!!platformCapabilities.codexAcpSupported && <SectionButton id="providers" icon={<Globe size={17} />} label={t.uiSettings.providers} />}
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} />}
                 {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} />

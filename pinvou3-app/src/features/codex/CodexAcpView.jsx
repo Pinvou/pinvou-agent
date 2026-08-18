@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { can } from '../../shared/platform.js';
@@ -17,7 +18,7 @@ import {
   runtimeNoticeMode,
   runtimeOperationFor,
 } from './runtimeNoticeState.js';
-import { ComposerPopover } from '../../components/ComposerPopover.jsx';
+import { ComposerPopover, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import {
   appendAcpEvent,
   buildElicitationContent,
@@ -767,7 +768,10 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onCancel]);
-  return (
+  // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
+  // `position: fixed` 的包含块，不 portal 的话全屏模态只会盖住输入框区域，
+  // 点击遮罩取消也随之失效。
+  return createPortal(
     <div data-testid="native-yolo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
@@ -809,7 +813,8 @@ function NativeYoloConfirmCard({ theme, t, busy, onConfirm, onCancel }) {
           >{t.modeYoloConfirmOk}</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1232,6 +1237,21 @@ export function CodexAcpView({
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // 这四个 composer 弹层不能用 `fixed inset-0` 关闭层：composer 容器的 backdrop-blur
+  // 会成为 fixed 后代的包含块，使关闭层只覆盖输入框区域、外点失效。统一用
+  // document 级 pointerdown 外点检测（见 ComposerPopover.jsx）。
+  const commandMenuPanelRef = useRef(null);
+  const commandMenuTriggerRef = useRef(null);
+  const workspaceMenuPanelRef = useRef(null);
+  const workspaceMenuTriggerRef = useRef(null);
+  const memoryPanelRef = useRef(null);
+  const memoryTriggerRef = useRef(null);
+  const accountMenuPanelRef = useRef(null);
+  const accountMenuTriggerRef = useRef(null);
+  useOutsidePointerClose(commandOpen, () => setCommandOpen(false), [commandMenuPanelRef, commandMenuTriggerRef]);
+  useOutsidePointerClose(workspaceMenuOpen, () => setWorkspaceMenuOpen(false), [workspaceMenuPanelRef, workspaceMenuTriggerRef]);
+  useOutsidePointerClose(memoryOpen, () => setMemoryOpen(false), [memoryPanelRef, memoryTriggerRef]);
+  useOutsidePointerClose(accountMenuOpen, () => setAccountMenuOpen(false), [accountMenuPanelRef, accountMenuTriggerRef]);
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
@@ -3201,20 +3221,17 @@ export function CodexAcpView({
                 </div>
               )}
               {commandOpen && availableCommands.length > 0 && (
-                <>
-                  <button aria-label={codexCopy.commandMenuClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setCommandOpen(false)} />
-                  <div className="absolute z-40 left-0 right-0 bottom-full mb-2 max-h-72 overflow-y-auto rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.agentCommands}</div>
-                    {availableCommands.map(command => (
-                      <button key={command.name} type="button"
-                        onClick={() => { setDraft(`/${command.name}${command.input ? ' ' : ''}`); setCommandOpen(false); }}
-                        className="w-full rounded-xl px-3 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
-                        <span className="block text-[12px] font-semibold">/{command.name}</span>
-                        <span className="block mt-0.5 text-[11px] text-gray-400">{command.description}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
+                <div ref={commandMenuPanelRef} className="absolute z-40 left-0 right-0 bottom-full mb-2 max-h-72 overflow-y-auto rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                  <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.agentCommands}</div>
+                  {availableCommands.map(command => (
+                    <button key={command.name} type="button"
+                      onClick={() => { setDraft(`/${command.name}${command.input ? ' ' : ''}`); setCommandOpen(false); }}
+                      className="w-full rounded-xl px-3 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                      <span className="block text-[12px] font-semibold">/{command.name}</span>
+                      <span className="block mt-0.5 text-[11px] text-gray-400">{command.description}</span>
+                    </button>
+                  ))}
+                </div>
               )}
               <textarea value={draft} onChange={event => setDraft(event.target.value)}
                 onPaste={handlePaste}
@@ -3234,6 +3251,7 @@ export function CodexAcpView({
                     <div className="relative min-w-0">
                       <button
                         type="button"
+                        ref={workspaceMenuTriggerRef}
                         data-testid="codex-workspace-selector"
                         onClick={() => setWorkspaceMenuOpen(value => !value)}
                         className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
@@ -3248,9 +3266,7 @@ export function CodexAcpView({
                         <ChevronDown size={12} className="shrink-0" />
                       </button>
                       {workspaceMenuOpen && (
-                        <>
-                          <button aria-label={codexCopy.workspaceMenuClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setWorkspaceMenuOpen(false)} />
-                          <div className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                        <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
                             <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
@@ -3274,8 +3290,7 @@ export function CodexAcpView({
                                 ))}
                               </div>
                             )}
-                          </div>
-                        </>
+                        </div>
                       )}
                     </div>
                   )}
@@ -3304,7 +3319,7 @@ export function CodexAcpView({
                     } ${nativeVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
                     <Mic size={18} />
                   </button>
-                  <button type="button" onClick={() => setCommandOpen(value => !value)}
+                  <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
                     disabled={!availableCommands.length}
                     className="h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40"
                     title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
@@ -3374,6 +3389,7 @@ export function CodexAcpView({
                         <div className="relative min-w-0">
                           <button
                             type="button"
+                            ref={memoryTriggerRef}
                             data-testid="native-memory-badge"
                             onClick={() => setMemoryOpen(value => !value)}
                             title={codexCopy.nativeMemoryTitle}
@@ -3385,18 +3401,15 @@ export function CodexAcpView({
                             {`${codexCopy.nativeMemory} ${nativeMemoryItems.length}`}
                           </button>
                           {memoryOpen && (
-                            <>
-                              <button type="button" aria-label={codexCopy.nativeMemoryClose} className="fixed inset-0 z-30 cursor-default" onClick={() => setMemoryOpen(false)} />
-                              <div data-testid="native-memory-panel" className="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-[320px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95">
-                                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.nativeMemoryTitle}</div>
-                                {nativeMemoryItems.map((item, index) => (
-                                  <div key={item.id || `memory-${index}`} className="rounded-xl px-3 py-2">
-                                    <span className="block text-[10px] font-medium text-gray-400">{nativeMemoryKindLabel(item.kind)}</span>
-                                    <span className="mt-0.5 block text-[12px] text-gray-700 dark:text-gray-200">{item.text}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </>
+                            <div ref={memoryPanelRef} data-testid="native-memory-panel" className="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-[320px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95">
+                              <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.nativeMemoryTitle}</div>
+                              {nativeMemoryItems.map((item, index) => (
+                                <div key={item.id || `memory-${index}`} className="rounded-xl px-3 py-2">
+                                  <span className="block text-[10px] font-medium text-gray-400">{nativeMemoryKindLabel(item.kind)}</span>
+                                  <span className="mt-0.5 block text-[12px] text-gray-700 dark:text-gray-200">{item.text}</span>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       )}
@@ -3406,6 +3419,7 @@ export function CodexAcpView({
                   <div className="relative min-w-0">
                     <button
                       type="button"
+                      ref={accountMenuTriggerRef}
                       data-testid="acp-account-menu-trigger"
                       onClick={() => setAccountMenuOpen(value => !value)}
                       className="inline-flex h-7 min-w-0 max-w-[260px] items-center gap-1.5 rounded-lg px-2 text-[10px] text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
@@ -3426,17 +3440,11 @@ export function CodexAcpView({
                       <ChevronDown size={11} className="shrink-0" />
                     </button>
                     {accountMenuOpen && (
-                      <>
-                        <button
-                          type="button"
-                          aria-label={codexCopy.closeAccountMenu}
-                          className="fixed inset-0 z-30 cursor-default"
-                          onClick={() => setAccountMenuOpen(false)}
-                        />
-                        <div
-                          data-testid="acp-account-menu"
-                          className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
-                        >
+                      <div
+                        ref={accountMenuPanelRef}
+                        data-testid="acp-account-menu"
+                        className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
+                      >
                           <div className="flex items-center gap-3 px-3 py-2.5">
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.04] dark:bg-white/[0.07]">
                               <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
@@ -3478,8 +3486,7 @@ export function CodexAcpView({
                               {codexCopy.recheck}
                             </button>
                           </div>
-                        </div>
-                      </>
+                      </div>
                     )}
                   </div>
                   )}
