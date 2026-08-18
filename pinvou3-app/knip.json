@@ -23,6 +23,7 @@
     "src/shared/format-utils.js",
     "src/shared/legacy-polyfills.js",
     "src/shared/markdown-bridge-fallback.js",
+    "src/shared/model-service-errors.js",
     "src/app/reader-main.jsx",
     "src/features/reader/ReaderApp.jsx",
     "scripts/tauri/*.js",

@@ -718,7 +718,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 }
 
 /// lane → ConversationTimeline 使用的 turn 投影。
-export function projectNativeLane(lane, sessionId) {
+export function projectNativeLane(lane, sessionId, options = {}) {
   return projectDeepSeekConversation({
     chatItems: lane ? lane.items : [],
     busy: Boolean(lane && lane.busy),
@@ -726,5 +726,7 @@ export function projectNativeLane(lane, sessionId) {
     tokens: lane ? lane.tokens : null,
     sessionId,
     timelineEvents: lane ? lane.timeline : [],
+    language: options.language,
+    modelServiceState: options.modelServiceState || null,
   });
 }
