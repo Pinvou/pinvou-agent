@@ -10,7 +10,7 @@ import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layou
 import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
-import { dict, LANG_TO_TAG, languageFromLocaleTags, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -309,11 +309,7 @@ function workspaceDisplayName(path) {
       }, [platformCapabilities.localVllmSupported]);
       const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState(() => {
-        const systemLanguage = languageFromLocaleTags(
-          typeof navigator === 'undefined'
-            ? []
-            : (navigator.languages?.length ? navigator.languages : navigator.language),
-        );
+        const systemLanguage = initialSystemLanguage();
         if (!isWeb) return systemLanguage;
         try {
           const value = window.localStorage.getItem('pinvou.web.language');

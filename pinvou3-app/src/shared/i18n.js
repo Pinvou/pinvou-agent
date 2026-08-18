@@ -1570,6 +1570,14 @@ const dict = {
       // 当前只提供中、英、日；系统首选语言不受支持时使用英文。
       return 'en';
     }
+    // 首帧系统语言探测:主窗口与各辅助窗口(桌宠/阅读器/分离窗口)在落盘
+    // settings 到达前共用;之后仍以 get_settings/bs.settings 的显式配置为准。
+    function initialSystemLanguage() {
+      if (typeof navigator === 'undefined') return 'en';
+      return languageFromLocaleTags(
+        navigator.languages?.length ? navigator.languages : navigator.language,
+      );
+    }
     const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
     /* ==========================================
@@ -2485,4 +2493,4 @@ dict.ja.uiSettingsDetail.memoryTopicCleanupRequired = 'メモリは更新され�
 
 if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
 
-export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, SEARCH_KEY_PROVIDERS };
+export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };

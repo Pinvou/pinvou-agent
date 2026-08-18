@@ -7,14 +7,14 @@ import { CardPoolView } from '../features/personas/Personas.jsx';
 import { CodexAcpView } from '../features/codex/CodexAcpView.jsx';
 import { useBridgeState } from '../hooks/useBridge.js';
 import { emitTauri, invokeTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
-import { dict, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 
 function useDetachedBase() {
   const bs = useBridgeState([
     'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
     'settings', 'personas',
   ]);
-  const [language, setLanguage] = useState('zh');
+  const [language, setLanguage] = useState(initialSystemLanguage);
   const [activeTheme, setActiveTheme] = useState('dark');
   const initRef = useRef(false);
 
