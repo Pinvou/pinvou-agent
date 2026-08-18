@@ -330,4 +330,24 @@ cyclic.self = cyclic;
 invokeResponse = async command => command === 'web_access_ingest_file' ? cyclic : null;
 await assert.rejects(api.attachments.addAttachmentByPath('/tmp/cyclic.txt'), /must not contain cycles/);
 
+// probeLocalServerKind 降级契约（PR #218 五审 P2）：web 桥层不得吞错伪造成
+// generic——命令失败（web 白名单不含该命令/老版本桌面）必须 reject，由消费方
+// （SettingsView）catch 后置 null 走 localProbeTiersForKind 默认四档；否则本地
+// vLLM/Ollama 会被误报成「该端点不支持思考档位调节」。
+invokeResponse = async command => {
+  if (command !== 'probe_local_server_kind') return null;
+  throw new Error('probe_local_server_kind is not allowed');
+};
+await assert.rejects(
+  () => api.models.probeLocalServerKind('http://127.0.0.1:8000/v1'),
+  /not allowed/,
+  'web probeLocalServerKind must reject (not swallow) command failures',
+);
+invokeResponse = async command => (command === 'probe_local_server_kind' ? 'ollama' : null);
+assert.equal(
+  await api.models.probeLocalServerKind('http://127.0.0.1:11434/v1'),
+  'ollama',
+  'web probeLocalServerKind must pass the probed kind through unchanged',
+);
+
 console.log('web bridge domain contract passed');
