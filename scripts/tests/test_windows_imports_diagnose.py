@@ -143,10 +143,14 @@ class ManifestSxsDllsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / "pinvou3_lib-test.exe"
             exe.write_bytes(build_pe_with_manifest(COMMON_CONTROLS_MANIFEST))
+            # 脚本自身把 stdout/stderr 强制为 UTF-8(见其模块头);父进程必须
+            # 用同编码解码,否则在默认编码非 UTF-8 的 Windows(GBK/cp1252)上
+            # 严格解码抛 UnicodeDecodeError 或产出乱码,断言必然失败。
             proc = subprocess.run(
                 [sys.executable, str(SCRIPT), str(exe)],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             self.assertEqual(proc.returncode, 0)
             self.assertIn("SxS 清单豁免", proc.stdout)
