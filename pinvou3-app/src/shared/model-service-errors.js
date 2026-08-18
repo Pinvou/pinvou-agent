@@ -18,8 +18,44 @@
     anthropic: "Claude",
     xai: "xAI",
     gemini: "Gemini",
-    openai_compatible: "当前模型服务",
   };
+
+  var MODEL_ERROR_KEYWORDS = [
+    "sse stream request failed",
+    "api key",
+    "invalid api key",
+    "invalid token",
+    "payment required",
+    "insufficient balance",
+    "insufficient quota",
+    "quota exceeded",
+    "quota exhausted",
+    "quota has been exceeded",
+    "exceeded your current quota",
+    "rate limit",
+    "too many requests",
+    "context length",
+    "context window",
+    "maximum context",
+    "prompt is too long",
+    "timeout",
+    "timed out",
+    "econnrefused",
+    "connection refused",
+    "connection reset",
+    "service unavailable",
+    "temporarily unavailable",
+    "server error",
+    "模型服务",
+    "账户余额",
+    "余额不足",
+    "欠费",
+    "额度不足",
+    "额度用尽",
+    "额度耗尽",
+    "用量超出",
+    "请求过于频繁",
+  ];
 
   function languageTag(language) {
     return language === "en" ? "en" : language === "ja" ? "ja" : "zh";
@@ -115,11 +151,17 @@
     });
   }
 
-  function hasProviderOrApiSignal(lower, normalized) {
+  function hasApiSignal(lower, normalized) {
     return hasAny(lower, normalized, [
-      "api key", "model service", "language model", "llm", "sse stream request failed",
-      "openai", "deepseek", "anthropic", "claude", "moonshot", "kimi",
-      "dashscope", "qwen", "doubao", "volcengine", "glm", "zhipu", "gemini", "xai",
+      "api key", "api account", "api quota", "api request", "model service",
+      "language model", "model endpoint", "provider endpoint", "sse stream request failed",
+    ]);
+  }
+
+  function hasProviderNameSignal(lower, normalized) {
+    return hasAny(lower, normalized, [
+      "openai", "deepseek", "anthropic", "moonshot", "kimi", "dashscope",
+      "qwen", "doubao", "volcengine", "zhipu", "gemini",
     ]);
   }
 
@@ -130,33 +172,10 @@
     var normalized = normalizeForMatch(text);
     var status = extractHttpStatus(text);
     if ([401, 402, 403, 429].indexOf(status) >= 0) return true;
-    if (status >= 500 && status <= 599 && hasProviderOrApiSignal(lower, normalized)) return true;
-    return hasAny(lower, normalized, [
-      "sse stream request failed",
-      "api key",
-      "invalid api key",
-      "invalid token",
-      "payment required",
-      "insufficient balance",
-      "insufficient quota",
-      "quota exceeded",
-      "quota has been exceeded",
-      "exceeded your current quota",
-      "rate limit",
-      "too many requests",
-      "context length",
-      "context window",
-      "maximum context",
-      "prompt is too long",
-      "模型服务",
-      "账户余额",
-      "余额不足",
-      "欠费",
-      "额度不足",
-      "额度用尽",
-      "用量超出",
-      "请求过于频繁",
-    ]) || hasProviderOrApiSignal(lower, normalized);
+    if (status >= 500 && status <= 599) return true;
+    return hasAny(lower, normalized, MODEL_ERROR_KEYWORDS)
+      || hasApiSignal(lower, normalized)
+      || (hasProviderNameSignal(lower, normalized) && hasAny(lower, normalized, MODEL_ERROR_KEYWORDS));
   }
 
   function classify(raw) {
@@ -172,22 +191,22 @@
       return { kind: "auth", httpStatus: status };
     }
     if (status === 403 || hasAny(lower, normalized, ["forbidden", "没有访问权限", "没有权限"])
-        || (hasProviderOrApiSignal(lower, normalized) && hasAny(lower, normalized, ["permission denied", "authorization", "access denied"]))) {
+        || (hasApiSignal(lower, normalized) && hasAny(lower, normalized, ["permission denied", "authorization", "access denied"]))) {
       return { kind: "permission", httpStatus: status };
     }
     if (status === 402 || hasAny(lower, normalized, ["payment required", "insufficient balance", "余额不足", "欠费", "账户余额"])) {
       return { kind: "billing", httpStatus: status };
     }
-    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "用量超出", "耗尽"])) {
+    if (hasAny(lower, normalized, ["quota exceeded", "insufficient quota", "quota exhausted", "quota has been exceeded", "exceeded your current quota", "额度不足", "额度用尽", "额度耗尽", "用量超出", "耗尽"])) {
       return { kind: "quota", httpStatus: status };
     }
     if (status === 429 || hasAny(lower, normalized, ["rate limit", "too many requests", "请求过于频繁"])) {
       return { kind: "rate_limit", httpStatus: status };
     }
-    if (status >= 500 && status <= 599 || hasAny(lower, normalized, ["server error", "temporarily unavailable", "service unavailable"])) {
+    if ((status >= 500 && status <= 599) || hasAny(lower, normalized, ["server error", "temporarily unavailable", "service unavailable"])) {
       return { kind: "server", httpStatus: status };
     }
-    if (hasAny(lower, normalized, ["timeout", "timed out", "dns", "connection", "network", "tls", "stream read error", "chunk decode", "连接失败"])) {
+    if (hasAny(lower, normalized, ["timeout", "timed out", "dns", "connection", "network", "tls", "econnrefused", "connection refused", "connection reset", "stream read error", "chunk decode", "连接失败"])) {
       return { kind: "network", httpStatus: status };
     }
     return { kind: "unknown", httpStatus: status };
@@ -196,14 +215,16 @@
   function redactTechnicalDetail(raw) {
     var text = String(raw || "");
     text = text.replace(/(Authorization\s*[:=]\s*Bearer\s+)[^\s,;"}]+/ig, "$1" + SENSITIVE_VALUE);
+    text = text.replace(/(Authorization\s*[:=]\s*)[^\s,;"}]+/ig, "$1" + SENSITIVE_VALUE);
     text = text.replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/=-]{12,}/g, "$1" + SENSITIVE_VALUE);
-    text = text.replace(/(["']?(?:api[_-]?key|token|password|secret|access[_-]?token)["']?\s*[:=]\s*["']?)[^"',\s&}]+/ig, "$1" + SENSITIVE_VALUE);
-    text = text.replace(/([?&](?:api[_-]?key|token|password|secret|access[_-]?token)=)[^&#\s]+/ig, "$1" + encodeURIComponent(SENSITIVE_VALUE));
+    text = text.replace(/(["']?(?:api[_-]?key|key|authorization|token|password|secret|access[_-]?token)["']?\s*[:=]\s*["']?)[^"',\s&}]+/ig, "$1" + SENSITIVE_VALUE);
+    text = text.replace(/([?&](?:api[_-]?key|key|authorization|token|password|secret|access[_-]?token)=)[^&#\s]+/ig, "$1" + encodeURIComponent(SENSITIVE_VALUE));
+    text = text.replace(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]{10,}\b/g, SENSITIVE_VALUE);
     if (text.length > 2000) text = text.slice(0, 2000) + "...";
     return text;
   }
 
-  function providerLabelFrom(value) {
+  function providerLabelFrom(value, language) {
     if (!value || typeof value !== "object") return "";
     var explicit = value.providerLabel || value.provider_label || value.name || value.display_name || value.title;
     if (explicit && String(explicit).trim()) return String(explicit).trim();
@@ -212,6 +233,7 @@
       .filter(Boolean);
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i].replace(/\s+/g, "_");
+      if (key === "openai_compatible") return defaultProviderLabel(language);
       if (PROVIDER_LABELS[key]) return PROVIDER_LABELS[key];
       if (key.indexOf("deepseek") >= 0) return "DeepSeek";
       if (key.indexOf("openai") >= 0) return "OpenAI";
@@ -225,16 +247,16 @@
     return "";
   }
 
-  function providerLabelFromState(state, fallbackRoute) {
+  function providerLabelFromState(state, fallbackRoute, language) {
     var saved = null;
     var activeId = state && (state.currentSessionModelId || state.activeModelId);
     if (state && Array.isArray(state.savedModels) && activeId) {
       saved = state.savedModels.find(function (model) { return model && model.id === activeId; }) || null;
     }
-    return providerLabelFrom(fallbackRoute)
-      || providerLabelFrom(saved)
-      || providerLabelFrom(state && state.effectiveModelConfig)
-      || providerLabelFrom(state && state.activeProvider)
+    return providerLabelFrom(fallbackRoute, language)
+      || providerLabelFrom(saved, language)
+      || providerLabelFrom(state && state.effectiveModelConfig, language)
+      || providerLabelFrom(state && state.activeProvider, language)
       || "";
   }
 
@@ -245,15 +267,31 @@
 
   function build(raw, options) {
     options = options || {};
+    var language = options.language || "zh-Hans";
     if (raw && typeof raw === "object" && raw.kind && raw.title && raw.message) {
+      var allowedKind = {
+        billing: true,
+        quota: true,
+        rate_limit: true,
+        auth: true,
+        permission: true,
+        server: true,
+        network: true,
+        context: true,
+        unknown: true,
+      };
+      var kind = allowedKind[raw.kind] ? raw.kind : "unknown";
       return Object.assign({}, raw, {
+        kind: kind,
+        title: redactTechnicalDetail(raw.title),
+        message: redactTechnicalDetail(raw.message),
+        retryable: raw.retryable === true,
         technicalDetail: redactTechnicalDetail(raw.technicalDetail || raw.technical_detail || raw.detail || ""),
       });
     }
     var technicalDetail = redactTechnicalDetail(raw);
     var classified = classify(raw);
-    var language = options.language || "zh-Hans";
-    var provider = options.providerLabel || providerLabelFrom(options.provider) || defaultProviderLabel(language);
+    var provider = options.providerLabel || providerLabelFrom(options.provider, language) || defaultProviderLabel(language);
     var key = {
       billing: ["billingTitle", "billingMessage", false],
       quota: ["quotaTitle", "quotaMessage", false],
@@ -265,15 +303,37 @@
       context: ["contextTitle", "contextMessage", false],
       unknown: ["unknownTitle", "unknownMessage", true],
     }[classified.kind] || ["unknownTitle", "unknownMessage", true];
+    var message = textFor(language, key[1], provider);
+    if (options.terminal === false) {
+      message = terminalMessageToRecoverable(message, language);
+    }
     return {
       kind: classified.kind,
       providerLabel: provider,
       title: textFor(language, key[0], provider),
-      message: textFor(language, key[1], provider),
+      message: message,
       retryable: key[2],
       technicalDetail: technicalDetail,
       httpStatus: classified.httpStatus || undefined,
     };
+  }
+
+  function terminalMessageToRecoverable(message, language) {
+    var lang = languageTag(language);
+    if (lang === "en") {
+      return String(message)
+        .replace("so this reply stopped. ", "")
+        .replace("This reply stopped. ", "")
+        .replace("Try again later", "Pinvou will keep retrying. Try again later");
+    }
+    if (lang === "ja") {
+      return String(message)
+        .replace("この応答は停止しました。", "")
+        .replace("しばらくしてから再試行するか", "Pinvou は現在の応答を再試行します。必要に応じてしばらくしてから再試行するか");
+    }
+    return String(message)
+      .replace("本次回复已停止。", "")
+      .replace("请稍后重试", "系统会继续重试当前回复。必要时请稍后重试");
   }
 
   function noticeText(userError) {

@@ -106,6 +106,12 @@
     // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: only generates request dedup IDs; collisions are safely retryable
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
   }
+  function webTurnTerminal() {
+    return window.PinvouWebTurnTerminal || {};
+  }
+  function bridgeMessages() {
+    return window.PinvouBridgeMessages || {};
+  }
 
   // ── Markdown rendering (vendor scripts loaded in index.html) ─────
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
@@ -6301,16 +6307,20 @@
     runSyncOnSession(sid, function () {
       if (isScheduledRunSession(sid)) markScheduledInitialTurnTerminal(sid);
       const error = e.payload && e.payload.error;
-      window.PinvouWebTurnTerminal.recordCompleted(
-        state,
-        latestOpenTimelineStart(),
-        e.payload || {}
-      );
+      const terminal = webTurnTerminal();
+      if (typeof terminal.recordCompleted === "function") {
+        terminal.recordCompleted(
+          state,
+          latestOpenTimelineStart(),
+          e.payload || {}
+        );
+      }
       // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
       // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
       if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
       if (error) {
-        if (!window.PinvouBridgeMessages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true)) {
+        const messages = bridgeMessages();
+        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true))) {
           const finalNotice = "⚠️ " + error;
           const finalNoticeItem = state.chatItems.find(function (item) {
             return item && item.turnErrorNotice && item.text === finalNotice;
@@ -6325,7 +6335,10 @@
           }
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      const shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
@@ -6496,7 +6509,8 @@
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
     const error = e.payload && e.payload.error;
     if (error) {
-      if (!window.PinvouBridgeMessages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false)) {
+      const messages = bridgeMessages();
+      if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
         const notice = "⚠️ " + error;
         const duplicate = state.chatItems.some(function (item) {
           return item && item.turnErrorNotice && item.text === notice;
