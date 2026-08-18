@@ -3,24 +3,25 @@ pub(crate) fn has_usable_asr_text(text: &str) -> bool {
 }
 
 pub(crate) fn parse_asr_transcript(stdout: &str, stderr: &str) -> Option<String> {
-    parse_asr_stream(stdout, true).or_else(|| parse_asr_stream(stderr, false))
+    parse_explicit_asr_result(stdout)
+        .or_else(|| parse_explicit_asr_result(stderr))
+        .or_else(|| parse_stdout_fallback(stdout))
 }
 
-fn parse_asr_stream(stream: &str, allow_plain_text: bool) -> Option<String> {
+fn parse_explicit_asr_result(stream: &str) -> Option<String> {
+    stream
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find_map(parse_protocol_line)
+}
+
+fn parse_stdout_fallback(stream: &str) -> Option<String> {
     let lines = stream
         .lines()
         .filter(|line| !line.trim().is_empty())
         .collect::<Vec<_>>();
-
-    for line in lines.iter().rev().copied() {
-        if let Some(text) = parse_protocol_line(line.trim()) {
-            return Some(text);
-        }
-    }
-
-    if !allow_plain_text {
-        return None;
-    }
 
     let timed_segments = lines
         .iter()
@@ -298,8 +299,27 @@ mod tests {
     }
 
     #[test]
+    fn stderr_explicit_result_wins_over_stdout_fallback_text() {
+        assert_eq!(
+            parse_asr_transcript("Done\n", "result: 123\n"),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("Using 4 threads\n", r#"{"text":"final transcript"}"#),
+            Some("final transcript".to_string())
+        );
+        assert_eq!(
+            parse_asr_transcript("[0-.5] preliminary transcript\n", r#"{"result":"final"}"#),
+            Some("final".to_string()),
+            "stdout timestamp fallback must not mask an explicit stderr result"
+        );
+    }
+
+    #[test]
     fn stderr_plain_progress_and_counts_are_not_transcripts() {
         assert_eq!(parse_asr_transcript("", "100/100%\n100\n12:34:56\n"), None);
+        assert_eq!(parse_asr_transcript("", "ordinary stderr text\n"), None);
+        assert_eq!(parse_asr_transcript("", "[0-.5] timed stderr text\n"), None);
     }
 
     #[test]
