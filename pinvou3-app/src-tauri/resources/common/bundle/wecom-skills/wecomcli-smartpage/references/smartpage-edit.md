@@ -37,7 +37,7 @@ wecom-cli smartpage pages get --json '<JSON参数>'
 | `pages[].file_path` | 页面内容 > 48KB 时返回，页面内容写入本地文件、回包本地文件路径；文件内容格式与 `content_file_inner` 相同，由 `content_type` 决定（`markdown` / `text` / `block`） |
 
 > **提示**：传入 `page_id` 时，回包的 `file_path` 指向一个本地文件，文件内容根据 `content_type` 不同而不同。不带 `page_id` 时不返回 `file_path`。
-> **读取文件**：拿到 `file_path` 后，使用 `read` 工具读取该路径下的文件内容，获取页面的完整数据。
+> **读取文件**：拿到 `file_path` 后，使用 `File(action="read")` 读取该路径下的文件内容，获取页面的完整数据。
 > **页面层级**：`pages` 数组是扁平列表，通过 `parent_id` 字段表达树形结构。没有 `parent_id`（或为空）的页面是根页面; 有 `parent_id` 的页面是对应父页面的子页面。梳理页面树时，以 `page_id` 为节点、`parent_id` 为边构建层级关系。
 > **注意**：`file_path` 中的文件编号仅用于保证文件名唯一，不代表任何业务 ID。所有 ID(如 `page_id`、`parent_id` 等)必须从实际回包字段中获取，禁止从文件名中提取。
 > **读取页面结构**：在不知道 `page_id` 的情况下，不传 `page_id` 直接调用 `smartpage pages get`，可以获取文档的页面结构。如需查询页面详细内容，在下一次请求中指定page_id。
@@ -198,7 +198,7 @@ wecom-cli smartpage pages append --json '{"docid": "<docid>", "page_id": "<page_
 
 **使用 `file_path` 传入文件的策略**:
 - **已有现成文件时**：无需读写文件，直接将原始文件路径传入 `file_path`，原始文件可直接使用，不要求文件格式
-- **内容需要现场构造时**：用 `write` 工具写入 `{产出目录}/smartpage/` 下，传入路径
+- **内容需要现场构造时**：用 `File(action="write")` 写入 `{产出目录}/smartpage/` 下，传入路径
 
 **content_file 文件内容:**
 
@@ -234,7 +234,7 @@ wecom-cli smartpage pages overwrite --json '{"docid": "<docid>", "page_id": "<pa
 
 **使用 `file_path` 传入文件的策略**:
 - **已有现成文件时**：无需读写文件，直接将原始文件路径传入 `file_path`，原始文件可直接使用，不要求文件格式
-- **内容需要现场构造时**：用 `write` 工具写入 `{产出目录}/smartpage/` 下，传入路径
+- **内容需要现场构造时**：用 `File(action="write")` 写入 `{产出目录}/smartpage/` 下，传入路径
 
 **content_file 文件内容:**
 
@@ -478,12 +478,12 @@ wecom-cli smartpage pages get --json '{"docid": "<docid>", "page_id": "<page_id>
 #### 方案 B: 末尾追加
 
 在当前页面末尾插入新内容，不影响已有内容。使用 `smartpage pages append`:
-- 用 `write` 工具将 Markdown 文本写入 `{产出目录}/smartpage/` 下，通过 `file_path` 传入。
+- 用 `File(action="write")` 将 Markdown 文本写入 `{产出目录}/smartpage/` 下，通过 `file_path` 传入。
 
 #### 方案 C: 全量覆盖页面
 
 **仅当用户明确要求要覆盖整页内容时选用**。将原有所有内容删除后重新创建，**旧内容无法通过接口恢复，调用前必须向用户复述"将用新内容全量覆盖页面 `<页面名>` 的原有内容"并取得明确确认**。使用 `smartpage pages overwrite`:
-- 用 `write` 工具将新的完整页面内容（MDX/Markdown，无需外层 `<smartpage>` 顶层标签）写入 `{产出目录}/smartpage/` 下，通过 `file_path` 传入。
+- 用 `File(action="write")` 将新的完整页面内容（MDX/Markdown，无需外层 `<smartpage>` 顶层标签）写入 `{产出目录}/smartpage/` 下，通过 `file_path` 传入。
 
 ### 步骤三：收尾检查
 
@@ -498,7 +498,7 @@ wecom-cli smartpage pages get --json '{"docid": "<docid>", "page_id": "<page_id>
 - **禁止用 overwrite 做局部替换**：用户要求替换/修改/删除页面中**某部分**内容时，**禁止**使用 `smartpage pages overwrite` 全量覆盖。必须走方案 A 做局部修改。overwrite 仅限用户明确要求覆盖整页内容时使用，不得作为局部编辑的捷径。
 - **编辑前必须两阶段读取**：避免覆盖他人并发修改。先不带 `page_id` 调用 `smartpage pages get` 获取页面结构（只有标题、层级、page_id，**无内容**），再带 `page_id` + `content_type` 获取目标页面实际内容。
 - **优先使用`file_path`**：无论 append 还是 overwrite，通过文件传递内容不受命令行长度限制，避免截断。
-- **写文件用 `write`，读回包文件用 `read`**：为避免跨平台兼容问题，统一使用工具读写文件，不要手动拼接路径或直接操作文件。
+- **写文件用 `File(action="write")`，读回包文件用 `File(action="read")`**：为避免跨平台兼容问题，统一使用工具读写文件，不要手动拼接路径或直接操作文件。
 - **`page_id` / `block_id` 必须从回包拿，禁止猜测**：不知道 `page_id` 时，先**不传** `page_id` 调 `smartpage pages get`，从回包 `pages[].page_id` 取值。`block_id` 取 `content_type=block` 时回包文件里 block 节点的 `id`。
 - 调用 `pages append` / `pages overwrite` / `blocks update` 前，必须先 `smartpage pages get` 拿最新值；禁止使用缓存的旧值、自行编造、或从 `file_path` 文件名推断，否则会报「块不存在」错误。
 - **保留原格式**：用户要求保留原格式时，以原文为基准修改，仅改动用户指出的部分，其余格式要素保持与原文一致。

@@ -1045,6 +1045,71 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// `WECOM_SKILL_DIRS` 清单必须与内嵌 wecom-skills 资源树的实际目录一致:
+    /// 漏列会让技能静默不可见(cached_wecom_skills_visible 的 all() 不查多余目录),
+    /// 多列会让门控删除/缓存判定指向不存在的目录——两侧都对齐才有报警。
+    #[test]
+    fn wecom_skill_dirs_match_embedded_resources() {
+        let mut embedded: Vec<&str> = WECOM_SKILLS_DIR
+            .dirs()
+            .map(|d| d.path().to_str().expect("目录名应为 UTF-8"))
+            .collect();
+        embedded.sort_unstable();
+        let mut listed = WECOM_SKILL_DIRS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            embedded, listed,
+            "WECOM_SKILL_DIRS 与 bundle/wecom-skills 实际目录不一致"
+        );
+        // 每个技能目录都必须带 SKILL.md(门控可见性按它判定)
+        for d in WECOM_SKILL_DIRS {
+            assert!(
+                WECOM_SKILLS_DIR.get_file(format!("{d}/SKILL.md")).is_some(),
+                "wecom-skills/{d} 缺 SKILL.md"
+            );
+        }
+    }
+
+    /// 0.1.9 时代的 legacy 目录(wecomcli-msg/schedule)无论显示与否都要被清掉,
+    /// 防残留技能教已死的命令(`msg`/`schedule` 服务)。
+    #[test]
+    fn wecom_skill_gate_cleans_legacy_dirs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            let legacy = bundle.skills_dir.join(d);
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("SKILL.md"), "legacy").unwrap();
+        }
+
+        // 隐藏门控:清 legacy + 删当前技能
+        bundle.apply_wecom_skills(false).unwrap();
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+        }
+
+        // 显示门控:同样先清 legacy(开头无条件清理),再解包 14 个当前技能
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
+        }
+        bundle.apply_wecom_skills(true).unwrap();
+        for d in WECOM_LEGACY_SKILL_DIRS {
+            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+        }
+        for d in WECOM_SKILL_DIRS {
+            assert!(
+                bundle.skills_dir.join(d).join("SKILL.md").is_file(),
+                "{d} 应被解包"
+            );
+        }
+
+        cleanup(&tmp);
+    }
+
     fn tempdir() -> String {
         // 叠加 pid + 进程内原子计数器:pid 保证跨进程唯一(双终端 cargo test),
         // unique_suffix 保证进程内唯一(纯纳秒会碰撞;曾因两个 bundle 测试落同纳秒,

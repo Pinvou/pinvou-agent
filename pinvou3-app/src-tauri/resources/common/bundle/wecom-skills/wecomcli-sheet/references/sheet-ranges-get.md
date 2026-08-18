@@ -41,5 +41,5 @@ wecom-cli sheet ranges get --json '<JSON 参数>'
 
 ## 使用规则
 
-- `mode="csv"` 且返回 `file_path` 时：必须再用 `read` 工具读取该文件内容，才能展示给用户或继续做分析。
+- `mode="csv"` 且返回 `file_path` 时：必须再用 `File(action="read")` 读取该文件内容，才能展示给用户或继续做分析。
 - `mode="csv"` 且返回 `content` 时：可直接消费，无需再次读取文件。

@@ -29,7 +29,7 @@
 根据用户原始表述判断是否需要附加转发说明，无需向用户追问确认：
 
 - **用户未提及附加说明（最常见）**：正文默认**留空**。具体做法是**完全省略** `file_path` 字段，接口会自动带上原邮件正文。
-- **用户提到附加说明**：用 Write 工具把正文写入本地 Markdown 文件（`.md`），记录路径作为 `file_path`，调用时设 `content_type: "markdown"`。参考 [send-mail](send-mail.md) 步骤三。
+- **用户提到附加说明**：用 `File(action="write")` 把正文写入本地 Markdown 文件（`.md`），记录路径作为 `file_path`，调用时设 `content_type: "markdown"`。参考 [send-mail](send-mail.md) 步骤三。
 - 若需要追加附件或内嵌图片，按"**二选一，优先 `media_id`**"组装 `attachments[]` 和 `inline_images[]`：已有 `media_id` 直接复用；仅当只有本地文件、且没有现成 `media_id` 时才用 `file_path`。内嵌图 `$xxx$` 占位符严格写成 `![]($xxx$)`（方括号留空，不带 alt 和 title）。
 
 

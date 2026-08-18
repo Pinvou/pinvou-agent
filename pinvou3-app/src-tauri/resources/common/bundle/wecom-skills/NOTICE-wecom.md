@@ -46,7 +46,8 @@ SOFTWARE.
 全量同步至上游 v1.1.0 发布提交 `cd0480e0`(npm `@wecom/cli@1.1.0` 同源)。
 1.1.0 上游重构了命令模型(鉴权 `init`→`auth init`、`msg`→`message`、
 `schedule`→`calendar`、入参 JSON 位置参数→命名 flags/`--json`/`--set`,
-新增 chat/disk/doc-manage/email/media/sheet/smartpage/shared 服务技能),
+新增 disk/doc-manage/email/media/sheet/smartpage/shared 服务技能与 chat 顶层
+服务域——chat 为 CLI 命令域,上游无对应技能目录,域探测见 wecom-smoke.sh),
 上游 `skills/` 目录随之重排为 14 个技能,本地结构**整体跟随上游**,不再维持
 0.1.9 时代的「sheet/smartpage 并入 wecomcli-doc」合并形态(该合并的结构性
 前提——doc 服务吞并 sheet/smartpage——已随上游服务模型拆分而消失)。
@@ -76,18 +77,26 @@ SOFTWARE.
    `npm install -g @wecom/cli` 自更新指引(会绕过品悟 lock 钉扎触发哈希不匹配
    重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在工具商店
    企业微信卡片重新点连接触发安装/升级」。
-3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」类裸 read 表述改为
-   「先用 `File(action="read")` 读取对应 references 文件」(smartpage/sheet/
-   smartsheet/calendar/doc-manage/meeting 及其 references)。
+3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」「用 `write` 工具
+   写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一改为
+   `File(action="read")` / `File(action="write")` 口径,覆盖 doc/doc-manage/
+   meeting/sheet/smartpage/smartsheet/email 七个技能的 SKILL.md 与 references
+   (含 doc-create.md 的 Write 写文件示例、smart-sheet-read.md 的 grep 提取与
+   smartpage-edit.md 的回包文件读写);calendar/contact/todo/disk/media 上游
+   原文无裸工具名,无需改动。
 4. **python3 口径**:doc-create 等 references 的 `python build_docx.py` 示例统一
    `python3`(宿主环境无裸 python)。
 5. **上游 bug 修正重放**:smartsheet `records.values` 双层嵌套 JSON 结构修正
    (若 1.1.0 上游原文仍为 `"values": {"values":{...}}` 则保持单层修正版)。
+6. **shared 技能 bins frontmatter**:上游 wecomcli-shared 的 frontmatter 无
+   `metadata.requires.bins`(其余 13 技能上游自带),本地按连接器技能包契约
+   (connector_skills_contract 规则 6)补 `bins: ["wecom-cli"]`,使技能注册表
+   能声明二进制依赖。
 
 ### 各技能重放基线
 
 14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
-上游同名同构;本地分叉仅为上文「本轮品悟适配清单」五类。
+上游同名同构;本地分叉仅为上文「本轮品悟适配清单」六类。
 
 > 对账命令(仓库根执行):
 > ```

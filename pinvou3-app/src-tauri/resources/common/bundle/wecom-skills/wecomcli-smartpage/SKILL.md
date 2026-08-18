@@ -78,7 +78,7 @@ metadata:
 #### 路径 A：导入 Markdown 一次性创建
 
 1. **准备 Markdown 文件**：
-   - 用真实数据构造内容，`write` 保存到 `{产出目录}/smartpage/` 下（已自动建父目录，无需 `mkdir`）。
+   - 用真实数据构造内容，`File(action="write")` 保存到 `{产出目录}/smartpage/` 下（已自动建父目录，无需 `mkdir`）。
    - 纯 Markdown（只用标准 Markdown 语法）可直接导入，无需任何额外标签包裹。
    - 需要富组件（卡片、分栏、图表、公式等）时改写为 MDX：参照 [MDX 语法](references/mdx-syntax.md) 使用扩展组件，并用 `<smartpage>` 与 `<page title="...">` 作为顶层标签包裹全文。
 2. **导入**：

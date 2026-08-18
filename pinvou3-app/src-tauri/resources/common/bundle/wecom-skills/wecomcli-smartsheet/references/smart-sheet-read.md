@@ -105,8 +105,8 @@ wecom-cli smartsheet sheets list --json '{"docid": "<docid>"}'
 > 遇到此情况时，**禁止**直接读取整个文件，应按以下策略处理：
 >
 > 1. 优先回到接口层补充过滤条件（如 `limit`、`cursor`），重新调用，避免本地全量解析。
-> 2. 如需快速预览，可使用局部读取（`read 工具`）查看结构。
-> 3. 如需提取关键字段，使用 `grep 工具`（指 Harness 内置工具，非 `exec grep` 命令）进行提取。
+> 2. 如需快速预览，可使用局部读取（`File(action="read")`）查看结构。
+> 3. 如需提取关键字段，用 `File(action="read")` 读取后提取（不要用 shell 的 `grep` 命令）。
 
 > **字段详情获取规则**：`sheets list` 返回的字段预览不能替代 `fields list`。涉及新增/修改记录、视图筛选、图表筛选、字段属性判断、单选/多选 option ID、人员字段属性等场景时，先用 `sheets list` 定位子表，再对目标子表调用 `wecom-cli smartsheet fields list`。
 

@@ -43,13 +43,9 @@ fn wecom(args: &[&str]) -> std::process::Command {
 
 /// 解析 `wecom-cli --version` 输出(1.1.0 起格式为
 /// `wecom-cli 1.1.0 (wecom 2026-08-17T03:14:38Z 889c555)`)。
-/// `wecom-cli` 程序名不含数字,输出中首个连续三段数字即版本号。
+/// `wecom-cli` 程序名不含数字,输出中首个数字段序列即版本号。
 fn parse_wecom_version(s: &str) -> Option<(u64, u64, u64)> {
-    let mut nums = s
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|p| !p.is_empty())
-        .filter_map(|p| p.parse::<u64>().ok());
-    Some((nums.next()?, nums.next()?, nums.next()?))
+    cc::parse_semver3(s)
 }
 
 fn wecom_cli_version() -> Option<(u64, u64, u64)> {
@@ -101,20 +97,27 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// 查询当前企微连接状态:`wecom-cli auth show --status`。未装则 `installed:false`。
+/// 查询当前企微连接状态:`wecom-cli auth show --status`。
+/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态,
+/// 供前端显示「待升级」而非「未安装」);未装则 `installed:false`。
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程。
+        if wecom_cli_version().is_none() {
+            return Ok::<Value, String>(json!({
+                "ok": false, "connected": false, "installed": false, "upgrade_required": false
+            }));
+        }
         if !wecom_cli_present() {
             return Ok::<Value, String>(json!({
-                "ok": false, "connected": false, "installed": false
+                "ok": false, "connected": false, "installed": true, "upgrade_required": true
             }));
         }
         let (ok, so, se) = cc::run(wecom(&["auth", "show", "--status"]))?;
         let connected = ok && (status_is_authorized(&so) || status_is_authorized(&se));
         // 只回布尔:--status 单行输出虽不含身份信息,保持最小回传面
         Ok::<Value, String>(json!({
-            "ok": ok, "connected": connected, "installed": true
+            "ok": ok, "connected": connected, "installed": true, "upgrade_required": false
         }))
     })
     .await
@@ -317,6 +320,7 @@ mod tests {
     use crate::platform::paths::tests::ENV_LOCK;
 
     /// `--version` 输出 → 三段版本号。1.1.0 起输出带构建信息尾巴。
+    /// 两段式按共享口径补 0(不因假想的「2.0」误判未装触发降级重装)。
     #[test]
     fn parses_wecom_versions() {
         assert_eq!(
@@ -324,7 +328,7 @@ mod tests {
             Some((1, 1, 0)),
         );
         assert_eq!(parse_wecom_version("wecom-cli 0.1.9"), Some((0, 1, 9)));
-        assert_eq!(parse_wecom_version("wecom-cli 2.0"), None); // 不足三段
+        assert_eq!(parse_wecom_version("wecom-cli 2.0"), Some((2, 0, 0)));
         assert_eq!(parse_wecom_version("hello"), None);
     }
 

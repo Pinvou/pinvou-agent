@@ -42,7 +42,7 @@
 
 ## 步骤四：写正文到本地文件（必做，无例外）
 
-用 Write 工具把回复正文写入本地 Markdown 文件：
+用 `File(action="write")` 把回复正文写入本地 Markdown 文件：
 
 - `{工作目录}/temp/output/mail_reply_<唯一后缀>.md`，文件内容为 Markdown 片段
 

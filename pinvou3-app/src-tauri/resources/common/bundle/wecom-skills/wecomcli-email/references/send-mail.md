@@ -58,7 +58,7 @@
 
 ## 步骤三：写正文到本地文件
 
-用 Write 工具把正文写入本地 Markdown 文件：
+用 `File(action="write")` 把正文写入本地 Markdown 文件：
 
 ```
 {产出目录}/mail_body_<唯一后缀>.md

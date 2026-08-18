@@ -24,10 +24,14 @@ echo
 echo "[1] 版本可执行且 ≥1.1.0(命令模型基线)"
 VER="$("$CLI" --version 2>/dev/null || true)"
 VNUM="$(echo "$VER" | awk '{print $2}')"
+# 与 wecom.rs parse_wecom_version 同口径:取输出前三个数字段逐段数值比较;
+# 不用 sort -V——它对 1.1.0-rc.1/两段版本的判定与 Rust 侧三段解析不一致。
+TRI="$(echo "$VER" | grep -oE '[0-9]+' | head -3 | paste -sd. -)"
+GE="$(printf '%s\n' "$TRI" | awk -F. 'NF==3 && ($1*10000+$2*100+$3 >= 10100) {print "yes"}')"
 if [ -n "$VER" ]; then
-  ok "--version 退出 0: $(echo "$VER" | head -1)"
-  if [ "$(printf '%s\n' "1.1.0" "$VNUM" | sort -V | head -1)" = "1.1.0" ]; then
-    ok "版本 ≥1.1.0"
+  ok "--version 可执行: $(echo "$VER" | head -1)"
+  if [ "$GE" = yes ]; then
+    ok "版本 ≥1.1.0: $VNUM"
   else
     no "版本低于 1.1.0(命令模型不匹配): $VNUM"
   fi
@@ -36,19 +40,24 @@ else
 fi
 
 echo "[2] 连接状态(auth show --status 输出 authorized = 已授权)"
-AUTH="$("$CLI" auth show --status 2>/dev/null || true)"
-if echo "$AUTH" | grep -qx 'authorized'; then
+# 与 wecom.rs status_is_authorized 同口径:整行、大小写不敏感;保留 stderr、
+# 剥 \r(Windows npm shim 的 CRLF 输出会让大小写敏感的 grep -qx 误报未连接)。
+AUTH="$("$CLI" auth show --status 2>&1 || true)"
+if echo "$AUTH" | tr -d '\r' | grep -xiq 'authorized'; then
   ok "已连接(auth show --status 返回 authorized)"
 else
   no "未连接/未授权(先扫码): $(echo "$AUTH" | tr -d '\n' | head -c 120)"
 fi
 
 echo "[3] 各域授权探测(只读;授权域应响应,未授权域报权限错)"
-for d in contact doc doc-manage mail disk media message meeting sheet smartpage smartsheet calendar todo; do
-  OUT="$("$CLI" "$d" --help 2>&1 || true)"
+# 域=CLI 顶层子命令:doc-manage 技能的命令实跑在 doc 域下,chat 有域无技能目录。
+# 用退出码判定可用性——错误输出也带 Usage 行,grep Usage 会把不存在的域误报可用。
+for d in contact doc chat mail disk media message meeting sheet smartpage smartsheet calendar todo; do
+  OUT="$("$CLI" "$d" --help 2>&1)"; d_rc=$?
   if echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
-  elif echo "$OUT" | grep -qi 'Usage'; then ok "$d 域可用"
-  else sk "$d 域结果未知: $(echo "$OUT" | tr -d '\n' | head -c 60)"; fi
+  elif echo "$OUT" | grep -q 'unrecognized subcommand'; then no "$d 域不存在(CLI 无此子命令)"
+  elif [ "$d_rc" -eq 0 ]; then ok "$d 域可用"
+  else sk "$d 域结果未知(exit $d_rc): $(echo "$OUT" | tr -d '\n' | head -c 60)"; fi
 done
 
 echo "[4] 真实读文档(可选,需 WECOM_TEST_DOCID)"

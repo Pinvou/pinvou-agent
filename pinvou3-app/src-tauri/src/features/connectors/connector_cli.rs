@@ -172,6 +172,19 @@ pub fn parse_json(s: &str) -> Option<Value> {
     serde_json::from_str(&s[start..=end]).ok()
 }
 
+/// 解析 CLI `--version` 输出为三段语义版本:取字符串中首个连续数字段序列,
+/// 不足三段补 0(假想的两段式「2.0」→(2,0,0),避免误判未装而触发降级重装),
+/// 一个数字段都没有则 `None`。wecom/tmeet 的最低版本门共用;
+/// 输出里程序名等位置可能带数字的,调用方先自行切片再传入(tmeet 见 marker 定位)。
+pub fn parse_semver3(s: &str) -> Option<(u64, u64, u64)> {
+    let mut nums = s
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse::<u64>().ok());
+    let major = nums.next()?;
+    Some((major, nums.next().unwrap_or(0), nums.next().unwrap_or(0)))
+}
+
 /// 把授权 URL 渲染成二维码(SVG data URL,供前端 `<img src>` 直接显示)。
 /// 纯 Rust(qrcode crate),不依赖具体 CLI 的 qrcode 子命令——各连接器通用。
 /// 失败返回 `None`(前端回退开浏览器)。
