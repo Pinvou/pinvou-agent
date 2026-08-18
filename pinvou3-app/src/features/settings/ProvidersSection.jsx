@@ -1,5 +1,5 @@
-// 设置页「Provider 管理」分节：三 Agent 标签页 + Provider 卡片（切换/编辑/删除）、
-// 导入导出、env 冲突警告、CLI 状态区（安装/更新/卸载）。
+// 设置页「ACP 管理」（模型设置页内子页，原「Provider 管理」分节）：三 Agent 标签页
+// + Provider 卡片（切换/编辑/删除）、导入导出、env 冲突警告、CLI 状态区（安装/更新/卸载）。
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {

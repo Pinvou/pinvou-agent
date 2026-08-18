@@ -881,8 +881,8 @@ async function expand(page) {
     JSON.stringify(codexBatchArchive));
   await page.evaluate(() => document.querySelector('button[aria-label="取消"]')?.click());
 
-  // 模型表单可能包含尚未保存的名称、地址和密钥，点击遮罩层不能意外丢失草稿；
-  // 只有显式点击“取消”才关闭。
+  // 模型表单点击遮罩（弹窗外部）直接关闭——与修复后的其它弹窗行为一致；
+  // 显式点击“取消”同样可关闭。
   const modelModalOpened = await page.evaluate(() => {
     const nav = document.querySelector('[data-testid="nav-settings"]');
     if (!nav) return false;
@@ -899,28 +899,33 @@ async function expand(page) {
       await settle();
     }
     const add = document.querySelector('[data-testid="settings-model-add"]');
-    if (!add) return { addFound: false, opened: false, stayedOpen: false, cancelled: false };
+    if (!add) return { addFound: false, opened: false, closedByOutside: false, reopened: false, cancelled: false };
     add.click();
     await settle();
     const backdrop = document.querySelector('[data-testid="model-form-backdrop"]');
     const opened = !!document.querySelector('[data-testid="model-form-dialog"]');
     if (backdrop) backdrop.click();
     await settle();
-    const stayedOpen = !!document.querySelector('[data-testid="model-form-dialog"]');
+    const closedByOutside = !document.querySelector('[data-testid="model-form-dialog"]');
+    // 关闭后设置面板会重渲染，需重新查询按钮（旧引用已脱离文档）
+    document.querySelector('[data-testid="settings-model-add"]')?.click();
+    await settle();
+    const reopened = !!document.querySelector('[data-testid="model-form-dialog"]');
     const cancel = document.querySelector('[data-testid="model-form-cancel"]');
     if (cancel) cancel.click();
     await settle();
     return {
       addFound: true,
       opened,
-      stayedOpen,
+      closedByOutside,
+      reopened,
       cancelled: !document.querySelector('[data-testid="model-form-dialog"]'),
     };
   });
   rec(
-    '模型编辑弹窗点击外部不关闭且显式取消仍可关闭',
+    '模型编辑弹窗点击外部可关闭且显式取消仍可关闭',
     modelModalOpened && modelModalOutsideClick.addFound && modelModalOutsideClick.opened
-      && modelModalOutsideClick.stayedOpen && modelModalOutsideClick.cancelled,
+      && modelModalOutsideClick.closedByOutside && modelModalOutsideClick.reopened && modelModalOutsideClick.cancelled,
     JSON.stringify(modelModalOutsideClick),
   );
 
