@@ -1,17 +1,8 @@
 use std::fmt;
 
-pub(crate) const GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS: &[&str] = &[
-    "read_file",
-    "list_dir",
-    "grep_files",
-    "file_search",
-    "web_search",
-    "fetch_url",
-    "image_analyze",
-];
+pub(crate) const GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS: &[&str] = &["File", "Web", "image_analyze"];
 
-pub(crate) const GAIA_OFFLINE_V1_ALLOWED_TOOLS: &[&str] =
-    &["read_file", "list_dir", "grep_files", "file_search"];
+pub(crate) const GAIA_OFFLINE_V1_ALLOWED_TOOLS: &[&str] = &["File"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvalToolPolicy {
@@ -83,31 +74,21 @@ mod tests {
         resolve_eval_policy, EvalNetworkClass, EvalToolPolicy, GAIA_OFFLINE_V1_ALLOWED_TOOLS,
         GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
     };
+    use crate::features::assistant::tool_policy::is_pinvou3_allowed;
     use deepseek_tui::config::VisionModelConfig;
-    use deepseek_tui::tools::pinvou3_blocklist::PINVOU3_HIDDEN_TOOLS;
-    use deepseek_tui::tools::plan::new_shared_plan_state;
-    use deepseek_tui::tools::registry::{AgentToolSurfaceOptions, ToolRegistryBuilder};
+    use deepseek_tui::tools::registry::ToolRegistryBuilder;
     use deepseek_tui::tools::spec::ToolContext;
-    use deepseek_tui::tools::todo::new_shared_todo_list;
-    use deepseek_tui::worker_profile::ShellPolicy;
     use std::collections::HashSet;
 
     fn verified_product_catalog_snapshot() -> Vec<String> {
-        let mut options = AgentToolSurfaceOptions::new(ShellPolicy::None);
-        options.web_search_enabled = true;
-        options.vision_config = Some(VisionModelConfig {
-            model: "catalog-fixture".to_string(),
-            api_key: None,
-            base_url: None,
-        });
         ToolRegistryBuilder::new()
-            .with_agent_runtime_surface(
-                None,
-                "catalog-fixture".to_string(),
-                options,
-                new_shared_todo_list(),
-                new_shared_plan_state(),
-            )
+            .with_file_tools()
+            .with_web_tools()
+            .with_vision_tools(VisionModelConfig {
+                model: "catalog-fixture".to_string(),
+                api_key: None,
+                base_url: None,
+            })
             .build(ToolContext::new(
                 std::env::temp_dir().join("pinvou-gaia-catalog-fixture"),
             ))
@@ -140,10 +121,8 @@ mod tests {
 
         assert_eq!(public.network, EvalNetworkClass::PublicWeb);
         assert_eq!(offline.network, EvalNetworkClass::Offline);
-        assert!(public.allows("web_search"));
-        assert!(public.allows("fetch_url"));
-        assert!(!offline.allows("web_search"));
-        assert!(!offline.allows("fetch_url"));
+        assert!(public.allows("Web"));
+        assert!(!offline.allows("Web"));
         assert!(!offline.allows("image_analyze"));
     }
 
@@ -153,20 +132,9 @@ mod tests {
 
         assert_eq!(
             GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
-            &[
-                "read_file",
-                "list_dir",
-                "grep_files",
-                "file_search",
-                "web_search",
-                "fetch_url",
-                "image_analyze",
-            ]
+            &["File", "Web", "image_analyze"]
         );
-        assert_eq!(
-            GAIA_OFFLINE_V1_ALLOWED_TOOLS,
-            &["read_file", "list_dir", "grep_files", "file_search"]
-        );
+        assert_eq!(GAIA_OFFLINE_V1_ALLOWED_TOOLS, &["File"]);
 
         for profile in [
             GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
@@ -187,9 +155,9 @@ mod tests {
             }
         }
 
-        // Registered by the upstream read-only builder, but Pinvou deliberately
-        // hides it from the product catalog, so the GAIA candidates must drop it.
-        assert!(PINVOU3_HIDDEN_TOOLS.contains(&"retrieve_tool_result"));
+        // The upstream read-only builder registers this compatibility helper,
+        // but Pinvou deliberately excludes it from the product tool policy.
+        assert!(!is_pinvou3_allowed("retrieve_tool_result"));
         assert!(!GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_OFFLINE_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
     }
