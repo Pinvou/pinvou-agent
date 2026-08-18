@@ -988,7 +988,6 @@ where
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }
             let store = SessionStore::boot().context("boot headless session store")?;
-            store.load_skill_bindings();
             store.load_session_models();
             store.load_pinned_sessions();
             store.load_hidden_sessions();
