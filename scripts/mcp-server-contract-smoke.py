@@ -373,13 +373,12 @@ def main():
         "provider": "tencent-docs",
         "required": True,
     }]
-    assert tdoc["config_fields"] == [{
-        "key": "TENCENT_DOCS_TOKEN",
-        "label": "腾讯文档 Token",
-        "required": True,
-        "target": "bearer",
-        "secret": True,
-    }]
+    # 不变量:Token 通道唯一。若再引入 config_fields target="bearer",安装时两通道会
+    # 同写 Authorization(scheme 分歧→bearer_token_env_var 与 env_headers 并存),
+    # 最终请求头是否带 Bearer 前缀将取决于底座合并顺序——禁止这种自相矛盾。
+    assert tdoc.get("config_fields", []) == [], (
+        "tencent-docs 的 Token 只经 secret_headers 声明,不得再加 config_fields"
+    )
     print("✅ tencent-docs: 四官方远程端点 + 无 scheme 原始 Token 注入 + 安装校验契约")
 
     print("\n✅ ALL MCP SERVER CONTRACTS PASS")

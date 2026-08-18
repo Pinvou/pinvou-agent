@@ -1427,6 +1427,9 @@ mod tests {
     /// 腾讯文档官方端点要求原始 Token(无 Bearer 前缀),四个远程 server 共用同一
     /// secret_headers 声明:每个 server 都落 `env_headers.Authorization` 指向同一
     /// 环境变量,不写 bearer_token_env_var(那会强制加 Bearer 前缀),也不落明文。
+    /// fixture 含 config_fields(target=bearer)与实发 manifest 的历史形状一致:
+    /// UI 首装会经 user_config 传入 Token,该通道不得与 secret_headers 双写
+    /// Authorization(否则 bearer_token_env_var 与 env_headers 并存,自相矛盾)。
     #[test]
     fn install_tencent_docs_raw_authorization_env_headers_on_all_servers() {
         with_temp_home(|| {
@@ -1436,6 +1439,7 @@ mod tests {
                     "id":"tencent-docs","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
                     "mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"","source_key":"TENCENT_DOCS_TOKEN","provider":"tencent-docs","required":true}],
+                    "config_fields":[{"key":"TENCENT_DOCS_TOKEN","label":"腾讯文档 Token","required":true,"target":"bearer","secret":true}],
                     "servers":[
                         {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
                         {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
@@ -1454,8 +1458,10 @@ mod tests {
                 .unwrap();
             let mgr = MarketplaceManager::with_store(store);
 
-            mgr.install("tencent-docs", &std::collections::HashMap::new())
-                .unwrap();
+            // 真实 UI 路径:配置弹窗把 Token 经 user_config 传入 install。
+            let mut user_config = std::collections::HashMap::new();
+            user_config.insert("TENCENT_DOCS_TOKEN".to_string(), secret.clone());
+            mgr.install("tencent-docs", &user_config).unwrap();
 
             let mcp = read_mcp_json();
             for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
@@ -1482,6 +1488,49 @@ mod tests {
             for server in ["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"] {
                 assert!(mcp["servers"].get(server).is_none());
             }
+        });
+    }
+
+    /// config_fields(target=bearer)与 secret_headers(scheme=Bearer)语义一致的
+    /// 成对声明(如 patsnap-search)不受同 key 跳过影响:两通道收敛到同一
+    /// bearer_token_env_var,不落 env_headers。
+    #[test]
+    fn install_bearer_config_field_kept_when_secret_header_scheme_matches() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "pair-bearer",
+                r#"{
+                    "id":"pair-bearer","name":"Pair","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"","args":[],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PAIR_API_KEY","provider":"pair","required":true}],
+                    "config_fields":[{"key":"PAIR_API_KEY","label":"Key","required":true,"target":"bearer","secret":true}],
+                    "servers":[{"name":"pair","url":"https://pair.example.com/mcp"}]
+                }"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("pair");
+            store
+                .set(
+                    &mcp_secret_reference("pair-bearer", "header", "PAIR_API_KEY"),
+                    &secret,
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store);
+
+            let mut user_config = std::collections::HashMap::new();
+            user_config.insert("PAIR_API_KEY".to_string(), secret.clone());
+            mgr.install("pair-bearer", &user_config).unwrap();
+
+            let entry = &read_mcp_json()["servers"]["pair"];
+            assert_eq!(
+                entry["bearer_token_env_var"], "PINVOU3_MCP_SECRET_PAIR_API_KEY",
+                "成对 Bearer 声明应收敛到 bearer_token_env_var"
+            );
+            assert!(
+                entry.get("env_headers").is_none(),
+                "成对 Bearer 声明不应落 env_headers"
+            );
+            assert!(!entry.to_string().contains(&secret));
         });
     }
 

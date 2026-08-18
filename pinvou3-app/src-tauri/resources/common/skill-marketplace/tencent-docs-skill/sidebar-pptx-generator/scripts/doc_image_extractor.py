@@ -60,11 +60,12 @@ def extract_images_from_pptx(filepath: str, output_dir: str) -> int:
                     if len(image_bytes) < MIN_IMAGE_SIZE:
                         continue
 
-                    # 确定扩展名
+                    # 确定扩展名（content_type 来自文档内部声明，白名单净化防路径穿越）
                     content_type = image.content_type
                     ext = content_type.split("/")[-1] if "/" in content_type else "png"
                     if ext == "jpeg":
                         ext = "jpg"
+                    ext = "".join(c if c.isalnum() else "" for c in ext) or "png"
 
                     image_count += 1
                     image_filename = f"pptx_s{slide_num}_img{image_count}.{ext}"
@@ -96,11 +97,12 @@ def extract_images_from_docx(filepath: str, output_dir: str) -> int:
                 if len(image_bytes) < MIN_IMAGE_SIZE:
                     continue
 
-                # 确定扩展名
+                # 确定扩展名（content_type 来自文档内部声明，白名单净化防路径穿越）
                 content_type = image.content_type if hasattr(image, "content_type") else "image/png"
                 ext = content_type.split("/")[-1] if "/" in content_type else "png"
                 if ext == "jpeg":
                     ext = "jpg"
+                ext = "".join(c if c.isalnum() else "" for c in ext) or "png"
 
                 image_count += 1
                 image_filename = f"docx_img{image_count}.{ext}"

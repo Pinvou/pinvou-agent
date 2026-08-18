@@ -30,7 +30,7 @@
 2. 把各工具的 JSON 响应按顺序（有 check_access 则其响应放第一行，`--with-access`）通过 stdin 喂给状态脚本归并：
 
 ```bash
-printf '%s\n' "$INFO_JSON" "$DESIGN_JSON" ${PAGE_JSONS[@]} \
+printf '%s\n' "$INFO_JSON" "$DESIGN_JSON" "${PAGE_JSONS[@]}" \
   | bash sidebar-pptx-generator/scripts/get_slide_info.sh
 ```
 

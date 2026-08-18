@@ -12,7 +12,7 @@
 | 错误场景 | 处理方式 |
 |------|---------|
 | `invalid_token` / `token_invalid`（400006） | 提示用户：「腾讯文档 Token 已失效，请在 Pinvou 工具商店的『腾讯文档 MCP』卡片重新连接，获取新 Token 后粘贴更新。」 |
-| `vip_required`（400007） | 提示用户：「当前操作需要腾讯文档 VIP 权限。」（升级入口：https://docs.qq.com/vip?immediate_buy=1?part_aid=persnlspace_mcp ） |
+| `vip_required`（400007） | 提示用户：「当前操作需要腾讯文档 VIP 权限。」（升级入口：https://docs.qq.com/vip?immediate_buy=1&part_aid=persnlspace_mcp ） |
 | 网络错误 | 提示用户检查网络或代理后重试 |
 
 用户更新 Token 的官方入口：[腾讯文档开放平台授权页](https://docs.qq.com/scenario/open-claw.html)（QQ / 微信扫码登录后获取个人 Token），更新请在工具商店操作，不在对话中进行。

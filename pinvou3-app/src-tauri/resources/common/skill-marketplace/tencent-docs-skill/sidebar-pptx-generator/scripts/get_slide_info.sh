@@ -10,7 +10,7 @@
 #   第 3..N 行：每页 slide_get_page_info 响应（可选，用于 content_page_count 统计）
 #
 # 用法：
-#   <调用工具取数> ; printf '%s\n' "$INFO" "$DESIGN" ${PAGE_INFOS[@]} | bash scripts/get_slide_info.sh
+#   <调用工具取数> ; printf '%s\n' "$INFO" "$DESIGN" "${PAGE_INFOS[@]}" | bash scripts/get_slide_info.sh
 #   # 权限校验（可选）：check_access 响应作为额外首行时用 --with-access，格式 {"granted_actions":["VIEW",...]}
 #
 # 输出：单行 JSON {"action":"write_design_md"|"proceed_next"|"ask_user","reason":"...",...}

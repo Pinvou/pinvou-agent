@@ -18,15 +18,6 @@
       "required": true
     }
   ],
-  "config_fields": [
-    {
-      "key": "TENCENT_DOCS_TOKEN",
-      "label": "腾讯文档 Token",
-      "required": true,
-      "target": "bearer",
-      "secret": true
-    }
-  ],
   "servers": [
     {
       "name": "tencent-docs",

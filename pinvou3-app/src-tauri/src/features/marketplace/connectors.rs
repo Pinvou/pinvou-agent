@@ -147,7 +147,17 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             let mut env_headers = serde_json::Map::new();
             let mut bearer_token_env_var = None;
 
-            // 1. config_fields 中 target="bearer" 的字段（用户填入）
+            // 1. config_fields 中 target="bearer" 的字段（用户填入）。
+            //    同一 source_key 已由 secret_headers 声明 Authorization 时跳过:两个通道
+            //    都写 Authorization,scheme 分歧时(bearer 前缀 vs 原始值)会同时落
+            //    bearer_token_env_var 与 env_headers,产生自相矛盾的条目。secret_headers
+            //    是权威声明;此处仍先 resolve_secret_placeholder,保证用户当次输入落库。
+            let secret_header_auth_keys: std::collections::HashSet<&str> = manifest
+                .secret_headers
+                .iter()
+                .filter(|s| s.header.eq_ignore_ascii_case("authorization"))
+                .map(|s| s.source_key.as_str())
+                .collect();
             for field in &manifest.config_fields {
                 if field.target == "bearer" {
                     if let Some(val) = user_config.get(&field.key) {
@@ -159,6 +169,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                                 user_config,
                                 &manifest.env,
                             )?;
+                            if secret_header_auth_keys.contains(field.key.as_str()) {
+                                continue;
+                            }
                             set_remote_secret_header(
                                 &mut env_headers,
                                 &mut bearer_token_env_var,
