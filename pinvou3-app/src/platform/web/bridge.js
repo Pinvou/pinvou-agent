@@ -404,6 +404,7 @@
       attachNoProgress: "Attachment download made no progress",
       artifactNoProgress: "Artifact download made no progress",
       newChatFallbackTitle: "New chat",
+      echoOtherPrefix: "(Other) ",
       mountCollectionFailed: "Failed to mount knowledge collection: ",
       depsNotInstallable: "The missing items cannot be installed automatically. Install the offline components per the dependency notes, then re-check.",
       voicePermissionDenied: "Microphone access was denied. Allow this app to use the microphone in system settings, then try again.",
@@ -510,6 +511,7 @@
       attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
       artifactNoProgress: "成果物のダウンロードが進みませんでした",
       newChatFallbackTitle: "新しいチャット",
+      echoOtherPrefix: "(その他) ",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       depsNotInstallable: "不足項目はワンクリックでインストールできません。依存関係の案内に従ってオフラインコンポーネントをインストールし、再検出してください。",
       voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイク使用を許可してから再試行してください。",
@@ -616,6 +618,7 @@
       attachNoProgress: "附件下载没有进展",
       artifactNoProgress: "产物下载没有进展",
       newChatFallbackTitle: "新对话",
+      echoOtherPrefix: "(其他) ",
       mountCollectionFailed: "挂载知识集失败: ",
       depsNotInstallable: "当前缺失项无法一键安装，请按依赖说明安装离线组件后重新检测。",
       voicePermissionDenied: "麦克风权限被拒绝，请在系统设置中允许本应用访问麦克风后重试。",
@@ -3203,16 +3206,23 @@
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
+  // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
   function parseUserAnswers(content, questions) {
     var ans;
     try { ans = JSON.parse(toolResultText(content)).answers; } catch (_) { return null; }
     if (!Array.isArray(ans)) return null;
-    var byId = {};
-    ans.forEach(function (a) { if (a && a.id != null) byId[a.id] = a; });
-    return questions.map(function (q) {
-      var a = byId[q.id];
-      return a ? { id: q.id, label: a.label, value: a.value } : null;
-    });
+    // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+    // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+    var byId = Object.create(null);
+    ans.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+    var out = [];
+    for (var qi = 0; qi < questions.length; qi++) {
+      var q = questions[qi];
+      var matches = byId[q.id];
+      if (!matches || !matches.length) { out.push(null); continue; }
+      matches.forEach(function (a) { out.push({ id: q.id, label: a.label, value: a.value }); });
+    }
+    return out;
   }
 
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
@@ -6755,25 +6765,46 @@
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
+  // 卡片动作链路有 await 边界：entry 先捕获触发会话 sid，invoke 与后续全部 UI 写入
+  // 都定向到 sid（runOnSession / patchItemByIdFor），避免用户提交期间切会话导致
+  // echo/restoredAnswers 漏写触发会话或污染当前会话（与 acceptPlan 同一约定）。
   async function submitUserInput(itemId, toolCallId, answers, questions) {
-    patchItemById(itemId, { submitting: true }); notify();
+    var sid = state.activeSessionId;
+    if (!sid) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
-      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: state.activeSessionId });
-      var summary = answers.map(function (a, i) {
-        var text = a.label === "其他" ? "(其他) " + a.value : a.label;
-        return (questions[i].header || ("Q" + (i + 1))) + ": " + text;
-      }).join(" · ");
-      pushUserEcho("✓ " + summary, false);
-      flushAssistantMessageToHistory();
-      patchItemById(itemId, { resolved: true, cardState: "submitted", submitting: false });
+      await invoke("submit_user_input", { toolCallId: toolCallId, answers: answers, sessionId: sid });
+      // 摘要按 question 分组拼接：answers 是按选项展开的（multi_select 时同一题多条），
+      // 不能按 answers 索引一一对应 questions（会越界抛 TypeError，复核 P1）。
+      // 用无原型对象：question id 仅后端校验非空，constructor/toString/__proto__ 是合法输入，
+      // 普通 {} 会让这些键命中 Object.prototype 继承属性，.push 抛 TypeError（复核 P1）。
+      var byId = Object.create(null);
+      answers.forEach(function (a) { if (a && a.id != null) (byId[a.id] = byId[a.id] || []).push(a); });
+      var summary = questions.map(function (q, qi) {
+        var list = byId[q.id];
+        if (!list || !list.length) return null;
+        var header = q.header || ("Q" + (qi + 1));
+        return header + ": " + list.map(function (a) {
+          var text = (a.other || a.label === "其他") ? bt("echoOtherPrefix") + a.value : a.label;
+          return text;
+        }).join(" · ");
+      }).filter(Boolean).join(" · ");
+      runOnSession(sid, function () {
+        pushUserEcho("✓ " + summary, false);
+        flushAssistantMessageToHistory();
+      });
+      // 提交时即存答案：切走视图再切回（ChatView 重挂载但 bridge state 保留）时，
+      // QuestionChoiceCard 用 restoredAnswers 恢复选中态；会话级 rerender 另有解析。
+      patchItemByIdFor(sid, itemId, { resolved: true, cardState: "submitted", submitting: false, restoredAnswers: answers });
     } catch (e) {
-      patchItemById(itemId, { submitting: false, error: String(e) });
+      patchItemByIdFor(sid, itemId, { submitting: false, error: String(e) });
     }
     notify();
   }
   async function cancelUserInput(itemId, toolCallId) {
-    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: state.activeSessionId }); } catch (_) {}
-    patchItemById(itemId, { resolved: true, cardState: "cancelled" });
+    var sid = state.activeSessionId;
+    try { await invoke("cancel_user_input", { toolCallId: toolCallId, sessionId: sid }); } catch (_) {}
+    patchItemByIdFor(sid, itemId, { resolved: true, cardState: "cancelled" });
     notify();
   }
 

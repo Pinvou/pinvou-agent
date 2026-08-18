@@ -20,6 +20,7 @@ vm.createContext(ctx);
 vm.runInContext(
   `${code}\n` +
   `this.isPresetModel = isPresetModel;\n` +
+  `this.catalogItemMatchesModel = catalogItemMatchesModel;\n` +
   `this.groupModelsForSelector = groupModelsForSelector;\n` +
   `this.localUserNamed = localUserNamed;\n` +
   `this.selectorMainLabel = selectorMainLabel;\n` +
@@ -35,7 +36,7 @@ vm.runInContext(
   { filename: srcPath },
 );
 
-const { isPresetModel, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -68,6 +69,22 @@ test('OpenAI Compatible 命中目录 ID 仍为自定义', () => {
 });
 test('Coding Plan 命中目录(glm-5.2) -> 预设', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.2' })), true);
+});
+test('z.ai 直连存量小写配置仍命中大写目录行 -> 预设', () => {
+  // 目录拼写以底座为准（GLM-5.2），存量配置可能保存旧小写 glm-5.2。
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'glm-5.2' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://api.z.ai/api/coding/paas/v4', model: 'GLM-5.2' })), true);
+});
+test('catalogItemMatchesModel 大小写不敏感(编辑弹窗存量小写命中目录行)', () => {
+  // SettingsView 编辑弹窗的 initialCatalogMatch/known/active 均复用此比较:
+  // 存量小写 glm-5.2 必须命中 z.ai 直连目录行 GLM-5.2,不得误判为自定义。
+  const zaiGroup = MODEL_CATALOG.cloud.find(group => group.key === 'glm_coding_plan_global');
+  const glm52 = zaiGroup.items.find(item => item.model === 'GLM-5.2');
+  assert.ok(glm52, 'z.ai 直连目录应含 GLM-5.2 规范拼写行');
+  assert.strictEqual(catalogItemMatchesModel(glm52, 'glm-5.2'), true);
+  assert.strictEqual(catalogItemMatchesModel(glm52, 'GLM-5.2'), true);
+  assert.strictEqual(catalogItemMatchesModel(glm52, 'glm-5.3'), false);
+  assert.strictEqual(catalogItemMatchesModel(glm52, undefined), false);
 });
 test('Coding Plan 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'my-custom-glm' })), false);

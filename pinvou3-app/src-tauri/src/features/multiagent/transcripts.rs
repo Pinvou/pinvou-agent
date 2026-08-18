@@ -476,11 +476,6 @@ pub fn read_chunk(
     })
 }
 
-/// 测试与内部兼容入口：从头读取完整消息列表。产品轮询走 [`read_chunk`]。
-pub fn read(workspace: &Path, agent_id: &str) -> Result<Vec<serde_json::Value>, String> {
-    Ok(read_chunk(workspace, agent_id, None, None)?.messages)
-}
-
 #[cfg(test)]
 mod tests {
     use super::projected_worker_status;
@@ -694,7 +689,9 @@ mod tests {
         );
         let ws = fixture_workspace(&[("bbbb.jsonl", other)]);
         std::fs::write(transcript_path(&ws, "agent_a"), GOOD).unwrap();
-        let messages = read(&ws, "agent_a").expect("read agent_a");
+        let messages = read_chunk(&ws, "agent_a", None, None)
+            .map(|c| c.messages)
+            .expect("read agent_a");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
@@ -831,7 +828,9 @@ mod tests {
     #[test]
     fn missing_agent_and_missing_dir_are_reported_not_panicked() {
         let ws = fixture_workspace(&[("aaaa.jsonl", GOOD)]);
-        assert!(read(&ws, "agent_zzz").is_err());
+        assert!(read_chunk(&ws, "agent_zzz", None, None)
+            .map(|c| c.messages)
+            .is_err());
 
         let empty = std::env::temp_dir().join(format!(
             "pinvou3-transcripts-empty-{}-{:?}",
@@ -845,7 +844,9 @@ mod tests {
                 .is_empty(),
             "目录缺失=还没派发过子任务，不是错误"
         );
-        assert!(read(&empty, "agent_a").is_err());
+        assert!(read_chunk(&empty, "agent_a", None, None)
+            .map(|c| c.messages)
+            .is_err());
     }
 
     /// 底座先在 ledger 登记（Starting/Queued）、后建 transcript：清单必须
@@ -949,7 +950,8 @@ mod tests {
             list(&root, None).is_err(),
             "非 NotFound 的 I/O 错误必须上抛"
         );
-        assert!(read(&root, "agent_a")
+        assert!(read_chunk(&root, "agent_a", None, None)
+            .map(|c| c.messages)
             .unwrap_err()
             .contains("读取 transcript 目录失败"));
     }
@@ -980,7 +982,9 @@ mod tests {
             "\n",
         );
         let ws = fixture_workspace(&[("cccc.jsonl", broken)]);
-        let messages = read(&ws, "agent_c").expect("read");
+        let messages = read_chunk(&ws, "agent_c", None, None)
+            .map(|c| c.messages)
+            .expect("read");
         assert_eq!(messages.len(), 1, "坏行跳过，好行保留");
     }
 }

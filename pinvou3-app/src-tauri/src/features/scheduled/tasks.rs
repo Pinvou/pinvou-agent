@@ -239,32 +239,6 @@ pub fn scheduled_task_data_root() -> std::path::PathBuf {
 }
 
 impl ScheduledTaskState {
-    #[allow(dead_code)]
-    pub fn boot_read_only() -> Result<Self> {
-        let sessions = SessionStore::boot()?;
-        sessions.reconcile_scheduled_profiles()?;
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())?;
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())?;
-        let manager = open_scheduled_automation_manager(scheduled_automation_root())?;
-        let fallback_model = default_automation_model(None);
-        Ok(Self {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            ui_metadata,
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model,
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        })
-    }
-
     pub async fn boot_runtime(
         bridge: &Pinvou3Bridge,
         pool: EnginePool,
@@ -332,11 +306,6 @@ impl ScheduledTaskState {
             scheduler_handle: Some(scheduler_handle),
             retention_handle: Some(retention_handle),
         })
-    }
-
-    #[allow(dead_code)]
-    pub fn automations(&self) -> SharedAutomationManager {
-        self.automations.clone()
     }
 
     fn operation_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -971,11 +940,6 @@ async fn prune_scheduled_history(
         compact_viewed_runs(read_state, &automation_id, &remaining);
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn map_scheduled_task(record: AutomationRecord) -> ScheduledTaskDto {
-    map_scheduled_task_with_bindings(record, None, None)
 }
 
 fn map_scheduled_task_with_bindings(
@@ -1736,33 +1700,6 @@ mod tests {
     }
 
     #[test]
-    fn versioned_json_store_open_corrupt_json_quarantines_rename_store() {
-        let dir = temp_home();
-        let path = dir.join("corrupt-read-state.json");
-        std::fs::write(&path, "{ definitely-not-json").expect("write corrupt payload");
-
-        let store = VersionedJsonStore::<ScheduledRunReadRegistry>::open(path.clone())
-            .expect("corrupt payload must not block startup");
-        assert!(store.registry.read().viewed_runs.is_empty());
-        assert!(
-            !path.exists(),
-            "corrupt rename-store payload must be quarantined"
-        );
-        assert!(
-            std::fs::read_dir(&dir)
-                .expect("read quarantine dir")
-                .filter_map(Result::ok)
-                .any(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("corrupt-read-state.json.invalid-")),
-            "a quarantine sidecar must exist"
-        );
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn versioned_json_store_open_corrupt_json_keeps_log_in_place_store() {
         let dir = temp_home();
         let path = dir.join("corrupt-ui-metadata.json");
@@ -2250,7 +2187,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "测试计划".to_string(),
@@ -2305,7 +2268,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
 
         // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
         let created = state
@@ -2370,7 +2359,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -2455,7 +2470,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -2574,7 +2615,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
         let expected_allow_shell = current_yolo_allow_shell();
 
         let created = state
@@ -2643,25 +2710,29 @@ mod tests {
     #[test]
     fn task_dto_does_not_expose_legacy_source_session_binding() {
         let now = chrono::Utc::now();
-        let dto = map_scheduled_task(AutomationRecord {
-            schema_version: 1,
-            id: "automation-1".to_string(),
-            name: "daily brief".to_string(),
-            prompt: "prepare it".to_string(),
-            rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
-            cwds: Vec::new(),
-            model: Some("model-1".to_string()),
-            mode: Some("agent".to_string()),
-            allow_shell: Some(false),
-            trust_mode: Some(false),
-            auto_approve: Some(false),
-            delivery_mode: None,
-            status: AutomationStatus::Active,
-            created_at: now,
-            updated_at: now,
-            next_run_at: None,
-            last_run_at: None,
-        });
+        let dto = map_scheduled_task_with_bindings(
+            AutomationRecord {
+                schema_version: 1,
+                id: "automation-1".to_string(),
+                name: "daily brief".to_string(),
+                prompt: "prepare it".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                model: Some("model-1".to_string()),
+                mode: Some("agent".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(false),
+                delivery_mode: None,
+                status: AutomationStatus::Active,
+                created_at: now,
+                updated_at: now,
+                next_run_at: None,
+                last_run_at: None,
+            },
+            None,
+            None,
+        );
 
         let value = serde_json::to_value(dto).expect("serialize task dto");
         assert!(
@@ -2745,7 +2816,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
 
         let error = state
             .create_for_test(CreateScheduledTaskInput {
@@ -2787,7 +2884,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "valid mode".to_string(),
@@ -3158,7 +3281,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "serialized delete".to_string(),
@@ -3212,7 +3361,33 @@ mod tests {
         let dir = temp_home();
         let previous = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var("PINVOU3_HOME", &dir);
-        let mut state = ScheduledTaskState::boot_read_only().expect("state");
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        let read_state =
+            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
+                .expect("read state");
+        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+            .expect("model bindings");
+        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+            .expect("ui metadata");
+        let manager =
+            open_scheduled_automation_manager(scheduled_automation_root()).expect("automations");
+        let mut state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(manager)),
+            task_manager: None,
+            sessions,
+            read_state,
+            model_bindings,
+            ui_metadata,
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "cleanup failure".to_string(),

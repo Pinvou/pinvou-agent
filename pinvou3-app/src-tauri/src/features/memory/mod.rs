@@ -44,15 +44,12 @@ pub use self::io::{
     ignore_pending_memory, list_preferences, list_preferences_with_cleanup, load_current_focus,
     load_never_memory, load_pending_memory, load_profile, load_recent_activity, load_recent_work,
     load_work_context, load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user,
-    refresh_recent_work_expiry, review_turn_candidates, save_profile, take_turn_capture,
-    update_preference, update_profile, update_timed_memory, update_work_context,
+    record_turn_tool_complete, record_turn_tool_start, record_turn_user, save_profile,
+    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
     upsert_recent_work,
 };
 
 // ---- LLM 后台复盘（llm_review）----
-#[allow(unused_imports)]
-pub(crate) use self::llm_review::append_memory_review_diagnostic;
 pub use self::llm_review::review_turn_candidates_with_llm;
 
 // ---- 渲染 / runtime prompt 文件管理（render）----

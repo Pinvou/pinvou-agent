@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -33,6 +33,7 @@
     "test:file-icon-theme": "node tests/file_icon_theme.test.js",
     "test:model-catalog-grouping": "node tests/model_catalog_grouping.test.js",
     "test:diff-ui": "node tests/diff_viewer_ui_smoke.mjs",
+    "test:choice-card-ui": "node tests/question_choice_card_smoke.mjs && node tests/question_choice_card_special_id_smoke.mjs",
     "test:code-viewer-ui": "node tests/code_viewer_modal_smoke.mjs",
     "test:code-viewer-diff-ui": "node tests/code_viewer_diff_smoke.mjs",
     "test:workspace-panel-ui": "node tests/workspace_panel_draft_smoke.mjs",

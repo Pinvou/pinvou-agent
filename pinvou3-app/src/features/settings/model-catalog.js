@@ -38,6 +38,15 @@ const MODEL_PRESET_DEFS = {
 const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
+// 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
+// 使用底座 models_dev.bundled.json 目录行的原样拼写——z.ai 直连（GLM Coding
+// Plan 国际版）当前为 `GLM-5.2` / `GLM-5-Turbo` / `glm-5.1`，资产自身大小写
+// 不统一（agent 层 ModelInfo 目录行则统一大写），新增条目须逐行核对资产行拼写，
+// 不可套用大小写规律；自定义兼容端点（bigmodel.cn Coding Plan、开放平台）与
+// modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。resolver 目录匹配
+// 是精确比较，拼写偏离目录行的 id（如小写 glm-5.2）会命中其他 provider 的裸
+// wire id 而被严格直连误拒——大小写不敏感回退已回馈上游审核、未随当前 gitlink
+// 发布，故新保存配置必须用目录行原样拼写。
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',
@@ -119,6 +128,8 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
       endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
+      // bigmodel 是底座 zai kind 的自定义端点：模型名原样透传，必须用厂商
+      // 文档的小写 wire id（glm-5.2），不要对齐 z.ai 直连目录的大写拼写。
       items: [
         { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
         { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
@@ -138,8 +149,8 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
       items: [
-        { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
-        { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
+        { model: 'GLM-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
+        { model: 'GLM-5-Turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -507,7 +518,7 @@ function findCloudProviderForModel(model) {
       .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
     const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
     if (compareBase && urls.includes(compareBase)) return true;
-    return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && item.model === model.model);
+    return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && catalogItemMatchesModel(item, model.model));
   }) || null;
 }
 function providerLabelForModel(model, t) {
@@ -527,17 +538,24 @@ function isCodingPlanModel(model) {
 // ── 模型选择器:预设/自定义分组与可区分标注(纯函数,显示期计算) ─────
 // 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
 // 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
+// 目录命中比较大小写不敏感:目录拼写以底座(CodeWhale)为准,存量配置可能保存
+// 旧拼写(如 z.ai 直连的 glm-5.2 vs 目录行 GLM-5.2),不得因此误判为自定义。
+function catalogItemMatchesModel(item, model) {
+  return typeof item.model === 'string' && typeof model === 'string'
+    && item.model.toLowerCase() === model.toLowerCase();
+}
+
 function isPresetModel(m) {
   if (!m || !m.model) return false;
   if (m.preset === 'local_vllm') {
     return (MODEL_CATALOG.local || []).some(group =>
-      (group.items || []).some(item => !item.custom && item.model === m.model));
+      (group.items || []).some(item => !item.custom && catalogItemMatchesModel(item, m.model)));
   }
   const providerKind = m.provider_kind || m.providerKind;
   if (providerKind === PROVIDER_KIND_CUSTOM) return false;
   const provider = findCloudProviderForModel(m);
   return !!provider && provider.providerKind !== PROVIDER_KIND_CUSTOM
-    && (provider.items || []).some(item => !item.custom && item.model === m.model);
+    && (provider.items || []).some(item => !item.custom && catalogItemMatchesModel(item, m.model));
 }
 
 // 保留各组在入参中的原顺序。
@@ -872,6 +890,7 @@ export {
   findCloudProviderForModel,
   providerLabelForModel,
   isCodingPlanModel,
+  catalogItemMatchesModel,
   isPresetModel,
   groupModelsForSelector,
   localUserNamed,

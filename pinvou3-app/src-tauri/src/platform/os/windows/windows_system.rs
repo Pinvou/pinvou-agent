@@ -455,11 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn libreoffice_tool_path_returns_program() {
-        assert!(!libreoffice_tool_path().as_os_str().is_empty());
-    }
-
-    #[test]
     fn libreoffice_missing_message_is_windows_specific() {
         let message = libreoffice_missing_message();
         assert!(message.contains("可前往设置 - 依赖体检"));
