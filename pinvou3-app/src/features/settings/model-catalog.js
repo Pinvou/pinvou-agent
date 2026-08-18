@@ -39,11 +39,14 @@ const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
 // 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
-// 使用底座目录的规范拼写——z.ai 直连（GLM Coding Plan 国际版）的目录行是
-// `GLM-5.2` / `GLM-5-Turbo`（`glm-5.1` 为小写）；自定义兼容端点（bigmodel.cn
-// Coding Plan、开放平台）与 modelstudio 目录（qwen_token_plan）保持各自的小写
-// wire id。底座 resolver 对严格直连 provider 已做大小写不敏感回退，但新保存
-// 配置仍以规范拼写进入底座，避免依赖回退路径。
+// 使用底座 models_dev.bundled.json 目录行的原样拼写——z.ai 直连（GLM Coding
+// Plan 国际版）当前为 `GLM-5.2` / `GLM-5-Turbo` / `glm-5.1`，资产自身大小写
+// 不统一（agent 层 ModelInfo 目录行则统一大写），新增条目须逐行核对资产行拼写，
+// 不可套用大小写规律；自定义兼容端点（bigmodel.cn Coding Plan、开放平台）与
+// modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。resolver 目录匹配
+// 是精确比较，拼写偏离目录行的 id（如小写 glm-5.2）会命中其他 provider 的裸
+// wire id 而被严格直连误拒——大小写不敏感回退已回馈上游审核、未随当前 gitlink
+// 发布，故新保存配置必须用目录行原样拼写。
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',

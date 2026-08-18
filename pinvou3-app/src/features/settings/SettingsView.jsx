@@ -1738,7 +1738,7 @@ const SCard = React.forwardRef(({ title, titleAdornment, children, id, style }, 
               <div className={catalogSectionTitleClass}>{group.providerKind === PROVIDER_KIND_CODING_PLAN ? group.title : presetProviderLabel(group.preset, t)}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
-                  const active = preset === group.preset && model === item.model && !item.custom;
+                  const active = preset === group.preset && !item.custom && catalogItemMatchesModel(item, model);
                   const itemTitle = item.custom ? (settingsCopy.customModelTitles[group.key] || settingsCopy.customModelTitle(presetProviderLabel(group.preset, t))) : item.title;
                   const itemDescription = item.custom
                     ? (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc)))
