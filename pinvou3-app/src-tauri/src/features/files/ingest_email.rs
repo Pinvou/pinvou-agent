@@ -496,18 +496,6 @@ mod tests {
     }
 
     #[test]
-    fn msg_sample_from_env_decodes_when_provided() {
-        let Ok(path) = std::env::var("PINVOU3_MSG_SAMPLE") else {
-            return;
-        };
-        let parsed = parse_msg_via_msg_parser(Path::new(&path)).unwrap();
-
-        assert!(!parsed.contains('\0'));
-        assert!(!parsed.contains("3c68746d6c"));
-        assert!(parsed.contains("OpenAI") || parsed.contains("正文:"));
-    }
-
-    #[test]
     fn eml_regression_parses_headers_body_and_attachment_when_python_available() {
         if !crate::platform::os::command_exists(&crate::platform::paths::python_command()) {
             eprintln!("skip: Python is not available");

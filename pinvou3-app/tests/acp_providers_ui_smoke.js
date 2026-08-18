@@ -152,7 +152,6 @@ function injectSource() {
         case 'get_super_permission_status': return Promise.resolve({ can_use: false });
         case 'get_mode_state': return Promise.resolve({ mode: 'yolo', plan_phase: 'none' });
         case 'get_active_persona': return Promise.resolve(null);
-        case 'list_workflows': return Promise.resolve([]);
         case 'list_scheduled_tasks': return Promise.resolve([]);
         case 'list_workspace_files': return Promise.resolve([]);
         case 'check_dependencies': return Promise.resolve([]);

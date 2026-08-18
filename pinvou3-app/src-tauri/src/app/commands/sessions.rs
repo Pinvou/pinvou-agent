@@ -131,8 +131,6 @@ pub async fn clear_session() -> Result<(), String> {
 
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
-/// [2026-06-04 白浪:chat 与工作流彻底分开] 过滤工作流宿主 session(绑定带 project_dir
-/// 即是,bindings 开机回灌持久化)——它们仅作 SubAgent 运行时,不进 chat 侧栏。
 /// 代码会话(ACP 与品悟原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
 #[tauri::command]
 pub async fn list_sessions(
@@ -146,9 +144,6 @@ pub async fn list_sessions(
             // 原生代码会话（code_session 绑定）归属代码列表，不进 chat 侧栏
             && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
-            && store
-                .active_skill(&m.id)
-                .is_none_or(|b| b.project_dir.is_none())
     });
     Ok(metas
         .into_iter()
@@ -310,12 +305,7 @@ pub async fn list_archived_sessions(
             .list_scheduled()
             .map_err(|e| format!("list_archived_sessions: {e:#}"))?,
     );
-    metas.retain(|m| {
-        store.is_hidden(&m.id)
-            && store
-                .active_skill(&m.id)
-                .is_none_or(|b| b.project_dir.is_none())
-    });
+    metas.retain(|m| store.is_hidden(&m.id));
     metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(metas
         .into_iter()

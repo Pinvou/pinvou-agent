@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * detached 启动冒烟：分别加载 workflow/session/codex-session/monitor 独立窗口，
+ * detached 启动冒烟：分别加载 session/codex-session/monitor 独立窗口，
  * 断言 ① 只渲染撕离面板 ② 普通与 Coding session 还原目标历史
  * ③ Coding session 接收实时事件 ④ monitor 能渲染实时快照。
  * 用 document.body.innerText(只含渲染出的可见文本)判断，避免 page.content() 把 <script> 里的 dict 字面量算进去。
@@ -91,7 +91,7 @@ function injectSource() {
   });
   page.on('pageerror', error => console.error('PAGEERROR:', String(error)));
   await page.evaluateOnNewDocument(injectSource());
-  await page.goto(url + '?detached=1&kind=workflow', { waitUntil: 'networkidle0' });
+  await page.goto(url + '?detached=1&kind=session&id=detached-session-42', { waitUntil: 'networkidle0' });
   await new Promise(r => setTimeout(r, 1500)); // 等 babel 编译 + 首渲染
 
   const detachedFlag = await page.evaluate(() => window.__PINVOU_DETACHED__ === true);
@@ -99,7 +99,7 @@ function injectSource() {
 
   let ok = true;
   if (!detachedFlag) { console.error('FAIL: __PINVOU_DETACHED__ 未置 true'); ok = false; }
-  if (!/撕离窗口|workflow/.test(text)) { console.error('FAIL: 未渲染撕离标题栏，innerText=', JSON.stringify(text.slice(0,120))); ok = false; }
+  if (!/撕离窗口|对话/.test(text)) { console.error('FAIL: 未渲染撕离标题栏，innerText=', JSON.stringify(text.slice(0,120))); ok = false; }
   if (/新对话|近期/.test(text)) { console.error('FAIL: detached 模式仍渲染了侧边栏(出现 新对话/近期)'); ok = false; }
 
   await page.goto(url + '?detached=1&kind=session&id=detached-session-42', { waitUntil: 'networkidle0' });
@@ -157,6 +157,6 @@ function injectSource() {
   }
 
   await browser.close(); fs.rmSync(PROFILE, { recursive: true, force: true });
-  if (ok) { console.log('PASS: detached workflow/session/ACP及品悟Coding/monitor 启动与状态投影正常'); process.exit(0); }
+  if (ok) { console.log('PASS: detached session/ACP及品悟Coding/monitor 启动与状态投影正常'); process.exit(0); }
   process.exit(1);
 })();

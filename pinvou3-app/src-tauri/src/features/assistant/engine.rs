@@ -13,7 +13,7 @@
 //! 这一层只做 "boot engine + 转发事件"。Engine 自管 session 状态，多轮对话
 //! 在同一个 EngineHandle 内自然累积。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -1156,9 +1156,8 @@ impl AppEngine {
         shell_manager: SharedShellManager,
         turn_shell_tasks: TurnShellTaskRegistry,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
-        // C 方案(P-no-disk): instructions 走 Inline,不再写 disk(远端)。
-        // 工作流会话不再施加监工白名单(对话型监工已废弃);SubAgent 角色的工具
-        // 由 agent_registry.json 各自约束,与此处无关。
+        // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
+        // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
         let scheduled_profile = store.scheduled_profile(session_id);
         let persisted_total_tokens = store.load(session_id)?.metadata.total_tokens;
         let scheduled_base_total_tokens = if scheduled_profile.is_some() {
@@ -1231,8 +1230,8 @@ impl AppEngine {
         // **完整**列表(已含连接器禁用),直接覆盖 build_engine_config 设的「连接器-only」初值,
         // 让新会话天生正确——空知识库就看不到知识工具,不会宣称能本地检索。
         //
-        // 该列表来自 compute_disallowed_tools;多智能体会话不改写它——
-        // 工具面与主线持平,workflow 与裸 agent 都不在禁用列表。
+        // 该列表来自 compute_disallowed_tools；多智能体会话不改写它，
+        // 工具面与普通会话保持一致。
         let mut scheduled_disallowed_tools = disallowed.clone();
         // One automation run owns exactly one engine turn. Goal tools can
         // enqueue autonomous continuation turns after TurnComplete. Apply this
@@ -1255,10 +1254,6 @@ impl AppEngine {
             Some(snapshot) => bridge.build_multi_agent_dt_config(snapshot),
             None => bridge.build_dt_config(),
         };
-        // 多智能体宿主不再改写 Workflow 审批配置："每张图必停"的旧约束已按
-        // 产品定义收缩撤除，只读图按底座默认自动起跑，写入/提权图由底座的
-        // require_approval_for_writes 走普通审批（确认卡只在那时出现）。
-
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
             session_id,
@@ -1676,78 +1671,6 @@ struct TurnPlanTracker {
     last_todos_snapshot: Option<serde_json::Value>,
 }
 
-/// [edict-obs] per-role token 账本：role_id → (input 累计, output 累计, 调用次数)。
-/// 每收到一条 MailboxMessage::TokenUsage 调 add，返回该 role 最新累计快照。
-#[derive(Default)]
-struct TokenLedger {
-    by_role: std::collections::HashMap<String, (u64, u64, u32)>,
-}
-
-impl TokenLedger {
-    /// 累加一次调用，返回 (input_total, output_total, calls)。
-    fn add(&mut self, role: &str, input: u64, output: u64) -> (u64, u64, u32) {
-        let e = self.by_role.entry(role.to_string()).or_insert((0, 0, 0));
-        e.0 += input;
-        e.1 += output;
-        e.2 += 1;
-        *e
-    }
-}
-
-/// [per_page] 把某 fan-out 节点的逐页状态(queued/running/done/retrying)推给前端，
-/// 让工作流界面把该节点展开成 N 个 SubAgent chip 实时显示并发。
-pub(crate) fn emit_fanout(app: &AppHandle, session_id: &str, base_role: &str) {
-    let pages = crate::features::assistant::harness::fanout_snapshot(session_id, base_role);
-    let _ = app.emit(
-        "workflow:fanout",
-        json!({
-            "session_id": session_id,
-            "base_role": base_role,
-            "pages": pages,
-        }),
-    );
-}
-
-/// [pinvou3-fork] 执行一个 [`HarnessAction`](crate::features::assistant::harness::HarnessAction)：emit
-/// 前端事件，派发真 SubAgent（SpawnAgent → `Op::SpawnSubAgent`）
-/// 或等待/收尾（WaitForHuman/AllDone/Blocked）。由 `TurnComplete`（首轮 step_fresh）
-/// 和 `AgentComplete`（SubAgent 完成后推进）两条路径共用。返回 `true` = harness
-/// 推进了（调用方据此 emit `workflow:full_state` 快照）。
-pub(crate) fn emit_workflow_blocked(
-    app: &AppHandle,
-    session_id: &str,
-    workspace: &Path,
-    message: &str,
-) {
-    eprintln!("[harness] blocked: {message}");
-    crate::features::assistant::audit::append(
-        workspace,
-        "blocked",
-        "",
-        json!({ "message": crate::platform::strings::truncate_utf8(message, 600) }),
-    );
-    let warmup_report = serde_json::from_str::<serde_json::Value>(message).ok();
-    let display_message = warmup_report
-        .as_ref()
-        .and_then(crate::features::assistant::harness::warmup_block_reason)
-        .unwrap_or_else(|| message.to_string());
-    let stage = if warmup_report.is_some() {
-        "warmup"
-    } else {
-        "runtime"
-    };
-    let _ = app.emit(
-        "workflow:blocked",
-        json!({
-            "session_id": session_id,
-            "status": "blocked",
-            "stage": stage,
-            "message": display_message,
-            "warmup_report": warmup_report,
-        }),
-    );
-}
-
 fn tool_call_result_parts(
     result: std::result::Result<
         deepseek_tui::tools::spec::ToolResult,
@@ -1760,181 +1683,6 @@ fn tool_call_result_parts(
     }
 }
 
-pub(crate) async fn apply_harness_action(
-    action: crate::features::assistant::harness::HarnessAction,
-    app: &AppHandle,
-    workspace: &Path,
-    handle: &EngineHandle,
-    active_id: &str,
-) -> bool {
-    use crate::features::assistant::harness::HarnessAction as HA;
-    let ws = workspace.to_path_buf();
-    match action {
-        HA::SpawnAgent {
-            role_id,
-            role_name,
-            prompt,
-            allowed_tools,
-            write_files,
-            project_dir,
-            max_steps,
-            output_schema,
-            expects_file_output,
-        } => {
-            eprintln!(
-                "[harness] Step C spawn → {role_name} ({role_id}) tools={allowed_tools:?} max_steps={max_steps:?} structured={}",
-                output_schema.is_some()
-            );
-            crate::features::assistant::audit::append(
-                &ws,
-                "dispatch",
-                &role_id,
-                json!({ "role_name": &role_name }),
-            );
-            let _ = app.emit(
-                "workflow:agent_state_changed",
-                json!({
-                    "session_id": active_id, "role_id": role_id,
-                    "role_name": role_name, "status": "running",
-                }),
-            );
-            let op = Op::SpawnSubAgent {
-                prompt,
-                role_id,
-                allowed_tools,
-                write_files,
-                max_steps,
-                output_schema,
-                structured_output_root: Some(project_dir),
-                expects_file_output,
-            };
-            if let Err(e) = handle.send(op).await {
-                eprintln!("[harness] spawn subagent failed: {e:#}");
-            }
-            true
-        }
-        // [per_page] 纵向 fan-out：有界并发派发。底座在 running>=max 时硬拒绝(不排队)，
-        // 故 Router 运行时自己排队：先派 K 个(per_page_concurrency)，其余留全局队列，由
-        // AgentComplete 每页完成补派一个 → 在飞稳定=K。join 计数在 State(record_page_done)；
-        // N 实例全到时 AgentComplete handler 对【单一逻辑节点】base_role 验收一次。
-        HA::SpawnAgentBatch {
-            base_role,
-            role_name,
-            tasks,
-        } => {
-            let total = tasks.len();
-            let k = crate::features::assistant::harness::per_page_concurrency();
-            eprintln!("[harness] Step C fan-out → {role_name} ({base_role}) {total} 页, 在飞并发={k}, 其余排队");
-            crate::features::assistant::audit::append(
-                &ws,
-                "dispatch_batch",
-                &base_role,
-                json!({ "role_name": &role_name, "pages": total, "concurrency": k }),
-            );
-            let _ = app.emit(
-                "workflow:agent_state_changed",
-                json!({
-                    "session_id": active_id, "role_id": &base_role,
-                    "role_name": role_name, "status": "running",
-                }),
-            );
-            let first = crate::features::assistant::harness::batch_seed_and_take(
-                active_id, &base_role, tasks, k,
-            );
-            for t in first {
-                let op = Op::SpawnSubAgent {
-                    prompt: t.prompt,
-                    role_id: t.agent_role, // "slide_writer#p01" → 回到 AgentComplete.role
-                    allowed_tools: t.allowed_tools,
-                    write_files: t.write_files,
-                    max_steps: t.max_steps,
-                    output_schema: t.output_schema,
-                    structured_output_root: Some(t.project_dir),
-                    expects_file_output: t.expects_file_output,
-                };
-                if let Err(e) = handle.send(op).await {
-                    eprintln!("[harness] fan-out spawn failed: {e:#}");
-                }
-            }
-            emit_fanout(app, active_id, &base_role); // 初始 fan-out 状态 → 前端
-            true
-        }
-        HA::WaitForHuman {
-            role_id,
-            role_name,
-            description,
-        } => {
-            eprintln!("[harness] waiting for human → {role_name} ({role_id})");
-            crate::features::assistant::audit::append(
-                &ws,
-                "human_gate",
-                &role_id,
-                json!({ "role_name": &role_name, "description": crate::platform::strings::truncate_utf8(&description, 600) }),
-            );
-            let _ = app.emit(
-                "workflow:gate_approval",
-                json!({
-                    "session_id": active_id, "role_id": role_id,
-                    "role_name": role_name, "gate_description": description,
-                }),
-            );
-            true
-        }
-        HA::AllDone => {
-            eprintln!("[harness] workflow complete");
-            // [edict-obs] 定位最终成品(deck 播放器入口),带进完成事件让前端弹"成品卡"。
-            // 找不到(非 deck 类工作流/产物缺失)→ artifact=null,前端只标完成不弹卡。
-            let artifact: Option<String> =
-                crate::features::assistant::harness::read_full_agent_state(&ws)
-                    .and_then(|st| {
-                        st.get("project_dir")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                    })
-                    .map(|p| {
-                        std::path::Path::new(&p)
-                            .join("HTML_Deck")
-                            .join("index.html")
-                    })
-                    .filter(|p| p.exists())
-                    .map(|p| p.display().to_string());
-            crate::features::assistant::audit::append(
-                &ws,
-                "complete",
-                "",
-                json!({ "artifact": artifact }),
-            );
-            let _ = app.emit(
-                "workflow:complete",
-                json!({ "session_id": active_id, "artifact": artifact }),
-            );
-            true
-        }
-        HA::Blocked { message } => {
-            eprintln!("[harness] blocked: {message}");
-            crate::features::assistant::audit::append(
-                &ws,
-                "blocked",
-                "",
-                json!({ "message": crate::platform::strings::truncate_utf8(&message, 600) }),
-            );
-            let warmup_report = serde_json::from_str::<serde_json::Value>(&message).ok();
-            let _ = app.emit(
-                "workflow:blocked",
-                json!({
-                    "session_id": active_id, "message": message, "warmup_report": warmup_report,
-                }),
-            );
-            true
-        }
-        HA::Error(e) => {
-            eprintln!("[harness] error: {e}");
-            false
-        }
-        HA::NotApplicable => false,
-    }
-}
-
 #[path = "forwarder.rs"]
 mod forwarder;
 pub(crate) use forwarder::spawn_event_forwarder;
@@ -1942,20 +1690,6 @@ pub(crate) use forwarder::spawn_event_forwarder;
 /// 让 main.rs 编译时知道这个模块（供 docs/CI 用）。
 pub fn _force_link() -> Arc<()> {
     Arc::new(())
-}
-
-#[cfg(test)]
-mod token_ledger_tests {
-    use super::TokenLedger;
-
-    #[test]
-    fn accumulates_per_role() {
-        let mut l = TokenLedger::default();
-        assert_eq!(l.add("pm", 100, 20), (100, 20, 1));
-        assert_eq!(l.add("pm", 50, 10), (150, 30, 2));
-        assert_eq!(l.add("writer", 7, 3), (7, 3, 1));
-        assert_eq!(l.add("pm", 0, 0), (150, 30, 3));
-    }
 }
 
 #[cfg(test)]

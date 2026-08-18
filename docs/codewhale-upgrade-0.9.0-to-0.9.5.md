@@ -1,19 +1,18 @@
 # CodeWhale 0.9.0 → 0.9.5 底座升级报告
 
-> 日期：2026-08-11
-> 状态：CodeWhale 重建、结构化产出安全加固、会话恢复和本地模型工具续轮兼容修复均已完成，公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r6` 已发布；`r1` 至 `r5` 保留为不可变历史标签。
+> 日期：2026-08-17
+> 状态：专用编排退役已通过 `Pinvou/CodeWhale#13` 合并；公开维护分支 `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
 
 ## 1. 结论
 
-本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。仍需留在底座生命周期的 Pinvou 差异被收敛为 5 个长期主题：
+本次从官方 `v0.9.5` tag clean re-fork，没有把旧 fork 整包 merge。r7 公开基线 `a36e6cd53` 退役专用编排协议并保留通用工具兼容后，仍需留在底座生命周期的 Pinvou 差异收敛为 4 个长期主题：
 
 1. 宿主嵌入与路由边界
 2. 工具兼容与命令执行安全
 3. 嵌入上下文与技能来源
 4. 定时任务与运行生命周期
-5. 三省六部编排与完成闸
 
-相对官方 v0.9.5，r6 公开 fork 为 52 文件、`+2640/-299`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
+相对官方 v0.9.5，退役后的 r7 fork 为 46 文件、`+1852/-269`；父仓代码层只需适配 `EngineConfig` 字段、窄 Fleet roster/worker 宿主入口和重算 lockfile。Pinvou 工具白名单继续在 app 层维护，直接复用 CodeWhale 原生 `allowed_tools`；工具商店和会话开关继续通过动态 `disallowed_tools` 收窄，不重建第二套底座策略。
 
 ## 2. 版本基线
 
@@ -48,7 +47,7 @@
 对 Pinvou 的影响：
 
 - 不再在 app 重写通用 Agent 生命周期；优先消费 CodeWhale 的 route、task、receipt 和 terminal facts。
-- 三省六部 fork 只保留业务特有的角色工具范围、最大步数、schema/file 产物和完成闸。
+- 产品专用角色协议、结构化提交和文件完成闸已整体退出底座，普通 SubAgent 继续使用上游生命周期。
 - “模型声称完成”不能替代结构化数据或文件真实落盘；完成条件必须由底座生命周期内的结果校验保证。
 
 ### 3.3 Runtime API、Session tree、Task 与 Automation 耐久化
@@ -90,29 +89,27 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 - library/runtime 边界更正式，旧的全量 bin facade 可以缩减为最小宿主公开面。
 - lockfile 依赖发生明显重排，但 Pinvou 无需新增直接依赖。
-- 去掉隐藏 continuation ceiling 对长工具链、三省六部和定时任务更安全；仍保留用户显式预算和真正 stuck-loop 防线。
+- 去掉隐藏 continuation ceiling 对长工具链和定时任务更安全；仍保留用户显式预算和真正 stuck-loop 防线。
 
-## 4. 本次五主题实现
+## 4. 当前四主题实现
 
 | 主题 | commit | 主要职责 |
 |---|---|---|
-| T1 宿主嵌入与路由边界 | `331cb1594` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
-| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e` | extra tools、动态禁用、File 上限、多行危险命令 fail-closed、schema 容器修复和工具续轮角色兼容 |
+| T1 宿主嵌入与路由边界 | `331cb1594`、`2eceab4e1`、`a36e6cd53` | 最小 library 公开面、窄 Fleet roster/worker API、opaque route、显式 limits、runtime host API |
+| T2 工具兼容与命令执行安全 | `595adce47`、`3bbf8421e`、`a36e6cd53` | extra tools、动态禁用、File 上限、命令安全、schema 容器兼容、canonical registry 提示与 action alias 解析 |
 | T3 嵌入上下文与技能来源 | `5a9f52941` | static composer 密封、Skill 单根/disabled、Permissions 100 KiB 窄例外、Working Set 隔离 |
 | T4 定时任务与运行生命周期 | `fc84f7d3e` | model/conversation、历史 schema、thread/turn、misfire/no-overlap、终态清理 |
-| T5 三省六部编排与完成闸 | `3782a78d4` + `d1010aa3b` | role/tool/steps、产物级 write claim、显式项目根、schema/file 安全产出、取消、权威失败终态 |
 
 主题边界、文件与指纹详见 `docs/fork-modifications.md`。
 
 ## 5. Pinvou 父仓兼容迁移
 
-- submodule 指向公开 v0.9.5 r5 五主题基线。
+- submodule 对齐公开 v0.9.5 r7 `a36e6cd533024cfe5724bae21875aea42b2ed87a`。
 - `Cargo.lock` 对齐 v0.9.5 workspace crate 和依赖图。
-- `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，并按 `SessionRoots` 将新增的 `subagent_state_root` 指向会话 ledger。
+- `EngineConfig` 删除已不存在的旧 `hidden_tools` 字段引用，显式透传新增 `subagent_state_root`。
 - 会话工具隐藏继续走 `shape_disallowed_tools`，产品语义不变。
 - app 工具白名单继续使用 `allowed_tool_names()` 同源注入 Engine/turn。
-- 三省六部把角色登记的具体产物文件转换为 v0.9.5 有界 write claim，工作区外路径继续拒绝。
-- 没有扩大 request-user-input、MCP 工具商店、定时任务或三省六部的产品权限。
+- 没有扩大 request-user-input、MCP 工具商店或定时任务的产品权限。
 
 ## 6. 验证结果
 
@@ -126,13 +123,13 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 
 - `cargo fmt --all -- --check`：通过。
 - `cargo check --locked`：通过。
-- `cargo test --locked --lib -- --test-threads=1`：1077 passed / 0 failed / 12 ignored；ignored 项依赖真实模型、外部工具或专用 fixture。
-- `./scripts/fork-guard.sh`：CodeWhale 23 passed；pinvou3-app 18 passed。
+- `cargo test --locked --lib -- --test-threads=1`：1220 passed / 0 failed / 12 ignored；ignored 项依赖真实模型、外部工具或专用 fixture。
+- `./scripts/fork-guard.sh`：CodeWhale 23 passed；pinvou3-app 19 passed。
 - `cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri`：实际桌面二进制链接通过。
 - `python3 scripts/architecture-guard.py`：通过，无新增架构债务。
 - `npm test`、`npm run lint:ui`、`npm run build:ui`、`npm run build:web`：全部通过；仅有既有非 module script 和大 chunk warning。
 
-未运行真实云模型、外部 API 凭据和各硬件部署的在线推理，因此“功能未丢失”最终仍需用户做 GUI、MCP/OAuth、定时任务和三省六部端到端签收。
+未运行真实云模型、外部 API 凭据和各硬件部署的在线推理，因此其余能力最终仍需用户做 GUI、MCP/OAuth 和定时任务端到端签收。
 
 ## 7. 风险与回滚
 
@@ -145,13 +142,13 @@ v0.9.5 把 CLI/TUI 合并为一个编译 runtime，`codewhale` 与 `codew` 指�
 1. **运行事实归底座**：route、usage、task、agent、receipt 和 terminal state 由 CodeWhale 生成，Pinvou UI 只消费，不再猜测。
 2. **产品策略留 app**：工具白名单、连接器开关、工作区、页面和产物规则不进入通用底座。
 3. **扩展优先 Skill/MCP/plugin**：只有需要参与 Engine/Task/SubAgent 原子生命周期的语义才进入 fork。
-4. **三省六部保持独立主题**：它的完成闸与普通 Fleet 能力分开维护，避免业务协议污染通用宿主接口。
-5. **耐久工作流围绕 receipt 设计**：定时任务、团队接力、后台运行和远程控制统一依赖可恢复、可审计终态。
-6. **用契约测试应对快速上游**：重点锁住 canonical tools、route limits、Skill 来源、Automation lifecycle、structured output 和文件完成闸。
+4. **耐久运行围绕 receipt 设计**：定时任务、团队接力、后台运行和远程控制统一依赖可恢复、可审计终态。
+5. **用契约测试应对快速上游**：重点锁住 canonical tools、route limits、Skill 来源和 Automation lifecycle。
 
 ## 9. 当前交付状态
 
-- CodeWhale 分支：`Pinvou/CodeWhale:pinvou3-clean`
-- CodeWhale HEAD：`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`
-- 父仓状态：会话恢复修复已通过 PR `#247` 合入 `main`，本地模型工具续轮兼容修复已通过 PR `#278` 合入 `main`
-- 远端状态：`pinvou3-clean` 与 `pinvou-v0.9.5-r6` 已发布；`r1` 至 `r5` 保留为不可变历史标签，旧 v0.9.0 分支已双重备份
+- CodeWhale 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`
+- CodeWhale 公开 HEAD：`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`pinvou-v0.9.5-r7`）
+- 父仓分支：`refactor/remove-sansheng-liubu`（PR #285）
+- 远端状态：`Pinvou/CodeWhale#13` 已合并；`pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 指向同一公开提交。
+- 下一步：完成父仓 PR #285 的 current-head 门禁并通过 Merge Queue 合并。

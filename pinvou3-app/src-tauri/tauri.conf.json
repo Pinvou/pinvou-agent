@@ -40,8 +40,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "resources/common/web-template/": "web-template"
-    }
+    "resources": {}
   }
 }

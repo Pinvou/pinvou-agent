@@ -311,7 +311,7 @@ pub fn delete_user_persona(id: &str) -> Result<(), String> {
 
 // ── 加持注入 ───────────────────────────────────────────────────────
 
-/// **一次性**注入的完整人设(加持后首条消息 prepend 一次,仿 skill pending_instruction)。
+/// **一次性**注入完整人设（加持后的首条消息 prepend 一次）。
 pub fn equip_body_injection(card: &PersonaCard) -> String {
     format!(
         "【你被加持了一张专家面具:{name}】\n\

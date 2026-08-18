@@ -15,7 +15,6 @@ const packageJson = JSON.parse(
 
 const helperFiles = new Set([
   "bridge_domain_contract.mjs",
-  "mock_ota_server.js",
   "ui_test_server.js",
 ]);
 const platformRuntimeSmokes = new Set([

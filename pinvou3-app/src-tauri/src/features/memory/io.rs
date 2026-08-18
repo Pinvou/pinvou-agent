@@ -288,11 +288,6 @@ pub fn clear_profile() -> io::Result<MemoryProfile> {
     Ok(profile)
 }
 
-pub fn capture_deterministic_memory(message: &str) -> io::Result<Vec<MemoryWriteEvent>> {
-    let _ = message;
-    Ok(Vec::new())
-}
-
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     let path = recent_work_path();
     let raw = match read_text_recovering(&path, json_lines_are_valid::<RecentWorkItem>) {

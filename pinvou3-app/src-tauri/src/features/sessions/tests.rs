@@ -79,7 +79,6 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
         store.scheduled_profiles_path.as_ref().clone(),
         store.scheduled_root.as_ref().clone(),
     )?;
-    reopened.load_skill_bindings();
     reopened.load_session_models();
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
@@ -96,16 +95,6 @@ fn task_workspace(store: &SessionStore, task_id: &str) -> PathBuf {
     store
         .scheduled_workspace_for_task(task_id)
         .expect("valid scheduled task workspace")
-}
-
-#[test]
-fn create_new_persists_and_lists() {
-    let (store, _g) = isolated_store();
-    let s = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let list = store.list().expect("list");
-    assert!(list.iter().any(|m| m.id == s.metadata.id));
 }
 
 #[test]
@@ -515,15 +504,6 @@ fn scheduled_mode_override_preserves_live_auxiliary_session_state() {
         .expect("create scheduled run");
     let id = scheduled.metadata.id;
     store.set_active_persona(&id, Some("scheduled-persona".to_string()));
-    store.bind_skill(
-        &id,
-        ActiveSkillBinding {
-            name: "scheduled-skill".to_string(),
-            pending_instruction: None,
-            phases: Vec::new(),
-            project_dir: None,
-        },
-    );
     store.set_mounted_collection(&id, Some(42));
     store
         .mode_states
@@ -535,10 +515,6 @@ fn scheduled_mode_override_preserves_live_auxiliary_session_state() {
     let state = store.mode_state(&id);
     assert_eq!(state.mode, SerializableMode::Plan);
     assert_eq!(state.active_persona.as_deref(), Some("scheduled-persona"));
-    assert_eq!(
-        state.active_skill.as_ref().map(|skill| skill.name.as_str()),
-        Some("scheduled-skill")
-    );
     assert_eq!(state.mounted_collection, Some(42));
 }
 
@@ -1108,15 +1084,6 @@ fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
         .metadata
         .id;
     for (id, suffix) in [(&live, "live"), (&stale, "stale")] {
-        store.bind_skill(
-            id,
-            ActiveSkillBinding {
-                name: format!("{suffix}-scheduled-skill"),
-                pending_instruction: None,
-                phases: Vec::new(),
-                project_dir: None,
-            },
-        );
         store
             .session_models
             .write()
@@ -1130,7 +1097,6 @@ fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
             .write()
             .insert(id.clone(), format!("{suffix}-hidden"));
     }
-    store.save_skill_bindings();
     store.save_session_models();
     store.save_pinned_sessions();
     store.save_hidden_sessions();
@@ -1138,16 +1104,13 @@ fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
         .expect("simulate stale profile after session loss");
     let reloaded = reopen_store(&store).expect("reboot and prune sidecars");
 
-    assert!(reloaded.mode_states.read().contains_key(&live));
     assert!(reloaded.session_models.read().contains_key(&live));
     assert!(reloaded.pinned_sessions.read().contains_key(&live));
     assert!(reloaded.hidden_sessions.read().contains_key(&live));
-    assert!(!reloaded.mode_states.read().contains_key(&stale));
     assert!(!reloaded.session_models.read().contains_key(&stale));
     assert!(!reloaded.pinned_sessions.read().contains_key(&stale));
     assert!(!reloaded.hidden_sessions.read().contains_key(&stale));
     for sidecar in [
-        "_skill_bindings.json",
         "_session_models.json",
         "_pinned_sessions.json",
         "_hidden_sessions.json",
@@ -1351,26 +1314,6 @@ fn update_messages_rejects_unrelated_short_overwrite() {
 }
 
 #[test]
-fn transcript_cas_commits_and_returns_content_revision() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let expected = transcript_revision(&session.messages).expect("empty revision");
-    let messages = vec![user_text("hello")];
-
-    let committed = store
-        .compare_and_swap_messages(&session.metadata.id, &expected, messages.clone())
-        .expect("CAS commit");
-
-    assert_eq!(committed, transcript_revision(&messages).expect("revision"));
-    assert_eq!(
-        store.load(&session.metadata.id).expect("load").messages,
-        messages
-    );
-}
-
-#[test]
 fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call() {
     let (store, _guard) = isolated_store();
     let session = store
@@ -1451,9 +1394,15 @@ fn transcript_cas_rejects_stale_revision_without_overwrite() {
         .expect("create");
     let stale = transcript_revision(&session.messages).expect("empty revision");
     let winner = vec![user_text("winner")];
-    store
+    // first commit 成功并返回新 revision、落盘生效
+    // (原 transcript_cas_commits_and_returns_content_revision 的断言)。
+    let committed = store
         .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
         .expect("first commit");
+    assert_eq!(
+        committed,
+        transcript_revision(&winner).expect("winner revision")
+    );
 
     let error = store
         .compare_and_swap_messages(
@@ -1556,18 +1505,16 @@ fn delete_removes_session() {
 }
 
 #[test]
-fn active_id_tracks_set_active() {
+fn delete_active_clears_active_id() {
     let (store, _g) = isolated_store();
+    // set_active/active_id 追踪语义(原 active_id_tracks_set_active 的断言):
+    // 初始 None → set Some 后可读回 → set None 复位。
     assert!(store.active_id().is_none());
     store.set_active(Some("abc".into()));
     assert_eq!(store.active_id().as_deref(), Some("abc"));
     store.set_active(None);
     assert!(store.active_id().is_none());
-}
 
-#[test]
-fn delete_active_clears_active_id() {
-    let (store, _g) = isolated_store();
     let s = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
@@ -1725,31 +1672,14 @@ fn generate_session_id_url_safe() {
 }
 
 #[test]
-fn pinvou_review_defaults_off() {
-    let (store, _g) = isolated_store();
-    assert!(!store.mode_state("s1").pinvou_review_enabled);
-}
-
-#[test]
 fn set_pinvou_review_persists() {
     let (store, _g) = isolated_store();
+    // 默认关闭(原 pinvou_review_defaults_off 的断言)。
+    assert!(!store.mode_state("s1").pinvou_review_enabled);
     store.set_pinvou_review("s1", true);
     assert!(store.mode_state("s1").pinvou_review_enabled);
     store.set_pinvou_review("s1", false);
     assert!(!store.mode_state("s1").pinvou_review_enabled);
-}
-
-#[test]
-fn set_mode_preserves_pinvou_review() {
-    // 关键不变量:切 mode(set_mode)不能覆盖品悟开关。
-    let (store, _g) = isolated_store();
-    store.set_pinvou_review("s1", true);
-    store
-        .set_mode("s1", SerializableMode::Yolo)
-        .expect("set chat mode");
-    let state = store.mode_state("s1");
-    assert!(state.pinvou_review_enabled);
-    assert!(matches!(state.mode, SerializableMode::Yolo));
 }
 
 #[test]
@@ -1802,10 +1732,10 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
 
 /// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
 /// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
-/// 品悟开关 / 挂载知识集 / 人格卡 / skill 绑定等正交状态必须原样保留。
+/// 品悟开关 / 挂载知识集 / 人格卡等正交状态必须原样保留。
 /// (discard_plan「算了」不在此列:放弃方案但留在当前 mode,不调 set_mode。)
 /// 防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时连带清掉这些字段。
-/// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 四字段)。
+/// 比 set_mode_preserves_pinvou_review 更全(多步往返 + 三字段)。
 #[test]
 fn mode_switch_loop_preserves_orthogonal_state() {
     use SerializableMode;
@@ -1817,15 +1747,6 @@ fn mode_switch_loop_preserves_orthogonal_state() {
     store.set_pinvou_review(sid, true);
     store.set_mounted_collection(sid, Some(42));
     store.set_active_persona(sid, Some("expert-x".into()));
-    store.bind_skill(
-        sid,
-        ActiveSkillBinding {
-            name: "legacy-ppt-workflow".into(),
-            pending_instruction: None,
-            phases: vec![],
-            project_dir: None,
-        },
-    );
 
     // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit)→ Yolo
     for _ in 0..2 {
@@ -1839,7 +1760,7 @@ fn mode_switch_loop_preserves_orthogonal_state() {
         assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
     }
 
-    // 四个正交字段全保留
+    // 三个正交字段全保留
     let st = store.mode_state(sid);
     assert!(st.pinvou_review_enabled, "切 mode 清了品悟开关");
     assert_eq!(st.mounted_collection, Some(42), "切 mode 卸载了知识集");
@@ -1848,128 +1769,28 @@ fn mode_switch_loop_preserves_orthogonal_state() {
         Some("expert-x"),
         "切 mode 清了人格"
     );
-    assert_eq!(
-        st.active_skill.map(|s| s.name),
-        Some("legacy-ppt-workflow".to_string()),
-        "切 mode 解绑了 skill"
-    );
-}
-
-#[test]
-fn bind_skill_then_take_consumes_once_and_returns_binding() {
-    let (store, _g) = isolated_store();
-    store.bind_skill(
-        "s1",
-        ActiveSkillBinding {
-            name: "legacy-ppt-workflow".into(),
-            pending_instruction: Some("PREPEND".into()),
-            phases: vec![],
-            project_dir: None,
-        },
-    );
-    let b = store.active_skill("s1").expect("bound");
-    assert_eq!(b.name, "legacy-ppt-workflow");
-    // pending_instruction 被 #[serde(skip)] 标记,active_skill 路径走的是
-    // .clone() 不影响 pending_instruction(它仍存在原 entry 上),take 走另一路径
-    assert_eq!(
-        store.take_pending_skill_instruction("s1").as_deref(),
-        Some("PREPEND")
-    );
-    assert!(store.take_pending_skill_instruction("s1").is_none());
-    // 取走 instruction 后 active_skill 仍能返回 binding(name+phases),
-    // 仅 pending_instruction 槽位被消费 — 关键:phases 不丢
-    let b2 = store.active_skill("s1").expect("still bound");
-    assert_eq!(b2.name, "legacy-ppt-workflow");
 }
 
 #[test]
 fn pending_turn_injections_restore_on_drop_and_commit_only_after_submission() {
     let (store, _g) = isolated_store();
-    store.bind_skill(
-        "s1",
-        ActiveSkillBinding {
-            name: "skill-a".into(),
-            pending_instruction: Some("SKILL BODY".into()),
-            phases: vec![],
-            project_dir: None,
-        },
-    );
     store.set_active_persona("s1", Some("persona-a".into()));
     store.set_pending_persona_body("s1", Some("PERSONA BODY".into()));
 
     {
         let pending = store.take_pending_turn_injections("s1");
-        assert_eq!(pending.skill_instruction(), Some("SKILL BODY"));
         assert_eq!(pending.persona_body(), Some("PERSONA BODY"));
-        assert!(store.take_pending_skill_instruction("s1").is_none());
         assert!(store.take_pending_persona_body("s1").is_none());
         // Simulate attachment/build/Engine submission failure.
     }
-    assert_eq!(
-        store.take_pending_skill_instruction("s1").as_deref(),
-        Some("SKILL BODY")
-    );
     assert_eq!(
         store.take_pending_persona_body("s1").as_deref(),
         Some("PERSONA BODY")
     );
 
-    store.bind_skill(
-        "s1",
-        ActiveSkillBinding {
-            name: "skill-a".into(),
-            pending_instruction: Some("SECOND SKILL".into()),
-            phases: vec![],
-            project_dir: None,
-        },
-    );
     store.set_pending_persona_body("s1", Some("SECOND PERSONA".into()));
     store.take_pending_turn_injections("s1").commit();
-    assert!(store.take_pending_skill_instruction("s1").is_none());
     assert!(store.take_pending_persona_body("s1").is_none());
-}
-
-#[test]
-fn unbind_skill_clears_binding() {
-    let (store, _g) = isolated_store();
-    store.bind_skill(
-        "s1",
-        ActiveSkillBinding {
-            name: "legacy-ppt-workflow".into(),
-            pending_instruction: None,
-            phases: vec![],
-            project_dir: None,
-        },
-    );
-    assert!(store.active_skill("s1").is_some());
-    store.unbind_skill("s1");
-    assert!(store.active_skill("s1").is_none());
-}
-
-#[test]
-fn bind_skill_preserves_mode() {
-    // 绑定/解绑 skill 不能动 mode / pinvou_review_enabled。
-    let (store, _g) = isolated_store();
-    store.set_pinvou_review("s1", true);
-    store
-        .set_mode("s1", SerializableMode::Plan)
-        .expect("set chat plan mode");
-    store.bind_skill(
-        "s1",
-        ActiveSkillBinding {
-            name: "legacy-ppt-workflow".into(),
-            pending_instruction: None,
-            phases: vec![],
-            project_dir: None,
-        },
-    );
-    let state = store.mode_state("s1");
-    assert!(state.pinvou_review_enabled);
-    assert!(matches!(state.mode, SerializableMode::Plan));
-    store.unbind_skill("s1");
-    let state2 = store.mode_state("s1");
-    assert!(state2.pinvou_review_enabled);
-    assert!(matches!(state2.mode, SerializableMode::Plan));
 }
 
 #[test]
@@ -2020,6 +1841,82 @@ fn mounted_collections_are_ordered_deduplicated_and_legacy_compatible() {
             collection_id: 42,
             enabled: true,
         }]
+    );
+}
+
+#[test]
+fn remote_and_local_collections_can_be_mounted_together() {
+    let (store, _g) = isolated_store();
+    let sid = "s-mixed-kb";
+    store.set_mounted_collection(sid, Some(7));
+    store.add_mounted_remote_collection(sid, "cube".to_string(), 7);
+    store.add_mounted_remote_collection(sid, "cube".to_string(), 7);
+    store.add_mounted_remote_collection(sid, "other".to_string(), 7);
+    assert_eq!(store.mounted_collection_ids(sid), vec![7]);
+    assert_eq!(
+        store.mounted_remote_collections(sid),
+        vec![
+            MountedRemoteCollection {
+                server_id: "cube".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+            MountedRemoteCollection {
+                server_id: "other".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+        ]
+    );
+    store.set_mounted_remote_collection_enabled(sid, "cube", 7, false);
+    assert!(!store.mounted_remote_collections(sid)[0].enabled);
+    let changed = store.remove_remote_server_mounts("cube");
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].0, sid);
+    assert_eq!(store.mounted_remote_collections(sid).len(), 1);
+}
+
+#[test]
+fn disconnecting_remote_server_removes_its_mounts_from_every_affected_session() {
+    let (store, _g) = isolated_store();
+    store.set_mounted_collection("session-a", Some(7));
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 7);
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 8);
+    store.add_mounted_remote_collection("session-a", "other".to_string(), 7);
+    store.add_mounted_remote_collection("session-b", "cube".to_string(), 9);
+    store.add_mounted_remote_collection("session-unaffected", "other".to_string(), 10);
+
+    let changed = store.remove_remote_server_mounts("cube");
+
+    assert_eq!(
+        changed
+            .iter()
+            .map(|(session_id, _)| session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-a", "session-b"]
+    );
+    assert_eq!(
+        changed[0].1,
+        vec![MountedRemoteCollection {
+            server_id: "other".to_string(),
+            collection_id: 7,
+            enabled: true,
+        }],
+        "events must receive the authoritative post-disconnect mount list"
+    );
+    assert!(store.mounted_remote_collections("session-b").is_empty());
+    assert_eq!(
+        store.mounted_remote_collections("session-unaffected"),
+        vec![MountedRemoteCollection {
+            server_id: "other".to_string(),
+            collection_id: 10,
+            enabled: true,
+        }]
+    );
+    assert_eq!(
+        store.mounted_collection("session-a"),
+        Some(7),
+        "disconnecting a remote server must not disturb local mounts"
     );
 }
 
@@ -2127,6 +2024,57 @@ fn deleting_collection_removes_mount_from_every_affected_session() {
             .revision,
         unaffected_revision,
         "unaffected sessions must not receive a spurious revision"
+    );
+}
+
+#[test]
+fn deleting_remote_collection_removes_only_the_exact_mount_from_every_session() {
+    let (store, _g) = isolated_store();
+    store.set_mounted_collection("session-a", Some(7));
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 7);
+    store.add_mounted_remote_collection("session-a", "cube".to_string(), 8);
+    store.add_mounted_remote_collection("session-a", "other".to_string(), 7);
+    store.add_mounted_remote_collection("session-b", "cube".to_string(), 7);
+    store.set_mounted_remote_collection_enabled("session-b", "cube", 7, false);
+    store.add_mounted_remote_collection("session-unaffected", "cube".to_string(), 9);
+
+    let changed = store.remove_mounted_remote_collection_from_all("cube", 7);
+
+    assert_eq!(
+        changed
+            .iter()
+            .map(|(session_id, _)| session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-a", "session-b"]
+    );
+    assert_eq!(
+        store.mounted_remote_collections("session-a"),
+        vec![
+            MountedRemoteCollection {
+                server_id: "cube".to_string(),
+                collection_id: 8,
+                enabled: true,
+            },
+            MountedRemoteCollection {
+                server_id: "other".to_string(),
+                collection_id: 7,
+                enabled: true,
+            },
+        ]
+    );
+    assert!(store.mounted_remote_collections("session-b").is_empty());
+    assert_eq!(
+        store.mounted_remote_collections("session-unaffected"),
+        vec![MountedRemoteCollection {
+            server_id: "cube".to_string(),
+            collection_id: 9,
+            enabled: true,
+        }]
+    );
+    assert_eq!(
+        store.mounted_collection("session-a"),
+        Some(7),
+        "remote deletion must not disturb local mounts with the same numeric id"
     );
 }
 
@@ -2479,42 +2427,6 @@ fn confirm_code_yolo_persists_globally() {
     assert!(UserPrefs::load().code_permission.yolo_confirmed);
     let reopened = reopen_store(&store).expect("reboot");
     assert!(reopened.code_permission_prefs().yolo_confirmed);
-}
-
-/// 重启回归：绑过 skill 但从未显式切 mode 的 code 会话，重启后必须回到 Plan
-/// 首启默认，不能被 `load_skill_bindings` 启动期物化的 `or_default()`(=Yolo)
-/// 条目盖掉。谓词在启动后才注入，`load_skill_bindings` 当时无法判 code 会话，
-/// 故在 `set_code_session_predicate` 注入后做一次 reconcile 修正这类残留。
-#[test]
-fn code_session_with_skill_binding_defaults_to_plan_after_reboot() {
-    // 绑 skill 的 code 会话重启后回 Plan，不被 Yolo 残留盖掉。
-    let (store, _g) = isolated_store();
-    // code-1 绑定 skill（谓词未注入 → 等同 `load_skill_bindings` 启动期物化
-    // 出 mode=Yolo 的条目），落盘后从不显式切 mode（无 per-session 记录）。
-    store.bind_skill(
-        "code-1",
-        ActiveSkillBinding {
-            name: "demo".into(),
-            pending_instruction: None,
-            phases: vec![],
-            project_dir: None,
-        },
-    );
-    store.save_skill_bindings();
-    assert!(store.mode_state("code-1").active_skill.is_some());
-
-    // 重启：load_skill_bindings 恢复出 mode=Yolo + active_skill，
-    // load_session_mode_states 因无 code-1 条目不覆盖。
-    let reopened = reopen_store(&store).expect("reboot");
-    // 谓词注入触发 reconcile：无持久化记录的 code 会话 mode 修正为 Plan。
-    with_code_sessions(&reopened, &["code-1"]);
-    assert_eq!(
-        reopened.mode_state("code-1").mode,
-        SerializableMode::Plan,
-        "绑 skill 的 code 会话重启后应回 Plan 首启默认，而非 Yolo 残留"
-    );
-    // active_skill 必须保留（reconcile 只修 mode，不动其他字段）。
-    assert!(reopened.mode_state("code-1").active_skill.is_some());
 }
 
 /// reconcile 只修正无持久化记录的 code 会话；显式切过的 mode 必须原样保留。

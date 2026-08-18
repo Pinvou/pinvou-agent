@@ -4,7 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { APP_ROOT } = require("./platform-config.js");
-const { npmInstallInvocation } = require("./web-template.js");
+const { npmInstallInvocation } = require("./npm-invocation.js");
 
 const BRIDGE_PACKAGE_ROOT = path.join(APP_ROOT, "scripts", "codex-bridge-runtime");
 const PACKAGE_JSON_PATH = path.join(BRIDGE_PACKAGE_ROOT, "package.json");

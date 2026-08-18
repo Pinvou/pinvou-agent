@@ -27,7 +27,7 @@ run_optional_skip2() {
   return "$rc"
 }
 
-run_required node --test pinvou3-app/tests/render_markdown.test.js
+run_required node pinvou3-app/tests/markdown_syntax_highlight.test.mjs
 run_required node pinvou3-app/tests/windows_runtime_packaging_contract.test.js
 run_required python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 if ! python3 -c 'import pptx, docx' >/dev/null 2>&1; then

@@ -1,18 +1,18 @@
 //! Per-session runtime mode state machine + 类型定义。
 //!
-//! `SessionModeState` / `ActiveSkillBinding` / `SerializableMode` 的**类型定义**
-//! 原先在 `core/mode_state.rs`，但它们是 session 域聚合（persona/review/workflow/
+//! `SessionModeState` / `SerializableMode` 的**类型定义**
+//! 原先在 `core/mode_state.rs`，但它们是 session 域聚合（persona/review/
 //! knowledge 四特性字段），违反 `core/README.md` 的"feature 内部类型不入 core"准则。
 //! Wave 3 将类型定义迁回此文件（行为 impl 一直在此），并由 `features::sessions`
 //! 正式 re-export，消费方一律从 `crate::features::sessions::{...}` 导入，
 //! 不再经过 `core` 垫片（避免形成 `core → features` 反向依赖）。
 //!
 //! These methods drive the in-memory `mode_states` map (mode, pinvou_review,
-//! pending Plan ticket + claim-in-flight, active skill binding, persona,
+//! pending Plan ticket + claim-in-flight, persona,
 //! mounted collection). All state is deliberately in-memory only: mode /
 //! plan_phase is runtime interaction state that should reset to Yolo + None on
-//! restart, while skill bindings and model selections are persisted in their
-//! own sidecars (see [`super::sidecars`]).
+//! restart, while model selections are persisted in their own sidecars (see
+//! [`super::sidecars`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -28,35 +28,21 @@ use std::io::ErrorKind;
 
 // ── 类型定义（session 域聚合，由 sessions 正式 re-export） ──
 
-/// Per-session 绑定的 skill。在 session 上点工作流卡片"启用"时,
-/// `commands::start_skill_session` 先查找已有绑定同名 skill 的 session，
-/// 找到则切回去（恢复工作流），找不到才 create_new()。
-///
-/// 持久化：`SessionStore::save_skill_bindings()` 把所有绑定写到
-/// `~/.pinvou3/sessions/_skill_bindings.json`，启动时 `load_skill_bindings()` 恢复。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActiveSkillBinding {
-    pub name: String,
-    #[serde(skip)]
-    pub pending_instruction: Option<String>,
-    /// 前端渲染 chips 用的 phases 列表(JSON 透传)。
-    #[serde(default)]
-    /// (底座 v0.8.57 删除 PhaseDef;字段保留作前端/持久化兼容,恒为空)
-    pub phases: Vec<serde_json::Value>,
-    /// 该 session 绑定的工作流项目目录（所有工作流 session 都填充）。
-    /// 当前是 `{workspace}/ppt-<ts>-<scenario>/`(历史前缀)，含 `_state/workflow_progress.json`。
-    /// 持久化在 `_skill_bindings.json` 里跟随 binding 一起恢复，重启 app 后 harness
-    /// 能继续找到对应项目。
-    #[serde(default)]
-    pub project_dir: Option<String>,
-}
-
 /// A knowledge collection mounted into a session with an enabled flag, so the
 /// UI can toggle a mount on/off without losing its position in the ordered
 /// list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MountedCollection {
+    pub collection_id: i64,
+    pub enabled: bool,
+}
+
+/// 会话挂载的远程知识集。服务器 ID 与服务端集合 ID 共同构成稳定身份。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedRemoteCollection {
+    pub server_id: String,
     pub collection_id: i64,
     pub enabled: bool,
 }
@@ -84,10 +70,6 @@ pub struct MountedCollectionsSnapshot {
 /// careful hook 跨所有组合默认开启(由 CodeWhale shell.rs 强制 BLOCKED Dangerous 实现,
 /// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
 ///
-/// **active_skill** 是工作流 phase 可视化 MVP1 加的 per-session 绑定字段:
-/// 用户在工作流页点"启用" → start_skill_session 命令 create_new + 写这里 →
-/// 切到该 session 时 chips strip 自动显示绑定 skill 的 phases。
-///
 /// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
 /// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
 #[derive(Debug, Clone, Serialize)]
@@ -112,9 +94,6 @@ pub struct SessionModeState {
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
     pub pinvou_review_enabled: bool,
-    /// 该 session 绑定的工作流 skill。`None` = 普通对话。
-    #[serde(default)]
-    pub active_skill: Option<ActiveSkillBinding>,
     /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
     /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
     /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
@@ -124,6 +103,9 @@ pub struct SessionModeState {
     /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。
     #[serde(default)]
     pub mounted_collections: Vec<MountedCollection>,
+    /// 远程知识集挂载，与本地挂载可以同时启用并由检索工具统一合并。
+    #[serde(default)]
+    pub mounted_remote_collections: Vec<MountedRemoteCollection>,
     /// 仅驻内存的并发版本号；通过专用 snapshot 命令对外提供，不混入 mode_state 协议。
     #[serde(skip)]
     pub mounted_collections_revision: u64,
@@ -142,11 +124,11 @@ impl Default for SessionModeState {
             pending_plan_id: None,
             plan_claim_in_flight: None,
             pinvou_review_enabled: false,
-            active_skill: None,
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
         }
@@ -183,11 +165,11 @@ mod type_tests {
             pending_plan_id: Some("plan-1".to_string()),
             plan_claim_in_flight: None,
             pinvou_review_enabled: false,
-            active_skill: None,
             active_persona: None,
             pending_persona_body: None,
             mounted_collection: None,
             mounted_collections: Vec::new(),
+            mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
         };
@@ -260,7 +242,7 @@ impl SessionStore {
     /// `_session_mode_states.json`（重开恢复它自己上次的 mode）；**不再**更新
     /// 全局 lane 默认——全局默认只由草稿态显式切换经 `set_mode_default` 写入。
     /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
-    /// ——内存切换已生效，与 save_skill_bindings 同级容错。
+    /// ——内存切换已生效，落盘只做尽力持久化。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
         {
             let mut m = self.mode_states.write();
@@ -455,48 +437,16 @@ impl SessionStore {
         }
     }
 
-    pub fn bind_skill(&self, id: &str, binding: ActiveSkillBinding) {
-        let default_mode = self.resolved_default_mode(id);
-        let mut m = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut m, id, default_mode);
-        entry.active_skill = Some(binding);
-    }
-
-    pub fn active_skill(&self, id: &str) -> Option<ActiveSkillBinding> {
-        self.mode_states.read().get(id)?.active_skill.clone()
-    }
-
-    pub fn take_pending_skill_instruction(&self, id: &str) -> Option<String> {
-        let mut m = self.mode_states.write();
-        let entry = m.get_mut(id)?;
-        let skill = entry.active_skill.as_mut()?;
-        skill.pending_instruction.take()
-    }
-
     pub(crate) fn take_pending_turn_injections(&self, id: &str) -> PendingTurnInjections {
-        let (skill, persona) = {
-            let mut states = self.mode_states.write();
-            match states.get_mut(id) {
-                Some(state) => {
-                    let skill = state.active_skill.as_mut().and_then(|binding| {
-                        binding
-                            .pending_instruction
-                            .take()
-                            .map(|instruction| (binding.name.clone(), instruction))
-                    });
-                    let persona = state
-                        .pending_persona_body
-                        .take()
-                        .map(|body| (state.active_persona.clone(), body));
-                    (skill, persona)
-                }
-                None => (None, None),
-            }
-        };
+        let persona = self.mode_states.write().get_mut(id).and_then(|state| {
+            state
+                .pending_persona_body
+                .take()
+                .map(|body| (state.active_persona.clone(), body))
+        });
         PendingTurnInjections {
             store: self.clone(),
             session_id: id.to_string(),
-            skill,
             persona,
             committed: false,
         }
@@ -505,27 +455,17 @@ impl SessionStore {
     pub(crate) fn restore_pending_turn_injections(
         &self,
         id: &str,
-        skill: Option<(String, String)>,
         persona: Option<(Option<String>, String)>,
     ) {
-        if skill.is_none() && persona.is_none() {
+        let Some((persona_id, body)) = persona else {
             return;
-        }
+        };
         let mut states = self.mode_states.write();
         let Some(state) = states.get_mut(id) else {
             return;
         };
-        if let Some((skill_name, instruction)) = skill {
-            if let Some(binding) = state.active_skill.as_mut() {
-                if binding.name == skill_name && binding.pending_instruction.is_none() {
-                    binding.pending_instruction = Some(instruction);
-                }
-            }
-        }
-        if let Some((persona_id, body)) = persona {
-            if state.active_persona == persona_id && state.pending_persona_body.is_none() {
-                state.pending_persona_body = Some(body);
-            }
+        if state.active_persona == persona_id && state.pending_persona_body.is_none() {
+            state.pending_persona_body = Some(body);
         }
     }
 
@@ -551,23 +491,6 @@ impl SessionStore {
             .get_mut(id)?
             .pending_persona_body
             .take()
-    }
-
-    pub fn unbind_skill(&self, id: &str) {
-        if let Some(entry) = self.mode_states.write().get_mut(id) {
-            entry.active_skill = None;
-        }
-        super::sidecars::save_skill_bindings(&self.mode_states);
-    }
-
-    pub fn find_session_with_skill(&self, skill_name: &str) -> Option<String> {
-        self.mode_states
-            .read()
-            .iter()
-            .find(|(_, state)| {
-                state.active_skill.as_ref().map(|s| s.name.as_str()) == Some(skill_name)
-            })
-            .map(|(id, _)| id.clone())
     }
 
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
@@ -773,11 +696,142 @@ impl SessionStore {
         self.mounted_collection_ids(id).into_iter().next()
     }
 
+    pub fn mounted_remote_collections(&self, id: &str) -> Vec<MountedRemoteCollection> {
+        self.mode_states
+            .read()
+            .get(id)
+            .map(|state| state.mounted_remote_collections.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn add_mounted_remote_collection(
+        &self,
+        id: &str,
+        server_id: String,
+        collection_id: i64,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            if let Some(collection) = collections.iter_mut().find(|collection| {
+                collection.server_id == server_id && collection.collection_id == collection_id
+            }) {
+                collection.enabled = true;
+            } else {
+                collections.push(MountedRemoteCollection {
+                    server_id,
+                    collection_id,
+                    enabled: true,
+                });
+            }
+            collections
+        })
+    }
+
+    pub fn set_mounted_remote_collection_enabled(
+        &self,
+        id: &str,
+        server_id: &str,
+        collection_id: i64,
+        enabled: bool,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            if let Some(collection) = collections.iter_mut().find(|collection| {
+                collection.server_id == server_id && collection.collection_id == collection_id
+            }) {
+                collection.enabled = enabled;
+            }
+            collections
+        })
+    }
+
+    pub fn remove_mounted_remote_collection(
+        &self,
+        id: &str,
+        server_id: &str,
+        collection_id: i64,
+    ) -> Vec<MountedRemoteCollection> {
+        self.update_mounted_remote_collections(id, |mut collections| {
+            collections.retain(|collection| {
+                collection.server_id != server_id || collection.collection_id != collection_id
+            });
+            collections
+        })
+    }
+
+    /// Remove one remote collection from every in-memory session.
+    pub fn remove_mounted_remote_collection_from_all(
+        &self,
+        server_id: &str,
+        collection_id: i64,
+    ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let previous_len = state.mounted_remote_collections.len();
+            state.mounted_remote_collections.retain(|collection| {
+                collection.server_id != server_id || collection.collection_id != collection_id
+            });
+            if state.mounted_remote_collections.len() == previous_len {
+                continue;
+            }
+            changed.push((session_id.clone(), state.mounted_remote_collections.clone()));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    /// Remove every mount belonging to a disconnected remote server from all sessions.
+    pub fn remove_remote_server_mounts(
+        &self,
+        server_id: &str,
+    ) -> Vec<(String, Vec<MountedRemoteCollection>)> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            let previous_len = state.mounted_remote_collections.len();
+            state
+                .mounted_remote_collections
+                .retain(|collection| collection.server_id != server_id);
+            if state.mounted_remote_collections.len() == previous_len {
+                continue;
+            }
+            changed.push((session_id.clone(), state.mounted_remote_collections.clone()));
+        }
+        changed.sort_by(|left, right| left.0.cmp(&right.0));
+        changed
+    }
+
+    fn update_mounted_remote_collections<F>(
+        &self,
+        id: &str,
+        update: F,
+    ) -> Vec<MountedRemoteCollection>
+    where
+        F: FnOnce(Vec<MountedRemoteCollection>) -> Vec<MountedRemoteCollection>,
+    {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let mut normalized = Vec::new();
+        for collection in update(state.mounted_remote_collections.clone()) {
+            if collection.server_id.trim().is_empty()
+                || collection.collection_id <= 0
+                || normalized.iter().any(|mounted: &MountedRemoteCollection| {
+                    mounted.server_id == collection.server_id
+                        && mounted.collection_id == collection.collection_id
+                })
+            {
+                continue;
+            }
+            normalized.push(collection);
+        }
+        state.mounted_remote_collections = normalized.clone();
+        normalized
+    }
+
     // ===================== per-session mode 持久化（所有会话） =====================
 
     /// 持久化所有会话的 per-session mode 到 `_session_mode_states.json`
-    /// （仿 `_skill_bindings.json`；三分 lane 语义后 plain 会话也持久化）。
-    /// 空表时删文件，与 save_skill_bindings 同款语义。
+    /// 三分 lane 语义后 plain 会话也持久化；空表时删除 sidecar。
     ///
     /// 原子写 + 失败可见：直接 `std::fs::write` 在进程中断时可能留下截断文件，
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有

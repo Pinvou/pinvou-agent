@@ -197,14 +197,6 @@ pub async fn set_codex_acp_session_provider(
         .map_err(|error| format!("设置会话 Provider 失败: {error:#}"))
 }
 
-/// 命令层参数校验（供单测覆盖 wire/action 解析）。
-#[allow(dead_code)]
-fn _validate(_ctx: &()) -> Result<(), String> {
-    let _ = parse_wire_api("openai")?;
-    let _ = parse_key_action("keep")?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,10 +213,5 @@ mod tests {
         assert!(parse_key_action("keep").is_ok());
         assert!(parse_key_action("delete").is_ok());
         assert!(parse_key_action("bogus").is_err());
-    }
-
-    #[test]
-    fn validate_helper_compiles() {
-        assert!(_validate(&()).is_ok());
     }
 }

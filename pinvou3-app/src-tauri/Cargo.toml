@@ -33,7 +33,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["local-embed"]
-local-embed = ["dep:fastembed"]
+local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
 benchmark-hooks = ["dep:agent-backend-api"]
 
@@ -41,10 +41,12 @@ benchmark-hooks = ["dep:agent-backend-api"]
 tauri-build = { version = "2.6.1", features = [] }
 
 [dependencies]
+pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+semver = "1"
 toml = "1"
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
@@ -114,7 +116,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 
 # File watcher：监听 ~/.pinvou3/sessions/*/workspace/ 新文件产出，
 # 自动入 session.artifacts (覆盖 write_file 之外的工具如 exec_shell pandoc 产出的 docx)
-notify = "6"
+# 8.x：把 mio 收敛到 1.x、连带消除 windows-sys 0.48.0，并修 Windows
+# FILE_NOTIFY_INFORMATION 未对齐 UB。
+# 注意：这不解决 windows-targets 0.48.5（+ 7 个 win 二进制 crate）——那条链由
+# device_query 2.1.0 → windows 0.48.0 持有，与 notify 无关，需单独处理 device_query。
+# 项目仅用稳定高层 API（recommended_watcher / Watcher::watch / EventKind / RecursiveMode），
+# 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
+notify = "8"
 msg_parser = "0.3.0"
 
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
@@ -144,6 +152,7 @@ futures-util = "0.3"
 rand = "0.9"
 tempfile = "3"
 base64 = "0.22"
+age = { version = "=0.12.1", default-features = false }
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
@@ -182,13 +191,11 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
-fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.38.2"
 windows = "0.61.3"
 
 [target.'cfg(not(windows))'.dependencies]
-fastembed = { version = "4", optional = true }
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。

@@ -122,6 +122,42 @@ pub fn native_recognition_source() -> &'static str {
     "system_speech"
 }
 
-pub async fn reset_microphone_permission(_window: tauri::WebviewWindow) -> Result<bool, String> {
-    Ok(false)
+pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<bool, String> {
+    use std::time::Duration;
+
+    use tauri::Manager;
+
+    // WKWebView 的麦克风授权走系统 TCC：清掉本应用 bundle 的麦克风记录后，
+    // 下一次 getUserMedia 会重新弹系统授权——等价于 Windows 侧把 WebView2 权限
+    // 状态重置为 DEFAULT。返回 true 后前端把失败文案换成"请重试"提示。
+    //
+    // 仅对打包 .app 生效：tccutil 经 Launch Services 按 bundle id 定位记录，
+    // `tauri dev` 的裸二进制不在 bundle 内，TCC 记录不挂该 identifier 名下——
+    // 若同机装有同 id 的 release 版，reset 会误清 release 版的记录而 dev 的
+    // 拒绝记录原样保留；无已注册 bundle 时则以 exit 64 走 Err 分支。
+    let identifier = window.app_handle().config().identifier.clone();
+    if identifier.trim().is_empty() {
+        return Err("无法确定应用标识符，重置麦克风权限失败".to_string());
+    }
+    // tccutil 是瞬时命令；包 3 秒超时防 tccd 异常挂起时前端权限状态卡死
+    // （与 windows.rs 的超时口径一致）。
+    let output = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::process::Command::new("/usr/bin/tccutil")
+            .args(["reset", "Microphone", &identifier])
+            .output(),
+    )
+    .await
+    .map_err(|_| "重置麦克风权限超时".to_string())?
+    .map_err(|e| format!("启动 tccutil 失败：{e}"))?;
+    if output.status.success() {
+        Ok(true)
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            "重置麦克风权限失败".to_string()
+        } else {
+            format!("重置麦克风权限失败：{detail}")
+        })
+    }
 }

@@ -4,7 +4,6 @@ pub(crate) mod engine_pool;
 mod engine_support;
 pub(crate) mod eval;
 pub(crate) mod expert_roster;
-pub(crate) mod harness;
 pub(crate) mod image_capability;
 pub(crate) mod pending_user_input;
 pub mod platform;

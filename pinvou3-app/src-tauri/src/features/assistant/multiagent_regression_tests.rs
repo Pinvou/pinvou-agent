@@ -479,14 +479,8 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
                 saw_agent_tool_success = true;
             }
             Event::AgentSpawned { .. } => saw_agent_spawned = true,
-            Event::AgentComplete {
-                role,
-                failed,
-                result,
-                ..
-            } => {
+            Event::AgentComplete { failed, result, .. } => {
                 assert!(!failed, "probe child failed: {result}");
-                assert_eq!(role.as_deref(), Some(profile_id.as_str()));
                 assert!(result.contains(CHILD_RESULT_SENTINEL), "{result}");
                 saw_agent_complete = true;
             }

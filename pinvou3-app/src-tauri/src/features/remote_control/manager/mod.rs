@@ -3166,15 +3166,9 @@ mod tests {
             "read_artifact_image_b64",
             "read_artifact_thumbnail",
             "render_artifact_visual",
-            "list_deliverables",
-            "get_role_prompt",
-            "get_role_outputs",
-            "get_role_logs",
-            "get_gate_report",
             "update_settings",
             "create_session",
             "load_session",
-            "start_skill_session",
             "web_access_bridge_ready",
             "web_access_rpc_begin",
             "web_access_rpc_respond",
@@ -3191,11 +3185,6 @@ mod tests {
             "web_access_read_artifact_image_b64",
             "web_access_read_artifact_thumbnail",
             "web_access_render_artifact_visual",
-            "web_access_list_deliverables",
-            "web_access_get_role_prompt",
-            "web_access_get_role_outputs",
-            "web_access_get_role_logs",
-            "web_access_get_gate_report",
             "web_access_update_settings",
             "web_access_create_session",
             "web_access_create_session_and_chat",
@@ -3206,7 +3195,6 @@ mod tests {
             "web_access_discard_attachment",
             "web_access_read_conversation_attachment_chunk",
             "web_access_load_session_chunk",
-            "web_access_start_skill_session",
         ] {
             assert!(
                 policy.commands.contains(command),
@@ -3458,7 +3446,7 @@ mod tests {
     #[test]
     fn rpc_command_and_error_envelopes_are_bounded() {
         assert!(validate_rpc_command("web_access_chat").is_ok());
-        assert!(validate_rpc_command("workflow:resume-2").is_ok());
+        assert!(validate_rpc_command("session:resume-2").is_ok());
         assert!(validate_rpc_command("").is_err());
         assert!(validate_rpc_command(&"x".repeat(MAX_RPC_COMMAND_BYTES + 1)).is_err());
         assert!(validate_rpc_command("chat/../../native").is_err());
@@ -3478,9 +3466,7 @@ mod tests {
             "edit_last_turn",
             "get_session_pinvou_scene_events",
             "get_session_timeline",
-            "kick_workflow",
             "save_session_pinvou_scene_events",
-            "stop_workflow",
             "web_access_chat",
         ] {
             assert_eq!(
@@ -3489,19 +3475,14 @@ mod tests {
                 "{command} must require the browser-selected Session"
             );
         }
-        assert_eq!(
-            web_session_scope("start_workflow"),
-            Some(WebSessionScope::Optional("sessionId"))
-        );
     }
 
     #[test]
-    fn workflow_sessions_reject_every_existing_web_session_command() {
+    fn session_scoped_commands_use_the_central_validator() {
         let scoped_commands = [
             ("get_session_timeline", "sessionId"),
             ("web_access_load_session_chunk", "id"),
             ("web_access_artifact_info", "sessionId"),
-            ("web_access_list_deliverables", "sessionId"),
             ("web_access_read_artifact_chunk", "sessionId"),
             ("web_access_read_artifact_image_b64", "sessionId"),
             ("web_access_read_artifact_text", "sessionId"),
@@ -3987,8 +3968,16 @@ mod tests {
     }
 
     #[test]
-    fn event_session_id_reads_each_event_family_field_name() {
-        // chat:* / artifact:disk 用 session_id，session:* 用 id，
+    fn code_session_event_filter_is_inert_without_predicate() {
+        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
+        let payload = json!({ "session_id": "code-sess-1" });
+        assert!(!should_filter_code_session_event(None, &payload));
+    }
+
+    #[test]
+    fn code_session_events_are_filtered_for_each_field_name_variant() {
+        // 字段名契约(原 event_session_id_reads_each_event_family_field_name):
+        // chat:* / artifact:disk 用 session_id,session:* 用 id,
         // scheduled_task:run_updated 用 sessionId。
         assert_eq!(
             event_session_id(&json!({ "session_id": "s-chat" })),
@@ -4002,26 +3991,7 @@ mod tests {
             event_session_id(&json!({ "sessionId": "s-task" })),
             Some("s-task")
         );
-    }
 
-    #[test]
-    fn event_session_id_ignores_missing_or_non_string_fields() {
-        assert_eq!(
-            event_session_id(&json!({ "kind": "session:list_changed" })),
-            None
-        );
-        assert_eq!(event_session_id(&json!({ "session_id": 42 })), None);
-    }
-
-    #[test]
-    fn code_session_event_filter_is_inert_without_predicate() {
-        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
-        let payload = json!({ "session_id": "code-sess-1" });
-        assert!(!should_filter_code_session_event(None, &payload));
-    }
-
-    #[test]
-    fn code_session_events_are_filtered_for_each_field_name_variant() {
         let predicate: CodeSessionPredicate =
             Arc::new(|session_id: &str| session_id.starts_with("code-"));
         for payload in [
@@ -4034,6 +4004,25 @@ mod tests {
                 "code session event must be filtered: {payload}"
             );
         }
+
+        // 恒真 predicate 下过滤器等价于 event_session_id 的存在性判定
+        // (原 event_session_id_ignores_missing_or_non_string_fields 与
+        // code_session_filter_only_fires_on_a_session_id_field):不带会话 id
+        // 或 id 非字符串的全局事件不得被误伤。
+        let always: CodeSessionPredicate = Arc::new(|_: &str| true);
+        assert_eq!(
+            event_session_id(&json!({ "kind": "session:list_changed" })),
+            None
+        );
+        assert_eq!(event_session_id(&json!({ "session_id": 42 })), None);
+        assert!(!should_filter_code_session_event(
+            Some(&always),
+            &json!({ "kind": "session:list_changed" })
+        ));
+        assert!(!should_filter_code_session_event(
+            Some(&always),
+            &json!({ "id": 42 })
+        ));
     }
 
     #[test]
@@ -4051,20 +4040,5 @@ mod tests {
                 "plain session event must not be filtered: {payload}"
             );
         }
-    }
-
-    #[test]
-    fn code_session_filter_only_fires_on_a_session_id_field() {
-        // 过滤器按 payload 中的会话 id 触发；即使 predicate 恒真，不带会话 id
-        // （或 id 非字符串）的事件也不过滤，避免误伤无会话维度的全局事件。
-        let predicate: CodeSessionPredicate = Arc::new(|_: &str| true);
-        assert!(!should_filter_code_session_event(
-            Some(&predicate),
-            &json!({ "kind": "session:list_changed" })
-        ));
-        assert!(!should_filter_code_session_event(
-            Some(&predicate),
-            &json!({ "id": 42 })
-        ));
     }
 }

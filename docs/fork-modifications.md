@@ -4,33 +4,25 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 公开基线）
+## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
-| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并 |
-| 公开状态 | `pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r7` 均指向公开维护分支 head；旧标签保留为不可变历史 |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
+| 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
+| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
-| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个长期主题；公开 9 个线性提交 |
-| drift | r7 公开基线 `46 files changed, +1852/-269` |
-| 守护 | r7 保留 CodeWhale `forkguard_*` 行为测试 + Tauri/Web 展示回归；完整 guard 结果见第 4 节 |
+| 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
+| drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
+| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
 
 ### r7 逐轮评测工具安全扩展（PR 候选）
 
 > CodeWhale PR #15 候选提交 `1eca6103a` + 安全修复 `169c24cc5`：为嵌入宿主增加进程内逐轮工具安全策略、可信外部路径完全覆盖、最终执行前精确白名单门禁，并封闭排队控制操作、Hook 与日志旁路。快速 guard 仅额外接受这条登记的 PR 候选链；公开标签校验仍固定为 `pinvou-v0.9.5-r7`。
 
-- 部分 OpenAI 兼容后端会返回结构上合法、但把 schema 声明的嵌套 object/array 再编码成 JSON 字符串的工具参数；这会让 `request_user_input` 等强类型工具在进入业务校验前失败。
-- T2 只在 schema 明确声明 object/array、字符串为不超过 64 KiB 的严格 JSON 且解码类型一致时修复该容器；普通文本和数字/布尔字符串不做宽松转换，修复后仍执行原工具校验。
-- 重复工具调用触发 `stuck_guard`，或连续工具错误触发 degradation hint 时，内部策略提示折叠进对应 `tool_result`，不再为这两条路径追加独立 runtime `user` 消息，避免严格 OpenAI 兼容后端因角色序列拒绝下一轮。
-- Tauri/Web bridge 只在工具卡展示投影中剥离 `stuck_guard` / `tool_error_degradation` 两种已知内部 suffix；持久化消息和送模上下文保持原样。
-- 本次不覆盖真实用户 `pending_steers`，也不覆盖循环入口 steer、LSP diagnostics 或 subagent handoff 等其他 runtime 注入路径；这些路径涉及用户权限和上下文语义，不在本 PR 中引入全局角色 normalizer 或虚构 assistant 消息，后续单独设计处理。
-- 底座修复已通过 `Pinvou/CodeWhale#12` squash 合入，公开 commit 为 `3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`，并由固定标签 `pinvou-v0.9.5-r6` 发布。
-- 通用 schema 参数修复已通过 `Hmbown/CodeWhale#5348` 合入官方上游；最新上游已移除 `stuck_guard` 和本 fork 的连续错误 degradation 路径，因此角色续轮兼容只保留在当前 v0.9.5 fork 生命周期内。
-
-### r5 会话恢复修复（已验证并发布）
+### 本次会话修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
 - 底座修复已通过 `Pinvou/CodeWhale#11` 合入，公开 commit 为 `2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`。
@@ -39,15 +31,28 @@
 - 本次新增 2 条 CodeWhale `forkguard_*`、2 条父仓 `forkguard_*` 和 Tauri/Web 前端行为回归，分别锁定运行时无副作用读取、显式恢复可观测与幂等、二次 Store 打开安全、启动恢复落盘以及本地完成后连续发送。
 - 本节改动已计入上方公开维护分支 head、drift 和固定标签 `pinvou-v0.9.5-r5`；CodeWhale required checks 与父仓自动测试均已通过。
 
+### PR #13 退役发布
+
+- **合并 commit**：`a36e6cd533024cfe5724bae21875aea42b2ed87a`；已通过 `Pinvou/CodeWhale#13` squash 合并并发布为 `pinvou-v0.9.5-r7`。
+- 删除专用角色派发字段、结构化提交入口、文件完成闸和对应 TUI 投影，不再让产品协议进入通用 SubAgent 生命周期。
+- 保留宿主取消所有运行中子智能体的窄操作，以及通用完成事件的 `failed` 终态；桌面停止/回收仍不会遗留后台子任务。
+- 新增 `forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，锁定批量取消和重复取消行为。
+- 修复退役后两处通用兼容回归：MCP registry 提示恢复 canonical `Bash(action="run")` / `Web(action="fetch")`，Custom SubAgent allowlist 的旧 action alias 继续解析到已注册的 canonical family。
+
 ### 软上限评估
 
-r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files changed, +1852/-269`。当前保留量集中在宿主嵌入、工具安全、Skill 来源与 Automation 生命周期；逐轮评测权限作为 T2 的单提交候选，不恢复已删除的产品专用协议。
+净增量高于 1500 行软线，主要保留量来自 Automation 持久化、会话恢复、工具兼容和嵌入上下文密封：
 
-## 1. 五个长期 fork 主题
+- T4 `+373/-24`：稳定 conversation/thread 关联、Pinvou 历史 schema 兼容、misfire/no-overlap 和终态级联清理必须与 Task/Automation 持久化原子完成。
+- T3 `+253/-71`：嵌入宿主的静态指令、ambient context 和 Skill 单根来源必须在模型上下文生成前密封。
+
+本轮不为压数字复制底座状态机到 app。后续减量顺序：T1 通用 embedding route API、T2 通用命令安全、T4 通用 Automation 生命周期；T3 的 Pinvou 产品语义继续留 fork。
+
+## 1. 四个长期 fork 主题
 
 ### T1：宿主嵌入与路由边界
 
-- **公开 commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`Pinvou/CodeWhale#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）。
 - **公开规模**：10 文件，`+394/-31`；仓库级 CI 恢复不计入 T1 主题规模。
 - **核心文件**：`crates/tui/src/lib.rs`、`core/engine.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
@@ -57,27 +62,27 @@ r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files ch
   - 提供 opaque resolved route、显式 route limits 和 embedding host route override。
   - 保留宿主需要的 runtime thread / Automation 接口和 `EngineConfig` 注入边界。
   - 将无副作用的运行时 session snapshot 与已知进程重启后的显式 tool history recovery 分开，避免嵌入宿主把仍在执行的工具调用误判为崩溃。
-- **边界**：不实现 Pinvou 产品工具策略，不包含三省六部完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`，以及父仓启动恢复、resolved-route 和 compaction 合约测试。
+  - 提供通用的宿主批量取消操作和失败终态标记，供会话停止与 Engine 回收安全收敛后台子智能体。
+- **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`，以及父仓启动恢复、resolved-route、取消级联和 compaction 合约测试。
 
 ### T2：工具兼容与命令执行安全
 
-- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）。
-- **规模**：初始主题 15 文件，`+181/-98`；r6 兼容修复另改 5 文件，`+463/-30`。
-- **核心文件**：`core/engine.rs`、`core/engine/{dispatch,turn_loop,tool_setup}.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
+- **commits**：`595adce47e2d1bcf895d7bfd6426c074eb969324`、`3bbf8421ebdb16bff71f83dac4d42c8fb65f0f02`（`Pinvou/CodeWhale#12`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`Pinvou/CodeWhale#13`）。
+- **核心文件**：`core/engine.rs`、`core/engine/tool_setup.rs`、`core/ops.rs`、`tools/file.rs`、`command_safety.rs`、`tools/shell.rs`、`docs/TOOL_SURFACE.md`。
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
   - `SetDisallowedTools` 支持工具商店、知识库和会话策略在不重建 Engine 的情况下动态收窄工具面。
   - 复用 v0.9.5 原生 `allowed_tools` 作为硬白名单入口；Pinvou 名单由 app 构造，底座不维护产品 blocklist。
   - `File` 写入保持 64 KiB 单次内容上限，并在落盘前拒绝超限输入。
   - 多行 Shell 按 segment 检查；破坏性命令在自动批准模式下仍被阻断。
-  - schema 明确要求 object/array 时，窄修复模型输出的严格 JSON 字符串容器；不做 primitive coercion，业务工具仍执行自身校验。
-  - `stuck_guard` 与连续工具错误 degradation 提示折叠进对应 `tool_result`，保持这两条续轮路径的 provider 角色序列合法；应用 bridge 只从工具卡展示值剥离这两种已知内部 suffix。
-  - 当前工具面不恢复已退役的独立追加文件工具，也不放宽 `request_user_input` 的问题数量、字段和选项校验。
-  - 本地未发布的逐轮安全策略在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次清空 trusted roots 时不再追加持久信任目录或剪贴板目录，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，排队操作不能借轮次结束扩权；Hook 默认关闭，受限日志与审计固定脱敏。`None` 保持现有 GUI 行为。
-- **上游计划**：逐轮权限、可信根覆盖和最终 dispatch 门禁是通用嵌入能力，将在本 PR 安全回归稳定后整理为独立上游贡献；Pinvou profile 名称与 GAIA 工具名单继续留在 app。上游接收后删除 fork 对应实现和本地指纹，不维护两套长期语义。
-- **边界**：不包含 Skill 来源、Automation 或三省六部角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、`forkguard_schema_bound_json_container_repair_accepts_nested_payload`、`forkguard_schema_bound_json_container_repair_rejects_wrong_or_unbounded_values`、`forkguard_stuck_guard_warning_is_embedded_in_tool_result_content`、`forkguard_stuck_guard_tool_warning_preserves_provider_role_sequence`、`forkguard_tool_error_degradation_preserves_provider_role_sequence`、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_queued_control_op_keeps_restricted_turn_authority`，以及受限 Hook/日志脱敏和 Tauri/Web 工具卡展示回归。
+  - schema 约束的 JSON 容器兼容、工具续轮 provider 角色顺序和已知内部 runtime suffix 展示清理继续沿用 r6 行为。
+  - registry-first 提示只引用 canonical action；Custom SubAgent 的显式旧 action allowlist 通过 alias 映射解析到 canonical family，不扩大实际工具权限。
+  - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
+  - PR #15 候选在 catalog 与最终 dispatch 共用 exact allowlist；显式受限轮次可清空 trusted roots，并禁止 MCP 初始化、控制面 shell、动态工具和子 Agent。控制面限制保持到下一条消息出队，Hook 默认关闭，受限日志与审计固定脱敏；`None` 保持现有 GUI 行为。
+- **上游计划**：逐轮权限、可信根覆盖和最终 dispatch 门禁是通用嵌入能力，将在本 PR 安全回归稳定后整理为独立上游贡献；Pinvou profile 名称与 GAIA 工具名单继续留在 app。上游接收后删除 fork 对应实现和本地指纹。
+- **边界**：不包含 Skill 来源、Automation 或产品角色协议。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt、Custom allowlist alias、`forkguard_session_trusted_roots_override_persisted_workspace_trust`、`forkguard_dispatch_allowlist_rejects_forged_calls_before_all_dispatch_backends`、`forkguard_queued_control_op_keeps_restricted_turn_authority` 以及受限 Hook/日志脱敏回归。
 
 ### T3：嵌入上下文与技能来源
 
@@ -106,6 +111,7 @@ r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files ch
 - **边界**：app 负责展示、通知和业务工作区；底座负责调度与耐久运行事实。
 - **守护**：`forkguard_scheduler_skips_offline_misfires_without_backfill`、`forkguard_scheduler_does_not_overlap_active_automation_run`、`forkguard_conversation_key_and_created_thread_survive_worker_boundary`、`forkguard_accepts_pinvou_v4_tasks_but_rejects_unknown_newer_schema`。
 
+
 ## 2. 父仓能力与 fork 的分界
 
 以下能力保留在 `pinvou3-app`，不进入 CodeWhale fork：
@@ -114,7 +120,7 @@ r7 已移除三省六部专用编排协议，公开 drift 收敛为 `46 files ch
 - `disallowed_tools` 的会话/连接器动态取值与工具商店开关。
 - bundle instructions、按会话 Skill 组合目录、用户 AGENTS 注入。
 - UI、Tauri IPC、工作区与产物卡、Shell 输出观察和前端终态对账。
-- 定时任务页面、通知、三省六部页面和业务日志展示。
+- 定时任务页面、通知和业务日志展示。
 
 CodeWhale fork 只提供这些产品能力不可缺少的底座生命周期入口和原子不变量。
 
@@ -129,39 +135,31 @@ CodeWhale fork 只提供这些产品能力不可缺少的底座生命周期入�
 
 ### v0.9.5 新增适配
 
-- `EngineConfig` 新增 `subagent_state_root`；父仓按 `SessionRoots` 显式设置：执行根保持任务目录，delegated-agent 状态根使用会话 ledger。
-- Pinvou 全局专家池通过原生 `fleet.profiles` 配置提供给 Engine；不再借 `subagent_state_root` 或每会话角色文件承载专家定义，个人/项目 profile 的原生覆盖优先级保持不变。
+- `EngineConfig` 新增 `subagent_state_root`，父仓显式透传默认值。
 - 已删除的旧 `hidden_tools` 字段不再恢复；Pinvou 原有动态隐藏行为本就通过 `disallowed_tools` 完成。
 - v0.9.5 WorldState 40 KiB fragment cap 只对 Permissions 做 100 KiB 窄例外，其他 fragment 不变。
 - v0.9.5 workspace crate 拆分引起父仓 `Cargo.lock` 重算，未增加 Pinvou 直接依赖。
 
 ## 4. 验证
 
-r6 当前已通过：
+CodeWhale 当前已通过：
 
 ```text
 cargo fmt --all -- --check
+cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-29 passed / 0 failed
-node pinvou3-app/tests/scheduled_tasks_unit.test.js
-PASS scheduled tasks unit
-npm run lint:ui
-npm run build:ui
-npm test
-122 passed / 0 failed；pet asset validation passed
-./scripts/fork-guard.sh
-CodeWhale 29 passed；pinvou3-app 20 passed
-python3 scripts/architecture-guard.py
-architecture guard passed
+23 passed / 0 failed
 ```
 
-以下为 r5 公开基线发布时通过的完整父仓 Rust 构建矩阵；r6 本轮重复了上方行为门禁、Node/UI 和架构检查，未重复以下全部 Rust 构建矩阵：
+父仓当前已通过：
 
 ```text
 cargo fmt --all -- --check
 cargo check --locked
 cargo test --locked --lib -- --test-threads=1
-1077 passed / 0 failed / 12 ignored
+1220 passed / 0 failed / 12 ignored
+./scripts/fork-guard.sh
+CodeWhale 23 passed；pinvou3-app 19 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui
@@ -170,7 +168,7 @@ npm run build:web
 cargo build --locked --no-default-features --features local-embed --bin pinvou3-tauri
 ```
 
-完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；公开标签一致性由 `scripts/verify-public-submodule.sh` 校验，不得以修改脚本方式绕过。
+完整结果见 `docs/codewhale-upgrade-0.9.0-to-0.9.5.md`。12 个 ignored 测试依赖真实模型、外部工具或专用 fixture；`scripts/verify-public-submodule.sh` 已锁定不可变标签 `pinvou-v0.9.5-r7` 与父仓 gitlink 一致。
 
 ## 5. 后续修改规则
 

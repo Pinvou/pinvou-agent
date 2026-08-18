@@ -218,11 +218,75 @@
   }
   // 兼容旧入口：摘下当前对话的全部知识集挂载。
   async function unmountCollection() {
-    if (!state.activeSessionId) { applyMountedCollections([]); notify(); return; }
-    return updateMountedCollections("session_unmount_collection", null);
+    if (!state.activeSessionId) {
+      applyMountedCollections([]);
+      applyMountedRemoteCollections([]);
+      notify();
+      return;
+    }
+    // 所有更新在本同步片段内入队，确保它们捕获同一个点击时 session；随后即使用户
+    // 切换会话，远程逐项移除和本地清空也不会误作用到新会话。
+    var pending = normalizeMountedRemoteCollections(state.mountedRemoteCollections).map(function (entry) {
+      return updateMountedRemoteCollections("session_remove_mounted_remote_collection", {
+        serverId: entry.serverId,
+        collectionId: entry.collectionId,
+      });
+    });
+    pending.push(updateMountedCollections("session_unmount_collection", null));
+    return Promise.all(pending);
+  }
+  function normalizeMountedRemoteCollections(value) {
+    if (!Array.isArray(value)) return [];
+    var seen = Object.create(null);
+    return value.map(function (entry) {
+      if (!entry || !entry.serverId || entry.collectionId == null) return null;
+      var key = String(entry.serverId) + ":" + String(entry.collectionId);
+      if (seen[key]) return null;
+      seen[key] = true;
+      return { serverId: entry.serverId, collectionId: entry.collectionId, enabled: entry.enabled !== false };
+    }).filter(Boolean);
+  }
+  function applyMountedRemoteCollections(value) {
+    state.mountedRemoteCollections = normalizeMountedRemoteCollections(value);
+    return state.mountedRemoteCollections;
+  }
+  function updateMountedRemoteCollections(command, args) {
+    var requestedTarget = mountedCollectionTargetAtEnqueue();
+    mountedCollectionUpdate = mountedCollectionUpdate.catch(function () {}).then(async function () {
+      var sessionId = await requestedTarget.promise;
+      if (!sessionId) return null;
+      try {
+        var saved = await invoke(command, Object.assign({ sessionId: sessionId }, args || {}));
+        var normalized = normalizeMountedRemoteCollections(saved);
+        if (state.activeSessionId === sessionId) {
+          applyMountedRemoteCollections(normalized);
+          notify();
+        }
+        return normalized;
+      } catch (e) {
+        addSystemItem(bt("mountCollectionFailed") + e);
+        return null;
+      }
+    });
+    if (requestedTarget.draft) {
+      mountedCollectionUpdate = mountedCollectionUpdate.finally(function () {
+        requestedTarget.pending -= 1;
+        if (requestedTarget.pending === 0 && mountedCollectionDraftTarget === requestedTarget) mountedCollectionDraftTarget = null;
+      });
+    }
+    return mountedCollectionUpdate;
+  }
+  async function mountRemoteCollection(serverId, collectionId) {
+    return updateMountedRemoteCollections("session_add_mounted_remote_collection", { serverId: serverId, collectionId: collectionId });
+  }
+  async function setRemoteCollectionEnabled(serverId, collectionId, enabled) {
+    return updateMountedRemoteCollections("session_set_mounted_remote_collection_enabled", { serverId: serverId, collectionId: collectionId, enabled: !!enabled });
+  }
+  async function removeRemoteCollection(serverId, collectionId) {
+    return updateMountedRemoteCollections("session_remove_mounted_remote_collection", { serverId: serverId, collectionId: collectionId });
   }
   // 切换/重载 session 后从后端还原挂载状态(backend 是真相;仅驻内存,重启后为 null)。
-  async function syncMountedCollection() {
+  async function syncLocalMountedCollection() {
     if (!state.activeSessionId) { applyMountedCollections([]); return; }
     var sessionId = state.activeSessionId;
     try {
@@ -243,6 +307,17 @@
       } catch (_) { if (state.activeSessionId === sessionId) applyMountedCollections([]); }
     }
   }
+  async function syncMountedCollection() {
+    await syncLocalMountedCollection();
+    if (!state.activeSessionId) { applyMountedRemoteCollections([]); return; }
+    var sessionId = state.activeSessionId;
+    try {
+      var mounted = await invoke("session_mounted_remote_collections", { sessionId: sessionId });
+      if (state.activeSessionId === sessionId) applyMountedRemoteCollections(mounted);
+    } catch (_) {
+      if (state.activeSessionId === sessionId) applyMountedRemoteCollections([]);
+    }
+  }
 
   function getPersonas() { return personaPoolCache; }
     return {
@@ -259,6 +334,9 @@
       setCollectionEnabled: setCollectionEnabled,
       removeCollection: removeCollection,
       unmountCollection: unmountCollection,
+      mountRemoteCollection: mountRemoteCollection,
+      setRemoteCollectionEnabled: setRemoteCollectionEnabled,
+      removeRemoteCollection: removeRemoteCollection,
       syncMountedCollection: syncMountedCollection
     };
   };
