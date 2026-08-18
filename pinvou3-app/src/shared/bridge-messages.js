@@ -44,16 +44,21 @@
       if (!helper || !userError) return false;
       var notice = helper.noticeText(userError);
       var chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
+      var nextDetail = userError && userError.technicalDetail;
+      // 去重按错误身份(kind+技术详情),不按最终措辞:同一回合先 transient
+      // (recoverable 文案)后 done(terminal 文案)时措辞必然不同,按文本全等
+      // 去重会漏,导致同一错误双气泡且措辞互相矛盾。
       var existing = chatItems.find(function (item) {
-        if (!item || !item.turnErrorNotice || item.text !== notice) return false;
-        var existingDetail = item.userError && item.userError.technicalDetail;
-        var nextDetail = userError && userError.technicalDetail;
+        if (!item || !item.turnErrorNotice || !item.userError) return false;
+        if (item.userError.kind !== userError.kind) return false;
+        var existingDetail = item.userError.technicalDetail;
         if (existingDetail || nextDetail) return existingDetail === nextDetail;
         return true;
       });
       if (existing) {
-        if (legacyConversationOnly) existing.legacyConversationOnly = true;
+        existing.text = notice;
         existing.userError = userError;
+        if (legacyConversationOnly) existing.legacyConversationOnly = true;
       } else {
         addSystemItem(notice, {
           turnErrorNotice: true,
