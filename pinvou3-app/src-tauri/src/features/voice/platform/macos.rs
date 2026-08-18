@@ -42,6 +42,10 @@ pub fn asr_tool_path() -> PathBuf {
     explicit_asr_tool_path().unwrap_or_else(voice_asr::engine_path)
 }
 
+pub fn default_asr_model_name() -> &'static str {
+    "sensevoice-q8"
+}
+
 pub fn asr_model_spec() -> AsrModelSpec {
     AsrModelSpec {
         id: "sensevoice-q4-k",
@@ -115,6 +119,19 @@ pub fn recognize_native(
     Some(voice_asr_speech::transcribe_with_speech(
         wav_path, locale_tag,
     ))
+}
+
+pub fn recognize_audio_bytes(
+    _audio_bytes: &[u8],
+    _locale_tag: &str,
+    _context: &str,
+    _timeout: std::time::Duration,
+) -> Option<Result<String, String>> {
+    None
+}
+
+pub fn prewarm_audio_backend(_timeout: std::time::Duration) -> Option<Result<bool, String>> {
+    None
 }
 
 /// 原生识别后端的来源标签（用于前端展示/日志区分）。

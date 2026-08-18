@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+asr_root="${PINVOU3_QWEN3_ASR_ROOT:-${HOME}/.pinvou3/asr/qwen3-asr-openvino}"
+exec "${asr_root}/runtime/bin/python" "${asr_root}/qwen3-asr-openvino.py" "$@"

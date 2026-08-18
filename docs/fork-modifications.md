@@ -4,19 +4,26 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-08-17 · v0.9.5 r7 四主题公开基线）
+## 0. 当前状态（2026-08-18 · v0.9.5 r7 四主题公开基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
 | 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，head `a36e6cd53` |
 | 已合并修复 | `Pinvou/CodeWhale#9`、`#11`、`#12`、`#13` 已合并；公开维护分支固定于 `pinvou-v0.9.5-r7` |
-| 发布状态 | `pinvou3-clean`、`pinvou-v0.9.5-r7` 与父仓 gitlink 均指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a` |
+| 发布状态 | `pinvou3-clean` 与 `pinvou-v0.9.5-r7` 仍指向 `a36e6cd533024cfe5724bae21875aea42b2ed87a`；PinvouOS feature 父仓 gitlink 指向 `3f64e41e971167aede9390dbecc0a307224562ba` |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
 | drift | r7 公开基线 `46 files changed, +1852/-269`；净增 1583 行 |
-| 守护 | 23 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
+| 守护 | r7 公开基线 23 条 + PinvouOS feature 3 条 CodeWhale `forkguard_*` 行为测试、2 条通用工具兼容回归 + 父仓指纹/行为测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配 |
+
+### PinvouOS feature checkpoint（已提交到 feature 分支）
+
+- 为 PinvouOS Front 增加通用、默认关闭的 `DirectToolRoundPolicy` Engine 配置。底座只按“一个 assistant 工具批次算一轮”计数，在宿主设定的轮次耗尽后把工具面收窄到指定 handoff 工具，并在 handoff 执行后关闭本轮工具面。
+- Pinvou app 将该策略配置为最多 3 轮 direct 工具批次、溢出时仅保留 `agent`；普通 CodeWhale 与其他 Pinvou Engine 保持 `None`，行为不变。产品如何判断完成、何时编排仍由 app instructions 定义。
+- `forkguard_direct_tool_round_budget_narrows_to_one_handoff_then_closes` 锁定模型可见目录；另外两条真实 Engine 回归锁定执行门：旧/幻觉 direct 工具不能绕过收窄，handoff 后任何工具都不能继续执行。
+- CodeWhale feature 分支为 `feat/pinvouos-front-round-policy`，commit `3f64e41e971167aede9390dbecc0a307224562ba`。它不移动 r7 公开 head 与不可变标签；父仓 feature 通过 gitlink 精确固定该提交。
 
 ### 本次会话修复（已验证并发布）
 
@@ -69,6 +76,7 @@
 - **内容**：
   - `EngineConfig.extra_tools` 让宿主工具在 Plan、Agent、Yolo 等 turn registry 中一致注册。
   - `SetDisallowedTools` 支持工具商店、知识库和会话策略在不重建 Engine 的情况下动态收窄工具面。
+  - 可选 `DirectToolRoundPolicy` 在单个 turn 内按 assistant 工具批次计数；达到宿主上限后只保留显式 handoff 工具，handoff 完成后关闭该 turn 工具面。默认 `None`，不改变上游/通用 Engine 行为。
   - 复用 v0.9.5 原生 `allowed_tools` 作为硬白名单入口；Pinvou 名单由 app 构造，底座不维护产品 blocklist。
   - `File` 写入保持 64 KiB 单次内容上限，并在落盘前拒绝超限输入。
   - 多行 Shell 按 segment 检查；破坏性命令在自动批准模式下仍被阻断。
@@ -76,7 +84,7 @@
   - registry-first 提示只引用 canonical action；Custom SubAgent 的显式旧 action allowlist 通过 alias 映射解析到 canonical family，不扩大实际工具权限。
   - 当前工具面不恢复已退役的独立追加文件工具，也没有改动 `request_user_input`。
 - **边界**：不包含 Skill 来源、Automation 或产品角色协议。
-- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt 和 Custom allowlist alias 回归。
+- **守护**：`forkguard_host_extra_tools_register_in_all_modes`、`forkguard_direct_tool_round_budget_narrows_to_one_handoff_then_closes`、`forkguard_file_content_caps_reject_before_writing`、`forkguard_multiline_still_blocks_destructive_segments`、registry prompt 和 Custom allowlist alias 回归。
 
 ### T3：嵌入上下文与技能来源
 
@@ -142,7 +150,7 @@ CodeWhale 当前已通过：
 cargo fmt --all -- --check
 cargo check -p codewhale-tui --lib --locked
 cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1
-23 passed / 0 failed
+26 passed / 0 failed（含 PinvouOS feature 新增 3 条）
 ```
 
 父仓当前已通过：
@@ -153,7 +161,7 @@ cargo check --locked
 cargo test --locked --lib -- --test-threads=1
 1220 passed / 0 failed / 12 ignored
 ./scripts/fork-guard.sh
-CodeWhale 23 passed；pinvou3-app 19 passed
+CodeWhale 26 passed；pinvou3-app 19 passed
 python3 scripts/architecture-guard.py
 npm test
 npm run lint:ui

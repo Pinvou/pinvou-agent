@@ -1,0 +1,1631 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <meta name="description" content="PinvouOS 交互画布架构真相源：Front Agent、AG-UI、A2UI、Runtime 与安全渲染器的职责、协议、迁移和验收边界。" />
+  <title>PinvouOS 交互画布 · AG-UI × A2UI 架构真相源</title>
+  <style>
+    :root {
+      --ink: #162033;
+      --muted: #667085;
+      --subtle: #8b95a5;
+      --paper: #f3f5f8;
+      --surface: #ffffff;
+      --line: #dce1e9;
+      --line-strong: #c8cfdb;
+      --navy: #101828;
+      --navy-2: #1d2939;
+      --blue: #3157e5;
+      --blue-soft: #eef2ff;
+      --teal: #087e73;
+      --teal-soft: #e8f7f3;
+      --amber: #b54708;
+      --amber-soft: #fff4e5;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --green: #067647;
+      --green-soft: #ecfdf3;
+      --violet: #6941c6;
+      --violet-soft: #f4f0ff;
+      --radius-lg: 24px;
+      --radius-md: 16px;
+      --radius-sm: 10px;
+      --shadow: 0 14px 40px rgba(16, 24, 40, 0.07);
+      --max: 1240px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; }
+    button { font: inherit; }
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    code {
+      padding: 0.14em 0.38em;
+      border: 1px solid #dfe5ef;
+      border-radius: 6px;
+      background: #f8fafc;
+      color: #344054;
+      font-size: 0.9em;
+    }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: 12px;
+      left: 12px;
+      transform: translateY(-180%);
+      padding: 9px 14px;
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--navy);
+      box-shadow: var(--shadow);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .topbar {
+      position: sticky;
+      z-index: 50;
+      top: 0;
+      border-bottom: 1px solid rgba(220, 225, 233, 0.9);
+      background: rgba(243, 245, 248, 0.94);
+      backdrop-filter: blur(16px);
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: min(var(--max), calc(100% - 40px));
+      min-height: 58px;
+      margin: 0 auto;
+      gap: 20px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--navy);
+      font-weight: 760;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+    .brand-mark {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--blue);
+      color: white;
+      font-size: 13px;
+    }
+    .topnav {
+      display: flex;
+      overflow-x: auto;
+      gap: 2px;
+      scrollbar-width: none;
+    }
+    .topnav::-webkit-scrollbar { display: none; }
+    .topnav a {
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .topnav a:hover, .topnav a:focus-visible {
+      background: var(--surface);
+      color: var(--blue);
+      outline: none;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      background: var(--navy);
+      color: white;
+    }
+    .hero::after {
+      position: absolute;
+      right: -160px;
+      bottom: -220px;
+      width: 560px;
+      height: 560px;
+      border: 80px solid rgba(91, 124, 250, 0.12);
+      border-radius: 50%;
+      content: "";
+    }
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.75fr);
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding: 76px 0 66px;
+      gap: 68px;
+      align-items: end;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+      color: #aebfff;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .eyebrow-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #65d9c7;
+      box-shadow: 0 0 0 5px rgba(101, 217, 199, 0.12);
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 820px;
+      margin-bottom: 20px;
+      font-size: clamp(38px, 6vw, 68px);
+      line-height: 1.06;
+      letter-spacing: -0.055em;
+    }
+    .keep { white-space: nowrap; }
+    .hero-lead {
+      max-width: 780px;
+      margin-bottom: 0;
+      color: #cfd6e6;
+      font-size: clamp(17px, 2vw, 21px);
+      line-height: 1.72;
+    }
+    .hero-lead strong { color: white; }
+    .hero-meta {
+      display: grid;
+      gap: 12px;
+    }
+    .meta-card {
+      padding: 15px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 13px;
+      background: rgba(255, 255, 255, 0.055);
+    }
+    .meta-label {
+      display: block;
+      margin-bottom: 5px;
+      color: #9eacc2;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .meta-value { font-size: 14px; font-weight: 680; }
+    .scope-pills {
+      display: flex;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      gap: 8px;
+    }
+    .scope-pill {
+      padding: 5px 9px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+      color: #d9e0ec;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    main { display: block; }
+    .section {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding: 84px 0;
+      scroll-margin-top: 58px;
+    }
+    .section + .section { border-top: 1px solid var(--line); }
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(340px, 1.2fr);
+      margin-bottom: 36px;
+      gap: 36px;
+      align-items: start;
+    }
+    .section-index {
+      display: block;
+      margin-bottom: 11px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h2 {
+      margin-bottom: 0;
+      color: var(--navy);
+      font-size: clamp(30px, 4vw, 46px);
+      line-height: 1.14;
+      letter-spacing: -0.045em;
+    }
+    .section-desc {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.8;
+    }
+    .section-desc strong { color: var(--ink); }
+
+    .thesis {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr 1fr 1fr;
+      overflow: hidden;
+      margin-top: -24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .thesis-main {
+      padding: 26px;
+      background: var(--blue);
+      color: white;
+    }
+    .thesis-main small, .thesis-item small {
+      display: block;
+      margin-bottom: 9px;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+    .thesis-main small { color: #c9d3ff; }
+    .thesis-main strong {
+      display: block;
+      max-width: 280px;
+      font-size: 21px;
+      line-height: 1.45;
+      letter-spacing: -0.02em;
+    }
+    .thesis-item {
+      padding: 26px 22px;
+      border-left: 1px solid var(--line);
+    }
+    .thesis-item small { color: var(--subtle); }
+    .thesis-item strong {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--navy);
+      font-size: 18px;
+    }
+    .thesis-item span { color: var(--muted); font-size: 13px; }
+
+    .truth-wrap {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+      gap: 7px;
+    }
+    .tab {
+      display: flex;
+      min-height: 48px;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 14px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 760;
+    }
+    .tab:hover { color: var(--navy); }
+    .tab[aria-selected="true"] {
+      border-color: var(--line);
+      background: var(--surface);
+      color: var(--blue);
+      box-shadow: 0 3px 10px rgba(16, 24, 40, 0.06);
+    }
+    .truth-panel { display: none; padding: 30px; }
+    .truth-panel.is-active { display: block; }
+    .truth-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      gap: 20px;
+    }
+    .truth-title-row h3 {
+      margin-bottom: 7px;
+      color: var(--navy);
+      font-size: 24px;
+      letter-spacing: -0.025em;
+    }
+    .truth-title-row p { margin-bottom: 0; color: var(--muted); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .status.actual { background: var(--green-soft); color: var(--green); }
+    .status.working { background: var(--amber-soft); color: var(--amber); }
+    .status.target { background: var(--violet-soft); color: var(--violet); }
+    .status.gap { background: var(--red-soft); color: var(--red); }
+    .truth-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .fact {
+      position: relative;
+      padding: 17px 18px 17px 45px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #fbfcfe;
+    }
+    .fact::before {
+      position: absolute;
+      top: 21px;
+      left: 18px;
+      width: 11px;
+      height: 11px;
+      border: 2px solid var(--blue);
+      border-radius: 50%;
+      content: "";
+    }
+    .fact.risk::before { border-color: var(--red); }
+    .fact.future::before { border-color: var(--violet); }
+    .fact b {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--navy);
+      font-size: 14px;
+    }
+    .fact span { color: var(--muted); font-size: 13px; }
+    .audit-note {
+      margin-top: 16px;
+      padding: 13px 15px;
+      border-left: 3px solid var(--amber);
+      border-radius: 0 9px 9px 0;
+      background: var(--amber-soft);
+      color: #7a2e0e;
+      font-size: 12px;
+    }
+
+    .split-title {
+      display: flex;
+      align-items: center;
+      margin: 40px 0 18px;
+      gap: 12px;
+      color: var(--navy);
+      font-size: 17px;
+      font-weight: 800;
+    }
+    .split-title::after {
+      height: 1px;
+      flex: 1;
+      background: var(--line);
+      content: "";
+    }
+    .current-chain {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      overflow-x: auto;
+      gap: 10px;
+    }
+    .chain-node {
+      position: relative;
+      min-width: 130px;
+      padding: 16px 15px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .chain-node:not(:last-child)::after {
+      position: absolute;
+      z-index: 2;
+      top: 50%;
+      right: -9px;
+      width: 7px;
+      height: 7px;
+      border-top: 2px solid var(--subtle);
+      border-right: 2px solid var(--subtle);
+      transform: translateY(-50%) rotate(45deg);
+      content: "";
+    }
+    .chain-node small {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--subtle);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .chain-node b { display: block; color: var(--navy); font-size: 13px; }
+    .chain-node span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .chain-node.break { border-color: #f5b7b1; background: var(--red-soft); }
+
+    .architecture-board {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .diagram-guide {
+      display: grid;
+      grid-template-columns: auto repeat(5, minmax(0, 1fr));
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      gap: 8px;
+      align-items: center;
+    }
+    .diagram-guide > strong {
+      padding: 0 10px;
+      color: var(--navy);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .guide-step {
+      display: flex;
+      min-height: 38px;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 9px;
+      background: #f7f9fc;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+      gap: 7px;
+    }
+    .guide-step b {
+      display: grid;
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      place-items: center;
+      border-radius: 6px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 10px;
+    }
+    .architecture-board svg {
+      display: block;
+      width: 100%;
+      min-width: 980px;
+      height: auto;
+    }
+    .arch-label { fill: #667085; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+    .arch-title { fill: #101828; font-size: 18px; font-weight: 800; }
+    .arch-sub { fill: #667085; font-size: 12px; }
+    .arch-sub-light { fill: #c5cede; }
+    .arch-sub-blue { fill: #dbe2ff; }
+    .arch-mini { fill: #475467; font-size: 11px; font-weight: 650; }
+    .arch-white { fill: white; }
+    .arch-line { fill: none; stroke: #98a2b3; stroke-width: 2; }
+    .arch-line-blue { fill: none; stroke: var(--blue); stroke-width: 2.4; }
+    .arch-line-teal { fill: none; stroke: var(--teal); stroke-width: 2.4; }
+    .arch-line-red { fill: none; stroke: var(--red); stroke-width: 2; stroke-dasharray: 7 6; }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 18px;
+      gap: 12px;
+    }
+    .principle {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .principle .num {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 14px;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .principle b { display: block; margin-bottom: 5px; color: var(--navy); }
+    .principle span { color: var(--muted); font-size: 12px; }
+
+    .protocol-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .protocol-card {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .protocol-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 25px 26px 22px;
+      gap: 20px;
+    }
+    .protocol-name {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+    }
+    .protocol-icon {
+      display: grid;
+      width: 43px;
+      height: 43px;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-weight: 900;
+    }
+    .protocol-card.a2ui .protocol-icon { background: var(--teal-soft); color: var(--teal); }
+    .protocol-name h3 { margin-bottom: 1px; color: var(--navy); font-size: 23px; }
+    .protocol-name span { color: var(--muted); font-size: 12px; }
+    .license {
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .protocol-body { padding: 0 26px 26px; }
+    .does-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .does { padding: 18px 0; }
+    .does + .does { padding-left: 20px; border-left: 1px solid var(--line); }
+    .does h4 {
+      margin: 0 0 9px;
+      color: var(--navy);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .does ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+    .does li + li { margin-top: 5px; }
+    .protocol-verdict {
+      margin: 18px 0 0;
+      padding: 14px 15px;
+      border-radius: 11px;
+      background: #f7f9fc;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .message-rail {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      margin-top: 18px;
+      gap: 8px;
+    }
+    .rail-step {
+      position: relative;
+      padding: 13px 12px;
+      border: 1px solid #bce4dd;
+      border-radius: 10px;
+      background: var(--teal-soft);
+      color: #06665e;
+      font-size: 11px;
+      font-weight: 780;
+      text-align: center;
+    }
+    .rail-step:not(:last-child)::after {
+      position: absolute;
+      z-index: 3;
+      top: 50%;
+      right: -7px;
+      width: 7px;
+      height: 7px;
+      border-top: 2px solid var(--teal);
+      border-right: 2px solid var(--teal);
+      background: var(--teal-soft);
+      transform: translateY(-50%) rotate(45deg);
+      content: "";
+    }
+
+    .mapping-wrap, .matrix-wrap {
+      overflow: hidden;
+      margin-top: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+    }
+    .table-caption {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 17px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+      gap: 20px;
+    }
+    .table-caption strong { color: var(--navy); font-size: 14px; }
+    .table-caption span { color: var(--muted); font-size: 11px; }
+    .table-scroll { overflow-x: auto; }
+    table {
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+      background: var(--surface);
+      font-size: 12px;
+    }
+    th, td {
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--subtle);
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child, td:nth-child(2) { color: var(--navy); font-weight: 700; }
+    td { color: var(--muted); }
+    .gap-text { color: var(--red); font-weight: 750; }
+    .target-text { color: var(--violet); font-weight: 750; }
+
+    .authority-grid {
+      display: grid;
+      grid-template-columns: 0.95fr 1.45fr;
+      gap: 18px;
+    }
+    .authority-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .authority-card.primary { padding: 28px; background: var(--navy); color: white; }
+    .authority-card.primary h3 { margin-bottom: 9px; font-size: 25px; letter-spacing: -0.025em; }
+    .authority-card.primary > p { color: #c9d2e2; }
+    .authority-rule {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      padding: 14px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      gap: 11px;
+    }
+    .rule-check {
+      display: grid;
+      width: 22px;
+      height: 22px;
+      place-items: center;
+      border-radius: 7px;
+      background: rgba(101, 217, 199, 0.16);
+      color: #65d9c7;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .authority-rule b { display: block; margin-bottom: 2px; font-size: 13px; }
+    .authority-rule span { display: block; color: #aeb9cb; font-size: 11px; }
+    .worker-contract { padding: 27px; }
+    .worker-contract h3 { margin-bottom: 6px; color: var(--navy); font-size: 22px; }
+    .worker-contract > p { color: var(--muted); font-size: 13px; }
+    .contract-code {
+      overflow-x: auto;
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 13px;
+      background: #101828;
+      color: #dce4f0;
+      font-size: 11px;
+      line-height: 1.75;
+      white-space: pre;
+    }
+    .contract-note {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin-top: 16px;
+      gap: 10px;
+    }
+    .contract-note div {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfcfe;
+    }
+    .contract-note b { display: block; margin-bottom: 3px; color: var(--navy); font-size: 12px; }
+    .contract-note span { color: var(--muted); font-size: 10px; }
+
+    .collision-note {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      margin-top: 17px;
+      padding: 17px 19px;
+      border: 1px solid #e7d8ff;
+      border-radius: 13px;
+      background: var(--violet-soft);
+      gap: 14px;
+    }
+    .collision-note .bang {
+      display: grid;
+      width: 31px;
+      height: 31px;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--violet);
+      color: white;
+      font-weight: 900;
+    }
+    .collision-note b { display: block; margin-bottom: 3px; color: #4a2b88; }
+    .collision-note span { color: #6941a5; font-size: 12px; }
+
+    .canvas-layout {
+      display: grid;
+      grid-template-columns: minmax(360px, 1.45fr) minmax(300px, 0.8fr);
+      gap: 18px;
+    }
+    .canvas-demo {
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-lg);
+      background: #e8ebf1;
+      box-shadow: var(--shadow);
+    }
+    .system-frame {
+      display: flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 15px;
+      background: var(--navy);
+      color: white;
+    }
+    .system-frame span { color: #b8c2d3; font-size: 10px; font-weight: 750; }
+    .system-controls { display: flex; gap: 7px; }
+    .sys-btn {
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 8px;
+      font-size: 10px;
+    }
+    .agent-plane {
+      display: grid;
+      grid-template-columns: 1.45fr 0.75fr;
+      min-height: 390px;
+      padding: 14px;
+      gap: 12px;
+    }
+    .canvas-primary, .canvas-context {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .canvas-card {
+      padding: 16px;
+      border: 1px solid rgba(200, 207, 219, 0.9);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .canvas-card.feature { flex: 1; }
+    .mini-eyebrow { color: var(--blue); font-size: 9px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .canvas-card h4 { margin: 8px 0 4px; color: var(--navy); font-size: 18px; }
+    .canvas-card p { color: var(--muted); font-size: 10px; }
+    .skeleton-line { height: 7px; margin-top: 9px; border-radius: 99px; background: #e1e6ef; }
+    .skeleton-line.short { width: 62%; }
+    .metric-row { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 17px; gap: 7px; }
+    .metric { padding: 10px; border-radius: 9px; background: var(--blue-soft); }
+    .metric b { display: block; color: var(--blue); font-size: 15px; }
+    .metric span { color: var(--muted); font-size: 8px; }
+    .timeline-mini { display: grid; gap: 9px; margin-top: 12px; }
+    .timeline-mini div { display: grid; grid-template-columns: 9px 1fr; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; }
+    .timeline-mini i { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); }
+    .timeline-mini i.wait { background: var(--amber); }
+    .canvas-overlay {
+      margin: 0 14px 14px;
+      padding: 12px 14px;
+      border: 1px solid #f0c89e;
+      border-radius: 12px;
+      background: var(--amber-soft);
+      color: #7a2e0e;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .canvas-rules {
+      display: grid;
+      gap: 11px;
+    }
+    .canvas-rule {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .canvas-rule b { display: block; margin-bottom: 5px; color: var(--navy); font-size: 13px; }
+    .canvas-rule span { display: block; color: var(--muted); font-size: 11px; }
+    .mode-row { display: flex; flex-wrap: wrap; margin-top: 10px; gap: 6px; }
+    .mode { padding: 4px 7px; border-radius: 6px; background: var(--blue-soft); color: var(--blue); font-size: 9px; font-weight: 780; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .phase {
+      position: relative;
+      padding: 22px 18px 19px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+    }
+    .phase:not(:last-child)::after {
+      position: absolute;
+      z-index: 2;
+      top: 35px;
+      right: -8px;
+      width: 8px;
+      height: 8px;
+      border-top: 2px solid var(--blue);
+      border-right: 2px solid var(--blue);
+      background: var(--paper);
+      transform: rotate(45deg);
+      content: "";
+    }
+    .phase-no {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 15px;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--navy);
+      color: white;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .phase h3 { margin-bottom: 7px; color: var(--navy); font-size: 15px; }
+    .phase p { min-height: 58px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+    .phase ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 10px; }
+    .phase li + li { margin-top: 4px; }
+    .phase .gate { display: block; margin-top: 13px; color: var(--blue); font-size: 9px; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
+
+    .acceptance {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin-top: 24px;
+      gap: 12px;
+    }
+    .accept {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      gap: 10px;
+    }
+    .accept-mark {
+      display: grid;
+      width: 22px;
+      height: 22px;
+      place-items: center;
+      border: 1px solid #b8c7ff;
+      border-radius: 7px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .accept b { display: block; margin-bottom: 3px; color: var(--navy); font-size: 12px; }
+    .accept span { display: block; color: var(--muted); font-size: 10px; }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .decision {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface);
+      gap: 14px;
+    }
+    .decision-id {
+      padding-top: 2px;
+      color: var(--blue);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .decision b { display: block; margin-bottom: 4px; color: var(--navy); font-size: 13px; }
+    .decision span { display: block; color: var(--muted); font-size: 11px; }
+
+    .sources {
+      display: grid;
+      grid-template-columns: 0.8fr 1.2fr;
+      overflow: hidden;
+      margin-top: 26px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+    }
+    .source-rule { padding: 26px; background: var(--navy); color: white; }
+    .source-rule h3 { margin-bottom: 10px; font-size: 20px; }
+    .source-rule p { color: #bdc7d8; font-size: 12px; }
+    .source-rule ol { margin: 18px 0 0; padding-left: 20px; color: #e8ecf4; font-size: 12px; }
+    .source-rule li + li { margin-top: 6px; }
+    .source-list { padding: 26px; }
+    .source-group + .source-group { margin-top: 22px; }
+    .source-group h4 { margin: 0 0 9px; color: var(--navy); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .source-link {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      padding: 8px 0;
+      border-top: 1px solid var(--line);
+      gap: 9px;
+      color: var(--muted);
+      font-size: 11px;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .source-link:hover { color: var(--blue); }
+    .source-link::before { color: var(--blue); content: "↗"; }
+    .source-path::before { color: var(--teal); content: "⌁"; }
+    .source-meta { margin-top: 17px; color: var(--subtle); font-size: 10px; }
+
+    .footer {
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .footer-inner {
+      display: flex;
+      width: min(var(--max), calc(100% - 40px));
+      min-height: 74px;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 auto;
+      gap: 22px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .footer strong { color: var(--navy); }
+
+    @media (max-width: 1040px) {
+      .hero-inner { grid-template-columns: 1fr; gap: 34px; }
+      .hero-meta { grid-template-columns: repeat(3, 1fr); }
+      .thesis { grid-template-columns: repeat(3, 1fr); }
+      .thesis-main { grid-column: 1 / -1; }
+      .thesis-item:first-of-type { border-left: 0; }
+      .principles { grid-template-columns: repeat(2, 1fr); }
+      .flow { grid-template-columns: repeat(3, 1fr); }
+      .phase:nth-child(3)::after { display: none; }
+      .acceptance { grid-template-columns: repeat(2, 1fr); }
+      .diagram-guide { grid-template-columns: repeat(3, 1fr); }
+      .diagram-guide > strong { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 800px) {
+      .topbar-inner { width: calc(100% - 24px); }
+      .brand span:last-child { display: none; }
+      .hero-inner, .section, .footer-inner { width: calc(100% - 28px); }
+      .hero-inner { padding: 58px 0 48px; }
+      .hero-meta { grid-template-columns: 1fr; }
+      .section { padding: 62px 0; }
+      .section-head { grid-template-columns: 1fr; gap: 17px; }
+      .thesis { grid-template-columns: 1fr; }
+      .thesis-main { grid-column: auto; }
+      .thesis-item { border-top: 1px solid var(--line); border-left: 0; }
+      .truth-grid, .protocol-grid, .authority-grid, .canvas-layout, .decision-grid, .sources { grid-template-columns: 1fr; }
+      .contract-note { grid-template-columns: 1fr; }
+      .canvas-demo { min-width: 0; }
+      .agent-plane { grid-template-columns: 1fr; min-height: 0; }
+      .flow { grid-template-columns: 1fr; }
+      .phase:not(:last-child)::after { display: none; }
+      .phase p { min-height: 0; }
+    }
+
+    @media (max-width: 560px) {
+      h1 { font-size: 39px; }
+      .tabs { grid-template-columns: 1fr; }
+      .tab { justify-content: flex-start; min-height: 42px; }
+      .truth-panel { padding: 20px; }
+      .truth-title-row { flex-direction: column; }
+      .principles, .acceptance { grid-template-columns: 1fr; }
+      .does-grid { grid-template-columns: 1fr; }
+      .does + .does { padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
+      .message-rail { grid-template-columns: 1fr; }
+      .rail-step:not(:last-child)::after { display: none; }
+      .metric-row { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; align-items: flex-start; justify-content: center; padding: 16px 0; }
+      .diagram-guide { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      .skip-link { display: none !important; }
+      .topbar { position: static; }
+      .hero { break-after: page; }
+      .section { width: 100%; padding: 38px 0; }
+      .truth-panel { display: block !important; border-top: 1px solid var(--line); }
+      .tabs { display: none; }
+      .architecture-board, .protocol-card, .authority-card, .canvas-demo { box-shadow: none; }
+      .architecture-board { overflow: visible; }
+      .architecture-board svg { width: 100%; min-width: 0; }
+      a { text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">P</span><span>PinvouOS · Interaction Surface</span></div>
+      <nav class="topnav" aria-label="文档导航">
+        <a href="#truth">三层真相</a>
+        <a href="#architecture">目标架构</a>
+        <a href="#protocols">双协议</a>
+        <a href="#authority">权责边界</a>
+        <a href="#canvas">画布语法</a>
+        <a href="#roadmap">迁移验收</a>
+        <a href="#decisions">决策与来源</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero" aria-labelledby="page-title">
+    <div class="hero-inner">
+      <div>
+        <div class="eyebrow"><span class="eyebrow-dot"></span>Architecture Source of Truth · v0.2</div>
+        <h1 id="page-title">让 Front 掌控<span class="keep">整张画布，</span><br />但不掌控<span class="keep">任意像素。</span></h1>
+        <p class="hero-lead"><strong>AG-UI 讲清“正在发生什么”，A2UI 讲清“应该展示什么”。</strong> Runtime 持有事实，Front 持有交互与呈现意图，Renderer 持有视觉，Policy 评估动作，Kernel 持有硬门禁。其他 Agent 全部隔离在 Front 后面。</p>
+      </div>
+      <aside class="hero-meta" aria-label="文档元数据">
+        <div class="meta-card"><span class="meta-label">Decision status</span><span class="meta-value">首阶段已实施 · MegaBook 已验证</span></div>
+        <div class="meta-card"><span class="meta-label">Last audited</span><span class="meta-value">2026-08-18 · Asia/Shanghai</span></div>
+        <div class="meta-card"><span class="meta-label">Owns</span><span class="meta-value">Interaction / Presentation Plane</span></div>
+        <div class="scope-pills">
+          <span class="scope-pill">MegaBook 部署态</span>
+          <span class="scope-pill">本地工作树</span>
+          <span class="scope-pill">目标态</span>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <main id="main">
+    <section class="section" aria-label="核心结论">
+      <div class="thesis">
+        <div class="thesis-main"><small>核心判断</small><strong>AG-UI 与 A2UI 值得加入，但它们是 PinvouOS 的交互平面，不是新的 Runtime。</strong></div>
+        <div class="thesis-item"><small>事实所有者</small><strong>Runtime</strong><span>Mission / Run / Event / Policy outcome</span></div>
+        <div class="thesis-item"><small>用户关系</small><strong>Front Agent</strong><span>唯一能面向用户编排与发问的 Agent</span></div>
+        <div class="thesis-item"><small>像素所有者</small><strong>Host Renderer</strong><span>组件目录、设计令牌、布局与降级</span></div>
+      </div>
+    </section>
+
+    <section class="section" id="truth">
+      <div class="section-head">
+        <div><span class="section-index">01 · Truth before design</span><h2>先分清三层真相</h2></div>
+        <p class="section-desc">这份文档不把“仓库里已经写了”当成“MegaBook 上已经能用”，也不把“目标架构”写成既成事实。<strong>部署态、本地工作树、目标态必须分别标记。</strong></p>
+      </div>
+
+      <div class="truth-wrap">
+        <div class="tabs" role="tablist" aria-label="真相层级">
+          <button class="tab" role="tab" aria-selected="true" aria-controls="truth-deployed" id="tab-deployed" data-tab="truth-deployed">A · MegaBook 实际部署</button>
+          <button class="tab" role="tab" aria-selected="false" aria-controls="truth-worktree" id="tab-worktree" data-tab="truth-worktree">B · 本地工作树</button>
+          <button class="tab" role="tab" aria-selected="false" aria-controls="truth-target" id="tab-target" data-tab="truth-target">C · 目标架构</button>
+        </div>
+
+        <div class="truth-panel is-active" role="tabpanel" id="truth-deployed" aria-labelledby="tab-deployed">
+          <div class="truth-title-row">
+            <div><h3>今天用户看到的是 VoiceShell + 只读交互画布</h3><p>语音主界面已接确定性 A2UI 运行态，但还不是可由 Front 自由编排的持续任务画布。</p></div>
+            <span class="status actual">OBSERVED</span>
+          </div>
+          <div class="truth-grid">
+            <div class="fact"><b>主画面已有三类受信内容</b><span>最新 assistant Markdown、待用户输入卡与 artifact 卡可见；reasoning、shell 和原始工具输出仍不进入主画面。</span></div>
+            <div class="fact risk"><b>运行时无法 steering</b><span>busy 时麦克风被禁用；当前只剩等待或外部停止，不能自然插话、修正与继续。</span></div>
+            <div class="fact"><b>隐藏 Session 仍在执行链</b><span>用户看不到 Session，但 CodeWhale 仍通过兼容 Session 承载消息、工具和 artifact。</span></div>
+            <div class="fact"><b>交互生命周期已进入 Runtime</b><span>Engine adapter 写入独立 interaction run、工具摘要、消息摘要与唯一终态；回答正文仍由 chat 兼容流承载。</span></div>
+            <div class="fact"><b>projection/* 已进入同一画布</b><span>Runtime sequence 确定性生成 A2UI v0.9 数据增量；VoiceShell 由宿主 Catalog 渲染身份、交互态与运行健康。</span></div>
+            <div class="fact risk"><b>Mission 闭环尚未出现</b><span>账本只观察到启动、身份、Agent 注册和资源事件，尚无可见 Mission / Run / tool / artifact 闭环。</span></div>
+          </div>
+          <div class="audit-note"><b>2026-08-18 实机验收：</b>使用固定 known-host 校验部署组合切片；MegaBook 本机 Rust 142 项、A2UI 5 项、三语、Web 事件契约、UI build 与架构守卫通过。新进程自 sequence 2648 起只写 schema v4；真实 WebView 可访问性树确认交互画布、语音入口、artifact 与 Agent Runtime，后台视觉黑盒确认有序 delta 更新并拒绝旧 sequence。</div>
+        </div>
+
+        <div class="truth-panel" role="tabpanel" id="truth-worktree" aria-labelledby="tab-worktree" hidden>
+          <div class="truth-title-row">
+            <div><h3>本次交互切片与 MegaBook 部署代码一致</h3><p>本地仍有其他并行开发改动；这里只声明已按哈希同步并验证的 Interaction / Presentation 范围。</p></div>
+            <span class="status working">INTEGRATING</span>
+          </div>
+          <div class="truth-grid">
+            <div class="fact"><b>系统角色扩展</b><span>代码中增加 Connectivity、Inference 等 Agent，并为 Front 注入 PinvouOS Runtime 工具。</span></div>
+            <div class="fact"><b>Front 执行约束随组合切片部署</b><span>三轮 Direct 与唯一 Orchestrator 的既有改动被保留；本次只在其外层增加 interaction trace，不改派工策略。</span></div>
+            <div class="fact"><b>Memory Runtime 核心已随 Runtime 部署</b><span>MemoryOrganizer 在同一账本维护 decision / checkpoint / replay 和结构 Top-K；异步 worker、VerifiedTaskOutcome 与 Front Context Compiler 仍待接。</span></div>
+            <div class="fact risk"><b>Mission 生命周期不完整</b><span>Runtime 有 Mission / Run 结构和 Opened / Started 事件，但缺少完成、暂停、恢复、取消等完整事件闭环。</span></div>
+            <div class="fact risk"><b>“存在”不等于“可调用”</b><span>open/register/report/ack 命令函数已写出，但当前 invoke handler 只暴露 snapshot、explain、list events。</span></div>
+            <div class="fact"><b>AG-UI 生命周期语义已落第一层</b><span>独立 scope/run、工具进度、exactly-one terminal、interrupt 与精确 resume 已入统一账本；标准 AG-UI wire envelope 尚未输出。</span></div>
+            <div class="fact"><b>A2UI 投影使用 ordered delta</b><span>projection/* 已按 basis Runtime sequence 增量更新；旧 AgentDock 仍在 pinvou-os:event 后重拉完整 snapshot。</span></div>
+          </div>
+        </div>
+
+        <div class="truth-panel" role="tabpanel" id="truth-target" aria-labelledby="tab-target" hidden>
+          <div class="truth-title-row">
+            <div><h3>目标不是“会生成 HTML 的 Agent”</h3><p>目标是“能在安全语法里编排整个内容平面，并可被事实重建的 Front”。</p></div>
+            <span class="status target">PROPOSED</span>
+          </div>
+          <div class="truth-grid">
+            <div class="fact future"><b>Mission 约束交互范围</b><span>Mission 工作区通常映射为 threadId；AG-UI runId 表示一次交互执行，Runtime Run 通过关联字段保留，不再强行 1:1。</span></div>
+            <div class="fact future"><b>双轨协议、单一账本</b><span>AG-UI 投影运行事实，A2UI 投影视图；权威事件与 Front 呈现意图都进入 Runtime Ledger 后再重建。</span></div>
+            <div class="fact future"><b>Front 独占 Agent 画布</b><span>只有 Front 能申请 front/* 内容画布；Runtime 投影和 Kernel 系统层由确定性宿主生成，其他 Agent 均无写权。</span></div>
+            <div class="fact future"><b>Host 控制美学</b><span>Agent 选择语义、优先级和布局枚举；React Renderer 决定像素、动效、触控和无障碍。</span></div>
+            <div class="fact future"><b>Policy 自动插门禁</b><span>Policy Agent 评估，Kernel 强制，Host 在 system/* 系统层显示确认；不依赖模型“记得加确认卡”。</span></div>
+            <div class="fact future"><b>可中断、可恢复、可回放</b><span>cancel / resume / steering、snapshot + delta、surface replay 都成为正式协议行为。</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split-title">当前用户链路：运行事实已进画布，内容流仍待统一</div>
+      <div class="current-chain" aria-label="当前交互链">
+        <div class="chain-node"><small>Input</small><b>Voice / Text</b><span>语音识别后提交</span></div>
+        <div class="chain-node"><small>Shell</small><b>VoiceShell</b><span>busy 锁麦克风</span></div>
+        <div class="chain-node"><small>Compat</small><b>Hidden Session</b><span>仍承载执行上下文</span></div>
+        <div class="chain-node"><small>Agent</small><b>Front + Engine</b><span>工具与 Orchestrator</span></div>
+        <div class="chain-node break"><small>Migration seam</small><b>chat:* + A2UI</b><span>正文兼容流 / 状态投影流</span></div>
+        <div class="chain-node break"><small>Output</small><b>Latest Markdown</b><span>不是全画布</span></div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="section-head">
+        <div><span class="section-index">02 · 目标架构</span><h2>一位 Front，双协议轨道</h2></div>
+        <p class="section-desc">Front 是唯一交互权威，但不是事实数据库、策略裁判或 CSS 生成器。<strong>它把用户意图路由到系统，把系统事实翻译为可理解的交互与呈现。</strong></p>
+      </div>
+
+      <div class="diagram-guide" aria-label="架构图阅读顺序">
+        <strong>这张图怎么读</strong>
+        <span class="guide-step"><b>1</b>用户从系统入口提出需求</span>
+        <span class="guide-step"><b>2</b>Front 统一理解、回应和调度</span>
+        <span class="guide-step"><b>3</b>简单任务直做，复杂任务才编排</span>
+        <span class="guide-step"><b>4</b>AG-UI 报进度，A2UI 描述界面</span>
+        <span class="guide-step"><b>5</b>前端按设计系统画出最终画面</span>
+      </div>
+
+      <div class="architecture-board">
+        <svg viewBox="0 0 1200 660" role="img" aria-labelledby="arch-svg-title arch-svg-desc">
+          <title id="arch-svg-title">PinvouOS AG-UI 与 A2UI 目标架构</title>
+          <desc id="arch-svg-desc">用户通过系统框架进入 Interaction Gateway，由 Front Agent 统一交互。简单任务由 Front 最多三轮直接调用原子能力，复杂任务才交给 Orchestrator 与动态 Mission Agent。Runtime Ledger 产生 AG-UI 事件，Front Presentation Planner 产生经校验的 A2UI Surface，Kernel 与 Host 生成受保护系统层，最终进入 Canvas Renderer。</desc>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#98a2b3" /></marker>
+            <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3157e5" /></marker>
+            <marker id="arrow-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#087e73" /></marker>
+          </defs>
+
+          <text class="arch-label" x="38" y="42">用户入口与系统外壳</text>
+          <rect x="38" y="64" width="208" height="102" rx="18" fill="#101828" />
+          <text class="arch-title arch-white" x="58" y="99">系统固定框架</text>
+          <text class="arch-sub arch-sub-light" x="58" y="124">语音 · 触控 · 键盘</text>
+          <text class="arch-sub arch-sub-light" x="58" y="145">主页 · 停止 · 隐私状态始终可见</text>
+
+          <rect x="286" y="64" width="218" height="102" rx="18" fill="#eef2ff" stroke="#b8c7ff" />
+          <text class="arch-title" x="306" y="99">交互网关</text>
+          <text class="arch-sub" x="306" y="124">统一输入 · 鉴权 · 分发动作</text>
+          <text class="arch-sub" x="306" y="145">复用 Tauri 通信层</text>
+
+          <rect x="544" y="64" width="264" height="102" rx="18" fill="#3157e5" />
+          <text class="arch-title arch-white" x="564" y="99">Front Agent · 交互总控</text>
+          <text class="arch-sub arch-sub-blue" x="564" y="124">唯一直接面向用户的 Agent</text>
+          <text class="arch-sub arch-sub-blue" x="564" y="145">快交互 ≤3 轮 · 复杂任务才编排</text>
+
+          <rect x="848" y="64" width="142" height="102" rx="18" fill="#f4f0ff" stroke="#d7c8ff" />
+          <text class="arch-title" x="868" y="99">复杂任务编排</text>
+          <text class="arch-sub" x="868" y="124">Orchestrator · 建工作图</text>
+          <text class="arch-sub" x="868" y="145">不直接修改 UI</text>
+
+          <rect x="1030" y="64" width="132" height="102" rx="18" fill="#f8fafc" stroke="#dce1e9" />
+          <text class="arch-title" x="1050" y="99">Mission Agent</text>
+          <text class="arch-sub" x="1050" y="124">执行具体任务</text>
+          <text class="arch-sub" x="1050" y="145">回传结果 · 缺参 · 风险</text>
+
+          <path class="arch-line" d="M246 115 H282" marker-end="url(#arrow)" />
+          <path class="arch-line-blue" d="M504 115 H540" marker-end="url(#arrow-blue)" />
+          <path class="arch-line" d="M808 115 H844" marker-end="url(#arrow)" />
+          <path class="arch-line" d="M990 115 H1026" marker-end="url(#arrow)" />
+
+          <text class="arch-label" x="38" y="228">事实与安全核心</text>
+          <rect x="38" y="250" width="466" height="118" rx="18" fill="#ffffff" stroke="#c8cfdb" />
+          <text class="arch-title" x="58" y="286">Runtime Ledger · 运行时事实账本</text>
+          <text class="arch-sub" x="58" y="313">身份 · Mission · Run · 事件 · Agent · 结论 · 控制指令</text>
+          <rect x="58" y="333" width="104" height="20" rx="6" fill="#ecfdf3" /><text class="arch-mini" x="69" y="347" fill="#067647">事实唯一来源</text>
+          <rect x="170" y="333" width="148" height="20" rx="6" fill="#fff0ee" /><text class="arch-mini" x="181" y="347" fill="#b42318">生命周期仍需补齐</text>
+
+          <rect x="544" y="250" width="264" height="118" rx="18" fill="#fff4e5" stroke="#f0c89e" />
+          <text class="arch-title" x="564" y="286">Kernel Policy Gate · 安全门禁</text>
+          <text class="arch-sub" x="564" y="313">Policy Agent 评估 · Kernel 强制</text>
+          <text class="arch-sub" x="564" y="337">系统确认层不可被 Front 隐藏</text>
+
+          <rect x="848" y="250" width="314" height="118" rx="18" fill="#ffffff" stroke="#c8cfdb" />
+          <text class="arch-title" x="868" y="286">原子能力与可信产物</text>
+          <text class="arch-sub" x="868" y="313">Front Direct ≤3 轮 · 证据 · 能力事实</text>
+          <text class="arch-sub" x="868" y="337">禁止把任意路径 / URL 交给渲染器</text>
+
+          <path class="arch-line" d="M676 166 V246" marker-end="url(#arrow)" />
+          <path class="arch-line-blue" d="M748 166 V208 H1005 V246" marker-end="url(#arrow-blue)" />
+          <text class="arch-mini" x="812" y="201" fill="#3157e5">Direct 快路径 · 最多三轮</text>
+          <path class="arch-line" d="M919 166 V246" marker-end="url(#arrow)" />
+          <path class="arch-line" d="M1096 166 V246" marker-end="url(#arrow)" />
+          <path class="arch-line-red" d="M544 309 H508" marker-end="url(#arrow)" />
+
+          <text class="arch-label" x="38" y="432">把事实同步到界面 · 只负责展示，不另建事实数据库</text>
+          <rect x="38" y="454" width="466" height="78" rx="16" fill="#eef2ff" stroke="#b8c7ff" />
+          <text class="arch-title" x="58" y="485">AG-UI 事件流 · 系统发生了什么</text>
+          <text class="arch-sub" x="58" y="510">交互执行 · 运行进度 · 工具状态 · 中断与恢复</text>
+
+          <rect x="544" y="454" width="264" height="78" rx="16" fill="#f8fafc" stroke="#c8cfdb" />
+          <text class="arch-title" x="564" y="485">前端统一状态</text>
+          <text class="arch-sub" x="564" y="510">合并多路事件 · 断线后恢复</text>
+
+          <rect x="848" y="454" width="314" height="78" rx="16" fill="#e8f7f3" stroke="#9ed9d0" />
+          <text class="arch-title" x="868" y="485">A2UI 界面流 · 应该显示什么</text>
+          <text class="arch-sub" x="868" y="510">创建界面 · 更新组件 · 更新数据 · 删除界面</text>
+
+          <path class="arch-line-blue" d="M271 368 V450" marker-end="url(#arrow-blue)" />
+          <path class="arch-line-blue" d="M504 493 H540" marker-end="url(#arrow-blue)" />
+          <path class="arch-line-teal" d="M676 368 V416 H1005 V450" marker-end="url(#arrow-teal)" />
+          <path class="arch-line-teal" d="M748 166 V204 H1005 V450" marker-end="url(#arrow-teal)" />
+
+          <text class="arch-label" x="38" y="588">由前端统一画出界面 · Agent 不直接写 HTML / CSS</text>
+          <rect x="38" y="605" width="1124" height="38" rx="13" fill="#101828" />
+          <text class="arch-mini arch-white" x="58" y="629">Canvas Renderer · 受信组件目录 · 固定布局模式 · 统一设计令牌 · 无障碍 · 安全降级 · 系统控件常驻</text>
+
+          <path class="arch-line" d="M676 532 V601" marker-end="url(#arrow)" />
+          <path class="arch-line-teal" d="M1005 532 V601" marker-end="url(#arrow-teal)" />
+        </svg>
+      </div>
+
+      <div class="principles">
+        <div class="principle"><span class="num">01</span><b>Runtime 事实优先</b><span>界面与事实冲突时，Runtime Ledger 的状态覆盖 Front 和客户端投影。</span></div>
+        <div class="principle"><span class="num">02</span><b>Front 独占 Agent 画布写权</b><span>只有 Front 可申请 front/* 内容画布；projection/* 与 system/* 由确定性宿主管理，其他 Agent 只返回结构化结果。</span></div>
+        <div class="principle"><span class="num">03</span><b>Host 决定最终视觉</b><span>目录组件、布局模板、token、动效、触控与降级由宿主代码控制。</span></div>
+        <div class="principle"><span class="num">04</span><b>Policy 评估，Kernel 强制</b><span>高风险动作先过硬门禁，再被渲染为确认或审批，不依赖 LLM 自觉。</span></div>
+      </div>
+    </section>
+
+    <section class="section" id="protocols">
+      <div class="section-head">
+        <div><span class="section-index">03 · Protocol fit</span><h2>协议各司其职，不互相冒充</h2></div>
+        <p class="section-desc">两套协议的价值在于省掉“事件流”和“生成式 UI 表达”这两类轮子。它们不负责 PinvouOS 的 Agent 拓扑、Mission 持久化、安全策略或全局画布治理。</p>
+      </div>
+
+      <div class="protocol-grid">
+        <article class="protocol-card">
+          <div class="protocol-head">
+            <div class="protocol-name"><span class="protocol-icon">A·G</span><div><h3>AG-UI</h3><span>Agent ↔ User interaction events</span></div></div>
+            <span class="license">MIT · OPEN</span>
+          </div>
+          <div class="protocol-body">
+            <div class="does-grid">
+              <div class="does"><h4>直接拿来</h4><ul><li>Run / Step 生命周期</li><li>文本与工具流式事件</li><li>Snapshot / JSON Patch delta</li><li>Interrupt / resume / steering</li></ul></div>
+              <div class="does"><h4>它不解决</h4><ul><li>卡片与画布怎么长</li><li>Mission 是否真实完成</li><li>用户身份、权限与审计</li><li>多 Agent 谁能直接见用户</li></ul></div>
+            </div>
+            <p class="protocol-verdict"><b>PinvouOS 用法：</b>保留 Tauri event bus 作为 transport，在边界做 wire-compatible adapter；不必为了“使用 AG-UI”先把桌面应用改成 HTTP/SSE 架构。</p>
+          </div>
+        </article>
+
+        <article class="protocol-card a2ui">
+          <div class="protocol-head">
+            <div class="protocol-name"><span class="protocol-icon">A·2</span><div><h3>A2UI</h3><span>Agent-requested, host-rendered UI</span></div></div>
+            <span class="license">APACHE-2.0 · OPEN</span>
+          </div>
+          <div class="protocol-body">
+            <div class="does-grid">
+              <div class="does"><h4>直接拿来</h4><ul><li>Surface 生命周期</li><li>组件与数据分离</li><li>JSON Pointer 数据绑定</li><li>Catalog 与增量 JSONL</li></ul></div>
+              <div class="does"><h4>它不解决</h4><ul><li>整个 OS 的画布模式</li><li>Runtime 事实是否可信</li><li>Action 的业务授权</li><li>设计系统是否好看</li></ul></div>
+            </div>
+            <div class="message-rail" aria-label="A2UI v0.9 消息顺序"><div class="rail-step">createSurface</div><div class="rail-step">updateComponents</div><div class="rail-step">updateDataModel</div><div class="rail-step">deleteSurface</div></div>
+            <p class="protocol-verdict"><b>PinvouOS 用法：</b>wire version 锁定 <code>v0.9</code>；具体 SDK / 仓库 revision 另行固定，不把包版本写进 wire。v1.0 仍经 adapter 隔离。React 侧做 Pinvou catalog renderer 是 A2UI 的宿主职责，不是重造协议。</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="mapping-wrap">
+        <div class="table-caption"><strong>现有事件 → AG-UI 的最小兼容映射</strong><span>先适配，后替换；避免一次性推翻现有 bridge</span></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>现有 Pinvou 事件</th><th>目标 AG-UI 事件</th><th>处理方式</th><th>当前缺口</th></tr></thead>
+            <tbody>
+              <tr><td>chat:turn_started</td><td>RUN_STARTED</td><td><code>interactionScopeId → threadId</code>，<code>interactionRunId → runId</code>；Mission / Runtime Run 作为关联</td><td class="gap-text">独立 interactionRunId 已入账；Mission / Runtime Run 权威关联仍缺</td></tr>
+              <tr><td>chat:delta</td><td>TEXT_MESSAGE_CONTENT</td><td>Adapter 补齐 message start / end 与 messageId</td><td class="gap-text">VoiceShell 只消费最终聚合文本</td></tr>
+              <tr><td>chat:tool_start / end</td><td>TOOL_CALL_* / TOOL_CALL_RESULT</td><td>把当前 start 内 args 拆成标准流；保留 toolCallId</td><td class="gap-text">原始输出需要安全裁剪与用户态摘要</td></tr>
+              <tr><td>chat:plan_snapshot</td><td>ACTIVITY_* 或 STATE_DELTA</td><td>计划进度做活动投影，不成为 Mission 真相</td><td class="gap-text">Plan 与 Runtime Run 仍分离</td></tr>
+              <tr><td>chat:user_input_required</td><td>RUN_FINISHED · interrupt outcome</td><td>先发恢复所需 snapshot，再以 <code>outcome.type=interrupt</code> 终止本次交互 run；同 scope 的新 run 精确引用 interruptId</td><td class="gap-text">Runtime contract 已落；标准 AG-UI resume wire 与重连 snapshot 待接</td></tr>
+              <tr><td>chat:done</td><td>RUN_FINISHED / RUN_ERROR</td><td>维持 exactly-one terminal，按权威 outcome 映射</td><td class="gap-text">interaction terminal 已落；Mission / Runtime Run 终态仍缺</td></tr>
+              <tr><td>pinvou-os:event</td><td>STATE_SNAPSHOT / STATE_DELTA</td><td>由 Runtime sequence 生成有序投影；断档时请求 snapshot</td><td class="gap-text">A2UI projection 已用 ordered delta；AgentDock 与 AG-UI state 仍待统一</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="mapping-wrap">
+        <div class="table-caption"><strong>A2UI Catalog v1：从徐雅静方案继承，但做系统化收敛</strong><span>业务卡不是核心协议，优先由通用原语组合</span></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>层</th><th>建议组件</th><th>来源与调整</th><th>硬限制</th></tr></thead>
+            <tbody>
+              <tr><td>Mission</td><td>MissionCard · StatusPill · Timeline</td><td>TaskCard 改为 MissionCard；Session 仅留在迁移 adapter 内</td><td>桌面不展示完整 chat / tool log</td></tr>
+              <tr><td>Result</td><td>Result · Report · MetricGrid · DataTable</td><td>保留 ResultCard / ReportCard 的语义，拆成可组合原语</td><td>只消费明确的最终内容与可信来源</td></tr>
+              <tr><td>Artifact</td><td>ArtifactPreview · ArtifactList</td><td>继承安全 artifact bridge 与受控 renderer 思路</td><td>禁止 Agent 直传任意 path、iframe URL</td></tr>
+              <tr><td>Interaction</td><td>ChoicePrompt · TextInput · ConfirmAction</td><td>普通缺参由 Front 呈现；强制确认由 Kernel/Host 的 system/* 层呈现</td><td>同屏一个主 overlay；Front 不得隐藏系统门禁</td></tr>
+              <tr><td>System</td><td>Error · Empty · Progress · Notice</td><td>确定性 fallback，未知组件不直接渲染</td><td>错误不暴露 stack / secret / 原始 shell</td></tr>
+              <tr><td>Domain</td><td>Weather / Travel / Calendar pattern</td><td>不进入 core catalog；用通用组件组合或独立可选 catalog</td><td>领域 catalog 不能扩大 action 权限</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="authority">
+      <div class="section-head">
+        <div><span class="section-index">04 · Authority & state</span><h2>隔离的关键不是“藏起来”，而是“无写权”</h2></div>
+        <p class="section-desc">其他 Agent 可以很强，但它们没有用户关系，也没有主画布写权限。它们只把证据和结构化结果交给 Front。<strong>Front 负责解释，不负责篡改事实。</strong></p>
+      </div>
+
+      <div class="authority-grid">
+        <article class="authority-card primary">
+          <h3>Front Interaction Authority</h3>
+          <p>一位人格、一个交互入口、一个 Agent 内容呈现决策点。</p>
+          <div class="authority-rule"><span class="rule-check">✓</span><div><b>唯一 Agent 画布写者</b><span>只有 Front 可通过受控 <span class="mono">present_surface</span> 申请 front/* 变更；Runtime Projector 与 Kernel 系统层不属于 Agent 写画布。</span></div></div>
+          <div class="authority-rule"><span class="rule-check">✓</span><div><b>唯一可做普通业务提问</b><span>Mission Agent 把 missing fields 返回 Orchestrator / Front，Front 决定何时、怎样澄清；Kernel/Host 仍可显示不可绕过的系统确认。</span></div></div>
+          <div class="authority-rule"><span class="rule-check">✓</span><div><b>唯一可做用户态叙事</b><span>把 tool、Run、artifact 和风险压缩成可理解的进度与结果。</span></div></div>
+          <div class="authority-rule"><span class="rule-check">✓</span><div><b>不能绕过 Runtime / Policy</b><span>不能把失败写成成功，不能把 deny 写成可点击动作。</span></div></div>
+        </article>
+
+        <article class="authority-card worker-contract">
+          <h3>其他 Agent 的统一回传合同</h3>
+          <p>这里的执行者专指按 Mission / Runtime Run 临时创建的 Dynamic Mission Agent，不包括 12 个常驻系统角色。它可以建议“语义重点”，不能提交 A2UI JSON，更不能直接触碰 Renderer。</p>
+          <div class="contract-code" aria-label="WorkerResult JSON 示例">{
+  "missionId": "mission_…",
+  "runtimeRunId": "run_…",
+  "sourceAgentId": "agent:travel",
+  "status": "completed | needs_input | blocked | failed | cancelled",
+  "summary": "面向 Front 的短摘要",
+  "facts": [{ "claim": "…", "evidenceEventIds": ["evt_…"] }],
+  "artifacts": [{ "artifactId": "artifact_…", "kind": "html" }],
+  "questions": [{ "field": "date", "reason": "required" }],
+  "riskSignals": [{ "kind": "payment", "severity": "high" }],
+  "presentationHint": { "semanticRole": "comparison", "priority": "high" },
+  "resultReceiptId": null
+}</div>
+          <div class="contract-note">
+            <div><b>Orchestrator</b><span>聚合为 NO_OP / COMPLETED / NEEDS_CLARIFICATION / BLOCKED / FAILED / CANCELLED；不直接 createSurface。</span></div>
+            <div><b>Mission Agent</b><span>只回事实、产物、问题、风险和执行自报；completed 不等于 Runtime 已验证成功。</span></div>
+            <div><b>Surface Agent</b><span>只提供窗口、可访问性节点、焦点、边界与语义缺口事实；设备事实归 Device Agent。</span></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="collision-note"><span class="bang">!</span><div><b>必须避免名称误解</b><span>PinvouOS 的 <strong>Surface Agent</strong> 是界面场景观察角色；A2UI 的 <strong>Surface</strong> 是逻辑 UI 区域。前者不能因为同名而获得画布编排权，硬件显示能力仍归 Device Agent。</span></div></div>
+
+      <div class="matrix-wrap">
+        <div class="table-caption"><strong>状态所有权矩阵</strong><span>任何“共享状态”都必须能回答：谁写、谁赢、能否重建</span></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>状态</th><th>唯一权威</th><th>协议投影</th><th>客户端能否写</th><th>冲突规则</th></tr></thead>
+            <tbody>
+              <tr><td>Mission / Runtime Run / Event</td><td>Runtime Ledger</td><td>AG-UI snapshot / delta</td><td>只能发 intent</td><td>Runtime sequence 胜出</td></tr>
+              <tr><td>Interaction Run / message / tool progress</td><td>当前 Engine；目标写入 Runtime 关联事件</td><td>AG-UI streaming events</td><td>否</td><td>每个 interaction run 恰好一个 terminal</td></tr>
+              <tr><td>projection/* 事实画面</td><td>Runtime Projector</td><td>确定性 A2UI 投影</td><td>否</td><td>同状态同画面，不接受 Agent 覆盖事实</td></tr>
+              <tr><td>front/* 内容画布</td><td>Front Presentation Intent</td><td>A2UI messages</td><td>只写绑定表单草稿</td><td>带 basis sequence / revision 校验，可被新事实覆写</td></tr>
+              <tr><td>system/* 审批与系统层</td><td>Kernel / Host</td><td>受保护系统组件</td><td>只能响应</td><td>Front 和其他 Agent 均不可隐藏或伪造</td></tr>
+              <tr><td>Action permission / approval</td><td>Kernel Policy Gate</td><td>AG-UI interrupt outcome + system/* confirm</td><td>只能批准、拒绝或编辑参数</td><td>deny 永远高于呈现意图</td></tr>
+              <tr><td>Visual style / layout token</td><td>Host Design System</td><td>A2UI catalog + Pinvou layout enum</td><td>偏好可选</td><td>未知值 fallback</td></tr>
+              <tr><td>Local form draft / focus</td><td>Client Interaction Store</td><td>动作时回传必要 context</td><td>是</td><td>不升级为业务事实，除非提交成功</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="canvas">
+      <div class="section-head">
+        <div><span class="section-index">05 · Canvas grammar</span><h2>整块屏幕是画布，不是自由画板</h2></div>
+        <p class="section-desc">“让 Agent 使用整个显示空间”是对的；但美感不应押注模型临场写 CSS。<strong>真正稳定的做法是：让 Front 选语义布局，让设计系统完成视觉。</strong></p>
+      </div>
+
+      <div class="canvas-layout">
+        <div class="canvas-demo" aria-label="PinvouOS 安全画布示意">
+          <div class="system-frame"><span>PINVOU · SYSTEM FRAME</span><div class="system-controls"><span class="sys-btn">⌂</span><span class="sys-btn">●</span><span class="sys-btn">■</span></div></div>
+          <div class="agent-plane">
+            <div class="canvas-primary">
+              <div class="canvas-card feature"><span class="mini-eyebrow">Primary · Mission result</span><h4>上海周末行程已经整理好</h4><p>Front 选择“报告 + 对比”语义；字体、间距、颜色和组件由 Renderer 决定。</p><div class="metric-row"><div class="metric"><b>3</b><span>候选路线</span></div><div class="metric"><b>¥2.4k</b><span>预算中位数</span></div><div class="metric"><b>2 days</b><span>建议时长</span></div></div><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+              <div class="canvas-card"><span class="mini-eyebrow">Action bar</span><div class="mode-row"><span class="mode">查看对比</span><span class="mode">打开产物</span><span class="mode">继续调整</span></div></div>
+            </div>
+            <div class="canvas-context">
+              <div class="canvas-card"><span class="mini-eyebrow">Activity</span><div class="timeline-mini"><div><i></i><span>需求已确认</span></div><div><i></i><span>候选已核验</span></div><div><i class="wait"></i><span>等待预算选择</span></div></div></div>
+              <div class="canvas-card"><span class="mini-eyebrow">Artifact</span><h4 style="font-size:14px">行程比较.html</h4><p>受控预览，不接受任意 URL。</p></div>
+            </div>
+          </div>
+          <div class="canvas-overlay">system/* 系统确认层 · 最终预订前必须由用户确认乘机人、订单和支付；Front 不可隐藏。</div>
+        </div>
+
+        <div class="canvas-rules">
+          <div class="canvas-rule"><b>系统层永远不可隐藏</b><span>Home、Stop、隐私/录音状态、关键连接状态由 Host 固定。即使 immersive 也保留安全逃生口。</span></div>
+          <div class="canvas-rule"><b>Front 只选 6 类画布模式</b><span>模式是 Pinvou 的宿主扩展，不假装属于 A2UI 标准。</span><div class="mode-row"><span class="mode">ambient</span><span class="mode">focus</span><span class="mode">split</span><span class="mode">grid</span><span class="mode">overview</span><span class="mode">immersive</span></div></div>
+          <div class="canvas-rule"><b>信息层级由规则锁住</b><span>首屏一个主目标、一个主动作、最多三个活跃内容块；细节进入 timeline、drawer 或二级 Surface。</span></div>
+          <div class="canvas-rule"><b>“丑”的风险靠系统治理</b><span>同一 catalog、同一 token、响应式排版、内容长度预算、确定性 fallback、视觉回归测试。</span></div>
+          <div class="canvas-rule"><b>Agent 永不输出这些东西</b><span>任意 HTML / CSS / JS、任意 iframe URL、文件路径、未注册 action、像素坐标和系统级 z-index。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap">
+      <div class="section-head">
+        <div><span class="section-index">06 · Migration & gates</span><h2>分五步接入，不做大爆炸重写</h2></div>
+        <p class="section-desc">先让现有事实流“说标准话”，再让确定性投影渲染 A2UI，最后才把呈现意图交给 Front。<strong>第一版不需要 LLM 直接生成画布。</strong></p>
+      </div>
+
+      <div class="flow">
+        <article class="phase"><span class="phase-no">P0</span><h3>补齐事实闭环</h3><p>先让 Runtime 可靠描述完整 Mission / Run 与可验证结果。</p><ul><li>完成 / 暂停 / 恢复 / 取消事件</li><li>用户、模型、工具、Policy、artifact 与 receipt 入账</li><li>Chat turn 与 Mission / Runtime Run 关联</li></ul><span class="gate">Gate · replay 后状态一致</span></article>
+        <article class="phase"><span class="phase-no">P1</span><h3>AG-UI Adapter · 首切片已落</h3><p>Runtime 已接 interaction scope/run、工具摘要、唯一终态与 interrupt/resume；标准 wire 适配继续推进。</p><ul><li>interaction scope / run 与 Runtime Run 分离：已完成</li><li>snapshot + delta + sequence：A2UI 投影已完成，AG-UI 待接</li><li>interrupt outcome + resume linkage：已完成</li></ul><span class="gate">Gate passed · 142 项 Runtime 回归含并发唯一终态</span></article>
+        <article class="phase"><span class="phase-no">P2</span><h3>确定性 A2UI · 状态面已落</h3><p>projector 已生成只读 projection/*，宿主固定 Catalog 渲染，不让模型参与。</p><ul><li>Pinvou catalog + validator：已完成首版</li><li>Runtime status：已完成；Mission / Result 待扩展</li><li>Artifact 仍用受信宿主卡；不开放外部副作用</li></ul><span class="gate">Gate passed · 同 sequence 同画面，旧 delta 丢弃</span></article>
+        <article class="phase"><span class="phase-no">P3</span><h3>Front 编排画布</h3><p>给 Front 受控 present_surface 能力，并先接最小 Policy 执行门。</p><ul><li>front/* + basis sequence / revision</li><li>Mission Agent / Orchestrator 两级回执</li><li>副作用 Action 必须先过 Kernel Policy Gate</li></ul><span class="gate">Gate · 未授权 Agent 写入必拒绝</span></article>
+        <article class="phase"><span class="phase-no">P4</span><h3>中断、审批与恢复</h3><p>完善 steering、cancel/resume、系统确认与重连。</p><ul><li>system/* 受保护确认层</li><li>审批参数绑定、过期与幂等恢复</li><li>surface + state recovery</li></ul><span class="gate">Gate · 崩溃/断连可重建</span></article>
+      </div>
+
+      <div class="acceptance" aria-label="架构验收标准">
+        <div class="accept"><span class="accept-mark">01</span><div><b>分区写权</b><span>只有 Front 可写 front/*；只有 Runtime Projector 可写 projection/*；只有 Kernel/Host 可写 system/*，越区写入全部拒绝并审计。</span></div></div>
+        <div class="accept"><span class="accept-mark">02</span><div><b>权威终态</b><span>每个 AG-UI interaction run 恰好一个 terminal；Runtime Run 可暂停/恢复，Mission 是否完成只由 Runtime 的已验证结果决定。</span></div></div>
+        <div class="accept"><span class="accept-mark">03</span><div><b>可恢复</b><span>重启或断连后用 snapshot + ordered delta 重建同一 Mission 画面。</span></div></div>
+        <div class="accept"><span class="accept-mark">04</span><div><b>可 steering</b><span>运行中始终能 cancel；支持在明确语义下补充、修正或 resume。</span></div></div>
+        <div class="accept"><span class="accept-mark">05</span><div><b>安全降级</b><span>未知组件、action、字段或 catalog 版本不崩溃、不越权。</span></div></div>
+        <div class="accept"><span class="accept-mark">06</span><div><b>视觉稳定</b><span>模型输出变化不改变 token、组件骨架、触控热区和系统逃生口。</span></div></div>
+        <div class="accept"><span class="accept-mark">07</span><div><b>无原始泄漏</b><span>主画布不显示 reasoning、shell、stack、secret 或未裁剪工具输出。</span></div></div>
+        <div class="accept"><span class="accept-mark">08</span><div><b>证据可追</b><span>结果、状态与风险能回到 eventId / artifactId / sourceAgentId。</span></div></div>
+        <div class="accept"><span class="accept-mark">09</span><div><b>协议可升级</b><span>A2UI v1.0 与 AG-UI 新版通过 adapter / conformance fixtures 升级。</span></div></div>
+      </div>
+    </section>
+
+    <section class="section" id="decisions">
+      <div class="section-head">
+        <div><span class="section-index">07 · Decisions & provenance</span><h2>明确决定，也明确没决定什么</h2></div>
+        <p class="section-desc">本文是 Interaction / Presentation Plane 的真相源；Agent 拓扑和 Memory 仍由各自架构文档负责。已验证切片标记为 Implemented，尚未实现的目标继续标记为 Proposed。</p>
+      </div>
+
+      <div class="decision-grid">
+        <div class="decision"><span class="decision-id">D-01</span><div><b>不新建第二个用户人格</b><span>“UI Agent”收敛为 Front 内部 Presentation Planner，不与 Front 抢用户关系。</span></div></div>
+        <div class="decision"><span class="decision-id">D-02</span><div><b>交互标识与任务标识分离</b><span>Mission 工作区通常映射为 threadId；AG-UI runId 使用独立 interactionRunId，Runtime Run 通过 correlation 关联。全局 Pinvou 画面使用稳定 interaction scope，不引入产品 Session。</span></div></div>
+        <div class="decision"><span class="decision-id">D-03</span><div><b>Tauri 继续做 transport</b><span>先做 AG-UI wire compatibility，不为协议形式重写桌面通信栈。</span></div></div>
+        <div class="decision"><span class="decision-id">D-04</span><div><b>A2UI wire v0.9 做基线</b><span>wire 使用规范声明的 <code>v0.9</code>；SDK / 仓库 revision 单独 pin。v1.0 经 adapter 试验，不直接绑定 main 分支变化。</span></div></div>
+        <div class="decision"><span class="decision-id">D-05</span><div><b>自有 Catalog，不自创协议</b><span>Pinvou Renderer 实现 A2UI Surface 和数据绑定；视觉原语由宿主定义。</span></div></div>
+        <div class="decision"><span class="decision-id">D-06</span><div><b>Adaptive Cards 只借思想</b><span>继承 host-owned visual、action whitelist、version fallback；不作为核心运行协议。</span></div></div>
+        <div class="decision"><span class="decision-id">D-07</span><div><b>Policy 高于 Presentation</b><span>Policy Agent 评估，Kernel 强制；Host 生成不可隐藏的 system/* 确认层，Front 只负责用户态解释。</span></div></div>
+        <div class="decision"><span class="decision-id">D-08</span><div><b>协议状态不是第二真相源</b><span>AG-UI state 与 A2UI data model 都是投影；业务事实与需要精确恢复的 Front Presentation Intent 均写入同一 Runtime Ledger。</span></div></div>
+        <div class="decision"><span class="decision-id">D-09</span><div><b>三个 Surface 写权分区</b><span>projection/* 属于 Runtime Projector，front/* 属于 Front，system/* 属于 Kernel/Host；“Front 唯一写者”只指 Agent 内容画布。</span></div></div>
+      </div>
+
+      <div class="sources">
+        <aside class="source-rule">
+          <h3>证据优先级</h3>
+          <p>同一结论发生冲突时，按下列顺序修正文档。目标态永远不能反向覆盖事实态。</p>
+          <ol>
+            <li>MegaBook 实际运行与可复现实机行为</li>
+            <li>当前工作树真实接线与可到达命令</li>
+            <li>自动化测试与 Runtime 账本</li>
+            <li>架构文档和设计提案</li>
+            <li>未来目标与路线图</li>
+          </ol>
+          <p style="margin-top:18px;margin-bottom:0">更新触发：部署变化、协议版本变化、状态所有权变化、Front/Policy 权限变化。</p>
+        </aside>
+        <div class="source-list">
+          <div class="source-group">
+            <h4>Industry · official primary sources</h4>
+            <a class="source-link" href="https://github.com/ag-ui-protocol/ag-ui">AG-UI official repository · MIT</a>
+            <a class="source-link" href="https://docs.ag-ui.com/concepts/architecture">AG-UI core architecture and event categories</a>
+            <a class="source-link" href="https://docs.ag-ui.com/concepts/events">AG-UI snapshot / delta / message events</a>
+            <a class="source-link" href="https://docs.ag-ui.com/concepts/interrupts">AG-UI interrupt and resume linkage</a>
+            <a class="source-link" href="https://github.com/a2ui-project/a2ui">A2UI official repository · Apache-2.0 · release status</a>
+            <a class="source-link" href="https://a2ui.org/specification/v0.9-a2ui/">A2UI v0.9 protocol specification</a>
+            <a class="source-link" href="https://a2ui.org/reference/messages/">A2UI message reference and JSONL envelope</a>
+          </div>
+          <div class="source-group">
+            <h4>Pinvou · local evidence</h4>
+            <a class="source-link source-path" href="./README.md">docs/architecture/README.md · 跨文档权威索引与共同不变量</a>
+            <a class="source-link source-path" href="./pinvouos-multi-agent-collaboration.html">docs/architecture/pinvouos-multi-agent-collaboration.html · Agent topology truth</a>
+            <a class="source-link source-path" href="./pinvouos-memory-architecture.html">docs/architecture/pinvouos-memory-architecture.html · Memory plane truth</a>
+            <span class="source-link source-path">AIOS UI Agent卡片协议设计.md · 内部设计输入</span>
+            <span class="source-link source-path">Obsidian / PinvouOS AgentOS 产品主张 · 产品原则</span>
+            <span class="source-link source-path">pinvou3-app/src/features/pinvou_os/PinvouOsVoiceShell.jsx · 当前显示边界</span>
+            <span class="source-link source-path">pinvou3-app/src-tauri/src/features/assistant/forwarder.rs · chat event evidence</span>
+            <span class="source-link source-path">pinvou3-app/src-tauri/src/features/pinvou_os/model.rs · Runtime event model</span>
+            <span class="source-link source-path">pinvou3-app/src/features/pinvou_os/runtime-api.js · current frontend projection</span>
+          </div>
+          <p class="source-meta">文档版本 v0.2 · 实施与实机验收更新于 2026-08-18 · 自包含 HTML：无外部脚本、字体、样式或图片依赖。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner"><span><strong>PinvouOS Interaction Surface</strong> · AG-UI × A2UI</span><span>Implemented first slice + Proposed target · shared invariants in architecture/README.md</span></div>
+  </footer>
+
+  <script>
+    (function () {
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-tab]'));
+      var panels = Array.prototype.slice.call(document.querySelectorAll('.truth-panel'));
+
+      function activate(tab) {
+        var targetId = tab.getAttribute('data-tab');
+        tabs.forEach(function (item) {
+          var selected = item === tab;
+          item.setAttribute('aria-selected', selected ? 'true' : 'false');
+          item.tabIndex = selected ? 0 : -1;
+        });
+        panels.forEach(function (panel) {
+          var active = panel.id === targetId;
+          panel.classList.toggle('is-active', active);
+          panel.hidden = !active;
+        });
+      }
+
+      tabs.forEach(function (tab, index) {
+        tab.addEventListener('click', function () { activate(tab); });
+        tab.addEventListener('keydown', function (event) {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          var direction = event.key === 'ArrowRight' ? 1 : -1;
+          var next = (index + direction + tabs.length) % tabs.length;
+          activate(tabs[next]);
+          tabs[next].focus();
+        });
+      });
+    }());
+  </script>
+</body>
+</html>

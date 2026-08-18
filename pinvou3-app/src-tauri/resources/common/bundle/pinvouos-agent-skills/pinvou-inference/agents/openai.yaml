@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Inference"
+  short_description: "Inspect model route health and recent success"
+  default_prompt: "Use $pinvou-inference to inspect whether the configured model route is ready."

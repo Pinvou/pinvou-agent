@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Attention"
+  short_description: "Allocate concurrent work under device pressure"
+  default_prompt: "Use $pinvou-attention to produce a bounded priority and interruption plan."

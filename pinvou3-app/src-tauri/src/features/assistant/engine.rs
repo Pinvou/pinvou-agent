@@ -22,6 +22,7 @@ use deepseek_tui::core::engine::{spawn_engine, EngineHandle};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
+use deepseek_tui::prompts::InstructionSource;
 use deepseek_tui::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use deepseek_tui::tools::user_input::UserInputResponse;
 use deepseek_tui::tui::app::AppMode;
@@ -73,6 +74,188 @@ pub struct AppEngine {
     turn_lifecycle: Arc<TurnLifecycle>,
     turn_shell_tasks: Option<TurnShellTaskRegistry>,
     scheduled_disallowed_tools: Vec<String>,
+    interaction_trace: PinvouInteractionTrace,
+}
+
+#[derive(Debug, Default)]
+struct PinvouInteractionTraceState {
+    active_interaction_run_id: Option<String>,
+    pending_interrupt: Option<(String, String)>,
+}
+
+/// CodeWhale turn id/session id 只留在 execution adapter；Runtime 只看到独立的
+/// interaction run。观测失败只记录告警，不得破坏用户的主交互路径。
+#[derive(Clone, Default)]
+pub(crate) struct PinvouInteractionTrace {
+    runtime: Option<crate::features::pinvou_os::PinvouOsRuntime>,
+    state: Arc<Mutex<PinvouInteractionTraceState>>,
+}
+
+impl PinvouInteractionTrace {
+    fn new(runtime: Option<crate::features::pinvou_os::PinvouOsRuntime>) -> Self {
+        Self {
+            runtime,
+            state: Arc::new(Mutex::new(PinvouInteractionTraceState::default())),
+        }
+    }
+
+    fn begin(&self, content: &str) -> Result<()> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Ok(());
+        };
+        let mut state = self.state.lock();
+        if state.active_interaction_run_id.is_some() {
+            anyhow::bail!("PinvouOS interaction trace already has an active run");
+        }
+        let interaction = runtime.open_interaction_run(
+            crate::features::pinvou_os::OpenInteractionRunRequest {
+                content: content.to_string(),
+                modality: crate::features::pinvou_os::InteractionModality::Voice,
+                parent_interaction_run_id: None,
+                resume_interrupt_id: None,
+            },
+        )?;
+        runtime.start_interaction_run(&interaction.interaction_run_id)?;
+        state.active_interaction_run_id = Some(interaction.interaction_run_id);
+        state.pending_interrupt = None;
+        Ok(())
+    }
+
+    pub(crate) fn record_tool_started(&self, id: &str, name: &str) {
+        let (Some(runtime), Some(interaction_run_id)) =
+            (self.runtime.as_ref(), self.active_interaction_run_id())
+        else {
+            return;
+        };
+        if let Err(error) = runtime.record_interaction_tool_started(&interaction_run_id, id, name) {
+            log::warn!("[pinvou-os][interaction] tool start not recorded: {error:#}");
+        }
+    }
+
+    pub(crate) fn record_tool_finished(&self, id: &str, name: &str, success: bool) {
+        let (Some(runtime), Some(interaction_run_id)) =
+            (self.runtime.as_ref(), self.active_interaction_run_id())
+        else {
+            return;
+        };
+        if let Err(error) =
+            runtime.record_interaction_tool_finished(&interaction_run_id, id, name, success)
+        {
+            log::warn!("[pinvou-os][interaction] tool finish not recorded: {error:#}");
+        }
+    }
+
+    pub(crate) fn interrupt(&self, interrupt_id: &str, question_count: usize, message: &str) {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+        let active = self.state.lock().active_interaction_run_id.clone();
+        let Some(interaction_run_id) = active else {
+            return;
+        };
+        if !message.is_empty() {
+            if let Err(error) =
+                runtime.record_interaction_assistant_message(&interaction_run_id, message)
+            {
+                log::warn!(
+                    "[pinvou-os][interaction] pre-interrupt message not recorded: {error:#}"
+                );
+            }
+        }
+        let outcome = crate::features::pinvou_os::InteractionRunOutcome::Interrupt {
+            interrupts: vec![crate::features::pinvou_os::InteractionInterrupt {
+                interrupt_id: interrupt_id.to_string(),
+                reason: "user_input_required".to_string(),
+                question_count: u32::try_from(question_count).unwrap_or(u32::MAX).max(1),
+                created_at_ms: chrono::Utc::now().timestamp_millis(),
+            }],
+        };
+        match runtime.finish_interaction_run(&interaction_run_id, outcome) {
+            Ok(_) => {
+                let mut state = self.state.lock();
+                if state.active_interaction_run_id.as_deref() == Some(&interaction_run_id) {
+                    state.active_interaction_run_id = None;
+                    state.pending_interrupt = Some((interaction_run_id, interrupt_id.to_string()));
+                }
+            }
+            Err(error) => {
+                log::warn!("[pinvou-os][interaction] interrupt not recorded: {error:#}");
+            }
+        }
+    }
+
+    pub(crate) fn resume(&self, interrupt_id: &str, response: &str) {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+        let mut state = self.state.lock();
+        let Some((parent_id, pending_interrupt_id)) = state.pending_interrupt.clone() else {
+            return;
+        };
+        if pending_interrupt_id != interrupt_id || state.active_interaction_run_id.is_some() {
+            return;
+        }
+        let content = if response.trim().is_empty() {
+            "user_input_submitted"
+        } else {
+            response
+        };
+        let opened =
+            runtime.open_interaction_run(crate::features::pinvou_os::OpenInteractionRunRequest {
+                content: content.to_string(),
+                modality: crate::features::pinvou_os::InteractionModality::Touch,
+                parent_interaction_run_id: Some(parent_id),
+                resume_interrupt_id: Some(pending_interrupt_id),
+            });
+        match opened.and_then(|interaction| {
+            runtime.start_interaction_run(&interaction.interaction_run_id)?;
+            Ok(interaction)
+        }) {
+            Ok(interaction) => {
+                state.active_interaction_run_id = Some(interaction.interaction_run_id);
+                state.pending_interrupt = None;
+            }
+            Err(error) => {
+                log::warn!("[pinvou-os][interaction] resume not recorded: {error:#}");
+            }
+        }
+    }
+
+    pub(crate) fn finish(
+        &self,
+        outcome: crate::features::pinvou_os::InteractionRunOutcome,
+        message: &str,
+    ) {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+        let active = self.state.lock().active_interaction_run_id.clone();
+        let Some(interaction_run_id) = active else {
+            return;
+        };
+        if !message.is_empty() {
+            if let Err(error) =
+                runtime.record_interaction_assistant_message(&interaction_run_id, message)
+            {
+                log::warn!("[pinvou-os][interaction] assistant message not recorded: {error:#}");
+            }
+        }
+        match runtime.finish_interaction_run(&interaction_run_id, outcome) {
+            Ok(_) => {
+                let mut state = self.state.lock();
+                if state.active_interaction_run_id.as_deref() == Some(&interaction_run_id) {
+                    state.active_interaction_run_id = None;
+                }
+            }
+            Err(error) => {
+                log::warn!("[pinvou-os][interaction] terminal not recorded: {error:#}");
+            }
+        }
+    }
+
+    fn active_interaction_run_id(&self) -> Option<String> {
+        self.state.lock().active_interaction_run_id.clone()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1214,6 +1397,41 @@ impl AppEngine {
         } else {
             bridge.build_engine_config_for_session_roots(session_id, roots)
         };
+        // 普通 PinvouOS 交互面由 Front 独占用户关系和最终答复权；完整契约只写进
+        // 一次静态 instructions，不随每轮消息重复。Scheduled 与原生 Code 入口
+        // 不是该 Front，不能继承语音假设或后台 Orchestrator 路由规则。
+        let is_pinvou_os_front = scheduled_profile.is_none() && !bridge.is_code_session(session_id);
+        let pinvou_os_fleet_config = is_pinvou_os_front.then(|| {
+            crate::features::pinvou_os::pinvou_os_fleet_config(
+                expert_snapshot
+                    .as_deref()
+                    .map(ExpertRosterSnapshot::fleet_config),
+            )
+        });
+        if is_pinvou_os_front {
+            engine_config.direct_tool_round_policy =
+                Some(deepseek_tui::core::engine::DirectToolRoundPolicy {
+                    max_direct_rounds: 3,
+                    overflow_tools: vec!["agent".to_string()],
+                });
+            // PinvouOS 原子能力直接读取同一份进程内 Runtime 投影。只装到唯一
+            // Front engine；Orchestrator 子 Agent 继承该工具面，原生 Code 与
+            // unattended automation 不得看到 OS 私有控制面。
+            engine_config.extra_tools.0.extend(
+                crate::features::pinvou_os::pinvou_os_runtime_tools(app.clone()),
+            );
+            if !install_front_agent_instruction(&mut engine_config.instructions) {
+                log::warn!(
+                    "[pinvou-os][front] static instruction source unavailable for {session_id}"
+                );
+            }
+            if let Some(fleet_config) = pinvou_os_fleet_config.as_ref() {
+                engine_config.fleet_roster = Arc::new(deepseek_tui::FleetRoster::load(
+                    fleet_config,
+                    &engine_config.workspace,
+                ));
+            }
+        }
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
         // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
@@ -1243,10 +1461,15 @@ impl AppEngine {
         } else {
             Some(disallowed)
         };
-        let dt_config = match expert_snapshot.as_deref() {
+        let mut dt_config = match expert_snapshot.as_deref() {
             Some(snapshot) => bridge.build_multi_agent_dt_config(snapshot),
             None => bridge.build_dt_config(),
         };
+        if let Some(fleet_config) = pinvou_os_fleet_config {
+            // EngineConfig 的可见 roster 与 spawn-time DtConfig 必须来自同一份
+            // 合并结果，否则 Front 看得到 profile，实际派工时却可能解析不到。
+            dt_config.fleet = Some(fleet_config);
+        }
         eprintln!(
             "[pinvou3-app] spawn_engine session={} model={} workspace={} instructions={}",
             session_id,
@@ -1259,6 +1482,12 @@ impl AppEngine {
         let handle = spawn_engine(engine_config, &dt_config);
         let (turn_events, _) = broadcast::channel(32);
         let scheduled_unattended = Arc::new(AtomicBool::new(false));
+        let interaction_trace = PinvouInteractionTrace::new(
+            is_pinvou_os_front
+                .then(|| app.try_state::<crate::features::pinvou_os::PinvouOsRuntime>())
+                .flatten()
+                .map(|runtime| (*runtime).clone()),
+        );
         let forwarder = spawn_event_forwarder(
             app,
             handle.clone(),
@@ -1273,6 +1502,7 @@ impl AppEngine {
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks.clone(),
+            interaction_trace.clone(),
         );
 
         Ok((
@@ -1287,6 +1517,7 @@ impl AppEngine {
                 turn_lifecycle,
                 turn_shell_tasks: Some(turn_shell_tasks),
                 scheduled_disallowed_tools,
+                interaction_trace,
             },
             forwarder,
         ))
@@ -1320,6 +1551,7 @@ impl AppEngine {
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
             turn_shell_tasks: None,
             scheduled_disallowed_tools,
+            interaction_trace: PinvouInteractionTrace::default(),
         })
     }
 
@@ -1336,6 +1568,7 @@ impl AppEngine {
         restrict_tools: bool,
     ) -> Result<()> {
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
+        let trace_content = content.clone();
         let op = self.build_interactive_send_message_op(
             content,
             mode,
@@ -1343,7 +1576,19 @@ impl AppEngine {
             restrict_tools,
             expert_snapshot,
         )?;
-        self.send_turn_op(op).await
+        if let Err(error) = self.interaction_trace.begin(&trace_content) {
+            log::warn!("[pinvou-os][interaction] submission start not recorded: {error:#}");
+        }
+        if let Err(error) = self.send_turn_op(op).await {
+            self.interaction_trace.finish(
+                crate::features::pinvou_os::InteractionRunOutcome::Error {
+                    error_code: "submission_failed".to_string(),
+                },
+                "",
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) async fn send_reserved_user_message(
@@ -1355,6 +1600,7 @@ impl AppEngine {
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         reservation: TurnReservation,
     ) -> Result<()> {
+        let trace_content = content.clone();
         let op = self.build_interactive_send_message_op(
             content,
             mode,
@@ -1362,7 +1608,21 @@ impl AppEngine {
             restrict_tools,
             expert_snapshot,
         )?;
-        self.send_reserved_turn_op(op, reservation).await
+        if let Err(error) = self.interaction_trace.begin(&trace_content) {
+            log::warn!(
+                "[pinvou-os][interaction] reserved submission start not recorded: {error:#}"
+            );
+        }
+        if let Err(error) = self.send_reserved_turn_op(op, reservation).await {
+            self.interaction_trace.finish(
+                crate::features::pinvou_os::InteractionRunOutcome::Error {
+                    error_code: "submission_failed".to_string(),
+                },
+                "",
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn build_interactive_send_message_op(
@@ -1390,13 +1650,23 @@ impl AppEngine {
             if expert_snapshot.is_some() {
                 anyhow::bail!("ordinary turn must not carry a multi-agent expert snapshot");
             }
-            self.bridge.build_send_message_op(
-                &self.session_id,
-                content,
-                mode,
-                persona_reminder,
-                restrict_tools,
-            )
+            if self.bridge.is_code_session(&self.session_id) {
+                self.bridge.build_send_message_op(
+                    &self.session_id,
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                )
+            } else {
+                self.bridge.build_pinvou_os_send_message_op(
+                    &self.session_id,
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                )
+            }
         }
     }
 
@@ -1616,7 +1886,6 @@ impl AppEngine {
 }
 
 fn format_instructions(sources: &[deepseek_tui::prompts::InstructionSource]) -> String {
-    use deepseek_tui::prompts::InstructionSource;
     if sources.is_empty() {
         "none".to_string()
     } else {
@@ -1629,6 +1898,18 @@ fn format_instructions(sources: &[deepseek_tui::prompts::InstructionSource]) -> 
             .collect::<Vec<_>>()
             .join(",")
     }
+}
+
+fn install_front_agent_instruction(sources: &mut [InstructionSource]) -> bool {
+    let Some(InstructionSource::Inline { content, .. }) = sources.first_mut() else {
+        return false;
+    };
+    let instruction = crate::features::pinvou_os::FRONT_AGENT_INSTRUCTION;
+    if !content.contains(instruction) {
+        content.push_str("\n\n");
+        content.push_str(instruction);
+    }
+    true
 }
 
 /// Per-turn 状态：跟踪本 turn 是否调过 plan 类工具 + 最后一次 snapshot。
@@ -1684,6 +1965,37 @@ mod tool_result_projection_tests {
         assert_eq!(output, "interrupted");
         assert!(!success, "chat:tool_end must preserve ToolResult.success");
         assert!(metadata.is_none());
+    }
+}
+
+#[cfg(test)]
+mod front_agent_instruction_tests {
+    use super::install_front_agent_instruction;
+    use crate::features::pinvou_os::{FRONT_AGENT_INSTRUCTION, FRONT_VOICE_TRANSCRIPT_INSTRUCTION};
+    use deepseek_tui::prompts::InstructionSource;
+
+    #[test]
+    fn front_contract_is_static_and_idempotent() {
+        let mut instructions = vec![InstructionSource::Inline {
+            name: "pinvou3:instructions".to_string(),
+            content: "base".to_string(),
+        }];
+
+        assert!(install_front_agent_instruction(&mut instructions));
+        assert!(install_front_agent_instruction(&mut instructions));
+
+        let InstructionSource::Inline { content, .. } = &instructions[0] else {
+            panic!("expected inline instructions");
+        };
+        assert_eq!(content.matches(FRONT_AGENT_INSTRUCTION).count(), 1);
+        assert!(content.contains(FRONT_VOICE_TRANSCRIPT_INSTRUCTION));
+        assert_eq!(content, &format!("base\n\n{FRONT_AGENT_INSTRUCTION}"));
+    }
+
+    #[test]
+    fn front_contract_does_not_mutate_non_inline_sources() {
+        let mut instructions = vec![InstructionSource::File("instructions.md".into())];
+        assert!(!install_front_agent_instruction(&mut instructions));
     }
 }
 

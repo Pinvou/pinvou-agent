@@ -317,6 +317,17 @@ pub(crate) async fn chat_with_reservation(
             if memory_enabled {
                 crate::features::memory::record_turn_user(&sid, &raw_message);
             }
+            if !is_scheduled {
+                if let Some(context_agent) =
+                    app.try_state::<crate::features::pinvou_os::AsrContextAgent>()
+                {
+                    if let Err(error) = context_agent
+                        .observe_user_text(&raw_message, chrono::Utc::now().timestamp_millis())
+                    {
+                        log::warn!("ASR Context Agent could not observe user terms: {error:#}");
+                    }
+                }
+            }
             log::info!(
                 "[pinvou3][chat] engine send ok sid={} send_elapsed_ms={} total_elapsed_ms={}",
                 sid,

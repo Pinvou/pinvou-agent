@@ -1,9 +1,16 @@
 use super::prelude::*;
+use base64::Engine as _;
+
+const MAX_VOICE_WAV_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct VoiceTranscriptionRequest {
-    /// WAV bytes captured by the WebView.
+    /// Legacy transport retained for compatibility with older callers.
+    #[serde(default)]
     pub audio_bytes: Vec<u8>,
+    /// Compact desktop transport for up to 60 seconds of PCM16 WAV audio.
+    #[serde(default)]
+    pub audio_base64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +36,45 @@ impl VoiceCommandError {
     }
 }
 
+impl VoiceTranscriptionRequest {
+    pub(super) fn into_audio_bytes(self) -> Result<Vec<u8>, VoiceCommandError> {
+        let has_legacy_bytes = !self.audio_bytes.is_empty();
+        let has_base64 = self
+            .audio_base64
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        if has_legacy_bytes && has_base64 {
+            return Err(VoiceCommandError::new(
+                "recording_failed",
+                "recording",
+                "Voice request must use exactly one audio transport.",
+            ));
+        }
+        let audio_bytes = if has_base64 {
+            base64::engine::general_purpose::STANDARD
+                .decode(self.audio_base64.as_deref().unwrap_or_default())
+                .map_err(|error| {
+                    VoiceCommandError::new(
+                        "recording_failed",
+                        "recording",
+                        format!("Voice WAV base64 is invalid: {error}"),
+                    )
+                })?
+        } else {
+            self.audio_bytes
+        };
+        if audio_bytes.len() > MAX_VOICE_WAV_BYTES {
+            return Err(VoiceCommandError::new(
+                "recording_failed",
+                "recording",
+                format!("Recorded voice WAV exceeds {MAX_VOICE_WAV_BYTES} bytes."),
+            ));
+        }
+        Ok(audio_bytes)
+    }
+}
+
 fn local_asr_command_name() -> String {
     crate::features::voice::asr_tool_path()
         .to_string_lossy()
@@ -38,7 +84,21 @@ fn local_asr_command_name() -> String {
 fn local_asr_model_name() -> String {
     std::env::var("PINVOU3_ASR_MODEL")
         .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_MODEL"))
-        .unwrap_or_else(|_| "sensevoice-q8".to_string())
+        .unwrap_or_else(|_| crate::features::voice::default_asr_model_name().to_string())
+}
+
+fn local_asr_source(model: &str) -> String {
+    std::env::var("PINVOU3_ASR_SOURCE")
+        .ok()
+        .map(|source| source.trim().to_string())
+        .filter(|source| !source.is_empty())
+        .unwrap_or_else(|| {
+            if model.to_ascii_lowercase().contains("qwen3-asr") {
+                "pinvou-webview-qwen3-asr-openvino-gpu".to_string()
+            } else {
+                "local_cli".to_string()
+            }
+        })
 }
 
 fn local_asr_language() -> String {
@@ -75,6 +135,18 @@ fn has_explicit_asr_cli_fallback() -> bool {
         values[1].as_deref(),
         values[2].as_deref(),
     ])
+}
+
+/// Ask the resident ASR service to refresh an idle GPU pipeline while the user
+/// is recording. Non-resident backends report that no prewarm was performed.
+#[tauri::command]
+pub async fn prewarm_voice_asr() -> Result<bool, String> {
+    tokio::task::spawn_blocking(|| {
+        crate::features::voice::prewarm_audio_backend(std::time::Duration::from_secs(10))
+            .unwrap_or(Ok(false))
+    })
+    .await
+    .map_err(|error| format!("Voice ASR prewarm task failed: {error}"))?
 }
 
 pub(super) fn apply_local_asr_model_env(
@@ -283,7 +355,7 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 
     Ok(LocalAsrOutput {
         text,
-        source: "local_cli".to_string(),
+        source: local_asr_source(&model),
     })
 }
 
@@ -292,8 +364,17 @@ fn run_local_asr_cli(wav_path: &std::path::Path) -> Result<LocalAsrOutput, Voice
 #[tauri::command]
 pub async fn transcribe_voice_audio(
     request: VoiceTranscriptionRequest,
+    context_agent: State<'_, crate::features::pinvou_os::AsrContextAgent>,
 ) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
-    if request.audio_bytes.len() < 44 {
+    transcribe_voice_audio_with_context(request, context_agent.current_context()).await
+}
+
+pub(crate) async fn transcribe_voice_audio_with_context(
+    request: VoiceTranscriptionRequest,
+    asr_context: String,
+) -> Result<VoiceTranscriptionResponse, VoiceCommandError> {
+    let audio_bytes = request.into_audio_bytes()?;
+    if audio_bytes.len() < 44 {
         return Err(VoiceCommandError::new(
             "recording_failed",
             "recording",
@@ -301,9 +382,43 @@ pub async fn transcribe_voice_audio(
         ));
     }
 
-    let wav_path = voice_temp_wav_path();
-    let audio_bytes = request.audio_bytes;
     let asr_output = tokio::task::spawn_blocking(move || {
+        // System locales such as en-US can make Chinese speech produce
+        // meaningless letters, so keep the app's explicit speech locale.
+        let locale_tag = crate::platform::prefs::UserPrefs::load()
+            .language
+            .speech_recognition_locale();
+
+        // Qwen3-ASR v3 sends WAV bytes plus the precompiled context snapshot
+        // directly to the loopback-only resident
+        // service. A configured CLI remains available as a rolling-upgrade
+        // fallback when the resident endpoint is unavailable.
+        match crate::features::voice::recognize_audio_bytes(
+            &audio_bytes,
+            locale_tag,
+            &asr_context,
+            local_asr_timeout(),
+        ) {
+            Some(Ok(text)) => {
+                return Ok(LocalAsrOutput {
+                    text,
+                    source: crate::features::voice::native_recognition_source().to_string(),
+                });
+            }
+            Some(Err(error)) if !has_explicit_asr_cli_fallback() => {
+                return Err(VoiceCommandError::new(
+                    "recognition_failed",
+                    "transcribing",
+                    error,
+                ));
+            }
+            Some(Err(error)) => {
+                log::warn!("direct resident ASR unavailable; using CLI fallback: {error}");
+            }
+            None => {}
+        }
+
+        let wav_path = voice_temp_wav_path();
         std::fs::write(&wav_path, &audio_bytes).map_err(|e| {
             VoiceCommandError::new(
                 "recording_failed",
@@ -317,11 +432,6 @@ pub async fn transcribe_voice_audio(
         // 平台选择封装在 `features::voice::recognize_native`（platform/ 适配器），
         // 此处只按返回值分发，不出现 cfg(target_os)。
         let result = {
-            // 识别语言跟随 UI 语言偏好（默认 zh-Hans → zh-CN）：系统默认 locale
-            // 可能是 en-US，会把中文音频当英文解析 → 无意义英文字母。
-            let locale_tag = crate::platform::prefs::UserPrefs::load()
-                .language
-                .speech_recognition_locale();
             let native = crate::features::voice::recognize_native(&wav_path, locale_tag);
             match native {
                 Some(Ok(text)) => Ok(LocalAsrOutput {
@@ -369,3 +479,38 @@ async_command_passthrough!(microphone_domain, reset_microphone_permission(window
 async_command_passthrough!(voice_asr_domain, voice_asr_status() -> VoiceAsrStatus);
 async_command_passthrough!(voice_asr_domain, install_voice_asr(app: AppHandle) -> Result<VoiceAsrStatus, String>);
 sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_compact_base64_voice_transport() {
+        let request = VoiceTranscriptionRequest {
+            audio_bytes: Vec::new(),
+            audio_base64: Some("UklGRg==".to_string()),
+        };
+        assert_eq!(request.into_audio_bytes().expect("base64 WAV"), b"RIFF");
+    }
+
+    #[test]
+    fn rejects_ambiguous_voice_transport() {
+        let request = VoiceTranscriptionRequest {
+            audio_bytes: vec![1],
+            audio_base64: Some("Ag==".to_string()),
+        };
+        let error = request
+            .into_audio_bytes()
+            .expect_err("exactly one transport is required");
+        assert_eq!(error.category, "recording_failed");
+    }
+
+    #[test]
+    fn rejects_voice_payload_over_two_mib() {
+        let request = VoiceTranscriptionRequest {
+            audio_bytes: vec![0; MAX_VOICE_WAV_BYTES + 1],
+            audio_base64: None,
+        };
+        assert!(request.into_audio_bytes().is_err());
+    }
+}

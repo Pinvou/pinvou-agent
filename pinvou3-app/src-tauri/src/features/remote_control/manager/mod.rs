@@ -192,6 +192,8 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:usage",
     "chat:user_message",
     "chat:user_input_required",
+    "pinvou-os:event",
+    "pinvou-os:a2ui",
     "scheduled_task:run_updated",
     "session:deleted",
     "session:list_changed",
@@ -3218,6 +3220,8 @@ mod tests {
         assert!(policy.events.contains("chat:plan_resolved"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:plan_resolved"));
         assert!(policy.events.contains("chat:transcript_committed"));
+        assert!(policy.events.contains("pinvou-os:event"));
+        assert!(RUST_FORWARDED_EVENTS.contains(&"pinvou-os:event"));
         assert!(policy.events.contains("session:deleted"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:deleted"));
         assert!(policy.events.contains("session:list_changed"));

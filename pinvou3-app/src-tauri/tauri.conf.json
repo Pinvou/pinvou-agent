@@ -21,7 +21,7 @@
         "width": 1100,
         "height": 760,
         "resizable": true,
-        "fullscreen": false,
+        "fullscreen": true,
         "maximized": true,
         "dragDropEnabled": false,
         "decorations": false

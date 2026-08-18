@@ -1,14 +1,19 @@
 use tauri::State;
 
 use crate::features::pinvou_os::{
-    CapabilityAvailability, ControlDirective, EventEnvelope, MissionStart, OpenMissionRequest,
-    PinvouOsRuntime, RegisterMissionAgentRequest, ResourceDecision, ResourceObservation,
-    RuntimeSnapshot,
+    create_runtime_projection, CapabilityAvailability, ControlDirective, EventEnvelope,
+    MissionStart, OpenMissionRequest, PinvouA2uiProjection, PinvouOsRuntime,
+    RegisterMissionAgentRequest, ResourceDecision, ResourceObservation, RuntimeSnapshot,
 };
 
 #[tauri::command]
 pub fn get_pinvou_os_snapshot(runtime: State<'_, PinvouOsRuntime>) -> RuntimeSnapshot {
     runtime.snapshot()
+}
+
+#[tauri::command]
+pub fn get_pinvou_os_projection(runtime: State<'_, PinvouOsRuntime>) -> PinvouA2uiProjection {
+    create_runtime_projection(&runtime.snapshot())
 }
 
 #[tauri::command]

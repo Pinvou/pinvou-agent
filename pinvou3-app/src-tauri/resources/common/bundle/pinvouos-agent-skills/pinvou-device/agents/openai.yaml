@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Device"
+  short_description: "Reason from verified device capability facts"
+  default_prompt: "Use $pinvou-device to check device and peripheral capabilities before planning controls."

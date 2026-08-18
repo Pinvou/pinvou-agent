@@ -1,0 +1,1781 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none';"
+  >
+  <meta name="color-scheme" content="light">
+  <title>PinvouOS Memory Agent · 完整记忆架构</title>
+  <style>
+    :root {
+      --ink: #243044;
+      --ink-strong: #101828;
+      --muted: #667085;
+      --subtle: #98a2b3;
+      --line: #d8e0ea;
+      --line-strong: #b9c7d8;
+      --paper: #ffffff;
+      --canvas: #f4f7fb;
+      --blue: #2563eb;
+      --blue-dark: #164db5;
+      --blue-soft: #edf4ff;
+      --teal: #0f8f83;
+      --teal-dark: #0b6f67;
+      --teal-soft: #eaf8f6;
+      --shadow: 0 18px 50px rgba(31, 48, 76, 0.08);
+      --shadow-small: 0 8px 24px rgba(31, 48, 76, 0.07);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "PingFang SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    button,
+    a {
+      font: inherit;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page {
+      width: min(100%, 1680px);
+      margin: 0 auto;
+      padding: 24px clamp(16px, 3vw, 48px) 56px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 330px;
+      padding: clamp(32px, 5vw, 72px);
+      border-radius: 28px;
+      color: #f8fbff;
+      background: #10223f;
+      box-shadow: var(--shadow);
+    }
+
+    .hero::before,
+    .hero::after {
+      position: absolute;
+      content: "";
+      border-radius: 999px;
+      pointer-events: none;
+    }
+
+    .hero::before {
+      width: 360px;
+      height: 360px;
+      right: -118px;
+      top: -154px;
+      border: 72px solid rgba(95, 160, 255, 0.12);
+    }
+
+    .hero::after {
+      width: 180px;
+      height: 180px;
+      right: 150px;
+      bottom: -118px;
+      border: 42px solid rgba(67, 205, 191, 0.12);
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: end;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 18px;
+      color: #a8cbff;
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: 28px;
+      height: 2px;
+      content: "";
+      background: #65bfb5;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin-bottom: 20px;
+      font-size: clamp(34px, 4.6vw, 68px);
+      line-height: 1.07;
+      letter-spacing: -0.045em;
+    }
+
+    .hero-copy {
+      max-width: 860px;
+      margin-bottom: 28px;
+      color: #c9d8ec;
+      font-size: clamp(15px, 1.35vw, 19px);
+      overflow-wrap: anywhere;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .hero-link {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 18px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 12px;
+      color: #eef5ff;
+      text-decoration: none;
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .hero-link.primary {
+      border-color: #79aef9;
+      color: #10223f;
+      background: #dbeafe;
+    }
+
+    .hero-summary {
+      display: grid;
+      gap: 12px;
+    }
+
+    .summary-card {
+      padding: 17px 18px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.055);
+    }
+
+    .summary-card strong {
+      display: block;
+      margin-bottom: 3px;
+      color: #ffffff;
+      font-size: 15px;
+    }
+
+    .summary-card span {
+      color: #b7c7dd;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0 46px;
+    }
+
+    .principle {
+      min-height: 118px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--paper);
+      box-shadow: var(--shadow-small);
+    }
+
+    .principle-index {
+      display: inline-flex;
+      width: 28px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 13px;
+      border-radius: 9px;
+      color: var(--blue-dark);
+      background: var(--blue-soft);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .principle h3 {
+      margin-bottom: 5px;
+      color: var(--ink-strong);
+      font-size: 15px;
+    }
+
+    .principle p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .section {
+      margin-top: 46px;
+    }
+
+    .section-heading {
+      display: flex;
+      gap: 24px;
+      align-items: end;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+
+    .section-heading h2 {
+      margin-bottom: 7px;
+      color: var(--ink-strong);
+      font-size: clamp(25px, 3vw, 38px);
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+    }
+
+    .section-heading p {
+      max-width: 760px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status-note {
+      flex: 0 0 auto;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 12px;
+      border: 1px solid #bce4df;
+      border-radius: 999px;
+      color: var(--teal-dark);
+      background: var(--teal-soft);
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .status-note::before {
+      width: 8px;
+      height: 8px;
+      content: "";
+      border-radius: 99px;
+      background: var(--teal);
+    }
+
+    .architecture-shell {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .architecture-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .focus-controls,
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .focus-controls span {
+      margin-right: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .focus-button {
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      background: #ffffff;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .focus-button:hover,
+    .focus-button:focus-visible {
+      border-color: #94b8f3;
+      color: var(--blue-dark);
+      outline: none;
+    }
+
+    .focus-button[aria-pressed="true"] {
+      border-color: var(--blue);
+      color: #ffffff;
+      background: var(--blue);
+    }
+
+    .legend-item {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .legend-line {
+      width: 24px;
+      height: 0;
+      border-top: 2px solid var(--blue);
+    }
+
+    .legend-line.read {
+      border-color: var(--teal);
+    }
+
+    .legend-line.human {
+      border-color: var(--teal);
+      border-top-style: dashed;
+    }
+
+    .legend-box {
+      width: 18px;
+      height: 14px;
+      border: 2px solid var(--teal);
+      border-radius: 4px;
+      background: var(--teal-soft);
+    }
+
+    .diagram-surface {
+      position: relative;
+    }
+
+    .desktop-map {
+      position: relative;
+      display: block;
+      height: 1250px;
+      overflow: hidden;
+      background-color: #fbfcfe;
+      background-image: radial-gradient(#d8e2ee 0.8px, transparent 0.8px);
+      background-size: 18px 18px;
+    }
+
+    .mobile-map {
+      display: none;
+    }
+
+    .zone {
+      position: absolute;
+      z-index: 1;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .zone.ledger-zone {
+      left: 13.3%;
+      top: 225px;
+      width: 74.7%;
+      height: 150px;
+      border-color: #c4d7f4;
+      background: rgba(237, 244, 255, 0.74);
+    }
+
+    .zone.agent-zone {
+      left: 2.5%;
+      top: 395px;
+      width: 95%;
+      height: 290px;
+    }
+
+    .zone.projection-zone {
+      left: 2.5%;
+      top: 710px;
+      width: 95%;
+      height: 290px;
+    }
+
+    .zone.read-zone {
+      left: 2.5%;
+      top: 1030px;
+      width: 95%;
+      height: 185px;
+      border-color: #bfe1dc;
+      background: rgba(234, 248, 246, 0.55);
+    }
+
+    .zone-title {
+      position: absolute;
+      z-index: 4;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      height: 28px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: #ffffff;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .zone-title.sources-title {
+      left: 3.2%;
+      top: 26px;
+    }
+
+    .zone-title.ledger-title {
+      left: 15%;
+      top: 210px;
+      border-color: #bfd3f2;
+      color: var(--blue-dark);
+    }
+
+    .zone-title.agent-title {
+      left: 4.4%;
+      top: 380px;
+    }
+
+    .zone-title.projection-title {
+      left: 4.4%;
+      top: 695px;
+    }
+
+    .zone-title.read-title {
+      left: 4.4%;
+      top: 1015px;
+      border-color: #b9ddd8;
+      color: var(--teal-dark);
+    }
+
+    .node {
+      position: absolute;
+      z-index: 4;
+      min-width: 0;
+      padding: 15px 16px;
+      border: 1px solid var(--line-strong);
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 9px 23px rgba(35, 54, 84, 0.065);
+      transition: opacity 160ms ease, filter 160ms ease, transform 160ms ease;
+    }
+
+    .node:hover {
+      transform: translateY(-2px);
+    }
+
+    .node.system {
+      border-color: #b8cff1;
+      background: #f9fbff;
+    }
+
+    .node.human {
+      border-color: #b7ddd8;
+      background: #f8fdfc;
+    }
+
+    .node.planned {
+      border-style: dashed;
+    }
+
+    .node.implemented {
+      border: 2px solid var(--teal);
+      color: #f7fffe;
+      background: #143f46;
+      box-shadow: 0 16px 34px rgba(15, 143, 131, 0.18);
+    }
+
+    .node.implemented-lite {
+      border-color: #7fcfc5;
+      background: #f5fcfb;
+    }
+
+    .node h3 {
+      margin-bottom: 6px;
+      color: var(--ink-strong);
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    .node.implemented h3 {
+      color: #ffffff;
+      font-size: 16px;
+    }
+
+    .node p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.48;
+      overflow-wrap: anywhere;
+    }
+
+    .node.implemented p {
+      color: #c8e7e3;
+    }
+
+    .node-kicker {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--blue-dark);
+      font-size: 9px;
+      font-weight: 850;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .node.human .node-kicker {
+      color: var(--teal-dark);
+    }
+
+    .node.implemented .node-kicker {
+      color: #87dbd1;
+    }
+
+    .node.planned .node-kicker,
+    .node.implemented .node-kicker,
+    .node.has-status .node-kicker {
+      padding-right: 54px;
+    }
+
+    .node-status {
+      position: absolute;
+      top: 11px;
+      right: 11px;
+      padding: 3px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--subtle);
+      background: #ffffff;
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .node-status.done {
+      border-color: #7fd0c7;
+      color: #ecfffd;
+      background: rgba(56, 165, 151, 0.2);
+    }
+
+    .node-status.optional {
+      border-color: #c8d1dc;
+      color: var(--muted);
+      background: #f7f9fc;
+    }
+
+    .node-status.live {
+      border-color: #8fd3ca;
+      color: #116a61;
+      background: #eaf9f6;
+    }
+
+    .node-status.partial {
+      border-color: #e2bd83;
+      color: #87500c;
+      background: #fff8eb;
+    }
+
+    .node.source {
+      top: 70px;
+      width: 12.7%;
+      min-height: 128px;
+    }
+
+    .source-1 { left: 3.2%; }
+    .source-2 { left: 19%; }
+    .source-3 { left: 34.8%; }
+    .source-4 { left: 50.6%; }
+    .source-5 { left: 66.5%; }
+    .source-6 { left: 82.3%; }
+
+    .raw-ledger {
+      left: 16.5%;
+      top: 250px;
+      width: 38%;
+      min-height: 105px;
+    }
+
+    .decision-ledger {
+      left: 63.3%;
+      top: 250px;
+      width: 23.4%;
+      min-height: 105px;
+    }
+
+    .gate-node {
+      left: 5.1%;
+      top: 445px;
+      width: 13.3%;
+      min-height: 120px;
+    }
+
+    .extract-node {
+      left: 21.5%;
+      top: 445px;
+      width: 13.3%;
+      min-height: 120px;
+    }
+
+    .queue-node {
+      left: 38%;
+      top: 445px;
+      width: 13.3%;
+      min-height: 120px;
+    }
+
+    .organizer-node {
+      left: 53.8%;
+      top: 420px;
+      width: 21%;
+      min-height: 190px;
+    }
+
+    .reflect-node {
+      left: 78.5%;
+      top: 445px;
+      width: 15.7%;
+      min-height: 120px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 11px;
+    }
+
+    .pill {
+      padding: 3px 7px;
+      border: 1px solid rgba(139, 219, 209, 0.35);
+      border-radius: 999px;
+      color: #d7f6f2;
+      background: rgba(30, 128, 117, 0.17);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .projection-builder {
+      left: 41.5%;
+      top: 738px;
+      width: 17%;
+      min-height: 105px;
+    }
+
+    .projection-output {
+      top: 865px;
+      width: 13.3%;
+      min-height: 112px;
+    }
+
+    .hot-index { left: 3.8%; }
+    .semantic-index { left: 22.2%; }
+    .archive-node { left: 40.6%; }
+    .conflict-node { left: 59%; }
+    .obsidian-node { left: 78.5%; width: 17%; }
+
+    .signal-node {
+      left: 3.8%;
+      top: 1070px;
+      width: 15.8%;
+      min-height: 126px;
+    }
+
+    .context-node {
+      left: 22.8%;
+      top: 1070px;
+      width: 15.2%;
+      min-height: 126px;
+    }
+
+    .rank-node {
+      left: 41.8%;
+      top: 1070px;
+      width: 15.2%;
+      min-height: 126px;
+    }
+
+    .select-node {
+      left: 60.8%;
+      top: 1070px;
+      width: 15.2%;
+      min-height: 126px;
+    }
+
+    .plan-node {
+      left: 79.8%;
+      top: 1070px;
+      width: 16.5%;
+      min-height: 126px;
+    }
+
+    .wires {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .wire {
+      fill: none;
+      stroke: var(--blue);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+      marker-end: url("#arrow-blue");
+      transition: opacity 160ms ease;
+    }
+
+    .wire.light {
+      stroke: #9caec3;
+      stroke-width: 1.4;
+      marker-end: url("#arrow-gray");
+    }
+
+    .wire.async {
+      stroke-dasharray: 7 6;
+    }
+
+    .wire.read {
+      stroke: var(--teal);
+      stroke-width: 2.4;
+      marker-end: url("#arrow-teal");
+    }
+
+    .wire.human {
+      stroke: var(--teal);
+      stroke-dasharray: 8 7;
+      marker-end: url("#arrow-teal");
+    }
+
+    .wire.optional {
+      stroke: #8c9bad;
+      stroke-dasharray: 3 7;
+      marker-end: url("#arrow-gray");
+    }
+
+    .wire-label {
+      position: absolute;
+      z-index: 5;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.94);
+      font-size: 9px;
+      font-weight: 750;
+      pointer-events: none;
+    }
+
+    .label-collect { left: 43%; top: 210px; }
+    .label-async { left: 10%; top: 412px; }
+    .label-decision { left: 67.5%; top: 383px; }
+    .label-rebuild { left: 55.5%; top: 695px; }
+    .label-read { left: 26.5%; top: 1018px; color: var(--teal-dark); border-color: #b7ddd8; }
+    .label-human {
+      right: 4px;
+      top: 605px;
+      color: var(--teal-dark);
+      border-color: #b7ddd8;
+      writing-mode: vertical-rl;
+    }
+    .label-task {
+      left: 3px;
+      top: 585px;
+      color: var(--teal-dark);
+      border-color: #b7ddd8;
+      writing-mode: vertical-rl;
+    }
+
+    .diagram-surface[data-focus]:not([data-focus="all"]) .focusable {
+      opacity: 0.2;
+      filter: saturate(0.45);
+    }
+
+    .diagram-surface[data-focus="write"] .focusable.path-write,
+    .diagram-surface[data-focus="read"] .focusable.path-read,
+    .diagram-surface[data-focus="human"] .focusable.path-human {
+      opacity: 1;
+      filter: none;
+    }
+
+    .diagram-surface[data-focus="write"] .path-write.node,
+    .diagram-surface[data-focus="read"] .path-read.node,
+    .diagram-surface[data-focus="human"] .path-human.node {
+      box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
+    }
+
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .flow-lane {
+      padding: clamp(20px, 3vw, 30px);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--paper);
+      box-shadow: var(--shadow-small);
+    }
+
+    .flow-lane.read-lane {
+      border-color: #bbddd8;
+    }
+
+    .flow-lane h3 {
+      margin-bottom: 6px;
+      color: var(--ink-strong);
+      font-size: 19px;
+    }
+
+    .flow-lane > p {
+      margin-bottom: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 0;
+    }
+
+    .timeline-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 12px;
+      min-height: 78px;
+      padding-bottom: 18px;
+    }
+
+    .timeline-step:not(:last-child)::before {
+      position: absolute;
+      left: 16px;
+      top: 33px;
+      bottom: -1px;
+      width: 2px;
+      content: "";
+      background: #cbdaf1;
+    }
+
+    .read-lane .timeline-step:not(:last-child)::before {
+      background: #b7ddd8;
+    }
+
+    .step-number {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      width: 34px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #b9cff0;
+      border-radius: 11px;
+      color: var(--blue-dark);
+      background: var(--blue-soft);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .read-lane .step-number {
+      border-color: #aed9d3;
+      color: var(--teal-dark);
+      background: var(--teal-soft);
+    }
+
+    .step-copy strong {
+      display: block;
+      margin: 1px 0 4px;
+      color: var(--ink-strong);
+      font-size: 14px;
+    }
+
+    .step-copy span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .boundary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .boundary-card {
+      padding: 21px;
+      border-top: 3px solid var(--blue);
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+    }
+
+    .boundary-card:nth-child(4) {
+      border-top-color: var(--teal);
+    }
+
+    .boundary-card h3 {
+      margin-bottom: 7px;
+      color: var(--ink-strong);
+      font-size: 15px;
+    }
+
+    .boundary-card p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .delivery {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: 18px;
+      margin-top: 46px;
+    }
+
+    .delivery-card {
+      padding: clamp(24px, 4vw, 38px);
+      border-radius: 22px;
+    }
+
+    .delivery-card.done {
+      color: #eafffc;
+      background: #143f46;
+    }
+
+    .delivery-card.next {
+      border: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .delivery-card .mini-label {
+      display: block;
+      margin-bottom: 13px;
+      color: var(--teal);
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .delivery-card.done .mini-label {
+      color: #8addd3;
+    }
+
+    .delivery-card h2 {
+      margin-bottom: 10px;
+      color: inherit;
+      font-size: clamp(22px, 2.7vw, 32px);
+      line-height: 1.2;
+    }
+
+    .delivery-card p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .delivery-card.done p {
+      color: #c4e5e1;
+    }
+
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 28px;
+      padding: 18px 4px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    code {
+      padding: 1px 5px;
+      border: 1px solid #d8e2ef;
+      border-radius: 6px;
+      color: var(--blue-dark);
+      background: #f4f7fb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    @media (max-width: 1279px) {
+      .hero-inner {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-summary {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .principles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .desktop-map {
+        display: none;
+      }
+
+      .mobile-map {
+        display: grid;
+        gap: 14px;
+        padding: 20px;
+        background-color: #fbfcfe;
+        background-image: radial-gradient(#d8e2ee 0.8px, transparent 0.8px);
+        background-size: 18px 18px;
+      }
+
+      .mobile-group {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.94);
+      }
+
+      .mobile-group.blue {
+        border-color: #c3d6f3;
+        background: rgba(244, 248, 255, 0.96);
+      }
+
+      .mobile-group.teal {
+        border-color: #bddfd9;
+        background: rgba(244, 252, 251, 0.96);
+      }
+
+      .mobile-group-title {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 14px;
+        color: var(--ink-strong);
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .mobile-group-title span {
+        display: inline-flex;
+        min-width: 24px;
+        height: 24px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        color: var(--blue-dark);
+        background: var(--blue-soft);
+        font-size: 10px;
+      }
+
+      .mobile-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .mobile-card {
+        min-width: 0;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #ffffff;
+        transition: opacity 160ms ease, filter 160ms ease;
+      }
+
+      .mobile-card.implemented {
+        border: 2px solid var(--teal);
+        color: #effffc;
+        background: #143f46;
+      }
+
+      .mobile-card h3 {
+        margin-bottom: 5px;
+        color: var(--ink-strong);
+        font-size: 13px;
+      }
+
+      .mobile-card.implemented h3 {
+        color: #ffffff;
+      }
+
+      .mobile-card p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .mobile-card.implemented p {
+        color: #c8e7e3;
+      }
+
+      .mobile-arrow {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        color: var(--blue-dark);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .mobile-arrow::before {
+        width: 2px;
+        height: 24px;
+        margin-right: 9px;
+        content: "";
+        background: var(--blue);
+      }
+
+      .mobile-arrow.read {
+        color: var(--teal-dark);
+      }
+
+      .mobile-arrow.read::before {
+        background: var(--teal);
+      }
+
+      .boundary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        padding-top: 12px;
+      }
+
+      .hero {
+        min-height: 0;
+        padding: 28px 22px;
+        border-radius: 22px;
+      }
+
+      h1 {
+        font-size: clamp(34px, 11vw, 48px);
+      }
+
+      .hero-summary,
+      .principles,
+      .flow-grid,
+      .delivery,
+      .boundary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-heading {
+        display: block;
+      }
+
+      .status-note {
+        display: flex;
+        width: 100%;
+        max-width: 100%;
+        align-items: flex-start;
+        margin-top: 14px;
+        border-radius: 16px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+      .architecture-toolbar {
+        align-items: flex-start;
+      }
+
+      .focus-controls,
+      .legend {
+        width: 100%;
+      }
+
+      .mobile-map {
+        padding: 12px;
+      }
+
+      .mobile-group {
+        padding: 14px;
+      }
+
+      .mobile-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+      }
+
+      .page {
+        width: 100%;
+        padding: 0;
+      }
+
+      .hero,
+      .architecture-shell,
+      .principle,
+      .flow-lane,
+      .delivery-card {
+        box-shadow: none;
+      }
+
+      .architecture-toolbar {
+        display: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <div>
+          <p class="eyebrow">PinvouOS · Memory Architecture</p>
+          <h1>持续理解一个人，而不是保存一堆会话</h1>
+          <p class="hero-copy">
+            这是 PinvouOS 的完整目标架构：统一事件账本负责保留事实，Memory Agent
+            将在后台整理事实、偏好、习惯、经历与教训。当前 Runtime 决策核心与热投影
+            已接通；异步消费、完整上下文编译和 Obsidian 工作台仍待接入。
+          </p>
+          <nav class="hero-actions" aria-label="页面导航">
+            <a class="hero-link primary" href="#architecture">查看完整架构</a>
+            <a class="hero-link" href="#flow">查看一次对话如何流转</a>
+          </nav>
+        </div>
+        <aside class="hero-summary" aria-label="核心摘要">
+          <div class="summary-card">
+            <strong>无 Session</strong>
+            <span>连续身份、连续时间线，任务只提供因果边界。</span>
+          </div>
+          <div class="summary-card">
+            <strong>异步写入 · 目标</strong>
+            <span>Runtime 耐久核心已完成；后台 worker、反思与 Obsidian 待接。</span>
+          </div>
+          <div class="summary-card">
+            <strong>热投影 · 已实现</strong>
+            <span>结构索引与有界 Top-K 已可用；Front 的 token 预算编译待接。</span>
+          </div>
+        </aside>
+      </div>
+    </header>
+
+    <section class="principles" aria-label="四项设计原则">
+      <article class="principle">
+        <span class="principle-index">01</span>
+        <h3>账本保存发生过什么</h3>
+        <p>原始事件不可被摘要覆盖；所有投影都必须能够重新构建。</p>
+      </article>
+      <article class="principle">
+        <span class="principle-index">02</span>
+        <h3>整理器判断现在相信什么</h3>
+        <p>来源权威、置信度、时间和环境分别建模，不能混成一个分数。</p>
+      </article>
+      <article class="principle">
+        <span class="principle-index">03</span>
+        <h3>任务与记忆各自负责</h3>
+        <p>进度、阻塞和下一步留在 Runtime Mission / Run Work Graph；只有已验证结果才能沉淀为经历。</p>
+      </article>
+      <article class="principle">
+        <span class="principle-index">04</span>
+        <h3>Obsidian 将让记忆可治理</h3>
+        <p>接入后用户可以看见和纠正记忆，但修改仍须经过候选与验证流程。</p>
+      </article>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="section-heading">
+        <div>
+          <h2>完整记忆架构</h2>
+          <p>
+            蓝色是异步写入与重建路径，青绿色是每轮同步读取路径，虚线表示候选、
+            人工修改或可选能力。点击下方按钮可以单独查看一条路径。
+          </p>
+        </div>
+        <span class="status-note">Runtime 决策流、结构化 Claim 绑定与热投影已接入；后台 worker、冷归档和 Obsidian 待接入</span>
+      </div>
+
+      <div class="architecture-shell" data-testid="memory-architecture">
+        <div class="architecture-toolbar">
+          <div class="focus-controls" role="group" aria-label="架构路径高亮">
+            <span>路径聚焦</span>
+            <button class="focus-button" type="button" data-focus-button="all" aria-pressed="true">全部</button>
+            <button class="focus-button" type="button" data-focus-button="write" aria-pressed="false">异步写入</button>
+            <button class="focus-button" type="button" data-focus-button="read" aria-pressed="false">同步读取</button>
+            <button class="focus-button" type="button" data-focus-button="human" aria-pressed="false">Obsidian 治理</button>
+          </div>
+          <div class="legend" aria-label="图例">
+            <span class="legend-item"><i class="legend-line"></i>账本与整理</span>
+            <span class="legend-item"><i class="legend-line read"></i>实时读取</span>
+            <span class="legend-item"><i class="legend-line human"></i>人工修订</span>
+            <span class="legend-item"><i class="legend-box"></i>当前已实现</span>
+          </div>
+        </div>
+
+        <div class="diagram-surface desktop-map" data-focus="all" aria-label="PinvouOS Memory Agent 完整桌面架构图">
+          <div class="zone ledger-zone focusable path-write path-human"></div>
+          <div class="zone agent-zone focusable path-write path-human"></div>
+          <div class="zone projection-zone focusable path-write path-read path-human"></div>
+          <div class="zone read-zone focusable path-read"></div>
+
+          <span class="zone-title sources-title">01 · 连续事件来源</span>
+          <span class="zone-title ledger-title">02 · 统一事件账本 · 唯一事实来源</span>
+          <span class="zone-title agent-title">03 · Memory Agent · 耐久核心已接 / 异步消费待接</span>
+          <span class="zone-title projection-title">04 · 可重建记忆投影</span>
+          <span class="zone-title read-title">05 · 每轮同步上下文读取</span>
+
+          <article class="node source source-1 focusable path-write">
+            <span class="node-kicker">Human</span>
+            <h3>用户持续对话</h3>
+            <p>陈述、纠正、评价和长期反馈都只是连续事件，不形成 Session 容器。</p>
+          </article>
+          <article class="node source source-2 system focusable path-write">
+            <span class="node-kicker">Front</span>
+            <h3>交互 Agent</h3>
+            <p>记录用户消息和最终答复；读取上下文，但不直接写长期记忆。</p>
+          </article>
+          <article class="node source source-3 system focusable path-write">
+            <span class="node-kicker">Orchestrator</span>
+            <h3>编排 Agent</h3>
+            <p>记录派工、工具调用与结果；不能自行把执行自报升级成事实。</p>
+          </article>
+          <article class="node source source-4 system focusable path-write path-read">
+            <span class="node-kicker">Task Boundary</span>
+            <h3>Runtime Mission / Run 与结果验证</h3>
+            <p>任务状态归 Runtime Work Graph；只有验证后的终态结果进入记忆证据，不复用旧 Session 任务状态。</p>
+          </article>
+          <article class="node source source-5 focusable path-write">
+            <span class="node-kicker">Evidence</span>
+            <h3>工具、设备与外部资料</h3>
+            <p>环境观察和外部证据携带来源、时间、可靠度与适用范围。</p>
+          </article>
+          <article class="node source source-6 human planned focusable path-write path-human">
+            <span class="node-kicker">Obsidian Input</span>
+            <h3>Obsidian 变更适配器</h3>
+            <p>Vault 修改只生成变更候选，绝不直接覆盖内部记忆状态。</p>
+            <span class="node-status">待接入</span>
+          </article>
+
+          <article class="node raw-ledger system has-status focusable path-write path-human" data-node="ledger">
+            <span class="node-kicker">Append-only · Raw Events</span>
+            <h3>原始事件流</h3>
+            <p>Runtime 事件已落同一账本；来源入口须先移除秘密。完整对话与任务终态事件待接。</p>
+            <span class="node-status partial">部分接入</span>
+          </article>
+          <article class="node decision-ledger system implemented-lite has-status focusable path-write path-human" data-node="decision-stream" data-status="implemented">
+            <span class="node-kicker">Same Ledger · Memory Decisions</span>
+            <h3>记忆决策流</h3>
+            <p>建立、合并、争议、裁决、替代和撤回。它属于同一账本，不是第二套真相源。</p>
+            <span class="node-status live">已接 Runtime</span>
+          </article>
+
+          <article class="node gate-node planned focusable path-write path-human">
+            <span class="node-kicker">Trusted Adapter</span>
+            <h3>记忆证据验证与隐私复检</h3>
+            <p>秘密必须在原始事件落账前移除；此处已做 Claim 精确绑定，候选隐私复检与完整语义验证待接。</p>
+            <span class="node-status partial">部分接入</span>
+          </article>
+          <article class="node extract-node planned focusable path-write path-human">
+            <span class="node-kicker">Candidate Extraction</span>
+            <h3>候选提取器</h3>
+            <p>规则优先，必要时使用轻量模型；模型只能提出候选，不能宣布事实。</p>
+            <span class="node-status">待接入</span>
+          </article>
+          <article class="node queue-node planned focusable path-write path-human">
+            <span class="node-kicker">Bounded Queue</span>
+            <h3>有界队列、去重与背压</h3>
+            <p>控制批量和资源占用；同一事件回放不会反复提高权重。</p>
+            <span class="node-status">待接入</span>
+          </article>
+          <article
+            class="node organizer-node implemented focusable path-write path-human"
+            data-node="organizer"
+            data-status="implemented"
+          >
+            <span class="node-kicker">Deterministic Core</span>
+            <h3>确定性记忆整理内核</h3>
+            <p>按时间、环境、证据权威和明确意图处理晋升、版本、冲突、裁决、撤回与幂等恢复。</p>
+            <div class="pill-row" aria-label="五类记忆">
+              <span class="pill">情境事实</span>
+              <span class="pill">偏好</span>
+              <span class="pill">习惯</span>
+              <span class="pill">行动经历</span>
+              <span class="pill">教训</span>
+            </div>
+            <span class="node-status done">已实现</span>
+          </article>
+          <article class="node reflect-node planned focusable path-write">
+            <span class="node-kicker">Slow Reflection</span>
+            <h3>后台反思器</h3>
+            <p>从多次已验证经历中提出习惯或教训候选；仍须回到同一整理门禁。</p>
+            <span class="node-status">待接入</span>
+          </article>
+
+          <article class="node projection-builder planned focusable path-write path-read path-human">
+            <span class="node-kicker">Materialized View</span>
+            <h3>投影构建器</h3>
+            <p>同步重放、检查点协议与热索引重建已实现；异步 projector、归档和可读投影待接。</p>
+            <span class="node-status partial">部分接入</span>
+          </article>
+          <article class="node projection-output hot-index implemented-lite has-status focusable path-write path-read" data-node="hot-index" data-status="implemented">
+            <span class="node-kicker">Hot Structured Memory</span>
+            <h3>结构化热记忆</h3>
+            <p>进程内、可重建，支持结构过滤与有界 Top-K；Front 尚未消费。</p>
+            <span class="node-status live">已实现</span>
+          </article>
+          <article class="node projection-output semantic-index planned focusable path-write path-read">
+            <span class="node-kicker">Optional Retrieval</span>
+            <h3>语义检索索引</h3>
+            <p>用于相关性召回，可卸载、可重建，不具备事实权威。</p>
+            <span class="node-status optional">可选</span>
+          </article>
+          <article class="node projection-output archive-node planned focusable path-write">
+            <span class="node-kicker">Cold Archive</span>
+            <h3>冷记忆与历史归档</h3>
+            <p>低频、过期、旧版本和聚合后的证据，不进入默认实时读取。</p>
+            <span class="node-status">待接入</span>
+          </article>
+          <article class="node projection-output conflict-node has-status focusable path-write path-human">
+            <span class="node-kicker">Review Queue</span>
+            <h3>争议与待确认</h3>
+            <p>内核可保留争议状态；独立人工审核队列与可信裁决事件仍待接。</p>
+            <span class="node-status partial">部分实现</span>
+          </article>
+          <article class="node projection-output obsidian-node human planned focusable path-write path-human" data-node="obsidian">
+            <span class="node-kicker">Obsidian Vault</span>
+            <h3>人机共管记忆工作台</h3>
+            <p>增量导出的可读投影、人工纠错入口和冷知识浏览界面；不是数据库。</p>
+            <span class="node-status">待接入</span>
+          </article>
+
+          <article class="node signal-node focusable path-read">
+            <span class="node-kicker">Current Direction</span>
+            <h3>本轮检索信号</h3>
+            <p>聊天方向、相关任务、身份空间、时间、环境与可用上下文长度。</p>
+          </article>
+          <article class="node context-node has-status focusable path-read" data-node="context">
+            <span class="node-kicker">Synchronous Read</span>
+            <h3>上下文管理器</h3>
+            <p>Runtime 同步查询 API 已实现，不扫描账本；Front 的本轮检索信号接线待完成。</p>
+            <span class="node-status partial">核心已实现</span>
+          </article>
+          <article class="node rank-node implemented-lite has-status focusable path-read" data-status="implemented">
+            <span class="node-kicker">Evidence-aware Ranking</span>
+            <h3>过滤与综合排序</h3>
+            <p>相关性、重要性、置信度、来源权威、新近度、环境有效性和当前状态。</p>
+            <span class="node-status live">轻量版已实现</span>
+          </article>
+          <article class="node select-node planned focusable path-read">
+            <span class="node-kicker">Hard Admission</span>
+            <h3>按长度预算选择并截断</h3>
+            <p>当前只有条目数上限；token 长度预算与段级硬截断待 Context Compiler 接入。</p>
+            <span class="node-status">待接入</span>
+          </article>
+          <article class="node plan-node planned focusable path-read">
+            <span class="node-kicker">Stable Context Plan</span>
+            <h3>稳定上下文方案与模型调用</h3>
+            <p>固定序列化顺序和 <code>context_plan_hash</code>；前缀缓存只是可丢弃加速层。</p>
+            <span class="node-status">待接入</span>
+          </article>
+
+          <span class="wire-label label-collect focusable path-write path-human">汇入连续事件流</span>
+          <span class="wire-label label-async focusable path-write path-human">目标：异步消费（待接）</span>
+          <span class="wire-label label-decision focusable path-write path-human">追加细粒度决策</span>
+          <span class="wire-label label-rebuild focusable path-write path-human">按决策流重建</span>
+          <span class="wire-label label-read focusable path-read">同步只读</span>
+          <span class="wire-label label-human focusable path-human">人工修改回到候选事件</span>
+          <span class="wire-label label-task focusable path-read">当前任务方向只作检索条件</span>
+
+          <svg class="wires" viewBox="0 0 1580 1250" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#2563eb"></path>
+              </marker>
+              <marker id="arrow-teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#0f8f83"></path>
+              </marker>
+              <marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#8c9bad"></path>
+              </marker>
+            </defs>
+
+            <path class="wire light focusable path-write" d="M150 198 V218 H560 V250"></path>
+            <path class="wire light focusable path-write" d="M400 198 V218 H560 V250"></path>
+            <path class="wire light focusable path-write" d="M650 198 V218 H560 V250"></path>
+            <path class="wire light focusable path-write" d="M900 198 V218 H560 V250"></path>
+            <path class="wire light focusable path-write" d="M1150 198 V218 H560 V250"></path>
+            <path class="wire human focusable path-write path-human" d="M1400 198 V218 H560 V250"></path>
+
+            <path class="wire async focusable path-write path-human" d="M560 355 V392 H185 V445"></path>
+            <path class="wire async focusable path-write path-human" d="M290 505 H340"></path>
+            <path class="wire async focusable path-write path-human" d="M550 505 H600"></path>
+            <path class="wire async focusable path-write path-human" d="M810 505 H850"></path>
+            <path class="wire optional focusable path-write" d="M1240 505 H1208 V655 H705 V565"></path>
+            <path class="wire focusable path-write path-human" d="M1015 420 V393 H1185 V355"></path>
+
+            <path class="wire focusable path-write path-human" d="M1185 355 V708 H790 V738"></path>
+            <path class="wire light focusable path-write path-read" d="M790 843 V853 H165 V865"></path>
+            <path class="wire light focusable path-write path-read" d="M790 843 V853 H455 V865"></path>
+            <path class="wire light focusable path-write" d="M790 843 V865"></path>
+            <path class="wire light focusable path-write path-human" d="M790 843 V853 H1080 V865"></path>
+            <path class="wire human focusable path-write path-human" d="M790 843 V853 H1415 V865"></path>
+            <path class="wire optional focusable path-write" d="M165 865 V690 H1365 V565"></path>
+            <path class="wire optional focusable path-write" d="M745 865 V675 H1410 V565"></path>
+
+            <path class="wire read focusable path-read" d="M165 977 V1020 H480 V1070"></path>
+            <path class="wire read focusable path-read" d="M455 977 V1035 H480 V1070"></path>
+            <path class="wire read focusable path-read" d="M300 1133 H360"></path>
+            <path class="wire read focusable path-read" d="M600 1133 H660"></path>
+            <path class="wire read focusable path-read" d="M900 1133 H960"></path>
+            <path class="wire read focusable path-read" d="M1200 1133 H1260"></path>
+            <path class="wire read focusable path-read" d="M900 198 H18 V1133 H60"></path>
+
+            <path class="wire human focusable path-human" d="M1415 977 H1555 V134 H1500"></path>
+          </svg>
+        </div>
+
+        <div class="diagram-surface mobile-map" data-focus="all" aria-label="PinvouOS Memory Agent 移动端架构图">
+          <section class="mobile-group">
+            <div class="mobile-group-title"><span>01</span>连续事件来源 · 不按 Session 分区</div>
+            <div class="mobile-grid">
+              <article class="mobile-card focusable path-write"><h3>用户与交互 Agent</h3><p>对话、纠正、评价和最终答复都写成连续事件。</p></article>
+              <article class="mobile-card focusable path-write"><h3>编排、工具与设备</h3><p>执行和环境观察携带来源、时间与证据引用。</p></article>
+              <article class="mobile-card focusable path-write path-read"><h3>Runtime Mission / Run</h3><p>Work Graph 保存进度；只把验证后的终态结果交给记忆系统。</p></article>
+              <article class="mobile-card focusable path-write path-human"><h3>Obsidian 修改 · 待接入</h3><p>未来经变更适配器形成候选，不能直接改内部状态。</p></article>
+            </div>
+          </section>
+          <div class="mobile-arrow focusable path-write path-human">追加到唯一事实来源</div>
+          <section class="mobile-group blue focusable path-write path-human">
+            <div class="mobile-group-title"><span>02</span>统一事件账本</div>
+            <div class="mobile-grid">
+              <article class="mobile-card focusable path-write path-human"><h3>原始事件流 · 部分接入</h3><p>Runtime 账本已运行；完整对话和任务终态事件待接。</p></article>
+              <article class="mobile-card implemented focusable path-write path-human"><h3>记忆决策流 · 已接 Runtime</h3><p>属于同一账本，记录建立、争议、替代和撤回。</p></article>
+            </div>
+          </section>
+          <div class="mobile-arrow focusable path-write path-human">目标：后台异步消费 · 待接入</div>
+          <section class="mobile-group focusable path-write path-human">
+            <div class="mobile-group-title"><span>03</span>Memory Agent</div>
+            <div class="mobile-grid">
+              <article class="mobile-card focusable path-write path-human"><h3>记忆证据门禁 · 部分接入</h3><p>秘密须在落账前移除；精确 Claim 绑定已接，候选隐私复检和语义提取待接。</p></article>
+              <article class="mobile-card focusable path-write path-human"><h3>候选提取与有界队列 · 待接入</h3><p>未来由规则或轻量模型只提出候选，并负责去重和背压。</p></article>
+              <article class="mobile-card implemented focusable path-write path-human"><h3>确定性记忆整理内核 · 已实现</h3><p>事实、偏好、习惯、行动经历、教训；支持版本、冲突、裁决与撤回。</p></article>
+              <article class="mobile-card focusable path-write"><h3>后台反思器 · 待接入</h3><p>未来从热记忆与冷归档中的已验证经历提出候选，不能自行宣布事实。</p></article>
+            </div>
+          </section>
+          <div class="mobile-arrow focusable path-write path-human">决策写回同一账本并重建投影</div>
+          <section class="mobile-group focusable path-write path-read path-human">
+            <div class="mobile-group-title"><span>04</span>可重建记忆投影</div>
+            <div class="mobile-grid">
+              <article class="mobile-card implemented focusable path-write path-read"><h3>结构化热记忆 · 已实现</h3><p>进程内、可重建，支持结构过滤与有界 Top-K。</p></article>
+              <article class="mobile-card focusable path-write path-read"><h3>可选语义索引 · 未实现</h3><p>未来只帮助召回，不具备事实权威。</p></article>
+              <article class="mobile-card focusable path-write path-human"><h3>冷归档待接 / 争议状态已实现</h3><p>内核保留冲突；历史归档和人工队列仍待完成。</p></article>
+              <article class="mobile-card focusable path-write path-human"><h3>Obsidian Vault · 待接入</h3><p>未来作为可读投影与纠错入口，不是数据库或真相源。</p></article>
+            </div>
+          </section>
+          <div class="mobile-arrow read focusable path-read">只读取热投影</div>
+          <section class="mobile-group teal focusable path-read">
+            <div class="mobile-group-title"><span>05</span>每轮同步上下文</div>
+            <div class="mobile-grid">
+              <article class="mobile-card focusable path-read"><h3>上下文查询核心 · 已实现</h3><p>Runtime 可按身份、时间、环境和关注词同步查询；Front 信号接线待完成。</p></article>
+              <article class="mobile-card implemented focusable path-read"><h3>结构过滤与排序 · 已实现</h3><p>重要性、置信度、权威、新近度、状态与轻量相关性。</p></article>
+              <article class="mobile-card focusable path-read"><h3>token 预算与硬截断 · 待接入</h3><p>当前只有条目数上限；选择权重不是模型内部注意力权重。</p></article>
+              <article class="mobile-card focusable path-read"><h3>稳定上下文方案 · 待接入</h3><p>未来提供固定顺序、方案指纹和可丢弃的模型前缀缓存。</p></article>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="flow">
+      <div class="section-heading">
+        <div>
+          <h2>目标态：一次对话，走两条互不等待的路径</h2>
+          <p>当前 Runtime 同步核心已接通；Front 的异步 Memory worker 尚未接入。接通后，回答只读热投影，Obsidian 与反思不会进入首字响应路径。</p>
+        </div>
+      </div>
+      <div class="flow-grid">
+        <article class="flow-lane read-lane">
+          <h3>对话实时路径 · 目标接线</h3>
+          <p>Runtime 查询核心可用；Front Context Compiler 仍待接入。</p>
+          <div class="timeline">
+            <div class="timeline-step">
+              <span class="step-number">1</span>
+              <div class="step-copy"><strong>收到新消息</strong><span>交互 Agent 记录事件，同时开始准备回答。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">2</span>
+              <div class="step-copy"><strong>只查询热记忆</strong><span>不读取完整账本、冷归档或 Obsidian Vault。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">3</span>
+              <div class="step-copy"><strong>按当前方向综合排序</strong><span>时间、环境、证据权威和内容相关性分别参与。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">4</span>
+              <div class="step-copy"><strong>按长度预算硬截断</strong><span>低排名内容直接不进入本轮上下文。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">5</span>
+              <div class="step-copy"><strong>生成稳定上下文方案</strong><span>固定顺序与方案指纹帮助复用模型前缀缓存。</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="flow-lane">
+          <h3>记忆后台路径 · 目标接线</h3>
+          <p>整理与耐久决策可用；后台消费、提取和反思仍待接入。</p>
+          <div class="timeline">
+            <div class="timeline-step">
+              <span class="step-number">1</span>
+              <div class="step-copy"><strong>接入后异步消费事件</strong><span>按耐久游标读取新对话、纠正、行动和验证结果；当前未运行。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">2</span>
+              <div class="step-copy"><strong>验证记忆证据并提取候选</strong><span>入口秘密须在落账前移除；精确 Claim 绑定已实现，候选隐私复检与语义提取待接。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">3</span>
+              <div class="step-copy"><strong>确定性整理</strong><span>合并证据、处理版本与冲突，必要时进入待确认。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">4</span>
+              <div class="step-copy"><strong>追加记忆决策</strong><span>以细粒度事件写回同一账本，避免重复保存全量快照。</span></div>
+            </div>
+            <div class="timeline-step">
+              <span class="step-number">5</span>
+              <div class="step-copy"><strong>更新热投影；未来更新 Obsidian</strong><span>热结构索引已可重建；冷归档和人类可读笔记尚未接入。</span></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <h2>不能跨越的系统边界</h2>
+          <p>这些边界决定了 PinvouOS 能否在无 Session、长期运行和多任务并发下仍然保持可靠。</p>
+        </div>
+      </div>
+      <div class="boundary-grid">
+        <article class="boundary-card">
+          <h3>没有 Session 真相边界</h3>
+          <p>记忆按身份空间、时间、环境和证据关系组织；Mission 与 Run 只保留因果出处。</p>
+        </article>
+        <article class="boundary-card">
+          <h3>任务进度不进入长期记忆</h3>
+          <p>承诺、阻塞和下一步属于 Runtime Mission / Run Work Graph；经过验证的结果才能形成行动经历。</p>
+        </article>
+        <article class="boundary-card">
+          <h3>交互协议不是记忆分区</h3>
+          <p>AG-UI threadId / runId 只负责交互路由与证据关联；Memory 仍按身份、时间、环境和证据组织，不按交互线程切割。</p>
+        </article>
+        <article class="boundary-card">
+          <h3>模型只能提出候选</h3>
+          <p>高置信度不能提高来源权威；明确用户证据和模型推断始终分开。</p>
+        </article>
+        <article class="boundary-card">
+          <h3>Obsidian 不是数据库</h3>
+          <p>接入后承担展示、纠错和归档；修改必须回到事件门禁，实时读取也不扫描 Vault。</p>
+        </article>
+        <article class="boundary-card">
+          <h3>缓存不是记忆</h3>
+          <p>模型前缀缓存可以随时失效或清除；记忆仍由账本与可重建投影保证。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="delivery" aria-label="当前实现状态">
+      <article class="delivery-card done">
+        <span class="mini-label">Implemented Now</span>
+        <h2>Memory Runtime Core 已接通</h2>
+        <p>确定性整理、细粒度决策与检查点协议、统一账本耐久化/重放、单写者保护、精确结构化 Claim 绑定、旧快照一次迁移及结构索引 Top-K 已实现。</p>
+      </article>
+      <article class="delivery-card next">
+        <span class="mini-label">Next Integration Gate</span>
+        <h2>下一阶段完成后台与上下文闭环</h2>
+        <p>待接 Front/Orchestrator 连续事件、异步 worker/cursor/背压、候选提取与入口隐私、VerifiedTaskOutcome、周期检查点与冷归档、token 预算 Context Compiler、Obsidian 增量投影及端到端延迟基准。</p>
+      </article>
+    </section>
+
+    <footer>
+      <span>PinvouOS Memory Architecture · 2026-08-18</span>
+      <span><a href="README.md" style="color:inherit">跨文档权威索引</a> · 单文件、自包含、无外部脚本与资源</span>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-focus-button]"));
+      var surfaces = Array.prototype.slice.call(document.querySelectorAll(".diagram-surface"));
+
+      function setFocus(focus) {
+        surfaces.forEach(function (surface) {
+          surface.setAttribute("data-focus", focus);
+        });
+        buttons.forEach(function (button) {
+          button.setAttribute(
+            "aria-pressed",
+            button.getAttribute("data-focus-button") === focus ? "true" : "false"
+          );
+        });
+      }
+
+      buttons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          setFocus(button.getAttribute("data-focus-button"));
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

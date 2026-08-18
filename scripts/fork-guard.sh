@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.5 clean re-fork guard: published four-theme baseline.
+# CodeWhale v0.9.5 clean re-fork guard: PinvouOS feature checkpoint on r7.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +7,8 @@ TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
 PUBLISHED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_HEAD="a36e6cd533024cfe5724bae21875aea42b2ed87a"
-EXPECTED_COMMITS=9
+EXPECTED_HEAD="3f64e41e971167aede9390dbecc0a307224562ba"
+EXPECTED_COMMITS=10
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -18,28 +18,28 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.5 r7 公开四主题基线拓扑 ──"
+bold "── 第 0 层：v0.9.5 r7 + PinvouOS feature checkpoint 拓扑 ──"
 actual_head="$(git -C "$TUI" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记的四主题公开基线 $EXPECTED_HEAD"
+  green "  ✓ CodeWhale gitlink 指向登记的 PinvouOS feature checkpoint $EXPECTED_HEAD"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，公开基线登记为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，feature checkpoint 登记为 $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$TUI" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null \
   && git -C "$TUI" merge-base --is-ancestor "$PUBLISHED_HEAD" HEAD 2>/dev/null; then
-  green "  ✓ 公开基线继承官方 v0.9.5 并与 r7 维护 head 一致"
+  green "  ✓ feature checkpoint 继承官方 v0.9.5 与 r7 公开维护 head"
 else
-  red "  ✗ 基线未同时继承官方 v0.9.5 与 r7 公开维护 head $PUBLISHED_HEAD"
+  red "  ✗ feature checkpoint 未同时继承官方 v0.9.5 与 r7 公开维护 head $PUBLISHED_HEAD"
   fail=1
 fi
 
 commit_count="$(git -C "$TUI" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个公开维护提交"
+  green "  ✓ v0.9.5 之上 $EXPECTED_COMMITS 个维护/feature 提交"
 else
-  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，公开基线登记为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.5 之上有 ${commit_count:-<unreadable>} 个 commit，feature checkpoint 登记为 $EXPECTED_COMMITS"
   fail=1
 fi
 
@@ -62,6 +62,10 @@ fingerprints=(
   "T2|宿主额外工具入口                    |CodeWhale/crates/tui/src/core/engine.rs|pub struct ExtraTools("
   "T2|动态禁用工具操作                    |CodeWhale/crates/tui/src/core/ops.rs|SetDisallowedTools { tools: Vec<String> }"
   "T2|宿主工具覆盖全部运行模式            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_host_extra_tools_register_in_all_modes"
+  "T2|宿主可选 direct 工具轮次预算        |CodeWhale/crates/tui/src/core/engine.rs|pub direct_tool_round_policy: Option<DirectToolRoundPolicy>"
+  "T2|轮次耗尽只保留一次 handoff          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_direct_tool_round_budget_narrows_to_one_handoff_then_closes"
+  "T2|轮次耗尽后旧工具执行层拒绝          |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_direct_round_budget_blocks_a_hallucinated_old_tool_at_execution"
+  "T2|handoff 后执行层关闭全部工具        |CodeWhale/crates/tui/src/core/engine/tests.rs|async fn forkguard_direct_round_policy_blocks_every_tool_after_handoff_execution"
   "T2|File 写入 64 KiB 上限               |CodeWhale/crates/tui/src/tools/file.rs|const WRITE_FILE_MAX_CONTENT_BYTES: usize = 64 * 1024;"
   "T2|写入上限落盘前拒绝回归              |CodeWhale/crates/tui/src/tools/file/tests/tools.rs|async fn forkguard_file_content_caps_reject_before_writing"
   "T2|多行危险命令分段阻断回归            |CodeWhale/crates/tui/src/command_safety.rs|fn forkguard_multiline_still_blocks_destructive_segments"

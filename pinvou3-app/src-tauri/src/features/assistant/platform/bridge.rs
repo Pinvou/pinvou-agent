@@ -21,6 +21,7 @@ pub use crate::platform::prefs;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
+use codewhale_config::FleetConfigToml;
 use deepseek_tui::config::{
     wire_model_for_provider, ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig,
 };
@@ -1261,6 +1262,7 @@ impl Pinvou3Bridge {
             goal_status,
             disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
             max_tool_calls,
+            direct_tool_round_policy,
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -1461,6 +1463,7 @@ impl Pinvou3Bridge {
                 }
             },
             max_tool_calls,
+            direct_tool_round_policy,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -1845,7 +1848,19 @@ impl Pinvou3Bridge {
         model: &str,
         snapshot: &ExpertRosterSnapshot,
     ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
-        let config = self.build_multi_agent_dt_config(snapshot);
+        self.resolve_fleet_runtime_route_for_model(model, snapshot.fleet_config())
+    }
+
+    /// 解析携带一份已经合并完成的 Fleet 配置的路由。Front 的系统
+    /// Orchestrator 与可选专家快照必须在进入这里前合并，保证初始 roster 和
+    /// turn-time spawn refresh 看到同一份配置。
+    pub(crate) fn resolve_fleet_runtime_route_for_model(
+        &self,
+        model: &str,
+        fleet_config: &FleetConfigToml,
+    ) -> Result<deepseek_tui::route_runtime::ResolvedRuntimeRoute> {
+        let mut config = self.build_dt_config();
+        config.fleet = Some(fleet_config.clone());
         let provider = config.api_provider();
         let route = if let Some(limits) = self.route_limits_for_model(model) {
             deepseek_tui::route_runtime::resolve_runtime_route_with_limits(
@@ -1891,6 +1906,30 @@ impl Pinvou3Bridge {
         )
     }
 
+    /// 普通 PinvouOS Front 的每轮路由必须携带系统 Orchestrator profile。
+    /// CodeWhale 会在真正执行 `agent(profile=...)` 前从 turn route 重新加载
+    /// roster；只在 EngineConfig 启动时注册一次会在第一轮被空配置覆盖。
+    pub(crate) fn build_pinvou_os_send_message_op(
+        &self,
+        session_id: &str,
+        content: String,
+        mode: AppMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<Op> {
+        self.ensure_session_skills_for_send(session_id);
+        let fleet_config = crate::features::pinvou_os::pinvou_os_fleet_config(None);
+        self.build_send_message_op_with_hooks(
+            session_id,
+            content,
+            mode,
+            persona_reminder,
+            restrict_tools,
+            self.build_hook_executor(),
+            Some(&fleet_config),
+        )
+    }
+
     /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
     /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
     pub(crate) fn build_multi_agent_send_message_op(
@@ -1904,6 +1943,11 @@ impl Pinvou3Bridge {
         snapshot: &ExpertRosterSnapshot,
     ) -> Result<Op> {
         self.ensure_session_skills_for_send(session_id);
+        let fleet_config = if self.is_code_session(session_id) {
+            snapshot.fleet_config().clone()
+        } else {
+            crate::features::pinvou_os::pinvou_os_fleet_config(Some(snapshot.fleet_config()))
+        };
         self.build_send_message_op_with_hooks(
             session_id,
             content,
@@ -1911,7 +1955,7 @@ impl Pinvou3Bridge {
             persona_reminder,
             restrict_tools,
             self.build_multi_agent_hook_executor(workspace),
-            Some(snapshot),
+            Some(&fleet_config),
         )
     }
 
@@ -1935,7 +1979,7 @@ impl Pinvou3Bridge {
         persona_reminder: Option<String>,
         restrict_tools: bool,
         hook_executor: Arc<HookExecutor>,
-        expert_snapshot: Option<&ExpertRosterSnapshot>,
+        fleet_config: Option<&FleetConfigToml>,
     ) -> Result<Op> {
         let (allow_shell, trust_mode) = match mode {
             AppMode::Yolo => (self.allow_shell(), true),
@@ -1979,8 +2023,10 @@ impl Pinvou3Bridge {
         let model = self.model();
         // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
         let (auto_approve, approval_mode) = policy.approval_params();
-        let route = match expert_snapshot {
-            Some(snapshot) => self.resolve_multi_agent_runtime_route_for_model(&model, snapshot)?,
+        let route = match fleet_config {
+            Some(fleet_config) => {
+                self.resolve_fleet_runtime_route_for_model(&model, fleet_config)?
+            }
             None => self.resolve_runtime_route_for_model(&model)?,
         };
         Ok(Op::SendMessage {

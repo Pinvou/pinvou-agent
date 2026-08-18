@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS ASR Context"
+  short_description: "Inspect bounded Qwen ASR vocabulary context"
+  default_prompt: "Use $pinvou-asr-context to inspect the current bounded speech recognition context."

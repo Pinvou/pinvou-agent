@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Policy"
+  short_description: "Apply fail-closed permission and safety rules"
+  default_prompt: "Use $pinvou-policy to evaluate an action against trusted PinvouOS policy facts."

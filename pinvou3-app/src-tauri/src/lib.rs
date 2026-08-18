@@ -324,6 +324,7 @@ pub fn run() {
             .map_err(|error| format!("PinvouOS runtime boot failed: {error:#}"))?;
             pinvou_os_runtime.set_event_sink({
                 let app = app.handle().clone();
+                let projection_runtime = pinvou_os_runtime.clone();
                 move |event| {
                     let payload = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
                     let _ = app.emit("pinvou-os:event", event);
@@ -332,9 +333,31 @@ pub fn run() {
                         "pinvou-os:event",
                         payload,
                     );
+                    let projection = crate::features::pinvou_os::update_runtime_projection(
+                        &projection_runtime.snapshot(),
+                    );
+                    let projection_payload = serde_json::to_value(&projection)
+                        .unwrap_or(serde_json::Value::Null);
+                    let _ = app.emit("pinvou-os:a2ui", projection);
+                    crate::platform::app_events::forward_app_event(
+                        &app,
+                        "pinvou-os:a2ui",
+                        projection_payload,
+                    );
                 }
             });
             app.handle().manage(pinvou_os_runtime.clone());
+            let asr_context_agent = crate::features::pinvou_os::AsrContextAgent::boot(
+                crate::platform::paths::pinvou_os_asr_context_state(),
+                crate::platform::paths::pinvou_os_asr_lexicon(),
+            )
+            .map_err(|error| format!("PinvouOS ASR Context Agent boot failed: {error:#}"))?;
+            app.handle().manage(asr_context_agent.clone());
+            crate::features::pinvou_os::spawn_asr_context_agent(
+                asr_context_agent,
+                pinvou_os_runtime.clone(),
+                crate::features::pinvou_os::ASR_CONTEXT_REFRESH_INTERVAL,
+            );
             startup::mark("pinvou_os:done");
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
@@ -477,6 +500,80 @@ pub fn run() {
             let monitor_state = MonitorState::new();
             app.handle().manage(monitor_state);
 
+            // Connectivity 与 Inference 是两个不同事实源：前者无密钥验证
+            // DNS/路由/TLS/HTTP 路径，后者带当前模型凭据验证模型是否真正可用。
+            crate::features::pinvou_os::spawn_connectivity_agent(
+                pinvou_os_runtime.clone(),
+                std::time::Duration::from_secs(10),
+            );
+            {
+                let runtime = pinvou_os_runtime.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut last_signature: Option<(
+                        crate::features::pinvou_os::InferenceStatus,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                    )> = None;
+                    let mut last_emitted_at: Option<std::time::Instant> = None;
+                    loop {
+                        let checked_at_ms = chrono::Utc::now().timestamp_millis();
+                        let started = std::time::Instant::now();
+                        let snapshot = crate::features::monitor::active_model_snapshot().await;
+                        let probe_latency_ms = Some(
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        );
+                        let observation = match snapshot {
+                            Some(snapshot) => {
+                                let status = classify_inference_probe(
+                                    snapshot.status,
+                                    &snapshot.health_status,
+                                );
+                                crate::features::pinvou_os::InferenceHealthObservation {
+                                    checked_at_ms,
+                                    status,
+                                    model: snapshot.configured_model.or(snapshot.model),
+                                    provider: Some(snapshot.provider),
+                                    probe_latency_ms,
+                                    reason_code: (status
+                                        != crate::features::pinvou_os::InferenceStatus::Ready)
+                                        .then_some(snapshot.health_status),
+                                }
+                            }
+                            None => crate::features::pinvou_os::InferenceHealthObservation {
+                                checked_at_ms,
+                                status: crate::features::pinvou_os::InferenceStatus::Unknown,
+                                model: None,
+                                provider: None,
+                                probe_latency_ms,
+                                reason_code: Some("model_probe_unavailable".to_string()),
+                            },
+                        };
+                        let signature = (
+                            observation.status,
+                            observation.model.clone(),
+                            observation.provider.clone(),
+                            observation.reason_code.clone(),
+                        );
+                        let should_emit = last_signature.as_ref() != Some(&signature)
+                            || last_emitted_at.is_none_or(|emitted_at| {
+                                emitted_at.elapsed() >= std::time::Duration::from_secs(300)
+                            });
+                        if should_emit {
+                            if let Err(error) = runtime.observe_inference_health(observation) {
+                                log::warn!(
+                                    "[pinvou-os][inference] health observation rejected: {error:#}"
+                                );
+                            } else {
+                                last_signature = Some(signature);
+                                last_emitted_at = Some(std::time::Instant::now());
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    }
+                });
+            }
+
             // Resource Agent 常驻采样，但只把等级变化或 30 秒心跳写入统一账本。
             // 采样复用 monitor 的平台探针；Governor 阈值与控制决策留在 pinvou_os。
             let resource_sampler: crate::features::pinvou_os::ResourceSampler =
@@ -497,11 +594,7 @@ pub fn run() {
                             .gpu
                             .as_ref()
                             .map(|gpu| gpu.utilization_pct as f64),
-                        temperature_c: snapshot
-                            .gpu
-                            .as_ref()
-                            .and_then(|gpu| gpu.temperature_c)
-                            .map(|value| value as f64),
+                        temperature_c: snapshot.temperature_c,
                         power_w: snapshot
                             .gpu
                             .as_ref()
@@ -628,11 +721,8 @@ pub fn run() {
             commands::monitor::get_backend_status,
             commands::monitor::discover_local_vllm,
             commands::pinvou_os::get_pinvou_os_snapshot,
-            commands::pinvou_os::open_pinvou_os_mission,
-            commands::pinvou_os::register_pinvou_os_mission_agent,
+            commands::pinvou_os::get_pinvou_os_projection,
             commands::pinvou_os::explain_pinvou_os_capability,
-            commands::pinvou_os::report_pinvou_os_resources,
-            commands::pinvou_os::acknowledge_pinvou_os_directive,
             commands::pinvou_os::list_pinvou_os_events,
             commands::local_llm::detect_local_vllm_setup,
             commands::local_llm::bootstrap_local_vllm,
@@ -696,6 +786,7 @@ pub fn run() {
             commands::settings::test_model_connection,
             commands::settings::test_image_input_capability,
             commands::settings::test_search_provider,
+            commands::voice::prewarm_voice_asr,
             commands::voice::transcribe_voice_audio,
             commands::voice::reset_microphone_permission,
             commands::voice::voice_asr_status,
@@ -941,6 +1032,49 @@ pub fn run() {
     startup::mark("process:exit");
 }
 
+fn classify_inference_probe(
+    status: crate::features::monitor::VllmStatus,
+    health_status: &str,
+) -> crate::features::pinvou_os::InferenceStatus {
+    use crate::features::monitor::VllmStatus;
+    use crate::features::pinvou_os::InferenceStatus;
+
+    match (status, health_status) {
+        (VllmStatus::Ready | VllmStatus::Busy, "verified") => InferenceStatus::Ready,
+        (VllmStatus::Mismatch, _) | (_, "mismatch") => InferenceStatus::Degraded,
+        (VllmStatus::Offline, _)
+        | (_, "unverified" | "missing_api_key" | "auth_failed" | "offline") => {
+            InferenceStatus::Unavailable
+        }
+        _ => InferenceStatus::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod inference_probe_contract {
+    use crate::features::monitor::VllmStatus;
+    use crate::features::pinvou_os::InferenceStatus;
+
+    #[test]
+    fn cloud_model_is_ready_only_after_a_verified_probe() {
+        assert_eq!(
+            super::classify_inference_probe(VllmStatus::Ready, "verified"),
+            InferenceStatus::Ready
+        );
+        for health in ["unverified", "missing_api_key", "auth_failed", "offline"] {
+            assert_eq!(
+                super::classify_inference_probe(VllmStatus::Ready, health),
+                InferenceStatus::Unavailable,
+                "health={health} must not be presented as model ready"
+            );
+        }
+        assert_eq!(
+            super::classify_inference_probe(VllmStatus::Mismatch, "mismatch"),
+            InferenceStatus::Degraded
+        );
+    }
+}
+
 #[cfg(test)]
 mod tool_allowlist_contract {
     use crate::features::assistant::tool_policy::{
@@ -988,7 +1122,7 @@ mod tool_allowlist_contract {
 
         assert_eq!(
             PINVOU3_ALWAYS_LOADED_TOOLS,
-            &["request_user_input", "image_analyze"]
+            &["agent", "request_user_input", "image_analyze"]
         );
         assert!(PINVOU3_ALLOWED_TOOLS.contains(&"mcp_*"));
     }

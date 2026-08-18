@@ -63,6 +63,8 @@ pub struct LocalResourceSnapshot {
     pub gpu: Option<GpuSnapshot>,
     pub cpu: Option<CpuSnapshot>,
     pub ram: Option<RamSnapshot>,
+    /// Hottest trusted CPU/package or GPU sensor available to resource governance.
+    pub temperature_c: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,11 +131,25 @@ impl MonitorState {
 }
 
 pub fn sample_local_resources() -> LocalResourceSnapshot {
+    let gpu = gpu_snapshot();
+    let platform_temperature_c = platform::temperature_c();
+    let gpu_temperature_c = gpu
+        .as_ref()
+        .and_then(|snapshot| snapshot.temperature_c)
+        .map(f64::from);
+    let temperature_c = match (platform_temperature_c, gpu_temperature_c) {
+        (Some(platform), Some(gpu)) => Some(platform.max(gpu)),
+        (Some(platform), None) => Some(platform),
+        (None, Some(gpu)) => Some(gpu),
+        (None, None) => None,
+    };
+
     LocalResourceSnapshot {
         generated_at_ms: chrono::Utc::now().timestamp_millis(),
-        gpu: gpu_snapshot(),
+        gpu,
         cpu: platform::cpu_snapshot(),
         ram: platform::ram_snapshot(),
+        temperature_c,
     }
 }
 

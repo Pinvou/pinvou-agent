@@ -83,6 +83,7 @@
     "validate:pet-assets": "node scripts/validate-pet-assets.mjs",
     "test:i18n-no-zh-literals": "node tests/i18n_no_zh_literals.test.mjs",
     "test:pinvou-mode-state": "node tests/pinvou_mode_state.test.js",
+    "test:pinvou-os-ui": "node --test tests/pinvou_os_ui_contract.test.mjs",
     "test:personal-workbench-scene": "node tests/personal_workbench_scene_logic.test.js",
     "test:pinvou-scene-sidecar": "node tests/pinvou_scene_sidecar.test.js",
     "test:design-runtime": "node tests/design_runtime_logic.test.js",

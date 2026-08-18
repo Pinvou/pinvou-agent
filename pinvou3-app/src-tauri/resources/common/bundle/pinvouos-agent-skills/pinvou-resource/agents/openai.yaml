@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Resource"
+  short_description: "Read resource pressure and governor evidence"
+  default_prompt: "Use $pinvou-resource to inspect current device pressure and safe mitigation."

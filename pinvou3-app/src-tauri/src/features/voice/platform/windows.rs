@@ -38,6 +38,10 @@ pub fn asr_tool_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("pinvou-asr"))
 }
 
+pub fn default_asr_model_name() -> &'static str {
+    "sensevoice-q8"
+}
+
 pub fn asr_model_spec() -> AsrModelSpec {
     AsrModelSpec {
         id: "sensevoice-q8",
@@ -115,6 +119,19 @@ pub fn recognize_native(
     _wav_path: &std::path::Path,
     _locale_tag: &str,
 ) -> Option<Result<String, String>> {
+    None
+}
+
+pub fn recognize_audio_bytes(
+    _audio_bytes: &[u8],
+    _locale_tag: &str,
+    _context: &str,
+    _timeout: std::time::Duration,
+) -> Option<Result<String, String>> {
+    None
+}
+
+pub fn prewarm_audio_backend(_timeout: std::time::Duration) -> Option<Result<bool, String>> {
     None
 }
 

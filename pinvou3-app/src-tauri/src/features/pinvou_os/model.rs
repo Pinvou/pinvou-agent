@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const PINVOU_IDENTITY_ID: &str = "pinvou";
+pub const PINVOU_INTERACTION_SCOPE_ID: &str = "pinvou:global";
 pub const KERNEL_ACTOR_ID: &str = "kernel:pinvou-os";
 pub const GOVERNOR_ACTOR_ID: &str = "kernel:resource-governor";
 pub const RESOURCE_AGENT_ID: &str = "agent:resource";
@@ -148,6 +149,76 @@ pub struct Run {
     pub ended_at_ms: Option<i64>,
 }
 
+/// 用户交互的输入通道。该值会进入持久化的 InteractionRun，
+/// 因此属于运行时领域模型，不属于具体 Front Agent 实现。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionModality {
+    Voice,
+    Text,
+    Touch,
+    System,
+}
+
+/// Front 的一次用户可感知交互运行。它与 Mission/Run 分离：同一连续 Pinvou
+/// 可以在没有 Mission 的情况下完成短问答，也可以在一个交互中观察多个后台 Run。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionRunStatus {
+    Submitted,
+    Running,
+    Interrupted,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionInterrupt {
+    pub interrupt_id: String,
+    pub reason: String,
+    pub question_count: u32,
+    pub created_at_ms: i64,
+}
+
+/// 与 AG-UI 对齐的唯一终态。需要用户输入不是悬空状态，而是带可恢复句柄的
+/// interrupt outcome；恢复时会创建新的 interaction run，并引用该句柄。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InteractionRunOutcome {
+    Success,
+    Interrupt {
+        interrupts: Vec<InteractionInterrupt>,
+    },
+    Error {
+        error_code: String,
+    },
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionRun {
+    pub interaction_run_id: String,
+    pub interaction_scope_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_interaction_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_interrupt_id: Option<String>,
+    pub input_digest: String,
+    pub input_char_count: u32,
+    pub modality: InteractionModality,
+    pub status: InteractionRunStatus,
+    pub submitted_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<InteractionRunOutcome>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldClaim {
@@ -213,6 +284,116 @@ impl Default for ResourceState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ConnectivityStatus {
+    Unknown,
+    Online,
+    Degraded,
+    Offline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectivityObservation {
+    pub checked_at_ms: i64,
+    pub status: ConnectivityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectivityState {
+    pub status: ConnectivityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl Default for ConnectivityState {
+    fn default() -> Self {
+        Self {
+            status: ConnectivityStatus::Unknown,
+            checked_at_ms: None,
+            latency_ms: None,
+            reason_code: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceStatus {
+    Unknown,
+    Ready,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceHealthObservation {
+    pub checked_at_ms: i64,
+    pub status: InferenceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceCompletionObservation {
+    pub completed_at_ms: i64,
+    pub model: String,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceState {
+    pub status: InferenceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl Default for InferenceState {
+    fn default() -> Self {
+        Self {
+            status: InferenceStatus::Unknown,
+            model: None,
+            provider: None,
+            checked_at_ms: None,
+            probe_latency_ms: None,
+            last_success_at_ms: None,
+            last_success_latency_ms: None,
+            reason_code: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum DirectiveAction {
     Pause,
     Resume,
@@ -261,9 +442,49 @@ pub enum RuntimeEvent {
     RunStarted {
         run: Run,
     },
+    InteractionRunOpened {
+        interaction_run: InteractionRun,
+    },
+    InteractionRunStarted {
+        interaction_run_id: String,
+        started_at_ms: i64,
+    },
+    InteractionToolStarted {
+        interaction_run_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        started_at_ms: i64,
+    },
+    InteractionToolFinished {
+        interaction_run_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        success: bool,
+        finished_at_ms: i64,
+    },
+    InteractionAssistantMessageCompleted {
+        interaction_run_id: String,
+        message_digest: String,
+        message_char_count: u32,
+        completed_at_ms: i64,
+    },
+    InteractionRunFinished {
+        interaction_run_id: String,
+        outcome: InteractionRunOutcome,
+        finished_at_ms: i64,
+    },
     ResourceObserved {
         observation: ResourceObservation,
         pressure: ResourcePressure,
+    },
+    ConnectivityObserved {
+        observation: ConnectivityObservation,
+    },
+    InferenceHealthObserved {
+        observation: InferenceHealthObservation,
+    },
+    InferenceCompleted {
+        observation: InferenceCompletionObservation,
     },
     ClaimAsserted {
         claim: WorldClaim,
@@ -284,6 +505,26 @@ pub enum RuntimeEvent {
         acknowledged_at_ms: i64,
         detail: String,
     },
+    /// v2 及更早版本的完整 MemoryAgent 投影。新 Runtime 只读此事件做一次迁移，
+    /// 绝不能继续写入；保留 variant 是为了让同一统一账本可向前恢复。
+    MemoryProjectionUpdated {
+        revision: u64,
+        operation: String,
+        memory_id: String,
+        projection: Value,
+    },
+    /// Memory decision stream 是统一 Runtime 账本中的逻辑分区，不是第二真相源。
+    OrganizedMemoryDecisionRecorded {
+        decision: super::memory_agent::OrganizedMemoryDecisionBatch,
+    },
+    /// 可重建热投影的受信 checkpoint。旧投影迁移只会写一次带来源 marker 的根。
+    OrganizedMemoryCheckpointRecorded {
+        checkpoint: super::memory_agent::OrganizedMemoryDecisionCheckpoint,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        legacy_source_event_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        legacy_migration: Option<super::memory_agent::LegacyMemoryMigrationReport>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -298,6 +539,10 @@ pub struct EventEnvelope {
     pub mission_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_scope_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -315,9 +560,15 @@ pub struct RuntimeSnapshot {
     pub agents: BTreeMap<String, AgentManifest>,
     pub missions: BTreeMap<String, Mission>,
     pub runs: BTreeMap<String, Run>,
+    #[serde(default)]
+    pub interaction_runs: BTreeMap<String, InteractionRun>,
     pub claims: BTreeMap<String, WorldClaim>,
     pub directives: BTreeMap<String, ControlDirective>,
     pub resources: ResourceState,
+    #[serde(default)]
+    pub connectivity: ConnectivityState,
+    #[serde(default)]
+    pub inference: InferenceState,
 }
 
 impl Default for RuntimeSnapshot {
@@ -329,9 +580,12 @@ impl Default for RuntimeSnapshot {
             agents: BTreeMap::new(),
             missions: BTreeMap::new(),
             runs: BTreeMap::new(),
+            interaction_runs: BTreeMap::new(),
             claims: BTreeMap::new(),
             directives: BTreeMap::new(),
             resources: ResourceState::default(),
+            connectivity: ConnectivityState::default(),
+            inference: InferenceState::default(),
         }
     }
 }

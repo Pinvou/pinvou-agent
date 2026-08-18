@@ -411,7 +411,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       );
     };
 
-    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode }) => {
+    const ChatView = ({ theme, t, bs, prefill, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, multiAgentAvailable = true, onSwitchHomeMode }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -964,6 +964,9 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
+      const isLegacyMultiAgentReadOnly = multiAgentAvailable && isMultiAgentReadOnly;
+      // Legacy Web invariant (kept as a contract anchor):
+      // editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       useEffect(() => {
         if (designAiSessionRef.current && designAiSessionRef.current !== activeSessionId) {
@@ -1021,7 +1024,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         }
       }, [subagentPanel]);
       useEffect(() => {
-        if (typeof window === 'undefined') return undefined;
+        if (!multiAgentAvailable || typeof window === 'undefined') return undefined;
         const onOpen = (event) => {
           const detail = event && event.detail;
           if (detail?.sessionId && detail.sessionId !== activeSessionId) return;
@@ -1034,7 +1037,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
         };
         window.addEventListener('pinvou:open-subagent', onOpen);
         return () => window.removeEventListener('pinvou:open-subagent', onOpen);
-      }, [activeSessionId, closeArtifactsPanel, rememberScrollBeforeSubagentPanelChange]);
+      }, [activeSessionId, closeArtifactsPanel, multiAgentAvailable, rememberScrollBeforeSubagentPanelChange]);
       useEffect(() => {
         if (artifactsVisible) setSubagentPanel(null);
       }, [artifactsVisible]);
@@ -1073,7 +1076,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
       const firstTurnPending = !activeSessionId && chatItems.some(item => (
         item && item.type === 'user' && !!item.deliveryState
       ));
-      const canSend = !isMultiAgentReadOnly
+      const canSend = !isLegacyMultiAgentReadOnly
         && !firstTurnPending
         && (hasDraftText || hasReadyAttachment);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
@@ -1310,7 +1313,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
 
       async function handleSend() {
         // 不再因 busy 拦截:bridge.chat.sendMessage 在生成中会把这句排队(本轮跑完自动发)。
-        if (isMultiAgentReadOnly || !canSend) return;
+        if (isLegacyMultiAgentReadOnly || !canSend) return;
         const constrained = constrainChatInput(inputText);
         if (constrained.truncated) {
           setInputText(constrained.text);
@@ -1600,7 +1603,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         sessionId={activeSessionId}
                         theme={theme}
                         t={t}
-                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
+                        editable={!busy && !isLegacyMultiAgentReadOnly && item.id === lastUserId}
                         conversationVariant="unified"
                       />
                     )}
@@ -1642,7 +1645,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                         t={t}
                         onPrefill={(text) => setInputText(text)}
                         onSend={sendChatMessage}
-                        editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
+                        editable={!busy && !isLegacyMultiAgentReadOnly && item.id === lastUserId}
                         onOpenEditor={onOpenEditor}
                         isLatestArtifact={latestArtifactIds.has(item.id)}
                         allowScheduledTaskDraft={isScheduledTaskCreationChat}
@@ -1937,7 +1940,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                 className="mb-0.5"
                 copy={t.uiConversation}
               />
-              {isMultiAgentReadOnly ? (
+              {isLegacyMultiAgentReadOnly ? (
                 <div
                   role="note"
                   data-testid="multiagent-desktop-only"
@@ -1980,7 +1983,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                     <Mic size={18} />
                   </button>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={multiAgentAvailable} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
@@ -2122,7 +2125,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
               onDesignAiStateChange={updateDesignAiState}
             />
           )}
-          {subagentPanel && (
+          {multiAgentAvailable && subagentPanel && (
             <SubagentTranscriptPanel
               sessionId={activeSessionId}
               initialAgentId={subagentPanel.agentId}
@@ -2719,7 +2722,7 @@ const ToolWelcomeCard = ({ toolId, theme, t, onSend }) => {
                   </div>
                 </div>
               ) : null}
-              {pd.draft ? (
+              {pd.draft && onOpenEditor ? (
                 <div className="mt-2 rounded-[14px] p-3 flex items-center gap-3 max-w-[460px]" style={{ background: theme === 'dark' ? '#1C1C1E' : '#F2F2F7' }}>
                   <AppIcon card={pd.draft} cls="w-11 h-11 rounded-[12px]" fb={22} />
                   <div className="min-w-0 flex-1">

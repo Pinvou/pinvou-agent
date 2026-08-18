@@ -28,6 +28,17 @@ const common = readJson("tauri.conf.json");
 const linux = readJson("config/platforms/linux/tauri.conf.json");
 const macos = readJson("config/platforms/macos/tauri.conf.json");
 const windows = readJson("config/platforms/windows/tauri.conf.json");
+const defaultCapability = readJson("capabilities/default.json");
+
+assert.ok(
+  defaultCapability.permissions.includes("notification:allow-is-permission-granted"),
+  "the notification plugin startup probe must be allowed without granting its full command set",
+);
+assert.equal(
+  defaultCapability.permissions.includes("notification:default"),
+  false,
+  "the main window must keep notification IPC permissions least-privileged",
+);
 
 assert.equal(resourceSources(common).length, 0, "common bundle assets are embedded by the Rust runtime");
 assert.match(common.build.beforeBuildCommand, /scripts\/tauri\/require-wrapper\.js build/);

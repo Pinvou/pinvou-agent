@@ -153,6 +153,8 @@
     "chat:usage",
     "chat:user_message",
     "chat:user_input_required",
+    "pinvou-os:event",
+    "pinvou-os:a2ui",
     "scheduled_task:run_updated",
     "session:deleted",
     "session:list_changed",

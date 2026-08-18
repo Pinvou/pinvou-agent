@@ -444,6 +444,7 @@ command_protocol!(
     voice_protocol,
     "voice.rs",
     [
+        "prewarm_voice_asr",
         "transcribe_voice_audio",
         "reset_microphone_permission",
         "voice_asr_status",

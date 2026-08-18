@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Connectivity"
+  short_description: "Diagnose network reachability from runtime facts"
+  default_prompt: "Use $pinvou-connectivity to diagnose the current network path from PinvouOS evidence."

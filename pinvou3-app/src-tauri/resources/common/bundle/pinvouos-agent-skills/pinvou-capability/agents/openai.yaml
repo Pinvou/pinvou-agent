@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Capability"
+  short_description: "Explain what PinvouOS can and cannot do now"
+  default_prompt: "Use $pinvou-capability to report available, temporary, and unsupported capabilities."

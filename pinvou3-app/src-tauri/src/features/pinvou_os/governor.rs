@@ -54,7 +54,7 @@ pub fn classify_pressure(
 
 pub(super) fn directive_for_agent(
     agent: &AgentManifest,
-    previous: ResourcePressure,
+    _previous: ResourcePressure,
     current: ResourcePressure,
     policy: ResourceGovernorPolicy,
 ) -> Option<(DirectiveAction, bool)> {
@@ -86,14 +86,14 @@ pub(super) fn directive_for_agent(
                 Some((DirectiveAction::Pause, false))
             }
         }
-        ResourcePressure::Normal if previous >= ResourcePressure::Hot => {
+        ResourcePressure::Normal => {
             if agent.desired_state == AgentState::Paused {
                 Some((DirectiveAction::Resume, false))
             } else {
                 None
             }
         }
-        ResourcePressure::Normal | ResourcePressure::Warm => None,
+        ResourcePressure::Warm => None,
     }
 }
 

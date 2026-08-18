@@ -1,0 +1,4 @@
+interface:
+  display_name: "PinvouOS Orchestrator"
+  short_description: "Plan complex work and return evidence to Front"
+  default_prompt: "Use $pinvou-orchestrator to plan this complex PinvouOS task with runtime evidence."

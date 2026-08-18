@@ -39,6 +39,7 @@ pub(crate) fn spawn_event_forwarder(
     turn_lifecycle: Arc<TurnLifecycle>,
     shell_manager: SharedShellManager,
     turn_shell_tasks: TurnShellTaskRegistry,
+    interaction_trace: PinvouInteractionTrace,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -63,6 +64,9 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        let mut current_turn_started_at: Option<std::time::Instant> = None;
+        let mut current_turn_model: Option<String> = None;
+        let mut interaction_assistant_message = String::new();
         let mut rx = handle.rx_event.write().await;
         while let Some(event) = rx.recv().await {
             match event {
@@ -89,6 +93,9 @@ pub(crate) fn spawn_event_forwarder(
                     active_transcript_seen = false;
                     chat_persistence_error = None;
                     current_turn_id = Some(turn_id.clone());
+                    current_turn_started_at = Some(std::time::Instant::now());
+                    current_turn_model = None;
+                    interaction_assistant_message.clear();
                     if let Err(error) = turn_shell_tasks.bind_or_prepare_turn(&turn_id).await {
                         log::error!(
                             "[pinvou3][chat] failed to bind shell task scope sid={} turn={}: {error:#}",
@@ -102,11 +109,17 @@ pub(crate) fn spawn_event_forwarder(
                         m.on_turn_started(&session_id);
                     }
                 }
+                Event::RouteDispatched { turn_id, route }
+                    if current_turn_id.as_deref() == Some(turn_id.as_str()) =>
+                {
+                    current_turn_model = Some(route.model);
+                }
                 Event::MessageDelta { content, .. } => {
                     if let Some(m) = &self_metrics {
                         m.on_message_delta(&session_id, content.chars().count());
                     }
                     crate::features::memory::append_turn_assistant(&session_id, &content);
+                    interaction_assistant_message.push_str(&content);
                     let payload = json!({ "session_id": session_id, "text": content });
                     let _ = app.emit("chat:delta", payload.clone());
                     crate::features::remote_control::forward_app_event(&app, "chat:delta", payload);
@@ -142,6 +155,7 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::ToolCallStarted { id, name, input } => {
+                    interaction_trace.record_tool_started(&id, &name);
                     if let Some(m) = &self_metrics {
                         m.on_tool(&session_id); // 本轮有工具 → 收尾跳过 TTFT/TPS(D2)
                     }
@@ -229,6 +243,14 @@ pub(crate) fn spawn_event_forwarder(
                         &tracked_input,
                         success,
                     );
+                    if name == "request_user_input" {
+                        if success {
+                            interaction_trace.resume(&id, &output);
+                            interaction_assistant_message.clear();
+                        }
+                    } else {
+                        interaction_trace.record_tool_finished(&id, &name, success);
+                    }
                     // Plan 类工具结果：标记 + 缓存 snapshot（两层）+ 实时 emit 给前端 chip 进度区
                     if success
                         && (name == "update_plan"
@@ -300,6 +322,12 @@ pub(crate) fn spawn_event_forwarder(
                             }
                         });
                     } else {
+                        interaction_trace.interrupt(
+                            &id,
+                            request.questions.len(),
+                            &interaction_assistant_message,
+                        );
+                        interaction_assistant_message.clear();
                         // 普通对话继续交给前端或远程控制端处理。登记 pending，
                         // 供前端 remount 后经 get_pending_user_inputs 恢复确认卡。
                         let payload = json!({
@@ -715,8 +743,28 @@ pub(crate) fn spawn_event_forwarder(
                     // during the await, this late TurnComplete is discarded.
                     let Some(_) = turn_lifecycle.claim_terminal_with_admission(&app, &session_id)
                     else {
+                        interaction_trace.finish(
+                            crate::features::pinvou_os::InteractionRunOutcome::Cancelled,
+                            &interaction_assistant_message,
+                        );
+                        interaction_assistant_message.clear();
                         continue;
                     };
+                    let interaction_outcome = match terminal_status {
+                        TurnOutcomeStatus::Completed => {
+                            crate::features::pinvou_os::InteractionRunOutcome::Success
+                        }
+                        TurnOutcomeStatus::Interrupted => {
+                            crate::features::pinvou_os::InteractionRunOutcome::Cancelled
+                        }
+                        TurnOutcomeStatus::Failed => {
+                            crate::features::pinvou_os::InteractionRunOutcome::Error {
+                                error_code: "engine_turn_failed".to_string(),
+                            }
+                        }
+                    };
+                    interaction_trace.finish(interaction_outcome, &interaction_assistant_message);
+                    interaction_assistant_message.clear();
                     // 单独发 usage 给前端 token 进度条
                     let payload = json!({
                         "session_id": session_id,
@@ -736,6 +784,29 @@ pub(crate) fn spawn_event_forwarder(
                             usage.prompt_cache_hit_tokens,
                             usage.prompt_cache_miss_tokens,
                         );
+                    }
+                    let inference_latency_ms = current_turn_started_at.take().map(|started| {
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+                    });
+                    let inference_model =
+                        current_turn_model.take().unwrap_or_else(|| bridge.model());
+                    if status == TurnOutcomeStatus::Completed {
+                        if let (Some(latency_ms), Some(runtime)) = (
+                            inference_latency_ms,
+                            app.try_state::<crate::features::pinvou_os::PinvouOsRuntime>(),
+                        ) {
+                            let observation =
+                                crate::features::pinvou_os::InferenceCompletionObservation {
+                                    completed_at_ms: chrono::Utc::now().timestamp_millis(),
+                                    model: inference_model,
+                                    latency_ms,
+                                };
+                            if let Err(error) = runtime.record_inference_completion(observation) {
+                                log::warn!(
+                                    "[pinvou-os][inference] completion observation rejected: {error:#}"
+                                );
+                            }
+                        }
                     }
                     // turn end:取出 tracker 快照,然后重置(下个 turn 重新累积)。
                     // 用独立 block 把 parking_lot guard 的生命周期限死在这里:下方
@@ -967,6 +1038,12 @@ pub(crate) fn spawn_event_forwarder(
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();
+        interaction_trace.finish(
+            crate::features::pinvou_os::InteractionRunOutcome::Error {
+                error_code: "engine_stream_stopped".to_string(),
+            },
+            &interaction_assistant_message,
+        );
         let mut shell_cleanup_failed = false;
         {
             // The stream can stop before `TurnStarted` bound the provisional

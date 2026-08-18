@@ -226,6 +226,16 @@ pub fn pinvou_os_event_ledger() -> PathBuf {
     pinvou3_home().join("pinvou-os").join("events.v1.jsonl")
 }
 
+/// ASR Context Agent 的本机私有状态。只保存候选术语与编译快照，不复制用户整句。
+pub fn pinvou_os_asr_context_state() -> PathBuf {
+    pinvou3_home().join("pinvou-os").join("asr-context.v1.json")
+}
+
+/// 用户可维护的私有 ASR 词表；一行一个人名、产品名或专业术语。
+pub fn pinvou_os_asr_lexicon() -> PathBuf {
+    pinvou3_home().join("pinvou-os").join("asr-lexicon.txt")
+}
+
 /// Scheduled-run data is separated from ordinary chat history.
 pub fn scheduled_runs_root() -> PathBuf {
     pinvou3_home().join("scheduled-runs")

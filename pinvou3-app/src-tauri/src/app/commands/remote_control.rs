@@ -626,6 +626,7 @@ pub async fn web_access_transcribe_voice_audio(
     audio_base64: String,
     session_id: String,
     store: State<'_, SessionStore>,
+    context_agent: State<'_, crate::features::pinvou_os::AsrContextAgent>,
 ) -> Result<super::voice::VoiceTranscriptionResponse, super::voice::VoiceCommandError> {
     crate::features::sessions::validate_session_id(&session_id).map_err(|error| {
         super::voice::VoiceCommandError::new(
@@ -657,8 +658,14 @@ pub async fn web_access_transcribe_voice_audio(
             "远程控制语音音频超过 1 MiB",
         ));
     }
-    super::voice::transcribe_voice_audio(super::voice::VoiceTranscriptionRequest { audio_bytes })
-        .await
+    super::voice::transcribe_voice_audio_with_context(
+        super::voice::VoiceTranscriptionRequest {
+            audio_bytes,
+            audio_base64: None,
+        },
+        context_agent.current_context(),
+    )
+    .await
 }
 
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects

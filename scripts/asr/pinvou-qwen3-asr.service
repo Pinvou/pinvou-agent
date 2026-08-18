@@ -1,0 +1,22 @@
+[Unit]
+Description=Pinvou Qwen3-ASR OpenVINO GPU resident service
+After=default.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.pinvou3/asr/qwen3-asr-openvino
+ExecStart=%h/.pinvou3/asr/qwen3-asr-openvino/runtime/bin/python %h/.pinvou3/asr/qwen3-asr-openvino/qwen3-asr-openvino.py serve
+Environment=PINVOU3_QWEN3_ASR_DEVICE=GPU
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

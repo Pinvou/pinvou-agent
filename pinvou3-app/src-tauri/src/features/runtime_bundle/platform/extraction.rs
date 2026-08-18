@@ -261,11 +261,13 @@ impl Pinvou3Bundle {
 
     /// 解包内嵌的内置 skills 到 pinvou3 单一来源 `bundle/skills`。v0.9 clean re-fork
     /// 后 catalogue 与 `load_skill` 都只扫描此目录，不再写 `~/.agents/skills`。
-    /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计。
+    /// 每次启动防御性重写(immutable 内置资源)。当前:视觉设计 + PinvouOS
+    /// 后台 Agent skills。后者独立于第三方连接器开关，不能被飞书门控误删。
     pub(super) fn write_builtin_skills(&self) -> std::io::Result<()> {
         let dir = self.skills_dir.join("visual-design");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("SKILL.md"), VISUAL_DESIGN_SKILL_MD)?;
+        Self::extract_dir(&PINVOUOS_AGENT_SKILLS_DIR, &self.skills_dir)?;
         Ok(())
     }
 

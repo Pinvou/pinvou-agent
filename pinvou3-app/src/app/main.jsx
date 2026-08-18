@@ -40,6 +40,12 @@ import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
+// PinvouOS 对用户只暴露一个连续身份。旧对话容器仍作为 CodeWhale 执行兼容层，
+// 但不得再成为主界面的导航和心智模型。
+const PINVOU_OS_UI_ENABLED = true;
+// 旧“三省六部”多智能体入口与专家卡牌池不属于 PinvouOS 产品模型。
+// 迁移期保留实现代码供旧壳兼容，但 PinvouOS 中禁止导航、编辑器、挂绳和运行模式。
+const LEGACY_EXPERT_SURFACES_ENABLED = !PINVOU_OS_UI_ENABLED;
 
 // 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
 // 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。
@@ -56,6 +62,8 @@ import { CardPoolView, Lanyard, PersonaEditorModal } from '../features/personas/
 import { SearchView } from '../features/search/SearchView.jsx';
 import { SearchOverlay } from '../features/search/SearchOverlay.jsx';
 import { UpdateNoticeButton } from '../features/updater/UpdateNoticeButton.jsx';
+import { PinvouOsAgentDock } from '../features/pinvou_os/PinvouOsAgentDock.jsx';
+import { PinvouOsVoiceShell } from '../features/pinvou_os/PinvouOsVoiceShell.jsx';
 import { DetachedShell } from './DetachedShell.jsx';
 import { TitleBar } from './DesktopTitleBar.jsx';
 
@@ -444,6 +452,7 @@ function workspaceDisplayName(path) {
       const [petFocusComposerTick, setPetFocusComposerTick] = useState(0);
       const petSnapshotRef = useRef([]);
       const petSnapshotSequenceRef = useRef(0);
+      const pinvouOsContinuityRestoredRef = useRef(false);
 
       // ── 多窗口(撕离/tear-off):长按标签 → 浮起跟手 → 拖到目标屏 → 松手 → 该屏最大化打开 ──
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
@@ -606,12 +615,46 @@ function workspaceDisplayName(path) {
         }
       }, [bs]);
 
+      // PinvouOS 只有一条连续交互时间线。迁移期仍把 CodeWhale 对话容器当作
+      // 私有执行句柄：启动时恢复上次句柄（或最近的一条），但不把它暴露给用户。
+      useEffect(() => {
+        if (!PINVOU_OS_UI_ENABLED || !bridge.available || !bs) return;
+        if (bs.activeSessionId) {
+          pinvouOsContinuityRestoredRef.current = true;
+          try { localStorage.setItem('pinvou_os_compat_timeline', bs.activeSessionId); } catch (_) {}
+          return;
+        }
+        if (pinvouOsContinuityRestoredRef.current || !Array.isArray(bs.sessions) || bs.sessions.length === 0) return;
+        let remembered = null;
+        try { remembered = localStorage.getItem('pinvou_os_compat_timeline'); } catch (_) {}
+        const target = bs.sessions.find(item => item.id === remembered)
+          || [...bs.sessions].sort((left, right) => String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || '')))[0];
+        if (!target || !target.id) return;
+        pinvouOsContinuityRestoredRef.current = true;
+        bridge.sessions.switchToSession(target.id).catch(() => {
+          pinvouOsContinuityRestoredRef.current = false;
+        });
+      }, [bs && bs.activeSessionId, bs && bs.sessions]);
+
       // HMR/旧前端状态可能仍停在已下线入口；立即回到仍可访问的视图。
       useEffect(() => {
         if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled') {
           setCurrentView('chat');
         }
+        if (!LEGACY_EXPERT_SURFACES_ENABLED && currentView === 'cardpool') {
+          setCurrentView('chat');
+        }
       }, [currentView]);
+
+      // PinvouOS 的后台 Agent Runtime 取代旧“三省六部”会话模式。若兼容时间线
+      // 曾经开启过旧模式，启动后主动关掉，避免入口消失但执行仍暗中走旧编排。
+      useEffect(() => {
+        if (LEGACY_EXPERT_SURFACES_ENABLED
+          || !bridge.available
+          || !(bs && bs.modeState && bs.modeState.multiAgent)
+          || !bridge.interaction.setMultiAgentMode) return;
+        Promise.resolve(bridge.interaction.setMultiAgentMode(false)).catch(() => {});
+      }, [bs && bs.modeState && bs.modeState.multiAgent]);
 
       // 草稿 vs 已保存基线 → 模型卡是否显示「保存并重启」操作条
       const savedModel = savedModelConfigRef.current;
@@ -922,6 +965,9 @@ function workspaceDisplayName(path) {
       }, [bs && bs.sessions, bs && bs.sessionBusy, language]);
 
       async function navigateFromScheduledRun(nextView, beforeNavigate) {
+        if (!LEGACY_EXPERT_SURFACES_ENABLED && nextView === 'cardpool') {
+          nextView = 'chat';
+        }
         if (bs && bs.scheduledRunContext && bridge.available && bridge.scheduled.exitScheduledRunChat) {
           const exited = await bridge.scheduled.exitScheduledRunChat();
           if (!exited) return false;
@@ -974,6 +1020,13 @@ function workspaceDisplayName(path) {
         // 工具渲染 null → 欢迎语整块空白。守卫挡住这条暗坑。
         if (typeof installedToolId === 'string' && installedToolId) {
           setJustInstalledTool(installedToolId);
+        }
+        if (PINVOU_OS_UI_ENABLED) {
+          // “回到 Pinvou”只聚焦同一个连续交互面，不创建第二条用户可见时间线。
+          setCurrentView('chat');
+          setPetFocusComposerTick(value => value + 1);
+          closeMobileSidebar();
+          return;
         }
         if (currentView === 'codex' && codexAcpSupported) {
           updateActiveCodexSession(null);
@@ -1588,7 +1641,7 @@ function workspaceDisplayName(path) {
       // 未读红点与侧栏入口同源，避免两套提醒逻辑漂移。
       const scheduledUnread = !!(bs && (bs.scheduledTasks || []).some(task => task.hasUnreadRuns));
       const mobileTitle = currentView === 'chat'
-        ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
+        ? 'PINVOU'
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings }[currentView] || 'PINVOU');
@@ -1596,7 +1649,7 @@ function workspaceDisplayName(path) {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
       };
-      const mobileMoreViews = ['search', 'outputs', 'knowledge', 'toolStore', 'settings'];
+      const mobileMoreViews = ['outputs', 'knowledge', 'toolStore', 'settings'];
       const mobileMoreActive = mobileMoreViews.includes(currentView)
         || (currentView === 'scheduled' && !(bs && bs.scheduledRunContext));
 
@@ -1616,7 +1669,7 @@ function workspaceDisplayName(path) {
               : chat.scheduledRun
                 ? !!(bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === chat.id)
                 : activeChat === chat.id && currentView === 'chat'}
-            personaTarget={chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
+            personaTarget={LEGACY_EXPERT_SURFACES_ENABLED && chat.taskKind !== 'codex' && !chat.scheduledRun && activeChat === chat.id && currentView === 'cardpool'}
             onSelect={chat.taskKind === 'codex'
               ? handleSwitchCodexSession
               : chat.scheduledRun
@@ -1633,6 +1686,23 @@ function workspaceDisplayName(path) {
           />
         );
       };
+
+      async function handlePinvouOsVoicePrompt(text) {
+        const prompt = String(text || '').trim();
+        if (!prompt || !bridge.available || !bridge.chat || !bridge.chat.sendMessage) return;
+        await bridge.chat.sendMessage(prompt);
+      }
+
+      if (PINVOU_OS_UI_ENABLED && currentView === 'chat') {
+        return (
+          <PinvouOsVoiceShell
+            theme={activeTheme}
+            t={t}
+            bs={bs}
+            onSubmitPrompt={handlePinvouOsVoicePrompt}
+          />
+        );
+      }
 
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
@@ -1705,8 +1775,7 @@ function workspaceDisplayName(path) {
 
           {isCompactShell && (
             <MobileTopBar theme={activeTheme} t={t} title={mobileTitle}
-              onMenu={() => setIsSidebarOpen(true)}
-              onNewChat={currentView === 'chat' || currentView === 'codex' ? () => handleNewChat() : undefined} />
+              onMenu={() => setIsSidebarOpen(true)} />
           )}
 
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]'}`}>
@@ -1747,9 +1816,9 @@ function workspaceDisplayName(path) {
                 <Menu size={20} className={activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]'} />
               </button>
               <span className={`text-[18px] font-medium tracking-wide flex items-center gap-2 whitespace-nowrap transition-opacity duration-200 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 w-0'}`}>
-                PINVOU
+                PINVOU OS
               </span>
-              {isSidebarOpen && !isCompactShell && (
+              {isSidebarOpen && !isCompactShell && !PINVOU_OS_UI_ENABLED && (
                 <button
                   type="button"
                   onClick={() => setSearchOverlayOpen(true)}
@@ -1769,12 +1838,13 @@ function workspaceDisplayName(path) {
             {/* Navigation — shrink-0 固定不滚动,list 再多也不挤压 nav */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
-                icon={<Edit2 size={18} />} label={t.newChat}
+                icon={<PinvouLogo className="h-[18px] w-[18px]" />} label="Pinvou"
+                active={currentView === 'chat'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => handleNewChat()}
+                onClick={() => navigateFromScheduledRun('chat')}
               />
-              {(!isSidebarOpen || isCompactShell) && (
+              {!PINVOU_OS_UI_ENABLED && (!isSidebarOpen || isCompactShell) && (
                 <NavItem
                   icon={<Search size={18} />} label={t.searchChats}
                   active={searchOverlayOpen}
@@ -1823,14 +1893,16 @@ function workspaceDisplayName(path) {
                 onClick={() => navigateFromScheduledRun('toolStore')}
                 dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
               />
-              <NavItem
-                icon={<Layers size={18} />} label={t.cardPool}
-                active={currentView === 'cardpool'}
-                theme={activeTheme}
-                isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
-              />
+              {LEGACY_EXPERT_SURFACES_ENABLED && (
+                <NavItem
+                  icon={<Layers size={18} />} label={t.cardPool}
+                  active={currentView === 'cardpool'}
+                  theme={activeTheme}
+                  isSidebarOpen={isSidebarOpen}
+                  onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
+                  dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
+                />
+              )}
               <NavItem
                 icon={<BookOpen size={18} />} label={t.knowledge}
                 active={currentView === 'knowledge'}
@@ -1839,8 +1911,8 @@ function workspaceDisplayName(path) {
                 onClick={() => navigateFromScheduledRun('knowledge')}
                 dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
               />
-              {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
-              {!isSidebarOpen && (
+              {/* 旧版收起态入口；PinvouOS 顶部的唯一 Pinvou 入口已经覆盖此职责。 */}
+              {!PINVOU_OS_UI_ENABLED && !isSidebarOpen && (
                 <NavItem
                   icon={<MessageSquare size={18} />} label={t.currentChat}
                   active={currentView === 'chat'}
@@ -1851,12 +1923,38 @@ function workspaceDisplayName(path) {
               )}
             </div>
 
+            {isSidebarOpen && PINVOU_OS_UI_ENABLED && (
+              <div className="flex-1 min-h-0 px-3 pt-5">
+                <div className={`rounded-[22px] border p-4 ${
+                  activeTheme === 'dark'
+                    ? 'border-white/[0.07] bg-white/[0.035]'
+                    : 'border-black/[0.04] bg-white/65'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-2xl ${activeTheme === 'dark' ? 'bg-white/[0.06]' : 'bg-white shadow-sm'}`}>
+                      <PinvouLogo className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <div className="text-[14px] font-semibold">{t.uiPinvouOs.identity}</div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-semibold text-[#34C759]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                        {t.uiPinvouOs.continuous}
+                      </div>
+                    </div>
+                  </div>
+                  <div className={`mt-3 text-[12px] leading-relaxed ${activeTheme === 'dark' ? 'text-[#8E949C]' : 'text-[#777D84]'}`}>
+                    {t.uiPinvouOs.oneIdentity}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Recents — 独立 flex-1 + overflow-y-auto,只在展开态显示。
                 min-h-0 关键:flex 子项默认 min-height: auto 会阻止 overflow,
                 显式压成 0 才允许内容溢出触发滚动条。
                 nav / list 分隔:「近期」label sticky top-0 + 实色背景,滚动时常驻顶端
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
-            {isSidebarOpen && (
+            {isSidebarOpen && !PINVOU_OS_UI_ENABLED && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
                 <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
@@ -2102,8 +2200,13 @@ function workspaceDisplayName(path) {
               </SettingsErrorBoundary>
             )}
             {currentView === 'toolStore' && <ToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
-            {currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} />}
+            {LEGACY_EXPERT_SURFACES_ENABLED && currentView === 'cardpool' && <CardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => setCurrentView('chat')} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
+            {currentView === 'chat' && (
+              <div className="flex flex-1 min-h-0 min-w-0">
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => setChatPrefill('')} onOpenEditor={LEGACY_EXPERT_SURFACES_ENABLED ? ((initial) => setPersonaEditor({ initial })) : undefined} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={false} multiAgentAvailable={LEGACY_EXPERT_SURFACES_ENABLED} />
+                <PinvouOsAgentDock theme={activeTheme} t={t} />
+              </div>
+            )}
             {codexAcpSupported && currentView === 'codex' && (
               <CodexAcpView
                 theme={activeTheme}
@@ -2123,14 +2226,14 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={(initial) => setPersonaEditor({ initial })} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} />
+                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={LEGACY_EXPERT_SURFACES_ENABLED ? ((initial) => setPersonaEditor({ initial })) : undefined} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} multiAgentAvailable={LEGACY_EXPERT_SURFACES_ENABLED} />
               ) : (
                 <ScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => setCurrentView('chat')} onGotoModelSettings={() => openSettingsSection('model')} />
               )
             )}
             {/* 草稿态(无 session)也渲染挂件,但强制空态——让欢迎页保留「＋加持卡牌」入口。
                 点它跳卡牌池,选卡时 equipPersona 会先物化 session(lazy session)。 */}
-            {(currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && bs && (
+            {LEGACY_EXPERT_SURFACES_ENABLED && (currentView === 'chat' || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && bs && (
               <Lanyard persona={bs.activeSessionId ? (bs.activePersona || null) : null} isDark={activeTheme === 'dark'} t={t}
                 onRemove={() => bridge.available && bridge.personas.unequipPersona()}
                 onOpenPicker={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))} />
@@ -2163,7 +2266,7 @@ function workspaceDisplayName(path) {
             )}
 
             {/* App 级自创卡编辑器: 聊天里「存入卡牌池」草稿走这条 */}
-            {personaEditor && (
+            {LEGACY_EXPERT_SURFACES_ENABLED && personaEditor && (
               <PersonaEditorModal initial={personaEditor.initial} isDark={activeTheme === 'dark'} t={t}
                 onClose={() => setPersonaEditor(null)}
                 onSaved={(sum) => { const isEdit = personaEditor.initial && personaEditor.initial.id; setPersonaEditor(null); if (!isEdit) setSavedConfirm({ name: sum && sum.name }); }}
@@ -2171,7 +2274,7 @@ function workspaceDisplayName(path) {
             )}
 
             {/* 存入成功 → iOS 确认窗:去查看我的卡牌 / 暂不 */}
-            {savedConfirm && (
+            {LEGACY_EXPERT_SURFACES_ENABLED && savedConfirm && (
               <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={() => setSavedConfirm(null)}>
                 <div onClick={(e) => e.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
                   style={{ background: activeTheme === 'dark' ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
@@ -2303,8 +2406,8 @@ function workspaceDisplayName(path) {
               { key: 'chat', label: t.currentChat, icon: <MessageSquare size={18} />,
                 active: currentView === 'chat' || !!(currentView === 'scheduled' && bs && bs.scheduledRunContext),
                 onClick: () => mobileNavigate('chat') },
-              { key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
-                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) },
+              ...(LEGACY_EXPERT_SURFACES_ENABLED ? [{ key: 'cardpool', label: t.cardPool, icon: <Layers size={18} />,
+                active: currentView === 'cardpool', onClick: () => mobileNavigate('cardpool', () => setPoolMyOnly(false)) }] : []),
               { key: 'monitor', label: t.monitor, icon: <BarChart2 size={18} />,
                 active: currentView === 'monitor',
                 onClick: () => mobileNavigate('monitor', () => {
@@ -2319,8 +2422,6 @@ function workspaceDisplayName(path) {
 
           {isCompactShell && mobileMoreOpen && (
             <MobileMoreSheet theme={activeTheme} title={t.mobileMore} onClose={() => setMobileMoreOpen(false)} items={[
-              { key: 'search', label: t.searchChats, icon: <Search size={18} />,
-                active: currentView === 'search', onClick: () => mobileNavigate('search') },
               ...(SCHEDULED_TASKS_ENTRY_ENABLED ? [{ key: 'scheduled', label: t.scheduledPlans, icon: <Clock size={18} />,
                 active: currentView === 'scheduled', dot: scheduledUnread,
                 onClick: () => mobileNavigate('scheduled') }] : []),

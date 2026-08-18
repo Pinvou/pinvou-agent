@@ -19,6 +19,25 @@ pub use extraction::Pinvou3Bundle;
 static LARK_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/skills");
 
+/// PinvouOS 后台系统 Agent 的按需操作技能。单独于第三方连接器技能存放并在每次
+/// 启动写出，避免被飞书开关连带隐藏。Front 每轮只看到短目录，正文由
+/// `load_skill` 渐进加载。
+static PINVOUOS_AGENT_SKILLS_DIR: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/pinvouos-agent-skills");
+
+const PINVOUOS_AGENT_SKILL_DIRS: [&str; 10] = [
+    "pinvou-orchestrator",
+    "pinvou-surface",
+    "pinvou-resource",
+    "pinvou-connectivity",
+    "pinvou-inference",
+    "pinvou-device",
+    "pinvou-capability",
+    "pinvou-policy",
+    "pinvou-attention",
+    "pinvou-asr-context",
+];
+
 /// 9 个 lark 域技能目录名(门控写/删共用)。skills_dir 下这些目录在不在
 /// = 飞书技能对模型可见与否(引擎 `SkillRegistry` 扫目录)。
 const LARK_SKILL_DIRS: [&str; 9] = [
@@ -755,6 +774,30 @@ mod tests {
         let content = std::fs::read_to_string(&skill_path).unwrap();
         assert!(content.contains("name: visual-design"));
         assert!(skill_path.starts_with(&bundle.skills_dir));
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn pinvouos_agent_skills_are_always_materialized_with_ui_metadata() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        std::env::set_var("PINVOU3_HOME", &tmp);
+        let bundle = Pinvou3Bundle::paths();
+
+        bundle.write_builtin_skills().unwrap();
+
+        for skill in PINVOUOS_AGENT_SKILL_DIRS {
+            let dir = bundle.skills_dir.join(skill);
+            let content = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+            assert!(
+                content.contains(&format!("name: {skill}")),
+                "missing {skill}"
+            );
+            assert!(
+                dir.join("agents/openai.yaml").is_file(),
+                "missing UI metadata for {skill}"
+            );
+        }
         cleanup(&tmp);
     }
 

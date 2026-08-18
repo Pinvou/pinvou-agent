@@ -94,7 +94,7 @@ const expectedProtocolHashes = {
   sessions: '43be5b929743f00818492d51d7a725860c71b9a52e7fdcbe72606426472409c0',
   settings: 'ea86f1145e200d58de340bf76650eee96fd8169168872ed71def166d42ef2208',
   updater: '53562c8fe6547a6c422d112d34769d3ac79abeec27633c32b5658605072c9fe2',
-  voice: '2e6789eca3969f27e8e0fd9f034bd82e0b0e1f302152efc65c5714839fbf5b72',
+  voice: '01156c79a47f6a02681d639904a8a774db270a36edb756a25d0197e8b9df06f6',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

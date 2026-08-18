@@ -1,0 +1,419 @@
+.pinvou-os-voice-shell {
+  --voice-shell-ink: #243044;
+  --voice-shell-muted: #667085;
+  --voice-shell-blue: #2563eb;
+  --voice-shell-glass: rgba(255, 255, 255, 0.66);
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--voice-shell-ink);
+  font-family: 'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse at 13% 28%, rgba(151, 184, 239, 0.72), transparent 47%),
+    radial-gradient(ellipse at 83% 18%, rgba(233, 193, 220, 0.68), transparent 43%),
+    radial-gradient(ellipse at 48% 92%, rgba(177, 224, 218, 0.58), transparent 47%),
+    #dce5f2;
+}
+
+.pinvou-os-voice-shell.dark {
+  --voice-shell-ink: #f1f5f9;
+  --voice-shell-muted: #a7b0bf;
+  --voice-shell-blue: #93c5fd;
+  --voice-shell-glass: rgba(19, 23, 34, 0.62);
+  background:
+    radial-gradient(ellipse at 14% 30%, rgba(52, 79, 126, 0.62), transparent 47%),
+    radial-gradient(ellipse at 82% 15%, rgba(100, 61, 91, 0.48), transparent 43%),
+    radial-gradient(ellipse at 48% 92%, rgba(36, 92, 88, 0.42), transparent 48%),
+    #11151e;
+}
+
+.pinvou-os-voice-shell::before,
+.pinvou-os-voice-shell::after,
+.pinvou-os-voice-veil {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pinvou-os-canvas-stage {
+  position: absolute;
+  z-index: 8;
+  top: clamp(1rem, 3vh, 2rem);
+  left: 50%;
+  width: min(780px, calc(100vw - 14rem));
+  transform: translateX(-50%);
+}
+
+.pinvou-os-projection {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  min-height: 4.4rem;
+  align-items: center;
+  gap: 1.2rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  border-radius: 1.35rem;
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 18px 52px rgba(62, 76, 112, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(30px) saturate(1.28);
+  -webkit-backdrop-filter: blur(30px) saturate(1.28);
+  animation: pinvouOsSurfaceIn 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: min-height 240ms ease, padding 240ms ease, background 240ms ease;
+}
+
+.dark .pinvou-os-projection {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(24, 29, 41, 0.54);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.pinvou-os-projection-identity,
+.pinvou-os-interaction-state,
+.pinvou-os-projection-metrics,
+.pinvou-os-projection-metrics span {
+  display: flex;
+  align-items: center;
+}
+
+.pinvou-os-projection-identity { gap: 0.7rem; }
+
+.pinvou-os-projection-mark {
+  width: 0.72rem;
+  height: 0.72rem;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.74);
+  border-radius: 50%;
+  background: #34c759;
+  box-shadow: 0 0 0 0.28rem rgba(52, 199, 89, 0.12), 0 0 1rem rgba(52, 199, 89, 0.34);
+}
+
+.pinvou-os-projection-copy { display: grid; line-height: 1.1; }
+.pinvou-os-projection-copy strong { font-size: 0.88rem; font-weight: 720; letter-spacing: -0.01em; }
+.pinvou-os-projection-copy small { margin-top: 0.22rem; color: var(--voice-shell-muted); font-size: 0.64rem; font-weight: 600; }
+
+.pinvou-os-interaction-state {
+  gap: 0.42rem;
+  min-height: 1.8rem;
+  padding: 0 0.66rem;
+  border-radius: 999px;
+  color: var(--voice-shell-muted);
+  background: rgba(100, 116, 139, 0.09);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pinvou-os-interaction-state > span {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 50%;
+  background: #8e8e93;
+}
+
+.pinvou-os-interaction-state.is-submitted > span,
+.pinvou-os-interaction-state.is-running > span { background: #0a84ff; box-shadow: 0 0 0.7rem rgba(10, 132, 255, 0.45); }
+.pinvou-os-interaction-state.is-running > span { animation: pinvouOsStatePulse 1.4s ease-in-out infinite; }
+.pinvou-os-interaction-state.is-completed > span { background: #34c759; }
+.pinvou-os-interaction-state.is-interrupted > span { background: #ff9500; }
+.pinvou-os-interaction-state.is-failed > span,
+.pinvou-os-interaction-state.is-cancelled > span { background: #ff3b30; }
+
+.pinvou-os-projection-metrics {
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  overflow: hidden;
+}
+
+.pinvou-os-projection-metrics span {
+  min-height: 1.8rem;
+  gap: 0.3rem;
+  padding: 0 0.56rem;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 0.72rem;
+  color: var(--voice-shell-muted);
+  background: rgba(255, 255, 255, 0.24);
+  font-size: 0.64rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.dark .pinvou-os-projection-metrics span {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.pinvou-os-projection.is-compact {
+  min-height: 3.6rem;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.pinvou-os-projection.is-compact .pinvou-os-projection-copy small,
+.pinvou-os-projection.is-compact .pinvou-os-projection-metrics span:nth-child(n + 3) { display: none; }
+
+.pinvou-os-voice-shell::before {
+  z-index: -2;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.3), transparent 34%, rgba(255, 255, 255, 0.12) 66%, transparent);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.pinvou-os-voice-shell::after {
+  z-index: -1;
+  opacity: 0.18;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.75) 0.6px, transparent 0.6px);
+  background-size: 8px 8px;
+}
+
+.pinvou-os-voice-veil {
+  z-index: 0;
+  background: radial-gradient(circle at 50% 47%, rgba(255, 255, 255, 0.16), transparent 48%);
+}
+
+.pinvou-os-answer-stage {
+  position: absolute;
+  z-index: 10;
+  top: clamp(6.1rem, 11vh, 8.4rem);
+  left: 50%;
+  width: min(880px, calc(100vw - 12rem));
+  max-height: calc(100vh - 16rem);
+  padding: clamp(1.4rem, 2.7vw, 2.6rem);
+  overflow: auto;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 2rem;
+  background: var(--voice-shell-glass);
+  box-shadow: 0 30px 80px rgba(62, 76, 112, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(36px) saturate(1.32);
+  -webkit-backdrop-filter: blur(36px) saturate(1.32);
+  animation: pinvouOsAnswerIn 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.dark .pinvou-os-answer-stage {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 36px 92px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.pinvou-os-answer-markdown {
+  color: var(--voice-shell-ink);
+  font-size: clamp(1rem, 1.2vw, 1.12rem);
+  line-height: 1.75;
+}
+
+.pinvou-os-canvas-content {
+  display: grid;
+  gap: 1rem;
+}
+
+.pinvou-os-system-card {
+  min-height: 4rem;
+}
+
+.pinvou-os-answer-markdown > :first-child { margin-top: 0; }
+.pinvou-os-answer-markdown > :last-child { margin-bottom: 0; }
+.pinvou-os-answer-markdown h1,
+.pinvou-os-answer-markdown h2,
+.pinvou-os-answer-markdown h3 {
+  margin: 1.2em 0 0.55em;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.pinvou-os-answer-markdown p { margin: 0.75em 0; }
+.pinvou-os-answer-markdown ul,
+.pinvou-os-answer-markdown ol { margin: 0.8em 0; padding-left: 1.4em; }
+.pinvou-os-answer-markdown code {
+  padding: 0.12em 0.38em;
+  border-radius: 0.45em;
+  background: rgba(15, 23, 42, 0.08);
+}
+.dark .pinvou-os-answer-markdown code { background: rgba(255, 255, 255, 0.1); }
+
+.pinvou-os-thinking {
+  display: flex;
+  min-height: 3.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.pinvou-os-thinking span {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 50%;
+  background: var(--voice-shell-blue);
+  animation: pinvouOsThinking 1.15s ease-in-out infinite;
+}
+.pinvou-os-thinking span:nth-child(2) { animation-delay: 130ms; }
+.pinvou-os-thinking span:nth-child(3) { animation-delay: 260ms; }
+
+.pinvou-os-error-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  min-height: 3rem;
+  color: #b42318;
+  font-size: 0.95rem;
+}
+.dark .pinvou-os-error-card { color: #fca5a5; }
+
+.pinvou-os-voice-dock {
+  position: absolute;
+  z-index: 20;
+  bottom: clamp(2.25rem, 5vh, 4.5rem);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translateX(-50%);
+}
+
+.pinvou-os-mic {
+  position: relative;
+  display: grid;
+  width: clamp(5rem, 7vw, 5.8rem);
+  height: clamp(5rem, 7vw, 5.8rem);
+  place-items: center;
+  overflow: visible;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 50%;
+  color: #4b5565;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 20px 48px rgba(52, 65, 95, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(28px) saturate(1.32);
+  -webkit-backdrop-filter: blur(28px) saturate(1.32);
+  transition: transform 180ms ease, color 220ms ease, background 220ms ease, box-shadow 220ms ease;
+}
+
+.dark .pinvou-os-mic {
+  color: rgba(235, 241, 250, 0.82);
+  background: rgba(34, 39, 54, 0.58);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.11);
+}
+
+.pinvou-os-mic:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.035);
+  color: var(--voice-shell-blue);
+  box-shadow: 0 26px 62px rgba(52, 65, 95, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.pinvou-os-mic:active:not(:disabled) { transform: scale(0.95); }
+.pinvou-os-mic:disabled { cursor: wait; opacity: 0.78; }
+.pinvou-os-mic.is-recording { color: #fff; background: rgba(201, 43, 43, 0.88); }
+.pinvou-os-mic.is-transcribing {
+  color: var(--voice-shell-blue);
+  background: rgba(239, 246, 255, 0.7);
+  box-shadow: 0 20px 48px rgba(37, 99, 235, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.dark .pinvou-os-mic.is-transcribing {
+  color: #bfdbfe;
+  background: rgba(30, 58, 92, 0.66);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(191, 219, 254, 0.15);
+}
+/* WebKitGTK repaints a backdrop-filter ancestor for every transformed child
+   frame. The ASR decoder shares that iGPU, so the recognition state must stay
+   visually explicit without any continuous animation. */
+.pinvou-os-mic.is-transcribing,
+.pinvou-os-mic.is-transcribing * { animation: none !important; }
+.pinvou-os-mic.is-failed { color: #b42318; }
+
+.pinvou-os-mic-ripple {
+  position: absolute;
+  inset: -0.5rem;
+  z-index: -1;
+  border: 1px solid transparent;
+  border-radius: inherit;
+}
+
+.pinvou-os-mic.is-recording .pinvou-os-mic-ripple {
+  border-color: rgba(239, 68, 68, 0.5);
+  animation: pinvouOsMicRipple 1.55s ease-out infinite;
+}
+
+.pinvou-os-mic-processing { transform: none; }
+
+.pinvou-os-voice-status,
+.pinvou-os-utterance {
+  position: absolute;
+  left: 50%;
+  width: max-content;
+  max-width: min(36rem, calc(100vw - 3rem));
+  transform: translateX(-50%);
+  color: var(--voice-shell-muted);
+  text-align: center;
+}
+
+.pinvou-os-voice-status {
+  top: calc(100% + 0.9rem);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.pinvou-os-voice-status.is-failed { color: #b42318; }
+.dark .pinvou-os-voice-status.is-failed { color: #fca5a5; }
+
+.pinvou-os-utterance {
+  bottom: calc(100% + 1rem);
+  padding: 0.55rem 0.9rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.38);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(18px);
+}
+.dark .pinvou-os-utterance { background: rgba(18, 22, 32, 0.48); border-color: rgba(255, 255, 255, 0.1); }
+
+@keyframes pinvouOsAnswerIn {
+  from { opacity: 0; transform: translate(-50%, 0.8rem) scale(0.985); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes pinvouOsSurfaceIn {
+  from { opacity: 0; transform: translateY(-0.55rem) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pinvouOsStatePulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes pinvouOsThinking {
+  0%, 70%, 100% { opacity: 0.35; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-0.38rem); }
+}
+
+@keyframes pinvouOsMicRipple {
+  from { opacity: 0.72; transform: scale(0.92); }
+  to { opacity: 0; transform: scale(1.45); }
+}
+
+@media (max-width: 720px) {
+  .pinvou-os-canvas-stage { width: calc(100vw - 2rem); }
+  .pinvou-os-projection { grid-template-columns: auto auto; }
+  .pinvou-os-projection-metrics { grid-column: 1 / -1; justify-content: flex-start; }
+  .pinvou-os-projection-metrics span:nth-child(n + 4) { display: none; }
+  .pinvou-os-answer-stage {
+    top: 8.6rem;
+    width: calc(100vw - 2rem);
+    max-height: calc(100vh - 14.5rem);
+    border-radius: 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pinvou-os-answer-stage,
+  .pinvou-os-projection,
+  .pinvou-os-interaction-state.is-running > span,
+  .pinvou-os-thinking span,
+  .pinvou-os-mic-ripple { animation: none !important; }
+}

@@ -35,7 +35,9 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
 ];
 
 /// 需要首轮直接可见、不能依赖模型先调用 `tool_search` 的工具。
-pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &["request_user_input", "image_analyze"];
+/// `agent` 是 PinvouOS Front→Orchestrator 的稳定控制面，若延迟发现，Front
+/// 会在已经判断为复杂任务后反而找不到唯一后台入口。
+pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &["agent", "request_user_input", "image_analyze"];
 
 #[must_use]
 pub fn allowed_tool_names() -> Vec<String> {
