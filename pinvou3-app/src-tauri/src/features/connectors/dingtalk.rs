@@ -454,7 +454,9 @@ pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         set_dingtalk_disabled_flag(!enabled)?;
         // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("dingtalk", enabled);
+        crate::features::marketplace::sync_disabled_bundles_for_connector_switch(
+            "dingtalk", enabled,
+        );
         let show = dingtalk_skills_should_show();
         GATE.apply_skills(show)?;
         Ok(show)

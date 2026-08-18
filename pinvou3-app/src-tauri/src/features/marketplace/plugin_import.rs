@@ -131,7 +131,9 @@ fn same_package_content(
             .unwrap_or(false);
     }
     if let Some((_, bytes)) = incoming_skill {
-        let name = pkg_dir.file_name().map(|s| s.to_string_lossy().into_owned());
+        let name = pkg_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned());
         if let Some(name) = name {
             let skill_md = pkg_dir.join("skills").join(name).join("SKILL.md");
             return std::fs::read(&skill_md)
@@ -534,17 +536,9 @@ pub fn import_plugin_package(
         &other_manifests,
         &all_paths,
     )?;
-    let (id, mcp_servers, skills) = (
-        det.id.clone(),
-        det.mcp_servers.clone(),
-        det.skills.clone(),
-    );
-    let kind = crate::features::marketplace::bundle::derive_bundle_kind(
-        &mcp_servers,
-        &skills,
-        &[],
-    )
-    .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
+    let (id, mcp_servers, skills) = (det.id.clone(), det.mcp_servers.clone(), det.skills.clone());
+    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills, &[])
+        .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
     // 拒绝与预置/内置包 id 冲突：用户上传包顶替市场预置会让 UI/默认值/资源池
     // 全部错位，且无法回滚（预置版本指纹与上传不同）。内置 CLI 连接器另由
@@ -560,10 +554,10 @@ pub fn import_plugin_package(
     // 已下线内置技能名拒收（plugin-package-spec §10 承诺的导入校验）：包 id 与
     // 任一技能组件名都不得与退役名单冲突（旧管线只拦技能路径，插件包管线此前
     // 未接，二轮评审文档失实）。
-    if crate::features::marketplace::skill_marketplace::RETIRED_SKILL_NAMES
-        .contains(&id.as_str())
-    {
-        return Err(format!("包 id '{id}' 与已下线内置技能名冲突，请改用其它 id"));
+    if crate::features::marketplace::skill_marketplace::RETIRED_SKILL_NAMES.contains(&id.as_str()) {
+        return Err(format!(
+            "包 id '{id}' 与已下线内置技能名冲突，请改用其它 id"
+        ));
     }
     for skill_name in &skills {
         if crate::features::marketplace::skill_marketplace::RETIRED_SKILL_NAMES
@@ -585,9 +579,11 @@ pub fn import_plugin_package(
         if entry.read_to_end(&mut buf).is_err() {
             continue;
         }
-        if let Some(fm_name) = crate::features::marketplace::skill_marketplace::read_skill_name_from_str(
-            std::str::from_utf8(&buf).unwrap_or(""),
-        ) {
+        if let Some(fm_name) =
+            crate::features::marketplace::skill_marketplace::read_skill_name_from_str(
+                std::str::from_utf8(&buf).unwrap_or(""),
+            )
+        {
             if fm_name != *skill_name {
                 return Err(format!(
                     "技能 '{skill_name}' 的 SKILL.md frontmatter name 为 '{fm_name}'，与组件 id 不一致（plugin-package-spec §8）"
@@ -604,11 +600,7 @@ pub fn import_plugin_package(
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。
     if pkg_dir.exists()
-        && !same_package_content(
-            &pkg_dir,
-            manifest_bytes.as_deref(),
-            best_skill_md.as_ref(),
-        )
+        && !same_package_content(&pkg_dir, manifest_bytes.as_deref(), best_skill_md.as_ref())
     {
         return Err(format!(
             "包 id '{id}' 已存在且内容不同，请改名后重试（避免覆盖已有包）"
@@ -844,7 +836,10 @@ mod tests {
         assert_eq!(m.id, "weather");
         // 旧 spanner 字段落到 `extra` map 里以便日志/排障，仍可读。
         let legacy = m.extra.get("spanner");
-        assert!(legacy.is_some(), "旧 spanner 字段应被 forward-compat 保留到 extra");
+        assert!(
+            legacy.is_some(),
+            "旧 spanner 字段应被 forward-compat 保留到 extra"
+        );
     }
 
     #[test]

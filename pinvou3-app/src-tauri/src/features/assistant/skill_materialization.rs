@@ -371,10 +371,12 @@ mod tests {
             // V5「随包」认领：包本体已装才把 companion 技能归属到包。本场景是
             // 「禁用已装连接器」，先登记 gongwen 安装态，物化排除才按包映射。
             crate::features::marketplace::store::BundleStore::new()
-                .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                    "gongwen".to_string(),
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ))
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
                 .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能

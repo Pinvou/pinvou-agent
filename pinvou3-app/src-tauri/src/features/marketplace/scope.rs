@@ -546,10 +546,12 @@ mod tests {
 
             // 登记 gongwen 安装态后：companion 技能归属到包 → 归一为 gongwen。
             crate::features::marketplace::store::BundleStore::new()
-                .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                    "gongwen".to_string(),
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ))
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
                 .unwrap();
             save_disabled_bundles_for(
                 ConnectorScope::Plain,

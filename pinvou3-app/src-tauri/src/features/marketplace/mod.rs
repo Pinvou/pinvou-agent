@@ -1199,7 +1199,6 @@ mod tests {
         });
     }
 
-
     /// 旧双 scope 对象 `{plain, code, code_initialized}` 迁移为 scopes map:
     /// 迁移前后行为一致(code_initialized=true → 以落盘为准;false → 默认全禁)。
     #[test]
@@ -1292,11 +1291,13 @@ mod tests {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
             sync_deny_all_scopes_after_install("weather");
-            assert!(crate::features::marketplace::scope::load_disabled_bundles_file()
-                .scopes
-                .get("code")
-                .map(|ids| ids.is_empty())
-                .unwrap_or(true));
+            assert!(
+                crate::features::marketplace::scope::load_disabled_bundles_file()
+                    .scopes
+                    .get("code")
+                    .map(|ids| ids.is_empty())
+                    .unwrap_or(true)
+            );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_connectors_for(ConnectorScope::Code, &[]);
             sync_deny_all_scopes_after_install("weather");

@@ -1320,7 +1320,9 @@ mod super_skill_tests {
     /// Test 1: visualizer 类（python + 单一 tool，runtime.dir 自带）
     #[test]
     fn super_skill_visualizer_like_skills_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-super-skill-visualizer-{}",
@@ -1338,7 +1340,9 @@ mod super_skill_tests {
 
         let listed = paths::skill_priority_paths();
         assert!(
-            listed.iter().any(|p| p.to_string_lossy().contains("visualizer")),
+            listed
+                .iter()
+                .any(|p| p.to_string_lossy().contains("visualizer")),
             "priority_paths 应含 visualizer 路径：{:?}",
             listed
         );
@@ -1353,7 +1357,9 @@ mod super_skill_tests {
     /// Test 2: package-author 类（node + 多个 tools）
     #[test]
     fn super_skill_package_author_like_skills_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-super-skill-pkgauthor-{}",
@@ -1371,7 +1377,9 @@ mod super_skill_tests {
 
         let listed = paths::skill_priority_paths();
         assert!(
-            listed.iter().any(|p| p.to_string_lossy().contains("package-author")),
+            listed
+                .iter()
+                .any(|p| p.to_string_lossy().contains("package-author")),
             "priority_paths 应含 package-author 路径"
         );
 
@@ -1385,7 +1393,9 @@ mod super_skill_tests {
     /// Test 3: 内容-only skill（runtime + tools 都不声明）不写 priority_paths
     #[test]
     fn content_only_skill_does_not_register_priority_paths() {
-        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-super-skill-content-{}",
@@ -1401,7 +1411,9 @@ mod super_skill_tests {
 
         let listed = paths::skill_priority_paths();
         assert!(
-            !listed.iter().any(|p| p.to_string_lossy().contains("content-only")),
+            !listed
+                .iter()
+                .any(|p| p.to_string_lossy().contains("content-only")),
             "内容-only skill 不应触发 priority_paths：{:?}",
             listed
         );
@@ -1437,7 +1449,10 @@ mod super_skill_tests {
         let exec = read_skill_exec_from_str(&md).unwrap();
         assert!(exec.is_executable());
         assert_eq!(exec.runtime.as_ref().unwrap().kind, "python");
-        assert_eq!(exec.runtime.as_ref().unwrap().dir.as_deref(), Some("runtime"));
+        assert_eq!(
+            exec.runtime.as_ref().unwrap().dir.as_deref(),
+            Some("runtime")
+        );
         assert_eq!(exec.tools.len(), 2);
         assert_eq!(exec.tools[0].name, "generate_html");
         assert_eq!(exec.tools[0].entry, "scripts/generate.py");
@@ -1447,7 +1462,7 @@ mod super_skill_tests {
 
     #[test]
     fn read_skill_exec_malformed_returns_err() {
-        let md = "---\ntools:\n  - entry: x.py\n---\n";  // 缺 name
+        let md = "---\ntools:\n  - entry: x.py\n---\n"; // 缺 name
         let err = read_skill_exec_from_str(&md).unwrap_err();
         assert!(err.contains("name"), "err: {err}");
     }
@@ -1455,7 +1470,9 @@ mod super_skill_tests {
     #[test]
     fn priority_paths_roundtrip() {
         use std::path::PathBuf;
-        let _g = paths::tests::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         std::env::set_var(
             "PINVOU3_HOME",
