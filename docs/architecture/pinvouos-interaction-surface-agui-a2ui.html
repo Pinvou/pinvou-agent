@@ -50,6 +50,15 @@
 
     a { color: inherit; }
     button { font: inherit; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
     code, .mono {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
@@ -120,6 +129,9 @@
     }
     .topnav::-webkit-scrollbar { display: none; }
     .topnav a {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
       padding: 8px 10px;
       border-radius: 8px;
       color: var(--muted);
@@ -305,7 +317,7 @@
       padding: 26px 22px;
       border-left: 1px solid var(--line);
     }
-    .thesis-item small { color: var(--subtle); }
+    .thesis-item small { color: var(--muted); }
     .thesis-item strong {
       display: block;
       margin-bottom: 5px;
@@ -465,7 +477,7 @@
     .chain-node small {
       display: block;
       margin-bottom: 6px;
-      color: var(--subtle);
+      color: var(--muted);
       font-size: 10px;
       font-weight: 800;
       text-transform: uppercase;
@@ -703,7 +715,7 @@
       vertical-align: top;
     }
     th {
-      color: var(--subtle);
+      color: var(--muted);
       font-size: 10px;
       font-weight: 850;
       letter-spacing: 0.07em;
@@ -854,7 +866,7 @@
     }
     .canvas-card.feature { flex: 1; }
     .mini-eyebrow { color: var(--blue); font-size: 9px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
-    .canvas-card h4 { margin: 8px 0 4px; color: var(--navy); font-size: 18px; }
+    .canvas-card h3 { margin: 8px 0 4px; color: var(--navy); font-size: 18px; }
     .canvas-card p { color: var(--muted); font-size: 10px; }
     .skeleton-line { height: 7px; margin-top: 9px; border-radius: 99px; background: #e1e6ef; }
     .skeleton-line.short { width: 62%; }
@@ -893,7 +905,7 @@
 
     .flow {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
     .phase {
@@ -916,6 +928,7 @@
       transform: rotate(45deg);
       content: "";
     }
+    .phase:nth-child(3)::after { display: none; }
     .phase-no {
       display: grid;
       width: 28px;
@@ -1019,7 +1032,7 @@
     .source-link:hover { color: var(--blue); }
     .source-link::before { color: var(--blue); content: "↗"; }
     .source-path::before { color: var(--teal); content: "⌁"; }
-    .source-meta { margin-top: 17px; color: var(--subtle); font-size: 10px; }
+    .source-meta { margin-top: 17px; color: var(--muted); font-size: 10px; }
 
     .footer {
       border-top: 1px solid var(--line);
@@ -1046,7 +1059,6 @@
       .thesis-item:first-of-type { border-left: 0; }
       .principles { grid-template-columns: repeat(2, 1fr); }
       .flow { grid-template-columns: repeat(3, 1fr); }
-      .phase:nth-child(3)::after { display: none; }
       .acceptance { grid-template-columns: repeat(2, 1fr); }
       .diagram-guide { grid-template-columns: repeat(3, 1fr); }
       .diagram-guide > strong { grid-column: 1 / -1; }
@@ -1075,7 +1087,7 @@
     @media (max-width: 560px) {
       h1 { font-size: 39px; }
       .tabs { grid-template-columns: 1fr; }
-      .tab { justify-content: flex-start; min-height: 42px; }
+      .tab { justify-content: flex-start; min-height: 44px; }
       .truth-panel { padding: 20px; }
       .truth-title-row { flex-direction: column; }
       .principles, .acceptance { grid-template-columns: 1fr; }
@@ -1096,9 +1108,17 @@
       .truth-panel { display: block !important; border-top: 1px solid var(--line); }
       .tabs { display: none; }
       .architecture-board, .protocol-card, .authority-card, .canvas-demo { box-shadow: none; }
+      .phase, .accept, .decision, .source-group { break-inside: avoid; }
       .architecture-board { overflow: visible; }
       .architecture-board svg { width: 100%; min-width: 0; }
+      .table-scroll { overflow: visible; }
+      table { width: 100%; min-width: 0; table-layout: fixed; }
+      th, td { padding: 7px 6px; overflow-wrap: anywhere; word-break: break-word; font-size: 8px; }
       a { text-decoration: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
     }
   </style>
 </head>
@@ -1123,13 +1143,13 @@
   <section class="hero" aria-labelledby="page-title">
     <div class="hero-inner">
       <div>
-        <div class="eyebrow"><span class="eyebrow-dot"></span>Architecture Source of Truth · v0.2</div>
+        <div class="eyebrow"><span class="eyebrow-dot"></span>Architecture Source of Truth · v0.3</div>
         <h1 id="page-title">让 Front 掌控<span class="keep">整张画布，</span><br />但不掌控<span class="keep">任意像素。</span></h1>
-        <p class="hero-lead"><strong>AG-UI 讲清“正在发生什么”，A2UI 讲清“应该展示什么”。</strong> Runtime 持有事实，Front 持有交互与呈现意图，Renderer 持有视觉，Policy 评估动作，Kernel 持有硬门禁。其他 Agent 全部隔离在 Front 后面。</p>
+        <p class="hero-lead"><strong>AG-UI 讲清“正在发生什么”，A2UI 讲清“应该展示什么”。</strong> Runtime 持有事实，Front 持有交互与呈现意图，Renderer 持有视觉，Policy 评估动作，Kernel 持有硬门禁。其他 Agent 的用户态表达隔离在 Front 后面；系统事实与硬控制仍可直接进入 Ledger / Kernel。</p>
       </div>
       <aside class="hero-meta" aria-label="文档元数据">
         <div class="meta-card"><span class="meta-label">Decision status</span><span class="meta-value">首阶段已实施 · MegaBook 已验证</span></div>
-        <div class="meta-card"><span class="meta-label">Last audited</span><span class="meta-value">2026-08-18 · Asia/Shanghai</span></div>
+        <div class="meta-card"><span class="meta-label">Last audited</span><span class="meta-value">2026-08-19 · Asia/Shanghai</span></div>
         <div class="meta-card"><span class="meta-label">Owns</span><span class="meta-value">Interaction / Presentation Plane</span></div>
         <div class="scope-pills">
           <span class="scope-pill">MegaBook 部署态</span>
@@ -1158,9 +1178,9 @@
 
       <div class="truth-wrap">
         <div class="tabs" role="tablist" aria-label="真相层级">
-          <button class="tab" role="tab" aria-selected="true" aria-controls="truth-deployed" id="tab-deployed" data-tab="truth-deployed">A · MegaBook 实际部署</button>
-          <button class="tab" role="tab" aria-selected="false" aria-controls="truth-worktree" id="tab-worktree" data-tab="truth-worktree">B · 本地工作树</button>
-          <button class="tab" role="tab" aria-selected="false" aria-controls="truth-target" id="tab-target" data-tab="truth-target">C · 目标架构</button>
+          <button class="tab" type="button" role="tab" aria-selected="true" aria-controls="truth-deployed" id="tab-deployed" data-tab="truth-deployed" tabindex="0">A · MegaBook 实际部署</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="truth-worktree" id="tab-worktree" data-tab="truth-worktree" tabindex="-1">B · 本地工作树</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="truth-target" id="tab-target" data-tab="truth-target" tabindex="-1">C · 目标架构</button>
         </div>
 
         <div class="truth-panel is-active" role="tabpanel" id="truth-deployed" aria-labelledby="tab-deployed">
@@ -1169,7 +1189,7 @@
             <span class="status actual">OBSERVED</span>
           </div>
           <div class="truth-grid">
-            <div class="fact"><b>主画面已有三类受信内容</b><span>最新 assistant Markdown、待用户输入卡与 artifact 卡可见；reasoning、shell 和原始工具输出仍不进入主画面。</span></div>
+            <div class="fact"><b>主画面已有三类宿主选择的内容入口</b><span>最新 assistant Markdown、待用户输入卡与 artifact 卡可见；其中卡片使用受信宿主壳，Markdown 仍是不可信内容且当前 sanitizer 不足。reasoning、shell 和原始工具输出不进入主画面。</span></div>
             <div class="fact risk"><b>运行时无法 steering</b><span>busy 时麦克风被禁用；当前只剩等待或外部停止，不能自然插话、修正与继续。</span></div>
             <div class="fact"><b>隐藏 Session 仍在执行链</b><span>用户看不到 Session，但 CodeWhale 仍通过兼容 Session 承载消息、工具和 artifact。</span></div>
             <div class="fact"><b>交互生命周期已进入 Runtime</b><span>Engine adapter 写入独立 interaction run、工具摘要、消息摘要与唯一终态；回答正文仍由 chat 兼容流承载。</span></div>
@@ -1186,7 +1206,7 @@
           </div>
           <div class="truth-grid">
             <div class="fact"><b>系统角色扩展</b><span>代码中增加 Connectivity、Inference 等 Agent，并为 Front 注入 PinvouOS Runtime 工具。</span></div>
-            <div class="fact"><b>Front 执行约束随组合切片部署</b><span>三轮 Direct 与唯一 Orchestrator 的既有改动被保留；本次只在其外层增加 interaction trace，不改派工策略。</span></div>
+            <div class="fact"><b>Front 执行约束随组合切片部署</b><span>三轮 Direct 硬门禁与 pinvou-orchestrator happy-path 被保留；唯一 profile 与同批单实例仍是 Prompt 契约。本次只在外层增加 interaction trace。</span></div>
             <div class="fact"><b>Memory Runtime 核心已随 Runtime 部署</b><span>MemoryOrganizer 在同一账本维护 decision / checkpoint / replay 和结构 Top-K；异步 worker、VerifiedTaskOutcome 与 Front Context Compiler 仍待接。</span></div>
             <div class="fact risk"><b>Mission 生命周期不完整</b><span>Runtime 有 Mission / Run 结构和 Opened / Started 事件，但缺少完成、暂停、恢复、取消等完整事件闭环。</span></div>
             <div class="fact risk"><b>“存在”不等于“可调用”</b><span>open/register/report/ack 命令函数已写出，但当前 invoke handler 只暴露 snapshot、explain、list events。</span></div>
@@ -1378,7 +1398,8 @@
         <div class="table-caption"><strong>现有事件 → AG-UI 的最小兼容映射</strong><span>先适配，后替换；避免一次性推翻现有 bridge</span></div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>现有 Pinvou 事件</th><th>目标 AG-UI 事件</th><th>处理方式</th><th>当前缺口</th></tr></thead>
+            <caption class="sr-only">现有 Pinvou 事件到目标 AG-UI 事件的兼容映射</caption>
+            <thead><tr><th scope="col">现有 Pinvou 事件</th><th scope="col">目标 AG-UI 事件</th><th scope="col">处理方式</th><th scope="col">当前缺口</th></tr></thead>
             <tbody>
               <tr><td>chat:turn_started</td><td>RUN_STARTED</td><td><code>interactionScopeId → threadId</code>，<code>interactionRunId → runId</code>；Mission / Runtime Run 作为关联</td><td class="gap-text">独立 interactionRunId 已入账；Mission / Runtime Run 权威关联仍缺</td></tr>
               <tr><td>chat:delta</td><td>TEXT_MESSAGE_CONTENT</td><td>Adapter 补齐 message start / end 与 messageId</td><td class="gap-text">VoiceShell 只消费最终聚合文本</td></tr>
@@ -1393,15 +1414,18 @@
       </div>
 
       <div class="mapping-wrap">
-        <div class="table-caption"><strong>A2UI Catalog v1：从徐雅静方案继承，但做系统化收敛</strong><span>业务卡不是核心协议，优先由通用原语组合</span></div>
+        <div class="table-caption"><strong>Pinvou Catalog v1：映射 A2UI，继承原卡片协议并系统化收敛</strong><span>业务卡不是核心协议，优先由通用原语组合</span></div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>层</th><th>建议组件</th><th>来源与调整</th><th>硬限制</th></tr></thead>
+            <caption class="sr-only">Pinvou Catalog v1 的组件分层、来源与硬限制</caption>
+            <thead><tr><th scope="col">层</th><th scope="col">建议组件</th><th scope="col">来源与调整</th><th scope="col">硬限制</th></tr></thead>
             <tbody>
               <tr><td>Mission</td><td>MissionCard · StatusPill · Timeline</td><td>TaskCard 改为 MissionCard；Session 仅留在迁移 adapter 内</td><td>桌面不展示完整 chat / tool log</td></tr>
               <tr><td>Result</td><td>Result · Report · MetricGrid · DataTable</td><td>保留 ResultCard / ReportCard 的语义，拆成可组合原语</td><td>只消费明确的最终内容与可信来源</td></tr>
               <tr><td>Artifact</td><td>ArtifactPreview · ArtifactList</td><td>继承安全 artifact bridge 与受控 renderer 思路</td><td>禁止 Agent 直传任意 path、iframe URL</td></tr>
               <tr><td>Interaction</td><td>ChoicePrompt · TextInput · ConfirmAction</td><td>普通缺参由 Front 呈现；强制确认由 Kernel/Host 的 system/* 层呈现</td><td>同屏一个主 overlay；Front 不得隐藏系统门禁</td></tr>
+              <tr><td>Auth</td><td>AuthChallenge · DeviceCode · AuthStatus</td><td>Auth Broker 提供受信 challenge state，只有 Kernel / Host Projector 写 system/*；Front 只能用 opaque providerCapabilityId + bounded purpose 发起请求</td><td>模型不得提供 URL、QR、token 或 flow type；二维码由 Host 从可信 challenge 本地生成</td></tr>
+              <tr><td>Rich App</td><td>AppSurface · HostChrome · StaticFallback</td><td>借鉴 MCP Apps：只引用预注册的 opaque appViewRef，由 Host 挂载沙箱</td><td>不接受裸 HTML、src、script、iframeAllow；认证与系统确认不得在 App 内完成</td></tr>
               <tr><td>System</td><td>Error · Empty · Progress · Notice</td><td>确定性 fallback，未知组件不直接渲染</td><td>错误不暴露 stack / secret / 原始 shell</td></tr>
               <tr><td>Domain</td><td>Weather / Travel / Calendar pattern</td><td>不进入 core catalog；用通用组件组合或独立可选 catalog</td><td>领域 catalog 不能扩大 action 权限</td></tr>
             </tbody>
@@ -1456,13 +1480,15 @@
         <div class="table-caption"><strong>状态所有权矩阵</strong><span>任何“共享状态”都必须能回答：谁写、谁赢、能否重建</span></div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>状态</th><th>唯一权威</th><th>协议投影</th><th>客户端能否写</th><th>冲突规则</th></tr></thead>
+            <caption class="sr-only">PinvouOS 交互平面的状态所有权矩阵</caption>
+            <thead><tr><th scope="col">状态</th><th scope="col">唯一权威</th><th scope="col">协议投影</th><th scope="col">客户端能否写</th><th scope="col">冲突规则</th></tr></thead>
             <tbody>
               <tr><td>Mission / Runtime Run / Event</td><td>Runtime Ledger</td><td>AG-UI snapshot / delta</td><td>只能发 intent</td><td>Runtime sequence 胜出</td></tr>
               <tr><td>Interaction Run / message / tool progress</td><td>当前 Engine；目标写入 Runtime 关联事件</td><td>AG-UI streaming events</td><td>否</td><td>每个 interaction run 恰好一个 terminal</td></tr>
               <tr><td>projection/* 事实画面</td><td>Runtime Projector</td><td>确定性 A2UI 投影</td><td>否</td><td>同状态同画面，不接受 Agent 覆盖事实</td></tr>
               <tr><td>front/* 内容画布</td><td>Front Presentation Intent</td><td>A2UI messages</td><td>只写绑定表单草稿</td><td>带 basis sequence / revision 校验，可被新事实覆写</td></tr>
               <tr><td>system/* 审批与系统层</td><td>Kernel / Host</td><td>受保护系统组件</td><td>只能响应</td><td>Front 和其他 Agent 均不可隐藏或伪造</td></tr>
+              <tr><td>AppSurface 文档与本地状态</td><td>预注册 App descriptor + Host sandbox</td><td>只作为 front/* 中的受控 renderer</td><td>只能经版本化 bridge 发 Action Intent</td><td>不得进入 system/*；Host 校验 schema、来源、revision、大小与速率</td></tr>
               <tr><td>Action permission / approval</td><td>Kernel Policy Gate</td><td>AG-UI interrupt outcome + system/* confirm</td><td>只能批准、拒绝或编辑参数</td><td>deny 永远高于呈现意图</td></tr>
               <tr><td>Visual style / layout token</td><td>Host Design System</td><td>A2UI catalog + Pinvou layout enum</td><td>偏好可选</td><td>未知值 fallback</td></tr>
               <tr><td>Local form draft / focus</td><td>Client Interaction Store</td><td>动作时回传必要 context</td><td>是</td><td>不升级为业务事实，除非提交成功</td></tr>
@@ -1483,12 +1509,12 @@
           <div class="system-frame"><span>PINVOU · SYSTEM FRAME</span><div class="system-controls"><span class="sys-btn">⌂</span><span class="sys-btn">●</span><span class="sys-btn">■</span></div></div>
           <div class="agent-plane">
             <div class="canvas-primary">
-              <div class="canvas-card feature"><span class="mini-eyebrow">Primary · Mission result</span><h4>上海周末行程已经整理好</h4><p>Front 选择“报告 + 对比”语义；字体、间距、颜色和组件由 Renderer 决定。</p><div class="metric-row"><div class="metric"><b>3</b><span>候选路线</span></div><div class="metric"><b>¥2.4k</b><span>预算中位数</span></div><div class="metric"><b>2 days</b><span>建议时长</span></div></div><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+              <div class="canvas-card feature"><span class="mini-eyebrow">Primary · Mission result</span><h3>上海周末行程已经整理好</h3><p>Front 选择“报告 + 对比”语义；字体、间距、颜色和组件由 Renderer 决定。</p><div class="metric-row"><div class="metric"><b>3</b><span>候选路线</span></div><div class="metric"><b>¥2.4k</b><span>预算中位数</span></div><div class="metric"><b>2 days</b><span>建议时长</span></div></div><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
               <div class="canvas-card"><span class="mini-eyebrow">Action bar</span><div class="mode-row"><span class="mode">查看对比</span><span class="mode">打开产物</span><span class="mode">继续调整</span></div></div>
             </div>
             <div class="canvas-context">
               <div class="canvas-card"><span class="mini-eyebrow">Activity</span><div class="timeline-mini"><div><i></i><span>需求已确认</span></div><div><i></i><span>候选已核验</span></div><div><i class="wait"></i><span>等待预算选择</span></div></div></div>
-              <div class="canvas-card"><span class="mini-eyebrow">Artifact</span><h4 style="font-size:14px">行程比较.html</h4><p>受控预览，不接受任意 URL。</p></div>
+              <div class="canvas-card"><span class="mini-eyebrow">Artifact</span><h3 style="font-size:14px">行程比较.html</h3><p>受控预览，不接受任意 URL。</p></div>
             </div>
           </div>
           <div class="canvas-overlay">system/* 系统确认层 · 最终预订前必须由用户确认乘机人、订单和支付；Front 不可隐藏。</div>
@@ -1499,23 +1525,24 @@
           <div class="canvas-rule"><b>Front 只选 6 类画布模式</b><span>模式是 Pinvou 的宿主扩展，不假装属于 A2UI 标准。</span><div class="mode-row"><span class="mode">ambient</span><span class="mode">focus</span><span class="mode">split</span><span class="mode">grid</span><span class="mode">overview</span><span class="mode">immersive</span></div></div>
           <div class="canvas-rule"><b>信息层级由规则锁住</b><span>首屏一个主目标、一个主动作、最多三个活跃内容块；细节进入 timeline、drawer 或二级 Surface。</span></div>
           <div class="canvas-rule"><b>“丑”的风险靠系统治理</b><span>同一 catalog、同一 token、响应式排版、内容长度预算、确定性 fallback、视觉回归测试。</span></div>
-          <div class="canvas-rule"><b>Agent 永不输出这些东西</b><span>任意 HTML / CSS / JS、任意 iframe URL、文件路径、未注册 action、像素坐标和系统级 z-index。</span></div>
+          <div class="canvas-rule"><b>Agent 永不输出这些东西</b><span>任意 HTML / CSS / JS、任意 iframe URL、文件路径、未注册 action、像素坐标和系统级 z-index。复杂内容只能引用 Host 签发的 <span class="mono">artifactId</span> 或 <span class="mono">appViewRef</span>。</span></div>
         </div>
       </div>
     </section>
 
     <section class="section" id="roadmap">
       <div class="section-head">
-        <div><span class="section-index">06 · Migration & gates</span><h2>分五步接入，不做大爆炸重写</h2></div>
-        <p class="section-desc">先让现有事实流“说标准话”，再让确定性投影渲染 A2UI，最后才把呈现意图交给 Front。<strong>第一版不需要 LLM 直接生成画布。</strong></p>
+        <div><span class="section-index">06 · Migration & gates</span><h2>六个工作包，按能力门禁开放</h2></div>
+        <p class="section-desc">这不是严格瀑布：P1 / P2 的只读切片可以在 P0 完整 Mission 闭环前落地；任何交互能力上线时，只需通过它实际依赖的门禁。认证纵切依赖 P3 与 system/auth 子集，不依赖完整 Mission 工作台。<strong>第一版不需要 LLM 直接生成画布。</strong></p>
       </div>
 
       <div class="flow">
         <article class="phase"><span class="phase-no">P0</span><h3>补齐事实闭环</h3><p>先让 Runtime 可靠描述完整 Mission / Run 与可验证结果。</p><ul><li>完成 / 暂停 / 恢复 / 取消事件</li><li>用户、模型、工具、Policy、artifact 与 receipt 入账</li><li>Chat turn 与 Mission / Runtime Run 关联</li></ul><span class="gate">Gate · replay 后状态一致</span></article>
         <article class="phase"><span class="phase-no">P1</span><h3>AG-UI Adapter · 首切片已落</h3><p>Runtime 已接 interaction scope/run、工具摘要、唯一终态与 interrupt/resume；标准 wire 适配继续推进。</p><ul><li>interaction scope / run 与 Runtime Run 分离：已完成</li><li>snapshot + delta + sequence：A2UI 投影已完成，AG-UI 待接</li><li>interrupt outcome + resume linkage：已完成</li></ul><span class="gate">Gate passed · 142 项 Runtime 回归含并发唯一终态</span></article>
         <article class="phase"><span class="phase-no">P2</span><h3>确定性 A2UI · 状态面已落</h3><p>projector 已生成只读 projection/*，宿主固定 Catalog 渲染，不让模型参与。</p><ul><li>Pinvou catalog + validator：已完成首版</li><li>Runtime status：已完成；Mission / Result 待扩展</li><li>Artifact 仍用受信宿主卡；不开放外部副作用</li></ul><span class="gate">Gate passed · 同 sequence 同画面，旧 delta 丢弃</span></article>
-        <article class="phase"><span class="phase-no">P3</span><h3>Front 编排画布</h3><p>给 Front 受控 present_surface 能力，并先接最小 Policy 执行门。</p><ul><li>front/* + basis sequence / revision</li><li>Mission Agent / Orchestrator 两级回执</li><li>副作用 Action 必须先过 Kernel Policy Gate</li></ul><span class="gate">Gate · 未授权 Agent 写入必拒绝</span></article>
-        <article class="phase"><span class="phase-no">P4</span><h3>中断、审批与恢复</h3><p>完善 steering、cancel/resume、系统确认与重连。</p><ul><li>system/* 受保护确认层</li><li>审批参数绑定、过期与幂等恢复</li><li>surface + state recovery</li></ul><span class="gate">Gate · 崩溃/断连可重建</span></article>
+        <article class="phase"><span class="phase-no">P3</span><h3>Presentation Host 安全门</h3><p>先修复当前 Markdown 视觉伪造面，再开放任何 Agent 交互组件。</p><ul><li>严格标签 / 属性 / 远程资源白名单；回答内 HTTP(S) 不得直接导航</li><li>外链只经 evidenceRef → Host open_external，并显示标准化的初始目标域名、Punycode 与端口</li><li>projection/front/system writer principal + typed Action dispatcher</li><li>认证 URL 做 HTTPS、精确 Host / 端口、Provider Adapter 与 OAuth callback allowlist 校验</li></ul><span class="gate">Gate · 假登录框、任意 URL 与越区写入都不可达</span></article>
+        <article class="phase"><span class="phase-no">P4</span><h3>首批原生互动</h3><p>第一条纵向链做 system/* AuthChallenge，再接 Front 表单、Mission 工作台与可恢复交互。</p><ul><li>按 method 显示 QR / 文本降级 / 可选 user code / 过期 / 取消 / 回执</li><li>device_code 必显 user code；authorize_url / scan_login 可不提供</li><li>front/*、AG-UI interrupt、steering、cancel / resume 与重连</li></ul><span class="gate">Gate · 认证成功只来自 Provider；旧 challenge 与旧 revision 均拒绝</span></article>
+        <article class="phase"><span class="phase-no">P5</span><h3>沙箱 AppSurface</h3><p>最后接地图、游戏、复杂图表和编辑器等富 HTML，不污染原生 Catalog。</p><ul><li>opaque appViewRef + Host chrome + static fallback</li><li>opaque origin、严格 CSP、默认断网、无 Tauri / 文件权限</li><li>版本化、验 schema、限大小与限速的 postMessage bridge</li></ul><span class="gate">Gate · App 不能访问父页、凭据、任意网络或系统确认</span></article>
       </div>
 
       <div class="acceptance" aria-label="架构验收标准">
@@ -1528,6 +1555,8 @@
         <div class="accept"><span class="accept-mark">07</span><div><b>无原始泄漏</b><span>主画布不显示 reasoning、shell、stack、secret 或未裁剪工具输出。</span></div></div>
         <div class="accept"><span class="accept-mark">08</span><div><b>证据可追</b><span>结果、状态与风险能回到 eventId / artifactId / sourceAgentId。</span></div></div>
         <div class="accept"><span class="accept-mark">09</span><div><b>协议可升级</b><span>A2UI v1.0 与 AG-UI 新版通过 adapter / conformance fixtures 升级。</span></div></div>
+        <div class="accept"><span class="accept-mark">10</span><div><b>认证不可伪造</b><span>Front 和 App 不接触 URL、QR、token、device_code 或 PKCE state；成功只来自 Broker / Provider 回执。</span></div></div>
+        <div class="accept"><span class="accept-mark">11</span><div><b>富 HTML 被隔离</b><span>静态产物默认无脚本；交互 App 只有 opaque handle、强沙箱与最小 bridge，并始终可降级。</span></div></div>
       </div>
     </section>
 
@@ -1547,6 +1576,7 @@
         <div class="decision"><span class="decision-id">D-07</span><div><b>Policy 高于 Presentation</b><span>Policy Agent 评估，Kernel 强制；Host 生成不可隐藏的 system/* 确认层，Front 只负责用户态解释。</span></div></div>
         <div class="decision"><span class="decision-id">D-08</span><div><b>协议状态不是第二真相源</b><span>AG-UI state 与 A2UI data model 都是投影；业务事实与需要精确恢复的 Front Presentation Intent 均写入同一 Runtime Ledger。</span></div></div>
         <div class="decision"><span class="decision-id">D-09</span><div><b>三个 Surface 写权分区</b><span>projection/* 属于 Runtime Projector，front/* 属于 Front，system/* 属于 Kernel/Host；“Front 唯一写者”只指 Agent 内容画布。</span></div></div>
+        <div class="decision"><span class="decision-id">D-10</span><div><b>原生 Catalog 与沙箱 App 分层</b><span>A2UI 承担原生卡片、表单、Modal 与 system/*；复杂 HTML 只能通过 front/* 中的 opaque AppSurface 由 Host 沙箱化挂载，不能进入 system/* 或成为任意 HTML 对话框后门。</span></div></div>
       </div>
 
       <div class="sources">
@@ -1572,6 +1602,13 @@
             <a class="source-link" href="https://github.com/a2ui-project/a2ui">A2UI official repository · Apache-2.0 · release status</a>
             <a class="source-link" href="https://a2ui.org/specification/v0.9-a2ui/">A2UI v0.9 protocol specification</a>
             <a class="source-link" href="https://a2ui.org/reference/messages/">A2UI message reference and JSONL envelope</a>
+            <a class="source-link" href="https://github.com/a2ui-project/a2ui/blob/main/specification/v1_0/docs/a2ui_protocol.md">A2UI v1 protocol · custom catalogs, data binding and actions</a>
+            <a class="source-link" href="https://adaptivecards.io/explorer/">Adaptive Cards official schema explorer · host version and fallback semantics</a>
+            <a class="source-link" href="https://www.rfc-editor.org/rfc/rfc8628.html">OAuth 2.0 Device Authorization Grant · RFC 8628</a>
+            <a class="source-link" href="https://modelcontextprotocol.io/extensions/apps/overview">MCP Apps · sandboxed interactive resources</a>
+            <a class="source-link" href="https://github.com/modelcontextprotocol/ext-apps">MCP Apps official SDK and examples</a>
+            <a class="source-link" href="https://elements.ai-sdk.dev/components/confirmation">AI Elements · confirmation state pattern</a>
+            <a class="source-link" href="https://elements.ai-sdk.dev/components/artifact">AI Elements · artifact shell pattern</a>
           </div>
           <div class="source-group">
             <h4>Pinvou · local evidence</h4>
@@ -1585,7 +1622,7 @@
             <span class="source-link source-path">pinvou3-app/src-tauri/src/features/pinvou_os/model.rs · Runtime event model</span>
             <span class="source-link source-path">pinvou3-app/src/features/pinvou_os/runtime-api.js · current frontend projection</span>
           </div>
-          <p class="source-meta">文档版本 v0.2 · 实施与实机验收更新于 2026-08-18 · 自包含 HTML：无外部脚本、字体、样式或图片依赖。</p>
+          <p class="source-meta">文档版本 v0.3 · 实施切片验收于 2026-08-18；认证、原生互动与 AppSurface 设计复核于 2026-08-19 · 自包含 HTML：无外部脚本、字体、样式或图片依赖。</p>
         </div>
       </div>
     </section>

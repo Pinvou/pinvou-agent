@@ -1,0 +1,1898 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <meta name="description" content="PinvouOS Front / 交互 Agent 的能力、路由、认证二维码、原生对话框、富 HTML、安全边界与动态画布目标设计。" />
+  <title>PinvouOS Front Agent · 能力与设计真相源</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #667085;
+      --subtle: #8a94a6;
+      --paper: #f3f5f8;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --line: #dce2eb;
+      --line-strong: #c7d0dd;
+      --navy: #0f1729;
+      --navy-2: #182238;
+      --blue: #3157e5;
+      --blue-deep: #2442b7;
+      --blue-soft: #eef2ff;
+      --cyan: #0e7490;
+      --cyan-soft: #ecfeff;
+      --green: #067647;
+      --green-soft: #ecfdf3;
+      --amber: #b54708;
+      --amber-soft: #fff5e8;
+      --red: #b42318;
+      --red-soft: #fff1ef;
+      --violet: #6941c6;
+      --violet-soft: #f4f0ff;
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius-sm: 9px;
+      --shadow: 0 16px 44px rgba(16, 24, 40, 0.07);
+      --max: 1240px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.68;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; }
+    h1, h2, h3, h4, p { margin-top: 0; }
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    code {
+      padding: 0.12em 0.38em;
+      border: 1px solid #dfe5ef;
+      border-radius: 6px;
+      background: #f8fafc;
+      color: #344054;
+      font-size: 0.9em;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: 12px;
+      left: 12px;
+      transform: translateY(-180%);
+      padding: 9px 14px;
+      border-radius: 8px;
+      background: white;
+      color: var(--navy);
+      box-shadow: var(--shadow);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .topbar {
+      position: sticky;
+      z-index: 50;
+      top: 0;
+      border-bottom: 1px solid rgba(220, 226, 235, 0.92);
+      background: rgba(243, 245, 248, 0.94);
+      backdrop-filter: blur(16px);
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: min(var(--max), calc(100% - 40px));
+      min-height: 58px;
+      margin: 0 auto;
+      gap: 20px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--navy);
+      font-weight: 780;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+    .brand-mark {
+      display: grid;
+      width: 29px;
+      height: 29px;
+      place-items: center;
+      border-radius: 9px;
+      background: linear-gradient(145deg, #496cf2, #2648cc);
+      color: white;
+      font-size: 13px;
+      box-shadow: 0 6px 16px rgba(49, 87, 229, 0.24);
+    }
+    .topnav {
+      display: flex;
+      overflow-x: auto;
+      gap: 2px;
+      scrollbar-width: none;
+    }
+    .topnav::-webkit-scrollbar { display: none; }
+    .topnav a {
+      display: inline-flex;
+      min-height: 44px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 680;
+      text-decoration: none;
+      white-space: nowrap;
+      align-items: center;
+    }
+    .topnav a:hover,
+    .topnav a:focus-visible {
+      background: white;
+      color: var(--blue);
+      outline: none;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      background: var(--navy);
+      color: white;
+    }
+    .hero::before,
+    .hero::after {
+      position: absolute;
+      border-radius: 50%;
+      content: "";
+      pointer-events: none;
+    }
+    .hero::before {
+      top: -260px;
+      right: -160px;
+      width: 620px;
+      height: 620px;
+      border: 90px solid rgba(78, 109, 242, 0.13);
+    }
+    .hero::after {
+      bottom: -220px;
+      left: 42%;
+      width: 440px;
+      height: 440px;
+      background: radial-gradient(circle, rgba(37, 184, 173, 0.11), rgba(37, 184, 173, 0));
+    }
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding: 78px 0 70px;
+      gap: 64px;
+      align-items: end;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 19px;
+      color: #afc0ff;
+      font-size: 12px;
+      font-weight: 820;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .eyebrow-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #67e8d5;
+      box-shadow: 0 0 0 5px rgba(103, 232, 213, 0.12);
+    }
+    h1 {
+      max-width: 860px;
+      margin-bottom: 22px;
+      font-size: clamp(38px, 5.8vw, 67px);
+      line-height: 1.055;
+      letter-spacing: -0.055em;
+    }
+    .hero-lead {
+      max-width: 820px;
+      margin-bottom: 0;
+      color: #cfd7e8;
+      font-size: clamp(17px, 2vw, 21px);
+      line-height: 1.75;
+    }
+    .hero-lead strong { color: white; }
+    .hero-meta { display: grid; gap: 12px; }
+    .meta-card {
+      padding: 15px 17px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.055);
+    }
+    .meta-label {
+      display: block;
+      margin-bottom: 5px;
+      color: #98a8c1;
+      font-size: 11px;
+      font-weight: 820;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .meta-value { font-size: 14px; font-weight: 700; }
+
+    .truth-strip {
+      position: relative;
+      z-index: 2;
+      width: min(var(--max), calc(100% - 40px));
+      margin: -28px auto 0;
+      padding: 23px 25px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+      box-shadow: var(--shadow);
+    }
+    .truth-strip-grid {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(3, minmax(150px, 0.55fr));
+      gap: 22px;
+      align-items: center;
+    }
+    .truth-lead {
+      margin: 0;
+      color: var(--navy);
+      font-size: 17px;
+      font-weight: 760;
+      line-height: 1.55;
+    }
+    .truth-fact {
+      padding-left: 18px;
+      border-left: 1px solid var(--line);
+    }
+    .truth-fact b {
+      display: block;
+      color: var(--blue);
+      font-size: 21px;
+      line-height: 1.1;
+    }
+    .truth-fact span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.4;
+    }
+
+    main {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding: 82px 0 100px;
+    }
+    section {
+      margin: 0 0 92px;
+      scroll-margin-top: 86px;
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(250px, 0.48fr);
+      margin-bottom: 30px;
+      gap: 36px;
+      align-items: end;
+    }
+    .section-index {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 840;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h2 {
+      margin-bottom: 0;
+      color: var(--navy);
+      font-size: clamp(29px, 4vw, 43px);
+      line-height: 1.16;
+      letter-spacing: -0.04em;
+    }
+    .section-head h3 { margin-bottom: 0; color: var(--navy); line-height: 1.16; letter-spacing: -0.04em; }
+    .section-summary {
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.72;
+    }
+    h3 {
+      margin-bottom: 11px;
+      color: var(--navy);
+      font-size: 20px;
+      line-height: 1.35;
+      letter-spacing: -0.02em;
+    }
+    h4 {
+      margin-bottom: 8px;
+      color: var(--navy);
+      font-size: 15px;
+    }
+    .small { color: var(--muted); font-size: 13px; }
+    .muted { color: var(--muted); }
+    .no-margin { margin: 0; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .card {
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.035);
+    }
+    .card p:last-child { margin-bottom: 0; }
+    .card.soft { background: var(--surface-soft); box-shadow: none; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    .span-2 { grid-column: span 2; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 790;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .status::before {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      content: "";
+    }
+    .status.live { border-color: #a6e9c5; background: var(--green-soft); color: var(--green); }
+    .status.partial { border-color: #c7d7fe; background: var(--blue-soft); color: var(--blue-deep); }
+    .status.prompt { border-color: #f1cea3; background: var(--amber-soft); color: var(--amber); }
+    .status.target { border-color: #d9ccfb; background: var(--violet-soft); color: var(--violet); }
+    .status.off { border-color: #f6c3bd; background: var(--red-soft); color: var(--red); }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      margin: 0 0 24px;
+      gap: 8px;
+    }
+
+    .principle {
+      position: relative;
+      overflow: hidden;
+      padding: 30px 32px;
+      border-radius: var(--radius-xl);
+      background: var(--navy);
+      color: white;
+    }
+    .principle::after {
+      position: absolute;
+      right: -44px;
+      bottom: -70px;
+      width: 220px;
+      height: 220px;
+      border: 42px solid rgba(80, 112, 246, 0.13);
+      border-radius: 50%;
+      content: "";
+    }
+    .principle-label {
+      display: block;
+      margin-bottom: 10px;
+      color: #aebfff;
+      font-size: 11px;
+      font-weight: 820;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    .principle blockquote {
+      position: relative;
+      z-index: 1;
+      max-width: 960px;
+      margin: 0;
+      color: white;
+      font-size: clamp(20px, 3vw, 31px);
+      font-weight: 720;
+      line-height: 1.5;
+      letter-spacing: -0.028em;
+    }
+
+    .role-map {
+      display: grid;
+      grid-template-columns: minmax(160px, 0.72fr) 48px minmax(250px, 1.18fr) 48px minmax(210px, 0.9fr);
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: white;
+      gap: 10px;
+      align-items: stretch;
+      box-shadow: var(--shadow);
+    }
+    .role-node {
+      position: relative;
+      display: flex;
+      min-height: 150px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      background: var(--surface-soft);
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .role-node.primary {
+      border-color: #9eb1ff;
+      background: linear-gradient(145deg, #f7f8ff, #edf1ff);
+      box-shadow: inset 0 0 0 1px rgba(49, 87, 229, 0.08);
+    }
+    .role-node.dark {
+      border-color: var(--navy);
+      background: var(--navy);
+      color: white;
+    }
+    .role-node.dark h3 { color: white; }
+    .role-node.dark p { color: #bcc7da; }
+    .role-kicker {
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 820;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .role-node p { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+    .role-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 24px;
+    }
+    .role-subgrid {
+      display: grid;
+      margin-top: 18px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .mini-node {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: white;
+    }
+    .mini-node strong { display: block; color: var(--navy); font-size: 13px; }
+    .mini-node span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+    .route-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }
+    .route-card {
+      position: relative;
+      min-height: 270px;
+      padding: 23px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+      overflow: hidden;
+    }
+    .route-number {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      margin-bottom: 25px;
+      place-items: center;
+      border-radius: 10px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 850;
+    }
+    .route-card:nth-child(1) .route-number { background: var(--red-soft); color: var(--red); }
+    .route-card:nth-child(3) .route-number { background: var(--amber-soft); color: var(--amber); }
+    .route-card:nth-child(4) .route-number { background: var(--violet-soft); color: var(--violet); }
+    .route-card p { color: var(--muted); font-size: 13px; }
+    .route-card .status { position: absolute; right: 16px; bottom: 16px; }
+
+    .callout {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      padding: 18px 20px;
+      border: 1px solid #cbd6f8;
+      border-radius: var(--radius-md);
+      background: var(--blue-soft);
+      gap: 13px;
+      align-items: start;
+    }
+    .callout.warn { border-color: #efd0aa; background: var(--amber-soft); }
+    .callout.danger { border-color: #f0c1bc; background: var(--red-soft); }
+    .callout.good { border-color: #b5e7cc; background: var(--green-soft); }
+    .callout-icon {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      border-radius: 9px;
+      background: white;
+      color: var(--blue);
+      font-weight: 850;
+      box-shadow: 0 2px 8px rgba(16, 24, 40, 0.06);
+    }
+    .callout.warn .callout-icon { color: var(--amber); }
+    .callout.danger .callout-icon { color: var(--red); }
+    .callout.good .callout-icon { color: var(--green); }
+    .callout strong { display: block; margin-bottom: 4px; color: var(--navy); }
+    .callout p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .capability-card {
+      display: flex;
+      min-height: 205px;
+      flex-direction: column;
+    }
+    .capability-top {
+      display: flex;
+      margin-bottom: 16px;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .capability-card p { color: var(--muted); font-size: 13px; }
+    .capability-card .evidence {
+      margin-top: auto;
+      padding-top: 13px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .tool-shell {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: white;
+    }
+    .tool-shell-head {
+      display: flex;
+      padding: 22px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-soft);
+      gap: 20px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tool-shell-head p { margin: 0; color: var(--muted); font-size: 13px; }
+    .tool-groups {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+    }
+    .tool-group { padding: 24px; }
+    .tool-group + .tool-group { border-left: 1px solid var(--line); }
+    .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      display: inline-flex;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: white;
+      color: #475467;
+      font-size: 12px;
+      font-weight: 670;
+    }
+    .chip.blue { border-color: #c9d5ff; background: var(--blue-soft); color: var(--blue-deep); }
+    .tool-list { display: grid; margin-top: 14px; gap: 9px; }
+    .tool-row {
+      display: grid;
+      grid-template-columns: minmax(190px, 0.8fr) 1fr;
+      padding: 11px 0;
+      border-top: 1px solid #edf0f4;
+      gap: 16px;
+      align-items: baseline;
+    }
+    .tool-row code { width: fit-content; color: var(--blue-deep); }
+    .tool-row span { color: var(--muted); font-size: 12px; }
+
+    .budget {
+      padding: 28px;
+      border-radius: var(--radius-xl);
+      background: var(--navy);
+      color: white;
+    }
+    .budget-head {
+      display: flex;
+      margin-bottom: 24px;
+      gap: 18px;
+      align-items: end;
+      justify-content: space-between;
+    }
+    .budget h3 { margin: 0; color: white; font-size: 24px; }
+    .budget-note { max-width: 540px; margin: 0; color: #aebad0; font-size: 13px; text-align: right; }
+    .budget-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) 44px minmax(0, 1.12fr) 44px minmax(0, 0.9fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .budget-step {
+      padding: 17px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.055);
+    }
+    .budget-step b { display: block; margin-bottom: 7px; color: white; font-size: 14px; }
+    .budget-step span { display: block; color: #aebad0; font-size: 11px; line-height: 1.5; }
+    .budget-step.handoff { border-color: rgba(167, 139, 250, 0.45); background: rgba(105, 65, 198, 0.17); }
+    .budget-step.closed { border-color: rgba(244, 162, 153, 0.36); background: rgba(180, 35, 24, 0.13); }
+    .budget-arrow { display: grid; place-items: center; color: #75839d; font-size: 21px; }
+
+    .timeline { position: relative; display: grid; gap: 14px; }
+    .timeline::before {
+      position: absolute;
+      top: 23px;
+      bottom: 23px;
+      left: 18px;
+      width: 2px;
+      background: var(--line);
+      content: "";
+    }
+    .timeline-item {
+      position: relative;
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 14px;
+    }
+    .timeline-dot {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 5px solid var(--paper);
+      border-radius: 50%;
+      background: var(--blue);
+      color: white;
+      font-size: 10px;
+      font-weight: 850;
+    }
+    .timeline-body {
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+    }
+    .timeline-body p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.03);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+    }
+    th, td {
+      padding: 15px 17px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--surface-soft);
+      color: #475467;
+      font-size: 11px;
+      font-weight: 820;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    td { color: var(--muted); font-size: 13px; }
+    td:first-child { color: var(--navy); font-weight: 720; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: var(--green); font-weight: 760; }
+    .no { color: var(--red); font-weight: 760; }
+    .partial-text { color: var(--blue-deep); font-weight: 760; }
+
+    .surface-stack {
+      display: grid;
+      grid-template-columns: 1fr 1.12fr;
+      gap: 18px;
+    }
+    .surface-map {
+      display: grid;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: white;
+      gap: 12px;
+    }
+    .surface-layer {
+      display: grid;
+      grid-template-columns: 116px 1fr auto;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      gap: 15px;
+      align-items: center;
+    }
+    .surface-layer code { width: fit-content; }
+    .surface-layer p { margin: 0; color: var(--muted); font-size: 12px; }
+    .surface-layer:nth-child(1) { border-color: #b8d9d2; background: #f0faf7; }
+    .surface-layer:nth-child(2) { border-color: #c8d5ff; background: #f5f7ff; }
+    .surface-layer:nth-child(3) { border-color: #decff8; background: #faf7ff; }
+    .canvas-demo {
+      position: relative;
+      overflow: hidden;
+      min-height: 430px;
+      padding: 22px;
+      border-radius: var(--radius-xl);
+      background: #101828;
+      color: white;
+    }
+    .canvas-demo::before {
+      position: absolute;
+      inset: 0;
+      background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 24px 24px;
+      content: "";
+    }
+    .canvas-head {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      margin-bottom: 18px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .canvas-title { font-size: 13px; font-weight: 760; }
+    .canvas-badge { padding: 5px 8px; border-radius: 999px; background: rgba(255,255,255,.08); color: #aebad0; font-size: 10px; }
+    .canvas-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 12px;
+    }
+    .demo-card {
+      min-height: 98px;
+      padding: 15px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px;
+      background: rgba(255,255,255,.065);
+    }
+    .demo-card.large { grid-row: span 2; min-height: 208px; }
+    .demo-card.wide { grid-column: 1 / -1; }
+    .demo-label { color: #8fa2c0; font-size: 9px; font-weight: 820; letter-spacing: .08em; text-transform: uppercase; }
+    .demo-value { margin-top: 8px; color: white; font-size: 15px; font-weight: 730; }
+    .demo-lines { display: grid; margin-top: 13px; gap: 8px; }
+    .demo-line { height: 7px; border-radius: 999px; background: rgba(255,255,255,.12); }
+    .demo-line:nth-child(2) { width: 76%; }
+    .demo-line:nth-child(3) { width: 58%; }
+    .demo-actions { display: flex; margin-top: 16px; gap: 8px; }
+    .demo-action { padding: 7px 10px; border-radius: 8px; background: rgba(77,110,245,.26); color: #cdd7ff; font-size: 10px; }
+
+    .display-verdict {
+      display: grid;
+      grid-template-columns: minmax(0, 1.18fr) minmax(280px, .82fr);
+      overflow: hidden;
+      border: 1px solid #c8d5ff;
+      border-radius: var(--radius-xl);
+      background: linear-gradient(135deg, #f8f9ff, #eef2ff);
+      box-shadow: var(--shadow);
+    }
+    .display-verdict-main { padding: 28px 30px; }
+    .display-verdict-main h3 { margin: 12px 0 10px; font-size: 25px; }
+    .display-verdict-main p { margin: 0; color: var(--muted); font-size: 14px; }
+    .display-verdict-side {
+      display: grid;
+      padding: 24px;
+      border-left: 1px solid #c8d5ff;
+      background: rgba(255,255,255,.66);
+      gap: 10px;
+      align-content: center;
+    }
+    .display-fact {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      padding: 11px 12px;
+      border: 1px solid rgba(199, 213, 254, .88);
+      border-radius: 13px;
+      background: rgba(255,255,255,.84);
+      gap: 12px;
+      align-items: center;
+    }
+    .display-fact b { color: var(--blue); font-size: 18px; text-align: center; }
+    .display-fact span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+    .render-stack {
+      display: grid;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: white;
+      gap: 10px;
+      box-shadow: 0 8px 28px rgba(16, 24, 40, .035);
+    }
+    .render-lane {
+      display: grid;
+      grid-template-columns: 128px minmax(170px, .65fr) 1fr minmax(160px, .52fr);
+      padding: 15px 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      gap: 16px;
+      align-items: center;
+    }
+    .render-lane:nth-child(1) { border-color: #b8d9d2; background: #f0faf7; }
+    .render-lane:nth-child(2) { border-color: #c8d5ff; background: #f5f7ff; }
+    .render-lane:nth-child(3) { border-color: #efd0aa; background: #fff9f1; }
+    .render-lane:nth-child(4) { border-color: #decff8; background: #faf7ff; }
+    .render-lane code { width: fit-content; font-size: 11px; }
+    .render-lane strong { color: var(--navy); font-size: 13px; }
+    .render-lane span { color: var(--muted); font-size: 11px; line-height: 1.48; }
+
+    .showcase-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 18px;
+      gap: 16px;
+    }
+    .showcase {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: white;
+      box-shadow: 0 12px 34px rgba(16, 24, 40, .055);
+    }
+    .showcase-head {
+      display: flex;
+      min-height: 62px;
+      padding: 15px 17px;
+      border-bottom: 1px solid var(--line);
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .showcase-head h4 { margin: 0; font-size: 16px; }
+    .showcase-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .showcase-stage { flex: 1; min-height: 410px; padding: 16px; background: #f5f7fa; }
+    .mock-note { margin: 12px 0 0; color: var(--muted); font-size: 10px; text-align: center; }
+
+    .auth-card {
+      padding: 17px;
+      border: 1px solid rgba(255,255,255,.9);
+      border-radius: 21px;
+      background: rgba(255,255,255,.88);
+      box-shadow: 0 18px 42px rgba(31, 42, 68, .12);
+      backdrop-filter: blur(20px);
+    }
+    .auth-provider { display: flex; gap: 11px; align-items: center; }
+    .provider-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #3868f5, #1653cf);
+      color: white;
+      font-size: 13px;
+      font-weight: 850;
+      box-shadow: 0 7px 16px rgba(49,87,229,.24);
+    }
+    .auth-provider strong { display: block; color: var(--navy); font-size: 14px; }
+    .auth-provider span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .qr-shell {
+      display: grid;
+      width: 184px;
+      margin: 18px auto 13px;
+      padding: 12px;
+      border: 1px solid #e3e7ed;
+      border-radius: 19px;
+      background: white;
+      place-items: center;
+      box-shadow: 0 7px 20px rgba(16,24,40,.06);
+    }
+    .qr-shell svg { display: block; width: 160px; height: 160px; }
+    .auth-code { text-align: center; }
+    .auth-code small { display: block; color: var(--muted); font-size: 10px; }
+    .auth-code b { display: block; margin-top: 4px; color: var(--navy); font-family: ui-monospace, monospace; font-size: 20px; letter-spacing: .13em; }
+    .auth-timer { margin-top: 12px; color: var(--amber); font-size: 11px; font-weight: 720; text-align: center; }
+    .mock-actions { display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; gap: 8px; }
+    .mock-button {
+      display: flex;
+      min-height: 44px;
+      padding: 8px 11px;
+      border: 1px solid #dce2eb;
+      border-radius: 999px;
+      background: white;
+      color: #475467;
+      font-size: 11px;
+      font-weight: 760;
+      align-items: center;
+      justify-content: center;
+    }
+    .mock-button.primary { border-color: var(--blue); background: var(--blue); color: white; }
+
+    .modal-stage {
+      position: relative;
+      overflow: hidden;
+      min-height: 378px;
+      border-radius: 20px;
+      background: linear-gradient(155deg, #dce5f7, #f7f9fd 60%, #dfe8fb);
+    }
+    .modal-underlay { display: grid; padding: 18px; gap: 10px; opacity: .45; }
+    .underlay-bar { width: 45%; height: 12px; border-radius: 999px; background: #8392aa; }
+    .underlay-card { height: 80px; border: 1px solid white; border-radius: 17px; background: rgba(255,255,255,.8); }
+    .modal-scrim { position: absolute; inset: 0; background: rgba(15,23,41,.42); backdrop-filter: blur(5px); }
+    .modal-panel {
+      position: absolute;
+      right: 17px;
+      bottom: 17px;
+      left: 17px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.66);
+      border-radius: 20px;
+      background: rgba(250,250,252,.96);
+      box-shadow: 0 24px 55px rgba(15,23,41,.24);
+    }
+    .modal-copy { padding: 18px; }
+    .modal-copy h5 { margin: 0 0 6px; font-size: 16px; }
+    .modal-copy p { margin: 0; color: var(--muted); font-size: 11px; }
+    .modal-detail { display: grid; margin-top: 13px; padding: 10px 11px; border-radius: 11px; background: #fff4e7; gap: 4px; }
+    .modal-detail b { color: var(--amber); font-size: 10px; }
+    .modal-detail span { color: #7a4c24; font-size: 10px; }
+    .modal-buttons { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #d9dde5; }
+    .modal-buttons span { display: grid; min-height: 46px; color: var(--blue); font-size: 12px; font-weight: 760; place-items: center; }
+    .modal-buttons span + span { border-left: 1px solid #d9dde5; }
+
+    .app-stage {
+      overflow: hidden;
+      min-height: 378px;
+      border: 1px solid #26334b;
+      border-radius: 20px;
+      background: #111827;
+      color: white;
+      box-shadow: 0 18px 42px rgba(15,23,41,.2);
+    }
+    .app-chrome { display: flex; min-height: 48px; padding: 0 13px; border-bottom: 1px solid rgba(255,255,255,.09); gap: 9px; align-items: center; }
+    .window-dots { display: flex; gap: 5px; }
+    .window-dots i { display: block; width: 7px; height: 7px; border-radius: 50%; background: #65748d; }
+    .app-chrome strong { margin-left: 2px; font-size: 11px; }
+    .sandbox-pill { margin-left: auto; padding: 5px 7px; border-radius: 999px; background: rgba(52,199,89,.12); color: #73e5a2; font-size: 8px; font-weight: 820; letter-spacing: .05em; text-transform: uppercase; }
+    .app-body { padding: 16px; }
+    .app-summary { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    .app-summary small { display: block; color: #7f91ae; font-size: 9px; text-transform: uppercase; }
+    .app-summary b { display: block; margin-top: 4px; font-size: 20px; }
+    .app-summary span { color: #7ee2aa; font-size: 10px; font-weight: 760; }
+    .chart-bars { display: flex; height: 154px; margin-top: 18px; padding: 11px 9px 0; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; background: rgba(255,255,255,.03); gap: 8px; align-items: end; }
+    .chart-bars i { display: block; width: 100%; border-radius: 7px 7px 2px 2px; background: linear-gradient(#7392ff, #3458d7); }
+    .chart-bars i:nth-child(1) { height: 32%; }
+    .chart-bars i:nth-child(2) { height: 54%; }
+    .chart-bars i:nth-child(3) { height: 47%; }
+    .chart-bars i:nth-child(4) { height: 78%; }
+    .chart-bars i:nth-child(5) { height: 68%; }
+    .chart-bars i:nth-child(6) { height: 92%; }
+    .app-controls { display: grid; grid-template-columns: 1fr 1fr; margin-top: 12px; gap: 8px; }
+    .app-controls span { display: grid; min-height: 42px; border: 1px solid rgba(255,255,255,.09); border-radius: 11px; background: rgba(255,255,255,.05); color: #bdc8da; font-size: 10px; place-items: center; }
+
+    .catalog-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 18px; gap: 12px; }
+    .catalog-group { padding: 18px; border: 1px solid var(--line); border-radius: 17px; background: white; }
+    .catalog-group h4 { margin-bottom: 7px; font-size: 15px; }
+    .catalog-group p { margin-bottom: 13px; color: var(--muted); font-size: 11px; }
+    .catalog-group .chip-list { gap: 6px; }
+    .catalog-group .chip { padding: 5px 7px; font-size: 10px; }
+    .catalog-group.system { border-color: #efd0aa; background: #fffaf4; }
+    .catalog-group.app { border-color: #decff8; background: #fbf9ff; }
+
+    .action-model { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; gap: 12px; }
+    .action-class { padding: 17px; border: 1px solid var(--line); border-radius: 16px; background: white; }
+    .action-class strong { display: block; color: var(--navy); font-size: 13px; }
+    .action-class p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+    .action-class code { display: inline-block; margin-top: 10px; font-size: 10px; }
+
+    .boundary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .boundary-card {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+    }
+    .boundary-head {
+      display: flex;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .boundary-head h3 { margin: 0; }
+    .boundary-list { display: grid; }
+    .boundary-item {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      padding: 14px 20px;
+      border-bottom: 1px solid #edf0f4;
+      gap: 10px;
+    }
+    .boundary-item:last-child { border-bottom: 0; }
+    .boundary-icon { color: var(--green); font-weight: 900; }
+    .boundary-card.soft-side .boundary-icon { color: var(--amber); }
+    .boundary-item strong { display: block; color: var(--navy); font-size: 13px; }
+    .boundary-item span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+
+    .error-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .error-item {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.75fr) 1fr;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+      gap: 14px;
+      align-items: start;
+    }
+    .error-item code { width: fit-content; color: var(--red); }
+    .error-item span { color: var(--muted); font-size: 12px; }
+
+    .roadmap { display: grid; gap: 12px; }
+    .roadmap-item {
+      display: grid;
+      grid-template-columns: 62px minmax(190px, .62fr) 1fr minmax(160px, .42fr);
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+      gap: 18px;
+      align-items: center;
+    }
+    .roadmap-step {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .roadmap-item h3 { margin: 0; font-size: 16px; }
+    .roadmap-item p { margin: 0; color: var(--muted); font-size: 12px; }
+    .roadmap-gate { color: var(--violet); font-size: 11px; font-weight: 760; }
+
+    .example {
+      display: grid;
+      grid-template-columns: minmax(200px, .72fr) 1fr;
+      min-height: 190px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+    }
+    .example-input {
+      padding: 22px;
+      background: var(--navy);
+      color: white;
+    }
+    .example-input small { color: #91a2bd; font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .example-input p { margin: 15px 0 0; font-size: 17px; font-weight: 680; line-height: 1.55; }
+    .example-output { padding: 22px; }
+    .example-output p { margin-bottom: 10px; color: var(--muted); font-size: 13px; }
+    .example-output p:last-child { margin-bottom: 0; }
+
+    .decision-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .decision-card {
+      padding: 22px;
+      border-top: 3px solid var(--blue);
+      border-radius: 4px 4px var(--radius-lg) var(--radius-lg);
+      background: white;
+      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.04);
+    }
+    .decision-card:nth-child(2) { border-top-color: var(--amber); }
+    .decision-card:nth-child(3) { border-top-color: var(--violet); }
+    .decision-card b { display: block; margin-bottom: 9px; color: var(--navy); }
+    .decision-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .sources {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .source {
+      padding: 17px 19px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+      text-decoration: none;
+    }
+    a.source { transition: border-color 160ms ease, transform 160ms ease; }
+    a.source:hover { border-color: #a8b9f3; transform: translateY(-1px); }
+    a.source:focus-visible { outline: 3px solid rgba(49, 87, 229, 0.25); outline-offset: 3px; }
+    .source strong { display: block; color: var(--navy); font-size: 13px; }
+    .source span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+
+    footer {
+      border-top: 1px solid var(--line);
+      background: white;
+    }
+    .footer-inner {
+      display: flex;
+      width: min(var(--max), calc(100% - 40px));
+      min-height: 92px;
+      margin: 0 auto;
+      gap: 24px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .footer-inner p { margin: 0; color: var(--muted); font-size: 12px; }
+    .footer-inner a { color: var(--blue); font-weight: 700; text-decoration: none; }
+
+    @media (max-width: 1060px) {
+      .hero-inner { grid-template-columns: 1fr; gap: 36px; }
+      .hero-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .truth-strip-grid { grid-template-columns: 1fr repeat(3, minmax(120px, .5fr)); }
+      .route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .role-map { grid-template-columns: 1fr; }
+      .role-arrow { min-height: 26px; transform: rotate(90deg); }
+      .budget-flow { grid-template-columns: 1fr; }
+      .budget-arrow { min-height: 26px; transform: none; font-size: 0; }
+      .budget-arrow::before { content: "↓"; font-size: 21px; }
+      .surface-stack { grid-template-columns: 1fr; }
+      .display-verdict { grid-template-columns: 1fr; }
+      .display-verdict-side { border-top: 1px solid #c8d5ff; border-left: 0; }
+      .showcase-grid { grid-template-columns: 1fr; }
+      .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .roadmap-item { grid-template-columns: 54px minmax(170px, .6fr) 1fr; }
+      .roadmap-gate { grid-column: 2 / -1; }
+    }
+
+    @media (max-width: 800px) {
+      .topbar-inner { width: min(100% - 24px, var(--max)); }
+      .brand span:last-child { display: none; }
+      .hero-inner, main, .truth-strip, .footer-inner { width: min(100% - 28px, var(--max)); }
+      .hero-inner { padding: 58px 0 56px; }
+      .hero-meta { grid-template-columns: 1fr; }
+      .truth-strip { margin-top: -20px; }
+      .truth-strip-grid { grid-template-columns: 1fr; }
+      .truth-fact { padding: 13px 0 0; border-top: 1px solid var(--line); border-left: 0; }
+      main { padding-top: 64px; }
+      section { margin-bottom: 72px; }
+      .section-head { grid-template-columns: 1fr; gap: 13px; }
+      .grid-2, .grid-3, .boundary-grid, .error-grid, .decision-grid, .sources { grid-template-columns: 1fr; }
+      .render-lane { grid-template-columns: 1fr 1fr; }
+      .render-lane span:last-child { grid-column: 1 / -1; }
+      .action-model { grid-template-columns: 1fr; }
+      .span-2 { grid-column: auto; }
+      .tool-groups { grid-template-columns: 1fr; }
+      .tool-group + .tool-group { border-top: 1px solid var(--line); border-left: 0; }
+      .budget-head { align-items: start; flex-direction: column; }
+      .budget-note { text-align: left; }
+      .budget-flow { grid-template-columns: 1fr; }
+      .budget-arrow { min-height: 28px; }
+      .surface-layer { grid-template-columns: 1fr; }
+      .roadmap-item { grid-template-columns: 50px 1fr; }
+      .roadmap-item p, .roadmap-gate { grid-column: 2; }
+      .example { grid-template-columns: 1fr; }
+      .footer-inner { padding: 22px 0; align-items: flex-start; flex-direction: column; justify-content: center; }
+    }
+
+    @media (max-width: 520px) {
+      body { font-size: 15px; }
+      .topnav a { padding: 8px; font-size: 12px; }
+      h1 { font-size: 39px; }
+      .route-grid, .grid-4, .role-subgrid { grid-template-columns: 1fr; }
+      .principle { padding: 24px; }
+      .role-map, .budget, .canvas-demo { padding: 18px; }
+      .tool-row, .error-item { grid-template-columns: 1fr; gap: 8px; }
+      .canvas-grid { grid-template-columns: 1fr; }
+      .demo-card.large, .demo-card.wide { grid-row: auto; grid-column: auto; }
+      .roadmap-item { padding: 16px; }
+      .catalog-grid { grid-template-columns: 1fr; }
+      .render-lane { grid-template-columns: 1fr; }
+      .render-lane span:last-child { grid-column: auto; }
+      .display-verdict-main, .display-verdict-side { padding: 20px; }
+      .showcase-stage { padding: 12px; }
+      .table-wrap::before {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        display: block;
+        width: calc(100vw - 30px);
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--line);
+        background: #f8fafc;
+        color: var(--muted);
+        content: "左右滑动查看完整表格 →";
+        font-size: 10px;
+        font-weight: 720;
+      }
+    }
+
+    @media print {
+      .skip-link { display: none !important; }
+      .topbar { position: static; }
+      .hero, .budget, .principle, .canvas-demo { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .truth-strip { margin-top: 22px; }
+      section { break-inside: auto; }
+      .card, .route-card, .boundary-card, .roadmap-item, .example, .callout, .tool-shell, .showcase, .catalog-group, .render-lane, .source { break-inside: avoid; }
+      .table-wrap::before { display: none !important; }
+      .table-wrap { overflow: visible; }
+      table { min-width: 0; table-layout: fixed; }
+      th, td { padding: 8px; overflow-wrap: anywhere; }
+      th { font-size: 8px; }
+      td { font-size: 9px; line-height: 1.45; }
+      td code { padding-inline: 2px; overflow-wrap: anywhere; }
+      td .status { padding: 3px 4px; font-size: 7px; line-height: 1.2; white-space: normal; }
+      td .status::before { width: 4px; height: 4px; flex: 0 0 4px; }
+      a { text-decoration: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      a.source { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">跳到正文</a>
+
+  <header class="topbar" aria-label="文档导航">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">F</span><span>Front Agent · 设计真相源</span></div>
+      <nav class="topnav" aria-label="章节导航">
+        <a href="#position">定位</a>
+        <a href="#routes">路由</a>
+        <a href="#capabilities">能力</a>
+        <a href="#orchestration">编排</a>
+        <a href="#canvas">画布</a>
+        <a href="#experience">显示互动</a>
+        <a href="#boundaries">边界</a>
+        <a href="#roadmap">路线</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-inner">
+      <div>
+        <div class="eyebrow"><span class="eyebrow-dot"></span>PinvouOS Architecture · 2026-08-19</div>
+        <h1>交互 Agent<br />到底能做什么？</h1>
+        <p class="hero-lead">
+          这份文档把 <strong>Front Agent 的真实能力、软约定和目标设计</strong> 分开说明。
+          它不是一个聊天头像，而是 PinvouOS 的用户关系所有者、交互路由器和最终表达者；
+          但它不拥有系统事实、用户授权、硬安全规则或最终像素。
+        </p>
+      </div>
+      <div class="hero-meta">
+        <div class="meta-card"><span class="meta-label">代码基线</span><span class="meta-value mono">pinvou-agent · 8c356239</span></div>
+        <div class="meta-card"><span class="meta-label">执行底座</span><span class="meta-value mono">CodeWhale · 3f64e41e</span></div>
+        <div class="meta-card"><span class="meta-label">阅读方式</span><span class="meta-value">先看状态标签，再看硬边界</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="truth-strip" aria-label="关键事实">
+    <div class="truth-strip-grid">
+      <p class="truth-lead">当前 Front 已经能稳定回答、使用广泛工具并在三轮后强制收口；但还不是完整 Runtime 化的“全屏交互 Agent”。</p>
+      <div class="truth-fact"><b>1</b><span>唯一用户态回答流</span></div>
+      <div class="truth-fact"><b>3 轮</b><span>Direct 工具硬预算</span></div>
+      <div class="truth-fact"><b>0</b><span>当前可写的 front/* Surface</span></div>
+    </div>
+  </div>
+
+  <main id="content">
+    <section id="position">
+      <div class="section-head">
+        <div><span class="section-index">01 · Position</span><h2>先把角色钉死：它是门面，也是边界</h2></div>
+        <p class="section-summary">“所有 Agent 都在 Front 后面”只适用于人机交互边界；系统事实与安全控制仍可直接经 Runtime Ledger 和 Kernel 运转。</p>
+      </div>
+
+      <div class="principle">
+        <span class="principle-label">Canonical statement</span>
+        <blockquote>Front 是 PinvouOS 唯一面向用户的 Agent，也是唯一能提出普通用户态 <span class="mono">front/*</span> 呈现意图的 Agent；它不拥有 Runtime 事实、系统审批、用户授权或最终像素。</blockquote>
+      </div>
+
+      <div class="role-map" style="margin-top:18px">
+        <div class="role-node">
+          <span class="role-kicker">Human boundary</span>
+          <div><h3>用户</h3><p>只面对一个连续的 Pinvou 身份；不用理解后台有哪些 Agent。</p></div>
+        </div>
+        <div class="role-arrow" aria-hidden="true">↔</div>
+        <div class="role-node primary">
+          <span class="role-kicker">Single user-facing authority</span>
+          <div><h3>Front / 交互 Agent</h3><p>理解输入、选择路由、直接做短任务、回收后台回执，并给出唯一最终答复。</p></div>
+        </div>
+        <div class="role-arrow" aria-hidden="true">→</div>
+        <div class="role-node dark">
+          <span class="role-kicker">Execution & truth</span>
+          <div><h3>Engine · Runtime · Host</h3><p>执行工具、维护事实、实施安全约束并把声明式 UI 渲染成像素。</p></div>
+        </div>
+      </div>
+      <div class="role-subgrid">
+        <div class="mini-node"><strong>Orchestrator</strong><span>复杂任务的后台顾问/执行单元，不直接对用户说话。</span></div>
+        <div class="mini-node"><strong>System Agents</strong><span>Resource、Connectivity、Policy 等可直接写事实或触发 Kernel。</span></div>
+        <div class="mini-node"><strong>Host Renderer</strong><span>控制组件、样式、布局、动效、触控、降级和最终像素。</span></div>
+      </div>
+
+      <div class="grid-3" style="margin-top:18px">
+        <div class="card"><span class="status live">已运行</span><h3 style="margin-top:16px">当前本体</h3><p>普通非 Code、非 scheduled 的兼容执行会话里，根 CodeWhale Agent 被装配为 Front，拥有主回答流和通用工具面。</p></div>
+        <div class="card"><span class="status partial">部分接通</span><h3 style="margin-top:16px">Runtime 投影</h3><p>外层已经记录 InteractionRun、工具摘要、终态和精确 resume，但这是 best-effort 观测，不是聊天执行的强事务。</p></div>
+        <div class="card"><span class="status target">目标态</span><h3 style="margin-top:16px">完整交互平面</h3><p>Runtime 以 InteractionRun 持有生命周期权威并经 AG-UI 暴露；Front 参与交互、通过 A2UI 编排 <code>front/*</code>，由 Policy、Memory 和 Host 提供硬支撑。</p></div>
+      </div>
+    </section>
+
+    <section id="routes">
+      <div class="section-head">
+        <div><span class="section-index">02 · Routing</span><h2>每次输入先走四选一</h2></div>
+        <p class="section-summary">顺序不是为了“多 Agent 化”，而是让简单事保持快、复杂事有结构、危险和歧义不会被模型硬猜。</p>
+      </div>
+
+      <div class="route-grid">
+        <article class="route-card">
+          <div class="route-number">01</div><h3>Interrupt · 打断</h3>
+          <p>用户明确要求停止、取消或改变正在执行的工作时，优先中断，再给简短确认。</p>
+          <span class="status prompt">路由仅 Prompt</span>
+        </article>
+        <article class="route-card">
+          <div class="route-number">02</div><h3>Direct · 直接完成</h3>
+          <p>闲聊、解释、改写、翻译，或边界清楚、低风险且能在三轮工具内验证完成的短任务。</p>
+          <span class="status live">预算硬实现</span>
+        </article>
+        <article class="route-card">
+          <div class="route-number">03</div><h3>Clarify · 只问关键问题</h3>
+          <p>仅当缺失信息会实质改变目标、安全边界或结果时澄清；不拿澄清代替可安全推进的工作。</p>
+          <span class="status prompt">策略仅 Prompt</span>
+        </article>
+        <article class="route-card">
+          <div class="route-number">04</div><h3>Orchestrate · 后台编排</h3>
+          <p>多产物、多依赖、可并行、耗时、需要调查→实施→验证，或跨资源/设备/策略协同时委派。</p>
+          <span class="status partial">happy-path 接通</span>
+        </article>
+      </div>
+
+      <div class="callout warn" style="margin-top:18px">
+        <div class="callout-icon">!</div>
+        <div><strong>必须区分“规则写在 Prompt 里”与“内核真的拦得住”</strong><p>四路由选择、只问一个问题、只启动一个 <code>pinvou-orchestrator</code> 目前主要靠 Prompt；真正硬化的是三轮 Direct 工具预算及其执行期复检。</p></div>
+      </div>
+    </section>
+
+    <section id="capabilities">
+      <div class="section-head">
+        <div><span class="section-index">03 · Capability</span><h2>当前能力：能答、能做、能委派，但没有全闭环</h2></div>
+        <p class="section-summary">状态不能只写一个 Running。这里分别看代码是否存在、Front 是否能调用、是否持续运行、是否真正端到端闭环。</p>
+      </div>
+
+      <div class="legend" aria-label="状态图例">
+        <span class="status live">已运行</span><span class="status partial">部分接通</span><span class="status prompt">仅 Prompt 协议</span><span class="status target">目标态</span><span class="status off">未接通</span>
+      </div>
+
+      <div class="grid-4">
+        <article class="card capability-card">
+          <div class="capability-top"><h3>主回答与流式输出</h3><span class="status live">已运行</span></div>
+          <p>用户只看到根 Agent 的消息流。子 Agent 结果作为内部结果回收，不直接占据用户回答面。</p>
+          <div class="evidence">真实隔离边界：forwarder 主消息流</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>用户输入归一化</h3><span class="status off">未接生产</span></div>
+          <p>Ask / Act / Interrupt / Acknowledge 与 Voice / Text / Touch / System 的确定性代码和校验已存在，但 Engine 生产链尚未调用。</p>
+          <div class="evidence">代码存在 ≠ 已成为真实入口</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>Direct 通用工具</h3><span class="status live">已运行</span></div>
+          <p>实际工具面远大于五个 Runtime 工具，包含文件、Shell、Git、Web、MCP、知识库、Skill 和用户输入等能力。</p>
+          <div class="evidence">由 CodeWhale 工具目录与产品白名单约束</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>三轮 Direct 预算</h3><span class="status live">硬门禁</span></div>
+          <p>并行工具同批只算一轮；第三轮后仅允许一个 handoff 批次，之后本轮工具面彻底关闭；同批多个 agent call 尚未被禁止。</p>
+          <div class="evidence">目录收窄 + 执行入口二次复检</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>Orchestrator 委派</h3><span class="status partial">部分接通</span></div>
+          <p><code>pinvou-orchestrator</code> profile 可解析并启动；但“只启动一个”和 profile pin 尚未内核化。</p>
+          <div class="evidence">当前走通用 agent tool</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>InteractionRun</h3><span class="status partial">best-effort</span></div>
+          <p>已记录运行、工具摘要、消息 digest、terminal、interrupt 和 resume；入账失败只告警，不阻断聊天。</p>
+          <div class="evidence">不能声称“每次交互一定入账”</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>Memory v2 Context</h3><span class="status off">Front 未消费</span></div>
+          <p>Memory 核心、回放和 Top-K 已有，但 Front 仍依赖隐藏 transcript 与 legacy memory prompt。</p>
+          <div class="evidence mono">frontContextConsumerConnected: false</div>
+        </article>
+        <article class="card capability-card">
+          <div class="capability-top"><h3>动态 UI 画布</h3><span class="status target">目标态</span></div>
+          <p>现在只有固定只读 Runtime 投影；没有 <code>present_surface</code>，也没有 Front 可写的 <code>front/*</code>。</p>
+          <div class="evidence">A2UI 目前是 projection-only 子集</div>
+        </article>
+      </div>
+
+      <div class="table-wrap" style="margin-top:22px">
+        <table>
+          <caption class="sr-only">Front Agent 当前能力实现矩阵</caption>
+          <thead><tr><th scope="col">能力</th><th scope="col">核心代码</th><th scope="col">Front 可调用</th><th scope="col">后台持续运行</th><th scope="col">端到端闭环</th><th scope="col">准确结论</th></tr></thead>
+          <tbody>
+            <tr><td>主回答流</td><td class="yes">是</td><td class="yes">是</td><td>按交互运行</td><td class="yes">是</td><td>当前最成熟的 Front 能力</td></tr>
+            <tr><td>Runtime 状态查询</td><td class="yes">是</td><td class="yes">是</td><td>投影来自 Runtime</td><td class="partial-text">只读闭环</td><td>可看状态，不能直接改 Runtime</td></tr>
+            <tr><td>Orchestrator 计划</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td class="no">否</td><td>生成临时计划，不启动 Mission</td></tr>
+            <tr><td>Mission / Runtime Run</td><td class="partial-text">核心 API 有</td><td class="no">未接</td><td class="partial-text">部分</td><td class="no">否</td><td>复杂任务当前仍走 CodeWhale subagent</td></tr>
+            <tr><td>Policy Agent</td><td class="yes">算法有</td><td class="no">未接 gate</td><td class="no">否</td><td class="no">否</td><td>当前安全边界仍是 CodeWhale</td></tr>
+            <tr><td>A2UI 画布</td><td class="partial-text">只读投影有</td><td class="no">不可写</td><td>Runtime 投影</td><td class="partial-text">首切片</td><td>固定健康条，不是动态内容画布</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tools">
+      <div class="section-head">
+        <div><span class="section-index">04 · Tool Surface</span><h2>它手上到底有哪些工具？</h2></div>
+        <p class="section-summary">Front 不是只会调用五个“系统 Agent 工具”。今天的它继承了 CodeWhale 的广泛工具面，再额外接入五个 PinvouOS 只读适配器。</p>
+      </div>
+
+      <div class="tool-shell">
+        <div class="tool-shell-head"><div><h3 class="no-margin">通用执行工具面</h3><p>是否可见和可执行还会经过 mode、allow/disallow、sandbox、hook 与 approval。</p></div><span class="status live">生产可用</span></div>
+        <div class="tool-groups">
+          <div class="tool-group">
+            <h4>主要工具族</h4>
+            <div class="chip-list">
+              <span class="chip">Bash</span><span class="chip">File</span><span class="chip">Git</span><span class="chip">Web</span><span class="chip">agent</span><span class="chip">load_skill</span><span class="chip">request_user_input</span><span class="chip">revert_turn</span><span class="chip">todo_write</span><span class="chip">workflow</span><span class="chip">tool_search</span><span class="chip">image_analyze</span><span class="chip">kb_search</span><span class="chip">kb_open_source</span><span class="chip">mcp_*</span><span class="chip">MCP resources</span>
+            </div>
+            <h4 style="margin-top:22px">始终预装</h4>
+            <div class="chip-list"><span class="chip blue">agent</span><span class="chip blue">request_user_input</span><span class="chip blue">image_analyze</span></div>
+          </div>
+          <div class="tool-group">
+            <h4>当前真实执行边界</h4>
+            <p class="small">新 Policy Agent 还没接入生产 gate。今天真正不可绕过的，是 CodeWhale 的工具目录、执行准入、权限、沙箱、hooks 与审批机制。</p>
+            <div class="callout good" style="margin-top:16px"><div class="callout-icon">✓</div><div><strong>目录与执行双重约束</strong><p>即使模型“记住”一个已经隐藏的旧工具名，执行入口仍会拒绝，不能靠幻觉绕开三轮预算。</p></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:18px">
+        <div class="capability-top"><div><h3 class="no-margin">五个 PinvouOS 专用工具</h3><p class="small no-margin" style="margin-top:5px">全部只读；不会创建 Mission、注册 Agent、批准动作或写 UI。</p></div><span class="status live">只读已实现</span></div>
+        <div class="tool-list">
+          <div class="tool-row"><code>pinvou_runtime_status</code><span>查看 Runtime、Agent、Mission、资源、连接与推理的统一投影。</span></div>
+            <div class="tool-row"><code>pinvou_capability_report</code><span>按 manifest 与证据报告 Available / TemporarilyUnavailable / Unsupported；Available 不等于端到端执行已闭环。</span></div>
+          <div class="tool-row"><code>pinvou_orchestrator_plan</code><span>验证依赖、重复与资源约束，生成 Ready / Deferred / Blocked 的临时工作图；不启动执行。</span></div>
+          <div class="tool-row"><code>pinvou_attention_plan</code><span>计算注意力与打断计划；当前 Scheduler 尚未消费该计划。</span></div>
+          <div class="tool-row"><code>pinvou_asr_context_status</code><span>查看 ASR Context 编译与快照状态，不直接改模型或识别服务。</span></div>
+        </div>
+      </div>
+
+      <div class="budget" style="margin-top:18px">
+        <div class="budget-head"><h3>三轮 Direct 是怎样“硬”起来的</h3><p class="budget-note">一轮 = 一次 assistant batch 里整批工具调用；同批并行多个工具仍只算一轮。</p></div>
+        <div class="budget-flow">
+          <div class="budget-step"><b>第 1 轮</b><span>普通工具开放；尽量并行取证。</span></div>
+          <div class="budget-step"><b>第 2 轮</b><span>基于结果补充执行或验证。</span></div>
+          <div class="budget-step"><b>第 3 轮</b><span>最后一次普通工具批次。</span></div>
+          <div class="budget-arrow" aria-hidden="true">→</div>
+          <div class="budget-step handoff"><b>只剩 handoff</b><span>模型目录只暴露允许的 agent handoff；执行入口再次复检。</span></div>
+          <div class="budget-arrow" aria-hidden="true">→</div>
+          <div class="budget-step closed"><b>本轮工具关闭</b><span>agent batch 出现后，无论成功失败，后续工具都拒绝。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="orchestration">
+      <div class="section-head">
+        <div><span class="section-index">05 · Orchestration</span><h2>复杂任务现在怎么走，目标又怎么走</h2></div>
+        <p class="section-summary">当前是 manager-as-tool：Front 调通用 agent 工具启动后台子 Agent；目标才是进入 Runtime Mission / Run 与权威 Work Graph。</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="capability-top"><h3>当前真实路径</h3><span class="status partial">部分接通</span></div>
+          <div class="timeline">
+            <div class="timeline-item"><div class="timeline-dot">1</div><div class="timeline-body"><h4>Front 识别复杂任务</h4><p>路由判断来自系统 Prompt，不是确定性分类器。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">2</div><div class="timeline-body"><h4>调用通用 agent tool</h4><p>happy-path 使用 <code>profile="pinvou-orchestrator"</code>，但内核未 pin profile，也未限制同批只能一个 agent 调用。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>CodeWhale 后台子 Agent 执行</h4><p>这是兼容层的 subagent，不是 Runtime Mission Agent，Governor 不能按 Mission pause / stop。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">4</div><div class="timeline-body"><h4>Front 回收结果并最终回答</h4><p>子 Agent 不直接对用户说话；回执格式和证据完整性目前主要靠 Prompt。</p></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="capability-top"><h3>目标权威路径</h3><span class="status target">目标态</span></div>
+          <div class="timeline">
+            <div class="timeline-item"><div class="timeline-dot">1</div><div class="timeline-body"><h4>打开 Mission / Runtime Run</h4><p>目标、完成标准、约束和证据进入 Runtime Ledger。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">2</div><div class="timeline-body"><h4>冻结权威 Work Graph</h4><p>Orchestrator 只规划与修订图；Kernel 拥有状态迁移和派发权。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">3</div><div class="timeline-body"><h4>分层回执与验证</h4><p>Mission Agent Result → Orchestrator Receipt → VerifiedTaskOutcome，执行自报不等于已完成。</p></div></div>
+            <div class="timeline-item"><div class="timeline-dot">4</div><div class="timeline-body"><h4>Front 解释并呈现</h4><p>Front 接受、修改或拒绝建议，决定普通用户态表达；安全否决和用户确认仍不归 Front。</p></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout danger" style="margin-top:18px"><div class="callout-icon">×</div><div><strong>现在不能说“复杂任务已经进入 Runtime Mission”</strong><p><code>pinvou_orchestrator_plan</code> 只生成确定性临时计划，不创建 Mission / Run，也不派发任务。当前复杂执行仍属于 CodeWhale 子 Agent 路径。</p></div></div>
+    </section>
+
+    <section id="interaction-runtime">
+      <div class="section-head">
+        <div><span class="section-index">06 · Interaction Runtime</span><h2>AG-UI 语义已经有骨架，但还没有标准线协议</h2></div>
+        <p class="section-summary">InteractionRun 让一次用户交互有独立 ID、状态、终态和恢复关系；当前回答正文仍走兼容的 chat 流。</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="card"><span class="status live">硬状态机</span><h3 style="margin-top:16px">一个 terminal</h3><p>成功打开的 InteractionRun 只能以一个 terminal outcome 结束；状态迁移和 resume 绑定有硬校验。</p></div>
+        <div class="card"><span class="status partial">best-effort trace</span><h3 style="margin-top:16px">只存摘要</h3><p>记录工具 start/finish、消息 digest 与终态，不保存参数和完整输出；入账失败只告警，交互继续。</p></div>
+        <div class="card"><span class="status off">用户链未闭环</span><h3 style="margin-top:16px">busy 时不可 steering</h3><p><code>request_user_input</code> 可产生精确 interrupt/resume，但 VoiceShell 忙时锁定输入，用户尚不能自然取消或改目标。</p></div>
+      </div>
+
+      <div class="callout warn" style="margin-top:18px"><div class="callout-icon">!</div><div><strong>当前 modality 还不是完整真实输入通道</strong><p>生产链普通输入目前统一标为 Voice，<code>request_user_input</code> 恢复输入标为 Touch；Text / System 的真实 plumbing 尚未接通，不能把投影里的 modality 当成完整多模态事实。</p></div></div>
+
+      <div class="table-wrap" style="margin-top:18px">
+        <table>
+          <caption class="sr-only">三类 Interrupt 的职责与权威边界</caption>
+          <thead><tr><th scope="col">容易混淆的“打断”</th><th scope="col">它解决什么</th><th scope="col">当前状态</th><th scope="col">谁拥有权威</th></tr></thead>
+          <tbody>
+            <tr><td>Front Interrupt 路由</td><td>用户说“停下、取消、换目标”时选择业务处理路径</td><td><span class="status prompt">主要是 Prompt</span></td><td>Front 识别，执行仍依赖底层能力</td></tr>
+            <tr><td>AG-UI interrupt outcome</td><td>本交互因等待输入/审批结束；新 run 用 interruptId 精确恢复</td><td><span class="status partial">语义内核首切片</span></td><td>InteractionRun 状态机</td></tr>
+            <tr><td>Runtime Directive</td><td>Kernel 对 Agent 执行 Pause / Stop / Resume</td><td><span class="status partial">系统路径已有</span></td><td>Runtime / Kernel，不是 Front</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="canvas">
+      <div class="section-head">
+        <div><span class="section-index">07 · Canvas</span><h2>全屏可以成为画布，但 Agent 不该直接画像素</h2></div>
+        <p class="section-summary">正确方案不是让模型随意吐 HTML，而是让 Front 声明“展示什么、层级如何、绑定什么数据、允许什么动作意图”，由 Host 决定长什么样。</p>
+      </div>
+
+      <div class="surface-stack">
+        <div class="surface-map">
+          <div>
+            <span class="status partial">协议已冻结</span>
+            <h3 style="margin-top:15px">Surface 写权分区</h3>
+            <p class="small">三分区权责已经冻结，但当前只有 projection 精确校验；writer principal、front/system hard gate 与越区审计仍未实现。</p>
+          </div>
+          <div class="surface-layer"><code>projection/*</code><p>Runtime Projector 的确定性只读投影；当前唯一已落地 Surface。</p><span class="status live">已运行</span></div>
+          <div class="surface-layer"><code>front/*</code><p>Front 的普通用户态呈现意图；未来由 Presentation Planner 写入。</p><span class="status target">目标态</span></div>
+          <div class="surface-layer"><code>system/*</code><p>系统审批、硬告警与不可隐藏控制层，只归 Kernel / Host。</p><span class="status target">目标态</span></div>
+          <div class="callout warn"><div class="callout-icon">!</div><div><strong>Surface Agent 不是 UI 写入者</strong><p>它的职责是观察窗口和可访问性场景，但当前 Provider 尚未接通；“Surface”同名不代表它能提交 A2UI。</p></div></div>
+        </div>
+
+        <div class="canvas-demo" aria-label="目标画布概念图">
+          <div class="canvas-head"><span class="canvas-title">目标：Front 声明式内容画布</span><span class="canvas-badge">示意 · 尚未接通</span></div>
+          <div class="canvas-grid">
+            <div class="demo-card large"><div class="demo-label">Mission summary</div><div class="demo-value">把当前工作变成可理解、可行动的工作台</div><div class="demo-lines"><div class="demo-line"></div><div class="demo-line"></div><div class="demo-line"></div></div><div class="demo-actions"><span class="demo-action">查看证据</span><span class="demo-action">调整目标</span></div></div>
+            <div class="demo-card"><div class="demo-label">Runtime fact</div><div class="demo-value">2 个执行单元正在工作</div></div>
+            <div class="demo-card"><div class="demo-label">Needs decision</div><div class="demo-value">等待确认部署范围</div></div>
+            <div class="demo-card wide"><div class="demo-label">Artifact</div><div class="demo-value">交付物、差异、验证结果和下一步集中呈现</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px">
+        <div class="card">
+          <div class="capability-top"><h3>当前 A2UI 到了哪一步</h3><span class="status partial">projection-only</span></div>
+          <p>只有 <code>projection/runtime-overview</code>：固定 catalog、固定四类组件、ordered messages、只读根数据更新、旧 sequence 丢弃。</p>
+          <div class="chip-list"><span class="chip">PinvouCanvas</span><span class="chip">PinvouIdentityCard</span><span class="chip">PinvouInteractionCard</span><span class="chip">PinvouRuntimeHealth</span></div>
+          <p class="small" style="margin-top:14px">没有 Button、没有 action、没有 <code>front/*</code>、没有 <code>system/*</code>。Markdown、Artifact、UserInputCard 仍走兼容渲染链。</p>
+        </div>
+        <div class="card">
+          <div class="capability-top"><h3>目标 Front 可以声明什么</h3><span class="status target">Presentation Planner</span></div>
+          <div class="grid-2" style="gap:10px">
+            <div class="mini-node"><strong>可以</strong><span>语义组件、信息层级、数据绑定、显著性、模式、Action Intent。</span></div>
+            <div class="mini-node"><strong>不可以</strong><span>任意 HTML/CSS/JS、iframe、URL、文件路径、像素坐标、绕过确认。</span></div>
+          </div>
+          <p class="small" style="margin-top:14px">Host 持有白名单组件、视觉系统、布局、动效、触控、焦点、降级和本地状态；Policy / Kernel 决定动作是否可执行。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="experience">
+      <div class="section-head">
+        <div><span class="section-index">08 · Display &amp; Interaction</span><h2>二维码、对话框与富 HTML：现在到底能不能</h2></div>
+        <p class="section-summary">答案不是简单的“有”或“没有”：宿主旧界面已经有不少能力，但 Front 与当前 A2UI 调不到。正确扩展方式是原生 A2UI、系统覆盖层与沙箱 AppSurface 三层并存。</p>
+      </div>
+
+      <div class="display-verdict">
+        <div class="display-verdict-main">
+          <span class="status off">当前结论</span>
+          <h3>Front 不能正式弹认证二维码，也不能调用自定义 HTML 对话框。</h3>
+          <p>旧 ToolStore 能生成二维码，旧 Artifact UI 能预览或运行 HTML，完整 App 也有许多 React Modal；但 PinvouOS 首页提前返回 VoiceShell，这些入口不在当前树里。Front 又没有 <code>begin_auth</code>、<code>present_surface</code> 或 <code>open_dialog</code> 工具，所以能力存在于宿主，却没有成为交互 Agent 的能力。</p>
+        </div>
+        <div class="display-verdict-side" aria-label="当前显示能力关键数字">
+          <div class="display-fact"><b>4</b><span>当前 A2UI 自有组件，全部只读</span></div>
+          <div class="display-fact"><b>0</b><span>Front 可调用的 Modal / Button / Auth action</span></div>
+          <div class="display-fact"><b>3 层</b><span>目标渲染：原生、系统、沙箱富内容</span></div>
+        </div>
+      </div>
+
+      <div class="table-wrap" style="margin-top:18px">
+        <table>
+          <caption class="sr-only">二维码、对话框与 HTML 在当前 PinvouOS 中的真实可达性</caption>
+          <thead><tr><th scope="col">显示能力</th><th scope="col">宿主代码是否存在</th><th scope="col">当前首页能否看到</th><th scope="col">Front 能否调用</th><th scope="col">准确结论</th></tr></thead>
+          <tbody>
+            <tr><td>Runtime A2UI 状态条</td><td class="yes">存在</td><td class="yes">能</td><td class="no">只读、不可写</td><td>当前唯一真实 A2UI Surface，只显示身份、交互态和运行健康。</td></tr>
+            <tr><td>缺参选择卡</td><td class="yes">存在</td><td class="yes">能</td><td class="partial-text">经 request_user_input</td><td>是旧兼容链上的内联 React 卡，不是 A2UI Modal。</td></tr>
+            <tr><td>网站认证二维码</td><td class="yes">ToolStore 已有</td><td class="no">当前入口不可达</td><td class="no">没有 typed auth tool</td><td>飞书、企微、钉钉等已有 URL→本地 SVG QR→事件→卡片链，但完全旁路 Front。</td></tr>
+            <tr><td>原生 Dialog / Sheet</td><td class="yes">旧 App 多处存在</td><td class="no">VoiceShell 未挂载</td><td class="no">没有 dispatcher</td><td>A2UI 标准目录本身有 Modal；Pinvou 自有四组件目录没有实现。</td></tr>
+            <tr><td>自己写的 HTML</td><td class="yes">Artifact 链存在</td><td class="partial-text">先显示文件卡</td><td class="partial-text">可生成、不可编排</td><td>用户点击 ArtifactCard 后在独立 Tauri 窗口打开；不是主画布内联，也不是 dialog。</td></tr>
+            <tr><td>安全的富 HTML Widget</td><td class="no">尚无可信 Host</td><td class="no">不能</td><td class="no">不能</td><td>现有 iframe / 独立 artifact window 不能直接当认证或系统交互的安全沙箱。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout good" style="margin-top:18px"><div class="callout-icon">✓</div><div><strong>原卡片协议的底座不改</strong><p>继续保留白名单组件、数据与组件分离、Host 控视觉、Action 白名单、未知输入失败关闭和产物优先。变化只是把旧“独立 UI Agent”内聚为 Front 的 Presentation Planner，并把认证与强制确认提升到不可伪造的 <code>system/*</code>。</p></div></div>
+
+      <div class="section-head" style="margin-top:42px">
+        <div><span class="section-index">Rendering model</span><h3 style="font-size:clamp(25px,3.3vw,35px)">一张画布，四种受控内容来源</h3></div>
+        <p class="section-summary">A2UI 覆盖绝大多数原生交互；复杂 HTML 不塞进组件目录，而是由 Host 挂载预注册、强沙箱的 AppSurface。认证和审批永远不是 Front 自画。</p>
+      </div>
+      <div class="render-stack" aria-label="PinvouOS 目标渲染分层">
+        <div class="render-lane"><code>projection/*</code><strong>Runtime Projector</strong><span>身份、Mission、Run、资源、连接、推理等确定性事实。</span><span>只读原生 A2UI · 当前已落一条</span></div>
+        <div class="render-lane"><code>front/*</code><strong>Front Presentation Planner</strong><span>普通结果、报告、表格、任务工作台、缺参表单和 Artifact 布局。</span><span>白名单 A2UI · 不接 HTML/CSS/JS</span></div>
+        <div class="render-lane"><code>system/*</code><strong>Kernel · Host Projector</strong><span>认证二维码、权限、OTP、支付、危险确认、暂停和取消等不可隐藏控制；Policy 与 Auth Broker 只提供受信 decision / challenge state。</span><span>只有 Kernel / Host 可写 · Front 只能发起请求</span></div>
+        <div class="render-lane"><code>AppSurface</code><strong>Host + 可信 App descriptor</strong><span>地图、游戏、复杂图表、编辑器等需要完整 HTML/JS 的富交互；只挂在 front/*，绝不进入 system/*。</span><span>沙箱 iframe · CSP · capability bridge</span></div>
+      </div>
+
+      <div class="section-head" style="margin-top:42px">
+        <div><span class="section-index">Visible patterns</span><h3 style="font-size:clamp(25px,3.3vw,35px)">先做这三个，用户才会真的感到 A2UI 有用</h3></div>
+        <p class="section-summary">下面是目标视觉，不是截图，也不是已实现功能。它们只使用 PinvouOS 宿主样式和受控语义，桌面用 Dialog / Workspace，窄屏自动映射为 Sheet / 单列。</p>
+      </div>
+
+      <div class="showcase-grid">
+        <article class="showcase">
+          <div class="showcase-head"><div><h4>认证 Challenge</h4><small>Device-code 视觉示例 · system-owned</small></div><span class="status target">第一纵切</span></div>
+          <div class="showcase-stage">
+            <div class="auth-card">
+              <div class="auth-provider"><span class="provider-mark">飞</span><div><strong>连接飞书工作账号</strong><span>请在手机上确认本设备授权</span></div></div>
+              <div class="qr-shell">
+                <svg viewBox="0 0 29 29" role="img" aria-label="不可扫描的二维码视觉示意">
+                  <rect width="29" height="29" rx="1.5" fill="#fff" />
+                  <g fill="#111827">
+                    <path d="M2 2h7v7H2zm2 2v3h3V4zm16-2h7v7h-7zm2 2v3h3V4zM2 20h7v7H2zm2 2v3h3v-3z" fill-rule="evenodd" />
+                    <rect x="11" y="2" width="2" height="2"/><rect x="15" y="2" width="3" height="2"/><rect x="11" y="6" width="4" height="2"/><rect x="17" y="7" width="2" height="4"/>
+                    <rect x="2" y="11" width="3" height="2"/><rect x="7" y="11" width="4" height="3"/><rect x="13" y="10" width="2" height="2"/><rect x="20" y="11" width="2" height="3"/><rect x="24" y="10" width="3" height="2"/>
+                    <rect x="3" y="15" width="4" height="2"/><rect x="9" y="16" width="2" height="3"/><rect x="13" y="14" width="4" height="2"/><rect x="18" y="16" width="3" height="3"/><rect x="23" y="14" width="4" height="4"/>
+                    <rect x="11" y="20" width="2" height="3"/><rect x="14" y="18" width="3" height="2"/><rect x="16" y="22" width="2" height="4"/><rect x="20" y="20" width="3" height="2"/><rect x="24" y="23" width="3" height="4"/>
+                  </g>
+                </svg>
+              </div>
+              <div class="auth-code"><small>请核对手机上的用户码</small><b>H7QK-9M2</b></div>
+              <div class="auth-timer">将在 04:32 后过期</div>
+              <div class="mock-actions"><span class="mock-button">取消</span><span class="mock-button primary">用浏览器继续</span></div>
+            </div>
+            <p class="mock-note">视觉示意 · 二维码不可扫描 · URL 与 token 不进入模型</p>
+          </div>
+        </article>
+
+        <article class="showcase">
+          <div class="showcase-head"><div><h4>原生决策层</h4><small>System Modal / mobile Sheet</small></div><span class="status target">硬确认</span></div>
+          <div class="showcase-stage">
+            <div class="modal-stage">
+              <div class="modal-underlay"><div class="underlay-bar"></div><div class="underlay-card"></div><div class="underlay-card"></div><div class="underlay-card"></div></div>
+              <div class="modal-scrim"></div>
+              <div class="modal-panel">
+                <div class="modal-copy">
+                  <h5>部署到 MegaBook？</h5>
+                  <p>将替换前端构建并重启应用；Qwen ASR 服务不会重启。</p>
+                  <div class="modal-detail"><b>需要你的确认</b><span>副作用由 Kernel 执行；Front 不能代点确认。</span></div>
+                </div>
+                <div class="modal-buttons"><span>取消</span><span>确认部署</span></div>
+              </div>
+            </div>
+            <p class="mock-note">Host 管焦点、Esc、44px 触控与唯一主 Overlay</p>
+          </div>
+        </article>
+
+        <article class="showcase">
+          <div class="showcase-head"><div><h4>沙箱 AppSurface</h4><small>Trusted ui:// / artifact handle</small></div><span class="status target">富 HTML</span></div>
+          <div class="showcase-stage">
+            <div class="app-stage">
+              <div class="app-chrome"><span class="window-dots"><i></i><i></i><i></i></span><strong>交互式成本报告</strong><span class="sandbox-pill">Sandboxed</span></div>
+              <div class="app-body">
+                <div class="app-summary"><div><small>本月推理成本</small><b>¥ 2,418</b></div><span>↓ 12.4%</span></div>
+                <div class="chart-bars" aria-label="成本柱状图示意"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="app-controls"><span>切换维度</span><span>导出报告</span></div>
+              </div>
+            </div>
+            <p class="mock-note">Host chrome 在 iframe 外；App 只能经受控 bridge 请求动作</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="section-head" style="margin-top:42px">
+        <div><span class="section-index">Catalog extension</span><h3 style="font-size:clamp(25px,3.3vw,35px)">在原目录上做加法，不开任意页面后门</h3></div>
+        <p class="section-summary">旧 block 语义保留并通过 adapter 迁移到 Mission / Run 标识；新增能力按 Catalog 分包。通用布局原语与业务语义卡分开，系统目录不暴露给 Front。</p>
+      </div>
+      <div class="catalog-grid">
+        <div class="catalog-group"><h4>保留的卡片基础</h4><p>不破坏已有设计意图，去掉 Session 作为领域主键。</p><div class="chip-list"><span class="chip">Task / Mission Card</span><span class="chip">StatusPill</span><span class="chip">ResultCard</span><span class="chip">ReportCard</span><span class="chip">ArtifactPreview</span><span class="chip">ChoicePrompt</span><span class="chip">TimelineDrawer</span><span class="chip">Empty / Error</span></div></div>
+        <div class="catalog-group"><h4>原生显示与输入</h4><p>覆盖 80% 日常 UI，由 Host 决定桌面/平板布局。</p><div class="chip-list"><span class="chip blue">Section / Stack / Grid</span><span class="chip blue">Tabs / SplitView</span><span class="chip blue">Metric / Table / Chart</span><span class="chip blue">Source / Evidence</span><span class="chip blue">TextField / Choice</span><span class="chip blue">DateTime / Form</span><span class="chip blue">Modal / Sheet / Drawer</span></div></div>
+        <div class="catalog-group system"><h4>系统专属交互</h4><p>只有 Kernel / Host Projector 可写；Policy 与 Auth Broker 提供受信状态，不持有 Surface writer token。</p><div class="chip-list"><span class="chip">AuthChallenge</span><span class="chip">ConfirmationDialog</span><span class="chip">PermissionPrompt</span><span class="chip">CredentialPicker</span><span class="chip">RiskBanner</span><span class="chip">SystemControlBar</span><span class="chip">ExternalEffectReceipt</span></div></div>
+        <div class="catalog-group app"><h4>富内容与 App</h4><p>只引用 opaque handle，不接受 HTML、src 或任意 URL。</p><div class="chip-list"><span class="chip">ArtifactShell</span><span class="chip">Code / Diff</span><span class="chip">FileGallery</span><span class="chip">StaticHtmlPreview</span><span class="chip">AppSurface</span><span class="chip">Host Chrome</span><span class="chip">Static Fallback</span></div></div>
+      </div>
+
+      <div class="action-model">
+        <div class="action-class"><strong>本地 UI 动作</strong><p>展开、切 Tab、缩放、关闭普通预览；只改 Renderer 本地状态。</p><code>local_ui</code></div>
+        <div class="action-class"><strong>Front 交互动作</strong><p>提交表单、选择、追问、调整目标；进入 AG-UI 新 run 或精确 resume。</p><code>front_interaction</code></div>
+        <div class="action-class"><strong>系统与外部副作用</strong><p>认证、审批、pause/cancel、下载、分享；必须 Capability → Policy → Kernel。</p><code>system_decision</code></div>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px">
+        <div class="card">
+          <div class="capability-top"><h3>认证二维码的最小闭环</h3><span class="status target">system/auth/*</span></div>
+          <p><code>Front begin_auth(providerCapabilityId, purpose)</code> → Auth Broker 按 Provider Adapter 校验 HTTPS、精确 Host / 端口与 OAuth callback allowlist → 生成短期 challenge → Host 按认证方法显示 QR、文本降级、可选用户码、过期时间 → Provider 真实回执 → AG-UI resume。</p>
+          <p class="small">Challenge 是 tagged union：<code>device_code</code> 使用可信 <code>verification_uri_complete</code> 生成 QR，并且必须同时显示文本 URI 与 <code>userCode</code>；<code>authorize_url / scan_login</code> 显示 Adapter 验证的登录 QR，<code>userCode</code> 可以没有。<code>device_code</code>、token、PKCE state 和真实 URL 均不进模型或 A2UI 长期数据；按钮只携带 <code>challengeId</code>。</p>
+        </div>
+        <div class="card">
+          <div class="capability-top"><h3>自己写的 HTML 如何呈现</h3><span class="status target">两条安全路径</span></div>
+          <p><strong>静态交付物：</strong>用 <code>ArtifactPreview(artifactId)</code> 在画布内预览；脚本关闭。<br /><strong>复杂交互：</strong>用 <code>AppSurface(appViewRef)</code> 挂载预注册 <code>ui://</code> 或可信 artifact descriptor。</p>
+          <p class="small">交互 iframe 使用 opaque origin、严格 CSP、默认断网、无 Tauri / 文件 / cookie / top-nav 权限；只允许版本化、限速、验 schema 的 postMessage。认证、OTP、支付和系统确认永不在 Widget 内完成。</p>
+        </div>
+      </div>
+
+      <div class="callout danger" style="margin-top:18px"><div class="callout-icon">!</div><div><strong>P3 Presentation Host · 阻断级安全门禁</strong><p>真实 Chromium 已证明当前回答 Markdown 会保留固定定位样式、原生 dialog、表单输入和远程图片，因此虽然没有正式 dialog API，模型仍可能“画出一个假的登录框”。必须先把 Markdown 改成严格标签/属性白名单，禁用 style、form、input、button、dialog 与任意远程资源；所有可交互控件只走 Host A2UI，并用固定恶意 payload 做回归。普通来源链接仍可显示，但回答 HTML 不得直接导航：HTTP(S) 点击统一改写成 Host <code>open_external(evidenceRef)</code>，执行 URL 标准化、Punycode / 端口与初始目标域名展示，并按需确认。旧连接器 QR 还必须把字符串包含式域名判断升级为 HTTPS + 精确 Host / 端口 / Provider Adapter 校验，并为 OAuth 固定 callback / redirect_uri allowlist，不能声称能拦截手机浏览器里的远端跳转链。</p></div></div>
+    </section>
+
+    <section id="relationships">
+      <div class="section-head">
+        <div><span class="section-index">09 · Relationships</span><h2>它与其他 Agent、Runtime 和 UI 怎么分工</h2></div>
+        <p class="section-summary">Front 是用户态总入口，不是系统总权威。把“最终表达”“事实真相”“安全强制”“像素渲染”拆开，架构才可控。</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Front 与 Orchestrator、Runtime、Policy、Memory、System Agents 及 Host Renderer 的分工</caption>
+          <thead><tr><th scope="col">协作者</th><th scope="col">给 Front 什么</th><th scope="col">Front 能决定什么</th><th scope="col">Front 不能决定什么</th><th scope="col">当前连接</th></tr></thead>
+          <tbody>
+            <tr><td>Orchestrator</td><td>计划、执行结果、证据、风险、阻塞、澄清问题</td><td>接受、修改、拒绝建议；组织最终答复</td><td>不能把用户关系移交出去</td><td><span class="status partial">通用 agent tool</span></td></tr>
+            <tr><td>Runtime Ledger</td><td>身份、Mission、Run、Interaction、Agent、资源等事实</td><td>读取并解释事实</td><td>不能把投影当第二真相源</td><td><span class="status partial">trace + 只读投影</span></td></tr>
+            <tr><td>Policy / Kernel</td><td>Allow / Deny / RequireConfirmation 与强制结果</td><td>提出 Action Intent、解释结果</td><td>不能替用户确认，不能覆盖硬拒绝</td><td><span class="status off">统一 gate 未接</span></td></tr>
+            <tr><td>Memory Agent</td><td>经证据筛选的稳定上下文</td><td>在回答与计划中使用上下文</td><td>不能把任务进度写进长期记忆</td><td><span class="status off">Front consumer 未接</span></td></tr>
+            <tr><td>System Agents</td><td>资源、连接、推理、设备、Surface 等事实和风险</td><td>面向用户解释与建议</td><td>不能阻断它们经 Ledger / Kernel 的系统路径</td><td><span class="status partial">多为投影或算法</span></td></tr>
+            <tr><td>Host Renderer</td><td>组件能力、动作回执、本地交互事件</td><td>声明普通用户态呈现意图</td><td>不能控制最终像素、焦点和系统确认层</td><td><span class="status partial">只读投影已渲染</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="boundaries">
+      <div class="section-head">
+        <div><span class="section-index">10 · Boundaries</span><h2>哪些是真硬边界，哪些只是模型自觉</h2></div>
+        <p class="section-summary">设计评审时最重要的问题不是“Prompt 写了什么”，而是“模型不听话时，哪一层会拒绝”。</p>
+      </div>
+
+      <div class="boundary-grid">
+        <div class="boundary-card">
+          <div class="boundary-head"><h3>内核 / Engine 硬约束</h3><span class="status live">不可绕过</span></div>
+          <div class="boundary-list">
+            <div class="boundary-item"><span class="boundary-icon">✓</span><div><strong>同一隐藏执行会话只有一个 root turn</strong><span>并发根请求会得到 <code>session_turn_in_progress</code>。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">✓</span><div><strong>三轮工具 batch 后只允许 handoff</strong><span>工具目录会收窄，真实执行入口还会二次复检。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">✓</span><div><strong>handoff 后本轮工具全部关闭</strong><span>即使 profile 错或调用失败，也不会重新开放普通工具。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">✓</span><div><strong>子 Agent 深度、scope、写权限受约束</strong><span>不是只靠 Orchestrator 自己承诺。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">✓</span><div><strong>InteractionRun 状态迁移与精确 resume</strong><span>前提是该 Run 已成功打开；一个 Run 只能有一个终态。</span></div></div>
+          </div>
+        </div>
+
+        <div class="boundary-card soft-side">
+          <div class="boundary-head"><h3>当前仅 Prompt 约定</h3><span class="status prompt">模型可违背</span></div>
+          <div class="boundary-list">
+            <div class="boundary-item"><span class="boundary-icon">!</span><div><strong>必须选择四种路由之一</strong><span>确定性 ingress 尚未进入生产链。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">!</span><div><strong>只调用一次 pinvou-orchestrator</strong><span>Kernel 没有 profile pin，同批可提出多个 agent 调用。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">!</span><div><strong>委派后不重复执行</strong><span>目前没有跨 Front / Orchestrator 的去重事务。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">!</span><div><strong>Orchestrator 五段式回执</strong><span>没有 parser / schema 强校验证据和回执结构。</span></div></div>
+            <div class="boundary-item"><span class="boundary-icon">!</span><div><strong>Front 不绕过新 Policy Agent</strong><span>Policy gate 尚未成为工具执行的统一入口。</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout warn" style="margin-top:18px"><div class="callout-icon">!</div><div><strong>一个容易踩的边界</strong><p>任何 <code>agent</code> action——包括 status、wait、cancel——都可能消耗唯一 handoff；因此不能只在 Prompt 里要求 profile，下一步必须把 handoff 变成专用、可验证的内核动作。</p></div></div>
+    </section>
+
+    <section id="failures">
+      <div class="section-head">
+        <div><span class="section-index">11 · Failure Semantics</span><h2>失败条件与系统收口</h2></div>
+        <p class="section-summary">稳定错误码与语义条件共同决定 Front 能否诚实告诉用户“哪里失败、是否执行过、还能不能继续”。</p>
+      </div>
+      <div class="error-grid">
+        <div class="error-item"><code>session_turn_in_progress</code><span>同一兼容执行会话已有 root turn；新根请求不并发进入。</span></div>
+        <div class="error-item"><code>submission_failed</code><span>请求未成功提交到 Engine；不能假装已经执行。</span></div>
+        <div class="error-item"><code>engine_turn_failed</code><span>本轮执行失败；Front 应给可行动说明或安全降级。</span></div>
+        <div class="error-item"><code>engine_stream_stopped</code><span>事件流异常结束；不能把缺失 terminal 当成功。</span></div>
+        <div class="error-item"><code>runtime_restarted</code><span>重启时发现未完成 InteractionRun，会以明确失败原因闭合。</span></div>
+        <div class="error-item"><span class="chip mono">Trace 写入失败</span><span>Runtime trace 入账失败只告警，用户交互继续；因此 Ledger 目前不是完整对话重放源。</span></div>
+        <div class="error-item"><span class="chip mono">Handoff 调用失败</span><span>错误 profile 或失败的 agent 调用可能失败，但该用户轮次工具面仍保持关闭。</span></div>
+        <div class="error-item"><span class="chip mono">Resume 绑定不匹配</span><span>恢复用户输入必须同时匹配父 Run 和 interrupt ID，不能重复恢复。</span></div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <div><span class="section-index">12 · Front Enablement Gates</span><h2>Front 要成为完整交互 Agent，还依赖什么</h2></div>
+        <p class="section-summary">这不是第二套全局迁移路线，只列 Front 的解锁依赖；全局实施顺序以“AG-UI × A2UI 交互画布架构”的迁移路线为唯一权威。</p>
+      </div>
+
+      <div class="roadmap">
+        <div class="roadmap-item"><div class="roadmap-step">G1</div><h3>专用 Orchestrate 准入</h3><p>把唯一 profile、单 Orchestrator、handoff action 类型与 receipt schema 做成 Engine 硬约束。</p><span class="roadmap-gate">门禁：错误 profile / 多 agent / status action 均不可消费或绕过正确 handoff</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G2</div><h3>生产 ingress 接线</h3><p>让 Voice / Text / Touch / System 全部经过规范化 FrontIntentEnvelope，并形成可审计路由。</p><span class="roadmap-gate">门禁：同输入确定性分类；Interrupt 优先级与模式一致</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G3</div><h3>Runtime Mission / Run 闭环</h3><p>冻结 correlation、权威 Work Graph、派发、回执、暂停/恢复/取消和 VerifiedTaskOutcome。</p><span class="roadmap-gate">门禁：复杂任务不再只存在于 CodeWhale subagent 内存</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G4</div><h3>Policy Gate、Auth Broker 与 system/*</h3><p>所有副作用 Action Intent 统一经过 Capability、Policy、AuthorityStore 与 Kernel；Broker 生成受信 challenge state，只有 Kernel / Host Projector 写不可隐藏的系统层。</p><span class="roadmap-gate">门禁：Front 无法替用户确认、伪造认证成功或覆盖 Deny</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G5</div><h3>Memory Context Compiler</h3><p>让 Front 消费有证据、限预算、按范围投影的 Memory v2，而不是依赖隐藏 transcript。</p><span class="roadmap-gate">门禁：无原始秘密、无任务进度污染、可解释来源</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G6</div><h3>front/* Presentation Planner 与 App Host</h3><p>增加 <code>present_surface</code>、白名单 catalog 与 opaque <code>appViewRef</code>；Front 只提交语义结构、数据绑定和 Action Intent。</p><span class="roadmap-gate">门禁：未知组件、跨 namespace、任意代码、路径、URL 与未注册 App 全部 fail closed</span></div>
+        <div class="roadmap-item"><div class="roadmap-step">G7</div><h3>AG-UI wire 与可恢复交互</h3><p>输出标准事件、共享状态、steering、cancel / resume，并支持断连后的 Surface 与 Run 重放。</p><span class="roadmap-gate">门禁：exactly-one terminal、exact resume、跨断连 sequence / revision 冲突测试</span></div>
+      </div>
+    </section>
+
+    <section id="examples">
+      <div class="section-head">
+        <div><span class="section-index">13 · Examples</span><h2>放到真实请求里，就很容易理解</h2></div>
+        <p class="section-summary">同一个 Front 身份，根据任务复杂度和风险选择不同内部路径；用户不需要切 Agent，也不需要切“会话人格”。</p>
+      </div>
+
+      <div class="grid-2">
+        <article class="example"><div class="example-input"><small>用户</small><p>“解释一下这段架构文档。”</p></div><div class="example-output"><span class="status live">Direct</span><p style="margin-top:14px">无需启动 Orchestrator；Front 直接读取、解释并给结论。若用工具，仍受三轮预算。</p></div></article>
+        <article class="example"><div class="example-input"><small>用户</small><p>“MegaBook 现在热不热？”</p></div><div class="example-output"><span class="status live">Direct + 只读状态</span><p style="margin-top:14px">Front 可读取 Runtime / Resource 投影后回答；不会凭一个 Running 徽标夸大设备能力。</p></div></article>
+        <article class="example"><div class="example-input"><small>用户</small><p>“把这个模块重构、部署，再做白盒和黑盒验证。”</p></div><div class="example-output"><span class="status partial">Orchestrate</span><p style="margin-top:14px">按 Prompt 契约应进入、happy-path 会进入 CodeWhale 子 Agent；目标态应建立 Runtime Mission、Work Graph、回执和验证终态。</p></div></article>
+        <article class="example"><div class="example-input"><small>用户</small><p>“先停，部署范围改成只动前端。”</p></div><div class="example-output"><span class="status off">Interrupt 链未闭环</span><p style="margin-top:14px">Prompt 会要求先打断，但当前忙时 UI 不能自然 steering；这是 AG-UI 接线必须补齐的关键体验。</p></div></article>
+        <article class="example span-2"><div class="example-input"><small>用户</small><p>“把整个屏幕整理成这项工作的操作台。”</p></div><div class="example-output"><span class="status target">front/* Canvas</span><p style="margin-top:14px">目标不是让 Front 输出任意 HTML，而是声明 Mission、产物、风险、等待决定等语义块；Host 用统一设计系统渲染，并由 Policy / Kernel 保护 Action。</p></div></article>
+      </div>
+    </section>
+
+    <section id="decision">
+      <div class="section-head">
+        <div><span class="section-index">14 · Decision</span><h2>最终判断</h2></div>
+        <p class="section-summary">这三个结论决定下一阶段怎么做，能避免“画布很丑”“权限失控”和“看起来已完成、实际上没接通”。</p>
+      </div>
+      <div class="decision-grid">
+        <div class="decision-card"><b>它确实应该负责用户看到什么</b><p>但负责的是语义编排、最终表达和 Action Intent，不是任意像素、系统确认和执行授权。</p></div>
+        <div class="decision-card"><b>现在还不能称为完整交互 Agent</b><p>它是一个能力很强的根 Agent，加上三轮硬边界和部分 Runtime 观测；关键闭环仍待接通。</p></div>
+        <div class="decision-card"><b>显示面的第一纵切做认证卡</b><p>先封住 Markdown 伪造与 QR 域名漏洞，再用现有连接器完成 <code>system/auth/*</code>。它可与 Mission/回执闭环并行开发，但发布前必须通过 Presentation Host 安全门和 Auth/Policy 子门禁。</p></div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="section-head">
+        <div><span class="section-index">15 · Source of Truth</span><h2>这份结论依据什么</h2></div>
+        <p class="section-summary">实现行为优先于愿景文档；历史输入用于解释为什么这样设计，但不能覆盖较新的 ADR、代码和测试。</p>
+      </div>
+      <div class="sources">
+        <a class="source" href="README.md"><strong>PinvouOS 架构权威索引</strong><span>跨文档不变量、当前实现边界与裁决顺序。</span></a>
+        <div class="source"><strong>Front / VoiceShell / ToolStore / Artifact 实现</strong><span>Front 工具面、首页 early return、旧 QR 事件卡和 HTML 外开窗口的真实可达性。</span></div>
+        <div class="source"><strong>src/shared/markdown-renderer.js · VoiceShell · Chromium 安全探针</strong><span>当前净化仍允许 fixed style、dialog、form/input、远程图片与直接链接；尚缺覆盖这五类 payload 的持久回归 fixture。</span></div>
+        <div class="source"><strong>CodeWhale Engine · 3f64e41e</strong><span>Direct 三轮目录收窄与执行期 hard admission。</span></div>
+        <a class="source" href="pinvouos-interaction-surface-agui-a2ui.html"><strong>AG-UI × A2UI 交互画布架构</strong><span>协议职责、Surface 写权、Catalog、Host Renderer 与唯一迁移路线。</span></a>
+        <div class="source"><strong>内部 UI Agent 卡片协议 + Obsidian 产品主张</strong><span>继承动态 Canvas、白名单组件与 Host 控制视觉；废弃旧 Session 与独立 UI Agent 假设。</span></div>
+        <a class="source" href="https://github.com/a2ui-project/a2ui/blob/main/specification/v1_0/docs/a2ui_protocol.md"><strong>A2UI v1 官方协议</strong><span>声明式 Surface、受信 Catalog、数据绑定、Action 与 Host 自定义组件。</span></a>
+        <a class="source" href="https://docs.ag-ui.com/introduction"><strong>AG-UI 官方文档</strong><span>Run、流式事件、共享状态、工具、interrupt、steering、cancel 与 resume。</span></a>
+        <a class="source" href="https://www.rfc-editor.org/rfc/rfc8628.html"><strong>OAuth 2.0 Device Authorization Grant · RFC 8628</strong><span>QR、verification URI、user code、过期与用户确认的标准安全语义。</span></a>
+        <a class="source" href="https://modelcontextprotocol.io/extensions/apps/overview"><strong>MCP Apps 官方说明</strong><span>预声明 UI 资源、Host 沙箱 iframe、postMessage bridge、权限与 CSP。</span></a>
+        <a class="source" href="https://elements.ai-sdk.dev/components/confirmation"><strong>AI Elements · Confirmation</strong><span>仅借鉴 requested / accepted / rejected / output 等交互状态，不作为权威协议。</span></a>
+        <a class="source" href="https://elements.ai-sdk.dev/components/artifact"><strong>AI Elements · Artifact</strong><span>借鉴稳定的产物标题、内容与动作栏外壳。</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>PinvouOS Front Agent · 能力与设计真相源 · 基于 feature checkpoint 8c356239</p>
+      <p><a href="README.md">返回架构权威索引</a> · <a href="pinvouos-interaction-surface-agui-a2ui.html">查看交互画布协议</a></p>
+    </div>
+  </footer>
+</body>
+</html>

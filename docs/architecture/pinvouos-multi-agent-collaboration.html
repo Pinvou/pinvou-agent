@@ -818,7 +818,7 @@
     <header class="hero">
       <div class="hero-top">
         <div class="brand"><span class="brand-mark">P</span> PINVOU OS · AGENT RUNTIME</div>
-        <div class="draft-tag">ARCHITECTURE REVIEW · 2026.08.18</div>
+        <div class="draft-tag">ARCHITECTURE REVIEW · 2026.08.19</div>
       </div>
       <div class="hero-grid">
         <div>
@@ -1152,12 +1152,12 @@
           </svg>
 
           <div class="mobile-map" aria-label="移动端协作关系摘要">
-            <div class="mobile-chain"><div class="mobile-arrow">1</div><div class="mobile-node"><b>用户 → Front</b><span>语音先经 Qwen3-ASR；文字与触控直接进入。Front 是唯一入口。</span></div></div>
-            <div class="mobile-chain"><div class="mobile-arrow">2</div><div class="mobile-node"><b>Front → Direct 或 Orchestrator</b><span>简单任务最多 3 轮工具；复杂或三轮未完成才委派唯一 Orchestrator。</span></div></div>
-            <div class="mobile-chain"><div class="mobile-arrow">3</div><div class="mobile-node"><b>Orchestrator → Mission Agents</b><span>独立项并行、有依赖项串行；最多并发 4，结果携带证据回执。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">1</div><div class="mobile-node"><b>用户 → Front</b><span>Front 是唯一目标入口；语音链已入，Text / Touch 的规范 modality plumbing 尚未完整接通。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">2</div><div class="mobile-node"><b>Front → Direct 或 Orchestrator</b><span>简单任务最多 3 轮工具；复杂或三轮未完成时，Prompt 要求委派 pinvou-orchestrator；唯一 profile 与单实例尚未内核化。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">3</div><div class="mobile-node"><b>Orchestrator → Mission Agents</b><span>目标按 Work Graph 并行并返回证据回执；当前复杂委派仍是 CodeWhale background subagent，不是 Runtime Mission Agent。</span></div></div>
             <div class="mobile-chain"><div class="mobile-arrow">4</div><div class="mobile-node"><b>观察 Agent → Runtime</b><span>Surface、Device、Resource、Connectivity、Inference 等发布事实，不直接干预其他 Agent。</span></div></div>
-            <div class="mobile-chain"><div class="mobile-arrow">5</div><div class="mobile-node"><b>Kernel → 控制与打断</b><span>Policy 预先评估、Kernel 执行门禁；Governor 与 Attention 经 Adapter 暂停、停止或恢复 Mission Agents。</span></div></div>
-            <div class="mobile-chain"><div class="mobile-arrow">6</div><div class="mobile-node"><b>回执 → Front → 用户</b><span>Orchestrator 和后台 Agent 永不直接对用户给最终答案。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">5</div><div class="mobile-node"><b>Kernel → 控制与打断</b><span>目标由 Policy 评估、Kernel 强制并经 Adapter 控制；统一副作用 Gate、Scheduler 与用户 steering 链尚未闭环。</span></div></div>
+            <div class="mobile-chain"><div class="mobile-arrow">6</div><div class="mobile-node"><b>回执 → Front → 用户</b><span>Front 独占最终回答已成立；Runtime Mission / Orchestrator 的结构化证据回执仍是目标合同。</span></div></div>
           </div>
         </div>
 
@@ -1237,7 +1237,7 @@
             <span class="section-index">04 · INTERRUPT AUTHORITY</span>
             <h2>谁能打断谁</h2>
           </div>
-          <p class="section-desc">“能影响”与“能打断”必须分开。绝大多数 Agent 只能提供事实；真正的中断权集中在用户/Front、任务父级和 Runtime 硬治理。</p>
+          <p class="section-desc">“能影响”与“能打断”必须分开。绝大多数 Agent 只能提供事实；真正的中断权集中在用户/Front、任务父级和 Runtime 硬治理。<strong>下表定义目标 Authority Contract；当前用户 busy 时不能 steering，Runtime Mission 与统一 Policy Gate 也未闭环，实施差异以 06 · Current Truth 为准。</strong></p>
         </div>
         <div class="authority-table-wrap">
           <table>
@@ -1245,7 +1245,7 @@
               <tr><th>发起者</th><th>作用对象</th><th>权限</th><th>边界与执行方式</th></tr>
             </thead>
             <tbody>
-              <tr><td class="authority">用户 → Front</td><td>当前 Orchestrator 与相关 Mission Agents</td><td class="yes">可取消 / 改目标</td><td>Front 将用户 Interrupt 转为运行时取消；Immediate 立即停，Checkpoint 到安全点停，Atomic 完成不可分割段后停。</td></tr>
+              <tr><td class="authority">用户 → Front</td><td>当前 Orchestrator 与相关 Mission Agents</td><td class="yes">目标：可取消 / 改目标</td><td>目标由 Front 将 Interrupt 转为运行时取消；当前 busy UI 不能自然 steering，用户链尚未接到完整 Runtime 控制闭环。</td></tr>
               <tr><td class="authority">Front Agent</td><td>自己授权的 Orchestrator / Mission</td><td class="yes">可中断</td><td>基于用户意图或业务判断撤销授权；Front 不能解除 Policy 的硬拒绝，也不能强迫 Kernel 越过安全阈值。</td></tr>
               <tr><td class="authority">Orchestrator</td><td>自己派出的子 Mission Agents</td><td class="yes">可取消 / 重排</td><td>只管理工作图，不得中断 Front、系统观察 Agent或其他不属于该 Mission 的工作。</td></tr>
               <tr><td class="authority">Resource Governor</td><td>Mission Agents</td><td class="yes">Pause / Stop / Resume</td><td>Warm 延后重任务；Hot 暂停低优先级可中断任务；Critical 硬停止非必要任务。通过 Adapter 执行并 Ack。</td></tr>
@@ -1305,7 +1305,7 @@
           <article class="truth-card current">
             <h3>现在已经是真的</h3>
             <ul>
-              <li>Front → 唯一 Orchestrator 的 manager-as-tool 真实调用链已通过 Engine 回归；Front 恢复并独占最终回复。</li>
+              <li>Front → pinvou-orchestrator 的 manager-as-tool happy-path 已通过 Engine 回归；Front 恢复并独占最终回复。唯一 profile、同批单实例与结构化回执仍待内核化。</li>
               <li>Resource、Connectivity、Inference 与 ASR Context 都有真实后台循环，并持续写入统一 Runtime 投影。</li>
               <li>Capability 已是可调用的进程内确定性 Agent；Memory Runtime 核心已接同一账本的决策、检查点与精确重放。</li>
               <li>Memory 写入已受单写锁与 durable-head CAS 保护；结构化 Claim 做精确语义绑定，热投影使用可重建结构索引和有界 Top-K。</li>
@@ -1342,7 +1342,7 @@
     </main>
 
     <footer>
-      <span>PinvouOS Multi-Agent Collaboration · Review Draft v0.1</span>
+      <span>PinvouOS Multi-Agent Collaboration · Review Draft v0.2</span>
       <span><a href="README.md" style="color:inherit">跨文档权威索引</a> · local worktree truth · deployment truth lives in Interaction audit</span>
     </footer>
   </div>
